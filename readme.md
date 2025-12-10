@@ -1,1 +1,1 @@
-Latest version - 1.20.7 - November 7 2025
+Latest version - 1.30 - November 30 2025
