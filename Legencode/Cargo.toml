@@ -1,0 +1,75 @@
+[package]
+name = "Legencode"
+version = "0.1.0"
+edition = "2021"
+description = "A unified image encoding crate for JPEG, JP2, JBIG2, and CCITT4"
+license = "MIT"
+authors = ["Your Name <your.email@example.com>"]
+repository = "https://github.com/yourusername/image_codecs"
+homepage = "https://github.com/yourusername/image_codecs"
+documentation = "https://docs.rs/image_codecs"
+keywords = ["jpeg", "jp2", "jbig2", "ccitt4", "image"]
+categories = ["multimedia::encoding"]
+
+[lib]
+name = "Legencode"
+path = "src/lib.rs"
+
+[dependencies]
+imagequant = "4.4.1"
+# Direct dependencies used by streamline.rs
+fax = { version = "0.2.6", default-features = false }  # External dependency for CCITT4 encoding
+ndarray = "0.16.1"          # Used directly for JBIG2 Array2 types - match jbig2 crate version
+anyhow = "1.0"              # For error handling in lib.rs
+uuid = { version = "1.17", features = ["v4"] }  # For generating unique temporary filenames
+flate2 = "1.1.5"                # For Flate/Zlib compression
+
+# Dependencies for color processing modules
+rayon = "1.11"              # For parallel processing
+serde = { version = "1.0", features = ["derive"] }  # For serialization
+thiserror = "2.0"           # For error handling
+image = "0.25.6"              # For image processing
+palette = "0.7"             # For color space conversions
+png = "0.17"                # For PNG encoding/decoding
+clap = { version = "4.4", features = ["derive"] }  # For command-line argument parsing
+lazy_static = "1.5"         # For static initialization
+rustc-hash = "1.1"
+ort = { path = "../ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }  # Local fork with WebGPU cleanup fix
+once_cell = "1.20"          # For global static initialization
+chrono = { version = "0.4", optional = true }  # For debug logging timestamps
+
+# Additional dependencies for jbig2enc-rust
+bitvec = "1.0.1"              # For bit manipulation
+byteorder = "1.5.0"           # For byte order handling
+lutz = "1.4.1"              # For JBIG2 symbol extraction
+lopdf = "0.38"              # For PDF handling in JBIG2
+serde_json = "1.0"          # For JSON serialization
+log = "0.4"                 # For logging
+bytemuck = "1.12"           # For safe casting between types
+glob = "0.3"                # For file pattern matching
+xxhash-rust = { version = "0.8", features = ["xxh3"] }  # For hashing
+
+# Local path dependencies - these will pull in their own dependencies
+toojpeg = { path = "src/TooJpeg-rust" }  # Local JPEG encoder
+# openjp2 = { path = "src/openjp2" }       # Local JP2 encoder (disabled)
+jbig2enc-rust = { path = "src/jbig2enc-rust", features = ["tracing"] }   # Local JBIG2 encoder
+
+# Configuration management
+config = { version = "0.14", features = ["toml"] }
+
+[features]
+default = []
+debug-logging = ["dep:chrono"]
+
+[dev-dependencies]
+# Only keep dev dependencies that are used by the main crate's tests
+criterion = { version = "0.5", features = ["html_reports"] } # For benchmarks if needed
+
+# [[bench]]
+# name = "benchmarks"
+# harness = false
+
+# NOTE: Profile settings moved to workspace root Cargo.toml
+# [profile.release]
+# lto = "fat"
+# codegen-units = 1
