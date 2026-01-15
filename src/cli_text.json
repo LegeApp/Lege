@@ -1,0 +1,154 @@
+{
+  "colors": {
+    "comment": "Color scheme for visually pleasing processing display",
+    "prompt": "\\u001b[97m",
+    "info": "\\u001b[36m",
+    "highlight": "\\u001b[35m",
+    "page_start": "\\u001b[94m",
+    "page_complete": "\\u001b[92m",
+    "ocr": "\\u001b[90m",
+    "render": "\\u001b[96m",
+    "detect": "\\u001b[93m",
+    "encode": "\\u001b[95m",
+    "worker": "\\u001b[2;37m",
+    "dag": "\\u001b[2;90m",
+    "status_label": "\\u001b[2;34m",
+    "detail_label": "\\u001b[2;36m",
+    "reset": "\\u001b[0m"
+  },
+  "app": {
+    "title": "Welcome to Lege PDF",
+    "welcome": "Optimal encoding of book scans for pleasant reading on e-ink readers",
+    "subtitle": "",
+    "main_title": "=== Lege PDF Processing ===",
+    "file_prompt": "Enter PDF file path with optional page range (e.g., book.pdf 1-10):"
+  },
+  "interactive": {
+    "step1_title": "Step 1: Processing Options (arrow keys to navigate/toggle, Enter to continue)",
+    "step2_title": "Step 2: Binarization Method",
+    "step3_title": "Step 3: Encoding Format",
+    "processing_options_title": "=== Processing Options ===",
+    "format_prompt": "Format: [1] CCITT4 | [2] JBIG2 | [3] DJVU",
+    "modifiers_prompt": "Modifiers: c=Dithered | a=No-layout | b=OCR | d=No-cover | e=PDF-compat | f=Force-crop | g=Invert | h=Deskew | m=Center | w=Crop",
+    "examples_prompt": "Examples: '1' (CCITT4) | '1c' (CCITT4+dither) | '2gw' (JBIG2+Invert+Crop) | '3abh' (DJVU+no layout+OCR new+deskew)",
+    "default_prompt": "Default: 1 (CCITT4, original quality, layout detection on)",
+    "binarization_title": "Binarization method:",
+    "binarization_advanced": "Advanced: Add k=<value> for sensitivity (e.g., '1 k=0.25') | thr=<0-255> for threshold (e.g., '2 thr=200')",
+    "binarization_prompt": "Choose [1-3] (default: 1):",
+    "target_device_title": "Target Device / Resolution:",
+    "target_device_default": "[0] Default ({}px height, proportional)",
+    "target_device_custom": "Or enter: custom height (e.g., 1600) | WxH (e.g., 1440x1920) | blank for default",
+    "selected_options_title": "=== Selected Options ===",
+    "options": {
+      "cover_images": "Cover format",
+      "ocr_text_layer": "Invisible text layer for searching, if not selected and existing layer found, it will be preserved",
+      "image_dithering": "Bayer 8x8 binary dithering for image areas",
+      "layout_detection": "Disable layout detection",
+      "height_label": "Height: {}px (left/right to change)"
+    },
+    "binarization_methods": [
+      "Adaptive binarization (Sauvola/Otsu fusion)",
+      "Fixed threshold (manual cutoff via thr=<value>)",
+      "Heavy Sauvola AI model (ONNX) for degraded pages"
+    ],
+    "encoding_formats": {
+      "ccitt4_jpeg_fastest": "CCITT4 + JPEG - Most compatible",
+      "jbig2_jpeg_modern": "JBIG2 + JPEG",
+      "ccitt4_jp2_compression": "CCITT4 + JP2",
+      "jbig2_jp2_best": "JBIG2 + JP2 - Best compression",
+      "jbig2_jp2_color": "JBIG2 + JP2 - Best for color",
+      "ccitt4_jp2_color": "CCITT4 + JP2",
+      "ccitt4_text_fastest": "CCITT4 Text Only - Fastest",
+      "jbig2_text_best": "JBIG2 Text Only - Best compression"
+    },
+    "prompts": {
+      "file_path": "Enter PDF file path (can specify page range like input.pdf 10-20)",
+      "select_method": "Select method",
+      "select_format": "Select format"
+    },
+    "messages": {
+      "starting_processing": "Starting processing...",
+      "page_range_found": "Found page range: {}",
+      "page_range_using": "Using page range: {}",
+      "ocr_unavailable": "OCR not available (Tesseract not found)",
+      "file_validation_error": "File does not exist or is not a valid PDF",
+      "ocr_detected": "✓ [OCR Layer Detected]",
+      "ocr_detected_msg": "This PDF contains an existing OCR text layer.",
+      "ocr_detected_tip": "Leave OCR disabled to preserve the existing text layer.",
+      "no_ocr_detected": "⚠ [No OCR Layer Found]",
+      "no_ocr_detected_msg": "Enable OCR if you want to add text recognition.",
+      "layout_disabled_inverted": "Layout detection temporarily disabled for inverted documents",
+      "layout_disabled_reason": "Inverted backgrounds confuse the model, creating large files"
+    }
+  },
+  "processing": {
+    "doc_processing": "Processing: {}",
+    "input_size": "Input size: {}",
+    "output_size": "Output size: {} ({:.1}% of original)",
+    "processing_completed": "Processing completed in {:.2}s",
+    "output_label": "Output: {}"
+  },
+  "progress": {
+    "percentage": "{}%",
+    "complete": "Processing complete",
+    "status_label": "Status",
+    "detail_label": "Detail",
+    "page_started": "Started page {}",
+    "page_finished": "Finished page {}",
+    "encoding_complete": "Encoding complete"
+  },
+  "system_status": {
+    "title": "Lege System Status",
+    "divider": "========================================",
+    "checking": "Checking system components...",
+    "tesseract_found": "Tesseract OCR: Available",
+    "tesseract_missing": "Tesseract OCR: Not found",
+    "cuda_available": "CUDA: Available",
+    "cuda_unavailable": "CUDA: Not available",
+    "memory_info": "System memory: {} MB available",
+    "cpu_info": "CPU cores: {} available"
+  },
+  "providers": {
+    "linux": {
+      "trying_cuda": "Checking for NVIDIA GPU support...",
+      "cuda_success": "NVIDIA GPU detected, using CUDA acceleration",
+      "cuda_failed": "Nvidia CUDA tried, not detected...",
+      "trying_openvino": "Checking OpenVINO support...",
+      "openvino_success": "OpenVINO detected, using Intel optimization",
+      "openvino_failed": "OpenVINO not found (download at https://www.intel.com/content/www/us/en/developer/tools/openvino-toolkit/download.html), falling back to CPU",
+      "using_cpu": "CPU mode"
+    },
+    "windows": {
+      "trying_cuda": "",
+      "cuda_success": "",
+      "cuda_failed": "",
+      "trying_directml": "Checking for hardware acceleration...",
+      "directml_success": "Using hardware acceleration for ONNX Runtime",
+      "directml_failed": "Hardware acceleration not available, falling back to CPU",
+      "using_cpu": "Using CPU execution for ONNX Runtime"
+    },
+    "install_help": {
+      "nvidia_drivers": "For NVIDIA acceleration: Update GPU drivers at https://www.nvidia.com/drivers",
+      "openvino_linux": "For Intel optimization on Linux: Install OpenVINO at https://www.intel.com/openvino",
+      "directml_windows": "For hardware acceleration on Windows: Ensure Windows 10/11 with latest updates"
+    }
+  },
+  "errors": {
+    "file_not_found": "Error: File not found - {}",
+    "invalid_pdf": "Error: Invalid PDF file - {}",
+    "processing_failed": "Error: Processing failed - {}",
+    "insufficient_memory": "Error: Insufficient memory for processing",
+    "general_error": "Error: {}",
+    "invalid_format_option": "Invalid format option: {}. Use: 1, 2, d, jpeg, jp2, none, nocover",
+    "invalid_binarization_method": "Invalid binarization method: {}. Use 1 (adaptive), 2 (fixed threshold), or 3 (heavy Sauvola)",
+    "invalid_start_page": "Invalid start page: {}",
+    "invalid_end_page": "Invalid end page: {}",
+    "invalid_page_range": "Invalid page range format: {}"
+  },
+  "indicators": {
+    "checked": "[X]",
+    "unchecked": "[ ]",
+    "arrow": ">",
+    "bullet": "*"
+  }
+}
