@@ -1,0 +1,17 @@
+[package]
+name = "sample_data_protection"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "std",
+    "Storage_Streams",
+    "Security_Cryptography_DataProtection",
+    "Win32_System_WinRT",
+]
+
+[lints]
+workspace = true

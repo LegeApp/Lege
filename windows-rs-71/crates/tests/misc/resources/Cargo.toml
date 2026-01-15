@@ -1,0 +1,28 @@
+[package]
+name = "test_resources"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Com",
+]
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Com",
+]
+
+[lints]
+workspace = true

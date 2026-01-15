@@ -1,0 +1,6 @@
+--out crates/libs/future/src/bindings.rs
+--flat --no-comment --no-allow
+
+--filter
+    Windows.Foundation.Async*
+    Windows.Foundation.IAsync*

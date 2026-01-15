@@ -1,0 +1,41 @@
+--out crates/libs/windows
+--package --index --no-comment --no-allow
+--rustfmt max_width=800,newline_style=Unix
+
+--filter
+    Windows
+
+// windows-collections
+    !Windows.Foundation.Collections.IIterable
+    !Windows.Foundation.Collections.IIterator
+    !Windows.Foundation.Collections.IKeyValuePair
+    !Windows.Foundation.Collections.IMap
+    !Windows.Foundation.Collections.IMapView
+    !Windows.Foundation.Collections.IVector
+    !Windows.Foundation.Collections.IVectorView
+
+// windows-numerics
+    !Windows.Foundation.Numerics.Matrix3x2
+    !Windows.Foundation.Numerics.Matrix4x4
+    !Windows.Foundation.Numerics.Vector2
+    !Windows.Foundation.Numerics.Vector3
+    !Windows.Foundation.Numerics.Vector4
+
+// windows-future
+    !Windows.Foundation.Async*
+    !Windows.Foundation.IAsync*
+
+    !Windows.AI.MachineLearning.Preview
+    !Windows.ApplicationModel.SocialInfo
+    !Windows.ApplicationModel.Store
+    !Windows.Devices.Perception
+    !Windows.Security.Authentication.Identity.Provider
+    !Windows.Services.Cortana
+    !Windows.System.Power.Diagnostics
+    !Windows.System.Preview
+    !Windows.UI.Xaml
+    !Windows.Win32.Foundation.Metadata
+    !Windows.Win32.System.Diagnostics.Debug.WebApp
+    !Windows.Win32.System.WinRT.Xaml
+    !Windows.Win32.UI.Xaml
+    !Windows.Win32.Web.MsHtml

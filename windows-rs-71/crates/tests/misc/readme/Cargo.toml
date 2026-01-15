@@ -1,0 +1,57 @@
+[package]
+name = "test_readme"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Data_Xml_Dom",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dev-dependencies.windows-bindgen]
+workspace = true
+
+[dependencies.windows-targets]
+workspace = true
+
+[dependencies.windows-link]
+workspace = true
+
+[dev-dependencies.windows-result]
+workspace = true
+
+[dev-dependencies.windows-registry]
+workspace = true
+
+[dev-dependencies.windows-version]
+workspace = true
+
+[dev-dependencies.windows-strings]
+workspace = true
+
+[dev-dependencies.windows-future]
+workspace = true
+features = ["std"]
+
+[dev-dependencies.cppwinrt]
+workspace = true
+
+[dev-dependencies.windows-collections]
+workspace = true
+features = ["std"]
+
+[lints]
+workspace = true

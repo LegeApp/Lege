@@ -1,0 +1,43 @@
+[package]
+name = "test_winrt"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows-collections]
+workspace = true
+
+[dependencies.windows-numerics]
+workspace = true
+
+[dependencies.windows-future]
+workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "std",
+    "AI_MachineLearning",
+    "ApplicationModel_Activation",
+    "ApplicationModel_Appointments",
+    "ApplicationModel_Email",
+    "Data_Xml_Dom",
+    "Devices_Enumeration",
+    "Devices_WiFiDirect",
+    "Foundation_Collections",
+    "Storage_Streams",
+    "System",
+    "UI_Composition",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+]
+
+[dev-dependencies]
+helpers = { workspace = true }
+
+[lints]
+workspace = true

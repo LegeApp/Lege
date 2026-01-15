@@ -1,0 +1,15 @@
+[package]
+name = "sample_spellchecker"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_System_Com",
+    "Win32_Globalization",
+]
+
+[lints]
+workspace = true

@@ -1,0 +1,70 @@
+name: web
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get sources
+        uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "latest"
+
+      - name: Setup mdBook
+        run: |
+          cargo install mdbook
+
+      - name: Build
+        working-directory: web
+        run: |
+          mkdir -p .build/features .build/book
+
+          # Copy static files
+          cp -r static/* .build/
+
+          # Build book
+          pushd book
+          mdbook build --dest-dir ../.build/book
+          popd
+
+          # Build feature tool
+          pushd features
+          npm ci
+          npm run build
+          cp -r build/* ../.build/features/
+          popd
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./web/.build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    if: github.event_name != 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

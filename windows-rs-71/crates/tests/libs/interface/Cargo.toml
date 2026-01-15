@@ -1,0 +1,26 @@
+[package]
+name = "test_interface"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D10",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Media_Audio_XAudio2",
+    "Win32_System_Com",
+    "Win32_System_SystemInformation",
+]
+
+[dependencies.windows-core]
+workspace = true
+
+[lints]
+workspace = true

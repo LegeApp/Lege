@@ -1,0 +1,28 @@
+[package]
+name = "test_reserved"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+]
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+]
+
+[lints]
+workspace = true

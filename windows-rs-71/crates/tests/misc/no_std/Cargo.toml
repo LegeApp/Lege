@@ -1,0 +1,71 @@
+[package]
+name = "test_no_std"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows-core]
+path = "../../../libs/core"
+default-features = false
+
+[dependencies.windows-registry]
+path = "../../../libs/registry"
+default-features = false
+
+[dependencies.windows-result]
+path = "../../../libs/result"
+default-features = false
+
+[dependencies.windows-strings]
+path = "../../../libs/strings"
+default-features = false
+
+[dependencies.windows-sys]
+path = "../../../libs/sys"
+default-features = false
+
+[dependencies.windows-targets]
+workspace = true
+
+[dependencies.windows-link]
+workspace = true
+
+[dependencies.windows-collections]
+path = "../../../libs/collections"
+default-features = false
+
+[dependencies.windows-numerics]
+path = "../../../libs/numerics"
+default-features = false
+
+[dependencies.windows-future]
+path = "../../../libs/future"
+default-features = false
+
+[dependencies.windows-version]
+path = "../../../libs/version"
+default-features = false
+
+[dependencies.windows-threading]
+path = "../../../libs/threading"
+default-features = false
+
+[dependencies.windows]
+path = "../../../libs/windows"
+default-features = false
+features = [
+    "Foundation_Collections",
+    "Win32_Graphics_Direct3D",
+    "Win32_Networking_WinSock",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Rpc",
+    "Win32_System_Variant",
+]
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+name: no_std
+
+on:
+  pull_request:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/web.yml'
+      - 'web/**'
+  push:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/web.yml'
+      - 'web/**'
+    branches:
+      - master
+
+jobs:
+  no_std:
+    strategy:
+      matrix:
+        rust: [stable, nightly]
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Prepare
+        run: rustup update --no-self-update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
+      - name: Check
+        run: cargo check -p test_no_std

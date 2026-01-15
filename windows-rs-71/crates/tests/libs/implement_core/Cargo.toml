@@ -1,0 +1,18 @@
+[package]
+name = "test_implement_core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows-core]
+workspace = true
+
+[dependencies]
+static_assertions = "1.1"
+
+[lints]
+workspace = true

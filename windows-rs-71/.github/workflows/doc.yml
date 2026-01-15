@@ -1,0 +1,54 @@
+name: docs
+
+on:
+  pull_request:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/web.yml'
+      - 'web/**'
+  push:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/web.yml'
+      - 'web/**'
+    branches:
+      - master
+
+jobs:
+  windows:
+    name: windows
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Check
+        run: cargo doc --no-deps -p windows
+
+  windows-sys:
+    name: windows-sys
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Check
+        run: cargo doc --no-deps -p windows-sys
+
+  other-crates:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check
+        run: >
+          cargo doc --no-deps
+          -p windows-bindgen
+          -p windows-core
+          -p cppwinrt
+          -p windows-implement
+          -p windows-interface
+          -p windows-registry
+          -p windows-result
+          -p windows-strings
+          -p windows-targets
+          -p windows-version

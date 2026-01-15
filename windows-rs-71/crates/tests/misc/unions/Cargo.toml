@@ -1,0 +1,25 @@
+[package]
+name = "test_unions"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Graphics_Direct3D12",
+    "Win32_System_IO",
+]
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_System_IO",
+]
+
+[lints]
+workspace = true

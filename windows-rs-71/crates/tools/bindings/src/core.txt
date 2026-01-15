@@ -1,0 +1,15 @@
+--out crates/libs/core/src/imp/bindings.rs
+--flat --sys --no-comment --no-deps --no-allow
+
+--filter
+    CoIncrementMTAUsage
+    CoTaskMemAlloc
+    CoTaskMemFree
+    EncodePointer
+    FreeLibrary
+    GetProcAddress
+    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+    LoadLibraryExA
+    RoGetActivationFactory
+    RPC_S_UUID_LOCAL_ONLY
+    UuidCreate

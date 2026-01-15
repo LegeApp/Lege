@@ -1,0 +1,22 @@
+[package]
+name = "test_structs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Storage_Search",
+    "Win32_Devices_Properties",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[lints]
+workspace = true

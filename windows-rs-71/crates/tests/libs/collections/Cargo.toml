@@ -1,0 +1,27 @@
+[package]
+name = "test_collections"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Foundation_Collections",
+    "Globalization",
+    "Win32_Foundation",
+]
+
+[dependencies.windows-core]
+workspace = true
+
+[dependencies.windows-collections]
+workspace = true
+features = ["std"]
+
+[lints]
+workspace = true

@@ -1,0 +1,68 @@
+name: no-default-features
+
+on:
+  pull_request:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/web.yml'
+      - 'web/**'
+  push:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/web.yml'
+      - 'web/**'
+    branches:
+      - master
+
+jobs:
+  no-default-features:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Update toolchain
+        run: rustup update --no-self-update nightly && rustup default nightly-x86_64-pc-windows-msvc
+      - name: Add toolchain target
+        run: rustup target add x86_64-pc-windows-msvc
+      - name: Fix environment
+        uses: ./.github/actions/fix-environment
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Check cppwinrt
+        run:  cargo check -p cppwinrt --no-default-features
+      - name: Check windows
+        run:  cargo check -p windows --no-default-features
+      - name: Check windows-bindgen
+        run:  cargo check -p windows-bindgen --no-default-features
+      - name: Check windows-collections
+        run:  cargo check -p windows-collections --no-default-features
+      - name: Check windows-core
+        run:  cargo check -p windows-core --no-default-features
+      - name: Check windows-future
+        run:  cargo check -p windows-future --no-default-features
+      - name: Check windows-implement
+        run:  cargo check -p windows-implement --no-default-features
+      - name: Check windows-interface
+        run:  cargo check -p windows-interface --no-default-features
+      - name: Check windows-link
+        run:  cargo check -p windows-link --no-default-features
+      - name: Check windows-metadata
+        run:  cargo check -p windows-metadata --no-default-features
+      - name: Check windows-numerics
+        run:  cargo check -p windows-numerics --no-default-features
+      - name: Check windows-registry
+        run:  cargo check -p windows-registry --no-default-features
+      - name: Check windows-result
+        run:  cargo check -p windows-result --no-default-features
+      - name: Check windows-services
+        run:  cargo check -p windows-services --no-default-features
+      - name: Check windows-strings
+        run:  cargo check -p windows-strings --no-default-features
+      - name: Check windows-sys
+        run:  cargo check -p windows-sys --no-default-features
+      - name: Check windows-targets
+        run:  cargo check -p windows-targets --no-default-features
+      - name: Check windows-threading
+        run:  cargo check -p windows-threading --no-default-features
+      - name: Check windows-version
+        run:  cargo check -p windows-version --no-default-features

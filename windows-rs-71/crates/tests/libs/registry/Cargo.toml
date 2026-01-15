@@ -1,0 +1,32 @@
+[package]
+name = "test_registry"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows-registry]
+workspace = true
+
+[dependencies.windows-result]
+workspace = true
+
+[dependencies.windows-sys]
+workspace = true
+features = ["Win32_System_Registry"]
+
+[dependencies.windows]
+workspace = true
+features = ["Win32_System_Registry"]
+
+[dependencies.windows-strings]
+workspace = true
+
+[dependencies.regex]
+version = "1.7"
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+*       text=auto
+*       text eol=lf
+*.png   -text
+*.jpg   -text
+*.winmd -text
+*.lib   -text
+*.a     -text
+*.exe   -text
+*.eot   binary
+*.ttf   binary
+*.woff  binary
+*.woff2 binary

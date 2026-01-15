@@ -1,0 +1,18 @@
+[package]
+name = "test_query_signature"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_System_Diagnostics_Debug_Extensions",
+]
+
+[lints]
+workspace = true

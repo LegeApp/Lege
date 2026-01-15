@@ -1,0 +1,28 @@
+[package]
+name = "test_win32_arrays"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Storage_FileSystem",
+    "Win32_Data_Xml_XmlLite",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_ColorSystem",
+    "Win32_UI_Shell",
+    "Win32_Globalization",
+]
+
+[lints]
+workspace = true

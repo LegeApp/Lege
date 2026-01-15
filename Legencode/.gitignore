@@ -1,0 +1,9 @@
+# Build artifacts
+target/
+
+# Compression test results (these are bloat files)
+compression_test_results/
+debug-output/
+
+# Lock files
+Cargo.lock

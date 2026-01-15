@@ -1,0 +1,18 @@
+[package]
+name = "test_linux"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doc = false
+doctest = false
+
+[dependencies.windows-result]
+workspace = true
+
+[dependencies.windows-core]
+workspace = true
+
+[lints]
+workspace = true
