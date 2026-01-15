@@ -1,0 +1,289 @@
+[package]
+build = "build.rs"
+name = "lege"
+version = "1.3.1"
+edition = "2024"
+description = "Fully automatic PDF processor especially for E-Ink ebook readers"
+authors = ["Lege Apps"]
+homepage = "https://www.legeapp.com"
+repository = "https://github.com/LegeApp/Lege/"
+keywords = ["pdf", "ocr", "ebook", "e-ink", "image-processing"]
+categories = ["multimedia::images", "text-processing"]
+
+[workspace]
+members = [
+    ".",  # The root crate
+    "Legencode",
+    "Legencode/src/jbig2enc-rust",
+    "Legencode/src/TooJpeg-rust",
+    "GUI/Dioxus",
+    "ort",           # Local ort fork with WebGPU cleanup fix
+    "ort/ort-sys",   # ONNX Runtime FFI bindings
+]
+default-members = [
+    ".",
+    "GUI/Dioxus",
+]
+
+[workspace.lints.rust]
+unused_imports = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)'] }
+
+[workspace.dependencies]
+anyhow = { version = "1.0.92", features = ["backtrace"] }
+proc-macro2 = { version = "1.0", default-features = false }
+quote = { version = "1.0", default-features = false }
+syn = { version = "2.0", default-features = false }
+num_cpus = "1.16"
+serde = { version = "1.0.214", features = ["derive"] }
+config = { version = "0.14.1", features = ["toml"] }
+thiserror = "1.0.0"
+serde_json = "1.0.132" 
+log = "0.4.22" 
+once_cell = "1.20.2" 
+rayon = "1.10.0"  
+image = { version = "0.25.9", features = ["png", "jpeg", "tiff"] }  
+lopdf = "0.38.0"
+flume = "0.11" 
+pdfium-render = { version = "0.8.24", features = ["thread_safe", "sync"] }  
+tempfile = "3.13.0"  
+flate2 = "1.0.34"  
+lazy_static = "1.5.0"  
+ndarray = { version = "0.16.0", features = ["rayon"] }
+palette = { version = "0.7.6", features = ["libm"] }  
+bytemuck = { version = "1.18.0", features = ["derive", "extern_crate_alloc"] }  
+cfg-if = "1.0.0"
+epub-builder = "0.7.4" 
+html-escape = "0.2.0"
+itertools = "0.12.0"
+console = "0.15.8"
+dialoguer = { version = "0.11.0", features = ["fuzzy-select"] }
+console_error_panic_hook = "0.1.7"
+ttf-parser = "0.21.1"
+encoding_rs = "0.8.34"
+wait-timeout = "0.2.0"
+
+# Windows-rs local crates - tag 71 (all workspace dependencies needed)
+windows = { path = "windows-rs-71/crates/libs/windows", default-features = false }
+windows-bindgen = { path = "windows-rs-71/crates/libs/bindgen", default-features = false }
+windows-collections = { path = "windows-rs-71/crates/libs/collections", default-features = false }
+windows-core = { path = "windows-rs-71/crates/libs/core", default-features = false }
+windows-future = { path = "windows-rs-71/crates/libs/future", default-features = false }
+windows-implement = { path = "windows-rs-71/crates/libs/implement", default-features = false }
+windows-interface = { path = "windows-rs-71/crates/libs/interface", default-features = false }
+windows-link = { path = "windows-rs-71/crates/libs/link", default-features = false }
+windows-metadata = { path = "windows-rs-71/crates/libs/metadata", default-features = false }
+windows-numerics = { path = "windows-rs-71/crates/libs/numerics", default-features = false }
+windows-registry = { path = "windows-rs-71/crates/libs/registry", default-features = false }
+windows-result = { path = "windows-rs-71/crates/libs/result", default-features = false }
+windows-services = { path = "windows-rs-71/crates/libs/services", default-features = false }
+windows-strings = { path = "windows-rs-71/crates/libs/strings", default-features = false }
+windows-sys = { path = "windows-rs-71/crates/libs/sys", default-features = false }
+windows-targets = { path = "windows-rs-71/crates/libs/targets", default-features = false }
+windows-threading = { path = "windows-rs-71/crates/libs/threading", default-features = false }
+windows-version = { path = "windows-rs-71/crates/libs/version", default-features = false }
+
+
+resolver = "2"
+
+[[bin]]
+name = "lege"
+path = "src/main.rs"
+
+
+[build-dependencies]
+winres = "0.1.12"  # Updated
+chrono = "0.4"
+
+[dependencies]
+app_dirs2 = "2.5.5"
+directories = "6.0.0"
+fax = { version = "0.2.4", default-features = false }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+image = { workspace = true }
+imageproc = "0.25.0"
+fontdue = { version = "0.9.0", optional = true }
+png = "0.17.14"
+# Enhanced CLI dependencies
+dialoguer = { workspace = true }
+config = { workspace = true }
+dirs = "5.0.1"
+toml = "0.8.19"
+pdfium-render = { version = "0.8.24", features = ["thread_safe", "sync"] }  # Updated
+rayon = { workspace = true }
+once_cell = { workspace = true }
+tempfile = { workspace = true }
+lopdf = { workspace = true }
+colored = "3.0.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+fast_image_resize = { version = "5.1.0" }
+bytemuck = { workspace = true }
+palette = { workspace = true }
+lazy_static = { workspace = true }
+ndarray = { workspace = true }
+Legencode = { path = "Legencode" }
+rusty-tesseract = "1.1.10"
+quick-xml = "0.38.1"
+# mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
+sysinfo = "0.31.4"
+shlex = "1.3.0"
+cfg-if = { workspace = true }
+html-escape = { workspace = true }
+epub-builder = { workspace = true }
+chrono = { version = "0.4.38", features = ["serde"] }  # Updated
+memmap2 = "0.9.5"
+winres = "0.1.12"
+libloading = "0.8.5"
+num_cpus = { workspace = true }
+ttf-parser = { workspace = true }
+encoding_rs = { workspace = true }
+wait-timeout = { workspace = true }
+bytes = "1.7.2"
+console = { workspace = true }
+rustc-hash = "1.1.0"
+env_logger = "0.10"
+tokio = { version = "1.48", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
+futures = "0.3"
+async-trait = "0.1"
+regex = "1.11.0"
+unicode-normalization = "0.1"
+indicatif = { version = "0.17", features = ["tokio"] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+parking_lot = "0.12"
+flume = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Local fork of ort with WebGPU cleanup fix - uses WebGPU with Vulkan backend (dynamic loading)
+ort = { path = "./ort", default-features = false, features = ["std", "ndarray", "tracing", "webgpu", "load-dynamic"] }
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+
+# Windows-specific dependencies
+[target.'cfg(target_os = "windows")'.dependencies]
+# Local fork of ort with WebGPU cleanup fix - uses DirectML on Windows (dynamic loading)
+ort = { path = "./ort", default-features = false, features = ["std", "ndarray", "tracing", "directml", "load-dynamic"] }
+winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
+windows = { workspace = true, features = [
+    "Foundation",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_Graphics",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_WinRT",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Console",
+] }
+windows-core = { workspace = true }
+windows-future = { workspace = true }
+
+# Debug dependencies for standalone JBIG2 creation
+jbig2 = { package = "jbig2enc-rust", path = "Legencode/src/jbig2enc-rust" }
+ndarray = "0.16.0"  # Updated
+
+[features]
+default = []
+static = ["pdfium-render/static"]
+debug-logging = ["Legencode/debug-logging", "dep:fontdue"]
+# Feature for profiling with debug symbols - enables both debug logging and debug symbols
+profiling = ["debug-logging"]
+gui = []
+debug-layers = []
+no-include-shaders = []
+djvu_debug = []
+# Static linking features for pdfium-render
+libstdcpp = ["pdfium-render/libstdc++"]
+libcpp = ["pdfium-render/libc++"]
+
+[dev-dependencies]
+flamegraph = "0.6"
+
+[profile.release]
+lto = "fat"
+codegen-units = 12
+panic = "abort"
+opt-level = 3
+debug = false
+strip = "debuginfo"
+incremental = false
+
+# Optimize incremental compilation
+[profile.dev]
+incremental = true
+codegen-units = 256
+split-debuginfo = "packed"
+
+# Profile for debug-logging builds with debug symbols enabled for flamegraph profiling
+[profile.profiling]
+inherits = "release"
+lto = false        # Disable LTO for faster compilation during profiling
+codegen-units = 16  # Allow more codegen units for faster builds
+incremental = true  # Enable incremental compilation
+debug = true
+strip = false
+
+# Profile for debug-logging builds without LTO for faster compilation
+[profile.debug-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+debug = true
+strip = false
+
+[package.metadata.deb]
+maintainer = "Lege Apps <read@legeapp.com>"
+copyright = "2025, Lege Apps"
+extended-description = """\
+The only app that helps you prepare a scanned book PDF for pleasant reading on E-ink readers. Automatic selective text binarization and optimal per-page re-encoding. """
+depends = "tesseract-ocr, djvulibre-bin"
+section = "graphics"
+priority = "optional"
+features = []
+default-features = false
+profile = "release"
+assets = [
+    # CLI and GUI binaries
+    # Install real CLI under lib dir, place wrapper in /usr/bin
+    ["target/release/lege", "usr/lib/lege/lege", "755"],
+    ["debian/lege", "usr/bin/lege", "755"],
+    # Install the real GUI binary under a different name
+    ["target/release/lege-gui", "usr/lib/lege/lege-gui", "755"],
+    # Install a small wrapper into /usr/bin that sets LD_LIBRARY_PATH
+    ["debian/lege-gui", "usr/bin/lege-gui", "755"],
+    # Required shared libraries
+    ["/home/dk/Desktop/lege-run/installer/linux64/libpdfium.so", "usr/lib/lege/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so", "usr/lib/lege/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1", "usr/lib/lege/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1.23.0", "usr/lib/lege/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime_providers_shared.so", "usr/lib/lege/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/libwebgpu_dawn.so", "usr/lib/lege/", "644"],
+    # ONNX models
+    ["/home/dk/Desktop/lege-run/installer/linux64/paddle-layout.onnx", "usr/share/lege/models/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/paddle-rotate.onnx", "usr/share/lege/models/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/paddle-deskew.onnx", "usr/share/lege/models/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/sauvola.onnx", "usr/share/lege/models/", "644"],
+    # Tesseract data
+    ["/home/dk/Desktop/lege-run/installer/linux64/eng.traineddata", "usr/share/lege/tessdata/", "644"],
+    # Documentation and licenses
+    ["/mnt/Samsung980_1TB/Rust-projects/Lege/docs/THIRD-PARTY-LICENSES.md", "usr/share/doc/lege/", "644"],
+    # Desktop integration
+    ["lege.desktop", "usr/share/applications/", "644"],
+    ["assets/icon.png", "usr/share/icons/hicolor/256x256/apps/lege.png", "644"],
+]
+
+# Point cargo-deb to the directory that contains maintainer scripts (postinst, postrm, etc.)
+# No maintainer scripts; rely on Debian triggers to update desktop/icon caches
