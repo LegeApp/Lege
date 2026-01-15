@@ -3,6 +3,7 @@ build = "build.rs"
 name = "lege"
 version = "1.3.1"
 edition = "2024"
+license = "AGPL-3.0-only"
 description = "Fully automatic PDF processor especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
 homepage = "https://www.legeapp.com"
