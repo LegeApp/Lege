@@ -4,9 +4,9 @@ January 15 2026 - Full source code uploaded.
 
 Need to know - 
 
-Ort local folder is needed because it is forked to allow WebGPU to work in the Linux program.
+Ort local folder is needed because it is forked to allow WebGPU to work in the Linux version.
 
-WinRS-71 local folder is needed because it is forked to improve OCR support in the program.
+WinRS-71 local folder is needed because it is forked to improve OCR support in the Windows version.
 
 Legencode is the self enclosed encoding module. OpenJP2 is not used in the program anymore but is still included.
 
