@@ -15,3 +15,19 @@ Now that the program is open source, the layout detection model could be switche
 OS specific files and instructions will be added later. MacOS needs a different cargo.toml and engine.rs along with its different ORT library to function.
 
 Otherwise it's just cargo build --release and you'll get two executables.
+
+Features - 
+
+ Automatic per-page rendering, binarization, re-encoding, and re-concatenation of any raster book scan.
+
+- Fast precise per-page layout detection with hardware acceleration via DirectML to preserve image areas from binarization, so that they are either dithered or encoded in original color.
+
+- Adaptive binarization, a fixed binary threshold, and a heavier neural GPU accelerated Sauvola model are the 3 binarization options.
+
+- per-page HOCR layer is an option. If OCR is in the document already, it is detected and transferred to the output.
+
+- JBIG2 with custom halftone dithering, CCITT4, and JPEG for images as the formats for PDF.
+
+- Optional automatic margin centering or cropping. Deskewing and de-rotating available with an ONNX model.
+
+- DJVU output supported, which is a great format for E-ink readers if you use opensource KoReader as the software for your reader.
