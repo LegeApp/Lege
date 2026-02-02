@@ -295,12 +295,11 @@ pub mod jp2_config {
 use std::error::Error;
 
 #[cfg(feature = "debug-logging")]
-use chrono;
-
-#[cfg(feature = "debug-logging")]
 use std::collections::VecDeque;
 #[cfg(feature = "debug-logging")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "debug-logging")]
+use std::time::SystemTime;
 
 use crate::encoders;
 
@@ -316,7 +315,17 @@ pub fn log_debug_message(message: &str) {
     let buffer = DEBUG_LOG_BUFFER.get_or_init(|| Arc::new(Mutex::new(VecDeque::new())));
 
     if let Ok(mut log) = buffer.lock() {
-        let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
+        // Format time using SystemTime
+        let timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(duration) => {
+                let total_secs = duration.as_secs();
+                let hours = (total_secs / 3600) % 24;
+                let minutes = (total_secs / 60) % 60;
+                let seconds = total_secs % 60;
+                format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+            }
+            Err(_) => "00:00:00".to_string(),
+        };
         let formatted_message = format!("[{}] {}", timestamp, message);
 
         log.push_back(formatted_message);

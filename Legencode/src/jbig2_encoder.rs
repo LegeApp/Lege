@@ -19,9 +19,6 @@ pub mod jbig2comparator;
 #[path = "jbig2enc-rust/src/jbig2lutz.rs"]
 pub mod jbig2lutz;
 
-#[path = "jbig2enc-rust/src/jbig2pdf.rs"]
-pub mod jbig2pdf;
-
 #[path = "jbig2enc-rust/src/jbig2shared.rs"]
 pub mod jbig2shared;
 

@@ -24,10 +24,12 @@ pub mod encoders;
 
 // Color processing and binarization modules
 pub mod color;
-pub mod colorquant;
 
 // Shared types
 pub mod types;
+
+// Custom image types (replaces image crate dependency)
+pub mod image_types;
 
 // Colorquant modules removed - were only used by deleted indexed8 encoder
 
