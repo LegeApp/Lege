@@ -1,13 +1,15 @@
 //! This module contains the main JBIG2 encoder logic.
 use crate::jbig2arith::{IntProc, Jbig2ArithCoder};
 use crate::jbig2comparator::Comparator;
-use crate::jbig2lutz::{extract_symbols, find_connected_components, SymbolExtractionConfig};
+// Symbol extraction using CC analysis
+#[cfg(feature = "cc-analysis")]
+use crate::jbig2cc::analyze_page;
 use crate::jbig2structs::{
     FileHeader, GenericRegionConfig, GenericRegionParams, Jbig2Config, PageInfo, Segment,
     SegmentType, SymbolDictParams, TextRegionParams,
 };
 
-use crate::jbig2sym::{BitImage, Rect, Symbol};
+use crate::jbig2sym::{BitImage, Rect};
 use anyhow::{anyhow, Result};
 
 // Define debug and trace macros at the crate root
@@ -38,9 +40,8 @@ macro_rules! trace {
 use crate::{debug, trace};
 
 use ndarray::Array2;
-use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use xxhash_rust::xxh3::xxh3_64;
 
 /// A key type for hashing bitmaps efficiently
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,32 +75,35 @@ pub struct SymbolCandidate {
 ///
 /// # Arguments
 /// * `image` - The input binary image to segment
-/// * `min_component_size` - Minimum number of pixels a connected component must have to be considered a symbol
+/// * `dpi` - Resolution in dots per inch (typically 300 for scanned documents)
+/// * `losslevel` - 0 for lossless, >0 to enable noise removal
 pub fn segment_symbols(
     image: &BitImage,
-    min_component_size: usize,
+    dpi: i32,
+    losslevel: i32,
 ) -> Result<Vec<SymbolCandidate>> {
-    // Find connected components with the specified minimum size
-    let components = find_connected_components(image, min_component_size);
-
-    let mut candidates = Vec::with_capacity(components.len());
-
-    for component in components {
-        // Create a rectangle from the component bounds
-        let bbox = Rect {
-            x: component.bounds.x,
-            y: component.bounds.y,
-            width: component.bounds.width,
-            height: component.bounds.height,
-        };
-
-        // Extract the bitmap for this symbol
-        let bitmap = BitImage::from_sub_image(image, &bbox);
-
-        candidates.push(SymbolCandidate { bitmap, bbox });
+    #[cfg(feature = "cc-analysis")]
+    {
+        // Use the new CC analysis pipeline from jbig2cc
+        let cc_image = analyze_page(image, dpi, losslevel);
+        let shapes = cc_image.extract_shapes();
+        
+        let mut candidates = Vec::with_capacity(shapes.len());
+        for (bitmap, bbox) in shapes {
+            let rect = Rect {
+                x: bbox.xmin as u32,
+                y: bbox.ymin as u32,
+                width: bbox.width() as u32,
+                height: bbox.height() as u32,
+            };
+            candidates.push(SymbolCandidate { bitmap, bbox: rect });
+        }
+        Ok(candidates)
     }
-
-    Ok(candidates)
+    #[cfg(not(feature = "cc-analysis"))]
+    {
+        Err(anyhow!("Symbol segmentation requires cc-analysis feature"))
+    }
 }
 
 // Jbig2EncConfig has been removed. Use jbig2structs::Jbig2Config directly.
@@ -159,10 +163,10 @@ pub struct Jbig2Encoder<'a> {
     symbol_usage: Vec<usize>,
 
     /// Set of page indices where each symbol appears
-    symbol_pages: Vec<FxHashSet<usize>>,
+    symbol_pages: Vec<HashSet<usize>>,
 
     /// Hash map for quick symbol lookup
-    hash_map: FxHashMap<HashKey, Vec<usize>>,
+    hash_map: HashMap<HashKey, Vec<usize>>,
 
     /// Page data for each page in the document
     pages: Vec<PageData>,
@@ -196,7 +200,7 @@ impl<'a> Jbig2Encoder<'a> {
             global_symbols: Vec::new(),
             symbol_usage: Vec::new(),
             symbol_pages: Vec::new(),
-            hash_map: FxHashMap::default(),
+            hash_map: HashMap::new(),
             pages: Vec::new(),
             next_segment_number: 0,
             global_dict_segment_number: None,
@@ -238,8 +242,25 @@ impl<'a> Jbig2Encoder<'a> {
 
         // Extract symbols if symbol mode is enabled
         if self.config.symbol_mode && self.state.segment {
-            let cfg = SymbolExtractionConfig::from_jbig2_config(self.config);
-            let extracted = extract_symbols(&bitimage, cfg);
+            #[cfg(feature = "cc-analysis")]
+            let extracted = {
+                let dpi = 300; // Default DPI
+                let losslevel = if self.config.is_lossless { 0 } else { 1 };
+                let cc_image = analyze_page(&bitimage, dpi, losslevel);
+                let shapes = cc_image.extract_shapes();
+                // Convert to (Rect, BitImage) format
+                shapes.into_iter().map(|(bitmap, bbox)| {
+                    let rect = Rect {
+                        x: bbox.xmin as u32,
+                        y: bbox.ymin as u32,
+                        width: bbox.width() as u32,
+                        height: bbox.height() as u32,
+                    };
+                    (rect, bitmap)
+                }).collect::<Vec<_>>()
+            };
+            #[cfg(not(feature = "cc-analysis"))]
+            let extracted: Vec<(Rect, BitImage)> = Vec::new();
 
             // Check if symbol extraction makes sense for this image
             // If we only get one symbol that covers the entire image,
@@ -257,7 +278,7 @@ impl<'a> Jbig2Encoder<'a> {
 
             if should_use_symbols {
                 for (rect, symbol) in extracted {
-                    let (_, trimmed) = symbol.image.trim();
+                    let (_, trimmed) = symbol.trim();
                     let key = hash_key(&trimmed);
                     let mut matched = false;
                     if let Some(bucket) = self.hash_map.get(&key) {
@@ -272,7 +293,7 @@ impl<'a> Jbig2Encoder<'a> {
                                 symbol_instances.push(SymbolInstance {
                                     symbol_index: idx,
                                     position: rect,
-                                    instance_bitmap: symbol.image.clone(),
+                                    instance_bitmap: symbol.clone(),
                                 });
                                 matched = true;
                                 break;
@@ -288,7 +309,7 @@ impl<'a> Jbig2Encoder<'a> {
                         symbol_instances.push(SymbolInstance {
                             symbol_index: idx,
                             position: rect,
-                            instance_bitmap: symbol.image.clone(),
+                            instance_bitmap: symbol.clone(),
                         });
                     }
                 }
@@ -363,7 +384,7 @@ impl<'a> Jbig2Encoder<'a> {
             });
 
             // Keep only the top 300 most used symbols
-            let kept_indices: FxHashSet<usize> = symbol_indices_with_usage
+            let kept_indices: HashSet<usize> = symbol_indices_with_usage
                 .into_iter()
                 .take(300)
                 .map(|(i, _)| i)
@@ -599,7 +620,7 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     fn auto_threshold_using_hash(&mut self) -> Result<()> {
-        let mut hashed_templates: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
+    let mut hashed_templates: HashMap<u32, Vec<usize>> = HashMap::new();
         for (i, symbol) in self.global_symbols.iter().enumerate() {
             let hash = compute_symbol_hash(symbol);
             hashed_templates.entry(hash).or_default().push(i);
@@ -814,7 +835,7 @@ pub fn encode_symbol_dict(
     }
 
     // Deduplicate symbols by content hash
-    let mut seen_hashes = FxHashSet::default();
+    let mut seen_hashes: HashSet<HashKey> = HashSet::new();
     let mut unique_symbols_list: Vec<&BitImage> = Vec::with_capacity(valid_symbols.len());
     for sym in &valid_symbols {
         if seen_hashes.insert(hash_key(sym)) {
@@ -943,7 +964,7 @@ pub fn encode_symbol_dict(
             }
 
             coder.encode_generic_region(
-                bytemuck::cast_slice(&packed),
+                &packed,
                 symbol.width,
                 symbol.height,
                 params.sd_template,
@@ -1398,20 +1419,20 @@ impl TextRegionSymbolInstance {
 }
 
 pub fn build_dictionary_and_get_instances(
-    symbols: &[(Rect, Symbol)],
+    symbols: &[(Rect, BitImage)],
     comparator: &mut Comparator,
 ) -> (Vec<BitImage>, Vec<TextRegionSymbolInstance>) {
     let mut dictionary_symbols: Vec<BitImage> = Vec::new();
     let mut instances = Vec::new();
 
-    for (rect, symbol) in symbols.iter() {
+    for (rect, symbol_image) in symbols.iter() {
         let mut found_match = false;
         // Use a 10% error threshold for matching, as recommended.
-        let max_err = ((symbol.image.width * symbol.image.height) / 10).max(3) as u32;
+        let max_err = ((symbol_image.width * symbol_image.height) / 10).max(3) as u32;
 
         for (dict_idx, dict_symbol) in dictionary_symbols.iter().enumerate() {
             // Use a low max_err for finding near-duplicates
-            if let Some((err, dx, dy)) = comparator.distance(&symbol.image, dict_symbol, max_err) {
+            if let Some((err, dx, dy)) = comparator.distance(symbol_image, dict_symbol, max_err) {
                 instances.push(TextRegionSymbolInstance {
                     symbol_id: dict_idx as u32,
                     x: rect.x as i32,
@@ -1427,7 +1448,7 @@ pub fn build_dictionary_and_get_instances(
 
         if !found_match {
             let new_idx = dictionary_symbols.len();
-            dictionary_symbols.push(symbol.image.clone());
+            dictionary_symbols.push(symbol_image.clone());
             instances.push(TextRegionSymbolInstance {
                 symbol_id: new_idx as u32,
                 x: rect.x as i32,
@@ -1449,9 +1470,26 @@ pub fn encode_page_with_symbol_dictionary(
     config: &Jbig2Config,
     next_segment_num: u32,
 ) -> Result<(Vec<u8>, u32)> {
-    // 1. Extract symbols from the page image
-    let symbol_config = SymbolExtractionConfig::from_jbig2_config(config);
-    let extracted_symbols = extract_symbols(image, symbol_config);
+    // 1. Extract symbols from the page image using CC analysis
+    #[cfg(feature = "cc-analysis")]
+    let extracted_symbols = {
+        let dpi = 300; // Default DPI
+        let losslevel = if config.is_lossless { 0 } else { 1 };
+        let cc_image = analyze_page(image, dpi, losslevel);
+        let shapes = cc_image.extract_shapes();
+        // Convert to (Rect, BitImage) format
+        shapes.into_iter().map(|(bitmap, bbox)| {
+            let rect = Rect {
+                x: bbox.xmin as u32,
+                y: bbox.ymin as u32,
+                width: bbox.width() as u32,
+                height: bbox.height() as u32,
+            };
+            (rect, bitmap)
+        }).collect::<Vec<_>>()
+    };
+    #[cfg(not(feature = "cc-analysis"))]
+    let extracted_symbols: Vec<(Rect, BitImage)> = Vec::new();
 
     if extracted_symbols.is_empty() {
         return Ok((Vec::new(), next_segment_num));
@@ -1568,8 +1606,11 @@ pub fn get_version() -> &'static str {
 
 #[inline]
 pub fn hash_key(img: &BitImage) -> HashKey {
-    // Use xxh3 for fast hashing of the bitmap data
-    let hash = xxh3_64(img.as_bytes());
+    // Use std library SipHash for hashing the bitmap data
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    img.as_bytes().hash(&mut hasher);
+    let hash = hasher.finish();
     HashKey(hash)
 }
 

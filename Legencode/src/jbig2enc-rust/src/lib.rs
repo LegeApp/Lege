@@ -12,13 +12,10 @@
 // Re-export commonly used types
 pub use ndarray::Array2;
 
-use thiserror::Error;
-
 /// Errors that can occur during JBIG2 encoding
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum Jbig2Error {
     /// Input buffer size mismatch
-    #[error("Input buffer size mismatch: expected {expected}, got {actual} for {width}x{height} image (ratio: {ratio:.3})")]
     BufferSizeMismatch {
         expected: usize,
         actual: usize,
@@ -28,46 +25,85 @@ pub enum Jbig2Error {
     },
 
     /// Buffer too small for operation
-    #[error("Buffer too small: expected {expected}, got {actual}")]
     BufferTooSmall { expected: usize, actual: usize },
 
     /// Array shape error during conversion
-    #[error("Array shape error")]
     ArrayShapeError {
-        #[from]
         source: ndarray::ShapeError,
     },
 
     /// Encoding failed
-    #[error("Encoding failed: {message}")]
     EncodingFailed { message: String },
 
     /// Dictionary creation failed  
-    #[error("Dictionary creation failed: {message}")]
     DictionaryFailed { message: String },
 
     /// Packed binary data detected when unpacked expected
-    #[error("Input appears to be packed binary data (1 bit per pixel), but JBIG2 encoder expects unpacked data (1 byte per pixel)")]
     PackedDataDetected,
 
     /// Stream count mismatch
-    #[error("Expected {expected} stream(s) for single image encoding, got {actual}")]
     StreamCountMismatch { expected: usize, actual: usize },
 
     /// Segment writing failed
-    #[error("Failed to write {segment_type} segment: {message}")]
     SegmentWriteFailed {
         segment_type: String,
         message: String,
     },
 }
 
+impl std::fmt::Display for Jbig2Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Jbig2Error::BufferSizeMismatch { expected, actual, width, height, ratio } => {
+                write!(f, "Input buffer size mismatch: expected {}, got {} for {}x{} image (ratio: {:.3})",
+                       expected, actual, width, height, ratio)
+            }
+            Jbig2Error::BufferTooSmall { expected, actual } => {
+                write!(f, "Buffer too small: expected {}, got {}", expected, actual)
+            }
+            Jbig2Error::ArrayShapeError { source } => {
+                write!(f, "Array shape error: {}", source)
+            }
+            Jbig2Error::EncodingFailed { message } => {
+                write!(f, "Encoding failed: {}", message)
+            }
+            Jbig2Error::DictionaryFailed { message } => {
+                write!(f, "Dictionary creation failed: {}", message)
+            }
+            Jbig2Error::PackedDataDetected => {
+                write!(f, "Input appears to be packed binary data (1 bit per pixel), but JBIG2 encoder expects unpacked data (1 byte per pixel)")
+            }
+            Jbig2Error::StreamCountMismatch { expected, actual } => {
+                write!(f, "Expected {} stream(s) for single image encoding, got {}", expected, actual)
+            }
+            Jbig2Error::SegmentWriteFailed { segment_type, message } => {
+                write!(f, "Failed to write {} segment: {}", segment_type, message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for Jbig2Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Jbig2Error::ArrayShapeError { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<ndarray::ShapeError> for Jbig2Error {
+    fn from(source: ndarray::ShapeError) -> Self {
+        Jbig2Error::ArrayShapeError { source }
+    }
+}
+
 // Module declarations
 pub mod jbig2arith;
 pub mod jbig2comparator;
 pub mod jbig2enc;
-pub mod jbig2lutz;
-pub mod jbig2pdf;
+#[cfg(feature = "cc-analysis")]
+pub mod jbig2cc;
 pub mod jbig2shared;
 pub mod jbig2structs;
 pub mod jbig2sym;
@@ -76,6 +112,8 @@ pub mod jbig2sym;
 pub use crate::jbig2arith::Jbig2ArithCoder;
 pub use jbig2enc::encode_document;
 pub use jbig2structs::Jbig2Config;
+#[cfg(feature = "cc-analysis")]
+pub use jbig2cc::{analyze_page, extract_symbols_for_jbig2, BBox, CCImage, CC, Run};
 
 use jbig2enc::Jbig2Encoder;
 use log::info;
