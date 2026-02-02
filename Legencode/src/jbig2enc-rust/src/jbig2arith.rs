@@ -8,8 +8,8 @@
 
 use anyhow::anyhow;
 use anyhow::Result;
-use lazy_static::lazy_static;
-use rustc_hash::FxHashMap;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 
 #[cfg(not(feature = "trace_arith"))]
 #[macro_use]
@@ -244,34 +244,32 @@ pub const BASE: [State; 47] = [
 ];
 
 /// Build the 94-state table at start-up.
-lazy_static! {
-    pub(crate) static ref FULL: [State; 94] = {
-        let mut t = [BASE[0]; 94];
+pub(crate) static FULL: Lazy<[State; 94]> = Lazy::new(|| {
+    let mut t = [BASE[0]; 94];
 
-        for i in 0..47 {
-            let s = BASE[i];
+    for i in 0..47 {
+        let s = BASE[i];
 
-            // Lower half: MPS = 0
-            t[i] = State {
-                qe: s.qe,
-                nmps: s.nmps,           // stays in lower half
-                nlps: if s.switch { s.nlps + 47 } else { s.nlps },
-                switch: s.switch,
-            };
+        // Lower half: MPS = 0
+        t[i] = State {
+            qe: s.qe,
+            nmps: s.nmps,           // stays in lower half
+            nlps: if s.switch { s.nlps + 47 } else { s.nlps },
+            switch: s.switch,
+        };
 
-            // Upper half: MPS = 1
-            t[i + 47] = State {
-                qe: s.qe,
-                nmps: s.nmps + 47,      // stays in upper half
-                // If LPS flips the MPS we must leave the upper half
-                nlps: if s.switch { s.nlps } else { s.nlps + 47 },
-                switch: s.switch,
-            };
-        }
+        // Upper half: MPS = 1
+        t[i + 47] = State {
+            qe: s.qe,
+            nmps: s.nmps + 47,      // stays in upper half
+            // If LPS flips the MPS we must leave the upper half
+            nlps: if s.switch { s.nlps } else { s.nlps + 47 },
+            switch: s.switch,
+        };
+    }
 
-        t
-    };
-}
+    t
+});
 
 /// Context-adaptive arithmetic encoder for JBIG2.
 const NUM_REFINEMENT_CX_STATES: usize = 17; // For GRTEMPLATE=0, contexts 0-16
@@ -799,7 +797,7 @@ impl Jbig2ArithCoder {
             Self::sample(packed, width, height, x, y) as u8
         };
 
-        let mut context_distribution: FxHashMap<usize, usize> = FxHashMap::default();
+        let mut context_distribution: HashMap<usize, usize> = HashMap::new();
         let progress_interval = (height as f32 * 0.1).ceil() as i32;
         let mut last_reported_progress = -1;
 
