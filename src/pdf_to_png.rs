@@ -1,7 +1,7 @@
 use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -102,7 +102,7 @@ fn render_pdf_page_to_png(
         let rt = Runtime::new()?;
         rt.block_on(renderer.render_page_rgb(page_index, target_height, None))?
     };
-    let img = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(rgb.width, rgb.height, rgb.data)
+    let img = RgbImage::from_raw(rgb.width, rgb.height, rgb.data)
         .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_index + 1))?;
 
     debug_println!(
@@ -116,7 +116,9 @@ fn render_pdf_page_to_png(
     let output_filename = format!("page_{:04}.png", page_index as usize + 1);
     let output_path = output_dir.join(output_filename);
 
-    img.save(&output_path)
+    img
+        .save(&output_path)
+        .map_err(anyhow::Error::msg)
         .with_context(|| format!("Failed to save PNG: {}", output_path.display()))?;
 
     Ok(output_path)

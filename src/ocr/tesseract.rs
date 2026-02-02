@@ -1,8 +1,7 @@
 use super::OcrResult;
 use crate::resize::{ResizeMethod, ResizeParams};
-use image::{ImageBuffer, Luma, Rgb};
-use rusty_tesseract::{Args, Image};
-use std::collections::HashMap;
+use crate::image_types::{DynamicImage, GrayImage, RgbImage};
+use tesseract::{Tesseract, PageSegMode, OcrEngineMode};
 
 pub fn run_tesseract(
     data: &[u8],
@@ -72,44 +71,51 @@ pub fn run_tesseract(
         // Continue anyway - user might have intentionally blank image
     }
 
-    // Create image buffer directly from scaled pixel data
-    let img = if is_binary {
-        // For binary/grayscale data (1 channel)
-        let img_buf = ImageBuffer::<Luma<u8>, _>::from_raw(
-            final_width as u32,
-            final_height as u32,
-            scaled_data,
-        )?;
-        image::DynamicImage::ImageLuma8(img_buf)
-    } else {
-        // For RGB data (3 channels)
-        let img_buf = ImageBuffer::<Rgb<u8>, _>::from_raw(
-            final_width as u32,
-            final_height as u32,
-            scaled_data,
-        )?;
-        image::DynamicImage::ImageRgb8(img_buf)
+    // Configure Tesseract with builder pattern
+    // tesseract crate uses set_frame(data, width, height, bytes_per_pixel, bytes_per_line)
+    let bytes_per_pixel = if is_binary { 1 } else { 3 };
+    let bytes_per_line = final_width * bytes_per_pixel;
+
+    let mut tess = match Tesseract::new_with_oem(None, Some("eng"), OcrEngineMode::LstmOnly) {
+        Ok(t) => t,
+        Err(e) => {
+            #[cfg(feature = "debug-logging")]
+            println!("[DEBUG OCR] Failed to initialize Tesseract: {:?}", e);
+            return None;
+        }
     };
 
-    let img = match Image::from_dynamic_image(&img) {
-        Ok(i) => i,
-        Err(_) => return None,
+    // Set the image from raw frame data
+    tess = match tess.set_frame(
+        &scaled_data,
+        final_width as i32,
+        final_height as i32,
+        bytes_per_pixel as i32,
+        bytes_per_line as i32,
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            #[cfg(feature = "debug-logging")]
+            println!("[DEBUG OCR] Failed to set image frame: {:?}", e);
+            return None;
+        }
     };
 
-    // Configure Tesseract arguments for HOCR output
-    let mut args = Args {
-        lang: "eng".to_string(),
-        psm: Some(3),
-        oem: Some(3),
-        config_variables: HashMap::default(),
-        ..Default::default()
+    // Set page segmentation mode (3 = Fully automatic page segmentation, but no OSD)
+    tess.set_page_seg_mode(PageSegMode::PsmAuto);
+
+    // Recognize the text
+    tess = match tess.recognize() {
+        Ok(t) => t,
+        Err(e) => {
+            #[cfg(feature = "debug-logging")]
+            println!("[DEBUG OCR] Tesseract recognition failed: {:?}", e);
+            return None;
+        }
     };
 
-    args.config_variables
-        .insert("tessedit_create_hocr".to_string(), "1".to_string());
-
-    // Get HOCR output with error handling
-    let hocr = match rusty_tesseract::image_to_string(&img, &args) {
+    // Get HOCR output (page number is typically 0 for single-page images)
+    let hocr = match tess.get_hocr_text(0) {
         Ok(h) => {
             #[cfg(feature = "debug-logging")]
             println!(
@@ -125,10 +131,8 @@ pub fn run_tesseract(
         }
     };
 
-    // Get plain text output with error handling
-    let mut args_txt = args.clone();
-    args_txt.config_variables.remove("tessedit_create_hocr");
-    let plain_text = match rusty_tesseract::image_to_string(&img, &args_txt) {
+    // Get plain text output
+    let plain_text = match tess.get_text() {
         Ok(t) => {
             #[cfg(feature = "debug-logging")]
             println!("[DEBUG OCR] Tesseract plain text completed successfully");

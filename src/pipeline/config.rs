@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 // Import perf_log macro from the crate root
 #[allow(unused_imports)]
 use crate::perf_log;
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use once_cell::sync::OnceCell;
 use pdfium_render::prelude::Pdfium;
 
@@ -50,8 +50,8 @@ pub enum ProcessingError {
 #[derive(Debug, Clone)]
 pub struct InferenceResult {
     pub index: usize,
-    pub high_res_image: Arc<ImageBuffer<Rgb<u8>, Vec<u8>>>,
-    pub inference_image: Arc<ImageBuffer<Rgb<u8>, Vec<u8>>>,
+    pub high_res_image: Arc<RgbImage>,
+    pub inference_image: Arc<RgbImage>,
     pub detections: Vec<crate::engine::Detection>,
     pub text_layer: Option<String>,
     // Legacy fields still used by margin mode
@@ -76,8 +76,8 @@ pub struct BatchInferenceResult {
 #[derive(Debug, Clone)]
 pub struct RenderedPageData {
     pub index: usize,
-    pub high_res_image: Arc<ImageBuffer<Rgb<u8>, Vec<u8>>>,
-    pub inference_image: Arc<ImageBuffer<Rgb<u8>, Vec<u8>>>, // Always square (e.g. 640x640)
+    pub high_res_image: Arc<RgbImage>,
+    pub inference_image: Arc<RgbImage>, // Always square (e.g. 640x640)
     pub original_width_pts: f32,  // Original PDF page width in points
     pub original_height_pts: f32, // Original PDF page height in points
 }
@@ -307,6 +307,8 @@ pub struct PipelineConfig {
     pub(crate) inference_size: u32,
     // Keep original image quality for detected image regions
     pub(crate) keep_original_images: bool,
+    // DjVu IW44 quality (0-100 scale, maps to slices)
+    pub(crate) djvu_iw44_quality: u8,
 }
 
 impl PipelineConfig {
@@ -359,6 +361,7 @@ impl PipelineConfig {
             high_res_render_height: 1200,
             inference_size: 640,
             keep_original_images: false,
+            djvu_iw44_quality: 75,  // Default to good quality
         };
 
         config.validate()?;
@@ -587,6 +590,9 @@ impl PipelineConfig {
     pub fn keep_original_images(&self) -> bool {
         self.keep_original_images
     }
+    pub fn djvu_iw44_quality(&self) -> u8 {
+        self.djvu_iw44_quality
+    }
 
     // Setters
     pub fn set_text_format(&mut self, format: &str) -> Result<()> {
@@ -725,6 +731,13 @@ impl PipelineConfig {
             return Err(anyhow!("inference_size must be > 0"));
         }
         self.inference_size = s;
+        Ok(())
+    }
+    pub fn set_djvu_iw44_quality(&mut self, quality: u8) -> Result<()> {
+        if quality > 100 {
+            return Err(anyhow!("djvu_iw44_quality must be 0-100"));
+        }
+        self.djvu_iw44_quality = quality;
         Ok(())
     }
 }
