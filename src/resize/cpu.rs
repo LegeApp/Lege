@@ -2,7 +2,7 @@ use crate::resize::{ResizeError, ResizeMethod, ResizeParams};
 use fast_image_resize::{
     FilterType, IntoImageView, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image,
 };
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use rayon::prelude::*;
 
 type Result<T> = std::result::Result<T, ResizeError>;
@@ -10,7 +10,7 @@ type Result<T> = std::result::Result<T, ResizeError>;
 pub fn resize_batch_cpu<T>(
     batch: &[T],
     params: &ResizeParams,
-) -> Result<Vec<ImageBuffer<Rgb<u8>, Vec<u8>>>>
+) -> Result<Vec<RgbImage>>
 where
     T: IntoImageView + Sync + Clone,
 {
@@ -43,7 +43,7 @@ pub fn resize_single<T>(
     params: &ResizeParams,
     tw: u32,
     th: u32,
-) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>>
+) -> Result<RgbImage>
 where
     T: IntoImageView,
 {
@@ -74,7 +74,7 @@ where
         }
     }
 
-    ImageBuffer::from_vec(tw, th, out).ok_or(ResizeError::InvalidDimensions)
+    RgbImage::from_raw(tw, th, out).ok_or(ResizeError::InvalidDimensions)
 }
 
 /// Specialized resize function for OCR and Margin modules

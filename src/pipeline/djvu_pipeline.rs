@@ -8,11 +8,12 @@
 //! - All binarization options (heavy sauvola, fixed threshold, etc.)
 //! - Page ranges
 //! - Different page dimensions support
+//! - **Concurrent document assembly** - pages are added to the document as they're processed
 //!
 //! The pipeline is kept separate to avoid conflicts between PDF and DJVU requirements.
 use crate::pipeline::config::PipelineConfig;
 use crate::pipeline::config::{RenderedPageData, InferenceResult};
-use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData};
+use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData, spawn_djvu_writer_actor};  // Use native encoder + writer actor
 use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::helper_functions::{
@@ -22,9 +23,9 @@ use crate::pipeline::helper_functions::{
 use crate::progress::ProgressTracker;
 use crate::resize_context::{build_inference_image, InferenceResizeSpec};
 use futures;
-use crate::{info_log, warn_log, success_log, error_log};
+use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,7 +69,7 @@ pub struct DjvuInferenceData {
 #[derive(Debug, Clone)]
 pub struct DjvuBinarizedData {
     pub index: usize,
-    pub adjusted_image: Arc<ImageBuffer<Rgb<u8>, Vec<u8>>>,
+    pub adjusted_image: Arc<RgbImage>,
     pub binarized: Vec<u8>,
     pub width: usize,
     pub height: usize,
@@ -90,7 +91,7 @@ pub fn create_djvu_pipeline_config(
         dpi: config.output_dpi(),
         clean: config.binarization().use_heavy_duty,
         lossy: None,
-        iw44_decibels: 32,
+        iw44_quality: config.djvu_iw44_quality(),  // Use quality from pipeline config
         work_dir,
         early_page_assembly: !(center_active || crop_active),
         pre_mask_color_layer: true,
@@ -149,6 +150,8 @@ pub async fn create_and_run_djvu_pipeline(
     info_log!("[DJVU-Parallel] Total pages to process: {}", total_pages);
     // Create DJVU orchestrator
     let djvu_config = create_djvu_pipeline_config(output_path, &config)?;
+    let dpi = djvu_config.dpi;  // Extract DPI before config is moved
+    let iw44_quality = djvu_config.iw44_quality;  // Extract quality setting (0-100)
     let orchestrator = Arc::new(DjvuOrchestrator::new(djvu_config)?);
     // Create shared inference handle if layout detection is enabled
     let shared_inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>> =
@@ -213,7 +216,7 @@ pub async fn create_and_run_djvu_pipeline(
                     .render_page_rgb(page_index as u32, config.target_height(), config.target_width())
                     .await?;
                 // Convert RgbPage to ImageBuffer
-                let rendered_image = match ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+                let rendered_image = match RgbImage::from_raw(
                     rgb_page.width,
                     rgb_page.height,
                     rgb_page.data,
@@ -431,15 +434,25 @@ pub async fn create_and_run_djvu_pipeline(
             Ok(())
         })
     };
-    // Spawn submission task (sequential to avoid external tool contention) (mut for tokio::select!)
+    // Spawn DjVu writer actor for concurrent document assembly
+    let (djvu_writer, mut writer_task) = spawn_djvu_writer_actor(
+        output_path.to_path_buf(),
+        total_pages,
+        dpi,
+        iw44_quality,
+        progress_tracker.clone(),
+    );
+
+    // Spawn encoding & submission task (converts pages and sends to writer actor)
     let mut submit_task: JoinHandle<Result<()>> = {
         let orchestrator = orchestrator.clone();
+        let djvu_writer = djvu_writer;
         let mut binarize_rx = binarize_rx;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Submit] Starting sequential submission task");
+            info_log!("[DJVU-Parallel-Submit] Starting encoding & submission task");
             while let Some(binarized_data) = binarize_rx.recv().await {
-                // Submit to orchestrator
+                // Convert page data and encode
                 let page_data = PageData {
                     index: binarized_data.index,
                     rgb_image: (*binarized_data.adjusted_image).clone(),
@@ -447,10 +460,19 @@ pub async fn create_and_run_djvu_pipeline(
                     detections: binarized_data.detections,
                     hocr: binarized_data.hocr_text,
                 };
-                orchestrator.process_page(page_data)?;
+                
+                // Process page (returns encoded Page)
+                let page = orchestrator.process_page(page_data)?;
+                
+                // Send to writer actor for concurrent assembly
+                djvu_writer.append_page(page, binarized_data.index)?;
             }
+            
+            // Signal writer to finalize
+            djvu_writer.finalize()?;
+            
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Submit] Submission task complete");
+            info_log!("[DJVU-Parallel-Submit] Encoding & submission task complete");
             Ok(())
         })
     };
@@ -527,14 +549,14 @@ pub async fn create_and_run_djvu_pipeline(
             result = &mut submit_task => {
                 result??;
                 #[cfg(feature = "debug-logging")]
-                info_log!("[DJVU-Parallel] Submit stage complete");
+                info_log!("[DJVU-Parallel] Encoding stage complete");
                 break;
             }
             signal = shutdown_rx.recv() => {
                 if let Ok(sig) = signal {
                     submit_task.abort();
 
-                    return Err(anyhow::anyhow!("Processing cancelled during submit stage: {}",
+                    return Err(anyhow::anyhow!("Processing cancelled during encoding stage: {}",
                         sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
                 }
             }
@@ -542,29 +564,33 @@ pub async fn create_and_run_djvu_pipeline(
     }
 
     #[cfg(feature = "debug-logging")]
-    info_log!("[DJVU-Parallel] All pipeline stages complete. Starting final assembly...");
+    info_log!("[DJVU-Parallel] Waiting for writer actor to complete document assembly...");
 
-    // Check for cancellation before final assembly
-    if let Ok(signal) = shutdown_rx.try_recv() {
-        return Err(anyhow::anyhow!("Processing cancelled before final assembly: {}",
-            signal.message.unwrap_or_else(|| "User requested cancellation".to_string())));
-    }
-
-    // Final assembly
-    match orchestrator.assemble_djvu_with_progress(output_path, Some(progress_tracker)) {
-        Ok(_final_path) => {
-            #[cfg(feature = "debug-logging")]
-            success_log!("[DJVU-Parallel] DJVU document created: {}", output_path.display());
-            if let Err(_e) = orchestrator.cleanup_work_dir_only() {
+    // Wait for writer actor to finish (concurrent assembly)
+    loop {
+        tokio::select! {
+            result = &mut writer_task => {
+                result??;
                 #[cfg(feature = "debug-logging")]
-                warn_log!("[DJVU-Parallel] Failed to clean up work directory: {}", _e);
+                success_log!("[DJVU-Parallel] Document assembly complete: {}", output_path.display());
+                break;
+            }
+            signal = shutdown_rx.recv() => {
+                if let Ok(sig) = signal {
+                    writer_task.abort();
+                    return Err(anyhow::anyhow!("Processing cancelled during document assembly: {}",
+                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
+                }
             }
         }
-        Err(e) => {
-            error_log!("[DJVU-Parallel] DJVU finalization failed: {}", e);
-            return Err(anyhow!("DJVU finalization failed: {}", e));
-        }
     }
+
+    // Cleanup
+    if let Err(_e) = orchestrator.cleanup_work_dir_only() {
+        #[cfg(feature = "debug-logging")]
+        warn_log!("[DJVU-Parallel] Failed to clean up work directory: {}", _e);
+    }
+
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Pipeline complete");
     Ok(())
@@ -660,7 +686,7 @@ struct DjvuPageProcessingInput {
     config: Arc<PipelineConfig>,
 }
 struct DjvuPageProcessingOutput {
-    adjusted_image: ImageBuffer<Rgb<u8>, Vec<u8>>,
+    adjusted_image: RgbImage,
     adjusted_detections: Vec<crate::engine::Detection>,
     binarized: Vec<u8>,
     width: usize,
@@ -710,14 +736,14 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
             };
             match crate::resize::resize_bytes(adjusted_image.as_raw(), current_w, current_h, &params, 3) {
                 Ok(bytes) => {
-                    if let Some(buf) = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(target_w, target_h, bytes) {
+                    if let Some(buf) = RgbImage::from_raw(target_w, target_h, bytes) {
                         adjusted_image = buf;
                         adjusted_detections = scaled_detections;
                     }
                 }
                 Err(e) => {
                     // Fallback resize
-                    adjusted_image = image::imageops::resize(&adjusted_image, target_w, target_h, image::imageops::FilterType::Lanczos3);
+                    adjusted_image = crate::image_types::imageops::resize(&adjusted_image, target_w, target_h, crate::image_types::imageops::FilterType::Lanczos3);
                     adjusted_detections = scaled_detections; // Keep scaled detections
                 }
             }
@@ -732,11 +758,12 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
         // This is used for OCR purposes but the RGB image will be encoded as IW44
         adjusted_image
             .pixels()
-            .map(|pixel| {
+            .chunks_exact(3)
+            .map(|rgb| {
                 // Standard luminance conversion: 0.299*R + 0.587*G + 0.114*B
-                let r = pixel[0] as f32;
-                let g = pixel[1] as f32;
-                let b = pixel[2] as f32;
+                let r = rgb[0] as f32;
+                let g = rgb[1] as f32;
+                let b = rgb[2] as f32;
                 ((0.299 * r + 0.587 * g + 0.114 * b) as u8).max(1) // Ensure non-zero to avoid issues
             })
             .collect()
@@ -805,7 +832,7 @@ fn apply_djvu_region_policy(
     rendered: &RenderedPageData,
     inference_result: &InferenceResult,
     config: &PipelineConfig,
-) -> Result<(ImageBuffer<Rgb<u8>, Vec<u8>>, Vec<crate::engine::Detection>)> {
+) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
     let policy: Arc<dyn crate::pipeline::policies::RegionPolicy> = match config.margin_settings() {
         crate::margin::MarginSettings::StandardizeAndCenter | crate::margin::MarginSettings::CropAndResize => {
             Arc::new(crate::pipeline::policies::MarginStandardizeAndCenter)
@@ -822,7 +849,7 @@ fn apply_djvu_region_policy(
 }
 /// Binarize DJVU image with all options support
 fn binarize_djvu_image(
-    image: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+    image: &RgbImage,
     config: &PipelineConfig,
     has_no_detections: bool,
 ) -> Vec<u8> {
