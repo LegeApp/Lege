@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 
 use crate::engine::Detection;
 use crate::pipeline::config::{PipelineConfig, RenderedPageData, InferenceResult};
@@ -69,7 +69,7 @@ pub trait DetectionProvider: Send + Sync {
 pub trait RegionPolicy: Send + Sync {
     /// Transform the page image and detections (e.g., margin crop/center) and return adjusted outputs.
     /// Default behavior is identity transform with remapped detections to page space.
-    fn transform(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> (ImageBuffer<Rgb<u8>, Vec<u8>>, Vec<Detection>) {
+    fn transform(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> (RgbImage, Vec<Detection>) {
         let mut dets = inf.detections.clone();
         remap_detections_to_page(&mut dets, page.high_res_image.width(), page.high_res_image.height(), cfg);
         ((*inf.high_res_image).clone(), dets)
@@ -113,7 +113,7 @@ impl RegionPolicy for LayoutRegions {
         page: &RenderedPageData,
         inf: &InferenceResult,
         cfg: &PipelineConfig,
-    ) -> (ImageBuffer<Rgb<u8>, Vec<u8>>, Vec<Detection>) {
+    ) -> (RgbImage, Vec<Detection>) {
         // Start with original page image and remap detections to page space
         let mut dets = inf.detections.clone();
         let page_w = page.high_res_image.width();
@@ -157,7 +157,7 @@ impl RegionPolicy for NoLayoutFullPage {}
 pub struct MarginStandardizeAndCenter;
 
 impl RegionPolicy for MarginStandardizeAndCenter {
-    fn transform(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> (ImageBuffer<Rgb<u8>, Vec<u8>>, Vec<Detection>) {
+    fn transform(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> (RgbImage, Vec<Detection>) {
         // Start from original image and remapped detections
         let mut dets = inf.detections.clone();
         let page_w = page.high_res_image.width();
@@ -267,7 +267,7 @@ fn remap_detections_to_page(dets: &mut Vec<Detection>, page_w: u32, page_h: u32,
 }
 
 fn compute_pixel_bounds_for_margin(
-    image: &image::ImageBuffer<image::Rgb<u8>, Vec<u8>>,
+    image: &crate::image_types::RgbImage,
     config: &PipelineConfig,
 ) -> Option<margin::ContentBounds> {
     use Legencode::types::BinarizationOptions;
