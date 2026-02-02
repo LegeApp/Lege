@@ -803,6 +803,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         crop_margins,
         force_crop,
         deskew_enabled,
+        djvu_quality,
     ) = loop {
         print!(
             "\n{}=== Processing Options ==={}\n",
@@ -836,6 +837,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 crop_margins,
                 force_crop,
                 deskew_enabled,
+                djvu_quality,
             )) => {
                 // No immediate rejection; we'll apply precedence rules below when building config
                 break (
@@ -854,6 +856,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     crop_margins,
                     force_crop,
                     deskew_enabled,
+                    djvu_quality,
                 );
             }
             Err(e) => {
@@ -924,6 +927,12 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // Set the configuration using the public setters
     if let Err(e) = config.set_text_format(&text_format) {
         error_println!("Failed to set text format: {}", e);
+    }
+    // Set DjVu quality if specified
+    if let Some(quality) = djvu_quality {
+        if let Err(e) = config.set_djvu_iw44_quality(quality) {
+            error_println!("Failed to set DjVu quality: {}", e);
+        }
     }
     // Use unified image format setter for non-binarized images
     config.set_image_format(cover_format);
@@ -1024,6 +1033,7 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
+    Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
 )> {
     if input.is_empty() {
         // Default: Original images with CCITT4 text, JPEG cover, layout detection ENABLED
@@ -1044,11 +1054,15 @@ fn parse_format_selection_with_options(
             false, // crop_margins
             false, // force_crop
             false, // deskew_enabled
+            None,  // djvu_quality (not DjVu)
         ));
     }
 
     let parts: Vec<&str> = input.split_whitespace().collect();
     let main_part = parts[0];
+
+    // Check for --high flag in remaining parts (hidden quality flag for DjVu)
+    let has_high_flag = parts.iter().any(|&p| p == "--high");
 
     // Parse main format option
     let (format_num, has_c_flag, has_s_flag) = parse_main_format(main_part)?;
@@ -1110,7 +1124,9 @@ fn parse_format_selection_with_options(
         1 // Include everything after the format number
     };
 
-    let remaining_parts: Vec<&str> = parts.iter().skip(options_start_index).copied().collect();
+    let remaining_parts: Vec<&str> = parts.iter().skip(options_start_index).copied()
+        .filter(|&p| p != "--high")  // Filter out --high flag
+        .collect();
     options_parts.extend(remaining_parts.iter().map(|s| s.to_string()));
 
     let options_str = options_parts.join(" ");
@@ -1133,6 +1149,18 @@ fn parse_format_selection_with_options(
 
     let symbol_mode = format_num == 1 && has_s_flag;
 
+    // Determine DjVu quality based on --high flag
+    let djvu_quality = if format_num == 3 {
+        // DjVu format
+        if has_high_flag {
+            Some(100)  // High quality mode (97 slices)
+        } else {
+            Some(75)   // Default quality (85 slices)
+        }
+    } else {
+        None  // Not DjVu format
+    };
+
     // Note: We do not offer "Original+JBIG2" because JBIG2's advantage is its superior dithering.
     // Using JBIG2 without dithering negates file size benefits and offers no other clear advantage over CCITT4.
     Ok((
@@ -1151,6 +1179,7 @@ fn parse_format_selection_with_options(
         crop_margins,
         force_crop,
         deskew_enabled,
+        djvu_quality,
     ))
 }
 

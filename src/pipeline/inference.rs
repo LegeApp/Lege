@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::Result;
-use image::RgbImage;
+use crate::image_types::RgbImage;
 use log::{error, info, warn};
 use tokio::sync::{mpsc, oneshot};
 use crate::engine::{PaddleXEngine, PaddleXConfig, Detection};

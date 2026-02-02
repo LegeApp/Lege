@@ -7,7 +7,7 @@ use crate::{
     pipeline::encode_page_data,
 };
 use anyhow::{Context, Result, anyhow};
-use image::{ImageBuffer, RgbImage, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
 
 use crate::types::AppConfig;
@@ -113,7 +113,8 @@ fn process_single_image(
     deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
     runtime: &tokio::runtime::Handle,
 ) -> Result<()> {
-    let dynamic = image::open(image_path)
+    let dynamic = crate::image_types::open(image_path)
+        .map_err(anyhow::Error::msg)
         .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
     let mut rgb_image: RgbImage = dynamic.to_rgb8();
 
@@ -274,7 +275,7 @@ pub async fn run_pdf_layout_crop_debug(
     for (i, page_num) in pages_to_render.iter().enumerate() {
         println!("Processing page {} of {}", page_num, total_pages);
         let rgb = renderer.render_page_rgb((*page_num - 1) as u32, target_height, None).await?;
-        let img_buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(rgb.width, rgb.height, rgb.data)
+        let img_buf = RgbImage::from_raw(rgb.width, rgb.height, rgb.data)
             .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_num))?;
         let mut img: RgbImage = img_buf;
 
@@ -308,9 +309,11 @@ pub async fn run_pdf_layout_crop_debug(
             if x2 <= x1 || y2 <= y1 { continue; }
             let w = x2 - x1;
             let h = y2 - y1;
-            let crop = image::imageops::crop_imm(&img, x1, y1, w, h).to_image();
+            let crop = crate::image_types::imageops::crop_imm(&img, x1, y1, w, h).to_image();
             let filename = format!("page_{:04}_area_{:03}{}", page_num, area_idx + 1, ext);
-            crop.save(output_dir.join(filename))?;
+            crop
+                .save(output_dir.join(filename))
+                .map_err(anyhow::Error::msg)?;
             saved += 1;
         }
         info_println!("Saved {} regions from page {}", saved, page_num);
