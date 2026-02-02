@@ -8,11 +8,12 @@ use bitvec::slice::BitSlice;
 use ndarray::Array2;
 use once_cell::unsync::OnceCell;
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::io::{Read, Seek};
 use std::path::Path;
-use xxhash_rust::xxh3::xxh3_64;
 
 use crate::jbig2shared::{u32_to_usize, usize_to_u32};
 
@@ -231,6 +232,16 @@ impl BitImage {
         self.get(usize_to_u32(x), usize_to_u32(y))
     }
 
+    /// Gets the value of a pixel without bounds checking (alias for get_usize for CC analysis compatibility).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `x` and `y` are within the bitmap's bounds.
+    #[inline(always)]
+    pub fn get_pixel_unchecked(&self, x: usize, y: usize) -> bool {
+        self.bits[y * self.width + x]
+    }
+
     /// Creates a sub-image from a specified rectangle.
     pub fn from_sub_image(source: &BitImage, rect: &Rect) -> Self {
         let width = u32_to_usize(rect.width);
@@ -254,6 +265,15 @@ impl BitImage {
     pub fn set(&mut self, x: u32, y: u32, value: bool) {
         if x < usize_to_u32(self.width) && y < usize_to_u32(self.height) {
             let idx = u32_to_usize(y) * self.width + u32_to_usize(x);
+            self.bits.set(idx, value);
+        }
+    }
+
+    /// Sets a pixel value with usize coordinates (alias for CC analysis compatibility).
+    #[inline]
+    pub fn set_usize(&mut self, x: usize, y: usize, value: bool) {
+        if x < self.width && y < self.height {
+            let idx = y * self.width + x;
             self.bits.set(idx, value);
         }
     }
@@ -501,9 +521,11 @@ pub fn sort_symbols_for_dictionary<'a>(symbols: &[&'a BitImage]) -> Vec<Vec<&'a 
         .collect()
 }
 
-/// Computes a hash for a `BitImage` using xxh3.
+/// Computes a hash for a `BitImage` using SipHash from std library.
 pub fn compute_glyph_hash(image: &BitImage) -> u64 {
-    xxh3_64(image.as_bytes())
+    let mut hasher = DefaultHasher::new();
+    image.as_bytes().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Converts an `ndarray::Array2<u8>` to a `BitImage`.
