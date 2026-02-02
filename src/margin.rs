@@ -17,7 +17,7 @@
 use crate::engine::Detection;
 use crate::resize_context::MarginCorrection;
 use anyhow::{Result, anyhow};
-use image::{Rgb, RgbImage};
+use crate::image_types::{Rgb, RgbImage};
 use std::collections::HashMap;
 
 /// Input data for a single page when performing document-wide margin analysis.
@@ -149,7 +149,7 @@ impl ContentBounds {
 /// # Returns
 /// `Option<ContentBounds>` - The detected content bounds, or None if the page is blank
 pub fn compute_pixel_bounds_for_margin(
-    image: &image::ImageBuffer<image::Rgb<u8>, Vec<u8>>,
+    image: &crate::image_types::RgbImage,
     config: &crate::pipeline::config::PipelineConfig,
 ) -> Option<ContentBounds> {
     use Legencode::types::BinarizationOptions;
@@ -962,7 +962,7 @@ fn crop_and_resize_with_standard_aspect_ratio(
         final_bounds.width(), final_bounds.height());
 
     // Crop the content area from the original image using the final bounds
-    let content_crop = image::imageops::crop_imm(
+    let content_crop = crate::image_types::imageops::crop_imm(
         original_image,
         final_bounds.min_x,
         final_bounds.min_y,
@@ -1139,10 +1139,10 @@ fn standardize_and_center_page(
         target_width, target_height, standard_aspect_ratio);
 
     // Create a new blank (white) image with target dimensions
-    let mut new_image = RgbImage::from_pixel(target_width, target_height, Rgb([255, 255, 255]));
+    let mut new_image = RgbImage::from_pixel(target_width, target_height, Rgb::new(255, 255, 255));
 
     // Crop the content area from the original image.
-    let content_crop = image::imageops::crop_imm(
+    let content_crop = crate::image_types::imageops::crop_imm(
         original_image,
         bounds.min_x,
         bounds.min_y,
@@ -1195,7 +1195,7 @@ fn standardize_and_center_page(
     crate::debug_println!("MARGIN CENTERING: Placing resized content at position ({},{}) on {}x{} canvas",
         target_x, target_y, target_width, target_height);
     
-    image::imageops::overlay(&mut new_image, &resized, target_x, target_y);
+    crate::image_types::imageops::overlay(&mut new_image, &resized, target_x, target_y);
 
     Ok(new_image)
 }

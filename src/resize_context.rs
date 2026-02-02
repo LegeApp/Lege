@@ -13,7 +13,7 @@
 //!   * Deterministic, side-effect free (except optional logging via dbglog!).
 //!   * Explicit resize policy enum so changes are compile-time visible.
 
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use anyhow::{Result, anyhow};
 use crate::resize::{ResizeMethod, ResizeParams};
 
@@ -39,8 +39,8 @@ impl Default for InferenceResizeSpec {
 /// Result bundling source + inference images.
 #[derive(Debug, Clone)]
 pub struct InferenceImages {
-    pub high_res: ImageBuffer<Rgb<u8>, Vec<u8>>,    // original (possibly deskewed / margin-corrected)
-    pub inference: ImageBuffer<Rgb<u8>, Vec<u8>>,   // resized for model
+    pub high_res: RgbImage,    // original (possibly deskewed / margin-corrected)
+    pub inference: RgbImage,   // resized for model
 }
 
 /// Compute scale factors (inference -> page) given page dimensions and spec.
@@ -70,9 +70,9 @@ pub fn is_in_inference_space(b: &[f32;4], spec: &InferenceResizeSpec) -> bool {
 /// Build inference image according to spec (Direct policy only for now).
 /// Caller passes a cloneable reference to the high_res image.
 pub fn build_inference_image(
-    high_res: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+    high_res: &RgbImage,
     spec: &InferenceResizeSpec,
-) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
+) -> Result<RgbImage> {
     #[cfg(feature = "debug-logging")]
     crate::debug_println!("RESIZE INFERENCE: Input image: {}x{}, Target: {}x{}, Policy: {:?}", 
         high_res.width(), high_res.height(), spec.target, spec.target, spec.policy);
@@ -105,7 +105,7 @@ pub fn build_inference_image(
             crate::debug_println!("RESIZE INFERENCE: Resize completed from {}x{} to {}x{}, Output buffer size: {} bytes", 
                 high_res.width(), high_res.height(), spec.target, spec.target, resized.len());
 
-            ImageBuffer::from_vec(spec.target, spec.target, resized)
+            RgbImage::from_raw(spec.target, spec.target, resized)
                 .ok_or_else(|| anyhow!("Failed to build inference image buffer"))
         }
     }

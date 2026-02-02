@@ -28,7 +28,7 @@ use crate::margin::{PageMarginInput, DocumentMarginAnalysis};
 use crate::{info_log, warn_log, success_log};
 
 use anyhow::{Result, anyhow};
-use image::{ImageBuffer, Rgb};
+use crate::image_types::{Rgb, RgbImage};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -121,7 +121,7 @@ async fn render_stage(
             .map_err(|e| anyhow!("Failed to render page {}: {}", page_index, e))?;
 
         // Convert to ImageBuffer
-        let mut rendered_image = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+        let mut rendered_image = RgbImage::from_raw(
             rgb_page.width,
             rgb_page.height,
             rgb_page.data,
@@ -239,7 +239,7 @@ async fn inference_stage_parallel(
                         warn_log!("[PDF-Parallel-Infer] Inference task failed: {}", e);
                     }
                     Err(e) => {
-                        warn_log!("[PDF-Parallel-Infer] Task join error: {}", e);
+                        warn_log!("[PDF-Parallel-Infer] Inference task panicked: {}", e);
                     }
                 }
             }
@@ -584,7 +584,7 @@ struct RegionProcessingResult {
 }
 
 struct PageProcessingOutput {
-    adjusted_image: ImageBuffer<Rgb<u8>, Vec<u8>>,
+    adjusted_image: RgbImage,
     adjusted_detections: Vec<crate::engine::Detection>,
     binarized: Vec<u8>,
     width: usize,
@@ -654,13 +654,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             };
             match crate::resize::resize_bytes(adjusted_image.as_raw(), current_w, current_h, &params, 3) {
                 Ok(bytes) => {
-                    if let Some(buf) = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(target_w, target_h, bytes) {
+                    if let Some(buf) = RgbImage::from_raw(target_w, target_h, bytes) {
                         adjusted_image = buf;
                     }
                 }
                 Err(e) => {
                     // Fallback resize
-                    adjusted_image = image::imageops::resize(&adjusted_image, target_w, target_h, image::imageops::FilterType::Lanczos3);
+                    adjusted_image = crate::image_types::imageops::resize(&adjusted_image, target_w, target_h, crate::image_types::imageops::FilterType::Lanczos3);
                 }
             }
         }
@@ -677,11 +677,12 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         // Convert RGB to grayscale (this will be used for the base layer in JPEG mode)
         adjusted_image
             .pixels()
-            .map(|pixel| {
+            .chunks_exact(3)
+            .map(|rgb| {
                 // Standard luminance conversion: 0.299*R + 0.587*G + 0.114*B
-                let r = pixel[0] as f32;
-                let g = pixel[1] as f32;
-                let b = pixel[2] as f32;
+                let r = rgb[0] as f32;
+                let g = rgb[1] as f32;
+                let b = rgb[2] as f32;
                 ((0.299 * r + 0.587 * g + 0.114 * b) as u8).max(1) // Ensure non-zero to avoid issues
             })
             .collect()
@@ -825,7 +826,7 @@ fn apply_margin_analysis_to_page(
     cfg: &PipelineConfig,
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
-) -> Result<(ImageBuffer<Rgb<u8>, Vec<u8>>, Vec<crate::engine::Detection>)> {
+) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
     use crate::resize_context::{InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page};
 
     // Remap detections to page space
@@ -1014,7 +1015,7 @@ fn apply_region_policy(
     rendered: &RenderedPageData,
     inference_result: &InferenceResult,
     config: &PipelineConfig,
-) -> Result<(ImageBuffer<Rgb<u8>, Vec<u8>>, Vec<crate::engine::Detection>)> {
+) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
     let policy: Arc<dyn RegionPolicy> = match config.margin_settings() {
         crate::margin::MarginSettings::StandardizeAndCenter
         | crate::margin::MarginSettings::CropAndResize => {
@@ -1034,7 +1035,7 @@ fn apply_region_policy(
 
 /// Binarize image with special handling for blank pages in layout detection mode
 fn binarize_image(
-    image: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+    image: &RgbImage,
     config: &PipelineConfig,
     has_no_detections: bool,
 ) -> Vec<u8> {
@@ -1224,7 +1225,7 @@ async fn perform_ocr(
 async fn extract_pdf_text(
     pdf_renderer: &Arc<PdfiumRenderer>,
     page_index: usize,
-    image: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+    image: &RgbImage,
 ) -> Result<Option<String>> {
     match pdf_renderer.has_text_layer(page_index as u32).await {
         Ok(true) => {
@@ -1381,7 +1382,7 @@ async fn encode_base_layer(
 
 /// Encode base layer as full-color JPEG for JPEG-only mode
 async fn encode_base_layer_for_jpeg_mode(
-    image: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+    image: &RgbImage,
     config: &PipelineConfig,
     page_index: usize,
 ) -> Result<crate::accumulator::ContentType> {
@@ -1407,7 +1408,7 @@ async fn encode_base_layer_for_jpeg_mode(
     // Clone the image data for the blocking task
     let width = image.width();
     let height = image.height();
-    let image_data = image.as_raw().clone();
+    let image_data = image.as_raw().to_vec();
 
     let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
     let permit = match encode_sem {
@@ -1507,7 +1508,7 @@ async fn perform_document_analysis(
             }
         };
 
-        let original_image = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+        let original_image = RgbImage::from_raw(
             rgb_page.width,
             rgb_page.height,
             rgb_page.data,
@@ -1540,12 +1541,12 @@ async fn perform_document_analysis(
             Err(e) => {
                 warn_log!("Page {}: Failed to resize for margin analysis: {}. Using original image.", page_idx, e);
                 // Fallback: use original image if resize fails
-                original_image.as_raw().clone()
+                original_image.as_raw().to_vec()
             }
         };
 
         let analysis_image = if analysis_image_data.len() == (ANALYSIS_WIDTH * analysis_height * 3) as usize {
-            ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+            RgbImage::from_raw(
                 ANALYSIS_WIDTH,
                 analysis_height,
                 analysis_image_data,

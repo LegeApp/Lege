@@ -9,7 +9,7 @@ use crate::gpu::webgpu_execution_provider_dispatch;
 #[cfg(windows)]
 use crate::gpu::directml_execution_provider_dispatch;
 use anyhow::{Context, Result, anyhow};
-use image::{ImageBuffer, Rgb, RgbImage};
+use crate::image_types::{Rgb, RgbImage};
 use log::info;
 use memmap2::Mmap;
 use ndarray::Array;
@@ -263,11 +263,11 @@ impl RotationClassifier {
     /// Preprocess image for rotation classification
     fn preprocess(&self, img: &RgbImage) -> Result<Array<f32, ndarray::Ix4>> {
         // Resize to 224x224
-        let resized = image::imageops::resize(
+        let resized = crate::image_types::imageops::resize(
             img,
             ROTATION_CLASSIFIER_SIZE,
             ROTATION_CLASSIFIER_SIZE,
-            image::imageops::FilterType::Lanczos3,
+            crate::image_types::imageops::FilterType::Lanczos3,
         );
 
         // Convert to NCHW format and normalize to [0, 1]
@@ -497,7 +497,7 @@ impl DocumentUnwarper {
         let width = shape[3] as usize;
         let channel_size = height * width;
 
-        let mut img_buffer = ImageBuffer::new(width as u32, height as u32);
+        let mut img_buffer = RgbImage::new(width as u32, height as u32);
 
         for y in 0..height {
             for x in 0..width {
@@ -507,7 +507,7 @@ impl DocumentUnwarper {
                 let g = (data[base_idx + channel_size].clamp(0.0, 1.0) * 255.0) as u8;
                 let b = (data[base_idx + 2 * channel_size].clamp(0.0, 1.0) * 255.0) as u8;
 
-                img_buffer.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
+                img_buffer.put_pixel(x as u32, y as u32, Rgb::new(r, g, b));
             }
         }
 
@@ -517,13 +517,11 @@ impl DocumentUnwarper {
 
 /// Apply rotation correction to an image based on rotation angle
 pub fn apply_rotation_correction(image: &RgbImage, angle: RotationAngle) -> RgbImage {
-    use image::imageops::{rotate90, rotate180, rotate270};
-
     match angle {
         RotationAngle::NoRotation => image.clone(),
-        RotationAngle::Rotate90 => rotate270(image), // Correct 90° CW by rotating 270° CCW
-        RotationAngle::Rotate180 => rotate180(image),
-        RotationAngle::Rotate270 => rotate90(image), // Correct 270° CW by rotating 90° CCW
+        RotationAngle::Rotate90 => image.rotate_270(), // Correct 90° CW by rotating 270° CCW
+        RotationAngle::Rotate180 => image.rotate_180(),
+        RotationAngle::Rotate270 => image.rotate_90(), // Correct 270° CW by rotating 90° CCW
     }
 }
 
