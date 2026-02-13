@@ -125,6 +125,6 @@ macro_rules! info_println {
 #[macro_export]
 macro_rules! error_println {
     ($($arg:tt)*) => {
-        eprintln!($($arg)*);
+        eprintln!($($arg)*)
     };
 }

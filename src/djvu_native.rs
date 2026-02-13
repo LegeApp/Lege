@@ -36,11 +36,8 @@ pub struct DjvuConfig {
     pub clean: bool,
     /// Lossy compression level for bilevel (0-200, None for lossless)
     pub lossy: Option<u32>,
-    /// IW44 quality (0-100, default 100 = high quality, maps to slice count)
-    /// 100 = 97 slices (30% more than C44 default)
-    /// 50 = 74 slices (C44 default)
-    /// 0 = 50 slices (lower quality, smaller files)
-    pub iw44_quality: u8,
+    /// IW44 quality in decibels (25-38 recommended for ebooks, higher = better quality)
+    pub iw44_decibels: u32,
     /// Working directory for logs/debug (no temp files needed for encoding)
     pub work_dir: PathBuf,
     /// When true, apply PBM (binarized background) as a transparency mask for color layer
@@ -61,7 +58,7 @@ impl Default for DjvuConfig {
             dpi: 300,
             clean: true,
             lossy: None,
-            iw44_quality: 75,  // Good quality (85 slices, balanced quality/size)
+            iw44_decibels: 38,  // Top of recommended range for ebooks (25-38 dB)
             work_dir: app_dirs::djvu_base_dir(),
             pre_mask_color_layer: true,
             no_binarization_mode: false,
@@ -252,9 +249,8 @@ impl DjvuOrchestrator {
         // 5. Add OCR text layer if available
         if let Some(ref hocr) = page_data.hocr {
             let words = self.parse_hocr_to_words(hocr, width, height)?;
-            let word_count = words.len();
             page_builder = page_builder.with_ocr_words(words);
-            dbglog!("[djvu-native] OCR text layer added ({} words)", word_count);
+            dbglog!("[djvu-native] OCR text layer added ({} words)", words.len());
         }
 
         // 6. Build the final page
@@ -383,18 +379,8 @@ impl DjvuOrchestrator {
     ) -> Result<Vec<(String, u16, u16, u16, u16)>> {
         use regex::Regex;
 
-        // Debug: log HOCR length and first 500 chars
-        #[cfg(feature = "debug-logging")]
-        {
-            crate::info_log!("[parse_hocr_to_words] HOCR length: {} chars", hocr.len());
-            if !hocr.is_empty() {
-                let preview: String = hocr.chars().take(500).collect();
-                crate::info_log!("[parse_hocr_to_words] HOCR preview: {}", preview);
-            }
-        }
-
         let word_re = Regex::new(
-            r#"<span class=['"]ocrx_word['"].*?title=['"]bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)['"].*?>(.*?)</span>"#
+            r#"<span class=['"]ocrx_word['"].*?title=['"]bbox (\d+) (\d+) (\d+) (\d+)['"].*?>(.*?)</span>"#
         )?;
 
         let mut words = Vec::new();
@@ -437,9 +423,6 @@ impl DjvuOrchestrator {
 
             words.push((text, x1, y1, width, height));
         }
-
-        #[cfg(feature = "debug-logging")]
-        crate::info_log!("[parse_hocr_to_words] Found {} words from HOCR", words.len());
 
         Ok(words)
     }
@@ -538,28 +521,18 @@ pub fn spawn_djvu_writer_actor(
     output_path: PathBuf,
     total_pages: usize,
     dpi: u32,
-    iw44_quality: u8,
+    iw44_decibels: u32,
     progress_tracker: crate::progress::ProgressTracker,
 ) -> (DjvuWriterHandle, tokio::task::JoinHandle<Result<(), anyhow::Error>>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<DjvuWriterMessage>();
 
     let handle = DjvuWriterHandle { sender: tx };
 
-    // Map quality (0-100) to slice count:
-    // 100 = 97 slices (30% above C44 default, high quality)
-    // 50 = 74 slices (C44 default)
-    // 0 = 50 slices (lower quality, smaller files)
-    let slices = match iw44_quality {
-        100 => 97,  // High quality
-        q if q >= 50 => 74 + ((q as usize - 50) * 23 / 50),  // 74-97 range
-        q => 50 + (q as usize * 24 / 50),  // 50-74 range
-    };
-
     let task = tokio::spawn(async move {
-        // Build the DjVu document with slice-based quality (NOT decibels)
+        // Build the DjVu document
         let doc = DjvuBuilder::new(total_pages)
             .with_dpi(dpi)
-            .with_slices(slices)
+            .with_decibels(iw44_decibels as f32)
             .build();
 
         let mut pages_written = 0usize;

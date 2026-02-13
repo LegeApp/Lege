@@ -28,7 +28,7 @@ use crate::margin::{PageMarginInput, DocumentMarginAnalysis};
 use crate::{info_log, warn_log, success_log};
 
 use anyhow::{Result, anyhow};
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -660,7 +660,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 }
                 Err(e) => {
                     // Fallback resize
-                    adjusted_image = crate::image_types::imageops::resize(&adjusted_image, target_w, target_h, crate::image_types::imageops::FilterType::Lanczos3);
+                    adjusted_image = image::imageops::resize(&adjusted_image, target_w, target_h, image::imageops::FilterType::Lanczos3);
                 }
             }
         }
@@ -676,7 +676,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         // For JPEG-only mode: create grayscale representation of the full RGB image
         // Convert RGB to grayscale (this will be used for the base layer in JPEG mode)
         adjusted_image
-            .pixels()
+            .as_raw()
             .chunks_exact(3)
             .map(|rgb| {
                 // Standard luminance conversion: 0.299*R + 0.587*G + 0.114*B

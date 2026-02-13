@@ -1,7 +1,7 @@
 use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
