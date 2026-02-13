@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 // Import perf_log macro from the crate root
 #[allow(unused_imports)]
 use crate::perf_log;
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use once_cell::sync::OnceCell;
 use pdfium_render::prelude::Pdfium;
 

@@ -5,7 +5,6 @@ pub mod app_dirs;
 pub mod cli_progress;
 pub mod debug_log;
 pub mod deskew;
-pub mod image_types;
 pub mod djvu;  // Native Rust DJVU encoder
 pub mod engine;
 pub mod gpu;

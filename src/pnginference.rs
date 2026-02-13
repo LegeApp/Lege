@@ -7,7 +7,7 @@ use crate::{
     pipeline::encode_page_data,
 };
 use anyhow::{Context, Result, anyhow};
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
 
 use crate::types::AppConfig;
@@ -113,7 +113,7 @@ fn process_single_image(
     deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
     runtime: &tokio::runtime::Handle,
 ) -> Result<()> {
-    let dynamic = crate::image_types::open(image_path)
+    let dynamic = image::open(image_path)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
     let mut rgb_image: RgbImage = dynamic.to_rgb8();
@@ -309,7 +309,7 @@ pub async fn run_pdf_layout_crop_debug(
             if x2 <= x1 || y2 <= y1 { continue; }
             let w = x2 - x1;
             let h = y2 - y1;
-            let crop = crate::image_types::imageops::crop_imm(&img, x1, y1, w, h).to_image();
+            let crop = image::imageops::crop_imm(&img, x1, y1, w, h).to_image();
             let filename = format!("page_{:04}_area_{:03}{}", page_num, area_idx + 1, ext);
             crop
                 .save(output_dir.join(filename))

@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 
 use crate::engine::Detection;
 use crate::pipeline::config::{PipelineConfig, RenderedPageData, InferenceResult};
@@ -267,7 +267,7 @@ fn remap_detections_to_page(dets: &mut Vec<Detection>, page_w: u32, page_h: u32,
 }
 
 fn compute_pixel_bounds_for_margin(
-    image: &crate::image_types::RgbImage,
+    image: &image::RgbImage,
     config: &PipelineConfig,
 ) -> Option<margin::ContentBounds> {
     use Legencode::types::BinarizationOptions;

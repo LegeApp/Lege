@@ -3,7 +3,7 @@ use crate::text_loader::CLI_TEXT;
 use crate::{debug_println, error_println, info_println};
 use crate::nms::{Detection as NmsDetection, DetectionContext, two_pass_nms};
 use anyhow::{Result, anyhow};
-use crate::image_types::RgbImage;
+use image::RgbImage;
 use log::info;
 use memmap2::Mmap;
 use ndarray::{Array, s};

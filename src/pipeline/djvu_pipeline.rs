@@ -25,7 +25,7 @@ use crate::resize_context::{build_inference_image, InferenceResizeSpec};
 use futures;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -572,7 +572,7 @@ pub async fn create_and_run_djvu_pipeline(
             result = &mut writer_task => {
                 result??;
                 #[cfg(feature = "debug-logging")]
-                success_log!("[DJVU-Parallel] Document assembly complete: {}", output_path.display());
+                info_log!("[DJVU-Parallel] Document assembly complete: {}", output_path.display());
                 break;
             }
             signal = shutdown_rx.recv() => {
@@ -743,7 +743,7 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
                 }
                 Err(e) => {
                     // Fallback resize
-                    adjusted_image = crate::image_types::imageops::resize(&adjusted_image, target_w, target_h, crate::image_types::imageops::FilterType::Lanczos3);
+                    adjusted_image = image::imageops::resize(&adjusted_image, target_w, target_h, image::imageops::FilterType::Lanczos3);
                     adjusted_detections = scaled_detections; // Keep scaled detections
                 }
             }
@@ -757,7 +757,7 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
         // For JPEG-only mode in DJVU: create grayscale representation of the full RGB image
         // This is used for OCR purposes but the RGB image will be encoded as IW44
         adjusted_image
-            .pixels()
+            .as_raw()
             .chunks_exact(3)
             .map(|rgb| {
                 // Standard luminance conversion: 0.299*R + 0.587*G + 0.114*B
@@ -796,13 +796,20 @@ async fn extract_djvu_text_layer(
 ) -> Option<String> {
     if config.enable_ocr() {
         let use_regions = config.enable_layout_detection() && !detections.is_empty();
+        #[cfg(feature = "debug-logging")]
+        info_log!("[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}", 
+            page_index, use_regions, detections.len());
         let result = if use_regions {
             crate::ocr::ocr::perform_region_based_ocr(binarized, width, height, detections).await
         } else {
             crate::ocr::ocr::perform_tiling_based_ocr(binarized, width, height).await
         };
         match result {
-            Ok(text) => Some(text),
+            Ok(text) => {
+                #[cfg(feature = "debug-logging")]
+                info_log!("[extract_djvu_text_layer] Page {}: OCR returned {} chars", page_index, text.len());
+                Some(text)
+            }
             Err(e) => {
                 warn_log!("Page {}: OCR failed: {}", page_index, e);
                 Some(String::new())
@@ -812,7 +819,12 @@ async fn extract_djvu_text_layer(
         match pdf_renderer.has_text_layer(page_index as u32).await {
             Ok(true) => {
                 match pdf_renderer.extract_page_text(page_index as u32).await {
-                    Ok(raw_text) => Some(build_hocr_from_pdf_text(&raw_text, width as u32, height as u32)),
+                    Ok(raw_text) => {
+                        let hocr = build_hocr_from_pdf_text(&raw_text, width as u32, height as u32);
+                        #[cfg(feature = "debug-logging")]
+                        info_log!("[extract_djvu_text_layer] Page {}: PDF text extracted, HOCR {} chars", page_index, hocr.len());
+                        Some(hocr)
+                    }
                     Err(e) => {
                         warn_log!("Failed to extract text from page {}: {}", page_index, e);
                         None
@@ -854,25 +866,26 @@ fn binarize_djvu_image(
     has_no_detections: bool,
 ) -> Vec<u8> {
     let want_invert_input = config.invert_input();
-    let mut want_invert_output = config.binarization.invert;
+    let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
         want_invert_output = false;
     }
     // Special handling for blank pages in layout detection mode
+    // For blank pages (no detections), use fixed threshold of 128
     let (use_fixed_threshold, fixed_threshold) = if config.enable_layout_detection() && has_no_detections {
         #[cfg(feature = "debug-logging")]
         crate::debug_log!("Blank page detected (no detections), using fixed threshold 128");
         (true, 128)
     } else {
-        (config.binarization.use_fixed_threshold, config.binarization.fixed_threshold)
+        (config.binarization().use_fixed_threshold, config.binarization().fixed_threshold)
     };
     let options = Legencode::types::BinarizationOptions {
         invert: want_invert_output,
         invert_input: want_invert_input,
-        k_factor: config.binarization.k_factor,
-        use_heavy_duty: config.binarization.use_heavy_duty && !use_fixed_threshold,
-        patch_percentage: config.binarization.patch_percentage,
-        no_patch: config.binarization.no_patch,
+        k_factor: config.binarization().k_factor,
+        use_heavy_duty: config.binarization().use_heavy_duty && !use_fixed_threshold,
+        patch_percentage: config.binarization().patch_percentage,
+        no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
     };
