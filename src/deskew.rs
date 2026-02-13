@@ -9,7 +9,7 @@ use crate::gpu::webgpu_execution_provider_dispatch;
 #[cfg(windows)]
 use crate::gpu::directml_execution_provider_dispatch;
 use anyhow::{Context, Result, anyhow};
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use log::info;
 use memmap2::Mmap;
 use ndarray::Array;
@@ -263,11 +263,11 @@ impl RotationClassifier {
     /// Preprocess image for rotation classification
     fn preprocess(&self, img: &RgbImage) -> Result<Array<f32, ndarray::Ix4>> {
         // Resize to 224x224
-        let resized = crate::image_types::imageops::resize(
+        let resized = image::imageops::resize(
             img,
             ROTATION_CLASSIFIER_SIZE,
             ROTATION_CLASSIFIER_SIZE,
-            crate::image_types::imageops::FilterType::Lanczos3,
+            image::imageops::FilterType::Lanczos3,
         );
 
         // Convert to NCHW format and normalize to [0, 1]
@@ -507,7 +507,7 @@ impl DocumentUnwarper {
                 let g = (data[base_idx + channel_size].clamp(0.0, 1.0) * 255.0) as u8;
                 let b = (data[base_idx + 2 * channel_size].clamp(0.0, 1.0) * 255.0) as u8;
 
-                img_buffer.put_pixel(x as u32, y as u32, Rgb::new(r, g, b));
+                img_buffer.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
             }
         }
 
@@ -519,9 +519,9 @@ impl DocumentUnwarper {
 pub fn apply_rotation_correction(image: &RgbImage, angle: RotationAngle) -> RgbImage {
     match angle {
         RotationAngle::NoRotation => image.clone(),
-        RotationAngle::Rotate90 => image.rotate_270(), // Correct 90° CW by rotating 270° CCW
-        RotationAngle::Rotate180 => image.rotate_180(),
-        RotationAngle::Rotate270 => image.rotate_90(), // Correct 270° CW by rotating 90° CCW
+        RotationAngle::Rotate90 => image::imageops::rotate270(image),
+        RotationAngle::Rotate180 => image::imageops::rotate180(image),
+        RotationAngle::Rotate270 => image::imageops::rotate90(image),
     }
 }
 

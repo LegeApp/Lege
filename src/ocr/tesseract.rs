@@ -1,6 +1,6 @@
 use super::OcrResult;
 use crate::resize::{ResizeMethod, ResizeParams};
-use crate::image_types::{DynamicImage, GrayImage, RgbImage};
+use image::{DynamicImage, GrayImage, RgbImage};
 use tesseract::{Tesseract, PageSegMode, OcrEngineMode};
 
 pub fn run_tesseract(
