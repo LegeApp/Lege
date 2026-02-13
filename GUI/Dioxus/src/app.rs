@@ -1634,17 +1634,11 @@ fn MainContentArea(state: Signal<AppState>) -> Element {
                                                             // Track active files for multi-file progress display
                                                             active_files.insert(task_id);
 
-                                                            // Switch to bundling mode for final DJVU assembly
+                                                            // Switch to bundling mode for final DJVU assembly (if needed)
                                                             match &status {
                                                                 lege::progress::ProcessingStatus::AssemblingOutput => {
                                                                     let mut w = state_clone.write();
                                                                     w.enter_bundling_mode();
-                                                                }
-                                                                lege::progress::ProcessingStatus::DjvuBundling { current, total } => {
-                                                                    let mut w = state_clone.write();
-                                                                    if !w.bundling_mode { w.enter_bundling_mode(); }
-                                                                    w.bundling_progress = Some((*current, *total));
-                                                                    w.update_bundling_line(None);
                                                                 }
                                                                 lege::progress::ProcessingStatus::ExternalToolLine { line } => {
                                                                     let mut w = state_clone.write();
@@ -2878,8 +2872,17 @@ fn AboutWindow(state: Signal<AppState>) -> Element {
                     a { href: "mailto:read@legeapp.com", style: "color: #1a5fb4;", "read@legeapp.com" }
                 }
 
-                // Donate button (same behavior as before)
-                div { style: "margin-top: 8px;",
+                // Buttons row - Source Code and Donate side by side
+                div { style: "margin-top: 8px; display: flex; justify-content: center; gap: 8px;",
+                    button {
+                        class: "raised-btn",
+                        style: "padding: 6px 12px; font-size: 12px;",
+                        onclick: move |_| {
+                            let _ = open::that("https://github.com/LegeApp/Lege");
+                        },
+                        "Source Code"
+                    }
+                    
                     button {
                         class: "raised-btn",
                         style: "padding: 6px 12px; font-size: 12px;",

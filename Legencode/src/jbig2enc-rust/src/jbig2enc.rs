@@ -1077,14 +1077,18 @@ pub fn encode_refine(
     let num_inst = instances.len() as u32;
     let _ = coder.encode_int_with_ctx(num_inst as i32, 16, IntProc::Iaai);
 
+    // Calculate SBSYMCODELEN - the number of bits needed to encode symbol IDs
+    let num_symbols = all_known_symbols.len() as u32;
+    let symbol_id_bits = log2up(num_symbols.max(1)).max(1);
+
     // 4. Initialize an empty region buffer to track already emitted pixels
     let mut region_buf = BitImage::new(width, height).expect("region bitmap too large");
 
     // 5. Emit each instance
     for inst in instances {
-        // IAID symbol ID
+        // Encode symbol ID using IAID procedure (per JBIG2 spec §6.4.4)
         let sym_id = inst.symbol_id;
-        let _ = coder.encode_int_with_ctx(sym_id as i32, 16, IntProc::Iads);
+        let _ = coder.encode_iaid(sym_id, symbol_id_bits);
 
         // Refinement deltas
         let _ = coder.encode_integer(IntProc::Iardx, inst.dx);
@@ -1325,12 +1329,8 @@ pub fn encode_text_region(
         // Always update last_s_coord for the next delta calculation
         last_s_coord = instance_abs_pos.x as i32;
 
-        // Encode the Symbol ID itself (IAID)
-        let _ = coder.encode_int_with_ctx(
-            symbol_id_to_encode as i32,
-            symbol_id_bits as i32,
-            IntProc::Iads,
-        );
+        // Encode the Symbol ID using IAID procedure (per JBIG2 spec §6.4.4)
+        let _ = coder.encode_iaid(symbol_id_to_encode, symbol_id_bits);
     }
     coder.flush(true);
     payload.extend(coder.as_bytes());

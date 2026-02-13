@@ -532,6 +532,44 @@ impl Jbig2ArithCoder {
         Ok(())
     }
 
+    /// Encodes a symbol ID using the IAID (Index Arithmetic Integer Decoding) procedure.
+    /// This is used for encoding symbol IDs in text region segments.
+    /// 
+    /// # Arguments
+    /// * `symbol_id` - The symbol ID to encode (0-indexed)
+    /// * `symbol_code_len` - The number of bits needed to represent all symbol IDs (SBSYMCODELEN)
+    /// 
+    /// According to JBIG2 spec Annex A.3:
+    /// 1. Set PREV = 1
+    /// 2. For each bit: context CX = IAID + PREV, then PREV = (PREV << 1) | bit
+    /// 3. After all bits decoded, PREV = PREV - 2^SBSYMCODELEN (clear leading 1)
+    /// 
+    /// The number of contexts required is 2^SBSYMCODELEN.
+    #[inline]
+    pub fn encode_iaid(&mut self, symbol_id: u32, symbol_code_len: u32) -> anyhow::Result<()> {
+        // Initialize PREV to 1 (leading 1 bit per spec)
+        let mut prev: usize = 1;
+        
+        // Encode each bit from most significant to least significant
+        for i in (0..symbol_code_len).rev() {
+            let bit = ((symbol_id >> i) & 1) != 0;
+            
+            // Context is PREV (which includes the leading 1 and all previously encoded bits)
+            // The rightmost (SBSYMCODELEN+1) bits of PREV are used
+            // Since we have at most symbol_code_len bits + leading 1, this is at most 2^(symbol_code_len+1)-1
+            // But the spec says we need 2^SBSYMCODELEN contexts, so we use the full PREV value
+            let ctx_idx = prev & ((1 << (symbol_code_len + 1)) - 1);
+            let ctx_idx = ctx_idx.min(511); // Limit to array bounds
+            let state_idx = self.iaid_ctx[ctx_idx];
+            self.encode_bit(state_idx, bit);
+            
+            // Update PREV: shift left and add new bit (keep the leading 1)
+            prev = (prev << 1) | (bit as usize);
+        }
+        
+        Ok(())
+    }
+
     /// Encodes an integer using the specified procedure.
     pub fn encode_integer(&mut self, proc: IntProc, value: i32) -> anyhow::Result<()> {
         if !(-2_000_000_000..=2_000_000_000).contains(&value) {

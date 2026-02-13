@@ -1,6 +1,6 @@
 [package]
 name = "Legencode"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "A unified image encoding crate for JPEG, JP2, JBIG2, and CCITT4"
 license = "MIT"

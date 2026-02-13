@@ -1,39 +1,37 @@
 // linearize.rs
-use image::open;
 use ndarray::Array3;
-use palette::{IntoColor, LinSrgb, SrgbLuma};
 use rayon::prelude::*;
-// use std::cmp::{max, min}; // Unused imports
 use std::error::Error;
 
-// Use lazy_static to initialize the LUT at runtime
-lazy_static::lazy_static! {
-    static ref SRGB_TO_LINEAR: [f32; 256] = {
-        let mut table = [0f32; 256];
-        for (i, val) in table.iter_mut().enumerate() {
-            let x = i as f32 / 255.0;
-            *val = if x <= 0.04045 {
-                x / 12.92
-            } else {
-                ((x + 0.055) / 1.055).powf(2.4)
-            };
-        }
-        table
-    };
-    static ref LINEAR_TO_SRGB: [u8; 1025] = {
-        let mut table = [0u8; 1025];
-        for i in 0..1025 {
-            let x = (i as f32) / 1024.0;
-            let y = if x <= 0.0031308 {
-                x * 12.92
-            } else {
-                1.055 * x.powf(1.0 / 2.4) - 0.055
-            };
-            table[i] = (y * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-        }
-        table
-    };
-}
+// Use once_cell to initialize the LUT at runtime
+use once_cell::sync::Lazy;
+
+static SRGB_TO_LINEAR: Lazy<[f32; 256]> = Lazy::new(|| {
+    let mut table = [0f32; 256];
+    for (i, val) in table.iter_mut().enumerate() {
+        let x = i as f32 / 255.0;
+        *val = if x <= 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        };
+    }
+    table
+});
+
+static LINEAR_TO_SRGB: Lazy<[u8; 1025]> = Lazy::new(|| {
+    let mut table = [0u8; 1025];
+    for i in 0..1025 {
+        let x = (i as f32) / 1024.0;
+        let y = if x <= 0.0031308 {
+            x * 12.92
+        } else {
+            1.055 * x.powf(1.0 / 2.4) - 0.055
+        };
+        table[i] = (y * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+    }
+    table
+});
 
 // Convert sRGB value to linear RGB (LUT version)
 #[inline(always)]
@@ -89,10 +87,10 @@ pub fn load_and_linearize<'a>(
 
     // Load or prepare RGB data
     let (rgb_bytes, actual_width, actual_height) = match input {
-        LinearizeInput::Path(path) => {
-            let img = open(path)?.to_rgb8();
-            let (w, h) = img.dimensions();
-            (img.into_raw(), w as usize, h as usize)
+        LinearizeInput::Path(_path) => {
+            // Path loading removed with image crate dependency
+            // For path-based loading, use external tools or pass bytes directly
+            return Err("Path-based image loading not supported. Use LinearizeInput::Bytes.".into());
         }
         LinearizeInput::Bytes(bytes) => {
             if width == 0 || height == 0 || bytes.len() != width * height * 3 {
@@ -130,6 +128,7 @@ impl<'a> From<&'a [u8]> for LinearizeInput<'a> {
 }
 
 /// Convert linearized RGB (0.0-1.0 range) to grayscale (8-bit) using parallel processing
+/// Uses BT.709 luminance coefficients: Y = 0.2126*R + 0.7152*G + 0.0722*B
 pub fn linearized_rgb_to_grayscale(linear_rgb: &[f32], gray: &mut [u8]) {
     assert!(
         linear_rgb.len() == gray.len() * 3,
@@ -137,18 +136,15 @@ pub fn linearized_rgb_to_grayscale(linear_rgb: &[f32], gray: &mut [u8]) {
     );
 
     gray.par_iter_mut().enumerate().for_each(|(i, chunk)| {
-        // Create linear RGB color (D65 white point is implicit in Srgb<Linear>)
-        let rgb = LinSrgb::new(
-            linear_rgb[3 * i].clamp(0.0, 1.0),
-            linear_rgb[3 * i + 1].clamp(0.0, 1.0),
-            linear_rgb[3 * i + 2].clamp(0.0, 1.0),
-        );
-
-        // Convert to Luma (grayscale) using BT.709 luminance (D65-based)
-        let luma: SrgbLuma = rgb.into_color();
-
-        // Extract luminance and scale to [0, 255]
-        *chunk = (luma.luma * 255.0).clamp(0.0, 255.0) as u8;
+        let r = linear_rgb[3 * i].clamp(0.0, 1.0);
+        let g = linear_rgb[3 * i + 1].clamp(0.0, 1.0);
+        let b = linear_rgb[3 * i + 2].clamp(0.0, 1.0);
+        
+        // BT.709 luminance formula for linear RGB
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        
+        // Convert back to sRGB gamma space for grayscale output
+        *chunk = linear_to_srgb(luma);
     });
 }
 

@@ -1,0 +1,12 @@
+[package]
+name = "jbig2h2-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+bitvec = "1.0"
+lazy_static = "1.4.0"
+ndarray = "0.15"
+once_cell = "1.19"
+xxhash-rust = { version = "0.8.10", features = ["xxh3"] }

@@ -1,9 +1,9 @@
 //! Pure-CPU document binarization module in Rust
 //! Replicates OpenCV Sauvola-based precision binarization and PBM encoding
 
+use crate::image_types::{GrayImage, GrayPixel};
 use crate::types::BinarizationOptions;
 use anyhow::{anyhow, Result};
-use image::{GrayImage, Luma};
 use ndarray::Array4;
 use ort::execution_providers::DirectMLExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -224,7 +224,7 @@ impl HeavySauvolaProcessor {
                 } else {
                     0u8
                 };
-                mask.put_pixel(x as u32, y as u32, Luma([pixel_value]));
+                mask.put_pixel(x as u32, y as u32, GrayPixel::new(pixel_value));
             }
         }
 
@@ -829,13 +829,13 @@ fn process_in_patches(
                     let final_y = y + py;
                     let weight = 1.0; // Simple average for now, can be improved with blending
 
-                    let old_pixel = final_image.get_pixel(final_x, final_y).0[0] as f32;
-                    let new_pixel = patch_result.get_pixel(px, py).0[0] as f32;
+                    let old_pixel = final_image.get_pixel(final_x, final_y).y as f32;
+                    let new_pixel = patch_result.get_pixel(px, py).y as f32;
                     let old_weight = weight_map[(final_y as usize * width) + final_x as usize];
 
                     let blended_pixel =
                         ((old_pixel * old_weight) + (new_pixel * weight)) / (old_weight + weight);
-                    final_image.put_pixel(final_x, final_y, Luma([blended_pixel as u8]));
+                    final_image.put_pixel(final_x, final_y, GrayPixel::new(blended_pixel as u8));
                     weight_map[(final_y as usize * width) + final_x as usize] += weight;
                 }
             }

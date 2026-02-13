@@ -7,7 +7,6 @@ use jbig2enc_rust::jbig2pdf;
 use jbig2enc_rust::jbig2pdf::{Jbig2Input, Jbig2Roi};
 use jbig2enc_rust::jbig2structs::Jbig2Config;
 use jbig2enc_rust::jbig2sym::array_to_bitimage;
-use jbig2enc_rust::{encode_rois, Jbig2Context};
 use log::info;
 use log::LevelFilter;
 use ndarray::Array2;
@@ -175,10 +174,9 @@ fn main() -> Result<()> {
         info!("Finalizing JBIG2 encoding...");
         encoder.flush()?
     } else {
-        info!("Standalone mode: Using Jbig2Encoder to produce full JBIG2 file.");
-        let mut encoder = Jbig2Encoder::new(&config);
-        encoder.add_page(&image_array)?;
-        encoder.flush()?
+        info!("Standalone mode: Using encode_generic_region to produce full JBIG2 file.");
+        let bit_image = array_to_bitimage(&image_array);
+        encode_generic_region(&bit_image, &config)?
     };
 
     // 5. Write the output file
