@@ -131,7 +131,6 @@ pub async fn run_cli_three_line(rx: flume::Receiver<crate::progress::ProgressUpd
                     crate::progress::ProcessingStatus::MarginAnalysisSummary { .. } |
                     crate::progress::ProcessingStatus::PdfAppend { .. } |
                     crate::progress::ProcessingStatus::PdfAppendMargin { .. } |
-                    crate::progress::ProcessingStatus::DjvuBundling { .. } |
                     crate::progress::ProcessingStatus::ExternalToolLine { .. } => {
                         is_significant = true;
                     }

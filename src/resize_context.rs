@@ -13,7 +13,7 @@
 //!   * Deterministic, side-effect free (except optional logging via dbglog!).
 //!   * Explicit resize policy enum so changes are compile-time visible.
 
-use crate::image_types::{Rgb, RgbImage};
+use image::{Rgb, RgbImage};
 use anyhow::{Result, anyhow};
 use crate::resize::{ResizeMethod, ResizeParams};
 

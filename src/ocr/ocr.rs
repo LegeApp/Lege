@@ -203,10 +203,16 @@ pub async fn perform_region_based_ocr(
 ) -> Result<String> {
     let mut tasks = Vec::new();
     let classifier = crate::types::LabelClassifier::default();
-    for det in detections
+    let text_regions: Vec<_> = detections
         .iter()
         .filter(|d| classifier.should_process_with_ocr(d))
-    {
+        .collect();
+    
+    #[cfg(feature = "debug-logging")]
+    println!("[perform_region_based_ocr] {} total detections, {} text regions for OCR", 
+        detections.len(), text_regions.len());
+    
+    for det in text_regions {
         let bbox = det.bbox;
         let (region_data, region_w, region_h) =
             extract_region_from_image(binarized, page_width, page_height, bbox)?;
@@ -219,28 +225,52 @@ pub async fn perform_region_based_ocr(
     }
 
     let mut stitched = String::new();
+    let mut regions_with_text = 0;
     for res in futures::future::join_all(tasks).await {
         if let Ok((Some(hocr), bbox)) = res {
+            #[cfg(feature = "debug-logging")]
+            println!("[perform_region_based_ocr] Region {:?}: HOCR {} chars", bbox, hocr.len());
             let body = strip_hocr_to_body(&hocr);
+            #[cfg(feature = "debug-logging")]
+            println!("[perform_region_based_ocr] After strip_hocr_to_body: {} chars", body.len());
             let adjusted =
                 adjust_hocr_offsets(&body, bbox[0].round() as i32, bbox[1].round() as i32);
+            #[cfg(feature = "debug-logging")]
+            println!("[perform_region_based_ocr] After adjust_hocr_offsets: {} chars", adjusted.len());
+            if !adjusted.trim().is_empty() {
+                regions_with_text += 1;
+            }
             stitched.push_str(&adjusted);
         }
     }
+    
+    #[cfg(feature = "debug-logging")]
+    println!("[perform_region_based_ocr] Stitched result: {} chars from {} regions with text", 
+        stitched.len(), regions_with_text);
+    
     if stitched.trim().is_empty() {
         // Fallback: if region-based OCR produced no text, try tiling-based OCR,
         // and finally full-page OCR to ensure some text layer is generated.
+        #[cfg(feature = "debug-logging")]
+        println!("[perform_region_based_ocr] Stitched is empty, trying tiling fallback...");
         if let Ok(hocr_tiles) = perform_tiling_based_ocr(binarized, page_width, page_height).await {
             if !strip_hocr_to_body(&hocr_tiles).trim().is_empty() {
                 return Ok(hocr_tiles);
             }
         }
+        #[cfg(feature = "debug-logging")]
+        println!("[perform_region_based_ocr] Tiling fallback empty, trying full-page OCR...");
         if let Ok(hocr_full) = perform_ocr_on_binarized(binarized, page_width, page_height).await {
             let body = strip_hocr_to_body(&hocr_full);
+            #[cfg(feature = "debug-logging")]
+            println!("[perform_region_based_ocr] Full-page OCR body: {} chars", body.len());
             return Ok(finalize_hocr(&body, page_width, page_height));
         }
     }
-    Ok(finalize_hocr(&stitched, page_width, page_height))
+    let result = finalize_hocr(&stitched, page_width, page_height);
+    #[cfg(feature = "debug-logging")]
+    println!("[perform_region_based_ocr] Final HOCR: {} chars", result.len());
+    Ok(result)
 }
 
 /// Slices the page into overlapping horizontal tiles and runs OCR on each

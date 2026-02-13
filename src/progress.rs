@@ -31,7 +31,6 @@ pub enum ProcessingStatus {
     PdfAppend { current: usize, total: usize },
     /// Same as PdfAppend but keeps the header stable for Margin Mode to avoid flicker
     PdfAppendMargin { current: usize, total: usize },
-    DjvuBundling { current: usize, total: usize },
     ExternalToolLine { line: String },
 
     // --- Progress variants for different modes ---
@@ -134,14 +133,6 @@ impl ProcessingStatus {
                 "[Margin Mode]".to_string(),
                 String::new(),  // Removed per-page "Encoding complete" message
                 String::new(),  // Removed per-page "✓ Page X of Y" message
-            ),
-            Self::DjvuBundling { current, total } => (
-                "[Finalizing DjVu]".to_string(),
-                "Bundling pages...".to_string(),
-                {
-                    let total_val = (*total).max(1);
-                    format!("Adding page {} of {}", current, total_val)
-                },
             ),
             Self::ExternalToolLine { line } => ("[External]".to_string(), line.clone(), String::new()),
             Self::LayoutProgress { rendered, detected, encoded, deskewed, total, enable_layout_detection: _, enable_deskew, eta: _ } => {
@@ -329,21 +320,13 @@ impl ProcessingStatus {
                 "Margin Analysis: complete".to_string(),
                 summary.clone(),
             ),
-            // PdfAppend and PdfAppendMargin: These "page completed" messages are for CLI only.
-            // In the GUI, they cause flickering because they compete with the per-page progress
-            // updates (render/inference/encoding). Return empty strings to suppress them in GUI.
+            // PdfAppend and PdfAppendMargin: These "page completed" messages are
+            // suppressed to avoid flickering and align with the 3-part progress display pattern
+            // (render/inference/encoding). Return empty strings to suppress them.
             Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => (
                 String::new(),
                 String::new(),
                 String::new(),
-            ),
-            Self::DjvuBundling { current, total } => (
-                "[Finalizing DjVu]".to_string(),
-                "Bundling pages...".to_string(),
-                {
-                    let total_val = (*total).max(1);
-                    format!("Adding page {} of {}", current, total_val)
-                },
             ),
             Self::ExternalToolLine { line } => ("[External]".to_string(), line.clone(), String::new()),
             Self::LayoutProgress { rendered, detected, encoded, deskewed, total, enable_layout_detection: _, enable_deskew, eta: _ } => {
