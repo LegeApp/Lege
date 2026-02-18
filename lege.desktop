@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Lege
+Comment=Document processing application
+Exec=lege-gui
+TryExec=lege-gui
+Icon=lege
+Type=Application
+Categories=Office;Graphics;
+Terminal=false
+StartupNotify=true
