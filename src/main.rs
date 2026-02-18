@@ -379,6 +379,26 @@ fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
         }));
     }
 
+    // Allow "height width" input for disproportionate custom sizing in interactive CLI,
+    // e.g. "1600 1200" => height 1600, width 1200.
+    let whitespace_parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if whitespace_parts.len() == 2 {
+        let height: u32 = whitespace_parts[0]
+            .parse()
+            .map_err(|_| anyhow!("Invalid height in target specification: {}", whitespace_parts[0]))?;
+        let width: u32 = whitespace_parts[1]
+            .parse()
+            .map_err(|_| anyhow!("Invalid width in target specification: {}", whitespace_parts[1]))?;
+        if width == 0 || height == 0 {
+            bail!("Target dimensions must be greater than zero");
+        }
+        return Ok(Some(TargetSelection {
+            width: Some(width),
+            height,
+            profile_label: None,
+        }));
+    }
+
     let normalized = trimmed.replace('×', "x").replace('X', "x");
     if let Some((w_part, h_part)) = normalized.split_once('x') {
         let _width: u32 = w_part
@@ -1435,7 +1455,7 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 COLORS.prompt, idx, COLORS.reset, profile.name, profile.width, profile.height
             );
         }
-        println!("{}Or enter:{} custom height (e.g., 1600) | WxH (e.g., 1440x1920) | blank for default", COLORS.highlight, COLORS.reset);
+        println!("{}Or enter:{} custom height (e.g., 1600) | WxH (e.g., 1440x1920) | H W (e.g., 1600 1200) | blank for default", COLORS.highlight, COLORS.reset);
         print!("{}> {}", COLORS.prompt, COLORS.reset);
         io::stdout().flush()?;
 
@@ -1464,8 +1484,9 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
             {
                 Some(profile.name.to_string())
             } else {
-                println!("{}Invalid preset selection '{}'. Try again.{}", COLORS.highlight, input, COLORS.reset);
-                continue;
+                // If the numeric input is not a preset index, treat it as a custom height target.
+                // This keeps inputs like "1600" working in interactive mode.
+                Some(input.to_string())
             }
         } else {
             let slug = slugify_profile_name(input);

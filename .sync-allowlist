@@ -1,0 +1,60 @@
+# Approved sync list: only these paths are staged by scripts/stage-approved-sync.sh
+# Use git pathspec syntax. Prefix recursive globs with ':(glob)'.
+
+# Root project files
+Cargo.toml
+Cargo.lock
+build.rs
+README.md
+LICENSE
+macos-Cargo.toml
+macos-engine.rs
+
+# Build/release scripts
+build-all.ps1
+build-macos2.sh
+docker-build-macos.sh
+win.sh
+release-all.py
+clean-preserve-git.sh
+scripts/stage-approved-sync.sh
+.sync-allowlist
+
+# Main app
+:(glob)src/**
+:(glob)docs/**
+:(glob)assets/**
+
+# Workspace crates
+Legencode/Cargo.toml
+Legencode/README.md
+:(glob)Legencode/src/**
+:(glob)Legencode/examples/**
+:(glob)Legencode/tests/**
+
+Legencode/src/jbig2enc-rust/Cargo.toml
+:(glob)Legencode/src/jbig2enc-rust/src/**
+:(glob)Legencode/src/jbig2enc-rust/tests/**
+
+Legencode/src/TooJpeg-rust/Cargo.toml
+:(glob)Legencode/src/TooJpeg-rust/src/**
+
+# Native DjVu encoder crate
+:(glob)DJVULibRust/src/**
+:(glob)DJVULibRust/cargo-checker/**
+DJVULibRust/Cargo.lock
+
+# GUI workspace member
+GUI/Dioxus/Cargo.toml
+GUI/Dioxus/Dioxus.toml
+GUI/Dioxus/build.rs
+:(glob)GUI/Dioxus/src/**
+:(glob)GUI/Dioxus/assets/**
+
+# Local ORT fork (workspace dependency)
+ort/Cargo.toml
+:(glob)ort/src/**
+:(glob)ort/ort-sys/**
+
+# Local windows-rs fork (workspace dependency)
+:(glob)windows-rs-71/crates/libs/**
