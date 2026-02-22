@@ -1,0 +1,11 @@
+# Build artifacts
+/target/
+
+# Local scratch/dev outputs
+*.djvu
+*.pbm
+*.jpg
+*.jpeg
+
+# Local helper workspace
+/cargo-checker/target/
