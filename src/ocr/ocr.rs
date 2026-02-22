@@ -1,5 +1,6 @@
-﻿use anyhow::Result;
+use anyhow::Result;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use tokio::sync::Semaphore;
 
 /// Limit concurrent OCR operations to avoid WinRT memory pressure
@@ -116,68 +117,44 @@ fn strip_hocr_to_body(hocr: &str) -> String {
 
 /// Adjusts bbox coordinates inside title="bbox x1 y1 x2 y2" by offsets
 fn adjust_hocr_offsets(hocr_body: &str, dx: i32, dy: i32) -> String {
-    let mut out = String::with_capacity(hocr_body.len());
-    let bytes = hocr_body.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if i + 12 < bytes.len() && &bytes[i..i + 12] == b"title=\"bbox " {
-            out.push_str("title=\"bbox ");
-            i += 12;
-            // parse four integers until '"'
-            let mut nums = [0i32; 4];
-            let mut nidx = 0usize;
-            let mut num_buf = String::new();
-            while i < bytes.len() && nidx < 4 {
-                let c = bytes[i] as char;
-                if c.is_ascii_digit() || c == '-' {
-                    num_buf.push(c);
-                    i += 1;
-                    continue;
-                }
-                if c.is_ascii_whitespace() {
-                    if !num_buf.is_empty() {
-                        if let Ok(v) = num_buf.parse::<i32>() {
-                            nums[nidx] = v;
-                        }
-                        nidx += 1;
-                        num_buf.clear();
-                    }
-                    out.push(' ');
-                    i += 1;
-                    continue;
-                }
-                if c == '"' {
-                    if !num_buf.is_empty() && nidx < 4 {
-                        if let Ok(v) = num_buf.parse::<i32>() {
-                            nums[nidx] = v;
-                        }
-                        nidx += 1;
-                        num_buf.clear();
-                    }
-                    // apply offsets
-                    if nidx == 4 {
-                        nums[0] += dx;
-                        nums[1] += dy;
-                        nums[2] += dx;
-                        nums[3] += dy;
-                    }
-                    out.push_str(&format!(
-                        "{} {} {} {}\"",
-                        nums[0], nums[1], nums[2], nums[3]
-                    ));
-                    i += 1; // skip '"'
-                    break;
-                }
-                // unexpected char; write and advance
-                out.push(c);
-                i += 1;
+    static BBOX_TITLE_DQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"title="bbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)([^"]*)""#)
+            .expect("valid bbox title regex (double quote)")
+    });
+    static BBOX_TITLE_SQ_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"title='bbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)([^']*)'"#)
+            .expect("valid bbox title regex (single quote)")
+    });
+
+    fn replace_bbox_titles(input: &str, re: &Regex, quote: &str, dx: i32, dy: i32) -> String {
+        re.replace_all(input, |caps: &regex::Captures| {
+            let x1 = caps.get(1).and_then(|m| m.as_str().parse::<i32>().ok());
+            let y1 = caps.get(2).and_then(|m| m.as_str().parse::<i32>().ok());
+            let x2 = caps.get(3).and_then(|m| m.as_str().parse::<i32>().ok());
+            let y2 = caps.get(4).and_then(|m| m.as_str().parse::<i32>().ok());
+            let tail = caps.get(5).map_or("", |m| m.as_str());
+
+            match (x1, y1, x2, y2) {
+                (Some(x1), Some(y1), Some(x2), Some(y2)) => format!(
+                    "title={}bbox {} {} {} {}{}{}",
+                    quote,
+                    x1 + dx,
+                    y1 + dy,
+                    x2 + dx,
+                    y2 + dy,
+                    tail,
+                    quote
+                ),
+                _ => caps
+                    .get(0)
+                    .map_or_else(String::new, |m| m.as_str().to_string()),
             }
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
-        }
+        })
+        .into_owned()
     }
-    out
+
+    let adjusted_dq = replace_bbox_titles(hocr_body, &BBOX_TITLE_DQ_RE, "\"", dx, dy);
+    replace_bbox_titles(&adjusted_dq, &BBOX_TITLE_SQ_RE, "'", dx, dy)
 }
 
 fn finalize_hocr(body: &str, width: usize, height: usize) -> String {
@@ -193,7 +170,6 @@ fn finalize_hocr(body: &str, width: usize, height: usize) -> String {
     )
 }
 
-
 /// Runs OCR on detected text regions and stitches results into a page HOCR
 pub async fn perform_region_based_ocr(
     binarized: &[u8],
@@ -207,11 +183,14 @@ pub async fn perform_region_based_ocr(
         .iter()
         .filter(|d| classifier.should_process_with_ocr(d))
         .collect();
-    
+
     #[cfg(feature = "debug-logging")]
-    println!("[perform_region_based_ocr] {} total detections, {} text regions for OCR", 
-        detections.len(), text_regions.len());
-    
+    println!(
+        "[perform_region_based_ocr] {} total detections, {} text regions for OCR",
+        detections.len(),
+        text_regions.len()
+    );
+
     for det in text_regions {
         let bbox = det.bbox;
         let (region_data, region_w, region_h) =
@@ -229,25 +208,38 @@ pub async fn perform_region_based_ocr(
     for res in futures::future::join_all(tasks).await {
         if let Ok((Some(hocr), bbox)) = res {
             #[cfg(feature = "debug-logging")]
-            println!("[perform_region_based_ocr] Region {:?}: HOCR {} chars", bbox, hocr.len());
+            println!(
+                "[perform_region_based_ocr] Region {:?}: HOCR {} chars",
+                bbox,
+                hocr.len()
+            );
             let body = strip_hocr_to_body(&hocr);
             #[cfg(feature = "debug-logging")]
-            println!("[perform_region_based_ocr] After strip_hocr_to_body: {} chars", body.len());
+            println!(
+                "[perform_region_based_ocr] After strip_hocr_to_body: {} chars",
+                body.len()
+            );
             let adjusted =
                 adjust_hocr_offsets(&body, bbox[0].round() as i32, bbox[1].round() as i32);
             #[cfg(feature = "debug-logging")]
-            println!("[perform_region_based_ocr] After adjust_hocr_offsets: {} chars", adjusted.len());
+            println!(
+                "[perform_region_based_ocr] After adjust_hocr_offsets: {} chars",
+                adjusted.len()
+            );
             if !adjusted.trim().is_empty() {
                 regions_with_text += 1;
             }
             stitched.push_str(&adjusted);
         }
     }
-    
+
     #[cfg(feature = "debug-logging")]
-    println!("[perform_region_based_ocr] Stitched result: {} chars from {} regions with text", 
-        stitched.len(), regions_with_text);
-    
+    println!(
+        "[perform_region_based_ocr] Stitched result: {} chars from {} regions with text",
+        stitched.len(),
+        regions_with_text
+    );
+
     if stitched.trim().is_empty() {
         // Fallback: if region-based OCR produced no text, try tiling-based OCR,
         // and finally full-page OCR to ensure some text layer is generated.
@@ -263,13 +255,19 @@ pub async fn perform_region_based_ocr(
         if let Ok(hocr_full) = perform_ocr_on_binarized(binarized, page_width, page_height).await {
             let body = strip_hocr_to_body(&hocr_full);
             #[cfg(feature = "debug-logging")]
-            println!("[perform_region_based_ocr] Full-page OCR body: {} chars", body.len());
+            println!(
+                "[perform_region_based_ocr] Full-page OCR body: {} chars",
+                body.len()
+            );
             return Ok(finalize_hocr(&body, page_width, page_height));
         }
     }
     let result = finalize_hocr(&stitched, page_width, page_height);
     #[cfg(feature = "debug-logging")]
-    println!("[perform_region_based_ocr] Final HOCR: {} chars", result.len());
+    println!(
+        "[perform_region_based_ocr] Final HOCR: {} chars",
+        result.len()
+    );
     Ok(result)
 }
 

@@ -1,7 +1,6 @@
 use super::OcrResult;
 use crate::resize::{ResizeMethod, ResizeParams};
-use image::{DynamicImage, GrayImage, RgbImage};
-use tesseract::{Tesseract, PageSegMode, OcrEngineMode};
+use tesseract::{OcrEngineMode, PageSegMode, Tesseract};
 
 pub fn run_tesseract(
     data: &[u8],
@@ -61,14 +60,18 @@ pub fn run_tesseract(
         (width, height, data.to_vec())
     };
 
-    // Validate scaled data is not all zeros or all same value (likely corrupted)
+    // Skip OCR for uniform images (all white/all black). This prevents noisy
+    // Tesseract "Empty page" output and avoids wasted OCR work.
     if scaled_data.iter().all(|&b| b == scaled_data[0]) {
         #[cfg(feature = "debug-logging")]
         println!(
-            "[DEBUG OCR] Warning: Image data appears uniform (value: {}), OCR may not find text",
+            "[DEBUG OCR] Uniform image data (value: {}), skipping OCR",
             scaled_data[0]
         );
-        // Continue anyway - user might have intentionally blank image
+        return Some(OcrResult {
+            hocr: String::new(),
+            plain_text: String::new(),
+        });
     }
 
     // Configure Tesseract with builder pattern
@@ -76,12 +79,33 @@ pub fn run_tesseract(
     let bytes_per_pixel = if is_binary { 1 } else { 3 };
     let bytes_per_line = final_width * bytes_per_pixel;
 
-    let mut tess = match Tesseract::new_with_oem(None, Some("eng"), OcrEngineMode::LstmOnly) {
-        Ok(t) => t,
-        Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to initialize Tesseract: {:?}", e);
-            return None;
+    let mut tess = if let Some(tessdata_path) = super::get_tessdata_path() {
+        match Tesseract::new_with_oem(Some(&tessdata_path), Some("eng"), OcrEngineMode::LstmOnly) {
+            Ok(t) => t,
+            Err(path_err) => {
+                #[cfg(feature = "debug-logging")]
+                println!(
+                    "[DEBUG OCR] Failed to initialize Tesseract with tessdata path '{}': {:?}. Falling back to default search path.",
+                    tessdata_path, path_err
+                );
+                match Tesseract::new_with_oem(None, Some("eng"), OcrEngineMode::LstmOnly) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        #[cfg(feature = "debug-logging")]
+                        println!("[DEBUG OCR] Failed to initialize Tesseract: {:?}", e);
+                        return None;
+                    }
+                }
+            }
+        }
+    } else {
+        match Tesseract::new_with_oem(None, Some("eng"), OcrEngineMode::LstmOnly) {
+            Ok(t) => t,
+            Err(e) => {
+                #[cfg(feature = "debug-logging")]
+                println!("[DEBUG OCR] Failed to initialize Tesseract: {:?}", e);
+                return None;
+            }
         }
     };
 
@@ -97,6 +121,24 @@ pub fn run_tesseract(
         Err(e) => {
             #[cfg(feature = "debug-logging")]
             println!("[DEBUG OCR] Failed to set image frame: {:?}", e);
+            return None;
+        }
+    };
+
+    // Prevent DPI-estimation chatter in Tesseract ("Estimating resolution as ...")
+    // by always providing a concrete source resolution.
+    tess = tess.set_source_resolution(300);
+
+    // Suppress internal Tesseract chatter on stderr/stdout (e.g. diacritic/empty-page notices).
+    #[cfg(windows)]
+    let null_device = "NUL";
+    #[cfg(not(windows))]
+    let null_device = "/dev/null";
+    tess = match tess.set_variable("debug_file", null_device) {
+        Ok(t) => t,
+        Err(e) => {
+            #[cfg(feature = "debug-logging")]
+            println!("[DEBUG OCR] Failed to set tesseract debug_file: {:?}", e);
             return None;
         }
     };
@@ -182,14 +224,7 @@ fn downscale_image_lanczos3(
         swap_rb: false,
     };
 
-    crate::resize::resize_bytes(
-        data,
-        src_width,
-        src_height,
-        &params,
-        channels as u32,
-    )
-    .ok()
+    crate::resize::resize_bytes(data, src_width, src_height, &params, channels as u32).ok()
 }
 
 /// Scale HOCR coordinates back to original image dimensions
