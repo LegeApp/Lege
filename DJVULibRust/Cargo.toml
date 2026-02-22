@@ -1,0 +1,33 @@
+[package]
+name = "djvu_encoder"
+version = "0.8.0"
+edition = "2024"
+autotests = true
+autoexamples = true
+
+[features]
+portable_simd = []  # Enable portable SIMD features
+asm_zp = []        # Use assembly ZP arithmetic coder
+dev_asm_cmp = []   # Enable assembly vs Rust ZP comparison tests
+rayon = ["dep:rayon"]
+iw44-trace = []    # Enable IW44 debug tracing (verbose)
+
+[dependencies]
+byteorder = "1.5"
+thiserror = "1.0"
+bytemuck = { version = "1.25", features = ["derive"] }
+log = "0.4"
+bitvec = "1.0"
+rayon = { version = "1.11", optional = true }
+
+[dev-dependencies]
+tempfile = "3.24"
+chrono = "0.4"
+image = "0.25.9"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
