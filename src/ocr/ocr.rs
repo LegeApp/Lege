@@ -4,7 +4,38 @@ use regex::Regex;
 use tokio::sync::Semaphore;
 
 /// Limit concurrent OCR operations to avoid WinRT memory pressure
-pub static OCR_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(2));
+pub static OCR_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    #[cfg(target_os = "linux")]
+    let permits = cores.clamp(2, 8);
+    #[cfg(not(target_os = "linux"))]
+    let permits = 2;
+    Semaphore::new(permits)
+});
+
+/// For Tesseract, many tiny region OCR calls can be slower than tiled/full-page OCR
+/// due to setup overhead. Cap region fan-out to keep Linux throughput stable.
+const MAX_REGION_OCR_BOXES: usize = 12;
+
+pub fn should_use_region_ocr(
+    enable_layout_detection: bool,
+    detections: &[crate::engine::Detection],
+) -> bool {
+    if !enable_layout_detection || detections.is_empty() {
+        return false;
+    }
+
+    let classifier = crate::types::LabelClassifier::default();
+    let text_regions = detections
+        .iter()
+        .filter(|d| classifier.should_process_with_ocr(d))
+        .take(MAX_REGION_OCR_BOXES + 1)
+        .count();
+
+    text_regions > 0 && text_regions <= MAX_REGION_OCR_BOXES
+}
 
 /// Performs OCR on binarized image data
 pub async fn perform_ocr_on_binarized(

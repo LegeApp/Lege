@@ -795,7 +795,10 @@ async fn extract_djvu_text_layer(
     page_index: usize,
 ) -> Option<String> {
     if config.enable_ocr() {
-        let use_regions = config.enable_layout_detection() && !detections.is_empty();
+        let use_regions = crate::ocr::ocr::should_use_region_ocr(
+            config.enable_layout_detection(),
+            detections,
+        );
         #[cfg(feature = "debug-logging")]
         info_log!("[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}", 
             page_index, use_regions, detections.len());

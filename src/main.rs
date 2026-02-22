@@ -19,9 +19,9 @@ use version::display_version;
 // ============================================================================
 pub struct ColorConfig {
     // Interactive prompts
-    pub prompt: &'static str,           // Bright cyan for user input prompts
-    pub info: &'static str,             // Base prompt color for general info
-    pub highlight: &'static str,        // Base prompt color for emphasized text
+    pub prompt: &'static str,           // Prompt color (empty = terminal default)
+    pub info: &'static str,             // Info color (empty = terminal default)
+    pub highlight: &'static str,        // Highlight color (empty = terminal default)
     
     // Processing stages - subtle, muted colors for visual pleasure
     pub page_start: &'static str,       // Soft blue for page starting
@@ -42,9 +42,10 @@ pub struct ColorConfig {
 
 pub const COLORS: ColorConfig = ColorConfig {
     // Interactive prompts
-    prompt: "\x1b[96m",          // Bright cyan
-    info: "\x1b[96m",            // Bright cyan (same base prompt color)
-    highlight: "\x1b[96m",       // Bright cyan (same base prompt color)
+    // Keep prompt/info text uncolored so terminals choose their readable default.
+    prompt: "",
+    info: "",
+    highlight: "",
     
     // Processing stages - subtle palette
     page_start: "\x1b[94m",      // Bright blue (soft)
@@ -1928,6 +1929,7 @@ async fn process_single_file(
     // CLI always uses a line-by-line color stream. GUI has a separate renderer.
     let mut progress_error: Option<anyhow::Error> = None;
     let mut stage_snapshot = CliStageSnapshot::default();
+    let mut last_status_lines: Option<(String, String, String)> = None;
     loop {
         match receiver.recv_async().await {
             Ok(ProgressUpdate::Status {
@@ -1952,6 +1954,13 @@ async fn process_single_file(
                     continue;
                 }
                 let (l1, l2, l3) = status.to_cli_display_lines();
+                if last_status_lines
+                    .as_ref()
+                    .is_some_and(|(p1, p2, p3)| *p1 == l1 && *p2 == l2 && *p3 == l3)
+                {
+                    continue;
+                }
+                last_status_lines = Some((l1.clone(), l2.clone(), l3.clone()));
                 if !l1.is_empty() {
                     println!("{}", l1);
                 }
