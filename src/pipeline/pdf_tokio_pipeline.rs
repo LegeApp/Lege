@@ -13,28 +13,29 @@
 //!              └────────────────────────────────────────────────────────────
 //!                          Backpressure via bounded channels
 
-use crate::pipeline::config::{PipelineConfig, RenderedPageData, InferenceResult};
+use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::pipeline::{prepare_shared_deskew_engine};
-use crate::pipeline::policies::{RegionPolicy, MarginStandardizeAndCenter, LayoutRegions, NoLayoutFullPage};
+use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    wait_for_memory_relief,
-    should_treat_as_cover_page, build_hocr_from_pdf_text, encode_region_image, rounded_clamped_bbox,
-    spawn_pdf_writer_actor,
+    build_hocr_from_pdf_text, encode_region_image, rounded_clamped_bbox,
+    should_treat_as_cover_page, spawn_pdf_writer_actor, wait_for_memory_relief,
 };
-use crate::resize_context::{build_inference_image, InferenceResizeSpec};
+use crate::pipeline::policies::{
+    LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
+};
+use crate::pipeline::prepare_shared_deskew_engine;
 use crate::progress::ProgressTracker;
-use crate::margin::{PageMarginInput, DocumentMarginAnalysis};
-use crate::{info_log, warn_log, success_log};
+use crate::resize_context::{InferenceResizeSpec, build_inference_image};
+use crate::{info_log, success_log, warn_log};
 
+use Legencode::types::BinarizationOptions;
 use anyhow::{Result, anyhow};
+use futures::stream::{FuturesUnordered, StreamExt};
 use image::{Rgb, RgbImage};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
-use futures::stream::{FuturesUnordered, StreamExt};
-use Legencode::types::BinarizationOptions;
 
 //==============================================================================
 // Data Structures
@@ -77,8 +78,8 @@ struct PipelineConfig2 {
 impl Default for PipelineConfig2 {
     fn default() -> Self {
         Self {
-            render_buffer: 16,      // Allow render to get ahead
-            inference_buffer: 8,    // Buffer between inference and processing
+            render_buffer: 16,        // Allow render to get ahead
+            inference_buffer: 8,      // Buffer between inference and processing
             inference_concurrency: 2, // 2 concurrent inference (overlap preprocessing)
             process_concurrency: 4,   // 4 concurrent CPU workers
         }
@@ -102,7 +103,10 @@ async fn render_stage(
     total_pages: usize,
     layout_enabled: bool,
 ) -> Result<()> {
-    info_log!("[PDF-Parallel-Render] Starting render stage for {} pages", total_pages);
+    info_log!(
+        "[PDF-Parallel-Render] Starting render stage for {} pages",
+        total_pages
+    );
 
     for page_index in page_range {
         // Memory check - but don't over-check
@@ -121,17 +125,15 @@ async fn render_stage(
             .map_err(|e| anyhow!("Failed to render page {}: {}", page_index, e))?;
 
         // Convert to ImageBuffer
-        let mut rendered_image = RgbImage::from_raw(
-            rgb_page.width,
-            rgb_page.height,
-            rgb_page.data,
-        )
-        .ok_or_else(|| anyhow!(
-            "Failed to create ImageBuffer for page {} ({}x{})",
-            page_index,
-            rgb_page.width,
-            rgb_page.height
-        ))?;
+        let mut rendered_image = RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Failed to create ImageBuffer for page {} ({}x{})",
+                    page_index,
+                    rgb_page.width,
+                    rgb_page.height
+                )
+            })?;
 
         // Apply deskew if enabled
         if let Some(engine) = &deskew_engine {
@@ -141,7 +143,10 @@ async fn render_stage(
         }
 
         // Set standard dimensions from first page for margin processing
-        crate::pipeline::set_standard_dimensions_once(rendered_image.width(), rendered_image.height());
+        crate::pipeline::set_standard_dimensions_once(
+            rendered_image.width(),
+            rendered_image.height(),
+        );
 
         let high_res_arc = Arc::new(rendered_image);
 
@@ -173,11 +178,21 @@ async fn render_stage(
         // Update progress tracking
         let rendered_val = render_count.fetch_add(1, Ordering::Relaxed) + 1;
         // Deskew happens inline during rendering, so deskew count == render count when deskew is enabled
-        let deskewed_val = if deskew_engine.is_some() { rendered_val } else { 0 };
+        let deskewed_val = if deskew_engine.is_some() {
+            rendered_val
+        } else {
+            0
+        };
         if layout_enabled {
             let detected_val = detect_count.load(Ordering::Relaxed);
             let encoded_val = encode_count.load(Ordering::Relaxed);
-            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, deskewed_val, total_pages);
+            progress.publish_layout_progress(
+                rendered_val,
+                detected_val,
+                encoded_val,
+                deskewed_val,
+                total_pages,
+            );
         } else {
             progress.publish_no_layout_progress(rendered_val, deskewed_val, total_pages);
         }
@@ -210,7 +225,10 @@ async fn inference_stage_parallel(
     detection_cache: Arc<Vec<Vec<crate::engine::Detection>>>,
     analysis_width: u32,
 ) -> Result<()> {
-    info_log!("[PDF-Parallel-Infer] Starting inference stage with concurrency={}", concurrency);
+    info_log!(
+        "[PDF-Parallel-Infer] Starting inference stage with concurrency={}",
+        concurrency
+    );
 
     // Track in-flight inference tasks
     let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
@@ -309,8 +327,12 @@ async fn run_single_inference(
             }
 
             #[cfg(feature = "debug-logging")]
-            info_log!("Page {}: Reusing {} cached detections (scaled by {:.2}x)",
-                     page_index, scaled.len(), scale_factor);
+            info_log!(
+                "Page {}: Reusing {} cached detections (scaled by {:.2}x)",
+                page_index,
+                scaled.len(),
+                scale_factor
+            );
 
             scaled
         } else if let Some(handle) = &inference_handle {
@@ -375,7 +397,10 @@ async fn processing_stage_parallel(
     layout_enabled: bool,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
 ) -> Result<()> {
-    info_log!("[PDF-Parallel-Process] Starting processing stage with concurrency={}", concurrency);
+    info_log!(
+        "[PDF-Parallel-Process] Starting processing stage with concurrency={}",
+        concurrency
+    );
 
     let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
     let mut input_exhausted = false;
@@ -468,9 +493,9 @@ async fn process_single_page(
         margin_analysis,
     };
 
-    let cpu_result = tokio::task::spawn_blocking(move || {
-        process_page_cpu_work(input)
-    }).await.map_err(|e| anyhow!("CPU task panicked: {}", e))??;
+    let cpu_result = tokio::task::spawn_blocking(move || process_page_cpu_work(input))
+        .await
+        .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
 
     let PageProcessingOutput {
         adjusted_image,
@@ -504,11 +529,8 @@ async fn process_single_page(
 
     for region_result in region_processing_results {
         if let Some((encoded_data, format)) = region_result.encoded_data {
-            let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(
-                region_result.detection.bbox,
-                width as u32,
-                height as u32
-            );
+            let (ix1, iy1, ix2, iy2) =
+                rounded_clamped_bbox(region_result.detection.bbox, width as u32, height as u32);
             elements.push(crate::accumulator::ContentElement {
                 x: ix1 as f32,
                 y: iy1 as f32,
@@ -526,7 +548,15 @@ async fn process_single_page(
 
     // OCR or text extraction (can run concurrently with other pages)
     let hocr_text = if config.enable_ocr() {
-        perform_ocr(&binarized, width, height, &adjusted_detections, &config, page_index).await?
+        perform_ocr(
+            &binarized,
+            width,
+            height,
+            &adjusted_detections,
+            &config,
+            page_index,
+        )
+        .await?
     } else {
         extract_pdf_text(&pdf_renderer, page_index, &adjusted_image).await?
     };
@@ -608,20 +638,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // 1. Apply region policy OR document-wide margin analysis
     let (mut adjusted_image, mut adjusted_detections) = if let Some(analysis) = &margin_analysis {
         // Use document-wide margin analysis (2-pass mode)
-        apply_margin_analysis_to_page(
-            &rendered,
-            &inference_result,
-            &config,
-            analysis,
-            page_index,
-        )?
+        apply_margin_analysis_to_page(&rendered, &inference_result, &config, analysis, page_index)?
     } else {
         // Use per-page policy (1-pass mode)
-        apply_region_policy(
-            &rendered,
-            &inference_result,
-            &config,
-        )?
+        apply_region_policy(&rendered, &inference_result, &config)?
     };
 
     // 2. Resize to target height (CPU-heavy: Lanczos3 filtering)
@@ -630,7 +650,9 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         let current_h = adjusted_image.height();
         let target_h = config.target_height();
         let aspect_ratio = current_w as f32 / current_h as f32;
-        let target_w = config.target_width().unwrap_or_else(|| (target_h as f32 * aspect_ratio).round() as u32);
+        let target_w = config
+            .target_width()
+            .unwrap_or_else(|| (target_h as f32 * aspect_ratio).round() as u32);
 
         if target_w > 0 && target_h > 0 {
             // Scale detection bboxes
@@ -652,7 +674,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 border_value: 0.0,
                 swap_rb: false,
             };
-            match crate::resize::resize_bytes(adjusted_image.as_raw(), current_w, current_h, &params, 3) {
+            match crate::resize::resize_bytes(
+                adjusted_image.as_raw(),
+                current_w,
+                current_h,
+                &params,
+                3,
+            ) {
                 Ok(bytes) => {
                     if let Some(buf) = RgbImage::from_raw(target_w, target_h, bytes) {
                         adjusted_image = buf;
@@ -660,7 +688,12 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 }
                 Err(e) => {
                     // Fallback resize
-                    adjusted_image = image::imageops::resize(&adjusted_image, target_w, target_h, image::imageops::FilterType::Lanczos3);
+                    adjusted_image = image::imageops::resize(
+                        &adjusted_image,
+                        target_w,
+                        target_h,
+                        image::imageops::FilterType::Lanczos3,
+                    );
                 }
             }
         }
@@ -687,31 +720,29 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             })
             .collect()
     } else {
-        binarize_image(
-            &adjusted_image,
-            &config,
-            has_no_detections,
-        )
+        binarize_image(&adjusted_image, &config, has_no_detections)
     };
 
     let is_cover_page = should_treat_as_cover_page(page_index, &config);
 
     // 4. Handle cover page encoding (before processing regions since it modifies binarized)
-    let cover_encoded_data = if is_cover_page && *config.cover_format() != crate::types::CoverFormat::None {
-        // Use synchronous version for cover page encoding within the blocking task
-        let cover_result = encode_region_image_sync(
-            adjusted_image.as_raw(),
-            width as u32,
-            height as u32,
-            *config.cover_format(),
-            true
-        ).map_err(|e| anyhow!("Failed to encode cover image: {}", e))?;
+    let cover_encoded_data =
+        if is_cover_page && *config.cover_format() != crate::types::CoverFormat::None {
+            // Use synchronous version for cover page encoding within the blocking task
+            let cover_result = encode_region_image_sync(
+                adjusted_image.as_raw(),
+                width as u32,
+                height as u32,
+                *config.cover_format(),
+                true,
+            )
+            .map_err(|e| anyhow!("Failed to encode cover image: {}", e))?;
 
-        binarized.fill(1); // Fill binarized with white for cover pages
-        Some(cover_result)
-    } else {
-        None
-    };
+            binarized.fill(255); // Fill binarized with white for cover pages
+            Some(cover_result)
+        } else {
+            None
+        };
 
     // 5. Process all image regions (consolidate all region work into this single blocking call)
     let classifier = &crate::types::LABEL_CLASSIFIER;
@@ -723,14 +754,19 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
 
         // Check if the detection bbox is valid (not completely outside image bounds)
-        let (bbox_x1, bbox_y1, bbox_x2, bbox_y2) = rounded_clamped_bbox(det.bbox, width as u32, height as u32);
+        let (bbox_x1, bbox_y1, bbox_x2, bbox_y2) =
+            rounded_clamped_bbox(det.bbox, width as u32, height as u32);
 
         // Skip regions that are completely outside the new image bounds after margin correction
         if bbox_x2 <= bbox_x1 || bbox_y2 <= bbox_y1 {
             #[cfg(feature = "debug-logging")]
             crate::debug_println!(
                 "Skipping image region with invalid bounds after margin correction: ({}, {})-({}, {}) for original bbox {:?}",
-                bbox_x1, bbox_y1, bbox_x2, bbox_y2, det.bbox
+                bbox_x1,
+                bbox_y1,
+                bbox_x2,
+                bbox_y2,
+                det.bbox
             );
             continue;
         }
@@ -746,15 +782,16 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         };
 
         // CPU-heavy: Extract and process region
-        let (region_data, region_w, region_h) = Legencode::color::color_processing::process_image_region(
-            adjusted_image.as_raw(),
-            width as u32,
-            height as u32,
-            det.bbox,
-            should_dither,
-            config.text_format(),
-            false,
-        )?;
+        let (region_data, region_w, region_h) =
+            Legencode::color::color_processing::process_image_region(
+                adjusted_image.as_raw(),
+                width as u32,
+                height as u32,
+                det.bbox,
+                should_dither,
+                config.text_format(),
+                false,
+            )?;
 
         let mut processed_for_masking = false;
         let mut encoded_data = None;
@@ -779,18 +816,25 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             let pw = (ix2 - ix1) as f32;
             let ph = (iy2 - iy1) as f32;
 
-            Legencode::color::color_processing::mask_region(&mut binarized, width as u32, [px, py, px + pw, py + ph]);
+            Legencode::color::color_processing::mask_region(
+                &mut binarized,
+                width as u32,
+                [px, py, px + pw, py + ph],
+            );
             processed_for_masking = true;
 
             // For non-dithered regions that need overlay encoding
             if !should_dither {
-                encoded_data = Some(encode_region_image_sync(
-                    &region_data,
-                    region_w,
-                    region_h,
-                    *config.cover_format(),
-                    is_cover_page,
-                ).map_err(|e| anyhow!("Could not encode image region: {}", e))?);
+                encoded_data = Some(
+                    encode_region_image_sync(
+                        &region_data,
+                        region_w,
+                        region_h,
+                        *config.cover_format(),
+                        is_cover_page,
+                    )
+                    .map_err(|e| anyhow!("Could not encode image region: {}", e))?,
+                );
             }
         }
 
@@ -827,13 +871,18 @@ fn apply_margin_analysis_to_page(
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
-    use crate::resize_context::{InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page};
+    use crate::resize_context::{
+        InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page,
+    };
 
     // Remap detections to page space
     let mut dets = inf.detections.clone();
     let page_w = page.high_res_image.width();
     let page_h = page.high_res_image.height();
-    let spec = InferenceResizeSpec { target: cfg.inference_size(), ..Default::default() };
+    let spec = InferenceResizeSpec {
+        target: cfg.inference_size(),
+        ..Default::default()
+    };
     for d in dets.iter_mut() {
         if is_in_inference_space(&d.bbox, &spec) {
             d.bbox = map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
@@ -856,7 +905,9 @@ fn apply_margin_analysis_to_page(
     // For consistent cropping, use document-wide baseline consistently across all pages
     // - All pages use the same baseline to ensure consistency
     // - This prevents pages with equal margins from being processed differently
-    let bounds = if analysis.effective_margin_setting == crate::margin::MarginSettings::CropAndResize {
+    let bounds = if analysis.effective_margin_setting
+        == crate::margin::MarginSettings::CropAndResize
+    {
         // Calculate per-page bounds for content preservation but only use it to validate against baseline
         let page_bounds = if !dets.is_empty() {
             crate::margin::calculate_content_bounds(&dets, page_w, page_h, true)
@@ -874,10 +925,13 @@ fn apply_margin_analysis_to_page(
 
                 let exceeds_left = pb.min_x < scaled_baseline.min_x.saturating_sub(BOUND_TOLERANCE);
                 let exceeds_top = pb.min_y < scaled_baseline.min_y.saturating_sub(BOUND_TOLERANCE);
-                let exceeds_right = pb.max_x > scaled_baseline.max_x.saturating_add(BOUND_TOLERANCE);
-                let exceeds_bottom = pb.max_y > scaled_baseline.max_y.saturating_add(BOUND_TOLERANCE);
+                let exceeds_right =
+                    pb.max_x > scaled_baseline.max_x.saturating_add(BOUND_TOLERANCE);
+                let exceeds_bottom =
+                    pb.max_y > scaled_baseline.max_y.saturating_add(BOUND_TOLERANCE);
 
-                let final_bounds = if exceeds_left || exceeds_top || exceeds_right || exceeds_bottom {
+                let final_bounds = if exceeds_left || exceeds_top || exceeds_right || exceeds_bottom
+                {
                     // Expand baseline to accommodate content that genuinely exceeds it
                     crate::margin::ContentBounds {
                         min_x: pb.min_x.min(scaled_baseline.min_x),
@@ -894,17 +948,32 @@ fn apply_margin_analysis_to_page(
                 crate::debug_println!(
                     "CropAndResize bounds for page {}: scaled_baseline=({},{})-({},{}) per-page=({},{})-({},{}) final=({},{})-({},{})",
                     page_index,
-                    scaled_baseline.min_x, scaled_baseline.min_y, scaled_baseline.max_x, scaled_baseline.max_y,
-                    pb.min_x, pb.min_y, pb.max_x, pb.max_y,
-                    final_bounds.min_x, final_bounds.min_y, final_bounds.max_x, final_bounds.max_y
+                    scaled_baseline.min_x,
+                    scaled_baseline.min_y,
+                    scaled_baseline.max_x,
+                    scaled_baseline.max_y,
+                    pb.min_x,
+                    pb.min_y,
+                    pb.max_x,
+                    pb.max_y,
+                    final_bounds.min_x,
+                    final_bounds.min_y,
+                    final_bounds.max_x,
+                    final_bounds.max_y
                 );
 
                 Some(final_bounds)
             }
             None => {
                 #[cfg(feature = "debug-logging")]
-                crate::debug_println!("CropAndResize bounds for page {}: using scaled baseline only ({},{})-({},{})",
-                    page_index, scaled_baseline.min_x, scaled_baseline.min_y, scaled_baseline.max_x, scaled_baseline.max_y);
+                crate::debug_println!(
+                    "CropAndResize bounds for page {}: using scaled baseline only ({},{})-({},{})",
+                    page_index,
+                    scaled_baseline.min_x,
+                    scaled_baseline.min_y,
+                    scaled_baseline.max_x,
+                    scaled_baseline.max_y
+                );
                 Some(scaled_baseline)
             }
         }
@@ -914,12 +983,14 @@ fn apply_margin_analysis_to_page(
             crate::margin::calculate_content_bounds(&dets, page_w, page_h, true)
         } else if let Some(pd) = page_data {
             // CRITICAL: Also scale per-page cached bounds if using them
-            pd.content_bounds.map(|cb| cb.scale_to_resolution(
-                analysis.analysis_width,
-                analysis.analysis_height,
-                page_w,
-                page_h,
-            ))
+            pd.content_bounds.map(|cb| {
+                cb.scale_to_resolution(
+                    analysis.analysis_width,
+                    analysis.analysis_height,
+                    page_w,
+                    page_h,
+                )
+            })
         } else {
             crate::margin::compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
         }
@@ -985,7 +1056,8 @@ fn apply_margin_analysis_to_page(
                         #[cfg(feature = "debug-logging")]
                         crate::debug_println!(
                             "Discarding detection outside image bounds after transformation: page {}, bbox {:?}",
-                            page_index, det.bbox
+                            page_index,
+                            det.bbox
                         );
                     }
                 }
@@ -993,16 +1065,24 @@ fn apply_margin_analysis_to_page(
                 // Log margin correction for debugging if needed
                 #[cfg(feature = "debug-logging")]
                 if _margin_correction.scale_x != 0.0 || _margin_correction.scale_y != 0.0 {
-                    crate::debug_println!("Margin correction for page {}: offset=({}, {}), scale=({}, {})",
+                    crate::debug_println!(
+                        "Margin correction for page {}: offset=({}, {}), scale=({}, {})",
                         page_index,
-                        _margin_correction.offset_x, _margin_correction.offset_y,
-                        _margin_correction.scale_x, _margin_correction.scale_y);
+                        _margin_correction.offset_x,
+                        _margin_correction.offset_y,
+                        _margin_correction.scale_x,
+                        _margin_correction.scale_y
+                    );
                 }
 
                 return Ok((img, validated_detections));
             }
             Err(e) => {
-                warn_log!("Page {}: Failed to apply margin analysis: {}. Falling back to original.", page_index, e);
+                warn_log!(
+                    "Page {}: Failed to apply margin analysis: {}. Falling back to original.",
+                    page_index,
+                    e
+                );
             }
         }
     }
@@ -1018,9 +1098,7 @@ fn apply_region_policy(
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
     let policy: Arc<dyn RegionPolicy> = match config.margin_settings() {
         crate::margin::MarginSettings::StandardizeAndCenter
-        | crate::margin::MarginSettings::CropAndResize => {
-            Arc::new(MarginStandardizeAndCenter)
-        }
+        | crate::margin::MarginSettings::CropAndResize => Arc::new(MarginStandardizeAndCenter),
         crate::margin::MarginSettings::None => {
             if config.enable_layout_detection() {
                 Arc::new(LayoutRegions)
@@ -1034,11 +1112,7 @@ fn apply_region_policy(
 }
 
 /// Binarize image with special handling for blank pages in layout detection mode
-fn binarize_image(
-    image: &RgbImage,
-    config: &PipelineConfig,
-    has_no_detections: bool,
-) -> Vec<u8> {
+fn binarize_image(image: &RgbImage, config: &PipelineConfig, has_no_detections: bool) -> Vec<u8> {
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
@@ -1047,13 +1121,17 @@ fn binarize_image(
 
     // Special handling for blank pages in layout detection mode
     // For blank pages (no detections), use fixed threshold of 128
-    let (use_fixed_threshold, fixed_threshold) = if config.enable_layout_detection() && has_no_detections {
-        #[cfg(feature = "debug-logging")]
-        crate::debug_log!("Blank page detected (no detections), using fixed threshold 128");
-        (true, 128)
-    } else {
-        (config.binarization().use_fixed_threshold, config.binarization().fixed_threshold)
-    };
+    let (use_fixed_threshold, fixed_threshold) =
+        if config.enable_layout_detection() && has_no_detections {
+            #[cfg(feature = "debug-logging")]
+            crate::debug_log!("Blank page detected (no detections), using fixed threshold 128");
+            (true, 128)
+        } else {
+            (
+                config.binarization().use_fixed_threshold,
+                config.binarization().fixed_threshold,
+            )
+        };
 
     let options = BinarizationOptions {
         invert: want_invert_output,
@@ -1092,14 +1170,17 @@ fn encode_region_image_sync(
     if width > MAX_OVERLAY_SIDE || height > MAX_OVERLAY_SIDE {
         return Err(anyhow!(
             "Region exceeds max side limit ({} or {} > {})",
-            width, height, MAX_OVERLAY_SIDE
+            width,
+            height,
+            MAX_OVERLAY_SIDE
         ));
     }
     let expected_len = width as usize * height as usize * CHANNELS;
     if image_data.len() < expected_len {
         return Err(anyhow!(
             "Region buffer shorter than expected ({} < {})",
-            image_data.len(), expected_len
+            image_data.len(),
+            expected_len
         ));
     }
     if image_data.len() > expected_len {
@@ -1107,7 +1188,8 @@ fn encode_region_image_sync(
         #[cfg(feature = "debug-logging")]
         crate::debug_log!(
             "encode_region_image: trimming padded buffer ({} -> {})",
-            image_data.len(), expected_len
+            image_data.len(),
+            expected_len
         );
     }
 
@@ -1120,7 +1202,8 @@ fn encode_region_image_sync(
     if image_data.len() < expected_len {
         return Err(anyhow!(
             "Region buffer shorter than expected ({} < {})",
-            image_data.len(), expected_len
+            image_data.len(),
+            expected_len
         ));
     }
 
@@ -1193,23 +1276,15 @@ async fn perform_ocr(
     page_index: usize,
 ) -> Result<Option<String>> {
     // Note: This function is only called when config.enable_ocr() is true
-    let use_regions = config.enable_layout_detection() && !detections.is_empty();
+    let use_regions = crate::ocr::ocr::should_use_region_ocr(
+        config.enable_layout_detection(),
+        detections,
+    );
 
     let result = if use_regions {
-        crate::ocr::ocr::perform_region_based_ocr(
-            binarized,
-            width,
-            height,
-            detections,
-        )
-        .await
+        crate::ocr::ocr::perform_region_based_ocr(binarized, width, height, detections).await
     } else {
-        crate::ocr::ocr::perform_tiling_based_ocr(
-            binarized,
-            width,
-            height,
-        )
-        .await
+        crate::ocr::ocr::perform_tiling_based_ocr(binarized, width, height).await
     };
 
     match result {
@@ -1228,21 +1303,17 @@ async fn extract_pdf_text(
     image: &RgbImage,
 ) -> Result<Option<String>> {
     match pdf_renderer.has_text_layer(page_index as u32).await {
-        Ok(true) => {
-            match pdf_renderer.extract_page_text(page_index as u32).await {
-                Ok(raw_text) => {
-                    Ok(Some(build_hocr_from_pdf_text(
-                        &raw_text,
-                        image.width(),
-                        image.height(),
-                    )))
-                }
-                Err(e) => {
-                    warn_log!("Failed to extract text from page {}: {}", page_index, e);
-                    Ok(None)
-                }
+        Ok(true) => match pdf_renderer.extract_page_text(page_index as u32).await {
+            Ok(raw_text) => Ok(Some(build_hocr_from_pdf_text(
+                &raw_text,
+                image.width(),
+                image.height(),
+            ))),
+            Err(e) => {
+                warn_log!("Failed to extract text from page {}: {}", page_index, e);
+                Ok(None)
             }
-        }
+        },
         Ok(false) => Ok(None),
         Err(e) => {
             warn_log!("Failed to check text layer for page {}: {}", page_index, e);
@@ -1476,7 +1547,6 @@ async fn perform_document_analysis(
     page_range: std::ops::Range<usize>,
     progress_tracker: &ProgressTracker,
 ) -> Result<(DocumentMarginAnalysis, Vec<Vec<crate::engine::Detection>>)> {
-
     info_log!("[Margin-Analysis] Phase 1: Analyzing document margins (Low-Res Pass)...");
     progress_tracker.update(crate::progress::ProcessingStatus::MarginPass1Analyzing);
 
@@ -1489,10 +1559,17 @@ async fn perform_document_analysis(
         let target_height = config.target_height();
         let target_width = config.target_width();
 
-        let rgb_page = match pdf_renderer.render_page_rgb(page_idx as u32, target_height, target_width).await {
+        let rgb_page = match pdf_renderer
+            .render_page_rgb(page_idx as u32, target_height, target_width)
+            .await
+        {
             Ok(rgb_page) => rgb_page,
             Err(e) => {
-                warn_log!("Page {}: Failed to render during margin analysis: {}. Skipping page for margin analysis.", page_idx, e);
+                warn_log!(
+                    "Page {}: Failed to render during margin analysis: {}. Skipping page for margin analysis.",
+                    page_idx,
+                    e
+                );
                 // Create a placeholder with empty detections to avoid breaking the analysis
                 margin_inputs.push(PageMarginInput {
                     page_index: page_idx,
@@ -1508,11 +1585,8 @@ async fn perform_document_analysis(
             }
         };
 
-        let original_image = RgbImage::from_raw(
-            rgb_page.width,
-            rgb_page.height,
-            rgb_page.data,
-        ).ok_or_else(|| anyhow!("Failed to convert image for page {}", page_idx))?;
+        let original_image = RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data)
+            .ok_or_else(|| anyhow!("Failed to convert image for page {}", page_idx))?;
 
         // Resize to analysis size (640px width) using internal resize functionality instead of pdfium
         // Low-res width for analysis (640px matches PaddleX inference size)
@@ -1539,21 +1613,23 @@ async fn perform_document_analysis(
         ) {
             Ok(bytes) => bytes,
             Err(e) => {
-                warn_log!("Page {}: Failed to resize for margin analysis: {}. Using original image.", page_idx, e);
+                warn_log!(
+                    "Page {}: Failed to resize for margin analysis: {}. Using original image.",
+                    page_idx,
+                    e
+                );
                 // Fallback: use original image if resize fails
                 original_image.as_raw().to_vec()
             }
         };
 
-        let analysis_image = if analysis_image_data.len() == (ANALYSIS_WIDTH * analysis_height * 3) as usize {
-            RgbImage::from_raw(
-                ANALYSIS_WIDTH,
-                analysis_height,
-                analysis_image_data,
-            ).unwrap_or_else(|| original_image.clone())
-        } else {
-            original_image.clone()
-        };
+        let analysis_image =
+            if analysis_image_data.len() == (ANALYSIS_WIDTH * analysis_height * 3) as usize {
+                RgbImage::from_raw(ANALYSIS_WIDTH, analysis_height, analysis_image_data)
+                    .unwrap_or_else(|| original_image.clone())
+            } else {
+                original_image.clone()
+            };
 
         // Run inference if enabled
         let detections = if let Some(handle) = &inference_handle {
@@ -1565,7 +1641,10 @@ async fn perform_document_analysis(
             let inference_img = build_inference_image(&analysis_image, &spec)
                 .unwrap_or_else(|_| analysis_image.clone());
 
-            handle.detect(page_idx, Arc::new(inference_img)).await.unwrap_or_default()
+            handle
+                .detect(page_idx, Arc::new(inference_img))
+                .await
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -1595,7 +1674,10 @@ async fn perform_document_analysis(
     }
 
     // Analyze margins across entire document
-    info_log!("[Margin-Analysis] Calculating document-wide baseline from {} pages...", margin_inputs.len());
+    info_log!(
+        "[Margin-Analysis] Calculating document-wide baseline from {} pages...",
+        margin_inputs.len()
+    );
     let analysis = crate::margin::analyze_document_margins(
         &margin_inputs,
         config.margin_settings(),
@@ -1614,9 +1696,7 @@ async fn perform_document_analysis(
         margin_inputs.len(),
         analysis.effective_margin_setting
     );
-    progress_tracker.update(crate::progress::ProcessingStatus::MarginAnalysisSummary {
-        summary,
-    });
+    progress_tracker.update(crate::progress::ProcessingStatus::MarginAnalysisSummary { summary });
 
     Ok((analysis, detection_cache))
 }
@@ -1645,7 +1725,10 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     let mut raster_cfg = PdfRasterConfig::default();
     raster_cfg.render_forms = false;
     raster_cfg.target_width = config.target_width();
-    let pdf_renderer = Arc::new(PdfiumRenderer::new_from_bytes(pdf_bytes.clone(), raster_cfg)?);
+    let pdf_renderer = Arc::new(PdfiumRenderer::new_from_bytes(
+        pdf_bytes.clone(),
+        raster_cfg,
+    )?);
 
     // Calculate pages to process
     let document_pages = pdf_renderer.page_count() as usize;
@@ -1655,8 +1738,14 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
     info_log!("[PDF-Parallel] Processing {} pages with:", total_pages);
     info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
-    info_log!("  - Inference concurrency: {}", pipeline_config.inference_concurrency);
-    info_log!("  - Process concurrency: {}", pipeline_config.process_concurrency);
+    info_log!(
+        "  - Inference concurrency: {}",
+        pipeline_config.inference_concurrency
+    );
+    info_log!(
+        "  - Process concurrency: {}",
+        pipeline_config.process_concurrency
+    );
 
     // Initialize shared resources
     let deskew_engine = prepare_shared_deskew_engine(&config)?;
@@ -1664,7 +1753,10 @@ pub async fn create_and_run_pdf_parallel_pipeline(
         match crate::pipeline::inference::InferenceHandle::new(&config) {
             Ok(handle) => Some(Arc::new(handle)),
             Err(e) => {
-                warn_log!("[PDF-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.", e);
+                warn_log!(
+                    "[PDF-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.",
+                    e
+                );
                 None
             }
         }
@@ -1674,14 +1766,19 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
     // Check for cancellation before starting processing
     if let Ok(signal) = shutdown_rx.try_recv() {
-        return Err(anyhow::anyhow!("Processing cancelled: {}",
-            signal.message.unwrap_or_else(|| "User requested cancellation".to_string())));
+        return Err(anyhow::anyhow!(
+            "Processing cancelled: {}",
+            signal
+                .message
+                .unwrap_or_else(|| "User requested cancellation".to_string())
+        ));
     }
 
     // Phase 1: Document-wide margin analysis (if margin mode is enabled)
     let needs_two_pass = matches!(
         config.margin_settings(),
-        crate::margin::MarginSettings::StandardizeAndCenter | crate::margin::MarginSettings::CropAndResize
+        crate::margin::MarginSettings::StandardizeAndCenter
+            | crate::margin::MarginSettings::CropAndResize
     );
 
     let (margin_analysis, detection_cache) = if needs_two_pass {
@@ -1693,7 +1790,8 @@ pub async fn create_and_run_pdf_parallel_pipeline(
             total_pages,
             page_start..page_end,
             progress_tracker,
-        ).await?;
+        )
+        .await?;
         (Some(analysis), cache)
     } else {
         (None, Vec::new())
@@ -1701,8 +1799,12 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
     // Check for cancellation after margin analysis
     if let Ok(signal) = shutdown_rx.try_recv() {
-        return Err(anyhow::anyhow!("Processing cancelled: {}",
-            signal.message.unwrap_or_else(|| "User requested cancellation".to_string())));
+        return Err(anyhow::anyhow!(
+            "Processing cancelled: {}",
+            signal
+                .message
+                .unwrap_or_else(|| "User requested cancellation".to_string())
+        ));
     }
 
     // Create progress counters
