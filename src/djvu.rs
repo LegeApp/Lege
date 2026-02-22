@@ -413,18 +413,33 @@ impl DjvuOrchestrator {
             }
         }
 
+        // Matches ocrx_word spans across newlines, with arbitrary attribute order and
+        // extended title payloads (e.g. "bbox ...; x_wconf 95").
         let word_re = Regex::new(
-            r#"<span class=['"]ocrx_word['"].*?title=['"]bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)['"].*?>(.*?)</span>"#
+            r#"(?is)<span[^>]*class=['"][^'"]*\bocrx_word\b[^'"]*['"][^>]*title=['"]([^'"]*)['"][^>]*>(.*?)</span>"#
         )?;
+        let bbox_re = Regex::new(r#"(?i)\bbbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)"#)?;
+        let tag_re = Regex::new(r#"(?is)<[^>]+>"#)?;
 
         let mut words = Vec::new();
 
         for cap in word_re.captures_iter(hocr) {
-            // Parse as u32 first to avoid truncation on high-DPI pages
-            let x1_raw: u32 = cap[1].parse().unwrap_or(0);
-            let y1_raw: u32 = cap[2].parse().unwrap_or(0);
-            let x2_raw: u32 = cap[3].parse().unwrap_or(0);
-            let y2_raw: u32 = cap[4].parse().unwrap_or(0);
+            let title = cap.get(1).map_or("", |m| m.as_str());
+            let Some(bbox_caps) = bbox_re.captures(title) else {
+                continue;
+            };
+
+            // Parse as i32 first to tolerate slightly malformed negatives.
+            let x1_i: i32 = bbox_caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let y1_i: i32 = bbox_caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let x2_i: i32 = bbox_caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let y2_i: i32 = bbox_caps.get(4).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+
+            // Clamp to page bounds and convert to unsigned after clamping.
+            let x1_raw = x1_i.max(0).min(page_width as i32) as u32;
+            let y1_raw = y1_i.max(0).min(page_height as i32) as u32;
+            let x2_raw = x2_i.max(0).min(page_width as i32) as u32;
+            let y2_raw = y2_i.max(0).min(page_height as i32) as u32;
 
             if x2_raw <= x1_raw || y2_raw <= y1_raw {
                 continue;
@@ -446,7 +461,19 @@ impl DjvuOrchestrator {
                 continue;
             }
 
-            let mut text = cap[5].trim().to_string();
+            let raw_text = cap.get(2).map_or("", |m| m.as_str());
+            // Remove any nested tags and decode common HTML entities.
+            let mut text = tag_re.replace_all(raw_text, "").into_owned();
+            text = text
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'");
+            text = text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             if text.is_empty() {
                 continue;
             }
