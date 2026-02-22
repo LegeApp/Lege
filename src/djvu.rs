@@ -1,4 +1,4 @@
-// djvu_native.rs
+// djvu.rs
 //! Native Rust DJVU encoding using the djvu_encoder crate
 //!
 //! This module replaces the subprocess-based djvulibre orchestration with
@@ -20,12 +20,19 @@ use unicode_normalization::UnicodeNormalization;
 use tokio::sync::mpsc;
 
 // Import DJVU encoder types
-use djvu_encoder::doc::{DjvuBuilder, PageBuilder, Page, DjvuDocument};
+use djvu_encoder::doc::{DjvuBuilder, DjvuDocument, Page, PageBuilder, PageEncodeParams};
 use djvu_encoder::image::image_formats::{Bitmap, Pixmap, GrayPixel, Pixel};
 
 use crate::app_dirs;
 use crate::engine::Detection;
 use crate::dbglog;
+
+fn djvu_hidden_text_enabled() -> bool {
+    std::env::var("LEGE_DJVU_HIDDEN_TEXT")
+        .ok()
+        .as_deref()
+        != Some("0")
+}
 
 /// Configuration for native DJVU encoding
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,10 +210,19 @@ impl DjvuOrchestrator {
             .with_background(pixmap)
             .context("Failed to set background")?;
 
-        // Add OCR if available
-        let page_builder = if let Some(ref hocr) = page_data.hocr {
-            let words = self.parse_hocr_to_words(hocr, width, height)?;
-            page_builder.with_ocr_words(words)
+        // Add OCR hidden text layer when enabled. Skip empty word sets to avoid
+        // emitting degenerate text chunks that some viewers can't parse.
+        let page_builder = if djvu_hidden_text_enabled() {
+            if let Some(ref hocr) = page_data.hocr {
+                let words = self.parse_hocr_to_words(hocr, width, height)?;
+                if words.is_empty() {
+                    page_builder
+                } else {
+                    page_builder.with_ocr_words(words)
+                }
+            } else {
+                page_builder
+            }
         } else {
             page_builder
         };
@@ -249,12 +265,16 @@ impl DjvuOrchestrator {
             dbglog!("[djvu-native] IW44 color background added");
         }
 
-        // 5. Add OCR text layer if available
-        if let Some(ref hocr) = page_data.hocr {
-            let words = self.parse_hocr_to_words(hocr, width, height)?;
-            let word_count = words.len();
-            page_builder = page_builder.with_ocr_words(words);
-            dbglog!("[djvu-native] OCR text layer added ({} words)", word_count);
+        // 5. Add OCR text layer when enabled; skip empty word sets.
+        if djvu_hidden_text_enabled() {
+            if let Some(ref hocr) = page_data.hocr {
+                let words = self.parse_hocr_to_words(hocr, width, height)?;
+                if !words.is_empty() {
+                    let word_count = words.len();
+                    page_builder = page_builder.with_ocr_words(words);
+                    dbglog!("[djvu-native] OCR text layer added ({} words)", word_count);
+                }
+            }
         }
 
         // 6. Build the final page
@@ -556,10 +576,12 @@ pub fn spawn_djvu_writer_actor(
     };
 
     let task = tokio::spawn(async move {
-        // Build the DjVu document with slice-based quality (NOT decibels)
+        // Build the DjVu document with explicit IW44 slice configuration.
+        let mut params = PageEncodeParams::default();
+        params.slices = Some(slices);
         let doc = DjvuBuilder::new(total_pages)
             .with_dpi(dpi)
-            .with_slices(slices)
+            .with_params(params)
             .build();
 
         let mut pages_written = 0usize;
@@ -583,8 +605,11 @@ pub fn spawn_djvu_writer_actor(
 
                         pages_written += 1;
                         next_expected += 1;
-                        // Page bundled silently - no progress update needed
-                        // (bundling happens concurrently with encoding)
+                        // Writer-side progress reflects successful document assembly.
+                        progress_tracker.update(crate::progress::ProcessingStatus::PdfAppend {
+                            current: pages_written,
+                            total: total_pages,
+                        });
                     }
                 }
                 DjvuWriterMessage::Finalize => {
