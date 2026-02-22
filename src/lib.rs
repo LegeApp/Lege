@@ -73,13 +73,32 @@ macro_rules! perf_log {
 }
 
 // Map legacy logging macros to current helpers
+#[cfg(feature = "debug-logging")]
 #[macro_export]
 macro_rules! info_log {
     ($($arg:tt)*) => { $crate::info_println!($($arg)*) }
 }
+
+#[cfg(not(feature = "debug-logging"))]
+#[macro_export]
+macro_rules! info_log {
+    ($($arg:tt)*) => {
+        ()
+    };
+}
+
+#[cfg(feature = "debug-logging")]
 #[macro_export]
 macro_rules! success_log {
     ($($arg:tt)*) => { $crate::info_println!($($arg)*) }
+}
+
+#[cfg(not(feature = "debug-logging"))]
+#[macro_export]
+macro_rules! success_log {
+    ($($arg:tt)*) => {
+        ()
+    };
 }
 #[macro_export]
 macro_rules! error_log {
@@ -144,7 +163,6 @@ pub fn get_external_version() -> &'static str {
 pub fn get_internal_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
-
 
 
 

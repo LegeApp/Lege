@@ -19,9 +19,9 @@ use version::display_version;
 // ============================================================================
 pub struct ColorConfig {
     // Interactive prompts
-    pub prompt: &'static str,           // Bright white for user input prompts
-    pub info: &'static str,             // Cyan for general info
-    pub highlight: &'static str,        // Magenta for emphasized text
+    pub prompt: &'static str,           // Bright cyan for user input prompts
+    pub info: &'static str,             // Base prompt color for general info
+    pub highlight: &'static str,        // Base prompt color for emphasized text
     
     // Processing stages - subtle, muted colors for visual pleasure
     pub page_start: &'static str,       // Soft blue for page starting
@@ -30,7 +30,7 @@ pub struct ColorConfig {
     pub render: &'static str,           // Soft cyan for rendering
     pub detect: &'static str,           // Soft yellow for detection/inference
     pub encode: &'static str,           // Soft magenta for encoding
-    pub worker: &'static str,           // Dim gray for worker/slot messages
+    pub worker: &'static str,           // Dim cyan for worker/slot messages
     pub dag: &'static str,              // Very dim for DAG internals
     
     // Status labels
@@ -42,9 +42,9 @@ pub struct ColorConfig {
 
 pub const COLORS: ColorConfig = ColorConfig {
     // Interactive prompts
-    prompt: "\x1b[97m",          // Bright white
-    info: "\x1b[36m",            // Cyan
-    highlight: "\x1b[35m",       // Magenta
+    prompt: "\x1b[96m",          // Bright cyan
+    info: "\x1b[96m",            // Bright cyan (same base prompt color)
+    highlight: "\x1b[96m",       // Bright cyan (same base prompt color)
     
     // Processing stages - subtle palette
     page_start: "\x1b[94m",      // Bright blue (soft)
@@ -53,7 +53,7 @@ pub const COLORS: ColorConfig = ColorConfig {
     render: "\x1b[96m",          // Bright cyan (soft)
     detect: "\x1b[93m",          // Bright yellow (soft)
     encode: "\x1b[95m",          // Bright magenta (soft)
-    worker: "\x1b[2;37m",        // Dim white (very subtle)
+    worker: "\x1b[2;36m",        // Dim cyan (very subtle)
     dag: "\x1b[2;90m",           // Dim bright-black (almost invisible)
     
     // Status labels
@@ -90,6 +90,83 @@ static DOC: &str = "[DOC]";
 static CHECK: &str = "[OK]";
 static FLOPPY: &str = "[SAVE]";
 
+// IMPORTANT: CLI user-facing copy in this file must come from `src/cli_text.json`
+// via `CLI_TEXT` (through `text_loader.rs`). Do not introduce hardcoded
+// user-visible strings in `main.rs`; update `cli_text.json` instead.
+fn fmt1(template: &str, a: impl std::fmt::Display) -> String {
+    template.replacen("{}", &a.to_string(), 1)
+}
+
+fn fmt2(
+    template: &str,
+    a: impl std::fmt::Display,
+    b: impl std::fmt::Display,
+) -> String {
+    template
+        .replacen("{}", &a.to_string(), 1)
+        .replacen("{}", &b.to_string(), 1)
+}
+
+fn fmt3(
+    template: &str,
+    a: impl std::fmt::Display,
+    b: impl std::fmt::Display,
+    c: impl std::fmt::Display,
+) -> String {
+    template
+        .replacen("{}", &a.to_string(), 1)
+        .replacen("{}", &b.to_string(), 1)
+        .replacen("{}", &c.to_string(), 1)
+}
+
+fn fmt4(
+    template: &str,
+    a: impl std::fmt::Display,
+    b: impl std::fmt::Display,
+    c: impl std::fmt::Display,
+    d: impl std::fmt::Display,
+) -> String {
+    template
+        .replacen("{}", &a.to_string(), 1)
+        .replacen("{}", &b.to_string(), 1)
+        .replacen("{}", &c.to_string(), 1)
+        .replacen("{}", &d.to_string(), 1)
+}
+
+fn hardware_acceleration_status() -> (bool, String) {
+    let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
+        .ok()
+        .as_deref() == Some("1");
+    if gpu_disabled {
+        return (false, "explicitly disabled via LEGE_DISABLE_GPU=1".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if lege::gpu::webgpu_execution_provider_dispatch().is_some() {
+            return (true, "WebGPU (Dawn/Vulkan)".to_string());
+        }
+        return (false, "WebGPU unavailable, CPU fallback".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // DirectML provider is selected in engine setup on Windows when GPU is enabled.
+        return (true, "DirectML".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // CoreML provider is selected in engine setup on macOS when GPU is enabled.
+        return (true, "CoreML".to_string());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        return (false, "not supported on this platform".to_string());
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -97,8 +174,8 @@ async fn main() -> Result<()> {
     // Special help: environment variables
     // Version flag
     if args.iter().any(|arg| arg == "--version" || arg == "-v") {
-        println!("Lege version {}", display_version());
-        println!("Internal version: {}", version::internal_version());
+        println!("{}", fmt1(&CLI_TEXT.main.version_line, display_version()));
+        println!("{}", fmt1(&CLI_TEXT.main.internal_version_line, version::internal_version()));
         return Ok(());
     }
 
@@ -129,10 +206,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Status / system info mode (placeholder – previously may have printed provider info)
+    // Status / system info mode
     if args.iter().any(|a| a == "--status") {
-        // Could hook into existing status reporting if present.
-        print_usage();
+        show_system_status()?;
         return Ok(());
     }
 
@@ -259,46 +335,7 @@ async fn main() -> Result<()> {
 }
 
 fn print_usage() {
-    println!("Lege – Document Processing CLI\n");
-    println!("Interactive mode: run with no arguments\n");
-    println!("BASIC USAGE:");
-    println!("    lege <file.pdf> [page-range] [target]");
-    println!("    lege --help");
-    println!(
-        "    lege --help env-variables    # show environment variables that influence behavior"
-    );
-    println!("    lege --help debug            # show debug/data-generation modes");
-    println!("    lege --status");
-    println!("    lege --licenses");
-    println!("    lege --targets          # list built-in device presets");
-    println!();
-    println!("EXAMPLES:");
-    println!("    lege book.pdf 1-10");
-    println!("    lege book.pdf all 1440x1920");
-    println!("    lege book.pdf 1-5 \"Amazon Kindle Scribe (2022)\"");
-    println!("    lege book.pdf");
-    println!("    lege (then follow interactive prompts)");
-    println!();
-    println!("TARGET FORMATS:");
-    println!("    - Number (e.g., 1600) keeps proportional width");
-    println!("    - WIDTHxHEIGHT (e.g., 1440x1920)");
-    println!("    - Device name from '--targets' list");
-    println!("    Use 'all' for the page-range when you want every page.");
-    println!();
-    println!("OPTIONS (interactive selection provides these):");
-    println!("    Text formats: jbig2 | ccitt4 | djvu (enter '3' for djvu in interactive)");
-    println!("    Image formats: jpeg | jp2 | none");
-    println!(
-        "    Flags: a(layout detection) b(OCR) c(original quality) d(no cover) e(PDF compat) f(force crop) g(invert) h(deskew) i(no binarization) m(center margins) w(crop margins)"
-    );
-    println!();
-    println!("TESTING / DEBUG MODES:");
-    println!("    lege <file.pdf> --pdf-to-png HEIGHT [page-range]");
-    println!("    lege <file.pdf> --crop-areas text|image|both [page-range] [--out DIR] [--format png|jpg] [--deskew]");
-    println!("    lege --png-folder <folder> [--deskew]");
-    println!();
-    println!("Run without arguments for the full interactive guided workflow.");
-    println!("\nTip: For environment variables, run: 'lege --help env-variables'.");
+    println!("{}", CLI_TEXT.main.usage_block);
 }
 
 fn print_licenses() {
@@ -309,20 +346,7 @@ fn print_licenses() {
 }
 
 fn print_debug_help() {
-    println!("Lege – Debug Modes\n");
-    println!("PDF to PNG (rasterize pages for inspection):");
-    println!("  Usage:   lege <file.pdf> [page_range] --pdf-to-png HEIGHT");
-    println!("  Example: lege book.pdf 1-5 --pdf-to-png 1600\n");
-    println!("Crop detected layout regions from a PDF into separate images:");
-    println!("  Usage:   lege <file.pdf> [page_range] --crop-areas text|image|both [--out DIR] [--format png|jpg] [--deskew]");
-    println!("  Example: lege book.pdf all --crop-areas image --out ./dataset --format jpg --deskew");
-    println!("  Notes:");
-    println!("    - Regions are numbered per page: page_0001_area_001.jpg, etc.");
-    println!("    - Uses the same layout model as the main pipeline.");
-    println!("    - Output defaults to '<pdf_stem>_areas' next to the input if --out is omitted.\n");
-    println!("PNG folder inference (images instead of PDF):");
-    println!("  Usage:   lege --png-folder <folder> [--deskew]");
-    println!("  Example: lege --png-folder ./scans --deskew");
+    println!("{}", CLI_TEXT.main.debug_help_block);
 }
 
 struct TargetSelection {
@@ -453,22 +477,14 @@ fn slugify_profile_name(name: &str) -> String {
 }
 
 fn print_target_profiles() {
-    println!("Available target device presets:");
+    println!("{}", CLI_TEXT.main.target_profiles_header);
     for profile in target_profiles::TARGET_DEVICE_PROFILES {
-        println!(
-            "  - {} ({}x{} px)",
-            profile.name, profile.width, profile.height
-        );
+        println!("{}", fmt3(&CLI_TEXT.main.target_profile_item, profile.name, profile.width, profile.height));
     }
-    println!(
-        "  - {} (keeps proportional width using custom height)",
-        target_profiles::PROPORTIONAL_OPTION_LABEL
-    );
+    println!("{}", fmt1(&CLI_TEXT.main.target_profile_proportional, target_profiles::PROPORTIONAL_OPTION_LABEL));
     println!();
-    println!("You can also pass custom values like 1440x1920 or a single height (e.g., 1600).");
-    println!(
-        "Use 'all' as the page-range placeholder when you want to target the entire document."
-    );
+    println!("{}", CLI_TEXT.main.target_profiles_custom_note);
+    println!("{}", CLI_TEXT.main.target_profiles_page_range_note);
 }
 
 async fn handle_simple_processing(
@@ -545,20 +561,17 @@ async fn handle_simple_processing(
     let output_dir = determine_output_directory(None, &normalized_inputs, &config)?;
 
     // Show batch summary
-    info_println!("\n=== Simple Processing Mode ===");
-    info_println!("Files queued: {}", file_paths.len());
+    info_println!("\n{}", CLI_TEXT.main.simple_mode_header);
+    info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_files_queued, file_paths.len()));
     for path in &file_paths {
-        info_println!("  - {}", path.display());
+        info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_file_item, path.display()));
     }
     if let Some(ref range) = page_range {
-        info_println!("Page range: {}", range);
+        info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_page_range, range));
     }
-    info_println!(
-        "Settings: CCITT4, JPEG cover, {}, threshold 200",
-        target_description
-    );
-    info_println!("Output directory: {}", output_dir.display());
-    info_println!("===============================\n");
+    info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_settings, &target_description));
+    info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_output_directory, output_dir.display()));
+    info_println!("{}\n", CLI_TEXT.main.simple_mode_footer);
 
     let total_files = file_paths.len();
     let mut overall_ok = true;
@@ -569,15 +582,13 @@ async fn handle_simple_processing(
 
         if total_files > 1 {
             info_println!(
-                "[Batch] {}/{} → {}",
-                index + 1,
-                total_files,
-                file_path.display()
+                "{}",
+                fmt3(&CLI_TEXT.main.simple_mode_batch_item, index + 1, total_files, file_path.display())
             );
-            info_println!("[Batch] Output → {}", output_path.display());
+            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_batch_output, output_path.display()));
         } else {
-            info_println!("Input: {}", file_path.display());
-            info_println!("Output: {}", output_path.display());
+            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_input, file_path.display()));
+            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_output, output_path.display()));
         }
 
         match process_single_file(file_path.clone(), output_path.clone(), per_file_config).await {
@@ -585,16 +596,14 @@ async fn handle_simple_processing(
                 if total_files > 1 {
                     let remaining = total_files - index - 1;
                     info_println!(
-                        "[Batch] Completed {}/{} • {} remaining",
-                        index + 1,
-                        total_files,
-                        remaining
+                        "{}",
+                        fmt3(&CLI_TEXT.main.simple_mode_batch_completed, index + 1, total_files, remaining)
                     );
                 }
             }
             Err(error) => {
                 overall_ok = false;
-                error_println!("Error processing {}: {}", file_path.display(), error);
+                error_println!("{}", fmt2(&CLI_TEXT.main.simple_mode_error_processing, file_path.display(), error));
             }
         }
     }
@@ -608,105 +617,7 @@ async fn handle_simple_processing(
 }
 
 fn print_env_variables_help() {
-    // Collate known environment variables and their behavior.
-    // If we add more in code, extend this list accordingly.
-    struct EnvHelp<'a> {
-        name: &'a str,
-        values: &'a str,
-        default: &'a str,
-        description: &'a str,
-        platform: &'a str,
-    }
-
-    let vars: Vec<EnvHelp> = vec![
-        EnvHelp {
-            name: "LEGE_ENABLE_PDFIUM_POOL",
-            values: "1|true to enable",
-            default: if cfg!(target_os = "windows") {
-                "disabled on Windows"
-            } else {
-                "enabled on non-Windows"
-            },
-            description: "Enables a pool of Pdfium instances for parallel rendering in no-layout mode.",
-            platform: "All (Windows default differs)",
-        },
-        EnvHelp {
-            name: "LEGE_NO_TTY_PROGRESS",
-            values: "any value",
-            default: "unset (TTY progress enabled if supported)",
-            description: "If set, disables TTY progress rendering in the console.",
-            platform: "All",
-        },
-        EnvHelp {
-            name: "LEGE_DJVU_BIN",
-            values: "absolute path",
-            default: "unset (tools resolved next to the executable or via PATH)",
-            description: "Directory containing DjVuLibre tools (cjb2, c44, djvumake, djvm, djvused, djvuextract).",
-            platform: "All",
-        },
-        EnvHelp {
-            name: "LEGE_SKIP_TASKKILL",
-            values: "1",
-            default: "unset (cleanup runs)",
-            description: "Skip best‑effort process cleanup (taskkill) for lingering DjVu tools after assembly.",
-            platform: "Windows only",
-        },
-        EnvHelp {
-            name: "LEGE_DATA_DIR",
-            values: "absolute path",
-            default: "unset",
-            description: "Additional search root for runtime assets (e.g., models, tessdata).",
-            platform: "All",
-        },
-        EnvHelp {
-            name: "LEGE_ASSET_DIR",
-            values: "absolute path",
-            default: "unset",
-            description: "Additional search root for runtime assets (e.g., models, tessdata).",
-            platform: "All",
-        },
-        EnvHelp {
-            name: "LD_LIBRARY_PATH",
-            values: "colon‑separated list of paths",
-            default: "system default",
-            description: "On Linux, directories here are also searched for Lege assets (in addition to libraries).",
-            platform: "Linux",
-        },
-        EnvHelp {
-            name: "PATH",
-            values: "OS path list",
-            default: "system default",
-            description: "Used to discover bundled or system DjVu tools if not found next to the executable.",
-            platform: "All",
-        },
-    ];
-
-    println!("Lege – Environment Variables\n");
-    if vars.len() <= 5 {
-        println!("Detected {} relevant environment variables:", vars.len());
-        for v in &vars {
-            println!("  - {}", v.name);
-        }
-        println!("\nFewer than 6 variables found; no dedicated section emitted.");
-        return;
-    }
-
-    println!("These environment variables influence behavior and discovery paths:\n");
-    for v in &vars {
-        println!("{}", v.name);
-        println!("  Platform:  {}", v.platform);
-        println!("  Values:    {}", v.values);
-        println!("  Default:   {}", v.default);
-        println!("  Purpose:   {}\n", v.description);
-    }
-
-    println!("Notes:");
-    println!(
-        "- On Windows, Pdfium pooling is disabled by default due to stability concerns; enable via LEGE_ENABLE_PDFIUM_POOL."
-    );
-    println!(
-        "- When LEGE_DJVU_BIN is not set, the app searches next to the executable (bin/ and djvulibre/) and then PATH."
-    );
+    println!("{}", CLI_TEXT.main.env_variables_help_block);
 }
 
 async fn handle_cli_mode(config: AppConfig) -> Result<()> {
@@ -734,9 +645,9 @@ async fn handle_cli_mode(config: AppConfig) -> Result<()> {
 
 async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // Combined input: file path and processing options
-    println!("=== Lege PDF Processing ===");
-    println!("Enter PDF file path with optional page range (e.g., book.pdf 1-10):");
-    print!("\x1b[32m> \x1b[0m"); // Green input prompt
+    println!("{}", CLI_TEXT.app.main_title);
+    println!("{}", CLI_TEXT.app.file_prompt);
+    print!("{}{} {}", COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset);
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -789,18 +700,20 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
 
         match has_ocr {
             Ok(true) => {
-                println!("\n{}✓ [OCR Layer Detected]{}", COLORS.info, COLORS.reset);
-                println!("This PDF contains an existing OCR text layer.");
-                println!("Leave OCR disabled to preserve the existing text layer.\n");
+                println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.messages.ocr_detected, COLORS.reset);
+                println!("{}", CLI_TEXT.interactive.messages.ocr_detected_msg);
+                println!("{}\n", CLI_TEXT.interactive.messages.ocr_detected_tip);
             }
             Ok(false) => {
-                println!("\n{}⚠ [No OCR Layer Found]{}", COLORS.highlight, COLORS.reset);
-                println!("Enable OCR if you want to add text recognition.\n");
+                println!("\n{}{}{}", COLORS.highlight, CLI_TEXT.interactive.messages.no_ocr_detected, COLORS.reset);
+                println!("{}\n", CLI_TEXT.interactive.messages.no_ocr_detected_msg);
             }
             Err(e) => {
                 eprintln!(
-                    "{}Warning: Failed to check for OCR layer: {}{}",
-                    COLORS.highlight, e, COLORS.reset
+                    "{}{}{}",
+                    COLORS.highlight,
+                    fmt1(&CLI_TEXT.main.ocr_check_warning, e),
+                    COLORS.reset
                 );
             }
         }
@@ -825,15 +738,12 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         deskew_enabled,
         djvu_quality,
     ) = loop {
-        print!(
-            "\n{}=== Processing Options ==={}\n",
-            COLORS.info, COLORS.reset
-        );
-        println!("{}Format:{} [1] CCITT4 | [2] JBIG2 | [3] DJVU", COLORS.prompt, COLORS.reset);
-        println!("{}Modifiers:{} c=Dithered | a=No-layout | b=OCR | d=No-cover | e=PDF-compat | f=Force-crop | g=Invert | h=Deskew | m=Center | w=Crop", COLORS.prompt, COLORS.reset);
-        println!("{}Examples:{} '1' (CCITT4) | '1c' (CCITT4+dither) | '2b' (JBIG2+OCR) | '2cs' (JBIG2+dither+symbol) | '3' (DJVU)", COLORS.highlight, COLORS.reset);
-        println!("{}Default:{} 1 (CCITT4, original quality, layout detection on)", COLORS.info, COLORS.reset);
-        print!("{}> {}", COLORS.prompt, COLORS.reset);
+        print!("\n{}{}{}\n", COLORS.info, CLI_TEXT.interactive.processing_options_title, COLORS.reset);
+        println!("{}{}{}", COLORS.prompt, CLI_TEXT.interactive.format_prompt, COLORS.reset);
+        println!("{}{}{}", COLORS.prompt, CLI_TEXT.interactive.modifiers_prompt, COLORS.reset);
+        println!("{}{}{}", COLORS.highlight, CLI_TEXT.interactive.examples_prompt, COLORS.reset);
+        println!("{}{}{}", COLORS.info, CLI_TEXT.interactive.default_prompt, COLORS.reset);
+        print!("{}{} {}", COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset);
         io::stdout().flush()?;
 
         let mut format_input = String::new();
@@ -880,21 +790,21 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 );
             }
             Err(e) => {
-                println!("{}\nPlease try again.\n", e);
+                println!("{}", fmt1(&CLI_TEXT.main.processing_options_retry, e));
                 continue;
             }
         }
     };
 
     // Step 3: Binarization method (always selectable, even when inversion is enabled)
-    println!("\n{}Binarization method:{}", COLORS.info, COLORS.reset);
-    println!("[1] {} | [2] {} | [3] {}", 
-        CLI_TEXT.interactive.binarization_methods[0],
-        CLI_TEXT.interactive.binarization_methods[1],
-        CLI_TEXT.interactive.binarization_methods[2]
-    );
-    println!("{}Advanced:{} Add k=<value> for sensitivity (e.g., '1 k=0.25') | thr=<0-255> for threshold (e.g., '2 thr=200')", COLORS.highlight, COLORS.reset);
-    print!("{}Choose [1-3] (default: 1):{} ", COLORS.prompt, COLORS.reset);
+    println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset);
+    println!("{}", fmt3(&CLI_TEXT.main.binarization_choices_template,
+        &CLI_TEXT.interactive.binarization_methods[0],
+        &CLI_TEXT.interactive.binarization_methods[1],
+        &CLI_TEXT.interactive.binarization_methods[2]
+    ));
+    println!("{}{}{}", COLORS.highlight, CLI_TEXT.interactive.binarization_advanced, COLORS.reset);
+    print!("{}{} {} ", COLORS.prompt, CLI_TEXT.interactive.binarization_prompt, COLORS.reset);
     io::stdout().flush()?;
 
     let mut binarization_input = String::new();
@@ -910,7 +820,8 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         // Force crop overrides everything
         if crop_margins || center_margins {
             println!(
-                "Note: 'force-crop' (f) selected. This overrides 'crop-margins' (w) and 'center-margins' (m)."
+                "{}",
+                CLI_TEXT.main.precedence_force_crop_note
             );
         }
         (false, true, true)
@@ -918,7 +829,8 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         // Crop overrides center
         if center_margins {
             println!(
-                "Note: Both 'crop-margins' (w) and 'center-margins' (m) selected. Applying precedence: crop wins."
+                "{}",
+                CLI_TEXT.main.precedence_crop_over_center_note
             );
         }
         (false, true, false)
@@ -931,10 +843,11 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     let effective_layout_detection = layout_detection_enabled;
     if (effective_center_margins || effective_crop_margins) && !layout_detection_enabled {
         println!(
-            "Margin processing will run without layout detection; using pixel-based margin analysis."
+            "{}",
+            CLI_TEXT.main.margin_without_layout_note
         );
         if effective_crop_margins && !effective_force_crop {
-            println!("Footnote-aware overrides will be unavailable without layout detection.");
+            println!("{}", CLI_TEXT.main.footnote_override_note);
         }
     }
 
@@ -946,12 +859,12 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
 
     // Set the configuration using the public setters
     if let Err(e) = config.set_text_format(&text_format) {
-        error_println!("Failed to set text format: {}", e);
+        error_println!("{}", fmt1(&CLI_TEXT.main.config_set_text_format_failed, e));
     }
     // Set DjVu quality if specified
     if let Some(quality) = djvu_quality {
         if let Err(e) = config.set_djvu_iw44_quality(quality) {
-            error_println!("Failed to set DjVu quality: {}", e);
+            error_println!("{}", fmt1(&CLI_TEXT.main.config_set_djvu_quality_failed, e));
         }
     }
     // Use unified image format setter for non-binarized images
@@ -981,44 +894,44 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     let target_summary = prompt_target_device(&mut config)?;
 
     // Log the selected options
-    println!("\n{}=== Selected Options ==={}", COLORS.info, COLORS.reset);
+    println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.selected_options_title, COLORS.reset);
     let text_format_display = if config.text_format() == "jbig2" && config.jbig2_symbol_mode() {
         "jbig2 (symbol mode)".to_string()
     } else {
         config.text_format().to_string()
     };
-    println!("{}Text Encoding:{} {}", COLORS.info, COLORS.reset, text_format_display);
-    println!("{}Image Format:{} {:?}", COLORS.info, COLORS.reset, config.image_format());
-    println!("{}Dithering:{} {}", COLORS.info, COLORS.reset, config.dither_images());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_text_encoding, COLORS.reset, text_format_display);
+    println!("{}{}:{} {:?}", COLORS.info, CLI_TEXT.main.selected_options_image_format, COLORS.reset, config.image_format());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_dithering, COLORS.reset, config.dither_images());
     println!(
-        "{}Original Quality (images):{} {}",
-        COLORS.info, COLORS.reset, config.keep_original_images()
+        "{}{}:{} {}",
+        COLORS.info, CLI_TEXT.main.selected_options_original_quality, COLORS.reset, config.keep_original_images()
     );
-    println!("{}Target Output:{} {}", COLORS.info, COLORS.reset, target_summary);
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_target_output, COLORS.reset, target_summary);
 
     let original_layout_detection = config.enable_layout_detection();
     if config.invert_input() && original_layout_detection {
         println!(
-            "{}Layout Detection:{} {} (disabled - inverted documents not supported)",
-            COLORS.info, COLORS.reset, original_layout_detection
+            "{}{}:{} {} (disabled - inverted documents not supported)",
+            COLORS.info, CLI_TEXT.main.selected_options_layout_detection, COLORS.reset, original_layout_detection
         );
-        println!("{}Note:{} Layout detection temporarily disabled for inverted documents", COLORS.highlight, COLORS.reset);
-        println!("{}Reason:{} Inverted backgrounds confuse the model, creating large files", COLORS.highlight, COLORS.reset);
+        println!("{}{}:{} {}", COLORS.highlight, CLI_TEXT.main.selected_options_note, COLORS.reset, CLI_TEXT.interactive.messages.layout_disabled_inverted);
+        println!("{}{}:{} {}", COLORS.highlight, CLI_TEXT.main.selected_options_reason, COLORS.reset, CLI_TEXT.interactive.messages.layout_disabled_reason);
         config.set_enable_layout_detection(false);
     } else {
-        println!("{}Layout Detection:{} {}", COLORS.info, COLORS.reset, config.enable_layout_detection());
+        println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_layout_detection, COLORS.reset, config.enable_layout_detection());
     }
 
-    println!("{}OCR Enabled:{} {}", COLORS.info, COLORS.reset, config.enable_ocr());
-    println!("{}No Cover Page:{} {}", COLORS.info, COLORS.reset, config.no_cover_page());
-    println!("{}PDF Compatibility:{} {}", COLORS.info, COLORS.reset, config.pdf_compatibility_mode());
-    println!("{}Invert Input:{} {}", COLORS.info, COLORS.reset, config.invert_input());
-    println!("{}Deskew Enabled:{} {}", COLORS.info, COLORS.reset, config.enable_deskew());
-    println!("{}Margin Processing:{} {:?}", COLORS.info, COLORS.reset, config.margin_settings());
-    println!("{}Force crop (ignore footnotes):{} {}", COLORS.info, COLORS.reset, config.crop_footnotes());
-    println!("{}Max Retries:{} {}", COLORS.info, COLORS.reset, config.max_retries());
-    println!("{}Retry Delay:{} {}ms", COLORS.info, COLORS.reset, config.retry_delay_ms());
-    println!("{}====================={}\n", COLORS.info, COLORS.reset);
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_ocr_enabled, COLORS.reset, config.enable_ocr());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_no_cover_page, COLORS.reset, config.no_cover_page());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_pdf_compatibility, COLORS.reset, config.pdf_compatibility_mode());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_invert_input, COLORS.reset, config.invert_input());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_deskew_enabled, COLORS.reset, config.enable_deskew());
+    println!("{}{}:{} {:?}", COLORS.info, CLI_TEXT.main.selected_options_margin_processing, COLORS.reset, config.margin_settings());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_force_crop, COLORS.reset, config.crop_footnotes());
+    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_max_retries, COLORS.reset, config.max_retries());
+    println!("{}{}:{} {}ms", COLORS.info, CLI_TEXT.main.selected_options_retry_delay, COLORS.reset, config.retry_delay_ms());
+    println!("{}{}{}\n", COLORS.info, CLI_TEXT.main.selected_options_footer, COLORS.reset);
 
     // Set binarization method (inversion no longer changes binarization selection)
     if !no_binarization {
@@ -1447,16 +1360,21 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
             .collect();
 
     loop {
-        println!("\n{}Target Device / Resolution:{}", COLORS.info, COLORS.reset);
-        println!("{}[0]{} Default ({}px height, proportional)", COLORS.prompt, COLORS.reset, config.target_height());
+        println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.target_device_title, COLORS.reset);
+        println!(
+            "{}[0]{} {}",
+            COLORS.prompt,
+            COLORS.reset,
+            fmt1(&CLI_TEXT.interactive.target_device_default, config.target_height())
+        );
         for (idx, profile, _slug) in &profile_entries {
             println!(
                 "{}[{:>2}]{} {} ({}x{})",
                 COLORS.prompt, idx, COLORS.reset, profile.name, profile.width, profile.height
             );
         }
-        println!("{}Or enter:{} custom height (e.g., 1600) | WxH (e.g., 1440x1920) | H W (e.g., 1600 1200) | blank for default", COLORS.highlight, COLORS.reset);
-        print!("{}> {}", COLORS.prompt, COLORS.reset);
+        println!("{}{}{}", COLORS.highlight, CLI_TEXT.main.target_device_custom_with_hw, COLORS.reset);
+        print!("{}{} {}", COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset);
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -1470,7 +1388,7 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
         {
             let height = config.target_height();
             if let Err(e) = config.set_high_res_render_height(height) {
-                println!("{}Failed to set render height: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
                 continue;
             }
             return Ok(format!("{}px height (proportional width)", height));
@@ -1507,21 +1425,21 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 Ok(Some(selection)) => {
                     if let Some(width) = selection.width {
                         if let Err(e) = config.set_target_dimensions(width, selection.height) {
-                            println!("{}Failed to apply target dimensions: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_apply_dimensions_error, e), COLORS.reset);
                             continue;
                         }
                         if let Err(e) = config.set_high_res_render_height(selection.height) {
-                            println!("{}Failed to set render height: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
                             continue;
                         }
                         return Ok(format!("{}x{} px", width, selection.height));
                     } else {
                         if let Err(e) = config.set_target_height(selection.height) {
-                            println!("{}Failed to set target height: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_set_target_height_error, e), COLORS.reset);
                             continue;
                         }
                         if let Err(e) = config.set_high_res_render_height(selection.height) {
-                            println!("{}Failed to set render height: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
                             continue;
                         }
                         return Ok(format!(
@@ -1533,20 +1451,20 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 Ok(None) => {
                     let height = config.target_height();
                     if let Err(e) = config.set_high_res_render_height(height) {
-                        println!("{}Failed to set render height: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                        println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
                         continue;
                     }
                     return Ok(format!("{}px height (proportional width)", height));
                 }
                 Err(e) => {
-                    println!("{}Invalid target specification '{}': {}. Try again.{}", COLORS.highlight, spec, e, COLORS.reset);
+                    println!("{}{}{}", COLORS.highlight, fmt2(&CLI_TEXT.main.target_device_invalid_spec_error, spec, e), COLORS.reset);
                     continue;
                 }
             }
         } else {
             let height = config.target_height();
             if let Err(e) = config.set_high_res_render_height(height) {
-                println!("{}Failed to set render height: {}. Try again.{}", COLORS.highlight, e, COLORS.reset);
+                println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
                 continue;
             }
             return Ok(format!("{}px height (proportional width)", height));
@@ -1571,12 +1489,12 @@ fn handle_png_folder(
         ));
     }
 
-    println!("Image Folder Mode");
-    println!("Input folder: {}", folder_path.display());
+    println!("{}", CLI_TEXT.main.image_folder_mode_title);
+    println!("{}", fmt1(&CLI_TEXT.main.image_folder_mode_input, folder_path.display()));
     if enable_deskew {
-        println!("Deskew: ENABLED (rotation correction + document unwarping)");
+        println!("{}", CLI_TEXT.main.image_folder_mode_deskew);
     }
-    println!("This mode processes image files and performs layout detection inference.");
+    println!("{}", CLI_TEXT.main.image_folder_mode_description);
 
     // Call the image processing function from the library
     run_png_mode(folder_path, None, AppConfig::default(), enable_deskew)?;
@@ -1615,13 +1533,13 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     let pdf_path = PathBuf::from(&files[0]);
     validate_pdf_file(&files[0])?;
 
-    println!("PDF to PNG Mode");
-    println!("Input PDF: {}", pdf_path.display());
-    println!("Target height: {}px", height);
+    println!("{}", CLI_TEXT.main.pdf_to_png_mode_title);
+    println!("{}", fmt1(&CLI_TEXT.main.pdf_to_png_mode_input, pdf_path.display()));
+    println!("{}", fmt1(&CLI_TEXT.main.pdf_to_png_mode_target_height, height));
     if let Some(ref range) = page_range {
-        println!("Page range: {}", range);
+        println!("{}", fmt1(&CLI_TEXT.main.pdf_to_png_mode_page_range, range));
     } else {
-        println!("Processing all pages");
+        println!("{}", CLI_TEXT.main.pdf_to_png_mode_all_pages);
     }
 
     // Call the PDF-to-PNG processing function
@@ -1801,34 +1719,48 @@ fn show_system_status() -> Result<()> {
             .replace("{}", &format!("{}", sys.cpus().len()))
     );
 
+    let (accel_enabled, accel_detail) = hardware_acceleration_status();
+    let accel_text = if accel_enabled {
+        fmt1(&CLI_TEXT.main.system_hardware_acceleration_enabled, accel_detail)
+    } else {
+        fmt1(&CLI_TEXT.main.system_hardware_acceleration_disabled, accel_detail)
+    };
+    info_println!(
+        "{}",
+        fmt1(&CLI_TEXT.main.system_hardware_acceleration_label, accel_text)
+    );
+
     // Disk space
     let disks = Disks::new_with_refreshed_list();
-    info_println!("Storage:");
+    info_println!("{}", CLI_TEXT.main.system_storage);
     for disk in &disks {
         let total_gb = disk.total_space() / 1024 / 1024 / 1024;
         let available_gb = disk.available_space() / 1024 / 1024 / 1024;
         let usage_percent = ((total_gb - available_gb) as f64 / total_gb as f64 * 100.0) as u32;
 
         info_println!(
-            "   {}: {} GB available / {} GB total ({}% used)",
-            disk.mount_point().display(),
-            available_gb,
-            total_gb,
-            usage_percent
+            "{}",
+            fmt4(
+                &CLI_TEXT.main.system_storage_line,
+                disk.mount_point().display(),
+                available_gb,
+                total_gb,
+                usage_percent
+            )
         );
     }
 
     // Configuration
     if let Some(config_path) = AppConfig::default_config_path() {
         let config_status = if config_path.exists() {
-            "Found"
+            CLI_TEXT.main.system_config_found.as_str()
         } else {
-            "Not found"
+            CLI_TEXT.main.system_config_missing.as_str()
         };
-        info_println!("Config file: {} ({})", config_path.display(), config_status);
+        info_println!("{}", fmt2(&CLI_TEXT.main.system_config_file, config_path.display(), config_status));
     }
 
-    info_println!("========================================");
+    info_println!("{}", CLI_TEXT.main.system_footer_divider);
 
     Ok(())
 }
@@ -1907,13 +1839,83 @@ async fn check_pdf_ocr_layer(pdf_path: &PathBuf) -> Result<bool> {
     Ok(has_ocr)
 }
 
+#[derive(Clone, Copy, Default)]
+struct CliStageSnapshot {
+    rendered: u32,
+    detected: u32,
+    encoded: u32,
+    deskewed: u32,
+}
+
+fn print_stage_progress_line(stage_label: &str, stage_color: &str, verb: &str, current: u32, total: u32) {
+    if total == 0 {
+        return;
+    }
+    let pct = (((current as f64 / total as f64) * 100.0).round() as u32).min(100);
+    println!(
+        "{}[{}]{} {}{}{}: {}{}/{}{} ({}%)",
+        stage_color,
+        stage_label,
+        COLORS.reset,
+        stage_color,
+        verb,
+        COLORS.reset,
+        COLORS.page_complete,
+        current,
+        total,
+        COLORS.reset,
+        pct
+    );
+}
+
+fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progress::ProgressMetrics) {
+    let total = metrics.pages_total.max(1);
+
+    match metrics.mode {
+        lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => {
+            if metrics.rendered > snapshot.rendered {
+                for n in (snapshot.rendered + 1)..=metrics.rendered {
+                    print_stage_progress_line("Render", COLORS.render, "Page rendered", n, total);
+                }
+                snapshot.rendered = metrics.rendered;
+            }
+            if metrics.detected > snapshot.detected {
+                for n in (snapshot.detected + 1)..=metrics.detected {
+                    print_stage_progress_line("Infer", COLORS.detect, "Page inferred", n, total);
+                }
+                snapshot.detected = metrics.detected;
+            }
+            if metrics.encoded > snapshot.encoded {
+                for n in (snapshot.encoded + 1)..=metrics.encoded {
+                    print_stage_progress_line("Encode", COLORS.encode, "Page encoded", n, total);
+                }
+                snapshot.encoded = metrics.encoded;
+            }
+        }
+        lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
+            if metrics.encoded > snapshot.encoded {
+                for n in (snapshot.encoded + 1)..=metrics.encoded {
+                    print_stage_progress_line("Encode", COLORS.encode, "Page encoded", n, total);
+                }
+                snapshot.encoded = metrics.encoded;
+            }
+        }
+        lege::progress::ProgressMode::Unknown => {}
+    }
+
+    if metrics.deskewed > snapshot.deskewed {
+        for n in (snapshot.deskewed + 1)..=metrics.deskewed {
+            print_stage_progress_line("Deskew", COLORS.page_start, "Page deskewed", n, total);
+        }
+        snapshot.deskewed = metrics.deskewed;
+    }
+}
+
 async fn process_single_file(
     input_path: PathBuf,
     output_path: PathBuf,
     config: PipelineConfig,
 ) -> Result<()> {
-    use std::io::IsTerminal;
-
     // Clone config so we can log settings after processing completes.
     let log_config = config.clone();
 
@@ -1923,58 +1925,68 @@ async fn process_single_file(
     let task_id =
         progress::spawn_file_processing_task(input_path.clone(), output_path.clone(), config);
 
-    let stdout_is_tty =
-        std::io::stdout().is_terminal() && std::env::var("LEGE_NO_TTY_PROGRESS").is_err();
+    // CLI always uses a line-by-line color stream. GUI has a separate renderer.
+    let mut progress_error: Option<anyhow::Error> = None;
+    let mut stage_snapshot = CliStageSnapshot::default();
+    loop {
+        match receiver.recv_async().await {
+            Ok(ProgressUpdate::Status {
+                task_id: id,
+                status,
+                metrics,
+            }) if id == task_id => {
+                if let Some(m) = metrics {
+                    emit_cli_stage_progress(&mut stage_snapshot, m);
+                }
 
-    let progress_result = if stdout_is_tty {
-        // Use the new smooth 3-line renderer
-        lege::cli_progress::run_cli_three_line(receiver).await
-    } else {
-        // Non‑TTY fallback: simple line printing for pipes/redirects
-        let receiver = receiver;
-        let mut progress_error: Option<anyhow::Error> = None;
-        loop {
-            match receiver.recv_async().await {
-                Ok(ProgressUpdate::Status {
-                    task_id: id,
+                // Stage lines are emitted from metrics above. Avoid duplicate aggregate bars
+                // and duplicate encode lines from writer-actor append notifications.
+                if matches!(
                     status,
-                    metrics: _,
-                }) if id == task_id => {
-                    let (l1, l2, l3) = status.to_display_lines();
+                    lege::progress::ProcessingStatus::LayoutProgress { .. }
+                        | lege::progress::ProcessingStatus::NoLayoutProgress { .. }
+                        | lege::progress::ProcessingStatus::MarginProgress { .. }
+                        | lege::progress::ProcessingStatus::PdfAppend { .. }
+                        | lege::progress::ProcessingStatus::PdfAppendMargin { .. }
+                ) {
+                    continue;
+                }
+                let (l1, l2, l3) = status.to_cli_display_lines();
+                if !l1.is_empty() {
                     println!("{}", l1);
-                    if !l2.is_empty() {
-                        println!("{}", l2);
-                    }
-                    if !l3.is_empty() {
-                        println!("{}", l3);
-                    }
                 }
-                Ok(ProgressUpdate::Completed {
-                    task_id: id,
-                    message,
-                    metrics: _,
-                }) if id == task_id => {
-                    println!("[Complete]\n{}", message);
-                    break;
+                if !l2.is_empty() {
+                    println!("{}", l2);
                 }
-                Ok(ProgressUpdate::Error {
-                    task_id: id,
-                    error,
-                    metrics: _,
-                }) if id == task_id => {
-                    println!("[Error]\n{}", error);
-                    progress_error = Some(anyhow!(error));
-                    break;
+                if !l3.is_empty() {
+                    println!("{}", l3);
                 }
-                Ok(_) => {}
-                Err(_) => break,
             }
+            Ok(ProgressUpdate::Completed {
+                task_id: id,
+                message,
+                metrics: _,
+            }) if id == task_id => {
+                println!("{}", fmt1(&CLI_TEXT.main.progress_complete, message));
+                break;
+            }
+            Ok(ProgressUpdate::Error {
+                task_id: id,
+                error,
+                metrics: _,
+            }) if id == task_id => {
+                println!("{}", fmt1(&CLI_TEXT.main.progress_error, &error));
+                progress_error = Some(anyhow!(error));
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => break,
         }
-        if let Some(err) = progress_error {
-            Err(err)
-        } else {
-            Ok(())
-        }
+    }
+    let progress_result = if let Some(err) = progress_error {
+        Err(err)
+    } else {
+        Ok(())
     };
 
     if let Err(err) = progress_result {
@@ -1999,7 +2011,7 @@ async fn process_single_file(
     log_options.output_path = Some(output_path);
 
     if let Err(err) = history_log::add_log_entry(&processing_result, &log_options) {
-        eprintln!("Warning: failed to write processing log entry: {}", err);
+        eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
     }
 
     Ok(())

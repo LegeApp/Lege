@@ -48,10 +48,6 @@ pub async fn run_cli_three_line(rx: flume::Receiver<crate::progress::ProgressUpd
     let mut completed_duration: Option<Duration> = None;
     let mut progress_error: Option<String> = None;
 
-    // External lines buffer
-    let mut ext_last = String::new();
-    let mut ext_muted_count: u32 = 0;
-
     // Track the last progress state to only update on significant changes
     let mut last_rendered = 0usize;
     let mut last_detected = 0usize;
@@ -61,27 +57,7 @@ pub async fn run_cli_three_line(rx: flume::Receiver<crate::progress::ProgressUpd
     loop {
         match rx.recv_async().await {
             Ok(crate::progress::ProgressUpdate::Status { status, .. }) => {
-                let (l0, l1, mut l2) = status.to_display_lines();
-
-                // Fold external tool line into the third line compactly
-                if let crate::progress::ProcessingStatus::ExternalToolLine { line } = &status {
-                    if line != &ext_last {
-                        ext_last = line.clone();
-                        ext_muted_count = 0;
-                    } else {
-                        // same line repeated → mute
-                        ext_muted_count = ext_muted_count.saturating_add(1);
-                    }
-                }
-
-                if !ext_last.is_empty() {
-                    let suffix = if ext_muted_count > 0 {
-                        format!("  (+{} muted)", ext_muted_count)
-                    } else {
-                        String::new()
-                    };
-                    l2 = format!("{}{}", ext_last, suffix);
-                }
+                let (l0, l1, l2) = status.to_display_lines();
 
                 // Determine if this is a significant change
                 let mut is_significant = false;
@@ -130,8 +106,7 @@ pub async fn run_cli_three_line(rx: flume::Receiver<crate::progress::ProgressUpd
                     crate::progress::ProcessingStatus::MarginPass1Analyzing |
                     crate::progress::ProcessingStatus::MarginAnalysisSummary { .. } |
                     crate::progress::ProcessingStatus::PdfAppend { .. } |
-                    crate::progress::ProcessingStatus::PdfAppendMargin { .. } |
-                    crate::progress::ProcessingStatus::ExternalToolLine { .. } => {
+                    crate::progress::ProcessingStatus::PdfAppendMargin { .. } => {
                         is_significant = true;
                     }
                 }
@@ -175,7 +150,7 @@ pub async fn run_cli_three_line(rx: flume::Receiver<crate::progress::ProgressUpd
                     println!("{} {}Status\x1b[0m {}", timestamp(), status_color, l0);
                     println!("{} {}Detail\x1b[0m {}{}{}", timestamp(), detail_color, detail_color, l1, "\x1b[0m");
                     if !l2.is_empty() {
-                        println!("{} \x1b[2;36mDetail\x1b[0m \x1b[2;37m{}\x1b[0m", timestamp(), l2);
+                        println!("{} \x1b[2;36mDetail\x1b[0m \x1b[2;36m{}\x1b[0m", timestamp(), l2);
                     } else {
                         println!();
                     }
