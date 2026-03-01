@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Screenshot.png" alt="Lege Interface" width="45%">
+  <img src="screenshot.png" alt="Lege Interface" width="45%">
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
@@ -224,6 +224,7 @@ Lege is a Rust workspace with multiple crates:
 GPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`. 
 
 ---
+
 
 
 
