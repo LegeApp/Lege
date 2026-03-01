@@ -170,6 +170,9 @@ fn hardware_acceleration_status() -> (bool, String) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Configure dynamic runtime library paths early (before ORT/PDF pipelines initialize).
+    lege::configure_runtime_env();
+
     let args: Vec<String> = std::env::args().collect();
 
     // Special help: environment variables

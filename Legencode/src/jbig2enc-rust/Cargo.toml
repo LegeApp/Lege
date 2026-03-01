@@ -42,10 +42,12 @@ rustc-hash = "1.1"
 vergen = { version = "9.0.6", default-features = false, features = ["build"] }
 
 [features]
-default = ["tracing"]
+default = []
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
 trace_encoder = ["dep:tracing", "dep:tracing-subscriber"]
 line_verify = []
+cc-analysis = []
+symboldict = ["cc-analysis"]
 
 [dev-dependencies]
 tracing = { version = "0.1", features = ["std"] }

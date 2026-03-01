@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ndarray::Array4;
 #[cfg(target_os = "macos")]
 use ort::execution_providers::CoreMLExecutionProvider;
@@ -330,8 +330,15 @@ fn crop_rgb_region_zero_copy(
         let actual_height = bounds.y_end - bounds.y_start;
         crate::streamline::log_debug_message(&format!(
             "crop_rgb_region_zero_copy: source_width={}, bounds=({},{} to {},{}), region_width={}, region_height={}, actual_width={}, actual_height={}",
-            source_width, bounds.x_start, bounds.y_start, bounds.x_end, bounds.y_end,
-            region_width, region_height, actual_width, actual_height
+            source_width,
+            bounds.x_start,
+            bounds.y_start,
+            bounds.x_end,
+            bounds.y_end,
+            region_width,
+            region_height,
+            actual_width,
+            actual_height
         ));
         if actual_width != region_width || actual_height != region_height {
             crate::streamline::log_debug_message(&format!(
@@ -769,7 +776,7 @@ pub fn create_inversion_mask(mask: &mut [bool], page_width: u32, bbox: [f32; 4])
     }
 }
 
-/// Mask a binary image region by setting pixels to 1 within bbox
+/// Mask a binary image region by setting pixels to white (255) within bbox
 pub fn mask_region(binarized: &mut [u8], page_width: u32, bbox: [f32; 4]) {
     if binarized.is_empty() || page_width == 0 {
         return;
@@ -799,7 +806,7 @@ pub fn mask_region(binarized: &mut [u8], page_width: u32, bbox: [f32; 4]) {
         if row_end > binarized.len() {
             break;
         }
-        binarized[row_start..row_end].fill(1);
+        binarized[row_start..row_end].fill(255);
     }
 }
 
