@@ -164,7 +164,26 @@ pub fn get_internal_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Configure runtime library environment for dynamically loaded dependencies.
+/// This enables wrapper-free Linux packaging when ONNX Runtime is installed
+/// under app-private directories such as `/usr/lib/lege`.
+pub fn configure_runtime_env() {
+    if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+        #[cfg(target_os = "windows")]
+        let ort_name = "onnxruntime.dll";
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let ort_name = "libonnxruntime.so";
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let ort_name = "libonnxruntime.dylib";
 
+        if let Some(path) = runtime_asset_path_if_exists(ort_name) {
+            // Safe: set once at process startup; never touched concurrently.
+            unsafe {
+                std::env::set_var("ORT_DYLIB_PATH", path);
+            }
+        }
+    }
+}
 
 
 

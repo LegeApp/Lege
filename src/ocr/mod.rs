@@ -1,11 +1,10 @@
 // src/ocr/mod.rs
 // Unified OCR interface for Windows (winocr) and Linux (tesseract)
 
-
 pub mod ocr;
 
 use std::env;
-use std::path:: {Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -136,6 +135,7 @@ fn has_system_traineddata() -> bool {
         "/usr/share/tesseract-ocr/tessdata/eng.traineddata",
         "/usr/share/tessdata/eng.traineddata",
         "/usr/local/share/tessdata/eng.traineddata",
+        "/usr/share/lege/tessdata/eng.traineddata",
     ];
 
     data_paths.iter().any(|path| Path::new(path).exists())
@@ -167,6 +167,7 @@ fn check_for_partial_installation() -> Result<String, String> {
         "/usr/share/tesseract-ocr/tessdata/",
         "/usr/share/tessdata/",
         "/usr/local/share/tessdata/",
+        "/usr/share/lege/tessdata/",
     ];
 
     for data_path in &data_paths {
@@ -201,6 +202,7 @@ pub fn get_tessdata_path() -> Option<String> {
         "/usr/share/tesseract-ocr/tessdata/",
         "/usr/share/tessdata/",
         "/usr/local/share/tessdata/",
+        "/usr/share/lege/tessdata/",
     ];
 
     for path in &system_paths {

@@ -1,0 +1,41 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Binary artifacts
+*.so
+*.a
+*.dll
+*.exe
+*.bin
+*.o
+*.d
+
+# Logs
+*.log
+
+# Misc
+*.zip
+*.tar.gz
+.idea/
+.vscode/
+
+# .NET/VS
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.rsuser
+*.cache
+*.ide
+*.nupkg
+*.snupkg
+/*.vs/
+**/*.wpftmp.csproj
+**/*_wpftmp.csproj
