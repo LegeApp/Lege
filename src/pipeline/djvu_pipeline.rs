@@ -803,9 +803,22 @@ async fn extract_djvu_text_layer(
         info_log!("[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}", 
             page_index, use_regions, detections.len());
         let result = if use_regions {
-            crate::ocr::ocr::perform_region_based_ocr(binarized, width, height, detections).await
+            crate::ocr::ocr::perform_region_based_ocr(
+                binarized,
+                width,
+                height,
+                detections,
+                config.ocr_language(),
+            )
+            .await
         } else {
-            crate::ocr::ocr::perform_tiling_based_ocr(binarized, width, height).await
+            crate::ocr::ocr::perform_tiling_based_ocr(
+                binarized,
+                width,
+                height,
+                config.ocr_language(),
+            )
+            .await
         };
         match result {
             Ok(text) => {

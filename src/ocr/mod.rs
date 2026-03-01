@@ -24,6 +24,7 @@ pub fn run_ocr(
     width: usize,
     height: usize,
     is_binary: bool,
+    _language: &str,
 ) -> Option<OcrResult> {
     winocr::run_winocr(image_data, width, height, is_binary)
 }
@@ -34,8 +35,9 @@ pub fn run_ocr(
     width: usize,
     height: usize,
     is_binary: bool,
+    language: &str,
 ) -> Option<OcrResult> {
-    tesseract::run_tesseract(image_data, width, height, is_binary)
+    tesseract::run_tesseract(image_data, width, height, is_binary, language)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -44,6 +46,7 @@ pub fn run_ocr(
     _width: usize,
     _height: usize,
     _is_binary: bool,
+    _language: &str,
 ) -> Option<OcrResult> {
     None
 }
@@ -51,94 +54,45 @@ pub fn run_ocr(
 /// Check if Tesseract is available on Linux/macOS systems
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn check_tesseract_availability() -> Result<String, String> {
-    // First check if we have local eng.traineddata in Lege directory
-    let local_traineddata = check_local_traineddata();
-
-    // Method 1: Check if tesseract command is available in PATH
-    let tesseract_binary = if let Ok(output) = Command::new("tesseract").arg("--version").output() {
-        if output.status.success() {
-            let version_info = String::from_utf8_lossy(&output.stdout);
-            let version_line = version_info.lines().next().unwrap_or("version unknown");
-            Some(format!("Tesseract found in PATH: {}", version_line))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // If no tesseract binary found in PATH, check common installation paths
-    let tesseract_binary = if tesseract_binary.is_none() {
-        let common_paths = [
-            "/usr/bin/tesseract",                       // apt/deb packages
-            "/usr/local/bin/tesseract",                 // manual install
-            "/snap/bin/tesseract",                      // snap packages
-            "/home/linuxbrew/.linuxbrew/bin/tesseract", // homebrew
-            "/opt/homebrew/bin/tesseract",              // homebrew (Apple Silicon)
-        ];
-
-        let mut found_binary = None;
-        for path in &common_paths {
-            if Path::new(path).exists() {
-                // Try to get version from this specific path
-                if let Ok(output) = Command::new(path).arg("--version").output() {
-                    if output.status.success() {
-                        let version_info = String::from_utf8_lossy(&output.stdout);
-                        let version_line = version_info.lines().next().unwrap_or("version unknown");
-                        found_binary =
-                            Some(format!("Tesseract found at {}: {}", path, version_line));
-                        break;
-                    }
-                }
-            }
-        }
-        found_binary
-    } else {
-        tesseract_binary
-    };
-
-    // Now determine the final result based on what we found
-    match (tesseract_binary, local_traineddata) {
-        (Some(binary_info), Some(local_data)) => Ok(format!(
-            "{} with custom eng.traineddata at {}",
-            binary_info,
-            local_data.display()
-        )),
-        (Some(binary_info), None) => {
-            // Check if system has eng.traineddata
-            if has_system_traineddata() {
-                Ok(format!("{} with system tessdata", binary_info))
-            } else {
-                Err(format!(
-                    "{} but no eng.traineddata found. \
-                    Place eng.traineddata in Lege directory or install with: sudo apt install tesseract-ocr-eng",
-                    binary_info
-                ))
-            }
-        }
-        (None, Some(local_data)) => Err(format!(
-            "Custom eng.traineddata found at {} but no Tesseract binary. \
-                Install with: sudo apt install tesseract-ocr",
-            local_data.display()
-        )),
-        (None, None) => {
-            // Continue with existing fallback detection logic...
-            check_for_partial_installation()
-        }
-    }
+    check_tesseract_availability_for_language("eng")
 }
 
-/// Check if system has eng.traineddata in standard locations
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn has_system_traineddata() -> bool {
-    let data_paths = [
-        "/usr/share/tesseract-ocr/tessdata/eng.traineddata",
-        "/usr/share/tessdata/eng.traineddata",
-        "/usr/local/share/tessdata/eng.traineddata",
-        "/usr/share/lege/tessdata/eng.traineddata",
-    ];
+pub fn check_tesseract_availability_for_language(language: &str) -> Result<String, String> {
+    let normalized = language.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err("OCR language cannot be empty".to_string());
+    }
 
-    data_paths.iter().any(|path| Path::new(path).exists())
+    let tesseract_binary = find_tesseract_binary();
+    let traineddata = find_traineddata_path(&normalized);
+
+    match (tesseract_binary, traineddata) {
+        (Some(binary_info), Some(data_path)) => Ok(format!(
+            "{} with {}.traineddata at {}",
+            binary_info,
+            normalized,
+            data_path.display()
+        )),
+        (Some(binary_info), None) => {
+            let searched = tessdata_search_dirs()
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "{} but no {}.traineddata found. Expected in one of: {}",
+                binary_info, normalized, searched
+            ))
+        }
+        (None, Some(data_path)) => Err(format!(
+            "Found {}.traineddata at {} but Tesseract binary is not accessible. \
+             Install with: sudo apt install tesseract-ocr",
+            normalized,
+            data_path.display()
+        )),
+        (None, None) => check_for_partial_installation(),
+    }
 }
 
 /// Check for partial Tesseract installation (libraries/data without binary)
@@ -189,30 +143,17 @@ fn check_for_partial_installation() -> Result<String, String> {
 /// Get the appropriate tessdata directory path, preferring local eng.traineddata
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn get_tessdata_path() -> Option<String> {
-    // First check for local eng.traineddata in Lege directory
-    if let Some(local_traineddata) = check_local_traineddata() {
-        // Return the directory containing the local eng.traineddata
-        if let Some(parent) = local_traineddata.parent() {
-            return Some(parent.to_string_lossy().to_string());
-        }
+    get_tessdata_path_for_language("eng")
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn get_tessdata_path_for_language(language: &str) -> Option<String> {
+    let normalized = language.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
     }
-
-    // Fall back to system tessdata directories
-    let system_paths = [
-        "/usr/share/tesseract-ocr/tessdata/",
-        "/usr/share/tessdata/",
-        "/usr/local/share/tessdata/",
-        "/usr/share/lege/tessdata/",
-    ];
-
-    for path in &system_paths {
-        let eng_path = Path::new(path).join("eng.traineddata");
-        if eng_path.exists() {
-            return Some(path.to_string());
-        }
-    }
-
-    None
+    find_traineddata_path(&normalized)
+        .and_then(|traineddata| traineddata.parent().map(|p| p.to_string_lossy().to_string()))
 }
 
 #[cfg(target_os = "windows")]
@@ -227,26 +168,97 @@ pub fn get_tessdata_path() -> Option<String> {
     None
 }
 
-/// Check for local eng.traineddata in Lege program directory
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn check_local_traineddata() -> Option<PathBuf> {
-    // Get the directory where the Lege executable is located
-    let exe_path = env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
+#[cfg(target_os = "windows")]
+pub fn check_tesseract_availability_for_language(_language: &str) -> Result<String, String> {
+    Ok("Windows OCR available (no Tesseract required)".to_string())
+}
 
-    // Check for eng.traineddata in the same directory as the executable
-    let local_traineddata = exe_dir.join("eng.traineddata");
-    if local_traineddata.exists() {
-        Some(local_traineddata)
-    } else {
-        // Also check current working directory as fallback
-        let cwd_traineddata = PathBuf::from("eng.traineddata");
-        if cwd_traineddata.exists() {
-            Some(cwd_traineddata)
-        } else {
-            None
+#[cfg(target_os = "windows")]
+pub fn get_tessdata_path_for_language(_language: &str) -> Option<String> {
+    None
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn find_tesseract_binary() -> Option<String> {
+    if let Ok(output) = Command::new("tesseract").arg("--version").output() {
+        if output.status.success() {
+            let version_info = String::from_utf8_lossy(&output.stdout);
+            let version_line = version_info.lines().next().unwrap_or("version unknown");
+            return Some(format!("Tesseract found in PATH: {}", version_line));
         }
     }
+
+    let common_paths = [
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/snap/bin/tesseract",
+        "/home/linuxbrew/.linuxbrew/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+    ];
+
+    for path in &common_paths {
+        if Path::new(path).exists() {
+            if let Ok(output) = Command::new(path).arg("--version").output() {
+                if output.status.success() {
+                    let version_info = String::from_utf8_lossy(&output.stdout);
+                    let version_line = version_info.lines().next().unwrap_or("version unknown");
+                    return Some(format!("Tesseract found at {}: {}", path, version_line));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn tessdata_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push_unique = |path: PathBuf| {
+        if !dirs.iter().any(|p| p == &path) {
+            dirs.push(path);
+        }
+    };
+
+    if let Ok(tess_prefix) = env::var("TESSDATA_PREFIX") {
+        let prefix = PathBuf::from(tess_prefix);
+        push_unique(prefix.clone());
+        push_unique(prefix.join("tessdata"));
+    }
+
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            push_unique(exe_dir.to_path_buf());
+            push_unique(exe_dir.join("tessdata"));
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        push_unique(cwd.clone());
+        push_unique(cwd.join("tessdata"));
+    }
+
+    for path in [
+        "/usr/share/tesseract-ocr/tessdata/",
+        "/usr/share/tessdata/",
+        "/usr/local/share/tessdata/",
+        "/usr/share/lege/tessdata/",
+    ] {
+        push_unique(PathBuf::from(path));
+    }
+
+    dirs
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn find_traineddata_path(language: &str) -> Option<PathBuf> {
+    let filename = format!("{}.traineddata", language);
+    for dir in tessdata_search_dirs() {
+        let candidate = dir.join(&filename);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -256,6 +268,16 @@ pub fn check_tesseract_availability() -> Result<String, String> {
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub fn get_tessdata_path() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub fn check_tesseract_availability_for_language(_language: &str) -> Result<String, String> {
+    Err("OCR not supported on this platform".to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub fn get_tessdata_path_for_language(_language: &str) -> Option<String> {
     None
 }
 
@@ -313,7 +335,7 @@ pub fn extract_text_layer(
     };
 
     // Enhanced OCR call with better error handling
-    match run_ocr(&final_image_data, width, height, is_binary) {
+    match run_ocr(&final_image_data, width, height, is_binary, "eng") {
         Some(ocr_result) => {
             // Validate the OCR result
             if ocr_result.hocr.is_empty() && ocr_result.plain_text.is_empty() {
