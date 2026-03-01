@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Screenshot 2026-02-18 112523.png" alt="Lege Interface" width="45%" style="margin-right: 2%">
+  <img src="Screenshot 2026-02-18 120310.png" alt="Lege Interface" width="45%" style="margin-right: 2%">
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
@@ -337,3 +337,4 @@ Third-party licenses are documented in `docs/THIRD-PARTY-LICENSES.md`.
 ---
 
 **Made with ❤️ for the E-Ink reading community**
+
