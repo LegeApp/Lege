@@ -272,6 +272,7 @@ pub struct PipelineConfig {
     pub(crate) dither_images: bool,
     pub(crate) binarization: BinarizationConfig,
     pub(crate) enable_ocr: bool,
+    pub(crate) ocr_language: String,
     pub(crate) cover_format: CoverFormat,
     pub(crate) text_format: String,
     pub(crate) enable_layout_detection: bool,
@@ -330,6 +331,7 @@ impl PipelineConfig {
             dither_images: true,
             binarization: BinarizationConfig::default(),
             enable_ocr: true,
+            ocr_language: "eng".to_string(),
             cover_format: CoverFormat::Jpeg,
             text_format: "jbig2".to_string(),
             enable_layout_detection: true,
@@ -432,6 +434,7 @@ impl PipelineConfig {
         if self.heavy_sauvola_concurrency == 0 {
             return Err(anyhow!("heavy_sauvola_concurrency must be greater than 0"));
         }
+        Self::validate_ocr_language_code(&self.ocr_language)?;
 
         if !self.model_path.is_empty() && self.model_path != "paddle-layout.onnx" {
             if !std::path::Path::new(&self.model_path).exists() {
@@ -488,6 +491,9 @@ impl PipelineConfig {
     }
     pub fn enable_ocr(&self) -> bool {
         self.enable_ocr
+    }
+    pub fn ocr_language(&self) -> &str {
+        &self.ocr_language
     }
     pub fn cover_format(&self) -> &CoverFormat {
         &self.cover_format
@@ -650,6 +656,12 @@ impl PipelineConfig {
     pub fn set_enable_ocr(&mut self, enable: bool) {
         self.enable_ocr = enable;
     }
+    pub fn set_ocr_language(&mut self, language: &str) -> Result<()> {
+        let normalized = language.trim().to_ascii_lowercase();
+        Self::validate_ocr_language_code(&normalized)?;
+        self.ocr_language = normalized;
+        Ok(())
+    }
     pub fn set_enable_layout_detection(&mut self, enable: bool) {
         self.enable_layout_detection = enable;
     }
@@ -739,6 +751,23 @@ impl PipelineConfig {
         }
         self.djvu_iw44_quality = quality;
         Ok(())
+    }
+
+    fn validate_ocr_language_code(language: &str) -> Result<()> {
+        if language.is_empty() {
+            return Err(anyhow!("ocr_language cannot be empty"));
+        }
+        if language
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "Invalid ocr_language '{}'. Allowed characters: a-z, 0-9, underscore",
+                language
+            ))
+        }
     }
 }
 

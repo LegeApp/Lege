@@ -1,14 +1,5 @@
 // djvu.rs
-//! Native Rust DJVU encoding using the djvu_encoder crate
-//!
-//! This module replaces the subprocess-based djvulibre orchestration with
-//! direct in-memory encoding. Key improvements:
-//! - No external dependencies (djvulibre binaries no longer required)
-//! - In-memory processing (no temp file I/O for intermediate steps)
-//! - Faster execution (no subprocess overhead)
-//! - Simpler deployment (single binary)
-//! - Better error handling (Rust Result types)
-//! - Thread-safe by design
+// Native Rust DJVU encoding using the djvu_encoder crate
 
 use anyhow::{anyhow, Context, Result};
 use image::{Rgb, RgbImage};

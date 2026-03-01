@@ -42,11 +42,13 @@ pub async fn perform_ocr_on_binarized(
     binarized: &[u8],
     width: usize,
     height: usize,
+    language: &str,
 ) -> Result<String> {
     // Concurrency limiter to keep OCR memory usage in check
     let _permit = OCR_SEMAPHORE.acquire().await;
     // Clone the data to move into the blocking task
     let binarized_data = binarized.to_vec();
+    let language = language.to_string();
 
     // Run the synchronous OCR in a blocking task to avoid runtime conflicts
     let ocr_result = tokio::task::spawn_blocking(move || {
@@ -55,6 +57,7 @@ pub async fn perform_ocr_on_binarized(
             width,
             height,
             true, // is_binary = true for binarized data
+            &language,
         )
     })
     .await?;
@@ -207,6 +210,7 @@ pub async fn perform_region_based_ocr(
     page_width: usize,
     page_height: usize,
     detections: &[crate::engine::Detection],
+    language: &str,
 ) -> Result<String> {
     let mut tasks = Vec::new();
     let classifier = crate::types::LabelClassifier::default();
@@ -226,10 +230,12 @@ pub async fn perform_region_based_ocr(
         let bbox = det.bbox;
         let (region_data, region_w, region_h) =
             extract_region_from_image(binarized, page_width, page_height, bbox)?;
+        let language = language.to_string();
         tasks.push(tokio::spawn(async move {
-            let hocr = super::ocr::perform_ocr_on_binarized(&region_data, region_w, region_h)
-                .await
-                .ok();
+            let hocr =
+                super::ocr::perform_ocr_on_binarized(&region_data, region_w, region_h, &language)
+                    .await
+                    .ok();
             (hocr, bbox)
         }));
     }
@@ -276,14 +282,18 @@ pub async fn perform_region_based_ocr(
         // and finally full-page OCR to ensure some text layer is generated.
         #[cfg(feature = "debug-logging")]
         println!("[perform_region_based_ocr] Stitched is empty, trying tiling fallback...");
-        if let Ok(hocr_tiles) = perform_tiling_based_ocr(binarized, page_width, page_height).await {
+        if let Ok(hocr_tiles) =
+            perform_tiling_based_ocr(binarized, page_width, page_height, language).await
+        {
             if !strip_hocr_to_body(&hocr_tiles).trim().is_empty() {
                 return Ok(hocr_tiles);
             }
         }
         #[cfg(feature = "debug-logging")]
         println!("[perform_region_based_ocr] Tiling fallback empty, trying full-page OCR...");
-        if let Ok(hocr_full) = perform_ocr_on_binarized(binarized, page_width, page_height).await {
+        if let Ok(hocr_full) =
+            perform_ocr_on_binarized(binarized, page_width, page_height, language).await
+        {
             let body = strip_hocr_to_body(&hocr_full);
             #[cfg(feature = "debug-logging")]
             println!(
@@ -307,6 +317,7 @@ pub async fn perform_tiling_based_ocr(
     binarized: &[u8],
     page_width: usize,
     page_height: usize,
+    language: &str,
 ) -> Result<String> {
     let tile_height: usize = 400;
     let overlap: usize = 50;
@@ -318,10 +329,12 @@ pub async fn perform_tiling_based_ocr(
         let bbox = [0.0, y_start as f32, page_width as f32, y_end as f32];
         let (tile_data, tile_w, tile_h) =
             extract_region_from_image(binarized, page_width, page_height, bbox)?;
+        let language = language.to_string();
         tasks.push(tokio::spawn(async move {
-            let hocr = super::ocr::perform_ocr_on_binarized(&tile_data, tile_w, tile_h)
-                .await
-                .ok();
+            let hocr =
+                super::ocr::perform_ocr_on_binarized(&tile_data, tile_w, tile_h, &language)
+                    .await
+                    .ok();
             (hocr, bbox)
         }));
         if y_end == page_height {
@@ -341,7 +354,9 @@ pub async fn perform_tiling_based_ocr(
     }
     if stitched.trim().is_empty() {
         // Fallback: run a single full-page OCR to ensure we produce a text layer
-        if let Ok(hocr_full) = perform_ocr_on_binarized(binarized, page_width, page_height).await {
+        if let Ok(hocr_full) =
+            perform_ocr_on_binarized(binarized, page_width, page_height, language).await
+        {
             let body = strip_hocr_to_body(&hocr_full);
             return Ok(finalize_hocr(&body, page_width, page_height));
         }

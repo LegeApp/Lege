@@ -1282,9 +1282,22 @@ async fn perform_ocr(
     );
 
     let result = if use_regions {
-        crate::ocr::ocr::perform_region_based_ocr(binarized, width, height, detections).await
+        crate::ocr::ocr::perform_region_based_ocr(
+            binarized,
+            width,
+            height,
+            detections,
+            config.ocr_language(),
+        )
+        .await
     } else {
-        crate::ocr::ocr::perform_tiling_based_ocr(binarized, width, height).await
+        crate::ocr::ocr::perform_tiling_based_ocr(
+            binarized,
+            width,
+            height,
+            config.ocr_language(),
+        )
+        .await
     };
 
     match result {

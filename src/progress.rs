@@ -1285,8 +1285,21 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
     }
 
     // OCR (tesseract) if enabled
-    if config.enable_ocr() && crate::is_ocr_available() == false {
-        missing.push("tesseract".to_string());
+    if config.enable_ocr() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Err(e) = crate::ocr::check_tesseract_availability_for_language(config.ocr_language())
+        {
+            return Err(anyhow::anyhow!(
+                "Missing OCR language data '{}.traineddata': {}",
+                config.ocr_language(),
+                e
+            ));
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        if crate::is_ocr_available() == false {
+            missing.push("tesseract".to_string());
+        }
     }
 
     // DJVU preflight (native Rust encoder): validate runtime state/workdir
