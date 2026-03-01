@@ -32,6 +32,9 @@ use winapi::um::winuser::{SW_HIDE, ShowWindow};
 use lege::debug_log::write_debug_line;
 
 fn main() {
+    // Configure dynamic runtime library paths early (before ONNX sessions initialize).
+    lege::configure_runtime_env();
+
     // Hide console window on Windows to prevent flicker
     #[cfg(target_os = "windows")]
     unsafe {

@@ -31,7 +31,6 @@ pub enum ProcessingStatus {
     PdfAppend { current: usize, total: usize },
     /// Same as PdfAppend but keeps the header stable for Margin Mode to avoid flicker
     PdfAppendMargin { current: usize, total: usize },
-    ExternalToolLine { line: String },
 
     // --- Progress variants for different modes ---
     LayoutProgress {
@@ -124,17 +123,22 @@ impl ProcessingStatus {
                 "Margin Analysis: complete".to_string(),
                 summary.clone(),
             ),
-            Self::PdfAppend { current, total } => (
-                "[Layout Mode]".to_string(),
-                String::new(),  // Removed per-page "Encoding complete" message
-                String::new(),  // Removed per-page "✓ Page X of Y" message
-            ),
-            Self::PdfAppendMargin { current, total } => (
-                "[Margin Mode]".to_string(),
-                String::new(),  // Removed per-page "Encoding complete" message
-                String::new(),  // Removed per-page "✓ Page X of Y" message
-            ),
-            Self::ExternalToolLine { line } => ("[External]".to_string(), line.clone(), String::new()),
+            Self::PdfAppend { current, total } => {
+                let pct = if *total > 0 { ((*current as f64 / *total as f64) * 100.0).round() as usize } else { 0 };
+                (
+                    "[Encode]".to_string(),
+                    format!("\x1b[95mPage encoded\x1b[0m: \x1b[92m{}/{}\x1b[0m ({}%)", current, total, pct.min(100)),
+                    String::new(),
+                )
+            }
+            Self::PdfAppendMargin { current, total } => {
+                let pct = if *total > 0 { ((*current as f64 / *total as f64) * 100.0).round() as usize } else { 0 };
+                (
+                    "[Encode+Margin]".to_string(),
+                    format!("\x1b[95mPage encoded\x1b[0m: \x1b[92m{}/{}\x1b[0m ({}%)", current, total, pct.min(100)),
+                    String::new(),
+                )
+            }
             Self::LayoutProgress { rendered, detected, encoded, deskewed, total, enable_layout_detection: _, enable_deskew, eta: _ } => {
                 let total = *total;
                 let r = (*rendered).min(total);
@@ -328,7 +332,6 @@ impl ProcessingStatus {
                 String::new(),
                 String::new(),
             ),
-            Self::ExternalToolLine { line } => ("[External]".to_string(), line.clone(), String::new()),
             Self::LayoutProgress { rendered, detected, encoded, deskewed, total, enable_layout_detection: _, enable_deskew, eta: _ } => {
                 let total = *total;
                 let r = (*rendered).min(total);
@@ -1249,7 +1252,11 @@ async fn process_file_with_tracker(
         // Progress is tracked via publish_*_progress methods, no need for callback updates
     }).await?;
 
-    tracker.update(ProcessingStatus::AssemblingOutput);
+    // DJVU assembly can continue after page encoding has reached total; suppressing
+    // a separate "finalizing" phase keeps progress aligned with the 3-stage model.
+    if config.text_format() != "djvu" {
+        tracker.update(ProcessingStatus::AssemblingOutput);
+    }
     Ok(format!("Successfully processed {} pages to {}", total_pages, output_path.display()))
 }
 
@@ -1263,7 +1270,7 @@ fn human_duration(d: Duration) -> String {
     else { format!("{:02}s", s) }
 }
 
-// Perform unified dependency checks (pdfium presence heuristic, OCR if requested, djvulibre tools if needed)
+// Perform unified dependency checks (pdfium presence heuristic, OCR if requested, DJVU runtime readiness if needed)
 fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
     let mut missing: Vec<String> = Vec::new();
 
@@ -1282,19 +1289,19 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
         missing.push("tesseract".to_string());
     }
 
-    // DjVu external tools if DjVu output selected
+    // DJVU preflight (native Rust encoder): validate runtime state/workdir
     if config.text_format() == "djvu" {
         let temp_dir = crate::app_dirs::djvu_base_dir();
         let djvu_cfg = crate::djvu::DjvuConfig { work_dir: temp_dir, ..Default::default() };
         match crate::djvu::DjvuOrchestrator::new(djvu_cfg) {
             Ok(orchestrator) => {
                 if let Err(e) = orchestrator.preflight_check(config.enable_ocr()) {
-                    // Bubble original detailed unified message from djvu orchestrator
+                    // Bubble original detailed unified message from djvu orchestrator.
                     return Err(e);
                 }
             }
-            Err(_) => {
-                missing.push("djvulibre tools".to_string());
+            Err(e) => {
+                return Err(anyhow::anyhow!("DJVU encoder initialization failed: {}", e));
             }
         }
     }

@@ -1,8 +1,8 @@
-﻿// src/ocr/winocr.rs
+// src/ocr/winocr.rs
 // Windows OCR implementation using Windows Runtime APIs
 
 use super::OcrResult;
-use windows::Graphics::Imaging::{SoftwareBitmap, BitmapPixelFormat, BitmapBufferAccessMode};
+use windows::Graphics::Imaging::{BitmapBufferAccessMode, BitmapPixelFormat, SoftwareBitmap};
 use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
 use windows_core;
 
@@ -52,7 +52,7 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
     // Memory optimization: downscale large images by total pixel count
     const MAX_OCR_PIXELS: usize = 1_500_000; // ~1200x1250
     let current_pixels = width * height;
-    
+
     // Work directly with raw pixel data - no need for image crate conversion
 
     // Apply memory optimization if needed using existing optimized downscaling
@@ -67,7 +67,14 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
             width, height, new_width, new_height, scale_factor
         );
 
-        match downscale_image_lanczos3(data, width as usize, height as usize, new_width as usize, new_height as usize, is_binary) {
+        match downscale_image_lanczos3(
+            data,
+            width as usize,
+            height as usize,
+            new_width as usize,
+            new_height as usize,
+            is_binary,
+        ) {
             Some(downscaled_data) => (downscaled_data, new_width as u32, new_height as u32),
             None => {
                 #[cfg(feature = "debug-logging")]
@@ -112,7 +119,9 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
     #[cfg(feature = "debug-logging")]
     println!(
         "[DEBUG OCR] Created BGRA data: {} bytes for {}x{} image",
-        bgra_bytes.len(), final_width, final_height
+        bgra_bytes.len(),
+        final_width,
+        final_height
     );
 
     // Create SoftwareBitmap directly
@@ -129,9 +138,11 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
                     unsafe {
                         let mut ptr: *mut u8 = std::ptr::null_mut();
                         let mut capacity: u32 = 0;
-                        
+
                         // Try to get buffer access
-                        if let Ok(byte_access) = windows_core::Interface::cast::<IMemoryBufferByteAccess>(&buffer_ref) {
+                        if let Ok(byte_access) =
+                            windows_core::Interface::cast::<IMemoryBufferByteAccess>(&buffer_ref)
+                        {
                             if byte_access.GetBuffer(&mut ptr, &mut capacity).is_ok() {
                                 if !ptr.is_null() && capacity >= bgra_bytes.len() as u32 {
                                     std::ptr::copy_nonoverlapping(
@@ -140,10 +151,15 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
                                         bgra_bytes.len(),
                                     );
                                     #[cfg(feature = "debug-logging")]
-                                    println!("[DEBUG OCR] Successfully copied {} bytes to bitmap buffer", bgra_bytes.len());
+                                    println!(
+                                        "[DEBUG OCR] Successfully copied {} bytes to bitmap buffer",
+                                        bgra_bytes.len()
+                                    );
                                 } else {
                                     #[cfg(feature = "debug-logging")]
-                                    println!("[DEBUG OCR] Invalid buffer pointer or insufficient capacity");
+                                    println!(
+                                        "[DEBUG OCR] Invalid buffer pointer or insufficient capacity"
+                                    );
                                     return None;
                                 }
                             } else {
@@ -167,14 +183,17 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
                 println!("[DEBUG OCR] Failed to lock bitmap buffer");
                 return None;
             }
-            
+
             #[cfg(feature = "debug-logging")]
             println!("[DEBUG OCR] Created SoftwareBitmap successfully");
             bitmap
         }
         Err(e) => {
             #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to create SoftwareBitmap from buffer: {:?}", e);
+            println!(
+                "[DEBUG OCR] Failed to create SoftwareBitmap from buffer: {:?}",
+                e
+            );
             return None;
         }
     };
@@ -393,8 +412,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
 
     Some(result)
 }
-
-
 
 // COM initialization guard
 struct ComGuard;

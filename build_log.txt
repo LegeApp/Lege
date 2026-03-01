@@ -1,0 +1,822 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust-projects\Lege\Legencode\Cargo.toml
+workspace: D:\Rust-projects\Lege\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust-projects\Lege\Legencode\src\jbig2enc-rust\Cargo.toml
+workspace: D:\Rust-projects\Lege\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust-projects\Lege\ort\Cargo.toml
+workspace: D:\Rust-projects\Lege\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   D:\Rust-projects\Lege\GUI\Dioxus\Cargo.toml
+workspace: D:\Rust-projects\Lege\Cargo.toml
+warning: D:\Rust-projects\Lege\Cargo.toml: unused manifest key: alias
+warning: D:\Rust-projects\Lege\Cargo.toml: unused manifest key: build
+warning: D:\Rust-projects\Lege\Cargo.toml: unused manifest key: package.icon
+warning: D:\Rust-projects\Lege\windows-rs-71\crates\libs\windows\Cargo.toml: unused manifest key: hints
+warning: unexpected `cfg` condition name: `windows_slim_errors`
+  --> windows-rs-71\crates\libs\result\src\lib.rs:20:24
+   |
+20 | #[cfg(all(windows, not(windows_slim_errors)))]
+   |                        ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: expected names are: `docsrs`, `feature`, and `test` and 31 more
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(windows_slim_errors)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `windows_slim_errors`
+  --> windows-rs-71\crates\libs\result\src\lib.rs:28:24
+   |
+28 | #[cfg(all(windows, not(windows_slim_errors)))]
+   |                        ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(windows_slim_errors)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `windows_slim_errors`
+   --> windows-rs-71\crates\libs\result\src\error.rs:254:24
+    |
+254 | #[cfg(all(windows, not(windows_slim_errors)))]
+    |                        ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(windows_slim_errors)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `windows_slim_errors`
+   --> windows-rs-71\crates\libs\result\src\error.rs:354:28
+    |
+354 | #[cfg(not(all(windows, not(windows_slim_errors))))]
+    |                            ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(windows_slim_errors)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: `windows-result` (lib) generated 4 warnings
+warning: struct `Error` is never constructed
+   --> ort\ort-sys\build\main.rs:183:8
+    |
+183 | struct Error {
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: associated function `new` is never used
+   --> ort\ort-sys\build\main.rs:188:9
+    |
+187 | impl Error {
+    | ---------- associated function in this implementation
+188 |     pub fn new(message: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: trait `ResultExt` is never used
+   --> ort\ort-sys\build\main.rs:205:7
+    |
+205 | trait ResultExt<T, E> {
+    |       ^^^^^^^^^
+
+warning: function `copy_dylibs` is never used
+  --> ort\ort-sys\build\dynamic_link.rs:12:8
+   |
+12 | pub fn copy_dylibs(lib_dir: &Path, out_dir: &Path) {
+   |        ^^^^^^^^^^^
+
+warning: `ort-sys` (build script) generated 4 warnings
+warning: unexpected `cfg` condition value: `trace_arith`
+  --> Legencode\src\jbig2enc-rust\src\jbig2arith.rs:14:11
+   |
+14 | #[cfg(not(feature = "trace_arith"))]
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: expected values for `feature` are: `default`, `line_verify`, `trace_encoder`, and `tracing`
+   = help: consider adding `trace_arith` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `trace_arith`
+  --> Legencode\src\jbig2enc-rust\src\jbig2arith.rs:25:11
+   |
+25 | #[cfg(not(feature = "trace_arith"))]
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: expected values for `feature` are: `default`, `line_verify`, `trace_encoder`, and `tracing`
+   = help: consider adding `trace_arith` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused doc comment
+   --> Legencode\src\jbig2enc-rust\src\jbig2arith.rs:248:1
+    |
+248 | /// Build the 94-state table at start-up.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` on by default
+
+warning: unused macro definition: `debug`
+  --> Legencode\src\jbig2enc-rust\src\jbig2arith.rs:17:18
+   |
+17 |     macro_rules! debug {
+   |                  ^^^^^
+   |
+   = note: `#[warn(unused_macros)]` on by default
+
+warning: unused macro definition: `trace`
+  --> Legencode\src\jbig2enc-rust\src\jbig2arith.rs:20:18
+   |
+20 |     macro_rules! trace {
+   |                  ^^^^^
+
+warning: unused import: `trace_stubs::*`
+  --> Legencode\src\jbig2enc-rust\src\jbig2arith.rs:26:5
+   |
+26 | use trace_stubs::*;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `super::u32_to_usize`
+   --> Legencode\src\jbig2enc-rust\src\jbig2shared.rs:212:9
+    |
+212 |     use super::u32_to_usize;
+    |         ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::cell::RefCell`
+  --> Legencode\src\jbig2enc-rust\src\jbig2sym.rs:10:5
+   |
+10 | use std::cell::RefCell;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `io::Write`
+  --> Legencode\src\jbig2enc-rust\src\lib.rs:82:16
+   |
+82 | use std::{env, io::Write};
+   |                ^^^^^^^^^
+
+warning: `jbig2enc-rust` (lib) generated 9 warnings (run `cargo fix --lib -p jbig2enc-rust` to apply 3 suggestions)
+warning: unused import: `std::collections::VecDeque`
+   --> Legencode\src\streamline.rs:292:5
+    |
+292 | use std::collections::VecDeque;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `Arc` and `Mutex`
+   --> Legencode\src\streamline.rs:294:17
+    |
+294 | use std::sync::{Arc, Mutex};
+    |                 ^^^  ^^^^^
+
+warning: unused import: `ImageBuffer`
+ --> Legencode\src\color\binarization.rs:6:24
+  |
+6 | use image::{GrayImage, ImageBuffer, Luma};
+  |                        ^^^^^^^^^^^
+
+warning: unnecessary parentheses around assigned value
+   --> Legencode\src\color\binarization.rs:173:28
+    |
+173 |             let mut gray = (0.299 * r + 0.587 * g + 0.114 * b);
+    |                            ^                                 ^
+    |
+    = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+    |
+173 -             let mut gray = (0.299 * r + 0.587 * g + 0.114 * b);
+173 +             let mut gray = 0.299 * r + 0.587 * g + 0.114 * b;
+    |
+
+warning: unused imports: `GrayImage` and `Luma`
+ --> Legencode\src\color\color_processing.rs:2:13
+  |
+2 | use image::{GrayImage, Luma};
+  |             ^^^^^^^^^  ^^^^
+
+warning: unused import: `Context`
+ --> Legencode\src\types.rs:2:14
+  |
+2 | use anyhow::{Context, Result};
+  |              ^^^^^^^
+
+warning: unused imports: `Config`, `FileFormat`, and `File`
+ --> Legencode\src\types.rs:3:14
+  |
+3 | use config::{Config, File, FileFormat};
+  |              ^^^^^^  ^^^^  ^^^^^^^^^^
+
+warning: unused import: `std::path::PathBuf`
+ --> Legencode\src\types.rs:5:5
+  |
+5 | use std::path::PathBuf;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Jbig2Error`
+  --> Legencode\src\jbig2.rs:15:46
+   |
+15 |     use jbig2enc_rust::{encode_single_image, Jbig2Error};
+   |                                              ^^^^^^^^^^
+
+warning: unused variable: `e`
+   --> Legencode\src\encoders\jp2.rs:291:28
+    |
+291 |                 if let Err(e) = std::fs::remove_file(&temp_file) {
+    |                            ^ help: if this is intentional, prefix it with an underscore: `_e`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: variable does not need to be mutable
+   --> Legencode\src\encoders\jp2.rs:359:9
+    |
+359 |     let mut guess = (orig_bytes / target_bytes as f64).max(1.0) as f32;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: unused variable: `metadata`
+  --> Legencode\src\color\binarization.rs:45:19
+   |
+45 |         if let Ok(metadata) = std::fs::metadata(&model_path) {
+   |                   ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_metadata`
+
+warning: unused variable: `height`
+   --> Legencode\src\color\binarization.rs:106:9
+    |
+106 |         height: u32,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_height`
+
+warning: unused variable: `e`
+   --> Legencode\src\color\binarization.rs:330:25
+    |
+330 |                     Err(e) => {
+    |                         ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> Legencode\src\color\binarization.rs:340:17
+    |
+340 |             Err(e) => {
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+  --> Legencode\src\color\color_processing.rs:78:21
+   |
+78 |                 Err(e) => {
+   |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `shape`
+   --> Legencode\src\color\color_processing.rs:542:14
+    |
+542 |         let (shape, data) = output.try_extract_tensor::<f32>()?;
+    |              ^^^^^ help: if this is intentional, prefix it with an underscore: `_shape`
+
+warning: unused variable: `page_height`
+   --> Legencode\src\color\color_processing.rs:509:9
+    |
+509 |         page_height: u32,
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_page_height`
+
+warning: unused variable: `color_map`
+  --> Legencode\src\colorquant\grayscale.rs:63:9
+   |
+63 |     let color_map = nq.color_map();
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_color_map`
+
+warning: variable does not need to be mutable
+  --> Legencode\src\colorquant\grayscale.rs:54:9
+   |
+54 |     let mut nq = NeuQuantGray::new(
+   |         ----^^
+   |         |
+   |         help: remove this `mut`
+
+warning: crate `Legencode` should have a snake case name
+  |
+  = help: convert the identifier to snake case: `legencode`
+  = note: `#[warn(non_snake_case)]` on by default
+
+warning: `Legencode` (lib) generated 21 warnings (run `cargo fix --lib -p Legencode` to apply 11 suggestions)
+   Compiling lege v0.7.0 (D:\Rust-projects\Lege)
+warning: lege@0.7.0: To enable static linking with Pdfium:
+warning: lege@0.7.0: 1. Set PDFIUM_STATIC_LIB_PATH environment variable
+warning: lege@0.7.0: 2. Build with: cargo build --features static
+warning: unused import: `crate::debug_println`
+  --> src\djvu_pipeline.rs:10:5
+   |
+10 | use crate::debug_println;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `crate::ocr::ocr::perform_ocr_on_binarized`
+  --> src\djvu_pipeline.rs:13:5
+   |
+13 | use crate::ocr::ocr::perform_ocr_on_binarized;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::text_loader::CLI_TEXT`
+ --> src\engine.rs:2:5
+  |
+2 | use crate::text_loader::CLI_TEXT;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::env`
+ --> src\ocr\mod.rs:4:5
+  |
+4 | use std::env;
+  |     ^^^^^^^^
+
+warning: unused imports: `PathBuf` and `Path`
+ --> src\ocr\mod.rs:5:17
+  |
+5 | use std::path::{Path, PathBuf};
+  |                 ^^^^  ^^^^^^^
+
+warning: unused import: `std::process::Command`
+ --> src\ocr\mod.rs:6:5
+  |
+6 | use std::process::Command;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Lazy`
+   --> src\lib.rs:131:23
+    |
+131 | use once_cell::sync::{Lazy, OnceCell};
+    |                       ^^^^
+
+warning: unused variable: `detections`
+    --> src\lib.rs:2476:9
+     |
+2476 |     let detections = &inference_result.detections;
+     |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_detections`
+     |
+     = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `page_index`
+    --> src\lib.rs:2477:9
+     |
+2477 |     let page_index = inference_result.index;
+     |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_page_index`
+
+warning: unused variable: `total_pixels`
+    --> src\lib.rs:2485:9
+     |
+2485 |     let total_pixels = width * height;
+     |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_total_pixels`
+
+warning: unused variable: `grayscale`
+    --> src\lib.rs:2486:9
+     |
+2486 |     let grayscale = Legencode::color::color_processing::rgb_to_grayscale_u8(image.as_raw());
+     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_grayscale`
+
+warning: unused variable: `rate`
+    --> src\lib.rs:2621:14
+     |
+2621 |         let (rate, data) = match Legencode::streamline::EncodingManager::encode_jp2_to_target_size(
+     |              ^^^^ help: if this is intentional, prefix it with an underscore: `_rate`
+
+warning: unused variable: `pipeline_start`
+    --> src\lib.rs:3414:9
+     |
+3414 |     let pipeline_start = Instant::now();
+     |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pipeline_start`
+
+warning: unused variable: `e`
+    --> src\lib.rs:3679:20
+     |
+3679 |         if let Err(e) = orchestrator.cleanup_work_dir_only() {
+     |                    ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: variable does not need to be mutable
+    --> src\lib.rs:3675:13
+     |
+3675 |         let mut orchestrator = crate::djvu::DjvuOrchestrator::new(djvu_cfg.clone())?;
+     |             ----^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` on by default
+
+warning: unused variable: `output_path`
+    --> src\lib.rs:4286:5
+     |
+4286 |     output_path: &std::path::Path,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_path`
+
+warning: unused variable: `img_count`
+    --> src\lib.rs:4598:17
+     |
+4598 |             let img_count = adjusted_detections.iter()
+     |                 ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_img_count`
+
+warning: unused variable: `summary`
+    --> src\lib.rs:4618:21
+     |
+4618 |                 let summary = entries
+     |                     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_summary`
+
+warning: variable does not need to be mutable
+    --> src\lib.rs:4316:17
+     |
+4316 |             let mut candidate_bounds = if page_data.is_blank || page_data.is_full_page_image {
+     |                 ----^^^^^^^^^^^^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\lib.rs:4637:21
+     |
+4637 |                 let mut should_dither = if config.keep_original_images() {
+     |                     ----^^^^^^^^^^^^^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: unused variable: `final_pdf_bytes`
+    --> src\lib.rs:4830:9
+     |
+4830 |     let final_pdf_bytes = assemble_pdf(
+     |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_final_pdf_bytes`
+
+warning: use of deprecated associated function `chrono::NaiveDateTime::from_timestamp_opt`: use `DateTime::from_timestamp` instead
+   --> src\processing_log.rs:320:36
+    |
+320 |         let naive = NaiveDateTime::from_timestamp_opt(self.timestamp as i64, 0)
+    |                                    ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `chrono::NaiveDateTime::from_timestamp_opt`: use `DateTime::from_timestamp` instead
+   --> src\processing_log.rs:321:47
+    |
+321 |             .unwrap_or_else(|| NaiveDateTime::from_timestamp_opt(0, 0).unwrap());
+    |                                               ^^^^^^^^^^^^^^^^^^
+
+error[E0308]: mismatched types
+    --> src\lib.rs:1580:66
+     |
+1580 |     encoder.write_image(img.as_raw(), img.width(), img.height(), ColorType::Rgb8)?;
+     |             ----------- arguments to this method are incorrect   ^^^^^^^^^^^^^^^ expected `ExtendedColorType`, found `ColorType`
+     |
+note: method defined here
+    --> C:\Users\dk\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\image-0.25.6\src\image.rs:811:8
+     |
+811  |     fn write_image(
+     |        ^^^^^^^^^^^
+help: call `Into::into` on this expression to convert `ColorType` into `ExtendedColorType`
+     |
+1580 |     encoder.write_image(img.as_raw(), img.width(), img.height(), ColorType::Rgb8.into())?;
+     |                                                                                 +++++++
+
+warning: unused variable: `open_punct`
+    --> src\accumulator.rs:1281:9
+     |
+1281 |     let open_punct = "([{\"'`";
+     |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_open_punct`
+
+warning: unused variable: `err`
+   --> src\deskew.rs:158:24
+    |
+158 |                 Ok(Err(err)) => {
+    |                        ^^^ help: if this is intentional, prefix it with an underscore: `_err`
+
+warning: unused variable: `err`
+   --> src\deskew.rs:358:24
+    |
+358 |                 Ok(Err(err)) => {
+    |                        ^^^ help: if this is intentional, prefix it with an underscore: `_err`
+
+warning: unused variable: `width`
+   --> src\deskew.rs:421:14
+    |
+421 |         let (width, height) = image.dimensions();
+    |              ^^^^^ help: if this is intentional, prefix it with an underscore: `_width`
+
+warning: unused variable: `height`
+   --> src\deskew.rs:421:21
+    |
+421 |         let (width, height) = image.dimensions();
+    |                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_height`
+
+warning: variable does not need to be mutable
+   --> src\djvu.rs:469:13
+    |
+469 |         let mut skip_ws = |i: &mut usize| {
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\djvu.rs:474:13
+    |
+474 |         let mut skip_comments = |i: &mut usize| {
+    |             ----^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\djvu.rs:484:13
+    |
+484 |         let mut parse_number = |i: &mut usize| -> Result<u32> {
+    |             ----^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\djvu.rs:1184:13
+     |
+1184 |         let mut skip_ws_and_comments = |i: &mut usize| {
+     |             ----^^^^^^^^^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\djvu.rs:1197:13
+     |
+1197 |         let mut parse_number = |i: &mut usize| -> Option<u32> {
+     |             ----^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\djvu.rs:1359:13
+     |
+1359 |         let mut skip_ws = |i: &mut usize| {
+     |             ----^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\djvu.rs:1365:13
+     |
+1365 |         let mut skip_comments = |i: &mut usize| {
+     |             ----^^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\djvu.rs:1375:13
+     |
+1375 |         let mut parse_number = |i: &mut usize| -> Result<u32> {
+     |             ----^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `e`
+  --> src\djvu_pipeline.rs:75:21
+   |
+75 |                 Err(e) => {
+   |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\djvu_pipeline.rs:277:29
+    |
+277 |                         Err(e) => {
+    |                             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `completed_pages`
+   --> src\djvu_pipeline.rs:411:17
+    |
+411 |         let mut completed_pages = 0;
+    |                 ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_completed_pages`
+
+warning: unused variable: `sender_id`
+   --> src\djvu_pipeline.rs:417:23
+    |
+417 |         while let Ok((sender_id, page_index_opt)) = in_channels.recv_any().await {
+    |                       ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sender_id`
+
+warning: variable does not need to be mutable
+   --> src\djvu_pipeline.rs:411:13
+    |
+411 |         let mut completed_pages = 0;
+    |             ----^^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\djvu_pipeline.rs:493:13
+    |
+493 |         let mut orchestrator = self.orchestrator_state.orchestrator.lock().await;
+    |             ----^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `run_options`
+    --> src\engine.rs:1058:13
+     |
+1058 |         let run_options = RunOptions::new()?;
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_run_options`
+
+warning: unused variable: `run_options`
+    --> src\engine.rs:1143:13
+     |
+1143 |         let run_options = RunOptions::new()?;
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_run_options`
+
+warning: unused variable: `run_options`
+    --> src\engine.rs:1286:13
+     |
+1286 |         let run_options = RunOptions::new()?;
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_run_options`
+
+warning: unused variable: `run_options`
+    --> src\engine.rs:1410:13
+     |
+1410 |         let run_options = RunOptions::new()?;
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_run_options`
+
+warning: variable `rows_above_threshold` is assigned to, but never used
+    --> src\engine.rs:1503:17
+     |
+1503 |         let mut rows_above_threshold = 0;
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: consider using `_rows_above_threshold` instead
+
+warning: unused variable: `e`
+  --> src\ocr\winocr.rs:13:13
+   |
+13 |         Err(e) => {
+   |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:175:13
+    |
+175 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:213:13
+    |
+213 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `line_count`
+   --> src\ocr\winocr.rs:220:9
+    |
+220 |     let line_count = lines.Size().unwrap_or(0);
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_line_count`
+
+warning: variable `word_count` is assigned to, but never used
+   --> src\ocr\winocr.rs:226:13
+    |
+226 |     let mut word_count = 0;
+    |             ^^^^^^^^^^
+    |
+    = note: consider using `_word_count` instead
+
+warning: unused variable: `line_idx`
+   --> src\ocr\winocr.rs:243:10
+    |
+243 |     for (line_idx, line) in lines.into_iter().enumerate() {
+    |          ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_line_idx`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:246:17
+    |
+246 |             Err(e) => {
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:292:21
+    |
+292 |                 Err(e) => {
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:315:21
+    |
+315 |                 Err(e) => {
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:470:13
+    |
+470 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:484:13
+    |
+484 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:556:13
+    |
+556 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:575:13
+    |
+575 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+   --> src\ocr\winocr.rs:592:13
+    |
+592 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `start_time`
+   --> src\pagerender.rs:283:13
+    |
+283 |         let start_time = Instant::now();
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_start_time`
+
+warning: unused variable: `output_path`
+  --> src\pdf_to_png.rs:72:16
+   |
+72 |             Ok(output_path) => {
+   |                ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_path`
+
+warning: unused variable: `params`
+   --> src\resize\hlsl\resizer.rs:549:34
+    |
+549 |     fn resize_chunked(&mut self, params: &ResizeParameters, src_rgba: &[u8], gpu_src_size: usize, gpu_dst_size: usize) -> Result<Vec<u8>> {
+    |                                  ^^^^^^ help: if this is intentional, prefix it with an underscore: `_params`
+
+warning: unused variable: `src_rgba`
+   --> src\resize\hlsl\resizer.rs:549:61
+    |
+549 |     fn resize_chunked(&mut self, params: &ResizeParameters, src_rgba: &[u8], gpu_src_size: usize, gpu_dst_size: usize) -> Result<Vec<u8>> {
+    |                                                             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_src_rgba`
+
+warning: unused variable: `gpu_src_size`
+   --> src\resize\hlsl\resizer.rs:549:78
+    |
+549 |     fn resize_chunked(&mut self, params: &ResizeParameters, src_rgba: &[u8], gpu_src_size: usize, gpu_dst_size: usize) -> Result<Vec<u8>> {
+    |                                                                              ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_gpu_src_size`
+
+warning: unused variable: `gpu_dst_size`
+   --> src\resize\hlsl\resizer.rs:549:99
+    |
+549 |     fn resize_chunked(&mut self, params: &ResizeParameters, src_rgba: &[u8], gpu_src_size: usize, gpu_dst_size: usize) -> Result<Vec<u8>> {
+    |                                                                                                   ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_gpu_dst_size`
+
+warning: unused variable: `page_index_offset`
+   --> src\lib.rs:272:13
+    |
+272 |         let page_index_offset = env.get::<usize>("page_index_offset").unwrap_or(0);
+    |             ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_page_index_offset`
+
+warning: unused variable: `found_path`
+   --> src\lib.rs:712:17
+    |
+712 |     if let Some(found_path) = locate_pdfium_in_runtime_dirs() {
+    |                 ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_found_path`
+
+warning: unused variable: `e`
+   --> src\lib.rs:861:24
+    |
+861 |             if let Err(e) = out_channels.send_to(&target, task).await {
+    |                        ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `batch_size`
+    --> src\lib.rs:1115:13
+     |
+1115 |         let batch_size = self
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_batch_size`
+
+warning: unused variable: `img_count`
+    --> src\lib.rs:2196:17
+     |
+2196 |             let img_count = adjusted_detections.iter()
+     |                 ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_img_count`
+
+warning: unused variable: `summary`
+    --> src\lib.rs:2216:21
+     |
+2216 |                 let summary = entries
+     |                     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_summary`
+
+warning: unused variable: `page_index`
+    --> src\lib.rs:2756:5
+     |
+2756 |     page_index: usize,
+     |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_page_index`
+
+For more information about this error, try `rustc --explain E0308`.
+warning: `lege` (lib) generated 74 warnings
+warning: lege@0.7.0: To enable static linking with Pdfium:
+warning: lege@0.7.0: 1. Set PDFIUM_STATIC_LIB_PATH environment variable
+warning: lege@0.7.0: 2. Build with: cargo build --features static
+error: could not compile `lege` (lib) due to 1 previous error; 74 warnings emitted

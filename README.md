@@ -1,3 +1,8 @@
+<div align="center">
+  <img src="Screenshot 2026-02-18 112523.png" alt="Lege Interface" width="45%" style="margin-right: 2%">
+  <img src="page_0002-original.png" alt="Lege Processing" width="45%">
+</div>
+
 # Lege
 
 > **Fully automatic PDF and image processor optimized for E-Ink ebook readers**

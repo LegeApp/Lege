@@ -357,12 +357,6 @@ pub struct AppState {
     // Track currently running job task IDs for cancellation
     pub active_task_ids: Vec<u64>,
 
-    // DJVU bundling display mode (collapse to one line and concatenate external tool output)
-    pub bundling_mode: bool,
-    pub bundling_progress: Option<(usize, usize)>, // (current, total)
-    pub external_line_last: String,
-    pub external_line_muted: u32,
-
     // UI state
     pub show_settings: bool,
     pub should_cancel: bool,
@@ -444,10 +438,6 @@ impl Default for AppState {
             status_log: VecDeque::new(),
             active_eta: None,
             active_task_ids: Vec::new(),
-            bundling_mode: false,
-            bundling_progress: None,
-            external_line_last: String::new(),
-            external_line_muted: 0,
             show_settings: false,
             should_cancel: false,
             output_is_editing: false,
@@ -563,56 +553,6 @@ impl AppState {
         self.status_lines = (l1, l2, l3, String::new());
     }
 
-    // Enter bundling mode: collapse to one-line concatenation view
-    fn enter_bundling_mode(&mut self) {
-        self.bundling_mode = true;
-        self.bundling_progress = None;
-        self.external_line_last.clear();
-        self.external_line_muted = 0;
-        // Reset visible lines to a neutral bundling state
-        self.status_lines = (
-            "[Finalizing] Assembling output file...".to_string(),
-            String::new(),
-            String::new(),
-            String::new(),
-        );
-    }
-
-    fn exit_bundling_mode(&mut self) {
-        self.bundling_mode = false;
-        self.bundling_progress = None;
-        self.external_line_last.clear();
-        self.external_line_muted = 0;
-    }
-
-    // Update single-line concatenation from bundling progress and external tool output
-    fn update_bundling_line(&mut self, ext_line_opt: Option<String>) {
-        if let Some(line) = ext_line_opt {
-            if !line.is_empty() {
-                if self.external_line_last == line {
-                    self.external_line_muted = self.external_line_muted.saturating_add(1);
-                } else {
-                    self.external_line_last = line;
-                    self.external_line_muted = 0;
-                }
-            }
-        }
-        let mut main = if let Some((cur, total)) = self.bundling_progress {
-            format!("Bundling: added {}/{}", cur, total)
-        } else {
-            "Bundling output...".to_string()
-        };
-        if !self.external_line_last.is_empty() {
-            let suffix = if self.external_line_muted > 0 {
-                format!("  (+{} muted)", self.external_line_muted)
-            } else {
-                String::new()
-            };
-            // Concatenate tool line after bundling progress
-            main = format!("{} | {}{}", main, self.external_line_last, suffix);
-        }
-        self.status_lines = (main, String::new(), String::new(), String::new());
-    }
 }
 
 #[component]
@@ -1634,26 +1574,11 @@ fn MainContentArea(state: Signal<AppState>) -> Element {
                                                             // Track active files for multi-file progress display
                                                             active_files.insert(task_id);
 
-                                                            // Switch to bundling mode for final DJVU assembly
+                                                            // GUI uses only the three core progress lanes.
+                                                            // Do not surface separate DJVU bundling/finalizing steps.
                                                             match &status {
                                                                 lege::progress::ProcessingStatus::AssemblingOutput => {
-                                                                    let mut w = state_clone.write();
-                                                                    w.enter_bundling_mode();
-                                                                }
-                                                                lege::progress::ProcessingStatus::DjvuBundling { current, total } => {
-                                                                    let mut w = state_clone.write();
-                                                                    if !w.bundling_mode { w.enter_bundling_mode(); }
-                                                                    w.bundling_progress = Some((*current, *total));
-                                                                    w.update_bundling_line(None);
-                                                                }
-                                                                lege::progress::ProcessingStatus::ExternalToolLine { line } => {
-                                                                    let mut w = state_clone.write();
-                                                                    if w.bundling_mode {
-                                                                        w.update_bundling_line(Some(line.clone()));
-                                                                    } else {
-                                                                        // Not in bundling mode: append to rolling 3-line view
-                                                                        w.push_status_log(line.clone());
-                                                                    }
+                                                                    // Suppress final bundling phase in GUI.
                                                                 }
                                                                 lege::progress::ProcessingStatus::NoLayoutProgress { .. } |
                                                                 lege::progress::ProcessingStatus::LayoutProgress { .. } |
@@ -1757,8 +1682,6 @@ fn MainContentArea(state: Signal<AppState>) -> Element {
                                                                 );
                                                                 state_clone.write().push_status_log(summary_line);
                                                             }
-                                                            // Exit bundling mode upon completion
-                                                            state_clone.write().exit_bundling_mode();
                                                         },
                                                         lege::progress::ProgressUpdate::Error { task_id, error, metrics: _ } => {
                                                             if handled.insert(task_id) {
@@ -1783,8 +1706,6 @@ fn MainContentArea(state: Signal<AppState>) -> Element {
                                                                     state_clone.write().set_status_message(format!("Error: {}", error));
                                                                 }
                                                             }
-                                                            // Exit bundling mode on error
-                                                            state_clone.write().exit_bundling_mode();
                                                         }
                                                     }
                                                 },
