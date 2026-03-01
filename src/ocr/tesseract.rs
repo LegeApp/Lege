@@ -7,6 +7,7 @@ pub fn run_tesseract(
     width: usize,
     height: usize,
     is_binary: bool,
+    language: &str,
 ) -> Option<OcrResult> {
     // Input validation with bounds checking (similar to Windows OCR)
     if width == 0 || height == 0 || width > 65535 || height > 65535 {
@@ -79,16 +80,23 @@ pub fn run_tesseract(
     let bytes_per_pixel = if is_binary { 1 } else { 3 };
     let bytes_per_line = final_width * bytes_per_pixel;
 
-    let mut tess = if let Some(tessdata_path) = super::get_tessdata_path() {
-        match Tesseract::new_with_oem(Some(&tessdata_path), Some("eng"), OcrEngineMode::LstmOnly) {
+    let normalized_language = language.trim().to_ascii_lowercase();
+    if normalized_language.is_empty() {
+        #[cfg(feature = "debug-logging")]
+        println!("[DEBUG OCR] Empty OCR language code");
+        return None;
+    }
+
+    let mut tess = if let Some(tessdata_path) = super::get_tessdata_path_for_language(&normalized_language) {
+        match Tesseract::new_with_oem(Some(&tessdata_path), Some(&normalized_language), OcrEngineMode::LstmOnly) {
             Ok(t) => t,
             Err(path_err) => {
                 #[cfg(feature = "debug-logging")]
                 println!(
-                    "[DEBUG OCR] Failed to initialize Tesseract with tessdata path '{}': {:?}. Falling back to default search path.",
-                    tessdata_path, path_err
+                    "[DEBUG OCR] Failed to initialize Tesseract with tessdata path '{}' and language '{}': {:?}. Falling back to default search path.",
+                    tessdata_path, normalized_language, path_err
                 );
-                match Tesseract::new_with_oem(None, Some("eng"), OcrEngineMode::LstmOnly) {
+                match Tesseract::new_with_oem(None, Some(&normalized_language), OcrEngineMode::LstmOnly) {
                     Ok(t) => t,
                     Err(e) => {
                         #[cfg(feature = "debug-logging")]
@@ -99,7 +107,7 @@ pub fn run_tesseract(
             }
         }
     } else {
-        match Tesseract::new_with_oem(None, Some("eng"), OcrEngineMode::LstmOnly) {
+        match Tesseract::new_with_oem(None, Some(&normalized_language), OcrEngineMode::LstmOnly) {
             Ok(t) => t,
             Err(e) => {
                 #[cfg(feature = "debug-logging")]

@@ -224,6 +224,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let (args, language_override) = extract_hidden_language_flag(args)?;
+
+    if language_override.is_some() && args.len() == 1 {
+        bail!("--language requires a direct CLI input file");
+    }
+
     // No extra args -> interactive CLI wizard
     if args.len() == 1 {
         handle_cli_mode(AppConfig::default()).await?;
@@ -331,11 +337,59 @@ async fn main() -> Result<()> {
             bail!("No input PDF files were provided.");
         }
 
-        handle_simple_processing(positional, page_range, target_arg, AppConfig::default()).await?;
+        handle_simple_processing(
+            positional,
+            page_range,
+            target_arg,
+            language_override,
+            AppConfig::default(),
+        )
+        .await?;
         return Ok(());
     }
 
     Ok(())
+}
+
+fn extract_hidden_language_flag(args: Vec<String>) -> Result<(Vec<String>, Option<String>)> {
+    let mut filtered: Vec<String> = Vec::with_capacity(args.len());
+    let mut language_override: Option<String> = None;
+
+    filtered.push(
+        args.first()
+            .cloned()
+            .ok_or_else(|| anyhow!("Missing argv[0]"))?,
+    );
+
+    let mut i = 1usize;
+    while i < args.len() {
+        if args[i] == "--language" {
+            let raw = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow!("Missing value after --language"))?;
+            let normalized = raw.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                bail!("--language value cannot be empty");
+            }
+            if !normalized
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                bail!(
+                    "Invalid --language '{}'. Use only a-z, 0-9, and underscore",
+                    raw
+                );
+            }
+            language_override = Some(normalized);
+            i += 2;
+            continue;
+        }
+
+        filtered.push(args[i].clone());
+        i += 1;
+    }
+
+    Ok((filtered, language_override))
 }
 
 fn print_usage() {
@@ -495,6 +549,7 @@ async fn handle_simple_processing(
     pdf_paths: Vec<String>,
     page_range: Option<String>,
     target_spec: Option<String>,
+    ocr_language: Option<String>,
     config: AppConfig,
 ) -> Result<()> {
     if pdf_paths.is_empty() {
@@ -513,6 +568,15 @@ async fn handle_simple_processing(
     // Create baseline pipeline config for simple CLI mode
     let mut pipeline_config = PipelineConfig::simple_cli_defaults()
         .map_err(|e| anyhow!("Failed to construct CLI defaults: {}", e))?;
+
+    if let Some(language) = ocr_language {
+        #[cfg(not(target_os = "linux"))]
+        {
+            bail!("--language is supported on Linux builds only");
+        }
+        #[cfg(target_os = "linux")]
+        pipeline_config.set_ocr_language(&language)?;
+    }
 
     let target_selection = target_spec
         .as_deref()
