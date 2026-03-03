@@ -18,7 +18,7 @@ use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::helper_functions::{
     init_encode_semaphore, build_hocr_from_pdf_text,
-    wait_for_memory_relief,
+    should_force_blank_page_threshold, wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
 };
 use crate::progress::ProgressTracker;
 use crate::resize_context::{build_inference_image, InferenceResizeSpec};
@@ -768,11 +768,9 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
             })
             .collect()
     } else {
-        binarize_djvu_image(
-            &adjusted_image,
-            &config,
-            adjusted_detections.is_empty(),
-        )
+        let force_blank_threshold =
+            should_force_blank_page_threshold(&config, inference_result.has_no_detections);
+        binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
     };
     Ok(DjvuPageProcessingOutput {
         adjusted_image,
@@ -879,19 +877,22 @@ fn apply_djvu_region_policy(
 fn binarize_djvu_image(
     image: &RgbImage,
     config: &PipelineConfig,
-    has_no_detections: bool,
+    force_blank_threshold: bool,
 ) -> Vec<u8> {
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
         want_invert_output = false;
     }
-    // Special handling for blank pages in layout detection mode
-    // For blank pages (no detections), use fixed threshold of 128
-    let (use_fixed_threshold, fixed_threshold) = if config.enable_layout_detection() && has_no_detections {
+    // Special handling for blank pages in adaptive + layout mode:
+    // use fixed threshold to avoid static/noise artifacts.
+    let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
         #[cfg(feature = "debug-logging")]
-        crate::debug_log!("Blank page detected (no detections), using fixed threshold 128");
-        (true, 128)
+        crate::debug_log!(
+            "Blank page detected via filtered detections, forcing fixed threshold {}",
+            BLANK_PAGE_FALLBACK_THRESHOLD
+        );
+        (true, BLANK_PAGE_FALLBACK_THRESHOLD)
     } else {
         (config.binarization().use_fixed_threshold, config.binarization().fixed_threshold)
     };

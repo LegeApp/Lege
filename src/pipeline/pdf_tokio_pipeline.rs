@@ -18,7 +18,8 @@ use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
     build_hocr_from_pdf_text, encode_region_image, rounded_clamped_bbox,
-    should_treat_as_cover_page, spawn_pdf_writer_actor, wait_for_memory_relief,
+    should_force_blank_page_threshold, should_treat_as_cover_page, spawn_pdf_writer_actor,
+    wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
@@ -503,7 +504,6 @@ async fn process_single_page(
         binarized,
         width,
         height,
-        has_no_detections,
         is_cover_page,
         cover_encoded_data,
         region_processing_results,
@@ -619,7 +619,6 @@ struct PageProcessingOutput {
     binarized: Vec<u8>,
     width: usize,
     height: usize,
-    has_no_detections: bool,
     is_cover_page: bool,
     cover_encoded_data: Option<(Vec<u8>, String)>,
     region_processing_results: Vec<RegionProcessingResult>,
@@ -701,7 +700,8 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
-    let has_no_detections = adjusted_detections.is_empty();
+    let force_blank_threshold =
+        should_force_blank_page_threshold(&config, inference_result.has_no_detections);
 
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // In "jpeg" text format mode, skip binarization and use the RGB image directly for base encoding
@@ -720,7 +720,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             })
             .collect()
     } else {
-        binarize_image(&adjusted_image, &config, has_no_detections)
+        binarize_image(&adjusted_image, &config, force_blank_threshold)
     };
 
     let is_cover_page = should_treat_as_cover_page(page_index, &config);
@@ -855,7 +855,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         binarized,
         width,
         height,
-        has_no_detections,
         is_cover_page,
         cover_encoded_data,
         region_processing_results,
@@ -1111,27 +1110,33 @@ fn apply_region_policy(
     Ok(policy.transform(rendered, inference_result, config))
 }
 
-/// Binarize image with special handling for blank pages in layout detection mode
-fn binarize_image(image: &RgbImage, config: &PipelineConfig, has_no_detections: bool) -> Vec<u8> {
+/// Binarize image with special handling for blank pages in adaptive mode.
+fn binarize_image(
+    image: &RgbImage,
+    config: &PipelineConfig,
+    force_blank_threshold: bool,
+) -> Vec<u8> {
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
         want_invert_output = false;
     }
 
-    // Special handling for blank pages in layout detection mode
-    // For blank pages (no detections), use fixed threshold of 128
-    let (use_fixed_threshold, fixed_threshold) =
-        if config.enable_layout_detection() && has_no_detections {
-            #[cfg(feature = "debug-logging")]
-            crate::debug_log!("Blank page detected (no detections), using fixed threshold 128");
-            (true, 128)
-        } else {
-            (
-                config.binarization().use_fixed_threshold,
-                config.binarization().fixed_threshold,
-            )
-        };
+    // Special handling for blank pages in adaptive + layout mode:
+    // use fixed threshold to avoid static/noise artifacts.
+    let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
+        #[cfg(feature = "debug-logging")]
+        crate::debug_log!(
+            "Blank page detected via filtered detections, forcing fixed threshold {}",
+            BLANK_PAGE_FALLBACK_THRESHOLD
+        );
+        (true, BLANK_PAGE_FALLBACK_THRESHOLD)
+    } else {
+        (
+            config.binarization().use_fixed_threshold,
+            config.binarization().fixed_threshold,
+        )
+    };
 
     let options = BinarizationOptions {
         invert: want_invert_output,
