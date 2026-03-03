@@ -127,6 +127,26 @@ pub fn rounded_clamped_bbox(bbox: [f32; 4], page_width: u32, page_height: u32) -
     (x1 as u32, y1 as u32, x2 as u32, y2 as u32)
 }
 
+/// Fixed threshold used for blank-page fallback when adaptive binarization is active.
+pub const BLANK_PAGE_FALLBACK_THRESHOLD: u8 = 96;
+
+/// Decide whether to force simple thresholding for blank pages.
+///
+/// This uses final filtered detections from Paddle (`InferenceResult.has_no_detections`).
+/// It is intentionally gated to adaptive + layout detection mode.
+pub fn should_force_blank_page_threshold(
+    config: &PipelineConfig,
+    has_no_filtered_detections: bool,
+) -> bool {
+    if !config.enable_layout_detection() {
+        return false;
+    }
+    if config.binarization().use_fixed_threshold || config.binarization().use_heavy_duty {
+        return false;
+    }
+    has_no_filtered_detections
+}
+
 // Helper to encode a small image region; used by image overlays in the page pipeline
 pub async fn encode_region_image(
     image_data: &[u8],
