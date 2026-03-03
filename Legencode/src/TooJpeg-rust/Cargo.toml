@@ -27,7 +27,7 @@ std = []  # For no_std support in the future
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"]}
-image = { version = "0.24", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
 rand = "0.8"
 # Core dependencies
 
