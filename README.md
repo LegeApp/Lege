@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Screenshot 2026-02-18 112523.png" alt="Lege Interface" width="45%" style="margin-right: 2%">
+  <img src="screenshot.png" alt="Lege Interface" width="45%">
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
@@ -215,9 +215,6 @@ Lege is a Rust workspace with multiple crates:
 
 ## Related Projects
 
-- **Calibre** - E-book library management (recommended companion tool)
-- **KoReader** - Open-source E-Ink reader firmware (best for DjVu support)
-- **Internet Archive Downloader** - [elementdavv/internet_archive_downloader](https://github.com/elementdavv/internet_archive_downloader)
 
 ## License
 
