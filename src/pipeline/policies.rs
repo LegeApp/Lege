@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 
 use crate::engine::Detection;
 use crate::pipeline::config::{PipelineConfig, RenderedPageData, InferenceResult};

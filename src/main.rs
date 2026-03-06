@@ -72,7 +72,7 @@ use lege::processing_log::{
 
 mod windows_dirs;
 use std::io::{self, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, System};
 
 /// Cleanup function specifically for CLI to ensure clean process exit
@@ -804,6 +804,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         crop_margins,
         force_crop,
         deskew_enabled,
+        high_quality_output,
         djvu_quality,
     ) = loop {
         print!("\n{}{}{}\n", COLORS.info, CLI_TEXT.interactive.processing_options_title, COLORS.reset);
@@ -835,6 +836,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 crop_margins,
                 force_crop,
                 deskew_enabled,
+                high_quality_output,
                 djvu_quality,
             )) => {
                 // No immediate rejection; we'll apply precedence rules below when building config
@@ -854,6 +856,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     crop_margins,
                     force_crop,
                     deskew_enabled,
+                    high_quality_output,
                     djvu_quality,
                 );
             }
@@ -935,6 +938,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
             error_println!("{}", fmt1(&CLI_TEXT.main.config_set_djvu_quality_failed, e));
         }
     }
+    config.set_high_quality_output(high_quality_output);
     // Use unified image format setter for non-binarized images
     config.set_image_format(cover_format);
     config.set_dither_images(effective_enable_dithering);
@@ -974,6 +978,13 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     println!(
         "{}{}:{} {}",
         COLORS.info, CLI_TEXT.main.selected_options_original_quality, COLORS.reset, config.keep_original_images()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_high_quality_output,
+        COLORS.reset,
+        config.high_quality_output()
     );
     println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_target_output, COLORS.reset, target_summary);
 
@@ -1034,6 +1045,7 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
+    bool,
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
 )> {
     if input.is_empty() {
@@ -1055,6 +1067,7 @@ fn parse_format_selection_with_options(
             false, // crop_margins
             false, // force_crop
             false, // deskew_enabled
+            false, // high_quality_output
             None,  // djvu_quality (not DjVu)
         ));
     }
@@ -1098,12 +1111,7 @@ fn parse_format_selection_with_options(
     // Determine dithering:
     // ALL formats default to original images (no dithering)
     // 'c' flag ENABLES dithering
-    let enable_dithering = if format_num == 3 {
-        // DJVU doesn't use dithering flag
-        false
-    } else {
-        has_c_flag
-    };
+    let enable_dithering = has_c_flag;
 
     // Parse additional options from the remaining parts
     // Also extract option letters that might be embedded in the first part (e.g., "1a" means format 1 with option 'a')
@@ -1148,7 +1156,7 @@ fn parse_format_selection_with_options(
     // Disable dithering if 'c' flag is specified (original quality)
     let final_enable_dithering = enable_dithering;
 
-    let symbol_mode = format_num == 1 && has_s_flag;
+    let symbol_mode = format_num == 2 && has_s_flag;
 
     // Determine DjVu quality based on --high flag
     let djvu_quality = if format_num == 3 {
@@ -1180,6 +1188,7 @@ fn parse_format_selection_with_options(
         crop_margins,
         force_crop,
         deskew_enabled,
+        has_high_flag,
         djvu_quality,
     ))
 }
@@ -1922,27 +1931,77 @@ struct CliStageEvent<'a> {
     stage_label: &'a str,
     stage_color: &'a str,
     verb: &'a str,
+    include_percentage: bool,
 }
 
-fn print_stage_progress_line(stage_label: &str, stage_color: &str, verb: &str, current: u32, total: u32) {
+fn current_cli_timestamp() -> String {
+    let now = chrono::Local::now();
+    format!("[{}]", now.format("%H:%M:%S"))
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let total_secs = elapsed.as_secs();
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn print_timestamped_line(line: &str) {
+    for segment in line.lines() {
+        println!("{} {}", current_cli_timestamp(), segment);
+    }
+}
+
+fn print_stage_progress_line(
+    stage_label: &str,
+    stage_color: &str,
+    verb: &str,
+    current: u32,
+    total: u32,
+    include_percentage: bool,
+) {
     if total == 0 {
         return;
     }
-    let pct = (((current as f64 / total as f64) * 100.0).round() as u32).min(100);
-    println!(
-        "{}[{}]{} {}{}{}: {}{}/{}{} ({}%)",
-        stage_color,
-        stage_label,
-        COLORS.reset,
-        stage_color,
-        verb,
-        COLORS.reset,
-        COLORS.page_complete,
-        current,
-        total,
-        COLORS.reset,
-        pct
-    );
+    let line = if include_percentage {
+        let pct = (((current as f64 / total as f64) * 100.0).round() as u32).min(100);
+        format!(
+            "{}[{}]{} {}{}{}: {}{}/{}{} ({}%)",
+            stage_color,
+            stage_label,
+            COLORS.reset,
+            stage_color,
+            verb,
+            COLORS.reset,
+            COLORS.page_complete,
+            current,
+            total,
+            COLORS.reset,
+            pct
+        )
+    } else {
+        format!(
+            "{}[{}]{} {}{}{}: {}{}/{}{}",
+            stage_color,
+            stage_label,
+            COLORS.reset,
+            stage_color,
+            verb,
+            COLORS.reset,
+            COLORS.page_complete,
+            current,
+            total,
+            COLORS.reset
+        )
+    };
+    print_timestamped_line(&line);
 }
 
 fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progress::ProgressMetrics) {
@@ -1963,6 +2022,7 @@ fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progr
                     stage_label,
                     stage_color,
                     verb,
+                    include_percentage: stage_label == "Encode",
                 });
             }
         }
@@ -2031,6 +2091,7 @@ fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progr
             event.verb,
             event.current,
             total,
+            event.include_percentage,
         );
     }
 }
@@ -2053,6 +2114,7 @@ async fn process_single_file(
     let mut progress_error: Option<anyhow::Error> = None;
     let mut stage_snapshot = CliStageSnapshot::default();
     let mut last_status_lines: Option<(String, String, String)> = None;
+    let job_started_at = Instant::now();
     loop {
         match receiver.recv_async().await {
             Ok(ProgressUpdate::Status {
@@ -2085,13 +2147,13 @@ async fn process_single_file(
                 }
                 last_status_lines = Some((l1.clone(), l2.clone(), l3.clone()));
                 if !l1.is_empty() {
-                    println!("{}", l1);
+                    print_timestamped_line(&l1);
                 }
                 if !l2.is_empty() {
-                    println!("{}", l2);
+                    print_timestamped_line(&l2);
                 }
                 if !l3.is_empty() {
-                    println!("{}", l3);
+                    print_timestamped_line(&l3);
                 }
             }
             Ok(ProgressUpdate::Completed {
@@ -2099,7 +2161,9 @@ async fn process_single_file(
                 message,
                 metrics: _,
             }) if id == task_id => {
-                println!("{}", fmt1(&CLI_TEXT.main.progress_complete, message));
+                let elapsed = format_elapsed(job_started_at.elapsed());
+                let completed = format!("{}\nElapsed: {}", message, elapsed);
+                print_timestamped_line(&fmt1(&CLI_TEXT.main.progress_complete, completed));
                 break;
             }
             Ok(ProgressUpdate::Error {
@@ -2107,7 +2171,7 @@ async fn process_single_file(
                 error,
                 metrics: _,
             }) if id == task_id => {
-                println!("{}", fmt1(&CLI_TEXT.main.progress_error, &error));
+                print_timestamped_line(&fmt1(&CLI_TEXT.main.progress_error, &error));
                 progress_error = Some(anyhow!(error));
                 break;
             }

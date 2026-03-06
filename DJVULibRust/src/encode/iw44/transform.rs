@@ -405,14 +405,3 @@ fn filter_fv(buf: &mut [i16], w: usize, h: usize, rowsize: usize, scale: usize) 
         p += s + s;
     }
 }
-/// Mirror index with even symmetry (DjVu style).
-#[inline]
-fn mirror(mut k: isize, size: usize) -> usize {
-    if k < 0 {
-        k = -k;
-    }
-    if k >= size as isize {
-        k = (size as isize - 2) - (k - size as isize);
-    }
-    k as usize
-}

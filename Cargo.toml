@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.3.7"
+version = "1.3.8"
 edition = "2024"
 description = "Fully automatic PDF processor especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -27,7 +27,7 @@ default-members = [
 
 [workspace.lints.rust]
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "trace_arith"))'] }
 
 [workspace.dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
@@ -43,7 +43,7 @@ log = "0.4.29"
 once_cell = "1.21.3" 
 rayon = "1.11.0"  
 image = { version = "0.25.9", features = ["png", "jpeg", "tiff"] }  
-lopdf = "0.38.0"
+lopdf = "0.39.0"
 flume = "0.11" 
 pdfium-render = { version = "0.8.37", features = ["thread_safe", "sync"] }  
 tempfile = "3.24.0"  
@@ -62,6 +62,9 @@ console_error_panic_hook = "0.1.7"
 ttf-parser = "0.21.1"
 encoding_rs = "0.8.35"
 wait-timeout = "0.2.1"
+byteorder = "1.5.0"
+bitvec = "1.0.1"
+chrono = "0.4.43"
 
 # Windows-rs local crates - tag 71 (all workspace dependencies needed)
 windows = { path = "windows-rs-71/crates/libs/windows", default-features = false }
@@ -161,10 +164,14 @@ djvu_encoder = { path = "DJVULibRust" }
 ort = { path = "./ort", default-features = false, features = ["std", "ndarray", "tracing", "webgpu", "load-dynamic"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = "0.14"
+wgpu = "28"
+pollster = "0.4"
 
 # macOS-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
 tesseract = "0.14"
+wgpu = "28"
+pollster = "0.4"
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -203,6 +210,7 @@ ndarray = "0.16.1"  # Updated
 default = []
 static = ["pdfium-render/static"]
 debug-logging = ["Legencode/debug-logging", "dep:fontdue"]
+jp2-openjp2 = ["Legencode/jp2-openjp2"]
 # Feature for profiling with debug symbols - enables both debug logging and debug symbols
 profiling = ["debug-logging"]
 gui = []

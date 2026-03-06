@@ -11,6 +11,7 @@ asm_zp = []        # Use assembly ZP arithmetic coder
 dev_asm_cmp = []   # Enable assembly vs Rust ZP comparison tests
 rayon = ["dep:rayon"]
 iw44-trace = []    # Enable IW44 debug tracing (verbose)
+debug-logging = []
 
 [dependencies]
 byteorder = "1.5"

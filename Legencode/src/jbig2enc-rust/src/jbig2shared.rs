@@ -1,7 +1,6 @@
 //! Utility functions for the JBIG2 encoder
 
 use crate::jbig2sym::BitImage;
-use anyhow::Result;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
