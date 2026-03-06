@@ -548,26 +548,41 @@ pub enum DjvuWriterMessage {
 }
 
 /// Handle for sending pages to the DjVu writer actor
+#[derive(Clone)]
 pub struct DjvuWriterHandle {
-    sender: mpsc::UnboundedSender<DjvuWriterMessage>,
+    sender: mpsc::Sender<DjvuWriterMessage>,
 }
 
 impl DjvuWriterHandle {
     /// Send a page to be added to the document
-    pub fn append_page(&self, page: Page, page_index: usize) -> Result<(), anyhow::Error> {
+    pub async fn append_page(&self, page: Page, page_index: usize) -> Result<(), anyhow::Error> {
         self.sender
             .send(DjvuWriterMessage::AppendPage { page, page_index })
+            .await
             .map_err(|_| anyhow::anyhow!("DjVu writer actor has stopped"))?;
         Ok(())
     }
 
     /// Finalize the document
-    pub fn finalize(&self) -> Result<(), anyhow::Error> {
+    pub async fn finalize(&self) -> Result<(), anyhow::Error> {
         self.sender
             .send(DjvuWriterMessage::Finalize)
+            .await
             .map_err(|_| anyhow::anyhow!("DjVu writer actor has stopped"))?;
         Ok(())
     }
+}
+
+fn drain_ready_pages<T>(
+    buffer: &mut std::collections::BTreeMap<usize, T>,
+    next_expected: &mut usize,
+) -> Vec<T> {
+    let mut ready = Vec::new();
+    while let Some(page) = buffer.remove(next_expected) {
+        ready.push(page);
+        *next_expected += 1;
+    }
+    ready
 }
 
 /// Spawn a dedicated DjVu writer actor that owns the DjvuDocument
@@ -578,8 +593,9 @@ pub fn spawn_djvu_writer_actor(
     dpi: u32,
     iw44_quality: u8,
     progress_tracker: crate::progress::ProgressTracker,
+    channel_capacity: usize,
 ) -> (DjvuWriterHandle, tokio::task::JoinHandle<Result<(), anyhow::Error>>) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<DjvuWriterMessage>();
+    let (tx, mut rx) = mpsc::channel::<DjvuWriterMessage>(channel_capacity.max(1));
 
     let handle = DjvuWriterHandle { sender: tx };
 
@@ -609,20 +625,29 @@ pub fn spawn_djvu_writer_actor(
         crate::info_log!("[DjvuWriterActor] Started, waiting for pages...");
 
         while let Some(msg) = rx.recv().await {
+            crate::pipeline::helper_functions::wait_for_memory_relief().await;
             match msg {
                 DjvuWriterMessage::AppendPage { page, page_index } => {
                     // Buffer the incoming page
                     page_buffer.insert(page_index, page);
 
                     // Add all consecutive pages starting from next_expected
-                    while let Some(page) = page_buffer.remove(&next_expected) {
+                    for page in drain_ready_pages(&mut page_buffer, &mut next_expected) {
                         if let Err(e) = doc.add_page(page) {
-                            crate::warn_log!("[DjvuWriterActor] Failed to append page {}: {}", next_expected, e);
-                            return Err(anyhow::anyhow!("Failed to append page {}: {}", next_expected, e));
+                            let failed_page = next_expected.saturating_sub(1);
+                            crate::warn_log!(
+                                "[DjvuWriterActor] Failed to append page {}: {}",
+                                failed_page,
+                                e
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Failed to append page {}: {}",
+                                failed_page,
+                                e
+                            ));
                         }
 
                         pages_written += 1;
-                        next_expected += 1;
                         // Writer-side progress reflects successful document assembly.
                         progress_tracker.update(crate::progress::ProcessingStatus::PdfAppend {
                             current: pages_written,
@@ -660,4 +685,51 @@ pub fn spawn_djvu_writer_actor(
     });
 
     (handle, task)
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+
+    use super::{DjvuWriterHandle, DjvuWriterMessage, drain_ready_pages};
+
+    #[test]
+    fn out_of_order_djvu_pages_drain_in_order() {
+        let mut buffer = std::collections::BTreeMap::new();
+        let mut next_expected = 0usize;
+        buffer.insert(2usize, "two");
+        buffer.insert(0usize, "zero");
+        buffer.insert(1usize, "one");
+
+        let ready = drain_ready_pages(&mut buffer, &mut next_expected);
+
+        assert_eq!(ready, vec!["zero", "one", "two"]);
+        assert!(buffer.is_empty());
+        assert_eq!(next_expected, 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_djvu_writer_handle_applies_backpressure() {
+        let (tx, mut rx) = mpsc::channel::<DjvuWriterMessage>(1);
+        let handle = DjvuWriterHandle { sender: tx };
+
+        handle.finalize().await.expect("first send");
+
+        let second_send = tokio::spawn({
+            let handle = handle;
+            async move { handle.finalize().await }
+        });
+        let mut second_send = Box::pin(second_send);
+
+        assert!(timeout(Duration::from_millis(50), &mut second_send).await.is_err());
+
+        let _ = rx.recv().await.expect("message");
+
+        let completed = timeout(Duration::from_millis(200), &mut second_send)
+            .await
+            .expect("send should finish")
+            .expect("join");
+        completed.expect("send ok");
+    }
 }

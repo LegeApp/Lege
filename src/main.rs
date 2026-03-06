@@ -1915,6 +1915,15 @@ struct CliStageSnapshot {
     deskewed: u32,
 }
 
+#[derive(Clone, Copy)]
+struct CliStageEvent<'a> {
+    current: u32,
+    stage_order: u8,
+    stage_label: &'a str,
+    stage_color: &'a str,
+    verb: &'a str,
+}
+
 fn print_stage_progress_line(stage_label: &str, stage_color: &str, verb: &str, current: u32, total: u32) {
     if total == 0 {
         return;
@@ -1938,44 +1947,91 @@ fn print_stage_progress_line(stage_label: &str, stage_color: &str, verb: &str, c
 
 fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progress::ProgressMetrics) {
     let total = metrics.pages_total.max(1);
+    let mut events: Vec<CliStageEvent<'static>> = Vec::new();
+
+    let mut push_stage_events = |start: u32,
+                                 end: u32,
+                                 stage_order: u8,
+                                 stage_label: &'static str,
+                                 stage_color: &'static str,
+                                 verb: &'static str| {
+        if end > start {
+            for current in (start + 1)..=end {
+                events.push(CliStageEvent {
+                    current,
+                    stage_order,
+                    stage_label,
+                    stage_color,
+                    verb,
+                });
+            }
+        }
+    };
 
     match metrics.mode {
         lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => {
-            if metrics.rendered > snapshot.rendered {
-                for n in (snapshot.rendered + 1)..=metrics.rendered {
-                    print_stage_progress_line("Render", COLORS.render, "Page rendered", n, total);
-                }
-                snapshot.rendered = metrics.rendered;
-            }
-            if metrics.detected > snapshot.detected {
-                for n in (snapshot.detected + 1)..=metrics.detected {
-                    print_stage_progress_line("Infer", COLORS.detect, "Page inferred", n, total);
-                }
-                snapshot.detected = metrics.detected;
-            }
-            if metrics.encoded > snapshot.encoded {
-                for n in (snapshot.encoded + 1)..=metrics.encoded {
-                    print_stage_progress_line("Encode", COLORS.encode, "Page encoded", n, total);
-                }
-                snapshot.encoded = metrics.encoded;
-            }
+            push_stage_events(
+                snapshot.rendered,
+                metrics.rendered,
+                2,
+                "Render",
+                COLORS.render,
+                "Page rendered",
+            );
+            push_stage_events(
+                snapshot.detected,
+                metrics.detected,
+                1,
+                "Infer",
+                COLORS.detect,
+                "Page inferred",
+            );
+            push_stage_events(
+                snapshot.encoded,
+                metrics.encoded,
+                0,
+                "Encode",
+                COLORS.encode,
+                "Page encoded",
+            );
+            snapshot.rendered = metrics.rendered;
+            snapshot.detected = metrics.detected;
+            snapshot.encoded = metrics.encoded;
         }
         lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
-            if metrics.encoded > snapshot.encoded {
-                for n in (snapshot.encoded + 1)..=metrics.encoded {
-                    print_stage_progress_line("Encode", COLORS.encode, "Page encoded", n, total);
-                }
-                snapshot.encoded = metrics.encoded;
-            }
+            push_stage_events(
+                snapshot.encoded,
+                metrics.encoded,
+                0,
+                "Encode",
+                COLORS.encode,
+                "Page encoded",
+            );
+            snapshot.encoded = metrics.encoded;
         }
         lege::progress::ProgressMode::Unknown => {}
     }
 
-    if metrics.deskewed > snapshot.deskewed {
-        for n in (snapshot.deskewed + 1)..=metrics.deskewed {
-            print_stage_progress_line("Deskew", COLORS.page_start, "Page deskewed", n, total);
-        }
-        snapshot.deskewed = metrics.deskewed;
+    push_stage_events(
+        snapshot.deskewed,
+        metrics.deskewed,
+        3,
+        "Deskew",
+        COLORS.page_start,
+        "Page deskewed",
+    );
+    snapshot.deskewed = metrics.deskewed;
+
+    events.sort_by_key(|event| (event.current, event.stage_order));
+
+    for event in events {
+        print_stage_progress_line(
+            event.stage_label,
+            event.stage_color,
+            event.verb,
+            event.current,
+            total,
+        );
     }
 }
 

@@ -20,11 +20,13 @@ use crate::pipeline::helper_functions::{
     init_encode_semaphore, build_hocr_from_pdf_text,
     should_force_blank_page_threshold, wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
 };
+use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
 use crate::resize_context::{build_inference_image, InferenceResizeSpec};
 use futures;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
+use futures::future::BoxFuture;
 use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,31 +35,6 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use log::warn;
 use futures::stream::{FuturesUnordered, StreamExt};
-
-//==============================================================================
-// DJVU Pipeline Configuration
-//==============================================================================
-/// DJVU Pipeline concurrency settings
-struct PipelineConfig2 {
-    /// How many pages can be buffered between render→inference
-    render_buffer: usize,
-    /// How many pages can be buffered between inference→process
-    inference_buffer: usize,
-    /// How many concurrent inference tasks (usually 1-2 for GPU)
-    inference_concurrency: usize,
-    /// How many concurrent processing workers
-    process_concurrency: usize,
-}
-impl Default for PipelineConfig2 {
-    fn default() -> Self {
-        Self {
-            render_buffer: 16, // Allow render to get ahead
-            inference_buffer: 8, // Buffer between inference and processing
-            inference_concurrency: 2, // 2 concurrent inference (overlap preprocessing)
-            process_concurrency: 4, // 4 concurrent CPU workers
-        }
-    }
-}
 /// Result from inference stage (after layout detection)
 #[derive(Debug, Clone)]
 pub struct DjvuInferenceData {
@@ -77,6 +54,11 @@ pub struct DjvuBinarizedData {
     pub original_width_pts: f32,
     pub original_height_pts: f32,
     pub hocr_text: Option<String>,
+}
+
+struct EncodedDjvuPage {
+    index: usize,
+    page: djvu_encoder::doc::Page,
 }
 /// Helper function to create DJVU pipeline configuration
 pub fn create_djvu_pipeline_config(
@@ -168,15 +150,21 @@ pub async fn create_and_run_djvu_pipeline(
             None
         };
     // Pipeline concurrency settings (similar to PDF pipeline)
-    let pipeline_config = PipelineConfig2::default();
+    let pipeline_config = PipelineRuntimeLimits::from_config(&config);
+    init_encode_semaphore(pipeline_config.page_workers);
     #[cfg(feature = "debug-logging")]
-    info_log!("[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, inference_concurrency={}, process_concurrency={}",
-              pipeline_config.render_buffer, pipeline_config.inference_buffer,
-              pipeline_config.inference_concurrency, pipeline_config.process_concurrency);
+    info_log!(
+        "[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, page_workers={}, djvu_encode_workers={}",
+        pipeline_config.render_buffer,
+        pipeline_config.inference_buffer,
+        pipeline_config.page_workers,
+        pipeline_config.djvu_encode_workers
+    );
     // Create channels with larger buffers for better pipelining
     let (render_tx, render_rx) = mpsc::channel::<RenderedPageData>(pipeline_config.render_buffer);
     let (infer_tx, infer_rx) = mpsc::channel::<DjvuInferenceData>(pipeline_config.inference_buffer);
-    let (binarize_tx, binarize_rx) = mpsc::channel::<DjvuBinarizedData>(128); // Large output buffer
+    let (binarize_tx, binarize_rx) =
+        mpsc::channel::<DjvuBinarizedData>(pipeline_config.channel_capacity);
     // Setup progress tracking
     let layout_enabled = config.enable_layout_detection();
     let external_cb: Arc<dyn Fn(usize, usize) + Send + Sync + 'static> = Arc::new(progress_callback);
@@ -281,7 +269,6 @@ pub async fn create_and_run_djvu_pipeline(
     };
     // Spawn inference stage with TRUE concurrency (similar to PDF pipeline) (mut for tokio::select!)
     let mut infer_task: JoinHandle<Result<()>> = {
-        let config = config.clone();
         let tracker = progress_tracker.clone();
         let rc = render_count.clone();
         let dc = detect_count.clone();
@@ -289,12 +276,13 @@ pub async fn create_and_run_djvu_pipeline(
         let mut render_rx = render_rx;
         let handle_clone = shared_inference_handle.clone();
         let total_pages = total_pages;
-        let concurrency = pipeline_config.inference_concurrency;
+        let concurrency = pipeline_config.page_workers;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Infer] Starting inference stage with concurrency={}", concurrency);
             // Track in-flight inference tasks
-            let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
+            let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<DjvuInferenceData>>> =
+                FuturesUnordered::new();
             let mut input_exhausted = false;
             loop {
                 tokio::select! {
@@ -302,7 +290,7 @@ pub async fn create_and_run_djvu_pipeline(
                     // Collect completed inference results
                     Some(result) = in_flight.next(), if !in_flight.is_empty() => {
                         match result {
-                            Ok(Ok(data)) => {
+                            Ok(data) => {
                                 let detected_val = dc.fetch_add(1, Ordering::Relaxed) + 1;
                                 if layout_enabled {
                                     let rendered_val = rc.load(Ordering::Relaxed);
@@ -311,23 +299,14 @@ pub async fn create_and_run_djvu_pipeline(
                                 }
                                 infer_tx.send(data).await.map_err(|e| anyhow!("Infer send failed: {}", e))?;
                             }
-                            Ok(Err(e)) => {
-                                warn_log!("[DJVU-Parallel-Infer] Inference task failed: {}", e);
-                            }
                             Err(e) => {
-                                warn_log!("[DJVU-Parallel-Infer] Task join error: {}", e);
+                                warn_log!("[DJVU-Parallel-Infer] Inference task failed: {}", e);
                             }
                         }
                     }
                     // Accept new work if we have capacity
                     Some(rendered) = render_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
-                        let handle = handle_clone.clone();
-                        let config_clone = config.clone();
-                        // Spawn inference task - runs concurrently!
-                        let task = tokio::spawn(async move {
-                            run_single_djvu_inference(handle, config_clone, rendered).await
-                        });
-                        in_flight.push(task);
+                        in_flight.push(build_djvu_inference_future(handle_clone.clone(), rendered));
                     }
                     // Input channel closed
                     else => {
@@ -365,7 +344,7 @@ pub async fn create_and_run_djvu_pipeline(
         let total_pages = total_pages;
         let page_index_offset = page_index_offset;
         let layout_enabled = layout_enabled;
-        let concurrency = pipeline_config.process_concurrency;
+        let concurrency = pipeline_config.process_workers;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Process] Starting binarization & text extraction stage with concurrency={}", concurrency);
@@ -441,38 +420,69 @@ pub async fn create_and_run_djvu_pipeline(
         dpi,
         iw44_quality,
         progress_tracker.clone(),
+        pipeline_config.channel_capacity,
     );
 
-    // Spawn encoding & submission task (converts pages and sends to writer actor)
-    let mut submit_task: JoinHandle<Result<()>> = {
+    // Spawn encoding stage (encodes pages concurrently, then forwards to writer actor)
+    let mut encode_task: JoinHandle<Result<()>> = {
         let orchestrator = orchestrator.clone();
-        let djvu_writer = djvu_writer;
+        let djvu_writer = djvu_writer.clone();
         let mut binarize_rx = binarize_rx;
+        let concurrency = pipeline_config.djvu_encode_workers;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Submit] Starting encoding & submission task");
-            while let Some(binarized_data) = binarize_rx.recv().await {
-                // Convert page data and encode
-                let page_data = PageData {
-                    index: binarized_data.index,
-                    rgb_image: (*binarized_data.adjusted_image).clone(),
-                    binarized: binarized_data.binarized,
-                    detections: binarized_data.detections,
-                    hocr: binarized_data.hocr_text,
-                };
-                
-                // Process page (returns encoded Page)
-                let page = orchestrator.process_page(page_data)?;
-                
-                // Send to writer actor for concurrent assembly
-                djvu_writer.append_page(page, binarized_data.index)?;
+            info_log!("[DJVU-Parallel-Encode] Starting encoding stage with concurrency={}", concurrency);
+            let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<EncodedDjvuPage>>> =
+                FuturesUnordered::new();
+            let mut input_exhausted = false;
+
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(result) = in_flight.next(), if !in_flight.is_empty() => {
+                        let encoded_page = result?;
+                        djvu_writer.append_page(encoded_page.page, encoded_page.index).await?;
+                    }
+                    Some(binarized_data) = binarize_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
+                        let orchestrator = orchestrator.clone();
+                        in_flight.push(Box::pin(async move {
+                            let page_index = binarized_data.index;
+                            let page_data = PageData {
+                                index: binarized_data.index,
+                                rgb_image: (*binarized_data.adjusted_image).clone(),
+                                binarized: binarized_data.binarized,
+                                detections: binarized_data.detections,
+                                hocr: binarized_data.hocr_text,
+                            };
+
+                            let page = tokio::task::spawn_blocking(move || orchestrator.process_page(page_data))
+                                .await
+                                .map_err(|e| anyhow!("DjVu encode task panicked: {}", e))??;
+
+                            Ok(EncodedDjvuPage {
+                                index: page_index,
+                                page,
+                            })
+                        }));
+                    }
+                    else => {
+                        if !input_exhausted && binarize_rx.is_closed() {
+                            input_exhausted = true;
+                        }
+                        if input_exhausted && in_flight.is_empty() {
+                            break;
+                        }
+                        if in_flight.is_empty() {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                }
             }
-            
-            // Signal writer to finalize
-            djvu_writer.finalize()?;
+
+            djvu_writer.finalize().await?;
             
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Submit] Encoding & submission task complete");
+            info_log!("[DJVU-Parallel-Encode] Encoding stage complete");
             Ok(())
         })
     };
@@ -494,7 +504,7 @@ pub async fn create_and_run_djvu_pipeline(
                     render_task.abort();
                     infer_task.abort();
                     binarize_task.abort();
-                    submit_task.abort();
+                    encode_task.abort();
 
                     return Err(anyhow::anyhow!("Processing cancelled during render stage: {}",
                         sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
@@ -515,7 +525,7 @@ pub async fn create_and_run_djvu_pipeline(
                 if let Ok(sig) = signal {
                     infer_task.abort();
                     binarize_task.abort();
-                    submit_task.abort();
+                    encode_task.abort();
 
                     return Err(anyhow::anyhow!("Processing cancelled during inference stage: {}",
                         sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
@@ -535,7 +545,7 @@ pub async fn create_and_run_djvu_pipeline(
             signal = shutdown_rx.recv() => {
                 if let Ok(sig) = signal {
                     binarize_task.abort();
-                    submit_task.abort();
+                    encode_task.abort();
 
                     return Err(anyhow::anyhow!("Processing cancelled during binarization stage: {}",
                         sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
@@ -546,7 +556,7 @@ pub async fn create_and_run_djvu_pipeline(
 
     loop {
         tokio::select! {
-            result = &mut submit_task => {
+            result = &mut encode_task => {
                 result??;
                 #[cfg(feature = "debug-logging")]
                 info_log!("[DJVU-Parallel] Encoding stage complete");
@@ -554,7 +564,7 @@ pub async fn create_and_run_djvu_pipeline(
             }
             signal = shutdown_rx.recv() => {
                 if let Ok(sig) = signal {
-                    submit_task.abort();
+                    encode_task.abort();
 
                     return Err(anyhow::anyhow!("Processing cancelled during encoding stage: {}",
                         sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
@@ -595,39 +605,58 @@ pub async fn create_and_run_djvu_pipeline(
     info_log!("[DJVU-Parallel] Pipeline complete");
     Ok(())
 }
-/// Run inference for a single DJVU page (runs concurrently)
-async fn run_single_djvu_inference(
+fn build_djvu_inference_future(
     shared_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
-    config: Arc<PipelineConfig>,
     rendered: RenderedPageData,
-) -> Result<DjvuInferenceData> {
-    let page_index = rendered.index;
-    let detections = if let Some(handle) = &shared_handle {
-        handle
-            .detect(page_index, rendered.inference_image.clone())
-            .await
-            .unwrap_or_else(|e| {
-                warn_log!("Page {}: inference failed: {}", page_index, e);
-                Vec::new()
+) -> BoxFuture<'static, Result<DjvuInferenceData>> {
+    match shared_handle {
+        Some(handle) => Box::pin(async move {
+            let page_index = rendered.index;
+            let detections = handle
+                .submit(page_index, rendered.inference_image.clone())
+                .await?
+                .await
+                .map_err(|_| anyhow!("Inference actor dropped response"))?
+                .unwrap_or_else(|e| {
+                    warn_log!("Page {}: inference failed: {}", page_index, e);
+                    Vec::new()
+                });
+
+            let inference_result = InferenceResult {
+                index: rendered.index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: detections.clone(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: detections.is_empty(),
+            };
+            Ok(DjvuInferenceData {
+                index: page_index,
+                rendered,
+                inference_result,
             })
-    } else {
-        Vec::new()
-    };
-    let inference_result = InferenceResult {
-        index: rendered.index,
-        high_res_image: rendered.high_res_image.clone(),
-        inference_image: rendered.inference_image.clone(),
-        detections: detections.clone(),
-        text_layer: None,
-        original_width_pts: rendered.original_width_pts,
-        original_height_pts: rendered.original_height_pts,
-        has_no_detections: detections.is_empty(),
-    };
-    Ok(DjvuInferenceData {
-        index: page_index,
-        rendered,
-        inference_result,
-    })
+        }) as BoxFuture<'static, Result<DjvuInferenceData>>,
+        None => Box::pin(async move {
+            let page_index = rendered.index;
+            let inference_result = InferenceResult {
+                index: rendered.index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: Vec::new(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: true,
+            };
+            Ok(DjvuInferenceData {
+                index: page_index,
+                rendered,
+                inference_result,
+            })
+        }),
+    }
 }
 /// Process a single DJVU page with OCR/text extraction in the async part
 async fn process_single_djvu_page(

@@ -16,6 +16,8 @@ use crate::jbig2sym::BitImage;
 
 /// Maximum absolute shift (in pixels) that we search in x/y.
 const SEARCH_RADIUS: i32 = 5;
+/// Maximum width/height delta that can still produce a match.
+pub const MAX_DIMENSION_DELTA: usize = (SEARCH_RADIUS as usize) * 2;
 
 #[derive(Default)]
 /// Compares two BitImages and calculates the pixel distance between them.
@@ -46,9 +48,13 @@ impl Comparator {
         b: &BitImage,
         max_err: u32,
     ) -> Option<(u32, i32, i32)> {
+        if a == b {
+            return Some((0, 0, 0));
+        }
+
         // Bail early if sizes are wildly different.
-        if (a.width as i32 - b.width as i32).abs() > SEARCH_RADIUS * 2
-            || (a.height as i32 - b.height as i32).abs() > SEARCH_RADIUS * 2
+        if a.width.abs_diff(b.width) > MAX_DIMENSION_DELTA
+            || a.height.abs_diff(b.height) > MAX_DIMENSION_DELTA
         {
             return None;
         }
@@ -60,6 +66,9 @@ impl Comparator {
             self.tmp.resize(wpr_overlap, 0);
         }
 
+        let a_words = a.packed_words();
+        let b_words = b.packed_words();
+
         let mut best_err = max_err + 1;
         let mut best_dx = 0;
         let mut best_dy = 0;
@@ -67,7 +76,6 @@ impl Comparator {
         for dy in -SEARCH_RADIUS..=SEARCH_RADIUS {
             for dx in -SEARCH_RADIUS..=SEARCH_RADIUS {
                 let mut err = 0u32;
-                let bit_dx = (dx % 32) as i8;
 
                 let x0 = dx.max(0) as u32;
                 let y0 = dy.max(0) as u32;
@@ -81,10 +89,6 @@ impl Comparator {
 
                 let rows = y1 - y0;
                 let cols_words = (x1 - x0 + 31) >> 5;
-
-                // Convert BitImages to packed words representation for efficient comparison
-                let a_words = a.to_packed_words();
-                let b_words = b.to_packed_words();
 
                 for row in 0..rows {
                     let a_row_idx = (row as i32 + y0 as i32 - dy) as usize * awpr;

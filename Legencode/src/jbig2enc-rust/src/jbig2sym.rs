@@ -182,11 +182,10 @@ impl BitImage {
         self.bits.get(idx).map_or(false, |b| *b)
     }
 
-    /// Converts to packed 32-bit words for efficient comparison. Results are
-    /// cached to avoid repeated work when the same image is processed multiple
-    /// times.
-    pub fn to_packed_words(&self) -> Vec<u32> {
-        let cached = self.packed_cache.get_or_init(|| {
+    /// Returns packed 32-bit words for efficient comparison and generic-region
+    /// encoding. Results are cached to avoid repeated repacking work.
+    pub fn packed_words(&self) -> &[u32] {
+        self.packed_cache.get_or_init(|| {
             let words_per_row = (self.width + 31) / 32;
             let mut out = Vec::with_capacity(words_per_row * self.height);
 
@@ -211,9 +210,12 @@ impl BitImage {
             }
 
             out
-        });
+        })
+    }
 
-        cached.clone()
+    /// Converts to packed 32-bit words for callers that need owned storage.
+    pub fn to_packed_words(&self) -> Vec<u32> {
+        self.packed_words().to_vec()
     }
 
     /// Gets a pixel value at (x, y).
@@ -545,6 +547,31 @@ pub fn array_to_bitimage(array: &Array2<u8>) -> BitImage {
     bit_image
 }
 
+/// Converts unpacked binary pixels (one byte per pixel, non-zero = set) to a `BitImage`.
+pub fn binary_pixels_to_bitimage(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+) -> Result<BitImage, String> {
+    let expected_len = width
+        .checked_mul(height)
+        .ok_or_else(|| "Dimensions too large".to_string())?;
+    if pixels.len() < expected_len {
+        return Err(format!(
+            "Binary pixel buffer too small: expected {}, got {}",
+            expected_len,
+            pixels.len()
+        ));
+    }
+
+    let bits = pixels[..expected_len]
+        .iter()
+        .map(|&pixel| pixel > 0)
+        .collect::<BitVec<u8, Msb0>>();
+
+    Ok(BitImage::from_bits(width, height, bits.as_bitslice()))
+}
+
 /// Loads a PBM file into a BitImage
 pub fn load_pbm(path: &Path) -> Result<BitImage, String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -590,6 +617,31 @@ pub fn load_pbm(path: &Path) -> Result<BitImage, String> {
         .map_err(|e| format!("Read failed: {}", e))?;
 
     Ok(BitImage::from_bytes(width, height, &data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{array_to_bitimage, binary_pixels_to_bitimage};
+    use ndarray::array;
+
+    #[test]
+    fn binary_pixels_match_array_conversion() {
+        let pixels = vec![
+            0, 1, 0, 1, 1,
+            1, 0, 0, 0, 1,
+            0, 0, 1, 1, 0,
+        ];
+        let array = array![
+            [0u8, 1, 0, 1, 1],
+            [1u8, 0, 0, 0, 1],
+            [0u8, 0, 1, 1, 0],
+        ];
+
+        let from_pixels = binary_pixels_to_bitimage(&pixels, 5, 3).unwrap();
+        let from_array = array_to_bitimage(&array);
+
+        assert_eq!(from_pixels, from_array);
+    }
 }
 
 /// Helper function to find the first black pixel in packed u32 data

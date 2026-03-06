@@ -12,14 +12,21 @@ use log;
 // Increased from 4GB to 12GB to support layout detection with multiple workers
 const DEFAULT_MEMORY_LIMIT_GB: usize = 12; // 12GB default limit for modern systems
 
-static ENCODE_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<Semaphore>> = std::sync::OnceLock::new();
+static ENCODE_SEMAPHORE: std::sync::OnceLock<std::sync::Mutex<std::sync::Arc<Semaphore>>> =
+    std::sync::OnceLock::new();
 
 pub fn init_encode_semaphore(permits: usize) {
-    let _ = ENCODE_SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(permits.max(1))));
+    let semaphore = ENCODE_SEMAPHORE
+        .get_or_init(|| std::sync::Mutex::new(std::sync::Arc::new(Semaphore::new(1))));
+    if let Ok(mut guard) = semaphore.lock() {
+        *guard = std::sync::Arc::new(Semaphore::new(permits.max(1)));
+    }
 }
 
 pub fn get_encode_semaphore() -> Option<std::sync::Arc<Semaphore>> {
-    ENCODE_SEMAPHORE.get().cloned()
+    ENCODE_SEMAPHORE
+        .get()
+        .and_then(|semaphore| semaphore.lock().ok().map(|guard| guard.clone()))
 }
 
 
@@ -590,35 +597,6 @@ pub fn set_memory_limit_gb(limit_gb: usize) {
 }
 
 /// Calculate optimal worker count based on available RAM and processing mode
-pub fn calculate_optimal_workers(config: &PipelineConfig) -> usize {
-    let ram_gb = get_available_ram_gb();
-
-    if config.binarization().use_heavy_duty {
-        info_log!(
-            "Heavy Sauvola detected ({}GB RAM) - using sequential processing",
-            ram_gb
-        );
-        return 1;
-    }
-
-    let workers = if ram_gb >= 32 {
-        32
-    } else if ram_gb >= 16 {
-        24
-    } else if ram_gb >= 8 {
-        12
-    } else {
-        4
-    };
-
-    info_log!(
-        "Detected {}GB RAM - using {} workers for no-layout processing",
-        ram_gb,
-        workers
-    );
-    workers
-}
-
 /// Encode page data using the appropriate encoding format
 /// - JBIG2: Accepts 0/255 (channels=1) or 0/1 (channels=0)
 /// - CCITT4: Accepts 0/255 (channels=1) or bit-packed (channels=0)
@@ -772,6 +750,18 @@ pub async fn encode_page_data(
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+fn drain_ready_values<T>(
+    buffer: &mut std::collections::BTreeMap<usize, T>,
+    next_expected: &mut usize,
+) -> Vec<T> {
+    let mut ready = Vec::new();
+    while let Some(value) = buffer.remove(next_expected) {
+        ready.push(value);
+        *next_expected += 1;
+    }
+    ready
+}
+
 /// Message sent to the PDF writer actor
 #[derive(Clone, Debug)]
 pub enum WriterMessage {
@@ -784,22 +774,28 @@ pub enum WriterMessage {
 /// Handle for sending pages to the dedicated PDF writer actor
 #[derive(Clone)]
 pub struct PdfWriterHandle {
-    sender: mpsc::UnboundedSender<WriterMessage>,
+    sender: mpsc::Sender<WriterMessage>,
 }
 
 impl PdfWriterHandle {
     /// Send a page to be written to the PDF
-    pub fn send_page(&self, page: crate::accumulator::Page, page_index: usize) -> Result<(), anyhow::Error> {
+    pub async fn send_page(
+        &self,
+        page: crate::accumulator::Page,
+        page_index: usize,
+    ) -> Result<(), anyhow::Error> {
         self.sender
             .send(WriterMessage::AppendPage { page, page_index })
+            .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
     }
 
     /// Signal the writer to finalize the PDF
-    pub fn finalize(&self) -> Result<(), anyhow::Error> {
+    pub async fn finalize(&self) -> Result<(), anyhow::Error> {
         self.sender
             .send(WriterMessage::Finalize)
+            .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
     }
@@ -813,8 +809,9 @@ pub fn spawn_pdf_writer_actor(
     pdf_compatibility_mode: bool,
     progress_tracker: crate::progress::ProgressTracker,
     use_margin_label: bool,
+    channel_capacity: usize,
 ) -> (PdfWriterHandle, tokio::task::JoinHandle<Result<(), anyhow::Error>>) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<WriterMessage>();
+    let (tx, mut rx) = mpsc::channel::<WriterMessage>(channel_capacity.max(1));
 
     let handle = PdfWriterHandle { sender: tx };
 
@@ -846,13 +843,21 @@ pub fn spawn_pdf_writer_actor(
 
                         // Try to write any consecutive pages that are ready
                         let mut wrote_any = false;
-                        while let Some(page) = page_buffer.remove(&next_expected) {
+                        for page in drain_ready_values(&mut page_buffer, &mut next_expected) {
                             if let Err(e) = builder.add_page(&page) {
-                                crate::warn_log!("[PdfWriterActor] Failed to append page {}: {}", next_expected, e);
-                                return Err(anyhow::anyhow!("Failed to append page {}: {}", next_expected, e));
+                                let failed_page = next_expected.saturating_sub(1);
+                                crate::warn_log!(
+                                    "[PdfWriterActor] Failed to append page {}: {}",
+                                    failed_page,
+                                    e
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "Failed to append page {}: {}",
+                                    failed_page,
+                                    e
+                                ));
                             }
                             pages_written += 1;
-                            next_expected += 1;
                             wrote_any = true;
                         }
 
@@ -875,14 +880,22 @@ pub fn spawn_pdf_writer_actor(
                     }
 
                     // Append all consecutive pages starting from next_expected
-                    while let Some(page) = page_buffer.remove(&next_expected) {
+                    for page in drain_ready_values(&mut page_buffer, &mut next_expected) {
                         if let Err(e) = builder.add_page(&page) {
-                            crate::warn_log!("[PdfWriterActor] Failed to append page {}: {}", next_expected, e);
-                            return Err(anyhow::anyhow!("Failed to append page {}: {}", next_expected, e));
+                            let failed_page = next_expected.saturating_sub(1);
+                            crate::warn_log!(
+                                "[PdfWriterActor] Failed to append page {}: {}",
+                                failed_page,
+                                e
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Failed to append page {}: {}",
+                                failed_page,
+                                e
+                            ));
                         }
 
                         pages_written += 1;
-                        next_expected += 1;
 
                         // Throttle progress updates - every 5 pages or on last page
                         let is_last_page = pages_written == total_pages;
@@ -952,4 +965,62 @@ pub fn spawn_pdf_writer_actor(
     });
 
     (handle, task)
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+
+    use super::{PdfWriterHandle, WriterMessage, drain_ready_values};
+
+    fn empty_page(index: usize) -> crate::accumulator::Page {
+        crate::accumulator::Page {
+            width: 1.0,
+            height: 1.0,
+            elements: Vec::new(),
+            hocr_text: None,
+            index,
+            binarized: None,
+        }
+    }
+
+    #[test]
+    fn out_of_order_pages_drain_in_order() {
+        let mut buffer = std::collections::BTreeMap::new();
+        let mut next_expected = 0usize;
+        buffer.insert(2usize, "two");
+        buffer.insert(0usize, "zero");
+        buffer.insert(1usize, "one");
+
+        let ready = drain_ready_values(&mut buffer, &mut next_expected);
+
+        assert_eq!(ready, vec!["zero", "one", "two"]);
+        assert!(buffer.is_empty());
+        assert_eq!(next_expected, 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_writer_handle_applies_backpressure() {
+        let (tx, mut rx) = mpsc::channel::<WriterMessage>(1);
+        let handle = PdfWriterHandle { sender: tx };
+
+        handle.send_page(empty_page(0), 0).await.expect("first send");
+
+        let second_send = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.send_page(empty_page(1), 1).await }
+        });
+        let mut second_send = Box::pin(second_send);
+
+        assert!(timeout(Duration::from_millis(50), &mut second_send).await.is_err());
+
+        let _ = rx.recv().await.expect("message");
+
+        let completed = timeout(Duration::from_millis(200), &mut second_send)
+            .await
+            .expect("send should finish")
+            .expect("join");
+        completed.expect("send ok");
+    }
 }

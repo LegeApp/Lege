@@ -89,7 +89,6 @@ impl Default for PipelineConfig {
         config.max_retries = 3;
         config.retry_delay_ms = 1000;
         config.batch_size = 2;
-        config.min_pages_for_batching = 30;
         config.batch_timeout_ms = 2000; // Reduced from 5000ms for faster final batch processing
         config
     }
@@ -290,11 +289,9 @@ pub struct PipelineConfig {
     pub(crate) retry_delay_ms: u64,
     pub(crate) max_parallel_pages: Option<usize>,
     pub(crate) batch_size: usize,
-    pub(crate) min_pages_for_batching: usize,
     pub(crate) batch_timeout_ms: u64,
     // Batching behavior knobs
     pub(crate) initial_single_pages: usize,
-    pub(crate) enable_prebatching: bool,
     pub(crate) max_inference_batch_size: Option<usize>,
     pub(crate) margin_settings: crate::margin::MarginSettings,
     pub(crate) crop_footnotes: bool,
@@ -349,10 +346,8 @@ impl PipelineConfig {
             retry_delay_ms: 1000,
             max_parallel_pages: Some(4),
             batch_size: 15,
-            min_pages_for_batching: 30,
             batch_timeout_ms: 2000,
             initial_single_pages: 15,
-            enable_prebatching: true,
             max_inference_batch_size: Some(16), // Dynamic batching: greedy up to 16 images
             margin_settings: crate::margin::MarginSettings::None,
             crop_footnotes: false,
@@ -554,17 +549,11 @@ impl PipelineConfig {
     pub fn batch_size(&self) -> usize {
         self.batch_size
     }
-    pub fn min_pages_for_batching(&self) -> usize {
-        self.min_pages_for_batching
-    }
     pub fn batch_timeout_ms(&self) -> u64 {
         self.batch_timeout_ms
     }
     pub fn initial_single_pages(&self) -> usize {
         self.initial_single_pages
-    }
-    pub fn enable_prebatching(&self) -> bool {
-        self.enable_prebatching
     }
     pub fn max_inference_batch_size(&self) -> Option<usize> {
         self.max_inference_batch_size
@@ -718,9 +707,6 @@ impl PipelineConfig {
     }
     pub fn set_initial_single_pages(&mut self, n: usize) {
         self.initial_single_pages = n;
-    }
-    pub fn set_enable_prebatching(&mut self, enable: bool) {
-        self.enable_prebatching = enable;
     }
     pub fn set_max_inference_batch_size(&mut self, n: Option<usize>) {
         self.max_inference_batch_size = n;
