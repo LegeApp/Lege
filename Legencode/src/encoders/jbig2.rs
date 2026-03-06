@@ -1,13 +1,19 @@
 use crate::streamline::Jbig2Settings;
 use crate::{EncodingError, Result};
 use jbig2enc_rust::{encode_single_image, encode_single_image_lossless, Jbig2EncodeResult};
+use std::borrow::Cow;
 
 /// Normalize binary data from various formats to 0/1 per byte for JBIG2 encoding
 /// 
 /// Accepts:
 /// - channels=0: Already normalized 0/1 data (pass through)
 /// - channels=1: Grayscale 0/255 data (normalize to 0/1)
-fn normalize_binary_data(input: &[u8], width: u32, height: u32, channels: u8) -> Result<Vec<u8>> {
+fn normalize_binary_data<'a>(
+    input: &'a [u8],
+    width: u32,
+    height: u32,
+    channels: u8,
+) -> Result<Cow<'a, [u8]>> {
     let expected_len = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| EncodingError::InvalidInput("Dimensions too large".to_string()))?;
@@ -18,7 +24,7 @@ fn normalize_binary_data(input: &[u8], width: u32, height: u32, channels: u8) ->
             if input.len() < expected_len {
                 return Err(EncodingError::InputBufferTooSmall);
             }
-            Ok(input[..expected_len].to_vec())
+            Ok(Cow::Borrowed(&input[..expected_len]))
         }
         1 => {
             // Grayscale 0/255 data - normalize to 0/1
@@ -29,14 +35,16 @@ fn normalize_binary_data(input: &[u8], width: u32, height: u32, channels: u8) ->
             // Check if already normalized (all values are 0 or 1)
             let already_binary = input[..expected_len].iter().all(|&b| b <= 1);
             if already_binary {
-                return Ok(input[..expected_len].to_vec());
+                return Ok(Cow::Borrowed(&input[..expected_len]));
             }
-            
+
             // Normalize: >128 = white (1), <=128 = black (0)
-            Ok(input[..expected_len]
-                .iter()
-                .map(|&b| if b > 128 { 1 } else { 0 })
-                .collect())
+            Ok(Cow::Owned(
+                input[..expected_len]
+                    .iter()
+                    .map(|&b| if b > 128 { 1 } else { 0 })
+                    .collect(),
+            ))
         }
         _ => Err(EncodingError::UnsupportedChannels {
             format: "JBIG2",
@@ -58,12 +66,12 @@ pub fn encode(
     // Choose encoding function based on symbol_mode setting
     if settings.symbol_mode {
         // Use normal symbol dictionaries (original behavior)
-        encode_single_image(&normalized, width, height, settings.pdf_fragment_mode)
+        encode_single_image(normalized.as_ref(), width, height, settings.pdf_fragment_mode)
             .map_err(|e| EncodingError::EncoderError(e.to_string()))
     } else {
         // Use the lossless encoding function that creates proper JBIG2 segments
         // This includes end-of-page and end-of-file segments required for PDF embedding
-        encode_single_image_lossless(&normalized, width, height, settings.pdf_fragment_mode)
+        encode_single_image_lossless(normalized.as_ref(), width, height, settings.pdf_fragment_mode)
             .map_err(|e| EncodingError::EncoderError(e.to_string()))
     }
 }

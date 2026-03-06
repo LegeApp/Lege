@@ -227,6 +227,7 @@ impl RotationClassifier {
 
         // Run inference
         let input_value = Value::from_array(preprocessed)?;
+        let _ort_guard = crate::pipeline::runtime_limits::lock_ort_gate()?;
         let mut session = self
             .session
             .lock()
@@ -435,6 +436,7 @@ impl DocumentUnwarper {
 
         // Run inference
         let input_value = Value::from_array(preprocessed)?;
+        let _ort_guard = crate::pipeline::runtime_limits::lock_ort_gate()?;
         let mut session = self
             .session
             .lock()

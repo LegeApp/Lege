@@ -1390,6 +1390,7 @@ mod tests {
                 elements: Vec::new(),
                 hocr_text: None,
                 index: idx,
+                binarized: None,
             }
         }
 

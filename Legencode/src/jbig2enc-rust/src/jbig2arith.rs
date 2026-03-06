@@ -687,12 +687,12 @@ impl Jbig2ArithCoder {
             );
         }
 
-        let packed_data = image.to_packed_words();
+        let packed_data = image.packed_words();
 
         // Verify bit-order correctness: first black pixel should match between image and packed data
         if let Some(expected_first_pixel) = crate::jbig2enc::first_black_pixel(image) {
             let actual_first_pixel = crate::jbig2sym::first_black_pixel_in_packed(
-                &packed_data,
+                packed_data,
                 image.width,
                 image.height,
             );
@@ -713,7 +713,7 @@ impl Jbig2ArithCoder {
             at[i] = p;
         }
         coder.encode_generic_region_inner(
-            &packed_data,
+            packed_data,
             image.width,
             image.height,
             template,

@@ -1,6 +1,6 @@
 //! This module contains the main JBIG2 encoder logic.
 use crate::jbig2arith::{IntProc, Jbig2ArithCoder};
-use crate::jbig2comparator::Comparator;
+use crate::jbig2comparator::{Comparator, MAX_DIMENSION_DELTA};
 // Symbol extraction using CC analysis
 #[cfg(feature = "cc-analysis")]
 use crate::jbig2cc::analyze_page;
@@ -236,6 +236,10 @@ impl<'a> Jbig2Encoder<'a> {
 
     pub fn add_page(&mut self, image: &Array2<u8>) -> Result<()> {
         let bitimage = crate::jbig2sym::array_to_bitimage(image);
+        self.add_page_bitimage(bitimage)
+    }
+
+    pub fn add_page_bitimage(&mut self, bitimage: BitImage) -> Result<()> {
         let page_num = self.pages.len();
         let mut symbol_instances = Vec::new();
         let mut comparator = Comparator::default();
@@ -243,74 +247,71 @@ impl<'a> Jbig2Encoder<'a> {
         // Extract symbols if symbol mode is enabled
         if self.config.symbol_mode && self.state.segment {
             #[cfg(feature = "cc-analysis")]
-            let extracted = {
+            {
                 let dpi = 300; // Default DPI
                 let losslevel = if self.config.is_lossless { 0 } else { 1 };
                 let cc_image = analyze_page(&bitimage, dpi, losslevel);
-                let shapes = cc_image.extract_shapes();
-                // Convert to (Rect, BitImage) format
-                shapes.into_iter().map(|(bitmap, bbox)| {
-                    let rect = Rect {
-                        x: bbox.xmin as u32,
-                        y: bbox.ymin as u32,
-                        width: bbox.width() as u32,
-                        height: bbox.height() as u32,
-                    };
-                    (rect, bitmap)
-                }).collect::<Vec<_>>()
-            };
-            #[cfg(not(feature = "cc-analysis"))]
-            let extracted: Vec<(Rect, BitImage)> = Vec::new();
+                let extracted = cc_image.extract_shapes();
 
-            // Check if symbol extraction makes sense for this image
-            // If we only get one symbol that covers the entire image,
-            // it's better to use generic region encoding
-            let should_use_symbols = if extracted.len() == 1 {
-                let (rect, _) = &extracted[0];
-                // Check if the single symbol is essentially the entire image
-                !(rect.x == 0
-                    && rect.y == 0
-                    && rect.width as usize >= bitimage.width - 2
-                    && rect.height as usize >= bitimage.height - 2)
-            } else {
-                extracted.len() > 0
-            };
+                // Check if symbol extraction makes sense for this image
+                // If we only get one symbol that covers the entire image,
+                // it's better to use generic region encoding
+                let should_use_symbols = if extracted.len() == 1 {
+                    let (_, bbox) = &extracted[0];
+                    !(bbox.xmin == 0
+                        && bbox.ymin == 0
+                        && bbox.width() as usize >= bitimage.width.saturating_sub(2)
+                        && bbox.height() as usize >= bitimage.height.saturating_sub(2))
+                } else {
+                    !extracted.is_empty()
+                };
 
-            if should_use_symbols {
-                for (rect, symbol) in extracted {
-                    let (_, trimmed) = symbol.trim();
-                    let key = hash_key(&trimmed);
-                    let mut matched = false;
-                    if let Some(bucket) = self.hash_map.get(&key) {
-                        for &idx in bucket {
-                            // Allow more differences between symbols (up to 10% of pixels) for better deduplication
-                            let max_err = ((trimmed.width * trimmed.height) / 10).max(3) as u32;
-                            if let Some((err, dx, dy)) =
-                                comparator.distance(&trimmed, &self.global_symbols[idx], max_err)
-                            {
-                                self.symbol_usage[idx] += 1;
-                                self.symbol_pages[idx].insert(page_num);
-                                symbol_instances.push(SymbolInstance {
-                                    symbol_index: idx,
-                                    position: rect,
-                                    instance_bitmap: symbol.clone(),
-                                });
-                                matched = true;
-                                break;
+                if should_use_symbols {
+                    for (symbol, bbox) in extracted {
+                        let rect = Rect {
+                            x: bbox.xmin as u32,
+                            y: bbox.ymin as u32,
+                            width: bbox.width() as u32,
+                            height: bbox.height() as u32,
+                        };
+                        let (_, trimmed) = symbol.trim();
+                        let key = hash_key(&trimmed);
+                        let max_err = ((trimmed.width * trimmed.height) / 10).max(3) as u32;
+                        let mut matched = false;
+                        let mut instance_bitmap = Some(symbol);
+
+                        if let Some(bucket) = self.hash_map.get(&key) {
+                            for &idx in bucket {
+                                if let Some((err, dx, dy)) = comparator.distance(
+                                    &trimmed,
+                                    &self.global_symbols[idx],
+                                    max_err,
+                                ) {
+                                    self.symbol_usage[idx] += 1;
+                                    self.symbol_pages[idx].insert(page_num);
+                                    symbol_instances.push(SymbolInstance {
+                                        symbol_index: idx,
+                                        position: rect,
+                                        instance_bitmap: instance_bitmap.take().unwrap(),
+                                    });
+                                    matched = true;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    if !matched {
-                        let idx = self.global_symbols.len();
-                        self.global_symbols.push(trimmed.clone());
-                        self.symbol_usage.push(1);
-                        self.symbol_pages.push([page_num].into_iter().collect());
-                        self.hash_map.entry(key).or_default().push(idx);
-                        symbol_instances.push(SymbolInstance {
-                            symbol_index: idx,
-                            position: rect,
-                            instance_bitmap: symbol.clone(),
-                        });
+
+                        if !matched {
+                            let idx = self.global_symbols.len();
+                            self.global_symbols.push(trimmed);
+                            self.symbol_usage.push(1);
+                            self.symbol_pages.push([page_num].into_iter().collect());
+                            self.hash_map.entry(key).or_default().push(idx);
+                            symbol_instances.push(SymbolInstance {
+                                symbol_index: idx,
+                                position: rect,
+                                instance_bitmap: instance_bitmap.take().unwrap(),
+                            });
+                        }
                     }
                 }
             }
@@ -601,10 +602,10 @@ impl<'a> Jbig2Encoder<'a> {
 
     fn auto_threshold(&mut self) -> Result<()> {
         let mut i = 0;
+        let mut comparator = Comparator::default();
         while i < self.global_symbols.len() {
             let mut j = i + 1;
             while j < self.global_symbols.len() {
-                let mut comparator = Comparator::default();
                 if comparator
                     .distance(&self.global_symbols[i], &self.global_symbols[j], 0)
                     .is_some()
@@ -620,19 +621,19 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     fn auto_threshold_using_hash(&mut self) -> Result<()> {
-    let mut hashed_templates: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut hashed_templates: HashMap<u32, Vec<usize>> = HashMap::new();
         for (i, symbol) in self.global_symbols.iter().enumerate() {
             let hash = compute_symbol_hash(symbol);
             hashed_templates.entry(hash).or_default().push(i);
         }
 
+        let mut comparator = Comparator::default();
         for (_, bucket) in hashed_templates {
             let mut indices: Vec<usize> = bucket;
             let mut i = 0;
             while i < indices.len() {
                 let mut j = i + 1;
                 while j < indices.len() {
-                    let mut comparator = Comparator::default();
                     if comparator
                         .distance(
                             &self.global_symbols[indices[i]],
@@ -945,12 +946,12 @@ pub fn encode_symbol_dict(
             last_width += delta_w; // last_width becomes current width
 
             // II. Encode Symbol Bitmap using Generic Region Procedure
-            let packed = symbol.to_packed_words();
+            let packed = symbol.packed_words();
 
             // Verify bit-order correctness: first black pixel should match between symbol and packed data
             if let Some(expected_first_pixel) = first_black_pixel(symbol) {
                 let actual_first_pixel = crate::jbig2sym::first_black_pixel_in_packed(
-                    &packed,
+                    packed,
                     symbol.width,
                     symbol.height,
                 );
@@ -964,7 +965,7 @@ pub fn encode_symbol_dict(
             }
 
             coder.encode_generic_region(
-                &packed,
+                packed,
                 symbol.width,
                 symbol.height,
                 params.sd_template,
@@ -1422,15 +1423,27 @@ pub fn build_dictionary_and_get_instances(
     symbols: &[(Rect, BitImage)],
     comparator: &mut Comparator,
 ) -> (Vec<BitImage>, Vec<TextRegionSymbolInstance>) {
-    let mut dictionary_symbols: Vec<BitImage> = Vec::new();
-    let mut instances = Vec::new();
+    let mut dictionary_symbols: Vec<BitImage> = Vec::with_capacity(symbols.len());
+    let mut dictionary_black_pixels = Vec::with_capacity(symbols.len());
+    let mut instances = Vec::with_capacity(symbols.len());
 
     for (rect, symbol_image) in symbols.iter() {
         let mut found_match = false;
         // Use a 10% error threshold for matching, as recommended.
         let max_err = ((symbol_image.width * symbol_image.height) / 10).max(3) as u32;
+        let symbol_black_pixels = symbol_image.count_ones();
 
         for (dict_idx, dict_symbol) in dictionary_symbols.iter().enumerate() {
+            if symbol_image.width.abs_diff(dict_symbol.width) > MAX_DIMENSION_DELTA
+                || symbol_image.height.abs_diff(dict_symbol.height) > MAX_DIMENSION_DELTA
+            {
+                continue;
+            }
+
+            if symbol_black_pixels.abs_diff(dictionary_black_pixels[dict_idx]) > max_err as usize {
+                continue;
+            }
+
             // Use a low max_err for finding near-duplicates
             if let Some((err, dx, dy)) = comparator.distance(symbol_image, dict_symbol, max_err) {
                 instances.push(TextRegionSymbolInstance {
@@ -1449,6 +1462,7 @@ pub fn build_dictionary_and_get_instances(
         if !found_match {
             let new_idx = dictionary_symbols.len();
             dictionary_symbols.push(symbol_image.clone());
+            dictionary_black_pixels.push(symbol_black_pixels);
             instances.push(TextRegionSymbolInstance {
                 symbol_id: new_idx as u32,
                 x: rect.x as i32,

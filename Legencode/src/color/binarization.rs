@@ -868,16 +868,32 @@ pub fn apply_mask_to_binary(binary_data: &mut [u8], mask: &[u8]) {
         });
 }
 
-/// Apply fixed threshold (sequential processing)
+/// Apply fixed threshold.
+///
+/// This is safe to parallelize by row because each worker writes to a disjoint
+/// output slice. Keep smaller images on the serial path to avoid Rayon overhead.
 pub(crate) fn apply_threshold(gray: &[u8], thr: u8, bin: &mut [u8], width: usize, height: usize) {
-    for y in 0..height {
-        let start = y * width;
-        let row = &mut bin[start..start + width];
-        let gray_row = &gray[start..start + width];
-        for i in 0..width {
-            row[i] = if gray_row[i] > thr { 255 } else { 0 };
+    const PARALLEL_THRESHOLD_PIXELS: usize = 256 * 256;
+
+    if width.saturating_mul(height) < PARALLEL_THRESHOLD_PIXELS || height < 8 {
+        for y in 0..height {
+            let start = y * width;
+            let row = &mut bin[start..start + width];
+            let gray_row = &gray[start..start + width];
+            for i in 0..width {
+                row[i] = if gray_row[i] > thr { 255 } else { 0 };
+            }
         }
+        return;
     }
+
+    bin.par_chunks_mut(width)
+        .zip(gray.par_chunks(width))
+        .for_each(|(row, gray_row)| {
+            for i in 0..width {
+                row[i] = if gray_row[i] > thr { 255 } else { 0 };
+            }
+        });
 }
 
 /// Invert binary image (parallel using par_chunks_mut)
@@ -934,5 +950,26 @@ pub mod pbm {
                 }
             });
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_threshold;
+
+    #[test]
+    fn apply_threshold_sets_expected_binary_values() {
+        let gray = vec![
+            0u8, 100, 200, 255,
+            50, 150, 151, 149,
+        ];
+        let mut bin = vec![0u8; gray.len()];
+
+        apply_threshold(&gray, 150, &mut bin, 4, 2);
+
+        assert_eq!(bin, vec![
+            0, 0, 255, 255,
+            0, 0, 255, 0,
+        ]);
     }
 }

@@ -116,6 +116,7 @@ pub use jbig2structs::Jbig2Config;
 pub use jbig2cc::{analyze_page, extract_symbols_for_jbig2, BBox, CCImage, CC, Run};
 
 use jbig2enc::Jbig2Encoder;
+use jbig2sym::binary_pixels_to_bitimage;
 use log::info;
 use std::env;
 
@@ -232,51 +233,8 @@ pub fn encode_single_image(
     height: u32,
     pdf_mode: bool,
 ) -> Result<Jbig2EncodeResult, Jbig2Error> {
-    let expected_len = width as usize * height as usize;
-    if input.len() < expected_len {
-        // Check if this might be packed binary data (1 bit per pixel)
-        let packed_size = (width as usize * height as usize + 7) / 8;
-        if input.len() == packed_size {
-            return Err(Jbig2Error::PackedDataDetected);
-        }
-
-        return Err(Jbig2Error::BufferSizeMismatch {
-            expected: expected_len,
-            actual: input.len(),
-            width,
-            height,
-            ratio: input.len() as f64 / expected_len as f64,
-        });
-    }
-
-    // Convert to ndarray format
-    let array = Array2::from_shape_vec((height as usize, width as usize), input.to_vec())?;
-
-    // Create context with appropriate PDF mode setting
-    let ctx = Jbig2Context::with_pdf_mode(pdf_mode);
-
-    // Use the existing encode_rois function
-    let (global_dict, streams) =
-        encode_rois(&[array], ctx).map_err(|e| Jbig2Error::EncodingFailed {
-            message: e.to_string(),
-        })?;
-
-    // Handle the result based on whether we have a global dictionary
-    if let Some(global) = global_dict {
-        // Global dictionary mode (symbol_mode = true)
-        let page_data = streams.into_iter().next().unwrap_or_default();
-        Ok(Jbig2EncodeResult {
-            page_data,
-            global_data: Some(global),
-        })
-    } else {
-        // Standalone mode (symbol_mode = false or no symbols found)
-        let page_data = streams.into_iter().next().unwrap_or_default();
-        Ok(Jbig2EncodeResult {
-            page_data,
-            global_data: None,
-        })
-    }
+    let bitimage = validate_and_build_bitimage(input, width, height)?;
+    encode_single_bitimage(bitimage, Jbig2Context::with_pdf_mode(pdf_mode))
 }
 
 /// Encodes a single binary image into JBIG2 format using lossless configuration.
@@ -298,10 +256,18 @@ pub fn encode_single_image_lossless(
     height: u32,
     pdf_mode: bool,
 ) -> Result<Jbig2EncodeResult, Jbig2Error> {
+    let bitimage = validate_and_build_bitimage(input, width, height)?;
+    encode_single_bitimage(bitimage, Jbig2Context::with_lossless_config(pdf_mode))
+}
+
+fn validate_and_build_bitimage(
+    input: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<jbig2sym::BitImage, Jbig2Error> {
     let expected_len = width as usize * height as usize;
     if input.len() < expected_len {
-        // Check if this might be packed binary data (1 bit per pixel)
-        let packed_size = (width as usize * height as usize + 7) / 8;
+        let packed_size = (width as usize * height as usize).div_ceil(8);
         if input.len() == packed_size {
             return Err(Jbig2Error::PackedDataDetected);
         }
@@ -315,23 +281,50 @@ pub fn encode_single_image_lossless(
         });
     }
 
-    // Convert to ndarray format
-    let array = Array2::from_shape_vec((height as usize, width as usize), input.to_vec())?;
+    binary_pixels_to_bitimage(&input[..expected_len], width as usize, height as usize)
+        .map_err(|message| Jbig2Error::EncodingFailed { message })
+}
 
-    // Create context with lossless configuration (symbol_mode = false)
-    let ctx = Jbig2Context::with_lossless_config(pdf_mode);
+fn encode_single_bitimage(
+    bitimage: jbig2sym::BitImage,
+    ctx: Jbig2Context,
+) -> Result<Jbig2EncodeResult, Jbig2Error> {
+    let mut enc_config = ctx.config.clone();
+    enc_config.want_full_headers = !ctx.get_pdf_mode();
+    enc_config.auto_thresh = false;
+    enc_config.refine = false;
 
-    // Use the existing encode_rois function
-    let (global_dict, streams) =
-        encode_rois(&[array], ctx).map_err(|e| Jbig2Error::EncodingFailed {
+    let global_data = if ctx.get_symbol_mode() && ctx.get_pdf_mode() {
+        let mut dict_encoder = Jbig2Encoder::new(&enc_config).dict_only();
+        dict_encoder
+            .add_page_bitimage(bitimage.clone())
+            .map_err(|e| Jbig2Error::DictionaryFailed {
+                message: e.to_string(),
+            })?;
+        Some(
+            dict_encoder
+                .flush_dict()
+                .map_err(|e| Jbig2Error::DictionaryFailed {
+                    message: e.to_string(),
+                })?,
+        )
+    } else {
+        None
+    };
+
+    let mut encoder = Jbig2Encoder::new(&enc_config);
+    encoder
+        .add_page_bitimage(bitimage)
+        .map_err(|e| Jbig2Error::EncodingFailed {
             message: e.to_string(),
         })?;
+    let page_data = encoder.flush().map_err(|e| Jbig2Error::EncodingFailed {
+        message: e.to_string(),
+    })?;
 
-    // Lossless mode should not create global dictionaries
-    let page_data = streams.into_iter().next().unwrap_or_default();
     Ok(Jbig2EncodeResult {
+        global_data,
         page_data,
-        global_data: global_dict, // Should be None in lossless mode
     })
 }
 
