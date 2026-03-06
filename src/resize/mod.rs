@@ -1,6 +1,8 @@
 pub mod cpu;
 #[cfg(windows)]
 pub mod hlsl;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod wgpu;
 
 use bytemuck::Pod;
 use fast_image_resize::{
@@ -8,7 +10,6 @@ use fast_image_resize::{
     Resizer,
 };
 use log::warn;
-
 #[cfg(windows)]
 use once_cell::sync::OnceCell;
 #[cfg(windows)]
@@ -17,10 +18,22 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(windows)]
 use hlsl::{FilterType as HlslFilterType, HlslResizer, ResizeParameters as HlslResizeParameters};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use once_cell::sync::OnceCell;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::Mutex;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use wgpu::{FilterType as WgpuFilterType, WgpuResizer, ResizeParameters as WgpuResizeParameters};
 #[cfg(windows)]
 static HLSL_RESIZER: OnceCell<Mutex<HlslResizer>> = OnceCell::new();
 #[cfg(windows)]
 static GPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+static WGPU_RESIZER: OnceCell<Mutex<WgpuResizer>> = OnceCell::new();
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+static WGPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeMethod {
@@ -97,6 +110,28 @@ fn resize_alg_from_method(method: ResizeMethod) -> ResizeAlg {
         ResizeMethod::Bilinear => ResizeAlg::Convolution(FirFilterType::Bilinear),
         ResizeMethod::Bicubic => ResizeAlg::Convolution(FirFilterType::CatmullRom),
         ResizeMethod::Lanczos3 => ResizeAlg::Convolution(FirFilterType::Lanczos3),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ensure_wgpu_resizer() -> Result<&'static Mutex<WgpuResizer>, ResizeError> {
+    WGPU_RESIZER.get_or_try_init(|| {
+        let resizer = WgpuResizer::new()
+            .map_err(|e| ResizeError::BackendError(format!("Failed to initialize WGPU resizer: {e}")))?;
+
+        #[cfg(feature = "debug-logging")]
+        println!("✓ WGPU GPU resizer initialized successfully");
+
+        Ok(Mutex::new(resizer))
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn wgpu_filter_from_method(method: ResizeMethod) -> WgpuFilterType {
+    match method {
+        ResizeMethod::Nearest | ResizeMethod::Bilinear => WgpuFilterType::Bilinear,
+        ResizeMethod::Bicubic => WgpuFilterType::Bell,
+        ResizeMethod::Lanczos3 => WgpuFilterType::Lanczos3,
     }
 }
 
@@ -203,6 +238,39 @@ fn hlsl_resize_bytes(
     Ok(data)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn wgpu_resize_bytes(
+    src_data: &[u8],
+    src_width: u32,
+    src_height: u32,
+    params: &ResizeParams,
+    channel_count: u32,
+) -> Result<Vec<u8>, ResizeError> {
+    let resizer_lock = ensure_wgpu_resizer()?;
+    let mut resizer = resizer_lock
+        .lock()
+        .map_err(|_| ResizeError::BackendError("WGPU resizer poisoned".to_string()))?;
+
+    let mut wgpu_params =
+        WgpuResizeParameters::new(src_width, src_height, params.target_width, params.target_height);
+    wgpu_params.filter = wgpu_filter_from_method(params.method);
+    wgpu_params.border_value = params.border_value;
+    wgpu_params.channel_count = channel_count;
+    wgpu_params.no_srgb = true;
+
+    let mut data = resizer
+        .resize(src_data, &wgpu_params)
+        .map_err(|e| ResizeError::BackendError(format!("WGPU resize failed: {e}")))?;
+
+    if params.swap_rb && channel_count >= 3 {
+        for px in data.chunks_exact_mut(channel_count as usize) {
+            px.swap(0, 2);
+        }
+    }
+
+    Ok(data)
+}
+
 /// Resize image bytes using hardware acceleration when available.
 /// On Windows, uses HLSL/DirectX 12 compute shaders for GPU acceleration with CPU fallback.
 /// On Linux, uses CPU-based fast_image_resize (future: CUDA support).
@@ -256,6 +324,55 @@ pub fn resize_bytes(
             Err(err) => {
                 warn!(
                     "HLSL GPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
+                    src_width, src_height, params.target_width, params.target_height, err
+                );
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        match wgpu_resize_bytes(src_data, src_width, src_height, params, channel_count) {
+            Ok(data) => {
+                let count = WGPU_RESIZE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+
+                #[cfg(feature = "debug-logging")]
+                {
+                    if count == 1 {
+                        println!(
+                            "WGPU resize #1: {}x{} -> {}x{} ({} channels) - Hardware acceleration active!",
+                            src_width,
+                            src_height,
+                            params.target_width,
+                            params.target_height,
+                            channel_count
+                        );
+                    } else if count % 50 == 0 {
+                        println!(
+                            "WGPU resize #{}: {}x{} -> {}x{} ({} channels)",
+                            count,
+                            src_width,
+                            src_height,
+                            params.target_width,
+                            params.target_height,
+                            channel_count
+                        );
+                    }
+                }
+
+                log::debug!(
+                    "WGPU resize successful: {}x{} -> {}x{} ({} channels)",
+                    src_width,
+                    src_height,
+                    params.target_width,
+                    params.target_height,
+                    channel_count
+                );
+                return Ok(data);
+            }
+            Err(err) => {
+                warn!(
+                    "WGPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
                     src_width, src_height, params.target_width, params.target_height, err
                 );
             }

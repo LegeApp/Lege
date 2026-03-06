@@ -14,9 +14,11 @@ use std::collections::HashMap;
 #[cfg(not(feature = "trace_arith"))]
 #[macro_use]
 mod trace_stubs {
+    #[allow(unused_macros)]
     macro_rules! debug {
         ($($arg:tt)*) => { println!($($arg)*); };
     }
+    #[allow(unused_macros)]
     macro_rules! trace {
         ($($arg:tt)*) => { std::convert::identity(format_args!($($arg)*)) };
     }

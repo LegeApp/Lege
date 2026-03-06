@@ -150,7 +150,6 @@ pub use crate::types::{AppConfig, CliConfigBuilder, CoverFormat};
 #[allow(unused_imports)] use fast_image_resize::PixelType;
 #[allow(unused_imports)] use fast_image_resize::images::Image as FirImage;
 // Action types are re-exported from the top-level pub use pipeline::...
-use log::warn;
 
 // ShutdownReason and ShutdownSignal are now in pipeline::helper_functions
 
@@ -184,7 +183,6 @@ pub fn configure_runtime_env() {
         }
     }
 }
-
 
 
 

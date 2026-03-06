@@ -9,7 +9,6 @@ pub mod logging;
 pub mod models;
 pub mod settings;
 pub mod static_styles;
-pub mod store_iap;
 pub mod theme;
 pub mod version;
 

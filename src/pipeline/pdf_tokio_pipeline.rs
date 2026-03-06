@@ -17,7 +17,7 @@ use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, encode_region_image, init_encode_semaphore, rounded_clamped_bbox,
+    build_hocr_from_pdf_text, init_encode_semaphore, rounded_clamped_bbox,
     should_force_blank_page_threshold, should_treat_as_cover_page, spawn_pdf_writer_actor,
     wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
 };
@@ -34,7 +34,7 @@ use Legencode::types::BinarizationOptions;
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -724,6 +724,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 height as u32,
                 *config.cover_format(),
                 true,
+                config.high_quality_output(),
             )
             .map_err(|e| anyhow!("Failed to encode cover image: {}", e))?;
 
@@ -821,6 +822,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                         region_h,
                         *config.cover_format(),
                         is_cover_page,
+                        config.high_quality_output(),
                     )
                     .map_err(|e| anyhow!("Could not encode image region: {}", e))?,
                 );
@@ -1154,6 +1156,7 @@ fn encode_region_image_sync(
     height: u32,
     format: crate::types::CoverFormat,
     is_cover: bool,
+    high_quality: bool,
 ) -> Result<(Vec<u8>, String)> {
     // Guardrails: sanity-check dimensions and buffer length
     const MAX_OVERLAY_SIDE: u32 = 8192;
@@ -1203,7 +1206,7 @@ fn encode_region_image_sync(
 
     let (settings, fmt_str) = match format {
         crate::types::CoverFormat::Jpeg => {
-            let q = if is_cover { 50 } else { 40 };
+            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -1225,7 +1228,7 @@ fn encode_region_image_sync(
         crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
         _ => {
             // Treat any other formats as JPEG fallback
-            let q = if is_cover { 50 } else { 40 };
+            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -1359,7 +1362,7 @@ async fn encode_base_layer(
         "ccitt4" => (EncodingSettings::Ccitt4, "ccitt"),
         "jpeg" => (
             EncodingSettings::Jpeg(JpegSettings {
-                quality: 40,
+                quality: if config.high_quality_output() { 95 } else { 40 },
                 baseline: true,
                 optimized: true,
                 downsample: false,
@@ -1475,7 +1478,7 @@ async fn encode_base_layer_for_jpeg_mode(
 
     // For JPEG-only mode, use higher quality setting since we're preserving original image
     let jpeg_settings = JpegSettings {
-        quality: 60, // Higher quality for original content preservation
+        quality: if config.high_quality_output() { 95 } else { 60 },
         baseline: true,
         optimized: true,
         downsample: false, // Don't downsample to preserve quality

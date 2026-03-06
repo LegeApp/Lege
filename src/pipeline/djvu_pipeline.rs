@@ -18,7 +18,8 @@ use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::helper_functions::{
     init_encode_semaphore, build_hocr_from_pdf_text,
-    should_force_blank_page_threshold, wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
+    rounded_clamped_bbox, should_force_blank_page_threshold, wait_for_memory_relief,
+    BLANK_PAGE_FALLBACK_THRESHOLD,
 };
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
@@ -27,11 +28,11 @@ use futures;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture;
-use image::{Rgb, RgbImage};
-use std::path::{Path, PathBuf};
+use image::RgbImage;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use log::warn;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -77,6 +78,10 @@ pub fn create_djvu_pipeline_config(
         work_dir,
         early_page_assembly: !(center_active || crop_active),
         pre_mask_color_layer: true,
+        dither_image_regions: config.dither_images()
+            && !config.keep_original_images()
+            && config.enable_layout_detection()
+            && config.text_format() != "jpeg",
         center_margins: center_active,
         crop_margins: crop_active,
         no_binarization_mode: config.text_format() == "jpeg", // Use "jpeg" text format to indicate no binarization
@@ -782,7 +787,7 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
     let height = adjusted_image.height() as usize;
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // In "jpeg" text format mode, skip binarization and use grayscale version for OCR/text layer
-    let binarized = if config.text_format() == "jpeg" {
+    let mut binarized = if config.text_format() == "jpeg" {
         // For JPEG-only mode in DJVU: create grayscale representation of the full RGB image
         // This is used for OCR purposes but the RGB image will be encoded as IW44
         adjusted_image
@@ -801,6 +806,49 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
             should_force_blank_page_threshold(&config, inference_result.has_no_detections);
         binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
     };
+
+    let should_dither_regions = config.dither_images()
+        && !config.keep_original_images()
+        && config.enable_layout_detection()
+        && config.text_format() != "jpeg";
+
+    if should_dither_regions {
+        let classifier = &crate::types::LABEL_CLASSIFIER;
+
+        for det in &adjusted_detections {
+            if !classifier.is_image_label(det) {
+                continue;
+            }
+
+            let (bbox_x1, bbox_y1, bbox_x2, bbox_y2) =
+                rounded_clamped_bbox(det.bbox, width as u32, height as u32);
+            if bbox_x2 <= bbox_x1 || bbox_y2 <= bbox_y1 {
+                continue;
+            }
+
+            let (region_data, region_w, region_h) =
+                Legencode::color::color_processing::process_image_region(
+                    adjusted_image.as_raw(),
+                    width as u32,
+                    height as u32,
+                    det.bbox,
+                    true,
+                    "jbig2",
+                    false,
+                )?;
+
+            let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
+            Legencode::color::color_processing::merge_dithered_region(
+                &mut binarized,
+                &grayscale_data,
+                width as u32,
+                det.bbox,
+                region_w,
+                region_h,
+            );
+        }
+    }
+
     Ok(DjvuPageProcessingOutput {
         adjusted_image,
         adjusted_detections,

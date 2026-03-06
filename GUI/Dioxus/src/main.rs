@@ -8,7 +8,6 @@ mod logging;
 mod models;
 mod settings;
 mod static_styles;
-mod store_iap;
 mod theme;
 mod version;
 
@@ -19,6 +18,7 @@ use crate::app::App;
 use crate::static_styles::BASE_STYLES;
 use crate::theme::ThemeManager;
 use dioxus::prelude::*;
+#[cfg(target_os = "windows")]
 use dioxus_desktop::tao::dpi::PhysicalPosition;
 use dioxus_desktop::tao::window::Icon;
 use dioxus_desktop::{Config, LogicalSize, WindowBuilder};

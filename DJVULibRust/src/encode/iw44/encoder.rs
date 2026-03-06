@@ -60,22 +60,6 @@ impl Default for EncoderParams {
     }
 }
 
-#[inline]
-fn signed_to_unsigned_u8(v: i8) -> u8 {
-    (v as i16 + 128) as u8
-}
-
-fn convert_signed_buffer_to_grayscale(buf: &[i8], w: u32, h: u32) -> Bitmap {
-    let pixels: Vec<crate::image::image_formats::GrayPixel> = buf
-        .iter()
-        .map(|&v| crate::image::image_formats::GrayPixel::new(signed_to_unsigned_u8(v)))
-        .collect();
-    Bitmap::from_vec(w, h, pixels)
-}
-
-const SCALE: i32 = 1 << 16;
-const ROUND: i32 = 1 << 15;
-
 static YCC_TABLES: OnceLock<([[i32; 256]; 3], [[i32; 256]; 3], [[i32; 256]; 3])> = OnceLock::new();
 
 fn get_ycc_tables() -> &'static ([[i32; 256]; 3], [[i32; 256]; 3], [[i32; 256]; 3]) {
@@ -249,8 +233,7 @@ pub fn encoder_from_rgb_with_helpers(
         cr_codec,
         params,
         total_slices: 0,
-        total_bytes: 0,
-        serial: 0,
+            serial: 0,
         crcb_delay: match params.crcb_mode {
             CrcbMode::None => -1,
             CrcbMode::Half => 10,
@@ -279,7 +262,6 @@ pub fn encoder_from_gray_with_helpers(
         cr_codec: None,
         params,
         total_slices: 0,
-        total_bytes: 0,
         serial: 0,
         crcb_delay: -1,
         crcb_half: false,  // Grayscale has no chroma
@@ -293,7 +275,6 @@ pub struct IWEncoder {
     cr_codec: Option<Codec>,
     params: EncoderParams,
     total_slices: usize,
-    total_bytes: usize,
     serial: u8,
     crcb_delay: i32,
     crcb_half: bool,  // Added to match C++ behavior

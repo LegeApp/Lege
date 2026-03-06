@@ -1,5 +1,6 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, anyhow};
 

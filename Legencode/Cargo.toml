@@ -1,7 +1,7 @@
 [package]
 name = "Legencode"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "A unified image encoding crate for JPEG, JP2, JBIG2, and CCITT4"
 license = "MIT"
 authors = ["Your Name <your.email@example.com>"]
@@ -18,40 +18,41 @@ path = "src/lib.rs"
 [dependencies]
 # Direct dependencies used by streamline.rs
 fax = { version = "0.2.6", default-features = false }  # External dependency for CCITT4 encoding
-ndarray = "0.16.1"          # Used directly for JBIG2 Array2 types - match jbig2 crate version
-anyhow = "1.0"              # For error handling in lib.rs
+ndarray = { workspace = true }          # Used directly for JBIG2 Array2 types - match jbig2 crate version
+anyhow = { workspace = true }              # For error handling in lib.rs
 uuid = { version = "1.20", features = ["v4"] }  # For generating unique temporary filenames
-flate2 = "1.1.8"                # For Flate/Zlib compression
+flate2 = { workspace = true }                # For Flate/Zlib compression
 
 # Dependencies for color processing modules
-rayon = "1.11"              # For parallel processing
-serde = { version = "1.0", features = ["derive"] }  # For serialization
-image = "0.25.9"            # Used by color linearization helpers
-palette = { version = "0.7.6", features = ["libm"] }  # Used by linear RGB -> luma conversion
-lazy_static = "1.5.0"       # Used by LUT initialization in linearize.rs
-thiserror = "1.0.69"        # Used by ColorOpsError derive
+rayon = { workspace = true }              # For parallel processing
+serde = { workspace = true }  # For serialization
+image = { workspace = true }            # Used by color linearization helpers
+palette = { workspace = true }  # Used by linear RGB -> luma conversion
+lazy_static = { workspace = true }       # Used by LUT initialization in linearize.rs
+thiserror = { workspace = true }        # Used by ColorOpsError derive
 png = "0.17"                # For PNG encoding/decoding
 ort = { path = "../ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }  # Local fork with WebGPU cleanup fix
-once_cell = "1.21"          # For global static initialization
+once_cell = { workspace = true }          # For global static initialization
 
 # Additional dependencies for jbig2enc-rust
-bitvec = "1.0.1"              # For bit manipulation
-byteorder = "1.5.0"           # For byte order handling
-serde_json = "1.0"          # For JSON serialization
-log = "0.4"                 # For logging
+bitvec = { workspace = true }              # For bit manipulation
+byteorder = { workspace = true }           # For byte order handling
+serde_json = { workspace = true }          # For JSON serialization
+log = { workspace = true }                 # For logging
 
 # Local path dependencies - these will pull in their own dependencies
 toojpeg = { path = "src/TooJpeg-rust" }  # Local JPEG encoder
-# openjp2 = { path = "src/openjp2" }       # Local JP2 encoder (disabled)
+openjp2 = { path = "src/openjp2", optional = true }  # Optional JP2 encoder, disabled by default
 jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features = ["cc-analysis", "symboldict"] }   # Local JBIG2 encoder
 
 # Configuration management
-config = { version = "0.14", features = ["toml"] }
+config = { workspace = true }
 
 [features]
 default = []
 debug-logging = []  # No longer requires chrono
 cc-analysis = []  # Enable new connected component analysis for JBIG2 (cjb2-based)
+jp2-openjp2 = ["dep:openjp2"]
 
 [dev-dependencies]
 # Only keep dev dependencies that are used by the main crate's tests

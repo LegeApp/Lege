@@ -12,11 +12,6 @@ const NEW: u8 = 0x02; // New coefficient to be encoded
 const ACTIVE: u8 = 0x04; // Active coefficient (already encoded)
 const ZERO: u8 = 0x00; // Zero state (coefficient not significant)
 
-/// Context number used by the DjVu reference for "raw" (non-adaptive) bits
-const RAW_CONTEXT_ID: BitContext = 129;
-const RAW_CONTEXT_128: BitContext = 128;
-const RAW_CONTEXT_129: BitContext = 129;
-
 /// 1 bit / coefficient (32 × smaller than `Vec<bool>`)
 const WORD_BITS: usize = 32;
 

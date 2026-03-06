@@ -5,7 +5,6 @@ use crate::types::BinarizationOptions;
 use anyhow::{anyhow, Result};
 use image::{GrayImage, Luma};
 use ndarray::Array4;
-use ort::execution_providers::DirectMLExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Value;
 use rayon::prelude::*;
@@ -42,7 +41,7 @@ impl HeavySauvolaProcessor {
         })?;
 
         // Check model file size
-        if let Ok(metadata) = std::fs::metadata(&model_path) {
+        if let Ok(_metadata) = std::fs::metadata(&model_path) {
             #[cfg(feature = "debug-logging")]
             {
                 crate::streamline::log_debug_message(&format!(

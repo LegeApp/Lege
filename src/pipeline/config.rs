@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 // Import perf_log macro from the crate root
 #[allow(unused_imports)]
 use crate::perf_log;
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 use once_cell::sync::OnceCell;
 use pdfium_render::prelude::Pdfium;
 
@@ -280,6 +280,7 @@ pub struct PipelineConfig {
     pub(crate) enable_cover_page: bool,
     pub(crate) no_cover_page: bool,
     pub(crate) pdf_compatibility_mode: bool,
+    pub(crate) high_quality_output: bool,
     pub(crate) channel_buffer_size: Option<usize>,
     pub(crate) ocr_binarization_threshold: Option<u8>,
     pub(crate) ocr_preserve_grayscale: bool,
@@ -337,6 +338,7 @@ impl PipelineConfig {
             enable_cover_page: true,
             no_cover_page: false,
             pdf_compatibility_mode: false,
+            high_quality_output: false,
             channel_buffer_size: None,
             ocr_binarization_threshold: None,
             ocr_preserve_grayscale: false,
@@ -521,6 +523,9 @@ impl PipelineConfig {
     pub fn pdf_compatibility_mode(&self) -> bool {
         self.pdf_compatibility_mode
     }
+    pub fn high_quality_output(&self) -> bool {
+        self.high_quality_output
+    }
     pub fn channel_buffer_size(&self) -> usize {
         self.channel_buffer_size
             .unwrap_or_else(|| std::cmp::max(self.heavy_sauvola_concurrency * 2, 8))
@@ -675,6 +680,9 @@ impl PipelineConfig {
     }
     pub fn set_pdf_compatibility_mode(&mut self, compat: bool) {
         self.pdf_compatibility_mode = compat;
+    }
+    pub fn set_high_quality_output(&mut self, high_quality: bool) {
+        self.high_quality_output = high_quality;
     }
     pub fn set_binarization(&mut self, config: BinarizationConfig) {
         self.binarization = config;
