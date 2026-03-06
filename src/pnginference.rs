@@ -7,7 +7,7 @@ use crate::{
     pipeline::encode_page_data,
 };
 use anyhow::{Context, Result, anyhow};
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 use std::path::{Path, PathBuf};
 
 use crate::types::AppConfig;
@@ -322,4 +322,3 @@ pub async fn run_pdf_layout_crop_debug(
     info_println!("Region cropping complete: {}", output_dir.display());
     Ok(())
 }
-

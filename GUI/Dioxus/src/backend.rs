@@ -71,14 +71,8 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
     // - If Original image processing is selected: never dither
     // - If Dithered image processing is selected: dither BUT only if layout detection is enabled
     // - Dithering requires layout detection to identify image regions
-    let dither_images = if matches!(options.output_format, OutputFormat::Djvu) {
-        // Keep dithering behavior for DjVu if desired; we can reuse same logic
-        matches!(options.image_processing_type, ImageProcessingType::Dithered)
-            && enable_layout_detection
-    } else {
-        matches!(options.image_processing_type, ImageProcessingType::Dithered)
-            && enable_layout_detection
-    };
+    let dither_images = matches!(options.image_processing_type, ImageProcessingType::Dithered)
+        && enable_layout_detection;
 
     // Map GUI binarization options to BinarizationConfig
     // Safety layer: invert_input takes precedence over binarization modes
@@ -167,6 +161,7 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
     config.set_keep_original_images(keep_original);
     config.set_binarization(binarization_config);
     config.set_enable_ocr(options.use_ocr);
+    config.set_high_quality_output(options.high_quality_output);
     // Use unified image format alias to keep GUI/CLI consistent
     config.set_image_format(cover_format);
 
@@ -178,6 +173,12 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
 
     config.set_enable_layout_detection(enable_layout_detection);
     config.set_enable_deskew(options.deskew_documents);
+    if matches!(options.output_format, OutputFormat::Djvu) {
+        let iw44_quality = if options.high_quality_output { 100 } else { 75 };
+        if let Err(e) = config.set_djvu_iw44_quality(iw44_quality) {
+            eprintln!("Warning: Failed to set DjVu quality: {}", e);
+        }
+    }
     // Ensure pipeline-level invert flag is set so lib.rs uses binarize-then-invert path
     config.set_invert_input(options.invert_input);
 

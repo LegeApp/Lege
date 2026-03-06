@@ -649,13 +649,13 @@ impl PageComponents {
                                 writer.write_all(&data)?;
                                 writer.close_chunk()?;
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 #[cfg(feature = "debug-logging")]
                                 eprintln!("[page_encoder] Warning: BZZ compression for TXTz failed: {e}. Skipping text layer.");
                             }
                         }
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         // Log but don't fail - page will still be viewable without searchable text
                         #[cfg(feature = "debug-logging")]
                         eprintln!("[page_encoder] Warning: Failed to encode hidden text: {e}. Skipping text layer.");

@@ -13,14 +13,11 @@ use std::io::Write;
 const START_OF_DATA: i32 = 0;
 const NEW_MARK: i32 = 1;
 const NEW_MARK_LIBRARY_ONLY: i32 = 2;
-const NEW_MARK_IMAGE_ONLY: i32 = 3;
 const MATCHED_REFINE: i32 = 4;
 const MATCHED_REFINE_LIBRARY_ONLY: i32 = 5;
-const MATCHED_REFINE_IMAGE_ONLY: i32 = 6;
 const MATCHED_COPY: i32 = 7;
 const NON_MARK_DATA: i32 = 8;
 const REQUIRED_DICT_OR_RESET: i32 = 9;
-const PRESERVED_COMMENT: i32 = 10;
 const END_OF_DATA: i32 = 11;
 
 // Constants from DjVuLibre
@@ -828,41 +825,6 @@ impl<W: Write> JB2Encoder<W> {
         Ok(zc.finish()?)
     }
 
-    /// Encode absolute location for a blit (record types 3, 6, 8)
-    fn encode_absolute_location(
-        &mut self,
-        zc: &mut ZEncoder<Vec<u8>>,
-        left: i32,
-        bottom: i32,
-        rows: i32,
-    ) -> Result<(), Jb2Error> {
-        // Check start record
-        if !self.gotstartrecordp {
-            return Err(Jb2Error::InvalidState("No start record".to_string()));
-        }
-
-        // Code LEFT (1-based) and TOP (1-based)
-        // TOP = bottom + rows - 1 + 1 (converted to 1-based)
-        self.num_coder.code_num(
-            zc,
-            &mut self.abs_loc_x,
-            1,
-            self.image_width as i32,
-            left + 1,
-        )?;
-
-        let top = bottom + rows;
-        self.num_coder.code_num(
-            zc,
-            &mut self.abs_loc_y,
-            1,
-            self.image_height as i32,
-            top,
-        )?;
-
-        Ok(())
-    }
-
     /// Encode relative location for a blit (record types 1, 4, 7)
     /// This matches DjVuLibre's code_relative_location function.
     fn encode_relative_location(
@@ -1100,7 +1062,7 @@ impl<W: Write> JB2Encoder<W> {
         }
 
         // Encode each blit
-        for (blit_idx, &(left, bottom, shapeno)) in blits.iter().enumerate() {
+        for &(left, bottom, shapeno) in blits.iter() {
             if shapeno >= total_shapes {
                 return Err(Jb2Error::InvalidData(format!(
                     "Invalid shape index {} (max {})",

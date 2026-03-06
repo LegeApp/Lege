@@ -58,6 +58,7 @@ fn read_external_version_file() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// Returns the internal version string (e.g., "0.7.0")
+#[cfg(test)]
 pub fn internal_version() -> &'static str {
     INTERNAL_VERSION
 }

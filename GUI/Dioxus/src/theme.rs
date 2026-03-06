@@ -14,6 +14,7 @@ pub struct Theme {
 }
 
 impl Theme {
+    #[cfg(feature = "cotinga-theme")]
     pub fn cotinga_mystique() -> Self {
         Self {
             name: "Cotinga Mystique".to_string(),
@@ -418,14 +419,6 @@ impl ThemeManager {
             #[cfg(not(feature = "cotinga-theme"))]
             current_theme: Theme::classic_windows(),
         }
-    }
-
-    pub fn current_theme(&self) -> &Theme {
-        &self.current_theme
-    }
-
-    pub fn set_theme(&mut self, theme: Theme) {
-        self.current_theme = theme;
     }
 
     pub fn get_css(&self) -> String {

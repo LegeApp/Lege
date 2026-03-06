@@ -22,7 +22,7 @@ pub fn webgpu_execution_provider_dispatch() -> Option<ort::execution_providers::
 fn build_webgpu_execution_provider() -> ort::execution_providers::ExecutionProviderDispatch {
     use ort::execution_providers::{
         WebGPUExecutionProvider, WebGPUDawnBackendType, WebGPUBufferCacheMode,
-        WebGPUPreferredLayout, WebGPUValidationMode
+        WebGPUValidationMode
     };
 
     info!("Initializing WebGPU with Vulkan backend");

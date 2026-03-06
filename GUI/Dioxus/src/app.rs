@@ -53,6 +53,7 @@ fn load_debug_log_file() -> Vec<String> {
 }
 
 #[cfg(not(feature = "debug-logging"))]
+#[allow(dead_code)]
 fn load_debug_log_file() -> Vec<String> {
     Vec::new()
 }
@@ -500,21 +501,6 @@ impl AppState {
         l3: impl Into<String>,
     ) {
         let new_lines = (l1.into(), l2.into(), l3.into(), String::new());
-        // Only update if the lines have actually changed to prevent unnecessary re-renders
-        if self.status_lines != new_lines {
-            self.status_lines = new_lines;
-        }
-    }
-
-    /// Set all four status lines at once
-    fn set_status_lines_4(
-        &mut self,
-        l1: impl Into<String>,
-        l2: impl Into<String>,
-        l3: impl Into<String>,
-        l4: impl Into<String>,
-    ) {
-        let new_lines = (l1.into(), l2.into(), l3.into(), l4.into());
         // Only update if the lines have actually changed to prevent unnecessary re-renders
         if self.status_lines != new_lines {
             self.status_lines = new_lines;
@@ -1427,14 +1413,11 @@ impl std::fmt::Display for LayoutToggle {
 #[component]
 fn MainContentArea(state: Signal<AppState>) -> Element {
     let popup_state = state.clone();
-    let (is_processing, action_button_disabled, queue_len, show_queue_viewer, queue_preview) = {
+    let (is_processing, action_button_disabled) = {
         let s = state.read();
         (
             s.is_processing,
             s.queue.is_empty() || s.options.output_path.is_none(),
-            s.queue.len(),
-            s.show_queue_viewer,
-            s.queue.iter().cloned().collect::<Vec<_>>(),
         )
     };
 
@@ -1800,35 +1783,32 @@ fn LeftSettingsPanel(state: Signal<AppState>) -> Element {
 
             // Base Layer line removed (format inferred from image processing selection)
 
-            // PDF-specific: Show different toggle based on layout detection mode
-            // - Layout mode ON: "Image output type" (Original/Dithered) → controls image regions, auto-selects base format
-            // - Layout mode OFF: "Base format" (CCITT4/JBIG2) → controls full-page encoding
-            if matches!(state.read().options.output_format, OutputFormat::Pdf) {
-                if state.read().options.layout_analysis {
-                    // Layout mode: show image output type toggle
-                    div { class: "setting-item",
-                        title: "{GUI_TEXT.interactive.tooltips.image_output_type}",
-                        label { class: "setting-label", "{GUI_TEXT.interactive.labels.image_output_type}" }
-                        ToggleButton {
-                            left_option: ImageProcessingType::Original,
-                            right_option: ImageProcessingType::Dithered,
-                            current_selection: state.read().options.image_processing_type.clone(),
-                            on_toggle: move |val| state.write().options.image_processing_type = val,
-                            button_class: "raised-btn toggle-btn left-panel-btn",
-                        }
-                    }
-                } else {
-                    // No-layout mode: show base format toggle
-                    div { class: "setting-item",
-                        title: "{GUI_TEXT.interactive.tooltips.base_format}",
-                        label { class: "setting-label", "{GUI_TEXT.interactive.labels.base_format}" }
-                        ToggleButton {
-                            left_option: CompressionType::Ccitt4,
-                            right_option: CompressionType::Jbig2,
-                            current_selection: state.read().options.compression_type.clone(),
-                            on_toggle: move |val| state.write().options.compression_type = val,
-                            button_class: "raised-btn toggle-btn left-panel-btn",
-                        }
+            // Keep image processing visible for both PDF and DJVU.
+            // Base format remains PDF-only when layout detection is off.
+            div { class: "setting-item",
+                title: "{GUI_TEXT.interactive.tooltips.image_output_type}",
+                label { class: "setting-label", "{GUI_TEXT.interactive.labels.image_output_type}" }
+                ToggleButton {
+                    left_option: ImageProcessingType::Original,
+                    right_option: ImageProcessingType::Dithered,
+                    current_selection: state.read().options.image_processing_type.clone(),
+                    on_toggle: move |val| state.write().options.image_processing_type = val,
+                    button_class: "raised-btn toggle-btn left-panel-btn",
+                }
+            }
+
+            if matches!(state.read().options.output_format, OutputFormat::Pdf)
+                && !state.read().options.layout_analysis
+            {
+                div { class: "setting-item",
+                    title: "{GUI_TEXT.interactive.tooltips.base_format}",
+                    label { class: "setting-label", "{GUI_TEXT.interactive.labels.base_format}" }
+                    ToggleButton {
+                        left_option: CompressionType::Ccitt4,
+                        right_option: CompressionType::Jbig2,
+                        current_selection: state.read().options.compression_type.clone(),
+                        on_toggle: move |val| state.write().options.compression_type = val,
+                        button_class: "raised-btn toggle-btn left-panel-btn",
                     }
                 }
             }
@@ -1898,6 +1878,17 @@ fn LeftSettingsPanel(state: Signal<AppState>) -> Element {
                     }
                 }
                 span { "{GUI_TEXT.interactive.labels.ocr_text_layer}" }
+            }
+
+            label { class: "radio-label", title: "{GUI_TEXT.interactive.tooltips.high_quality_output}",
+                input {
+                    r#type: "checkbox",
+                    checked: state.read().options.high_quality_output,
+                    onchange: move |evt| {
+                        state.write().options.high_quality_output = evt.checked();
+                    }
+                }
+                span { "{GUI_TEXT.interactive.labels.high_quality_output}" }
             }
 
             // PDF compatibility mode - only show when OCR is enabled AND output is PDF
@@ -2221,41 +2212,6 @@ fn StatusBar(state: Signal<AppState>) -> Element {
                 }
             }
         }
-    }
-}
-
-// Helper to handle Donate click across platforms. Keeping platform-specific code out of rsx! body
-fn handle_donate_click(window: dioxus_desktop::DesktopContext, state: Signal<AppState>) {
-    #[cfg(target_os = "windows")]
-    {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        use windows::Win32::Foundation::HWND;
-
-        if is_msix_packaged() {
-            let handle = window.window_handle().expect("no window handle");
-            let hwnd = match handle.as_raw() {
-                RawWindowHandle::Win32(h) => HWND(h.hwnd.get() as *mut core::ffi::c_void),
-                _ => HWND(std::ptr::null_mut()),
-            };
-
-            let mut state_clone = state.clone();
-            static DONATION_STORE_ID: &str = "9NQ3GXX3LMDJ";
-            spawn(async move {
-                // Do not open web fallback on MSIX to avoid double prompts; just set status on success
-                if let Ok(_status) =
-                    crate::store_iap::purchase_and_consume_by_store_id(hwnd, DONATION_STORE_ID)
-                        .await
-                {
-                    state_clone.write().set_status_message("thanks!");
-                }
-            });
-        } else {
-            let _ = open::that("https://buy.stripe.com/eVqdR965pfUhgj7fpb1wY00");
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = open::that("https://buy.stripe.com/eVqdR965pfUhgj7fpb1wY00");
     }
 }
 
@@ -2764,8 +2720,6 @@ fn LicensesWindow(state: Signal<AppState>) -> Element {
 
 #[component]
 fn AboutWindow(state: Signal<AppState>) -> Element {
-    let window = dioxus_desktop::use_window();
-
     rsx! {
         div {
             style: "position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 420px; background: white; border: 1px solid #e0e0e0; border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,0.15); z-index: 1000; display: flex; flex-direction: column;",
@@ -2797,21 +2751,6 @@ fn AboutWindow(state: Signal<AppState>) -> Element {
                 div { class: "text-on-paper", style: "font-size: 13px;",
                     span { "Contact: " }
                     a { href: "mailto:read@legeapp.com", style: "color: #1a5fb4;", "read@legeapp.com" }
-                }
-
-                // Donate button (same behavior as before)
-                div { style: "margin-top: 8px;",
-                    button {
-                        class: "raised-btn",
-                        style: "padding: 6px 12px; font-size: 12px;",
-                        onclick: move |_| {
-                            handle_donate_click(window.clone(), state.clone());
-                        },
-                        {
-                            let show_thanks = state.read().status_message == "thanks!";
-                            if show_thanks { "thanks!" } else { "Donate" }
-                        }
-                    }
                 }
             }
         }

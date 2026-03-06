@@ -2,7 +2,7 @@ use crate::resize::{ResizeError, ResizeMethod, ResizeParams};
 use fast_image_resize::{
     FilterType, IntoImageView, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image,
 };
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 use rayon::prelude::*;
 
 type Result<T> = std::result::Result<T, ResizeError>;

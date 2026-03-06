@@ -161,6 +161,7 @@ pub async fn encode_region_image(
     height: u32,
     format: CoverFormat,
     is_cover: bool,
+    high_quality: bool,
 ) -> Result<(Vec<u8>, String)> {
     // Guardrails: sanity-check dimensions and buffer length
     const MAX_OVERLAY_SIDE: u32 = 8192;
@@ -204,7 +205,7 @@ pub async fn encode_region_image(
 
     let (settings, fmt_str) = match format {
         CoverFormat::Jpeg => {
-            let q = if is_cover { 50 } else { 40 };
+            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -226,7 +227,7 @@ pub async fn encode_region_image(
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),
         _ => {
             // Treat any other formats as JPEG fallback
-            let q = if is_cover { 50 } else { 40 };
+            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -634,7 +635,7 @@ pub async fn encode_page_data(
         "jpeg" => {
             (
                 EncodingSettings::Jpeg(JpegSettings {
-                    quality: 40,
+                    quality: if config.high_quality_output() { 95 } else { 40 },
                     baseline: true,
                     optimized: true,
                     downsample: false,

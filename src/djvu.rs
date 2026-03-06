@@ -2,16 +2,15 @@
 // Native Rust DJVU encoding using the djvu_encoder crate
 
 use anyhow::{anyhow, Context, Result};
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Arc};
 use unicode_normalization::UnicodeNormalization;
 use tokio::sync::mpsc;
 
 // Import DJVU encoder types
-use djvu_encoder::doc::{DjvuBuilder, DjvuDocument, Page, PageBuilder, PageEncodeParams};
+use djvu_encoder::doc::{DjvuBuilder, Page, PageBuilder, PageEncodeParams};
 use djvu_encoder::image::image_formats::{Bitmap, Pixmap, GrayPixel, Pixel};
 
 use crate::app_dirs;
@@ -45,6 +44,8 @@ pub struct DjvuConfig {
     pub pre_mask_color_layer: bool,
     /// If true, process in no-binarization mode (RGB image as IW44, no JB2 mask)
     pub no_binarization_mode: bool,
+    /// When true, image regions are dithered directly into the JB2 foreground.
+    pub dither_image_regions: bool,
     /// Margin centering (handled upstream in pipeline, not here)
     pub center_margins: bool,
     /// Crop margins mode (handled upstream in pipeline, not here)
@@ -63,6 +64,7 @@ impl Default for DjvuConfig {
             work_dir: app_dirs::djvu_base_dir(),
             pre_mask_color_layer: true,
             no_binarization_mode: false,
+            dither_image_regions: false,
             center_margins: false,
             crop_margins: false,
             early_page_assembly: false,
@@ -239,8 +241,10 @@ impl DjvuOrchestrator {
             height as usize,
         )?;
 
+        let use_color_background = !self.config.dither_image_regions;
+
         // 2. White out image regions in the bitmap (CRITICAL: prevents JB2 bleed-through)
-        if !image_regions.is_empty() {
+        if use_color_background && !image_regions.is_empty() {
             self.whiteout_image_regions(&mut bitmap, image_regions, width, height);
         }
 
@@ -249,7 +253,7 @@ impl DjvuOrchestrator {
             .with_foreground(bitmap, 0, 0);
 
         // 4. Add IW44 color background if image regions exist
-        if !image_regions.is_empty() {
+        if use_color_background && !image_regions.is_empty() {
             let color_canvas = self.compose_color_canvas(page_data, image_regions, width, height)?;
             page_builder = page_builder.with_background(color_canvas)
                 .context("Failed to add background")?;
