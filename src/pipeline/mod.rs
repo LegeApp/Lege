@@ -8,6 +8,7 @@ pub mod pdf_tokio_pipeline;
 pub mod deskew_graph;
 pub mod djvu_pipeline;
 pub mod policies;
+pub mod runtime_limits;
 
 // Re-export key types
 pub use config::{PipelineConfig, PageRange, PageTask, RenderedPageData, ProcessingPipeline, runtime_asset_path, runtime_asset_path_if_exists, ensure_pdfium_available};
@@ -24,4 +25,3 @@ pub use pdf_tokio_pipeline::{
     create_and_run_pdf_tokio_pipeline, // New simplified tokio-based PDF pipeline
     PdfInferenceData, ProcessedPage,
 };
-

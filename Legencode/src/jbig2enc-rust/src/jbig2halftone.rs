@@ -386,8 +386,8 @@ fn encode_grayscale_image_annex_c(gray_image: &Array2<u8>, template: u8) -> Resu
         // Encode the (potentially modified) bitplane using the generic region coder
         // The AT pixels for halftone bitplanes are fixed by the spec.
         let at_pixels = [ (3, -1), (-3, -1), (2, -2), (-2, -2) ];
-        let packed_data = plane_to_encode.to_packed_words();
-        coder.encode_generic_region_inner(&packed_data, w, h, template, &at_pixels)?;
+        let packed_data = plane_to_encode.packed_words();
+        coder.encode_generic_region_inner(packed_data, w, h, template, &at_pixels)?;
 
         // NOTE: The standard implies one continuous arithmetic stream for all bitplanes.
         // We will flush once at the end.

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::Result;
 use image::RgbImage;
-use log::{error, info, warn};
+use log::{error, info};
 use tokio::sync::{mpsc, oneshot};
 use crate::engine::{PaddleXEngine, PaddleXConfig, Detection};
 use crate::pipeline::config::PipelineConfig;
@@ -119,7 +119,13 @@ impl InferenceActor {
             if batch_size == 1 {
                 // Single image - most common case
                 let job = jobs.pop().unwrap();
-                let result = rt.block_on(self.engine.detect_single_async(&job.image));
+                let result = {
+                    let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
+                    match _guard {
+                        Ok(_guard) => rt.block_on(self.engine.detect_single_async(&job.image)),
+                        Err(e) => Err(e),
+                    }
+                };
                 let _ = job.response_tx.send(result);
             } else {
                 // Batch processing
@@ -128,9 +134,15 @@ impl InferenceActor {
                     .collect();
                 let indices: Vec<usize> = (0..images.len()).collect();
 
-                let batch_result = rt.block_on(
-                    self.engine.detect_batch_with_indices_async(&images, &indices)
-                );
+                let batch_result = {
+                    let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
+                    match _guard {
+                        Ok(_guard) => rt.block_on(
+                            self.engine.detect_batch_with_indices_async(&images, &indices)
+                        ),
+                        Err(e) => Err(e),
+                    }
+                };
 
                 match batch_result {
                     Ok(results) => {

@@ -17,7 +17,7 @@ use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, encode_region_image, rounded_clamped_bbox,
+    build_hocr_from_pdf_text, encode_region_image, init_encode_semaphore, rounded_clamped_bbox,
     should_force_blank_page_threshold, should_treat_as_cover_page, spawn_pdf_writer_actor,
     wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
 };
@@ -25,12 +25,14 @@ use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
 };
 use crate::pipeline::prepare_shared_deskew_engine;
+use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
 use crate::resize_context::{InferenceResizeSpec, build_inference_image};
 use crate::{info_log, success_log, warn_log};
 
 use Legencode::types::BinarizationOptions;
 use anyhow::{Result, anyhow};
+use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use image::{Rgb, RgbImage};
 use std::path::Path;
@@ -58,33 +60,6 @@ pub struct ProcessedPage {
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
     pub binarized: Vec<u8>,
-}
-
-//==============================================================================
-// Configuration
-//==============================================================================
-
-/// Pipeline concurrency settings
-struct PipelineConfig2 {
-    /// How many pages can be buffered between render→inference
-    render_buffer: usize,
-    /// How many pages can be buffered between inference→process
-    inference_buffer: usize,
-    /// How many concurrent inference tasks (usually 1-2 for GPU)
-    inference_concurrency: usize,
-    /// How many concurrent processing workers
-    process_concurrency: usize,
-}
-
-impl Default for PipelineConfig2 {
-    fn default() -> Self {
-        Self {
-            render_buffer: 16,        // Allow render to get ahead
-            inference_buffer: 8,      // Buffer between inference and processing
-            inference_concurrency: 2, // 2 concurrent inference (overlap preprocessing)
-            process_concurrency: 4,   // 4 concurrent CPU workers
-        }
-    }
 }
 
 //==============================================================================
@@ -138,7 +113,13 @@ async fn render_stage(
 
         // Apply deskew if enabled
         if let Some(engine) = &deskew_engine {
-            if let Ok(corrected) = engine.process_image(&rendered_image) {
+            let engine = engine.clone();
+            let image_for_deskew = rendered_image.clone();
+            if let Ok(Ok(corrected)) = tokio::task::spawn_blocking(move || {
+                engine.process_image(&image_for_deskew)
+            })
+            .await
+            {
                 rendered_image = corrected;
             }
         }
@@ -213,7 +194,6 @@ async fn render_stage(
 /// Now:        recv -> spawn(infer) -> recv -> spawn(infer) -> collect results -> send
 async fn inference_stage_parallel(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
-    config: Arc<PipelineConfig>,
     mut rx: mpsc::Receiver<RenderedPageData>,
     tx: mpsc::Sender<PdfInferenceData>,
     detect_count: Arc<AtomicUsize>,
@@ -232,7 +212,8 @@ async fn inference_stage_parallel(
     );
 
     // Track in-flight inference tasks
-    let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
+    let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<PdfInferenceData>>> =
+        FuturesUnordered::new();
     let mut input_exhausted = false;
 
     loop {
@@ -242,7 +223,7 @@ async fn inference_stage_parallel(
             // Collect completed inference results
             Some(result) = in_flight.next(), if !in_flight.is_empty() => {
                 match result {
-                    Ok(Ok(data)) => {
+                    Ok(data) => {
                         let detected_val = detect_count.fetch_add(1, Ordering::Relaxed) + 1;
                         if layout_enabled {
                             let rendered_val = render_count.load(Ordering::Relaxed);
@@ -254,11 +235,8 @@ async fn inference_stage_parallel(
                             return Ok(());
                         }
                     }
-                    Ok(Err(e)) => {
-                        warn_log!("[PDF-Parallel-Infer] Inference task failed: {}", e);
-                    }
                     Err(e) => {
-                        warn_log!("[PDF-Parallel-Infer] Inference task panicked: {}", e);
+                        warn_log!("[PDF-Parallel-Infer] Inference task failed: {}", e);
                     }
                 }
             }
@@ -266,16 +244,15 @@ async fn inference_stage_parallel(
             // Accept new work if we have capacity
             Some(rendered) = rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
                 let handle_clone = inference_handle.clone();
-                let config_clone = config.clone();
                 let cache_clone = detection_cache.clone();
                 let analysis_w = analysis_width;
 
-                // Spawn inference task - runs concurrently!
-                let task = tokio::spawn(async move {
-                    run_single_inference(handle_clone, config_clone, rendered, cache_clone, analysis_w).await
-                });
-
-                in_flight.push(task);
+                in_flight.push(build_inference_future(
+                    handle_clone,
+                    rendered,
+                    cache_clone,
+                    analysis_w,
+                ));
             }
 
             // Input channel closed
@@ -302,23 +279,18 @@ async fn inference_stage_parallel(
     Ok(())
 }
 
-/// Run inference for a single page
-async fn run_single_inference(
+fn build_inference_future(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
-    config: Arc<PipelineConfig>,
     rendered: RenderedPageData,
     detection_cache: Arc<Vec<Vec<crate::engine::Detection>>>,
     analysis_width: u32,
-) -> Result<PdfInferenceData> {
+) -> BoxFuture<'static, Result<PdfInferenceData>> {
     let page_index = rendered.index;
 
-    // Try to reuse cached detections from Phase 1 (scaled to high-res)
-    let detections = if let Some(cached) = detection_cache.get(page_index) {
+    if let Some(cached) = detection_cache.get(page_index) {
         if !cached.is_empty() && analysis_width > 0 {
-            // Scale detections from low-res analysis to high-res
             let high_res_width = rendered.high_res_image.width();
             let scale_factor = high_res_width as f32 / analysis_width as f32;
-
             let mut scaled = cached.clone();
             for det in &mut scaled {
                 det.bbox[0] *= scale_factor;
@@ -327,55 +299,72 @@ async fn run_single_inference(
                 det.bbox[3] *= scale_factor;
             }
 
-            #[cfg(feature = "debug-logging")]
-            info_log!(
-                "Page {}: Reusing {} cached detections (scaled by {:.2}x)",
-                page_index,
-                scaled.len(),
-                scale_factor
-            );
+            let inference_result = InferenceResult {
+                index: page_index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: scaled.clone(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: scaled.is_empty(),
+            };
 
-            scaled
-        } else if let Some(handle) = &inference_handle {
-            // Cache was empty, run normal inference
-            handle
-                .detect(page_index, rendered.inference_image.clone())
+            return Box::pin(async move {
+                Ok(PdfInferenceData {
+                    rendered,
+                    inference_result,
+                })
+            });
+        }
+    }
+
+    match inference_handle {
+        Some(handle) => Box::pin(async move {
+            let detections = handle
+                .submit(page_index, rendered.inference_image.clone())
+                .await?
                 .await
+                .map_err(|_| anyhow!("Inference actor dropped response"))?
                 .unwrap_or_else(|e| {
                     warn_log!("Page {}: inference failed: {}", page_index, e);
                     Vec::new()
-                })
-        } else {
-            Vec::new()
-        }
-    } else if let Some(handle) = &inference_handle {
-        // No cache available, run normal inference
-        handle
-            .detect(page_index, rendered.inference_image.clone())
-            .await
-            .unwrap_or_else(|e| {
-                warn_log!("Page {}: inference failed: {}", page_index, e);
-                Vec::new()
+                });
+
+            let inference_result = InferenceResult {
+                index: page_index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: detections.clone(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: detections.is_empty(),
+            };
+
+            Ok(PdfInferenceData {
+                rendered,
+                inference_result,
             })
-    } else {
-        Vec::new()
-    };
+        }) as BoxFuture<'static, Result<PdfInferenceData>>,
+        None => Box::pin(async move {
+            let inference_result = InferenceResult {
+                index: page_index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: Vec::new(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: true,
+            };
 
-    let inference_result = InferenceResult {
-        index: page_index,
-        high_res_image: rendered.high_res_image.clone(),
-        inference_image: rendered.inference_image.clone(),
-        detections: detections.clone(),
-        text_layer: None,
-        original_width_pts: rendered.original_width_pts,
-        original_height_pts: rendered.original_height_pts,
-        has_no_detections: detections.is_empty(),
-    };
-
-    Ok(PdfInferenceData {
-        rendered,
-        inference_result,
-    })
+            Ok(PdfInferenceData {
+                rendered,
+                inference_result,
+            })
+        }),
+    }
 }
 
 //==============================================================================
@@ -1555,6 +1544,113 @@ async fn encode_base_layer_for_jpeg_mode(
 // Phase 1: Document-Wide Margin Analysis (Low-Res Pass)
 //==============================================================================
 
+struct AnalysisPreparedPage {
+    page_index: usize,
+    analysis_image: RgbImage,
+    pixel_bounds: Option<crate::margin::ContentBounds>,
+}
+
+struct AnalysisPageResult {
+    page_index: usize,
+    page_width: u32,
+    page_height: u32,
+    detections: Vec<crate::engine::Detection>,
+    pixel_bounds: Option<crate::margin::ContentBounds>,
+}
+
+fn prepare_analysis_page(
+    page_idx: usize,
+    original_image: RgbImage,
+    config: Arc<PipelineConfig>,
+) -> AnalysisPreparedPage {
+    const ANALYSIS_WIDTH: u32 = 640;
+
+    let aspect_ratio = original_image.width() as f32 / original_image.height() as f32;
+    let analysis_height = (ANALYSIS_WIDTH as f32 / aspect_ratio).round() as u32;
+    let params = crate::resize::ResizeParams {
+        target_width: ANALYSIS_WIDTH,
+        target_height: analysis_height,
+        method: crate::resize::ResizeMethod::Lanczos3,
+        letterbox: false,
+        border_value: 0.0,
+        swap_rb: false,
+    };
+
+    let analysis_image_data = match crate::resize::resize_bytes(
+        original_image.as_raw(),
+        original_image.width(),
+        original_image.height(),
+        &params,
+        3,
+    ) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn_log!(
+                "Page {}: Failed to resize for margin analysis: {}. Using original image.",
+                page_idx,
+                e
+            );
+            original_image.as_raw().to_vec()
+        }
+    };
+
+    let analysis_image =
+        if analysis_image_data.len() == (ANALYSIS_WIDTH * analysis_height * 3) as usize {
+            RgbImage::from_raw(ANALYSIS_WIDTH, analysis_height, analysis_image_data)
+                .unwrap_or(original_image)
+        } else {
+            original_image
+        };
+
+    let pixel_bounds = crate::margin::compute_pixel_bounds_for_margin(&analysis_image, &config);
+
+    AnalysisPreparedPage {
+        page_index: page_idx,
+        analysis_image,
+        pixel_bounds,
+    }
+}
+
+fn build_margin_analysis_future(
+    inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
+    prepared: AnalysisPreparedPage,
+    config: Arc<PipelineConfig>,
+) -> BoxFuture<'static, Result<AnalysisPageResult>> {
+    Box::pin(async move {
+        let AnalysisPreparedPage {
+            page_index,
+            analysis_image,
+            pixel_bounds,
+        } = prepared;
+
+        let detections = if let Some(handle) = inference_handle {
+            let spec = InferenceResizeSpec {
+                target: config.inference_size(),
+                ..Default::default()
+            };
+            let inference_img = build_inference_image(&analysis_image, &spec)
+                .unwrap_or_else(|_| analysis_image.clone());
+
+            handle
+                .submit(page_index, Arc::new(inference_img))
+                .await?
+                .await
+                .map_err(|_| anyhow!("Inference actor dropped margin-analysis response"))?
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(AnalysisPageResult {
+            page_index,
+            page_width: analysis_image.width(),
+            page_height: analysis_image.height(),
+            detections,
+            pixel_bounds,
+        })
+    })
+}
+
 /// Performs document-wide margin analysis using low-resolution rendering
 /// Returns the analysis and cached detections for reuse in Phase 2
 async fn perform_document_analysis(
@@ -1570,6 +1666,26 @@ async fn perform_document_analysis(
 
     let mut margin_inputs = Vec::new();
     let mut detection_cache = vec![Vec::new(); total_pages];
+    let limits = PipelineRuntimeLimits::from_config(&config);
+    let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
+        FuturesUnordered::new();
+
+    let push_completed =
+        |result: AnalysisPageResult,
+         margin_inputs: &mut Vec<PageMarginInput>,
+         detection_cache: &mut Vec<Vec<crate::engine::Detection>>| {
+            margin_inputs.push(PageMarginInput {
+                page_index: result.page_index,
+                page_width: result.page_width,
+                page_height: result.page_height,
+                detections: result.detections.clone(),
+                pixel_bounds: result.pixel_bounds,
+            });
+
+            if result.page_index < detection_cache.len() {
+                detection_cache[result.page_index] = result.detections;
+            }
+        };
 
     // Render pages at original target resolution first, then resize in memory for analysis
     for (idx, page_idx) in page_range.enumerate() {
@@ -1605,84 +1721,23 @@ async fn perform_document_analysis(
 
         let original_image = RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data)
             .ok_or_else(|| anyhow!("Failed to convert image for page {}", page_idx))?;
+        let config_clone = config.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            prepare_analysis_page(page_idx, original_image, config_clone)
+        })
+        .await
+        .map_err(|e| anyhow!("Margin-analysis prep task panicked: {}", e))?;
 
-        // Resize to analysis size (640px width) using internal resize functionality instead of pdfium
-        // Low-res width for analysis (640px matches PaddleX inference size)
-        const ANALYSIS_WIDTH: u32 = 640;
-        let aspect_ratio = original_image.width() as f32 / original_image.height() as f32;
-        let analysis_height = (ANALYSIS_WIDTH as f32 / aspect_ratio).round() as u32;
+        pending.push(build_margin_analysis_future(
+            inference_handle.clone(),
+            prepared,
+            config.clone(),
+        ));
 
-        // Resize the original image to analysis size using the resize functionality
-        let params = crate::resize::ResizeParams {
-            target_width: ANALYSIS_WIDTH,
-            target_height: analysis_height,
-            method: crate::resize::ResizeMethod::Lanczos3,
-            letterbox: false,
-            border_value: 0.0,
-            swap_rb: false,
-        };
-
-        let analysis_image_data = match crate::resize::resize_bytes(
-            &original_image.as_raw(),
-            original_image.width(),
-            original_image.height(),
-            &params,
-            3, // RGB channels
-        ) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn_log!(
-                    "Page {}: Failed to resize for margin analysis: {}. Using original image.",
-                    page_idx,
-                    e
-                );
-                // Fallback: use original image if resize fails
-                original_image.as_raw().to_vec()
+        while pending.len() >= limits.page_workers {
+            if let Some(result) = pending.next().await {
+                push_completed(result?, &mut margin_inputs, &mut detection_cache);
             }
-        };
-
-        let analysis_image =
-            if analysis_image_data.len() == (ANALYSIS_WIDTH * analysis_height * 3) as usize {
-                RgbImage::from_raw(ANALYSIS_WIDTH, analysis_height, analysis_image_data)
-                    .unwrap_or_else(|| original_image.clone())
-            } else {
-                original_image.clone()
-            };
-
-        // Run inference if enabled
-        let detections = if let Some(handle) = &inference_handle {
-            // Build inference-sized image from analysis render
-            let spec = InferenceResizeSpec {
-                target: config.inference_size(),
-                ..Default::default()
-            };
-            let inference_img = build_inference_image(&analysis_image, &spec)
-                .unwrap_or_else(|_| analysis_image.clone());
-
-            handle
-                .detect(page_idx, Arc::new(inference_img))
-                .await
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        // Pixel-based bounds as fallback
-        let pixel_bounds = crate::margin::compute_pixel_bounds_for_margin(&analysis_image, &config);
-
-        // Store lightweight margin input
-        // Use analysis image dimensions since that's what we're analyzing for margin detection
-        margin_inputs.push(PageMarginInput {
-            page_index: page_idx,
-            page_width: analysis_image.width(),
-            page_height: analysis_image.height(),
-            detections: detections.clone(),
-            pixel_bounds,
-        });
-
-        // Cache detections for Phase 2
-        if page_idx < detection_cache.len() {
-            detection_cache[page_idx] = detections;
         }
 
         // Update progress
@@ -1690,6 +1745,12 @@ async fn perform_document_analysis(
             progress_tracker.update(crate::progress::ProcessingStatus::MarginPass1Analyzing);
         }
     }
+
+    while let Some(result) = pending.next().await {
+        push_completed(result?, &mut margin_inputs, &mut detection_cache);
+    }
+
+    margin_inputs.sort_by_key(|input| input.page_index);
 
     // Analyze margins across entire document
     info_log!(
@@ -1737,7 +1798,8 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     // Reset standard dimensions at the start of each new document
     crate::pipeline::reset_standard_dimensions();
 
-    let pipeline_config = PipelineConfig2::default();
+    let pipeline_config = PipelineRuntimeLimits::from_config(&config);
+    init_encode_semaphore(pipeline_config.page_workers);
 
     // Initialize PDF renderer
     let mut raster_cfg = PdfRasterConfig::default();
@@ -1758,11 +1820,11 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
     info_log!(
         "  - Inference concurrency: {}",
-        pipeline_config.inference_concurrency
+        pipeline_config.page_workers
     );
     info_log!(
         "  - Process concurrency: {}",
-        pipeline_config.process_concurrency
+        pipeline_config.process_workers
     );
 
     // Initialize shared resources
@@ -1834,7 +1896,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     // Create pipeline channels with larger buffers for better pipelining
     let (render_tx, render_rx) = mpsc::channel(pipeline_config.render_buffer);
     let (infer_tx, infer_rx) = mpsc::channel(pipeline_config.inference_buffer);
-    let (process_tx, process_rx) = mpsc::channel(128); // Large output buffer
+    let (process_tx, process_rx) = mpsc::channel(pipeline_config.channel_capacity);
 
     // Spawn PDF writer actor (already exists and works well)
     let use_margin_label = !matches!(
@@ -1847,6 +1909,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
         config.pdf_compatibility_mode,
         progress_tracker.clone(),
         use_margin_label,
+        pipeline_config.channel_capacity,
     );
 
     // Forward processed pages to PDF writer (mut for tokio::select!)
@@ -1866,12 +1929,14 @@ pub async fn create_and_run_pdf_parallel_pipeline(
                     binarized: Some(processed_page.binarized),
                 };
 
-                pdf_writer_handle.send_page(page, processed_page.index)?;
+                pdf_writer_handle
+                    .send_page(page, processed_page.index)
+                    .await?;
             }
 
             // CRITICAL: Finalize the PDF after all pages are sent
             info_log!("[PDF-Parallel] Finalizing PDF...");
-            pdf_writer_handle.finalize()?;
+            pdf_writer_handle.finalize().await?;
 
             Ok::<(), anyhow::Error>(())
         })
@@ -1898,11 +1963,10 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
     let mut infer_task = tokio::spawn(inference_stage_parallel(
         inference_handle,
-        config.clone(),
         render_rx,
         infer_tx,
         detect_count.clone(),
-        pipeline_config.inference_concurrency,
+        pipeline_config.page_workers,
         render_count.clone(),
         encode_count.clone(),
         progress_tracker.clone(),
@@ -1922,7 +1986,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
         process_tx,
         encode_count.clone(),
         page_start,
-        pipeline_config.process_concurrency,
+        pipeline_config.process_workers,
         render_count.clone(),
         detect_count.clone(),
         progress_tracker.clone(),
