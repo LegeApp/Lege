@@ -5,6 +5,10 @@ use crate::types::BinarizationOptions;
 use anyhow::{anyhow, Result};
 use image::{GrayImage, Luma};
 use ndarray::Array4;
+#[cfg(target_os = "macos")]
+use ort::execution_providers::CoreMLExecutionProvider;
+#[cfg(target_os = "windows")]
+use ort::execution_providers::DirectMLExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Value;
 use rayon::prelude::*;

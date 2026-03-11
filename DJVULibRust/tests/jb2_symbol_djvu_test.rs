@@ -7,16 +7,15 @@
 #![cfg(feature = "symboldict")]
 
 use djvu_encoder::{
+    DjvuError, Result,
     doc::page_encoder::{PageComponents, PageEncodeParams},
     encode::symbol_dict::BitImage,
-    DjvuError,
-    Result,
 };
-use tempfile::tempdir;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::process::Command;
+use tempfile::tempdir;
 
 const PBM_PATH: &str = "background.pbm";
 
@@ -120,7 +119,9 @@ fn load_pbm_as_bitimage(path: &Path) -> Result<BitImage> {
             .collect();
 
         if dims.len() < 2 {
-            return Err(DjvuError::InvalidOperation("Invalid PBM dimensions".to_string()));
+            return Err(DjvuError::InvalidOperation(
+                "Invalid PBM dimensions".to_string(),
+            ));
         }
 
         let (width, height) = (dims[0], dims[1]);
@@ -160,7 +161,8 @@ fn test_jb2_symbol_mode_single_page_djvu() -> Result<()> {
 
     let bitimage = load_pbm_as_bitimage(pbm_path)?;
 
-    let mut page = PageComponents::new_with_dimensions(bitimage.width as u32, bitimage.height as u32);
+    let mut page =
+        PageComponents::new_with_dimensions(bitimage.width as u32, bitimage.height as u32);
     page = page.with_jb2_auto_extract(bitimage)?;
 
     let (page_w, page_h) = page.dimensions();
@@ -185,7 +187,11 @@ fn test_jb2_symbol_mode_single_page_djvu() -> Result<()> {
     // Decode with ddjvu to ensure the file is readable
     let ddjvu_output = temp_dir.path().join("decoded.pbm");
     let ddjvu_status = Command::new("ddjvu")
-        .args(["-format=pbm", djvu_path.to_string_lossy().as_ref(), ddjvu_output.to_string_lossy().as_ref()])
+        .args([
+            "-format=pbm",
+            djvu_path.to_string_lossy().as_ref(),
+            ddjvu_output.to_string_lossy().as_ref(),
+        ])
         .status();
     let ddjvu_status = ddjvu_status.map_err(|e| {
         DjvuError::Io(io::Error::new(
@@ -194,7 +200,9 @@ fn test_jb2_symbol_mode_single_page_djvu() -> Result<()> {
         ))
     })?;
     if !ddjvu_status.success() {
-        return Err(DjvuError::InvalidOperation("ddjvu failed to decode output".to_string()));
+        return Err(DjvuError::InvalidOperation(
+            "ddjvu failed to decode output".to_string(),
+        ));
     }
 
     // Dump with djvudump for chunk verification
@@ -208,7 +216,9 @@ fn test_jb2_symbol_mode_single_page_djvu() -> Result<()> {
             ))
         })?;
     if !dump_output.status.success() {
-        return Err(DjvuError::InvalidOperation("djvudump failed to parse output".to_string()));
+        return Err(DjvuError::InvalidOperation(
+            "djvudump failed to parse output".to_string(),
+        ));
     }
     let dump_text = String::from_utf8_lossy(&dump_output.stdout);
     if !dump_text.contains("Sjbz") {
@@ -217,9 +227,7 @@ fn test_jb2_symbol_mode_single_page_djvu() -> Result<()> {
         ));
     }
 
-    let decoded_size = fs::metadata(&ddjvu_output)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let decoded_size = fs::metadata(&ddjvu_output).map(|m| m.len()).unwrap_or(0);
     println!(
         "JB2 symbol DjVu OK: djvu_bytes={} dump_bytes={} decoded_bytes={}",
         djvu_bytes.len(),

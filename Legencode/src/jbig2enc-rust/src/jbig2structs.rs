@@ -63,6 +63,13 @@ pub struct HalftoneConfig {
     /// Whether to use lossless encoding (true) or lossy encoding (false).
     /// Lossless guarantees bit-perfect reconstruction but produces larger files.
     pub lossless: bool,
+    /// Diagnostic backend for the gray-value image inside the halftone region.
+    /// When true, use MMR/T.6 coding instead of arithmetic Annex C coding.
+    pub gray_mmr: bool,
+    /// Backend for the pattern dictionary bitmap.
+    /// MMR keeps the tiled halftone cells exact and avoids arithmetic drift in the
+    /// collective pattern bitmap.
+    pub dict_mmr: bool,
 }
 
 impl Default for HalftoneConfig {
@@ -73,6 +80,8 @@ impl Default for HalftoneConfig {
             sharpening_l: 0.5,  // A moderate amount of sharpening
             template: 0,
             lossless: false, // Default to lossy encoding for better compression
+            gray_mmr: false,
+            dict_mmr: true,
         }
     }
 }
@@ -92,8 +101,8 @@ impl Default for Jbig2Config {
             text_refine_template: 0,
             halftone: HalftoneConfig::default(),
             dpi: 300,
-            symbol_mode: true,
-            refine: true, // Enable refinement by default for better compression (requires symbol_mode=true)
+            symbol_mode: false,
+            refine: false, // Refinement requires symbol_mode; both disabled until global dictionary encoding is fixed
             refine_template: 0,
             duplicate_line_removal: true,
             auto_thresh: true,
@@ -407,7 +416,7 @@ impl GenericRegionConfig {
             y: 0,
             comb_operator: 0, // Default to OR
             template: 0,      // Default to template 0
-            tpgdon: false,    // Disable typical prediction for testing
+            tpgdon: false,    // Disabled — arithmetic coder does not emit TPGD bits yet
             // Template 0 default AT pixels to match C encoder (even though spec says none needed)
             at_pixels: vec![(3, -1), (-3, -1), (2, -2), (-2, -2)],
             mmr: false, // Default to arithmetic coding
@@ -508,32 +517,38 @@ pub struct TextRegionParams {
 
 impl TextRegionParams {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(16 + 2 + if self.refine { 1 } else { 0 });
+        let mut buf = Vec::with_capacity(16 + 1 + 2 + if self.refine { 4 } else { 0 });
         buf.write_u32::<BigEndian>(self.width).unwrap();
         buf.write_u32::<BigEndian>(self.height).unwrap();
         buf.write_u32::<BigEndian>(self.x).unwrap();
         buf.write_u32::<BigEndian>(self.y).unwrap();
+        // Region segment combination operator.
+        buf.write_u8(self.comb_op & 0x07).unwrap();
 
-        let mut sbrflags: u16 = 0;
-        // SBHUFF is 0 for arithmetic coding
+        // Layout mirrors jbig2enc's packed jbig2_text_region bitfields.
+        let mut flags0 = 0u8;
+        flags0 |= ((self.comb_op >> 1) & 0x01) as u8; // SBCOMBOP bit 1 (sbcombop2)
+        flags0 |= (self.ds_offset & 0x1F) << 2; // SBDSOFFSET
+        if self.refine && self.refine_template == 1 {
+            flags0 |= 1 << 7; // SBRTEMPLATE
+        }
+        buf.write_u8(flags0).unwrap();
+
+        let mut flags1 = 0u8;
         if self.refine {
-            sbrflags |= 1 << 1; // SBREFINE
+            flags1 |= 1 << 1; // SBREFINE
         }
-        sbrflags |= ((self.log_strips as u16) & 0x03) << 2; // LOGSBSTRIPS
-        sbrflags |= ((self.ref_corner as u16) & 0x03) << 4; // REFCORNER
+        flags1 |= (self.log_strips & 0x03) << 2; // LOGSBSTRIPS
+        flags1 |= (self.ref_corner & 0x03) << 4; // REFCORNER
         if self.transposed {
-            sbrflags |= 1 << 6; // TRANSPOSED
+            flags1 |= 1 << 6; // TRANSPOSED
         }
-        sbrflags |= ((self.comb_op as u16) & 0x03) << 7; // SBCOMBOP
-                                                         // SBDEFPIXEL is 0
-        sbrflags |= ((self.ds_offset as u16) & 0x1F) << 10; // SBDSOFFSET
-        if self.refine && self.refine_template == 1 {
-            sbrflags |= 1 << 15; // SBRTEMPLATE
-        }
-        buf.write_u16::<BigEndian>(sbrflags).unwrap();
+        flags1 |= (self.comb_op & 0x01) << 7; // SBCOMBOP bit 0 (sbcombop1)
+        buf.write_u8(flags1).unwrap();
 
-        if self.refine && self.refine_template == 1 {
-            buf.write_u8(self.refine_template).unwrap();
+        // Refinement AT flags default to (-1, -1), (-1, -1) like jbig2enc.
+        if self.refine {
+            buf.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
         }
         buf
     }
@@ -546,12 +561,17 @@ pub struct HalftoneParams {
     pub height: u32,
     pub x: u32,
     pub y: u32,
+    pub region_comb_operator: u8,
+    pub mmr: bool,
+    pub skip_enabled: bool,
+    pub halftone_comb_operator: u8,
+    pub default_pixel: bool,
     pub grid_width: u32,    // HGRIDW
     pub grid_height: u32,   // HGRIDH
-    pub grid_x: u16,        // HGRIDX
-    pub grid_y: u16,        // HGRIDY
-    pub grid_vector_x: u16, // HVECX
-    pub grid_vector_y: u16, // HVECY
+    pub grid_x: i32,        // HGX, fixed-point 24.8
+    pub grid_y: i32,        // HGY, fixed-point 24.8
+    pub grid_vector_x: u16, // HRX, fixed-point 8.8
+    pub grid_vector_y: u16, // HRY, fixed-point 8.8
     pub pattern_width: u8,  // HPW
     pub pattern_height: u8, // HPH
     pub template: u8,       // HTEMPLATE (0-3)
@@ -559,27 +579,60 @@ pub struct HalftoneParams {
 
 impl HalftoneParams {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(26);
+        let mut buf = Vec::with_capacity(31);
         buf.write_u32::<BigEndian>(self.width).unwrap();
         buf.write_u32::<BigEndian>(self.height).unwrap();
         buf.write_u32::<BigEndian>(self.x).unwrap();
         buf.write_u32::<BigEndian>(self.y).unwrap();
+        buf.write_u8(self.region_comb_operator & 0x07).unwrap();
 
         let mut flags = 0u8;
-        // HMMR is 0 for arithmetic coding
-        flags |= (self.template & 0x03) << 1; // HTEMPLATE bits 1-2
+        if self.mmr {
+            flags |= 0x01;
+        }
+        flags |= (self.template & 0x03) << 1;
+        if self.skip_enabled {
+            flags |= 0x08;
+        }
+        flags |= (self.halftone_comb_operator & 0x07) << 4;
+        if self.default_pixel {
+            flags |= 0x80;
+        }
 
         buf.write_u8(flags).unwrap();
 
         buf.write_u32::<BigEndian>(self.grid_width).unwrap();
         buf.write_u32::<BigEndian>(self.grid_height).unwrap();
-        buf.write_u16::<BigEndian>(self.grid_x).unwrap();
-        buf.write_u16::<BigEndian>(self.grid_y).unwrap();
+        buf.write_i32::<BigEndian>(self.grid_x).unwrap();
+        buf.write_i32::<BigEndian>(self.grid_y).unwrap();
         buf.write_u16::<BigEndian>(self.grid_vector_x).unwrap();
         buf.write_u16::<BigEndian>(self.grid_vector_y).unwrap();
-        buf.write_u8(self.pattern_width).unwrap();
-        buf.write_u8(self.pattern_height).unwrap();
 
+        buf
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PatternDictionaryParams {
+    pub mmr: bool,
+    pub template: u8,
+    pub pattern_width: u8,
+    pub pattern_height: u8,
+    pub gray_max: u32,
+}
+
+impl PatternDictionaryParams {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(7);
+        let mut flags = 0u8;
+        if self.mmr {
+            flags |= 0x01;
+        }
+        flags |= (self.template & 0x03) << 1;
+        buf.push(flags);
+        buf.push(self.pattern_width);
+        buf.push(self.pattern_height);
+        buf.write_u32::<BigEndian>(self.gray_max).unwrap();
         buf
     }
 }
@@ -589,7 +642,7 @@ impl HalftoneParams {
 // -----------------------------------------------------------------------------
 
 /// Represents a JBIG2 segment, including header and payload
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Segment {
     pub number: u32,               // Segment number
     pub seg_type: SegmentType,     // Segment type
@@ -613,43 +666,48 @@ impl Segment {
     pub fn write_into<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_u32::<BigEndian>(self.number)?;
 
-        // First flags byte: bits 0-5 = segment type, bit 6 = page association size (0=1 byte, 1=4 bytes), bit 7 = deferred non-retain
-        // Always use 4-byte page association for compatibility and simplicity
-        let page_size_is_4_bytes = true;
+        // Flags1: segment type, page association size, deferred non-retain.
+        let page_num_val = self.page.unwrap_or(0);
+        let page_size_is_4_bytes = page_num_val > 0xFF;
         let flags1 = (self.seg_type as u8 & 0x3F)
             | ((page_size_is_4_bytes as u8) << 6)
             | ((self.deferred_non_retain as u8) << 7);
         w.write_u8(flags1)?;
 
-        // Referred-to segment count and retention flags field
+        // Flags2: retain bits + referred-to segment count (compact form).
         let referred_to_count = self.referred_to.len();
-        if referred_to_count <= 4 {
-            // Short form: one byte with high 3 bits = count, low 5 bits = (count+1) retention flags (we write zeros)
-            let byte = ((referred_to_count as u8) << 5) | 0x00;
-            w.write_u8(byte)?;
+        if referred_to_count > 7 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "referred_to count > 7 is not supported",
+            ));
+        }
+        let flags2 = (self.retain_flags & 0x1F) | ((referred_to_count as u8) << 5);
+        w.write_u8(flags2)?;
+
+        let ref_size = if self.number <= 256 {
+            1
+        } else if self.number <= 65_536 {
+            2
         } else {
-            // Long form: write 0b111xxxxx then varint count then (count+1) retention bits padded to byte boundary
-            w.write_u8(0xE0)?; // 1110 0000
-            let mut varint_buf = Vec::new();
-            encode_varint(referred_to_count as u32, &mut varint_buf);
-            w.write_all(&varint_buf)?;
-            // Write (n+1) zero bits padded to bytes
-            let retain_bits = referred_to_count + 1;
-            let retain_bytes = (retain_bits + 7) / 8;
-            for _ in 0..retain_bytes {
-                w.write_u8(0x00)?;
+            4
+        };
+
+        for &r_num in &self.referred_to {
+            match ref_size {
+                1 => w.write_u8(r_num as u8)?,
+                2 => w.write_u16::<BigEndian>(r_num as u16)?,
+                4 => w.write_u32::<BigEndian>(r_num)?,
+                _ => unreachable!(),
             }
         }
 
-        // Referred-to segment numbers: use 4 bytes per spec-friendly encoding (matches our 4-byte segment numbers)
-        for &r_num in &self.referred_to {
-            w.write_u32::<BigEndian>(r_num)?;
+        // Page association field is always present (0 means global segment stream).
+        if page_size_is_4_bytes {
+            w.write_u32::<BigEndian>(page_num_val)?;
+        } else {
+            w.write_u8(page_num_val as u8)?;
         }
-
-        // Page association field (always present in this writer):
-        // Use 0 to indicate global/all-pages when self.page is None
-        let p_num = self.page.unwrap_or(0);
-        w.write_u32::<BigEndian>(p_num)?;
 
         let payload_len = self.payload.len() as u32;
         debug!("Segment {} payload length: {}", self.number, payload_len);

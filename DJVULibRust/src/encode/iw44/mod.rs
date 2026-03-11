@@ -21,4 +21,4 @@ pub use coeff_map::*;
 pub use constants::*;
 pub use encoder::*;
 pub use masking::*;
-pub use zigzag::{get_zigzag_loc, get_zigzag_loc_checked, ZIGZAG_LOC};
+pub use zigzag::{ZIGZAG_LOC, get_zigzag_loc, get_zigzag_loc_checked};

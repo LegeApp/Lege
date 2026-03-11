@@ -175,12 +175,7 @@ impl CCImage {
 
     /// Add a single run.
     pub fn add_single_run(&mut self, y: i32, x1: i32, x2: i32) {
-        self.runs.push(Run {
-            y,
-            x1,
-            x2,
-            ccid: 0,
-        });
+        self.runs.push(Run { y, x1, x2, ccid: 0 });
     }
 
     /// Extract all horizontal runs from a `BitImage`.
@@ -517,19 +512,17 @@ impl CCImage {
 
         self.nregularccs = self.ccs.len();
 
-        let makeccid = |key: (i16, i16, i32),
-                            map: &mut HashMap<(i16, i16, i32), i32>,
-                            ncc: &mut i32|
-         -> i32 {
-            if let Some(&id) = map.get(&key) {
-                id
-            } else {
-                let id = *ncc;
-                map.insert(key, id);
-                *ncc += 1;
-                id
-            }
-        };
+        let makeccid =
+            |key: (i16, i16, i32), map: &mut HashMap<(i16, i16, i32), i32>, ncc: &mut i32| -> i32 {
+                if let Some(&id) = map.get(&key) {
+                    id
+                } else {
+                    let id = *ncc;
+                    map.insert(key, id);
+                    *ncc += 1;
+                    id
+                }
+            };
 
         for ccid in 0..self.ccs.len() {
             let cc = &self.ccs[ccid];
@@ -578,8 +571,7 @@ impl CCImage {
                         // Run spans multiple grid columns — split it.
                         // Truncate the original run to its first grid cell.
                         let orig_x2 = self.runs[r].x2;
-                        self.runs[r].x2 =
-                            (gridj_start as i32 + 1) * splitsize - 1;
+                        self.runs[r].x2 = (gridj_start as i32 + 1) * splitsize - 1;
 
                         // Create new runs for intermediate grid cells
                         let mut current_gridj = gridj_start + 1;
@@ -648,7 +640,8 @@ impl CCImage {
         // Sort by top edge ascending (lowest ymin first) for Top-Down coordinates.
         // This ensures Top-to-Bottom reading order.
         cc_arr.sort_by(|a, b| {
-            a.1.bb.ymin
+            a.1.bb
+                .ymin
                 .cmp(&b.1.bb.ymin)
                 .then(a.1.bb.xmin.cmp(&b.1.bb.xmin))
                 .then(a.1.frun.cmp(&b.1.frun))
@@ -662,11 +655,11 @@ impl CCImage {
         while ccno < n {
             let line_start_ymin = cc_arr[ccno].1.bb.ymin;
             // Scan for the end of this line (items that are vertically close)
-            
+
             let mut nccno = ccno + 1;
             while nccno < n {
                 let curr_ymin = cc_arr[nccno].1.bb.ymin;
-                
+
                 // If the next items top edge is significantly below the line start, it's a new line
                 if curr_ymin > line_start_ymin + maxtopchange {
                     break;
@@ -675,11 +668,7 @@ impl CCImage {
             }
 
             // Sort this line left-to-right (by xmin)
-            cc_arr[ccno..nccno].sort_by(|a, b| {
-                a.1.bb
-                    .xmin
-                    .cmp(&b.1.bb.xmin)
-            });
+            cc_arr[ccno..nccno].sort_by(|a, b| a.1.bb.xmin.cmp(&b.1.bb.xmin));
 
             // Move to next line
             ccno = nccno;
@@ -693,16 +682,16 @@ impl CCImage {
             new_ccs.push(cc);
             old_to_new[old_idx] = new_idx;
         }
-        
+
         // Append the non-regular CCs
         for i in n..self.ccs.len() {
             let new_idx = new_ccs.len();
             new_ccs.push(self.ccs[i].clone());
             old_to_new[i] = new_idx;
         }
-        
+
         self.ccs = new_ccs;
-        
+
         // Remap runs
         for run in &mut self.runs {
             if run.ccid >= 0 {

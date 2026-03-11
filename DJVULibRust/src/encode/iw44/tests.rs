@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::encode::iw44::encoder::{
-        rgb_to_ycbcr_planes, ycbcr_from_rgb, CrcbMode, EncoderParams,
+        CrcbMode, EncoderParams, rgb_to_ycbcr_planes, ycbcr_from_rgb,
     };
     #[cfg(test)]
     use image::{ImageBuffer, Rgb, RgbImage};

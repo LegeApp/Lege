@@ -1,5 +1,5 @@
-use super::table::{ZpTableEntry, DEFAULT_ZP_TABLE};
 use super::ZpEncoderCursor;
+use super::table::{DEFAULT_ZP_TABLE, ZpTableEntry};
 use std::io::Cursor;
 use std::io::Write;
 use thiserror::Error;
@@ -229,7 +229,7 @@ impl<W: Write> ZEncoder<W> {
                 return Err(ZCodecError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "invalid zemit bit",
-                )))
+                )));
             }
         }
         Ok(())
@@ -406,7 +406,6 @@ impl<W: Write> ZEncoder<W> {
         }
         self.writer.take().ok_or(ZCodecError::Finished)
     }
-
 
     /// Iwencoder for IW44 compatibility - uses fixed-probability (non-adaptive) coding.
     #[inline(always)]

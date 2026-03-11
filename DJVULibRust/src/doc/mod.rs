@@ -1,7 +1,7 @@
 // Core infrastructure
 pub mod djvu_dir;
-pub mod page_encoder;
 pub mod page_collection;
+pub mod page_encoder;
 
 // Public builder API
 pub mod builder;

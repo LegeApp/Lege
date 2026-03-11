@@ -190,6 +190,7 @@ impl BitImage {
             let mut out = Vec::with_capacity(words_per_row * self.height);
 
             for y in 0..self.height {
+                let row_offset = y * self.width;
                 for word_x in 0..words_per_row {
                     let mut w = 0u32;
 
@@ -197,9 +198,8 @@ impl BitImage {
                     for bit in 0..32 {
                         let x = word_x * 32 + bit;
                         if x < self.width {
-                            // self.get_usize(x,y) -> true means a black pixel at (x,y)
-                            if self.get_usize(x, y) {
-                                // shift so that bit 31 is leftmost, bit 0 is rightmost
+                            // Direct bitvec indexing — bypasses bounds-checked get_usize
+                            if self.bits[row_offset + x] {
                                 w |= 1u32 << (31 - bit);
                             }
                         }
@@ -323,18 +323,20 @@ impl BitImage {
         let mut max_x = 0;
         let mut max_y = 0;
 
-        // First pass: find min_y and max_y by checking each row
+        // First pass: find min_y and max_y using word-level row scanning
         for y in 0..self.height {
-            let row_has_pixels = (0..self.width).any(|x| self.get_usize(x, y));
-            if row_has_pixels {
+            let row_start = y * self.width;
+            let row_bits = &self.bits[row_start..row_start + self.width];
+            if row_bits.any() {
                 min_y = y;
                 break;
             }
         }
 
         for y in (0..self.height).rev() {
-            let row_has_pixels = (0..self.width).any(|x| self.get_usize(x, y));
-            if row_has_pixels {
+            let row_start = y * self.width;
+            let row_bits = &self.bits[row_start..row_start + self.width];
+            if row_bits.any() {
                 max_y = y;
                 break;
             }
@@ -437,9 +439,14 @@ impl BitImage {
     }
 
     /// Gets a pixel value safely, returning 0 for out-of-bounds.
+    ///
+    /// Casting negative i32 to u32 yields a huge positive value that naturally
+    /// fails the `< width/height` check, collapsing 4 branches into 2.
+    #[inline]
     pub fn get_pixel_safely(&self, x: i32, y: i32) -> u8 {
-        if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height {
-            self.get(x as u32, y as u32) as u8
+        if (x as u32) < (self.width as u32) && (y as u32) < (self.height as u32) {
+            let idx = (y as usize) * self.width + (x as usize);
+            self.bits[idx] as u8
         } else {
             0
         }
@@ -533,18 +540,20 @@ pub fn compute_glyph_hash(image: &BitImage) -> u64 {
 /// Converts an `ndarray::Array2<u8>` to a `BitImage`.
 pub fn array_to_bitimage(array: &Array2<u8>) -> BitImage {
     let (height, width) = array.dim();
-    let mut bit_image = BitImage::new(usize_to_u32(width), usize_to_u32(height))
-        .expect("Failed to create image from array");
+    let total = width * height;
+    let mut bits = bitvec::bitvec![u8, Msb0; 0; total];
 
-    for (y, row) in array.rows().into_iter().enumerate() {
-        for (x, &pixel) in row.iter().enumerate() {
+    let mut idx = 0usize;
+    for row in array.rows() {
+        for &pixel in row.iter() {
             if pixel > 0 {
-                bit_image.set(usize_to_u32(x), usize_to_u32(y), true);
+                bits.set(idx, true);
             }
+            idx += 1;
         }
     }
 
-    bit_image
+    BitImage::from_bits(width, height, &bits)
 }
 
 /// Converts unpacked binary pixels (one byte per pixel, non-zero = set) to a `BitImage`.

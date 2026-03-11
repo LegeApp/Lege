@@ -11,7 +11,6 @@ use crate::doc::djvu_dir::{DjVmDir, File as DjVuFile, FileType};
 use crate::Result;
 use byteorder::{BigEndian, WriteBytesExt};
 use std::io::Write;
-use std::sync::Arc;
 
 /// Internal document encoder
 ///
@@ -22,7 +21,7 @@ impl DocumentEncoder {
     /// Assembles encoded pages into a complete DjVu document
     ///
     /// Returns the complete document as bytes (single-page DJVU or multi-page DJVM)
-    pub fn assemble_pages(pages: &[Arc<Vec<u8>>]) -> Result<Vec<u8>> {
+    pub fn assemble_pages(pages: &[Vec<u8>]) -> Result<Vec<u8>> {
         let mut output = Vec::new();
 
         if pages.is_empty() {
@@ -41,15 +40,16 @@ impl DocumentEncoder {
     }
 
     /// Assembles a multi-page DJVM document
-    fn assemble_djvm(writer: &mut Vec<u8>, pages: &[Arc<Vec<u8>>]) -> Result<()> {
-        // Strip AT&T prefix from pages if present
-        let page_chunks: Vec<Vec<u8>> = pages
+    fn assemble_djvm(writer: &mut Vec<u8>, pages: &[Vec<u8>]) -> Result<()> {
+        // Build cheap slice references, stripping the AT&T prefix where present.
+        // No cloning — just pointer + length.
+        let page_chunks: Vec<&[u8]> = pages
             .iter()
             .map(|p| {
                 if p.starts_with(b"AT&TFORM") {
-                    p[4..].to_vec() // Strip "AT&T"
+                    &p[4..] // Slice — zero allocation
                 } else {
-                    p.to_vec()
+                    p.as_slice()
                 }
             })
             .collect();
@@ -73,13 +73,11 @@ impl DocumentEncoder {
         let estimated_dirm_size = 3 + (4 * page_chunks.len()) + 80;
         let dirm_chunk_size = 8 + estimated_dirm_size + (estimated_dirm_size % 2);
 
-    // Calculate initial page offsets (after DIRM + NAVM chunks)
-    // Offsets in DIRM are ABSOLUTE file positions (confirmed by analyzing working files).
-    // The base is AT&T(4) + FORM(4) + size(4) + DJVM(4) = 16 bytes.
-    let base_offset = 16u32;
-        let mut current_offset = base_offset
-            + dirm_chunk_size as u32
-            + nav_chunk_size as u32;
+        // Calculate initial page offsets (after DIRM + NAVM chunks)
+        // Offsets in DIRM are ABSOLUTE file positions (confirmed by analyzing working files).
+        // The base is AT&T(4) + FORM(4) + size(4) + DJVM(4) = 16 bytes.
+        let base_offset = 16u32;
+        let mut current_offset = base_offset + dirm_chunk_size as u32 + nav_chunk_size as u32;
         let mut file_offsets = Vec::new();
 
         for (i, page_chunk) in page_chunks.iter().enumerate() {
@@ -114,9 +112,7 @@ impl DocumentEncoder {
         if (actual_dirm_chunk_size as i32 - dirm_chunk_size as i32).abs() > 16 {
             // Re-calculate with correct DIRM size
             let corrected_dirm = DjVmDir::new();
-            current_offset = base_offset
-                + actual_dirm_chunk_size as u32
-                + nav_chunk_size as u32;
+            current_offset = base_offset + actual_dirm_chunk_size as u32 + nav_chunk_size as u32;
             let mut corrected_offsets = Vec::new();
 
             for (i, page_chunk) in page_chunks.iter().enumerate() {
@@ -152,8 +148,8 @@ impl DocumentEncoder {
         let pages_total_size: usize = page_chunks.iter().map(|p| p.len()).sum();
 
         // Calculate padding
-    let mut padding_bytes = 0;
-    let mut pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
+        let mut padding_bytes = 0;
+        let mut pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
         for page_chunk in &page_chunks {
             if pos % 2 != 0 {
                 padding_bytes += 1;
@@ -162,7 +158,8 @@ impl DocumentEncoder {
             pos += page_chunk.len();
         }
 
-        let total_djvm_payload = total_dirm_chunk_size + nav_chunk_size + pages_total_size + padding_bytes;
+        let total_djvm_payload =
+            total_dirm_chunk_size + nav_chunk_size + pages_total_size + padding_bytes;
 
         // Write DJVM header
         writer.write_all(b"AT&TFORM")?;
@@ -189,7 +186,7 @@ impl DocumentEncoder {
         // }
 
         // Write page chunks with alignment
-    let mut written_pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
+        let mut written_pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
         for page_data in &page_chunks {
             if written_pos % 2 != 0 {
                 writer.write_u8(0)?;
@@ -207,7 +204,7 @@ impl DocumentEncoder {
     // /// Creates default navigation structure with simple page bookmarks
     // fn create_default_navigation(page_count: usize) -> Result<DjVmNav> {
     //     let mut nav = DjVmNav::new();
-    //     
+    //
     //     for i in 0..page_count {
     //         let bookmark = Bookmark {
     //             title: format!("Page {}", i + 1),
@@ -216,8 +213,7 @@ impl DocumentEncoder {
     //         };
     //         nav.bookmarks.push(bookmark);
     //     }
-    //     
+    //
     //     Ok(nav)
     // }
 }
-

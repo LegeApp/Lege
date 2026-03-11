@@ -37,7 +37,7 @@ pub struct Encode;
 
 impl Encode {
     /// Fill data16 from a Bitmap (u8), centering values as needed for IW44.
-    /// 
+    ///
     /// IMPORTANT: C++ GPixmap uses bottom-up coordinates (row 0 = bottom of image).
     /// The image crate uses top-down coordinates (row 0 = top of image).
     /// We flip vertically here to match C++ coordinate system.
@@ -45,7 +45,6 @@ impl Encode {
         // Create bconv table for gray level normalization (matches C++ line 1656)
         // For standard 8-bit images, grays=256, so bconv[i] = i - 128
         let bconv = create_bconv_table(256);
-
 
         // FLIP VERTICALLY to match C++ GPixmap bottom-up coordinate system
         for y in 0..h {
@@ -64,17 +63,16 @@ impl Encode {
                 let centered = bconv[px as usize] as i32;
                 let scaled = centered << crate::encode::iw44::constants::IW_SHIFT;
                 data16[dst_idx] = scaled as i16;
-
             }
         }
     }
 
     /// Fill data16 from a Bitmap (u8) with stride.
-    /// 
+    ///
     /// IMPORTANT: C++ GPixmap uses bottom-up coordinates (row 0 = bottom of image).
     /// The image crate uses top-down coordinates (row 0 = top of image).
     /// We flip vertically here to match C++ coordinate system.
-    /// 
+    ///
     /// Note: C++ fills padding area with zeros, NOT edge replication.
     /// This matches IW44EncodeCodec.cpp Encode::create() behavior.
     pub fn from_u8_image_with_stride(
@@ -114,11 +112,11 @@ impl Encode {
     }
 
     /// Fill data16 from a signed i8 buffer with stride.
-    /// 
+    ///
     /// IMPORTANT: C++ GPixmap uses bottom-up coordinates (row 0 = bottom of image).
     /// The image crate uses top-down coordinates (row 0 = top of image).
     /// We flip vertically here to match C++ coordinate system.
-    /// 
+    ///
     /// Note: C++ fills padding area with zeros, NOT edge replication.
     /// This matches IW44EncodeCodec.cpp Encode::create() behavior.
     pub fn from_i8_channel_with_stride(
@@ -156,13 +154,7 @@ impl Encode {
 
     /// Forward wavelet transform using the streaming algorithm from DjVuLibre.
     /// Now operates on i16 throughout, matching C++'s short* buffer behavior.
-    pub fn forward(
-        buf: &mut [i16],
-        w: usize,
-        h: usize,
-        rowsize: usize,
-        levels: usize,
-    ) {
+    pub fn forward(buf: &mut [i16], w: usize, h: usize, rowsize: usize, levels: usize) {
         let mut scale = 1;
         for _ in 0..levels {
             filter_fh(buf, w, h, rowsize, scale);
@@ -172,7 +164,7 @@ impl Encode {
     }
 
     /// Prepare image data and perform the wavelet transform.
-    /// 
+    ///
     /// IMPORTANT: C++ GPixmap uses bottom-up coordinates (row 0 = bottom of image).
     /// The caller's pixel_fn should return pixels in visual order (y=0 is top).
     /// We flip vertically here to match C++ coordinate system.
@@ -224,7 +216,7 @@ fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usi
                 a3 = buf[q + s3] as i32;
             }
             b3 = (buf[q] as i32) - ((a1 + a2 + 1) >> 1);
-            buf[q] = b3 as i16;  // Store back to i16 (plain cast, no saturation)
+            buf[q] = b3 as i16; // Store back to i16 (plain cast, no saturation)
             q += s + s;
         }
 
@@ -240,14 +232,14 @@ fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usi
             let _old_val = buf[q];
             b3 = (buf[q] as i32) - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 8) >> 4);
             buf[q] = b3 as i16;
-            
- 
+
             let idx_i = q as isize - s3 as isize;
             if idx_i >= 0 {
                 let idx = idx_i as usize;
                 // FIX: Update uses +16 >> 5 (matches C: ((b1+b2)<<3)+(b1+b2)-b0-b3+16)>>5)
-                let updated = (buf[idx] as i32) + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 16) >> 5);
-                buf[idx] = updated as i16;  // Store back to i16
+                let updated =
+                    (buf[idx] as i32) + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 16) >> 5);
+                buf[idx] = updated as i16; // Store back to i16
             }
             q += s + s;
         }
@@ -265,7 +257,8 @@ fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usi
             if idx_i >= p as isize {
                 let idx = idx_i as usize;
                 // Complex update filter with +16 >> 5 (matches C)
-                let updated = (buf[idx] as i32) + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 16) >> 5);
+                let updated =
+                    (buf[idx] as i32) + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 16) >> 5);
                 buf[idx] = updated as i16;
             }
             q += s + s;
@@ -281,7 +274,8 @@ fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usi
             if idx_i >= p as isize {
                 let idx = idx_i as usize;
                 // Complex update filter with +16 >> 5 (matches C)
-                let updated = (buf[idx] as i32) + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 16) >> 5);
+                let updated =
+                    (buf[idx] as i32) + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 16) >> 5);
                 buf[idx] = updated as i16;
             }
             q += s + s;
@@ -346,7 +340,11 @@ fn filter_fv(buf: &mut [i16], w: usize, h: usize, rowsize: usize, scale: usize) 
                     // Special cases with boundary handling (matches C++: else if (y>=3))
                     // q1 corresponds to q+s when (y-2 < hlimit)
                     // q3 corresponds to q+s3 when (y < hlimit)
-                    let mut q1 = if y >= 2 && y - 2 < hlimit { Some(q + s) } else { None };
+                    let mut q1 = if y >= 2 && y - 2 < hlimit {
+                        Some(q + s)
+                    } else {
+                        None
+                    };
                     let mut q3 = if y < hlimit { Some(q + s3) } else { None };
 
                     if y >= 6 {

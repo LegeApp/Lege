@@ -11,11 +11,10 @@
 //! 4. The output is valid DjVu format (verifiable with djvudump)
 
 use djvu_encoder::{
-    doc::page_encoder::{PageComponents, PageEncodeParams},
+    DjvuError, Result,
     doc::document_encoder::DocumentEncoder,
+    doc::page_encoder::{PageComponents, PageEncodeParams},
     encode::jb2::symbol_dict::BitImage,
-    DjvuError,
-    Result,
 };
 use image::{self, RgbImage};
 use std::fs;
@@ -30,7 +29,10 @@ const OUTPUT_DIR: &str = "target/test_outputs";
 /// Load a PBM file into a BitImage for JB2 encoding
 fn load_pbm_as_bitimage(path: &Path) -> Result<BitImage> {
     let pbm_data = fs::read(path).map_err(|e| {
-        DjvuError::Io(io::Error::new(io::ErrorKind::Other, format!("Failed to read PBM file: {}", e)))
+        DjvuError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to read PBM file: {}", e),
+        ))
     })?;
 
     // Parse PBM format (P4 = raw binary, P1 = ASCII)
@@ -101,12 +103,16 @@ fn load_pbm_as_bitimage(path: &Path) -> Result<BitImage> {
         let header_end = cursor;
 
         if width == 0 || height == 0 {
-            return Err(DjvuError::InvalidOperation(
-                format!("Invalid PBM dimensions: {}x{}", width, height)
-            ));
+            return Err(DjvuError::InvalidOperation(format!(
+                "Invalid PBM dimensions: {}x{}",
+                width, height
+            )));
         }
 
-        println!("PBM dimensions: {}x{}, header ends at byte {}", width, height, header_end);
+        println!(
+            "PBM dimensions: {}x{}, header ends at byte {}",
+            width, height, header_end
+        );
 
         let mut bitimage = BitImage::new(width as u32, height as u32)
             .map_err(|e| DjvuError::InvalidOperation(e.to_string()))?;
@@ -136,7 +142,9 @@ fn load_pbm_as_bitimage(path: &Path) -> Result<BitImage> {
             .collect();
 
         if dims.len() < 2 {
-            return Err(DjvuError::InvalidOperation("Invalid PBM dimensions".to_string()));
+            return Err(DjvuError::InvalidOperation(
+                "Invalid PBM dimensions".to_string(),
+            ));
         }
 
         let (width, height) = (dims[0], dims[1]);
@@ -160,16 +168,20 @@ fn load_pbm_as_bitimage(path: &Path) -> Result<BitImage> {
 
         Ok(bitimage)
     } else {
-        Err(DjvuError::InvalidOperation(
-            format!("Unsupported PBM format: {}", magic)
-        ))
+        Err(DjvuError::InvalidOperation(format!(
+            "Unsupported PBM format: {}",
+            magic
+        )))
     }
 }
 
 /// Load a PNG file into an RgbImage for IW44 encoding
 fn load_png_as_rgb(path: &Path) -> Result<RgbImage> {
     let img = image::open(path).map_err(|e| {
-        DjvuError::Io(io::Error::new(io::ErrorKind::Other, format!("Failed to load PNG: {}", e)))
+        DjvuError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to load PNG: {}", e),
+        ))
     })?;
     Ok(img.to_rgb8())
 }
@@ -177,9 +189,7 @@ fn load_png_as_rgb(path: &Path) -> Result<RgbImage> {
 /// Verify DjVu output using djvudump (if available)
 fn verify_djvu_with_dump(path: &Path) -> Option<String> {
     // Try system djvudump first, then local Windows executable
-    let result = Command::new("djvudump")
-        .arg(path)
-        .output();
+    let result = Command::new("djvudump").arg(path).output();
 
     match result {
         Ok(output) if output.status.success() => {
@@ -189,14 +199,12 @@ fn verify_djvu_with_dump(path: &Path) -> Option<String> {
             // Try the local Windows executable (for WSL/Wine compatibility)
             let local_exe = Path::new("test-files-misc/djvudump.exe");
             if local_exe.exists() {
-                let result = Command::new(local_exe)
-                    .arg(path)
-                    .output();
+                let result = Command::new(local_exe).arg(path).output();
                 match result {
                     Ok(output) if output.status.success() => {
                         Some(String::from_utf8_lossy(&output.stdout).to_string())
                     }
-                    _ => None
+                    _ => None,
                 }
             } else {
                 None
@@ -224,8 +232,7 @@ fn test_jb2_single_page() -> Result<()> {
     println!("Loaded PBM image: {}x{}", bitimage.width, bitimage.height);
 
     // Create page with JB2 foreground (no IW44 background)
-    let page = PageComponents::new()
-        .with_foreground(bitimage)?;
+    let page = PageComponents::new().with_foreground(bitimage)?;
 
     println!("Page dimensions: {:?}", page.dimensions());
 
@@ -283,11 +290,14 @@ fn test_iw44_single_page() -> Result<()> {
 
     // Load the color image
     let rgb_image = load_png_as_rgb(png_path)?;
-    println!("Loaded PNG image: {}x{}", rgb_image.width(), rgb_image.height());
+    println!(
+        "Loaded PNG image: {}x{}",
+        rgb_image.width(),
+        rgb_image.height()
+    );
 
     // Create page with IW44 background (color image)
-    let page = PageComponents::new()
-        .with_background(rgb_image)?;
+    let page = PageComponents::new().with_background(rgb_image)?;
 
     println!("Page dimensions: {:?}", page.dimensions());
 
@@ -322,7 +332,10 @@ fn test_iw44_single_page() -> Result<()> {
         println!("djvudump output:\n{}", dump);
         assert!(dump.contains("DJVU"), "Should be a valid DJVU document");
         assert!(dump.contains("INFO"), "Should have INFO chunk");
-        assert!(dump.contains("BG44"), "Should have IW44 background chunk (BG44)");
+        assert!(
+            dump.contains("BG44"),
+            "Should have IW44 background chunk (BG44)"
+        );
     }
 
     Ok(())
@@ -352,35 +365,29 @@ fn test_multipage_alternating() -> Result<()> {
     println!("Loaded PNG: {}x{}", rgb_image.width(), rgb_image.height());
 
     // Create document encoder
-    let mut doc_encoder = DocumentEncoder::new()
-        .with_dpi(300)
-        .with_gamma(Some(2.2));
+    let mut doc_encoder = DocumentEncoder::new().with_dpi(300).with_gamma(Some(2.2));
 
     // Page 1: IW44 (color)
     println!("\nAdding Page 1 (IW44)...");
-    let page1 = PageComponents::new()
-        .with_background(rgb_image.clone())?;
+    let page1 = PageComponents::new().with_background(rgb_image.clone())?;
     doc_encoder.add_page(page1)?;
     println!("Page 1 added successfully");
 
     // Page 2: JB2 (bitonal)
     println!("\nAdding Page 2 (JB2)...");
-    let page2 = PageComponents::new()
-        .with_foreground(bitimage.clone())?;
+    let page2 = PageComponents::new().with_foreground(bitimage.clone())?;
     doc_encoder.add_page(page2)?;
     println!("Page 2 added successfully");
 
     // Page 3: IW44 (color)
     println!("\nAdding Page 3 (IW44)...");
-    let page3 = PageComponents::new()
-        .with_background(rgb_image.clone())?;
+    let page3 = PageComponents::new().with_background(rgb_image.clone())?;
     doc_encoder.add_page(page3)?;
     println!("Page 3 added successfully");
 
     // Page 4: JB2 (bitonal)
     println!("\nAdding Page 4 (JB2)...");
-    let page4 = PageComponents::new()
-        .with_foreground(bitimage.clone())?;
+    let page4 = PageComponents::new().with_foreground(bitimage.clone())?;
     doc_encoder.add_page(page4)?;
     println!("Page 4 added successfully");
 
@@ -392,18 +399,28 @@ fn test_multipage_alternating() -> Result<()> {
     doc_encoder.write_to(&mut file)?;
 
     let file_size = fs::metadata(&output_path)?.len();
-    println!("\nWritten multi-page document: {} bytes to {}", file_size, output_path.display());
+    println!(
+        "\nWritten multi-page document: {} bytes to {}",
+        file_size,
+        output_path.display()
+    );
 
     // Verify with djvudump if available
     if let Some(dump) = verify_djvu_with_dump(&output_path) {
         println!("\ndjvudump output:\n{}", dump);
 
         // Should be DJVM (multi-page) format
-        assert!(dump.contains("DJVM") || dump.contains("DOCUMENT"), "Should be multi-page DJVM format");
+        assert!(
+            dump.contains("DJVM") || dump.contains("DOCUMENT"),
+            "Should be multi-page DJVM format"
+        );
 
         // Should have DIRM (directory) chunk
         if dump.contains("DJVM") {
-            assert!(dump.contains("DIRM"), "Multi-page should have DIRM directory chunk");
+            assert!(
+                dump.contains("DIRM"),
+                "Multi-page should have DIRM directory chunk"
+            );
         }
 
         // Should have multiple pages
@@ -428,8 +445,8 @@ fn test_jb2_encoder_isolation() -> Result<()> {
     use djvu_encoder::encode::jb2::symbol_dict::SymDictBuilder;
 
     // Create a simple test pattern
-    let mut bitimage = BitImage::new(64, 64)
-        .map_err(|e| DjvuError::InvalidOperation(e.to_string()))?;
+    let mut bitimage =
+        BitImage::new(64, 64).map_err(|e| DjvuError::InvalidOperation(e.to_string()))?;
 
     // Draw a simple pattern - a rectangle
     for y in 10..50 {
@@ -456,7 +473,10 @@ fn test_jb2_encoder_isolation() -> Result<()> {
         }
     }
 
-    println!("Created test pattern: {}x{}", bitimage.width, bitimage.height);
+    println!(
+        "Created test pattern: {}x{}",
+        bitimage.width, bitimage.height
+    );
 
     // Test 1: Single page encoding
     let mut encoder1 = JB2Encoder::new(Vec::new());
@@ -477,13 +497,23 @@ fn test_jb2_encoder_isolation() -> Result<()> {
     let mut dict_builder = SymDictBuilder::new(0);
     let (dictionary, components) = dict_builder.build(&bitimage);
 
-    println!("Built dictionary with {} shapes, {} components", dictionary.len(), components.len());
+    println!(
+        "Built dictionary with {} shapes, {} components",
+        dictionary.len(),
+        components.len()
+    );
 
     if !dictionary.is_empty() {
         let parents: Vec<i32> = vec![-1; dictionary.len()];
         let blits: Vec<(i32, i32, usize)> = components
             .iter()
-            .map(|c| (c.bounds.x as i32, c.bounds.y as i32, c.dict_symbol_index.unwrap_or(0)))
+            .map(|c| {
+                (
+                    c.bounds.x as i32,
+                    c.bounds.y as i32,
+                    c.dict_symbol_index.unwrap_or(0),
+                )
+            })
             .collect();
 
         // Encode dictionary
@@ -531,7 +561,7 @@ fn test_jb2_encoder_isolation() -> Result<()> {
 fn test_iw44_encoder_isolation() {
     println!("\n=== TEST: IW44 Encoder Isolation ===");
 
-    use djvu_encoder::encode::iw44::encoder::{IWEncoder, EncoderParams, CrcbMode};
+    use djvu_encoder::encode::iw44::encoder::{CrcbMode, EncoderParams, IWEncoder};
 
     // Create a simple gradient test image
     let width = 128u32;
@@ -541,14 +571,14 @@ fn test_iw44_encoder_isolation() {
     for y in 0..height {
         for x in 0..width {
             let idx = ((y * width + x) * 3) as usize;
-            rgb_data[idx] = x as u8;     // R: horizontal gradient
+            rgb_data[idx] = x as u8; // R: horizontal gradient
             rgb_data[idx + 1] = y as u8; // G: vertical gradient
-            rgb_data[idx + 2] = 128;     // B: constant
+            rgb_data[idx + 2] = 128; // B: constant
         }
     }
 
-    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
-        .expect("Failed to create test RGB image");
+    let rgb_image =
+        RgbImage::from_raw(width, height, rgb_data).expect("Failed to create test RGB image");
 
     println!("Created test gradient image: {}x{}", width, height);
 
@@ -572,15 +602,14 @@ fn test_iw44_encoder_isolation() {
             lossless: false,
         };
 
-        let mut encoder = IWEncoder::from_rgb(&rgb_image, None, params)
-            .expect("Failed to create IW44 encoder");
+        let mut encoder =
+            IWEncoder::from_rgb(&rgb_image, None, params).expect("Failed to create IW44 encoder");
 
         let mut total_bytes = 0;
         let mut chunk_count = 0;
 
         loop {
-            let (chunk_data, more) = encoder.encode_chunk(74)
-                .expect("Failed to encode chunk");
+            let (chunk_data, more) = encoder.encode_chunk(74).expect("Failed to encode chunk");
 
             if chunk_data.is_empty() {
                 break;
@@ -632,17 +661,20 @@ fn test_full_page_creation_real_files() -> Result<()> {
                 &rgb_image,
                 512,
                 512,
-                image::imageops::FilterType::Triangle
+                image::imageops::FilterType::Triangle,
             );
             resized
         } else {
             rgb_image
         };
 
-        println!("Test image size: {}x{}", rgb_image.width(), rgb_image.height());
+        println!(
+            "Test image size: {}x{}",
+            rgb_image.width(),
+            rgb_image.height()
+        );
 
-        let page = PageComponents::new()
-            .with_background(rgb_image)?;
+        let page = PageComponents::new().with_background(rgb_image)?;
 
         let params = PageEncodeParams {
             use_iw44: true,
@@ -678,8 +710,7 @@ fn test_full_page_creation_real_files() -> Result<()> {
         let bitimage = load_pbm_as_bitimage(pbm_path)?;
         println!("Image size: {}x{}", bitimage.width, bitimage.height);
 
-        let page = PageComponents::new()
-            .with_foreground(bitimage)?;
+        let page = PageComponents::new().with_foreground(bitimage)?;
 
         let params = PageEncodeParams {
             use_iw44: false,
