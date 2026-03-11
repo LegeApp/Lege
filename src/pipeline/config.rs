@@ -286,6 +286,7 @@ pub struct PipelineConfig {
     pub(crate) ocr_preserve_grayscale: bool,
     pub(crate) invert_input: bool,
     pub(crate) jbig2_symbol_mode: bool,
+    pub(crate) jbig2_halftone_image_regions: bool,
     pub(crate) max_retries: u32,
     pub(crate) retry_delay_ms: u64,
     pub(crate) max_parallel_pages: Option<usize>,
@@ -344,6 +345,7 @@ impl PipelineConfig {
             ocr_preserve_grayscale: false,
             invert_input: false,
             jbig2_symbol_mode: false,
+            jbig2_halftone_image_regions: false,
             max_retries: 3,
             retry_delay_ms: 1000,
             max_parallel_pages: Some(4),
@@ -542,6 +544,9 @@ impl PipelineConfig {
     pub fn jbig2_symbol_mode(&self) -> bool {
         self.jbig2_symbol_mode
     }
+    pub fn jbig2_halftone_image_regions(&self) -> bool {
+        self.jbig2_halftone_image_regions
+    }
     pub fn max_retries(&self) -> u32 {
         self.max_retries
     }
@@ -712,6 +717,9 @@ impl PipelineConfig {
     }
     pub fn set_jbig2_symbol_mode(&mut self, symbol_mode: bool) {
         self.jbig2_symbol_mode = symbol_mode;
+    }
+    pub fn set_jbig2_halftone_image_regions(&mut self, enabled: bool) {
+        self.jbig2_halftone_image_regions = enabled;
     }
     pub fn set_initial_single_pages(&mut self, n: usize) {
         self.initial_single_pages = n;
