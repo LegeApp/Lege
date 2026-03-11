@@ -25,6 +25,19 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Dev / large binary files
+*.pdf
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.weights
+*.npz
+*.npy
+model_weights/
+models/
+
 # .NET/VS
 bin/
 obj/
