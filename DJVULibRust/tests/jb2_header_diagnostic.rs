@@ -34,7 +34,8 @@ fn extract_sjbz_chunk(djvu_path: &str) -> Result<Vec<u8>, String> {
         ));
     }
 
-    let data = fs::read("sjbz_temp.jb2").map_err(|e| format!("Failed to read extracted JB2: {}", e))?;
+    let data =
+        fs::read("sjbz_temp.jb2").map_err(|e| format!("Failed to read extracted JB2: {}", e))?;
     let _ = fs::remove_file("sjbz_temp.jb2");
     Ok(data)
 }
@@ -71,10 +72,7 @@ fn test_compare_jb2_headers() {
         .expect("Failed to run cjb2");
 
     if !output.status.success() {
-        eprintln!(
-            "cjb2 failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        eprintln!("cjb2 failed: {}", String::from_utf8_lossy(&output.stderr));
         panic!("cjb2 failed to generate reference");
     }
 
@@ -142,7 +140,11 @@ fn test_compare_jb2_headers() {
     }
 
     let pixel_data = &pbm_data[pos..];
-    println!("Pixel data starts at byte {}, length {}", pos, pixel_data.len());
+    println!(
+        "Pixel data starts at byte {}, length {}",
+        pos,
+        pixel_data.len()
+    );
 
     // Convert P4 (packed bits) to BitImage
     let mut bit_image = BitImage::new(width, height).expect("Failed to create BitImage");
@@ -196,10 +198,10 @@ fn test_compare_jb2_headers() {
         djvu_file.extend_from_slice(&(width as u16).to_be_bytes()); // width (BE)
         djvu_file.extend_from_slice(&(height as u16).to_be_bytes()); // height (BE)
         djvu_file.push(24); // minor version
-        djvu_file.push(0);  // major version
+        djvu_file.push(0); // major version
         djvu_file.extend_from_slice(&300u16.to_le_bytes()); // dpi (LE!)
         djvu_file.push(22); // gamma * 10
-        djvu_file.push(1);  // flags
+        djvu_file.push(1); // flags
 
         // Sjbz chunk
         djvu_file.extend_from_slice(b"Sjbz");
@@ -228,17 +230,19 @@ fn test_compare_jb2_headers() {
         // Try to decode
         println!("\n=== Attempting ddjvu decode ===");
         let output = Command::new("ddjvu")
-            .args(["-format=pbm", "-page=1", test_rust_djvu, "/tmp/rust_decoded.pbm"])
+            .args([
+                "-format=pbm",
+                "-page=1",
+                test_rust_djvu,
+                "/tmp/rust_decoded.pbm",
+            ])
             .output()
             .expect("Failed to run ddjvu");
 
         if output.status.success() {
             println!("SUCCESS! ddjvu decoded the Rust-generated DjVu");
         } else {
-            println!(
-                "FAILED: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            println!("FAILED: {}", String::from_utf8_lossy(&output.stderr));
         }
     }
 
@@ -276,7 +280,13 @@ fn test_minimal_jb2_stream() {
     // Encode START_OF_DATA (record type 0)
     println!("Encoding record type 0 (START_OF_DATA)...");
     num_coder
-        .code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, START_OF_DATA)
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            START_OF_DATA,
+        )
         .expect("Failed to encode record type");
 
     // Encode width = 10
@@ -299,7 +309,13 @@ fn test_minimal_jb2_stream() {
     // Encode END_OF_DATA (record type 11)
     println!("Encoding record type 11 (END_OF_DATA)...");
     num_coder
-        .code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, END_OF_DATA)
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            END_OF_DATA,
+        )
         .expect("Failed to encode end record type");
 
     // Finish encoding
@@ -324,10 +340,10 @@ fn test_minimal_jb2_stream() {
     djvu_file.extend_from_slice(&10u16.to_be_bytes()); // width (BE)
     djvu_file.extend_from_slice(&10u16.to_be_bytes()); // height (BE)
     djvu_file.push(24); // minor version
-    djvu_file.push(0);  // major version
+    djvu_file.push(0); // major version
     djvu_file.extend_from_slice(&300u16.to_le_bytes()); // dpi (LE!)
     djvu_file.push(22); // gamma * 10
-    djvu_file.push(1);  // flags
+    djvu_file.push(1); // flags
 
     // Sjbz chunk
     djvu_file.extend_from_slice(b"Sjbz");
@@ -356,7 +372,12 @@ fn test_minimal_jb2_stream() {
     // Try ddjvu
     println!("\n=== ddjvu decode attempt ===");
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "-page=1", test_file, "/tmp/minimal_decoded.pbm"])
+        .args([
+            "-format=pbm",
+            "-page=1",
+            test_file,
+            "/tmp/minimal_decoded.pbm",
+        ])
         .output()
         .expect("Failed to run ddjvu");
 

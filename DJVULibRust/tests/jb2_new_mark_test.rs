@@ -29,10 +29,10 @@ fn create_djvu_from_jb2(jb2_data: &[u8], width: u16, height: u16) -> Vec<u8> {
     djvu_file.extend_from_slice(&width.to_be_bytes());
     djvu_file.extend_from_slice(&height.to_be_bytes());
     djvu_file.push(24); // minor
-    djvu_file.push(0);  // major
+    djvu_file.push(0); // major
     djvu_file.extend_from_slice(&300u16.to_le_bytes()); // dpi LE
     djvu_file.push(22); // gamma
-    djvu_file.push(1);  // flags
+    djvu_file.push(1); // flags
 
     // Sjbz chunk
     djvu_file.extend_from_slice(b"Sjbz");
@@ -120,13 +120,18 @@ fn test_new_mark_record_minimal() {
     // Try to decode
     println!("\n=== ddjvu decode attempt ===");
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "-page=1", test_file, "/tmp/new_mark_decoded.pbm"])
+        .args([
+            "-format=pbm",
+            "-page=1",
+            test_file,
+            "/tmp/new_mark_decoded.pbm",
+        ])
         .output()
         .expect("Failed to run ddjvu");
 
     if output.status.success() {
         println!("SUCCESS! NEW_MARK record decoded correctly");
-        
+
         // Verify decoded output
         let decoded = fs::read("/tmp/new_mark_decoded.pbm").expect("Failed to read decoded");
         println!("Decoded PBM size: {} bytes", decoded.len());
@@ -146,7 +151,7 @@ fn test_reference_with_cjb2() {
     // Create a 10x10 PBM with a 3x3 filled square at (1,1)
     let mut pbm_data = Vec::new();
     pbm_data.extend_from_slice(b"P4\n10 10\n");
-    
+
     // Row by row, MSB first
     // Row 0: all zeros
     pbm_data.extend_from_slice(&[0, 0]); // 10 bits = 2 bytes
@@ -167,7 +172,7 @@ fn test_reference_with_cjb2() {
     // For a 10 pixel row: bits 0-9, packed into 2 bytes
     // Byte 0 has pixels 0-7 (MSB=pixel 0), Byte 1 has pixels 8-9
     // For pixels at x=1,2,3: byte 0 bits 6,5,4 = 0b01110000 = 0x70
-    
+
     // Recreate properly
     let mut pbm_data = Vec::new();
     pbm_data.extend_from_slice(b"P4\n10 10\n");
@@ -207,10 +212,7 @@ fn test_reference_with_cjb2() {
     // Extract and show the Sjbz
     let djvu_bytes = fs::read(test_djvu).expect("Failed to read djvu");
     // Find Sjbz chunk
-    if let Some(pos) = djvu_bytes
-        .windows(4)
-        .position(|w| w == b"Sjbz")
-    {
+    if let Some(pos) = djvu_bytes.windows(4).position(|w| w == b"Sjbz") {
         let size_start = pos + 4;
         let size = u32::from_be_bytes([
             djvu_bytes[size_start],
@@ -220,7 +222,7 @@ fn test_reference_with_cjb2() {
         ]) as usize;
         let data_start = size_start + 4;
         let sjbz_data = &djvu_bytes[data_start..data_start + size];
-        
+
         println!("\nReference Sjbz ({} bytes):", size);
         println!("{}", hex_dump(sjbz_data, 64));
     }
@@ -231,7 +233,7 @@ fn test_reference_with_cjb2() {
 
 #[test]
 fn test_encode_single_new_mark_manually() {
-    use djvu_encoder::encode::jb2::num_coder::{NumCoder, BIG_POSITIVE};
+    use djvu_encoder::encode::jb2::num_coder::{BIG_POSITIVE, NumCoder};
     use djvu_encoder::encode::jb2::symbol_dict::BitImage;
     use djvu_encoder::encode::zc::ZEncoder;
 
@@ -268,18 +270,42 @@ fn test_encode_single_new_mark_manually() {
 
     // START_OF_DATA
     println!("Encoding START_OF_DATA...");
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, START_OF_DATA).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, page_width).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, page_height).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            START_OF_DATA,
+        )
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, page_width)
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, page_height)
+        .unwrap();
     zc.encode(false, &mut dist_refinement_flag).unwrap();
 
     // NEW_MARK record
     println!("Encoding NEW_MARK...");
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, NEW_MARK).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            NEW_MARK,
+        )
+        .unwrap();
 
     // Absolute size (3x3)
-    num_coder.code_num(&mut zc, &mut abs_size_x, 0, BIG_POSITIVE, 3).unwrap();
-    num_coder.code_num(&mut zc, &mut abs_size_y, 0, BIG_POSITIVE, 3).unwrap();
+    num_coder
+        .code_num(&mut zc, &mut abs_size_x, 0, BIG_POSITIVE, 3)
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut abs_size_y, 0, BIG_POSITIVE, 3)
+        .unwrap();
 
     // Encode bitmap directly (matching DjVuLibre's code_bitmap_directly)
     // 10-bit context template
@@ -324,13 +350,28 @@ fn test_encode_single_new_mark_manually() {
     let bottom = 1i32;
     let top = bottom + bm_height;
 
-    println!("Encoding location: left={}, bottom={}, top={}", left, bottom, top);
-    num_coder.code_num(&mut zc, &mut abs_loc_x, 1, page_width, left + 1).unwrap();
-    num_coder.code_num(&mut zc, &mut abs_loc_y, 1, page_height, top).unwrap();
+    println!(
+        "Encoding location: left={}, bottom={}, top={}",
+        left, bottom, top
+    );
+    num_coder
+        .code_num(&mut zc, &mut abs_loc_x, 1, page_width, left + 1)
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut abs_loc_y, 1, page_height, top)
+        .unwrap();
 
     // END_OF_DATA
     println!("Encoding END_OF_DATA...");
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, END_OF_DATA).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            END_OF_DATA,
+        )
+        .unwrap();
 
     let buffer = zc.finish().expect("Failed to finish encoder");
     println!("\nManual JB2 stream ({} bytes):", buffer.len());
@@ -350,7 +391,12 @@ fn test_encode_single_new_mark_manually() {
 
     println!("\n=== ddjvu decode attempt ===");
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "-page=1", test_file, "/tmp/manual_decoded.pbm"])
+        .args([
+            "-format=pbm",
+            "-page=1",
+            test_file,
+            "/tmp/manual_decoded.pbm",
+        ])
         .output()
         .expect("Failed to run ddjvu");
 

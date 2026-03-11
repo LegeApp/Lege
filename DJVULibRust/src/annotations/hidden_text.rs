@@ -148,7 +148,7 @@ impl HiddenText {
             ZoneKind::Page,
             BoundingBox {
                 x: 0,
-                y: 0,  // Bottom of page in DjVu coords
+                y: 0, // Bottom of page in DjVu coords
                 w: page_width,
                 h: page_height,
             },
@@ -159,11 +159,8 @@ impl HiddenText {
         for (text, x, y_top, w, h) in words {
             // Convert Y coordinate: djvu_y_bottom = page_height - (y_top + h)
             let djvu_y = page_height.saturating_sub(y_top.saturating_add(h));
-            
-            let word_zone = Zone::word(
-                text,
-                BoundingBox { x, y: djvu_y, w, h },
-            );
+
+            let word_zone = Zone::word(text, BoundingBox { x, y: djvu_y, w, h });
             root.children.push(word_zone);
         }
 
@@ -240,7 +237,7 @@ impl HiddenText {
 
         // Start with absolute coordinates
         let mut x = zone.bbox.x as i32;
-        let mut y = zone.bbox.y as i32;  // This is ymin (bottom edge in DjVu coords)
+        let mut y = zone.bbox.y as i32; // This is ymin (bottom edge in DjVu coords)
         let width = zone.bbox.w as i32;
         let height = zone.bbox.h as i32;
 
@@ -283,7 +280,7 @@ impl HiddenText {
         // Write text info:
         // - offText: Per DjVu3 spec, this field is "Not used. Must be 0."
         // - lenText: Number of characters in this zone (INT24)
-        write_i16(writer, 0)?;  // offText MUST be 0 per spec
+        write_i16(writer, 0)?; // offText MUST be 0 per spec
         write_u24(writer, zone.text_len as u32)?;
 
         // Write number of children (INT24)

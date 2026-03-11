@@ -10,7 +10,7 @@ use crate::jbig2structs::{
 };
 
 use crate::jbig2sym::{BitImage, Rect};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 // Define debug and trace macros at the crate root
 #[macro_export]
@@ -77,17 +77,13 @@ pub struct SymbolCandidate {
 /// * `image` - The input binary image to segment
 /// * `dpi` - Resolution in dots per inch (typically 300 for scanned documents)
 /// * `losslevel` - 0 for lossless, >0 to enable noise removal
-pub fn segment_symbols(
-    image: &BitImage,
-    dpi: i32,
-    losslevel: i32,
-) -> Result<Vec<SymbolCandidate>> {
+pub fn segment_symbols(image: &BitImage, dpi: i32, losslevel: i32) -> Result<Vec<SymbolCandidate>> {
     #[cfg(feature = "cc-analysis")]
     {
         // Use the new CC analysis pipeline from jbig2cc
         let cc_image = analyze_page(image, dpi, losslevel);
         let shapes = cc_image.extract_shapes();
-        
+
         let mut candidates = Vec::with_capacity(shapes.len());
         for (bitmap, bbox) in shapes {
             let rect = Rect {
@@ -133,6 +129,27 @@ impl SymbolInstance {
 pub struct PageData {
     pub image: BitImage,
     pub symbol_instances: Vec<SymbolInstance>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfSplitOutput {
+    pub global_segments: Option<Vec<u8>>,
+    pub page_streams: Vec<Vec<u8>>,
+}
+
+#[derive(Debug)]
+struct PlannedPage {
+    page_number: u32,
+    segments: Vec<Segment>,
+}
+
+#[derive(Debug)]
+struct PlannedDocument {
+    file_header: Option<FileHeader>,
+    global_segments: Vec<Segment>,
+    pages: Vec<PlannedPage>,
+    eof_segment: Option<Segment>,
+    next_segment_number: u32,
 }
 
 /// Mutable state for the encoder that can change during encoding.
@@ -341,10 +358,29 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     pub fn flush(&mut self) -> Result<Vec<u8>> {
-        // Log symbol statistics for debugging
+        let include_header = self.state.full_headers_remaining;
+        let plan = self.plan_document(include_header)?;
+        self.validate_plan(&plan)?;
+        let output = self.serialize_full_document(&plan)?;
+        self.state.full_headers_remaining = false;
+        self.next_segment_number = plan.next_segment_number;
+        Ok(output)
+    }
+
+    pub fn flush_pdf_split(&mut self) -> Result<PdfSplitOutput> {
+        let plan = self.plan_document(false)?;
+        self.validate_plan(&plan)?;
+        let (global_segments, page_streams) = self.serialize_pdf_split(&plan)?;
+        self.next_segment_number = plan.next_segment_number;
+        Ok(PdfSplitOutput {
+            global_segments,
+            page_streams,
+        })
+    }
+
+    fn plan_document(&mut self, include_header: bool) -> Result<PlannedDocument> {
         debug!("Symbol stats before encoding: {}", self.get_symbol_stats());
 
-        let mut current_segment_number = self.next_segment_number;
         if self.config.auto_thresh {
             if self.config.hash {
                 self.auto_threshold_using_hash()?;
@@ -353,55 +389,8 @@ impl<'a> Jbig2Encoder<'a> {
             }
         }
 
-        let mut output = Vec::new();
-
-        if self.state.full_headers_remaining {
-            let header = FileHeader {
-                organisation_type: true,
-                unknown_n_pages: false,
-                n_pages: self.pages.len() as u32,
-            };
-            output.extend(header.to_bytes());
-            // only write the header once
-            self.state.full_headers_remaining = false;
-        }
-
-        // Prune low-usage symbols if we have too many (frequency-based pruning)
-        if self.global_symbols.len() > 300 {
-            let mut symbol_indices_with_usage: Vec<(usize, usize)> = self
-                .symbol_usage
-                .iter()
-                .enumerate()
-                .map(|(i, &usage)| (i, usage))
-                .collect();
-
-            // Sort by usage count (descending), then by size (descending)
-            symbol_indices_with_usage.sort_by(|a, b| {
-                b.1.cmp(&a.1).then_with(|| {
-                    let size_a = self.global_symbols[a.0].count_ones();
-                    let size_b = self.global_symbols[b.0].count_ones();
-                    size_b.cmp(&size_a)
-                })
-            });
-
-            // Keep only the top 300 most used symbols
-            let kept_indices: HashSet<usize> = symbol_indices_with_usage
-                .into_iter()
-                .take(300)
-                .map(|(i, _)| i)
-                .collect();
-
-            // Remove pruned symbols from pages
-            for page in &mut self.pages {
-                page.symbol_instances
-                    .retain(|inst| kept_indices.contains(&inst.symbol_index));
-            }
-
-            debug!(
-                "Pruned symbols from {} to 300 based on usage frequency",
-                self.global_symbols.len()
-            );
-        }
+        self.prune_symbols_if_needed();
+        self.validate_symbol_instance_indices()?;
 
         let global_symbol_indices: Vec<usize> = self
             .global_symbols
@@ -427,7 +416,12 @@ impl<'a> Jbig2Encoder<'a> {
             })
             .collect();
 
-        // Encode Global Symbol Dictionary (if not empty)
+        self.validate_symbol_partition(&global_symbol_indices, &page_local_symbols)?;
+
+        let mut current_segment_number = self.next_segment_number;
+        let mut global_segments = Vec::new();
+
+        self.global_dict_segment_number = None;
         if !global_symbol_indices.is_empty() {
             let refs: Vec<&BitImage> = global_symbol_indices
                 .iter()
@@ -438,105 +432,100 @@ impl<'a> Jbig2Encoder<'a> {
                 number: current_segment_number,
                 seg_type: SegmentType::SymbolDictionary,
                 deferred_non_retain: false,
-                retain_flags: 0,          // Default retention
-                page_association_type: 2, // Global (all pages)
+                retain_flags: 0,
+                page_association_type: 2,
                 referred_to: Vec::new(),
-                page: None, // Global dictionary
+                page: None,
                 payload: global_dict_payload,
             };
-
-            global_dict_segment.write_into(&mut output)?;
             self.global_dict_segment_number = Some(global_dict_segment.number);
+            global_segments.push(global_dict_segment);
             current_segment_number += 1;
         }
 
+        let mut pages = Vec::with_capacity(self.pages.len());
         for (page_num, page) in self.pages.iter().enumerate() {
-            // 2. Page-information segment (segment #0)
+            let page_number = page_num as u32 + 1;
+            let mut page_segments = Vec::new();
+
             let page_info_payload = PageInfo {
                 width: page.image.width as u32,
                 height: page.image.height as u32,
-                default_pixel: false, // white background (safer default)
+                default_pixel: false,
                 xres: self.config.generic.dpi,
                 yres: self.config.generic.dpi,
                 ..Default::default()
             }
             .to_bytes();
 
-            Segment {
+            page_segments.push(Segment {
                 number: current_segment_number,
-                seg_type: SegmentType::PageInformation, // 0x30
+                seg_type: SegmentType::PageInformation,
                 deferred_non_retain: false,
                 retain_flags: 0,
-                page_association_type: 0, // explicit
+                page_association_type: 0,
                 referred_to: vec![],
-                page: Some(page_num as u32 + 1),
+                page: Some(page_number),
                 payload: page_info_payload,
-            }
-            .write_into(&mut output)?;
+            });
             current_segment_number += 1;
 
             if self.config.symbol_mode && !page.symbol_instances.is_empty() {
-                // SYMBOL MODE: Encode Local Symbol Dictionary and Text Region
                 let local_symbols = &page_local_symbols[page_num];
                 let mut referred_to_for_text_region = Vec::new();
+
                 if let Some(global_dict_seg_num) = self.global_dict_segment_number {
                     referred_to_for_text_region.push(global_dict_seg_num);
                 }
 
                 if !local_symbols.is_empty() {
-                    let local_dict_payload = {
-                        let refs: Vec<&BitImage> = local_symbols
-                            .iter()
-                            .map(|&i| &self.global_symbols[i])
-                            .collect();
-                        let num_global_symbols_for_local_dict = global_symbol_indices.len() as u32;
-                        encode_symbol_dict(&refs, &self.config, num_global_symbols_for_local_dict)?
-                    };
+                    let refs: Vec<&BitImage> = local_symbols
+                        .iter()
+                        .map(|&i| &self.global_symbols[i])
+                        .collect();
+                    let num_global_symbols_for_local_dict = global_symbol_indices.len() as u32;
+                    let local_dict_payload =
+                        encode_symbol_dict(&refs, &self.config, num_global_symbols_for_local_dict)?;
                     let local_dict_segment = Segment {
                         number: current_segment_number,
                         seg_type: SegmentType::SymbolDictionary,
                         deferred_non_retain: false,
                         retain_flags: 0,
-                        page_association_type: 0, // Explicit page association
+                        page_association_type: 0,
                         referred_to: Vec::new(),
-                        page: Some(page_num as u32 + 1),
+                        page: Some(page_number),
                         payload: local_dict_payload,
                     };
-
-                    local_dict_segment.write_into(&mut output)?;
-                    current_segment_number += 1;
                     referred_to_for_text_region.push(local_dict_segment.number);
+                    page_segments.push(local_dict_segment);
+                    current_segment_number += 1;
                 }
 
                 let region_payload = if self.config.refine {
                     Vec::new()
                 } else {
-                    // Convert Vec<BitImage> to Vec<&BitImage> and then to a slice
-                    let global_symbol_refs: Vec<&BitImage> = self.global_symbols.iter().collect();
+                    let symbol_refs: Vec<&BitImage> = self.global_symbols.iter().collect();
                     encode_text_region(
                         &page.symbol_instances,
                         &self.config,
-                        &global_symbol_refs,
+                        &symbol_refs,
                         &global_symbol_indices,
-                        &page_local_symbols[page_num],
+                        local_symbols,
                     )?
                 };
 
-                let text_region_segment = Segment {
+                page_segments.push(Segment {
                     number: current_segment_number,
                     seg_type: SegmentType::ImmediateTextRegion,
                     deferred_non_retain: false,
                     retain_flags: 0,
-                    page_association_type: 0, // Explicit page association
+                    page_association_type: 0,
                     referred_to: referred_to_for_text_region,
-                    page: Some(page_num as u32 + 1),
+                    page: Some(page_number),
                     payload: region_payload,
-                };
-                text_region_segment.write_into(&mut output)?;
+                });
                 current_segment_number += 1;
             } else {
-                // NON-SYMBOL MODE or NO SYMBOLS FOUND: Use generic region encoding
-                // Build generic region config
                 let mut gr_cfg = GenericRegionConfig::new(
                     page.image.width as u32,
                     page.image.height as u32,
@@ -548,56 +537,251 @@ impl<'a> Jbig2Encoder<'a> {
                 gr_cfg.validate().map_err(|e: &'static str| anyhow!(e))?;
 
                 let coder_data = Jbig2ArithCoder::encode_generic_payload_cfg(&page.image, &gr_cfg)?;
-
                 let params: GenericRegionParams = gr_cfg.clone().into();
-
                 let mut generic_region_payload = params.to_bytes();
                 generic_region_payload.extend_from_slice(&coder_data);
 
-                let generic_region_segment = Segment {
+                page_segments.push(Segment {
                     number: current_segment_number,
                     seg_type: SegmentType::ImmediateGenericRegion,
                     deferred_non_retain: false,
                     retain_flags: 0,
                     page_association_type: 0,
                     referred_to: Vec::new(),
-                    page: Some(page_num as u32 + 1),
+                    page: Some(page_number),
                     payload: generic_region_payload,
-                };
-                generic_region_segment.write_into(&mut output)?;
+                });
                 current_segment_number += 1;
             }
 
-            let end_page_segment = Segment {
+            page_segments.push(Segment {
                 number: current_segment_number,
                 seg_type: SegmentType::EndOfPage,
                 deferred_non_retain: false,
                 retain_flags: 0,
-                page_association_type: 0, // Explicit page association
+                page_association_type: 0,
                 referred_to: Vec::new(),
-                page: Some(page_num as u32 + 1),
+                page: Some(page_number),
                 payload: Vec::new(),
-            };
-            end_page_segment.write_into(&mut output)?;
+            });
             current_segment_number += 1;
+
+            pages.push(PlannedPage {
+                page_number,
+                segments: page_segments,
+            });
         }
 
-        // 4. End-of-file segment
-        Segment {
+        let eof_segment = Some(Segment {
             number: current_segment_number,
-            seg_type: SegmentType::EndOfFile, // 51 / 0x33
+            seg_type: SegmentType::EndOfFile,
             deferred_non_retain: false,
             retain_flags: 0,
-            page_association_type: 2, // “all pages”
+            page_association_type: 2,
             referred_to: vec![],
             page: None,
             payload: vec![],
-        }
-        .write_into(&mut output)?;
+        });
         current_segment_number += 1;
 
-        self.next_segment_number = current_segment_number;
+        Ok(PlannedDocument {
+            file_header: if include_header {
+                Some(FileHeader {
+                    organisation_type: true,
+                    unknown_n_pages: false,
+                    n_pages: self.pages.len() as u32,
+                })
+            } else {
+                None
+            },
+            global_segments,
+            pages,
+            eof_segment,
+            next_segment_number: current_segment_number,
+        })
+    }
+
+    fn validate_plan(&self, plan: &PlannedDocument) -> Result<()> {
+        let mut all_numbers = HashSet::new();
+        let mut global_numbers = HashSet::new();
+
+        for seg in &plan.global_segments {
+            if !all_numbers.insert(seg.number) {
+                anyhow::bail!("Duplicate segment number in plan: {}", seg.number);
+            }
+            global_numbers.insert(seg.number);
+        }
+
+        for page in &plan.pages {
+            for seg in &page.segments {
+                if !all_numbers.insert(seg.number) {
+                    anyhow::bail!("Duplicate segment number in plan: {}", seg.number);
+                }
+            }
+        }
+
+        if let Some(eof) = &plan.eof_segment {
+            if !all_numbers.insert(eof.number) {
+                anyhow::bail!("Duplicate segment number in plan: {}", eof.number);
+            }
+        }
+
+        for seg in &plan.global_segments {
+            for referred in &seg.referred_to {
+                if !all_numbers.contains(referred) {
+                    anyhow::bail!(
+                        "Global segment {} refers to missing segment {}",
+                        seg.number,
+                        referred
+                    );
+                }
+            }
+        }
+
+        for page in &plan.pages {
+            for seg in &page.segments {
+                for referred in &seg.referred_to {
+                    if !all_numbers.contains(referred) {
+                        anyhow::bail!(
+                            "Page {} segment {} refers to missing segment {}",
+                            page.page_number,
+                            seg.number,
+                            referred
+                        );
+                    }
+                    if global_numbers.contains(referred) && plan.global_segments.is_empty() {
+                        anyhow::bail!(
+                            "Page {} segment {} refers to global {} but no globals stream exists",
+                            page.page_number,
+                            seg.number,
+                            referred
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn serialize_full_document(&self, plan: &PlannedDocument) -> Result<Vec<u8>> {
+        let mut output = Vec::new();
+        if let Some(header) = &plan.file_header {
+            output.extend(header.to_bytes());
+        }
+        for seg in &plan.global_segments {
+            seg.write_into(&mut output)?;
+        }
+        for page in &plan.pages {
+            for seg in &page.segments {
+                seg.write_into(&mut output)?;
+            }
+        }
+        if let Some(eof) = &plan.eof_segment {
+            eof.write_into(&mut output)?;
+        }
         Ok(output)
+    }
+
+    fn serialize_pdf_split(
+        &self,
+        plan: &PlannedDocument,
+    ) -> Result<(Option<Vec<u8>>, Vec<Vec<u8>>)> {
+        let global_segments = if plan.global_segments.is_empty() {
+            None
+        } else {
+            let mut out = Vec::new();
+            for seg in &plan.global_segments {
+                seg.write_into(&mut out)?;
+            }
+            Some(out)
+        };
+
+        let mut page_streams = Vec::with_capacity(plan.pages.len());
+        for page in &plan.pages {
+            let mut page_out = Vec::new();
+            for seg in &page.segments {
+                seg.write_into(&mut page_out)?;
+            }
+            page_streams.push(page_out);
+        }
+
+        Ok((global_segments, page_streams))
+    }
+
+    fn prune_symbols_if_needed(&mut self) {
+        if self.global_symbols.len() <= 300 {
+            return;
+        }
+
+        let mut symbol_indices_with_usage: Vec<(usize, usize)> = self
+            .symbol_usage
+            .iter()
+            .enumerate()
+            .map(|(i, &usage)| (i, usage))
+            .collect();
+
+        symbol_indices_with_usage.sort_by(|a, b| {
+            b.1.cmp(&a.1).then_with(|| {
+                let size_a = self.global_symbols[a.0].count_ones();
+                let size_b = self.global_symbols[b.0].count_ones();
+                size_b.cmp(&size_a)
+            })
+        });
+
+        let kept_indices: HashSet<usize> = symbol_indices_with_usage
+            .into_iter()
+            .take(300)
+            .map(|(i, _)| i)
+            .collect();
+
+        for page in &mut self.pages {
+            page.symbol_instances
+                .retain(|inst| kept_indices.contains(&inst.symbol_index));
+        }
+
+        debug!(
+            "Pruned symbols from {} to 300 based on usage frequency",
+            self.global_symbols.len()
+        );
+    }
+
+    fn validate_symbol_instance_indices(&self) -> Result<()> {
+        for (page_num, page) in self.pages.iter().enumerate() {
+            for instance in &page.symbol_instances {
+                if instance.symbol_index >= self.global_symbols.len() {
+                    anyhow::bail!(
+                        "Page {} has symbol instance {} out of range after pruning (max {})",
+                        page_num + 1,
+                        instance.symbol_index,
+                        self.global_symbols.len().saturating_sub(1)
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_symbol_partition(
+        &self,
+        global_symbol_indices: &[usize],
+        page_local_symbols: &[Vec<usize>],
+    ) -> Result<()> {
+        let global_set: HashSet<usize> = global_symbol_indices.iter().copied().collect();
+        for (page_num, page) in self.pages.iter().enumerate() {
+            let local_set: HashSet<usize> = page_local_symbols[page_num].iter().copied().collect();
+            for inst in &page.symbol_instances {
+                let idx = inst.symbol_index;
+                if !global_set.contains(&idx) && !local_set.contains(&idx) {
+                    anyhow::bail!(
+                        "Page {} symbol {} was not resolved to global or local dictionary",
+                        page_num + 1,
+                        idx
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn auto_threshold(&mut self) -> Result<()> {
@@ -707,18 +891,31 @@ impl<'a> Jbig2Encoder<'a> {
         let symbol_refs: Vec<&BitImage> = self.global_symbols.iter().collect();
         let dict_data = encode_symbol_dict(&symbol_refs, &self.config, 0)?;
 
-        if self.state.pdf_mode {
-            return Ok(dict_data);
-        }
+        let dict_segment = Segment {
+            number: self.next_segment_number,
+            seg_type: SegmentType::SymbolDictionary,
+            deferred_non_retain: false,
+            retain_flags: 0,
+            page_association_type: if self.state.pdf_mode { 2 } else { 0 },
+            referred_to: Vec::new(),
+            page: if self.state.pdf_mode { None } else { Some(1) },
+            payload: dict_data,
+        };
+        self.next_segment_number += 1;
 
         let mut output = Vec::new();
+        if self.state.pdf_mode {
+            dict_segment.write_into(&mut output)?;
+            return Ok(output);
+        }
+
         let header = FileHeader {
             organisation_type: true,
             unknown_n_pages: false,
             n_pages: 1,
         };
         output.extend(header.to_bytes());
-        output.extend(dict_data);
+        dict_segment.write_into(&mut output)?;
 
         Ok(output)
     }
@@ -875,8 +1072,9 @@ pub fn encode_symbol_dict(
     // Create symbol dictionary parameters
     let mut params = SymbolDictParams {
         // Made params mutable
-        sd_template: 0,                       // Use standard template 0
-        at: [(0, 0), (0, 0), (0, 0), (0, 0)], // Default AT pixels
+        sd_template: 0, // Use standard template 0
+        // Match jbig2enc's template-0 adaptive pixels for symbol dictionaries.
+        at: [(3, -1), (-3, -1), (2, -2), (-2, -2)],
         exsyms: num_imported_symbols,         // Number of exported symbols
         newsyms: symbols.len() as u32,        // Number of new symbols
     };
@@ -893,19 +1091,6 @@ pub fn encode_symbol_dict(
     // Write the symbol dictionary parameters
     payload.extend(params.to_bytes());
 
-    // Encode the export flags using IAID arithmetic integer procedure
-    let k = (32 - num_export_syms.leading_zeros()).max(1) as u8;
-
-    // Run of exported symbols from the imported dictionary (length is 0)
-    let _ = coder.encode_int_with_ctx(0, k as i32, IntProc::Iaex);
-
-    // Run of exported symbols from the new symbols in this dict (length is all of them)
-    let _ = coder.encode_int_with_ctx(num_export_syms as i32, k as i32, IntProc::Iaex);
-
-    // No terminating IAID(0) as per JBIG2 specification §7.4.3.1.7
-
-    // No flush/align between export flags and symbol data - we need a continuous stream
-
     // 2. Group symbols by height using jbig2sym's utility function
     let height_classes = crate::jbig2sym::sort_symbols_for_dictionary(&symbols);
 
@@ -914,7 +1099,7 @@ pub fn encode_symbol_dict(
     // 4. Encode the height classes
     for symbols_in_class in &height_classes {
         let h = symbols_in_class[0].height; // All symbols in class have same height
-                                            // A. Encode Delta Height
+        // A. Encode Delta Height
         let delta_h = h as i32 - last_height as i32;
         let _ = coder.encode_integer(crate::jbig2arith::IntProc::Iadh, delta_h);
         last_height = h;
@@ -969,14 +1154,17 @@ pub fn encode_symbol_dict(
                 symbol.width,
                 symbol.height,
                 params.sd_template,
-                &[(-1, -1), (3, -1), (-3, -1), (-2, -2)],
+                &[(3, -1), (-3, -1), (2, -2), (-2, -2)],
             )?;
         }
 
-        // Encode OOB (Out-Of-Band) value for IADW after all symbols in this height class
-        // This signals to the decoder that there are no more symbols in this height class
-        let _ = coder.encode_oob(crate::jbig2arith::IntProc::Iadw)?;
+        // OOB marks the end of this height class.
+        let _ = coder.encode_oob(IntProc::Iadw);
     }
+
+    // Export flags come after the symbol bitmap data (run-length form).
+    let _ = coder.encode_integer(IntProc::Iaex, 0);
+    let _ = coder.encode_integer(IntProc::Iaex, num_export_syms as i32);
 
     // 5. flush the coder ONCE
     coder.flush(true);
@@ -1085,7 +1273,7 @@ pub fn encode_refine(
     for inst in instances {
         // IAID symbol ID
         let sym_id = inst.symbol_id;
-        let _ = coder.encode_int_with_ctx(sym_id as i32, 16, IntProc::Iads);
+        let _ = coder.encode_iaid(sym_id, 16);
 
         // Refinement deltas
         let _ = coder.encode_integer(IntProc::Iardx, inst.dx);
@@ -1111,10 +1299,10 @@ pub fn encode_refine(
                             continue;
                         }
 
-                        // the reference pixel is from the symbol dict image
-                        let ref_bit = sym.get(x, y) as u8;
-                        // the predicted/context pixel is from region_buf
-                        let pred_bit = region_buf.get(rx, ry) as u8;
+                        // Bounds already verified above (rx < width, ry < height);
+                        // use direct indexing to bypass redundant bounds checks.
+                        let ref_bit = sym.get_pixel_unchecked(x as usize, y as usize) as u8;
+                        let pred_bit = region_buf.get_pixel_unchecked(rx as usize, ry as usize) as u8;
 
                         // Context = combine ref_bit, pred_bit, template (here simple sum)
                         let ctx = ((ref_bit << 1) | pred_bit) as usize;
@@ -1147,7 +1335,7 @@ pub fn encode_refine(
 /// and IADW/IADH delta encoding for more efficient compression.
 pub fn encode_text_region(
     instances: &[SymbolInstance],
-    _config: &Jbig2Config,
+    config: &Jbig2Config,
     all_known_symbols: &[&BitImage],
     global_dict_indices: &[usize],
     local_dict_indices: &[usize],
@@ -1239,45 +1427,40 @@ pub fn encode_text_region(
         height: region_height,
         x: min_x,
         y: min_y,
-        ds_offset: 0,
-        refine: false,
-        log_strips: 0,
-        ref_corner: 0,
-        transposed: false,
-        comb_op: 0,
-        refine_template: 0,
+        ds_offset: config.text_ds_offset,
+        refine: config.text_refine,
+        log_strips: config.text_log_strips,
+        ref_corner: config.text_ref_corner,
+        transposed: config.text_transposed,
+        comb_op: config.text_comb_op,
+        refine_template: config.text_refine_template,
     };
     if cfg!(debug_assertions) {
         trace!("encode_text_region: TextRegionParams details: {:?}", params);
     }
-    // Write Text Region parameters (width/height/x/y + SBRFLAGS [+ SBRTEMPLATE if needed])
-    // Note: No extra leading flags byte should be written here; SBRFLAGS encodes all required bits.
+    // Write text-region header and number of instances (SBNUMINSTANCES).
     payload.extend(params.to_bytes());
+    payload.extend_from_slice(&(instances.len() as u32).to_be_bytes());
 
-    // Encode the number of instances using IAID
-    let num_instances = instances.len() as u32;
-    let _ = coder.encode_int_with_ctx(num_instances as i32, 16, IntProc::Iaai); // Using 16 bits for instance count
-
-    // Initialize variables for text region encoding as per JBIG2 spec (single strip model)
-    let mut current_t_strip = 0; // T-coordinate of the current strip, initialized to 0 (spec 6.4.5.1)
-    let mut last_s_coord = 0; // Last S-coordinate for delta encoding
-    let mut is_first_instance_in_strip = true;
-
-    // These are from the original code and needed for symbol ID encoding
+    // Number of bits used by IAID symbol coding.
     let num_total_dict_symbols = (global_dict_indices.len() + local_dict_indices.len()) as u32;
     let symbol_id_bits = log2up(num_total_dict_symbols.max(1)).max(1);
 
-    for instance in instances.iter() {
-        // Iterate through instances
+    #[derive(Clone, Copy)]
+    struct EncodedInstance {
+        strip_base: i32,
+        x: i32,
+        t_offset: i32,
+        symbol_id: u32,
+        symbol_width: i32,
+    }
+
+    let strip_width = 1i32 << params.log_strips.min(3);
+    let mut encoded_instances = Vec::with_capacity(instances.len());
+
+    for instance in instances {
         let sym_idx_in_all_known_list = instance.symbol_index();
         let symbol_props = &all_known_symbols[sym_idx_in_all_known_list];
-
-        // Ensure instance_abs_pos has correct width and height
-        let mut instance_abs_pos = instance.position();
-        instance_abs_pos.width = symbol_props.width as u32;
-        instance_abs_pos.height = symbol_props.height as u32;
-
-        // Determine the symbol ID to encode (logic from original, confirmed correct by plan)
         let symbol_id_to_encode = if let Some(pos_global) = global_dict_indices
             .iter()
             .position(|&idx| idx == sym_idx_in_all_known_list)
@@ -1295,44 +1478,61 @@ pub fn encode_text_region(
             );
         };
 
-        debug!(
-            "encode_text_region: sym_idx={}, id_to_encode={}, abs_pos={:?}, current_t_strip={}, last_s_coord={}",
-            instance.symbol_index(), symbol_id_to_encode, instance_abs_pos, current_t_strip, last_s_coord
-        );
+        // Encode using the symbol's bottom edge in region-relative coordinates (jbig2enc parity).
+        let abs = instance.position();
+        let rel_x = abs.x as i32 - min_x as i32;
+        let rel_bottom_y = (abs.y + symbol_props.height as u32 - 1) as i32 - min_y as i32;
+        let strip_base = (rel_bottom_y / strip_width) * strip_width;
+        let t_offset = rel_bottom_y - strip_base;
 
-        // Encode T-coordinate for the strip (IADT) - only for the first instance in a new strip
-        // Assuming a single strip for now as per plan.
-        if is_first_instance_in_strip {
-            let delta_t = instance_abs_pos.y as i32 - current_t_strip; // Initial current_t_strip is 0
-            let _ = coder.encode_integer(IntProc::Iadt, delta_t);
-            current_t_strip += delta_t; // current_t_strip is now the T-coordinate of this strip (TCUR)
-        }
-
-        // Encode T-offset (CURT) for this instance relative to the strip's T-coordinate (IAIT)
-        let t_offset = instance_abs_pos.y as i32 - current_t_strip;
-        let _ = coder.encode_integer(IntProc::Iait, t_offset);
-
-        // Encode S-coordinate
-        if is_first_instance_in_strip {
-            // First S coordinate in the strip is encoded with IAFS (absolute value)
-            let _ = coder.encode_integer(IntProc::Iafs, instance_abs_pos.x as i32);
-            is_first_instance_in_strip = false; // Subsequent instances in this strip will use IADS
-        } else {
-            // Subsequent S coordinates are delta-encoded with IADS
-            let delta_s = instance_abs_pos.x as i32 - last_s_coord;
-            let _ = coder.encode_integer(IntProc::Iads, delta_s);
-        }
-
-        // Always update last_s_coord for the next delta calculation
-        last_s_coord = instance_abs_pos.x as i32;
-
-        // Encode the Symbol ID itself (IAID)
-        let _ = coder.encode_int_with_ctx(
-            symbol_id_to_encode as i32,
-            symbol_id_bits as i32,
-            IntProc::Iads,
-        );
+        encoded_instances.push(EncodedInstance {
+            strip_base,
+            x: rel_x,
+            t_offset,
+            symbol_id: symbol_id_to_encode,
+            symbol_width: symbol_props.width as i32,
+        });
     }
+
+    // Sort strip-wise (top to bottom), then left to right inside each strip.
+    encoded_instances.sort_by_key(|e| (e.strip_base, e.x));
+
+    let _ = coder.encode_integer(IntProc::Iadt, 0);
+    let mut strip_t = 0i32;
+    let mut first_s = 0i32;
+    let mut idx = 0usize;
+    while idx < encoded_instances.len() {
+        let current_strip = encoded_instances[idx].strip_base;
+        let delta_t = current_strip - strip_t;
+        let _ = coder.encode_integer(IntProc::Iadt, delta_t / strip_width);
+        strip_t = current_strip;
+
+        let mut first_symbol_in_strip = true;
+        let mut current_s = 0i32;
+        while idx < encoded_instances.len() && encoded_instances[idx].strip_base == current_strip {
+            let item = encoded_instances[idx];
+            if first_symbol_in_strip {
+                let delta_fs = item.x - first_s;
+                let _ = coder.encode_integer(IntProc::Iafs, delta_fs);
+                first_s += delta_fs;
+                current_s = first_s;
+                first_symbol_in_strip = false;
+            } else {
+                let delta_s = item.x - current_s;
+                let _ = coder.encode_integer(IntProc::Iads, delta_s);
+                current_s += delta_s;
+            }
+
+            if strip_width > 1 {
+                let _ = coder.encode_integer(IntProc::Iait, item.t_offset);
+            }
+            let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            current_s += item.symbol_width - 1;
+            idx += 1;
+        }
+        let _ = coder.encode_oob(IntProc::Iads);
+    }
+
     coder.flush(true);
     payload.extend(coder.as_bytes());
 
@@ -1492,15 +1692,18 @@ pub fn encode_page_with_symbol_dictionary(
         let cc_image = analyze_page(image, dpi, losslevel);
         let shapes = cc_image.extract_shapes();
         // Convert to (Rect, BitImage) format
-        shapes.into_iter().map(|(bitmap, bbox)| {
-            let rect = Rect {
-                x: bbox.xmin as u32,
-                y: bbox.ymin as u32,
-                width: bbox.width() as u32,
-                height: bbox.height() as u32,
-            };
-            (rect, bitmap)
-        }).collect::<Vec<_>>()
+        shapes
+            .into_iter()
+            .map(|(bitmap, bbox)| {
+                let rect = Rect {
+                    x: bbox.xmin as u32,
+                    y: bbox.ymin as u32,
+                    width: bbox.width() as u32,
+                    height: bbox.height() as u32,
+                };
+                (rect, bitmap)
+            })
+            .collect::<Vec<_>>()
     };
     #[cfg(not(feature = "cc-analysis"))]
     let extracted_symbols: Vec<(Rect, BitImage)> = Vec::new();

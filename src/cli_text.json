@@ -20,7 +20,7 @@
     "title": "Welcome to Lege PDF",
     "welcome": "Optimal encoding of book scans for pleasant reading on e-ink readers",
     "subtitle": "",
-    "main_title": "=== Lege PDF Processing ===",
+    "main_title": "Welcome to Lege PDF - ",
     "file_prompt": "Enter PDF file path with optional page range (e.g., book.pdf 1-10):"
   },
   "main": {

@@ -1,14 +1,11 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use env_logger::Builder;
-use env_logger::Env;
-use jbig2enc_rust::jbig2enc::{encode_generic_region, Jbig2Encoder};
-use jbig2enc_rust::jbig2pdf;
-use jbig2enc_rust::jbig2pdf::{Jbig2Input, Jbig2Roi};
+use jbig2enc_rust::jbig2enc::{Jbig2Encoder, encode_generic_region};
 use jbig2enc_rust::jbig2structs::Jbig2Config;
 use jbig2enc_rust::jbig2sym::array_to_bitimage;
-use jbig2enc_rust::{encode_rois, Jbig2Context};
 use log::info;
+use env_logger::Builder;
+use env_logger::Env;
 use log::LevelFilter;
 use ndarray::Array2;
 use std::fs::File;
@@ -55,7 +52,7 @@ fn init_logging(args: &Args) -> Result<()> {
         // In release builds, default to info level
         "info"
     };
-
+    
     let mut builder = Builder::from_env(Env::new().default_filter_or(default_log_level));
 
     // Set appropriate log levels for our crates
@@ -97,10 +94,8 @@ fn init_logging(args: &Args) -> Result<()> {
     }
 
     builder.init();
-    info!(
-        "Logging initialized with console={}, log_dir={:?}, log_file={:?}",
-        args.console, args.log_dir, args.log_file
-    );
+    info!("Logging initialized with console={}, log_dir={:?}, log_file={:?}",
+          args.console, args.log_dir, args.log_file);
     Ok(())
 }
 
@@ -109,13 +104,13 @@ fn main() -> Result<()> {
 
     // Set environment variables for logging configuration
     if args.console {
-        std::env::set_var("RUST_LOG_CONSOLE", "1");
+        unsafe { std::env::set_var("RUST_LOG_CONSOLE", "1") };
     }
     if let Some(dir) = &args.log_dir {
-        std::env::set_var("JBIG2_LOG_DIR", dir);
+        unsafe { std::env::set_var("JBIG2_LOG_DIR", dir) };
     }
     if let Some(file) = &args.log_file {
-        std::env::set_var("JBIG2_LOG_FILE", file);
+        unsafe { std::env::set_var("JBIG2_LOG_FILE", file) };
     }
 
     // Initialize logging
@@ -162,11 +157,9 @@ fn main() -> Result<()> {
         ..Jbig2Config::default()
     };
     println!("[DEBUG] Jbig2Config.mmr = {}", config.generic.mmr);
-
-    info!(
-        "Using encoder config: symbol_mode={}, want_full_headers={}",
-        config.symbol_mode, config.want_full_headers
-    );
+    
+    info!("Using encoder config: symbol_mode={}, want_full_headers={}",
+          config.symbol_mode, config.want_full_headers);
 
     // 4. Initialize and use the Jbig2Encoder
     let encoded_data = if args.pdf_mode {
@@ -175,40 +168,21 @@ fn main() -> Result<()> {
         info!("Finalizing JBIG2 encoding...");
         encoder.flush()?
     } else {
-        info!("Standalone mode: Using Jbig2Encoder to produce full JBIG2 file.");
-        let mut encoder = Jbig2Encoder::new(&config);
-        encoder.add_page(&image_array)?;
-        encoder.flush()?
+        info!("Standalone mode: Using encode_generic_region to produce full JBIG2 file.");
+        let bit_image = array_to_bitimage(&image_array);
+        encode_generic_region(&bit_image, &config)?
     };
 
     // 5. Write the output file
     if args.pdf_mode {
-        let output_path = args.output.replace(".jb2", ".pdf");
-        info!("PDF Mode: Creating PDF file at {}", output_path);
-
-        let jbig2_roi = Jbig2Roi {
-            stream: encoded_data,
-            width: width as u32,
-            height: height as u32,
-            xres: 300,
-            yres: 300,
-            pdf_x: 0.0,
-            pdf_y: 0.0,
-            pdf_width: width as f32,
-            pdf_height: height as f32,
-            page_index: 0,
-        };
-
-        let jbig2_input = Jbig2Input::from_memory(None, vec![jbig2_roi]);
-        let page_dims = vec![(width as f32, height as f32)];
-
-        jbig2pdf::create_jbig2_pdf(jbig2_input, &output_path, &page_dims)?;
-        info!("Successfully created PDF with JBIG2 fragment.");
-    } else {
-        let mut file = File::create(&args.output)?;
-        file.write_all(&encoded_data)?;
-        info!("Successfully wrote full JBIG2 file to {}", args.output);
+        return Err(anyhow!(
+            "PDF mode is not supported by src/bin/tester.rs. Use halftone-tester for PDF validation."
+        ));
     }
+
+    let mut file = File::create(&args.output)?;
+    file.write_all(&encoded_data)?;
+    info!("Successfully wrote full JBIG2 file to {}", args.output);
 
     info!("Encoded data written successfully.");
     Ok(())

@@ -51,7 +51,6 @@ pub fn save_debug_pbm(image: &BitImage, filename: &str) -> std::io::Result<()> {
 // (PDF helpers removed - this crate no longer creates PDFs directly.)
 
 pub mod jbig2wrapper {
-    
 
     pub fn push_file_header(out: &mut Vec<u8>) {
         out.extend_from_slice(&[0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A]);

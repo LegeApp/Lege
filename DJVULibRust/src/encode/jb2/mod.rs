@@ -21,6 +21,6 @@ pub mod error;
 pub mod num_coder;
 pub mod symbol_dict;
 
+pub use cc_image::{BBox, CC, CCImage, Run, analyze_page, shapes_to_encoder_format};
 pub use encoder::JB2Encoder;
-pub use cc_image::{analyze_page, shapes_to_encoder_format, BBox, CCImage, CC, Run};
-pub use symbol_dict::{BitImage, Rect, Comparator, SharedDict};
+pub use symbol_dict::{BitImage, Comparator, Rect, SharedDict};

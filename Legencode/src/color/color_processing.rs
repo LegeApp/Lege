@@ -502,7 +502,7 @@ impl HeavyBinarizationProcessor {
         // - Windows: DirectML
         // - macOS: CoreML
         // - Linux/other: WebGPU if available via build feature, else CPU
-        let session = {
+        let mut session = {
             #[cfg(target_os = "windows")]
             {
                 if let Ok(dml_builder) = builder

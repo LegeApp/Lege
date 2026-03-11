@@ -23,33 +23,30 @@ use std::path::{Path, PathBuf};
 /// ```
 pub fn parse_file_path(s: &str) -> PathBuf {
     let s = s.trim();
-    
+
     // Handle file:// URLs
     if s.starts_with("file://") {
         let path_part = &s[7..]; // Skip "file://"
-        
+
         // Remove "localhost" if present
         let path_part = if path_part.starts_with("localhost/") {
             &path_part[9..] // Skip "localhost"
         } else {
             path_part
         };
-        
+
         // On Windows, handle file:///C:/path format
         #[cfg(windows)]
         {
             if path_part.starts_with('/') && path_part.len() > 2 {
                 // Check for /C:/ pattern
                 let bytes = path_part.as_bytes();
-                if bytes.len() > 3 
-                    && bytes[1].is_ascii_alphabetic() 
-                    && bytes[2] == b':' 
-                {
+                if bytes.len() > 3 && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
                     return PathBuf::from(&path_part[1..]); // Skip leading /
                 }
             }
         }
-        
+
         PathBuf::from(path_part)
     } else {
         // Plain file path
@@ -70,7 +67,7 @@ pub fn parse_file_path(s: &str) -> PathBuf {
 /// ```
 pub fn path_to_file_url(path: &Path) -> String {
     let path_str = path.to_string_lossy();
-    
+
     #[cfg(windows)]
     {
         // Convert backslashes to forward slashes
@@ -81,7 +78,7 @@ pub fn path_to_file_url(path: &Path) -> String {
         }
         format!("file://{}", normalized)
     }
-    
+
     #[cfg(not(windows))]
     {
         if path_str.starts_with('/') {

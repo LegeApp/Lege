@@ -29,10 +29,10 @@ fn create_djvu_from_jb2(jb2_data: &[u8], width: u16, height: u16) -> Vec<u8> {
     djvu_file.extend_from_slice(&width.to_be_bytes());
     djvu_file.extend_from_slice(&height.to_be_bytes());
     djvu_file.push(24); // minor
-    djvu_file.push(0);  // major
+    djvu_file.push(0); // major
     djvu_file.extend_from_slice(&300u16.to_le_bytes()); // dpi LE
     djvu_file.push(22); // gamma
-    djvu_file.push(1);  // flags
+    djvu_file.push(1); // flags
 
     // Sjbz chunk
     djvu_file.extend_from_slice(b"Sjbz");
@@ -113,7 +113,12 @@ fn test_two_symbols_same_row() {
 
     println!("\n=== ddjvu decode attempt ===");
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "-page=1", test_file, "/tmp/two_symbols_decoded.pbm"])
+        .args([
+            "-format=pbm",
+            "-page=1",
+            test_file,
+            "/tmp/two_symbols_decoded.pbm",
+        ])
         .output()
         .expect("Failed to run ddjvu");
 
@@ -194,7 +199,12 @@ fn test_two_symbols_different_rows() {
 
     println!("\n=== ddjvu decode attempt ===");
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "-page=1", test_file, "/tmp/two_symbols_diff_decoded.pbm"])
+        .args([
+            "-format=pbm",
+            "-page=1",
+            test_file,
+            "/tmp/two_symbols_diff_decoded.pbm",
+        ])
         .output()
         .expect("Failed to run ddjvu");
 

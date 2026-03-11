@@ -1,6 +1,6 @@
-use super::zigzag::ZIGZAG_LOC;
 use super::masking;
 use super::transform::Encode;
+use super::zigzag::ZIGZAG_LOC;
 use crate::image::image_formats::Bitmap;
 
 /// Replaces `IW44Image::Block`, storing coefficients for a 32x32 image block.
@@ -219,7 +219,7 @@ impl CoeffMap {
                 let mut liftblock = [0i16; 1024];
 
                 Self::copy_block_data(&mut liftblock, &data16, map.bw, block_x, block_y);
-                
+
                 map.blocks[block_idx].read_liftblock(&liftblock);
             }
         }

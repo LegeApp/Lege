@@ -71,8 +71,16 @@ impl<W: Write> BsEncoder<W> {
             for k in 0..len {
                 let ia = (a + k) % len;
                 let ib = (b + k) % len;
-                let va = if ia == len - 1 { -1i32 } else { block[ia] as i32 };
-                let vb = if ib == len - 1 { -1i32 } else { block[ib] as i32 };
+                let va = if ia == len - 1 {
+                    -1i32
+                } else {
+                    block[ia] as i32
+                };
+                let vb = if ib == len - 1 {
+                    -1i32
+                } else {
+                    block[ib] as i32
+                };
                 if va != vb {
                     return va.cmp(&vb);
                 }

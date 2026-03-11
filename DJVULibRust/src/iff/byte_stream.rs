@@ -4,7 +4,7 @@
 //! This provides big-endian byte order operations needed for DjVu format.
 
 use crate::utils::error::{DjvuError, Result};
-use bytemuck::{cast_slice, Pod, Zeroable};
+use bytemuck::{Pod, Zeroable, cast_slice};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Write};
 

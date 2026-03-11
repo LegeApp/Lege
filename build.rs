@@ -1,5 +1,7 @@
 use std::env;
 use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     // Get external version from the file, with fallback to environment or default

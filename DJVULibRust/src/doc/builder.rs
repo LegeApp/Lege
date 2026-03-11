@@ -28,13 +28,13 @@
 //! std::fs::write("output.djvu", djvu_bytes)?;
 //! ```
 
+use crate::annotations::{Annotations, hidden_text::HiddenText};
 use crate::doc::encoder::DocumentEncoder;
 use crate::doc::page_collection::PageCollection;
 use crate::doc::page_encoder::PageEncodeParams;
 use crate::doc::page_encoder::{EncodedPage, PageComponents, Rect};
 use crate::encode::symbol_dict::BitImage;
 use crate::image::image_formats::{Bitmap, Pixmap};
-use crate::annotations::{Annotations, hidden_text::HiddenText};
 use crate::{DjvuError, Result};
 use std::sync::Arc;
 
@@ -286,8 +286,8 @@ impl PageBuilder {
         h: u32,
         comment: impl Into<String>,
     ) -> Self {
-        use crate::annotations::{Hyperlink, AnnotationShape};
-        
+        use crate::annotations::{AnnotationShape, Hyperlink};
+
         let mut annotations = self.annotations.take().unwrap_or_default();
         annotations.hyperlinks.push(Hyperlink {
             shape: AnnotationShape::Rect { x, y, w, h },
@@ -524,13 +524,8 @@ impl DjvuDocument {
         let page_num = page.page_number();
         let components = page.to_components()?;
 
-        let encoded = EncodedPage::from_components(
-            page_num,
-            components,
-            &self.params,
-            self.dpi,
-            self.gamma,
-        )?;
+        let encoded =
+            EncodedPage::from_components(page_num, components, &self.params, self.dpi, self.gamma)?;
 
         self.collection.insert_page(page_num, encoded)
     }
@@ -547,7 +542,7 @@ impl DjvuDocument {
 
         let pages = self
             .collection
-            .collect_all()
+            .take_all()
             .ok_or_else(|| DjvuError::InvalidOperation("Failed to collect pages".to_string()))?;
 
         // Use internal encoder to assemble the document

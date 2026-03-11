@@ -101,7 +101,9 @@ mod tests {
         let bg = Pixmap::from_pixel(1, 1, white);
 
         let doc = DjvuBuilder::new(2).with_dpi(300).build();
-        let page0 = PageBuilder::new(0, 1, 1).with_background(bg.clone())?.build()?;
+        let page0 = PageBuilder::new(0, 1, 1)
+            .with_background(bg.clone())?
+            .build()?;
         let page1 = PageBuilder::new(1, 1, 1).with_background(bg)?.build()?;
 
         doc.add_page(page0)?;
@@ -118,9 +120,9 @@ mod tests {
         cursor.read_exact(&mut id)?;
         assert_eq!(&id, b"DIRM");
         let dirm_size = cursor.read_u32::<BigEndian>()? as usize;
-    let dirm_data_start = cursor.position() as usize;
-    let dirm_data_end = dirm_data_start + dirm_size;
-    let dirm_pad = dirm_size % 2;
+        let dirm_data_start = cursor.position() as usize;
+        let dirm_data_end = dirm_data_start + dirm_size;
+        let dirm_pad = dirm_size % 2;
 
         // Read DIRM offsets (bundled header)
         let dirm_data = &djvu_bytes[dirm_data_start..dirm_data_end];
@@ -151,7 +153,10 @@ mod tests {
 
         // Offsets are relative to the start of "DJVM" (position 8)
         let expected_offset = first_page_pos - 8;
-        assert_eq!(first_offset, expected_offset, "DIRM offset should match page position");
+        assert_eq!(
+            first_offset, expected_offset,
+            "DIRM offset should match page position"
+        );
 
         Ok(())
     }
