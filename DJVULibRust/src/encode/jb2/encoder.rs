@@ -4,7 +4,7 @@
 //! producing a single Sjbz chunk with arithmetically encoded records.
 
 use crate::encode::jb2::error::Jb2Error;
-use crate::encode::jb2::num_coder::{NumCoder, NumContext, BIG_POSITIVE};
+use crate::encode::jb2::num_coder::{BIG_POSITIVE, NumCoder, NumContext};
 use crate::encode::jb2::symbol_dict::BitImage;
 use crate::encode::zc::ZEncoder;
 use std::io::Write;
@@ -57,11 +57,11 @@ pub struct JB2Encoder<W: Write> {
     rel_size_x: NumContext,
     rel_size_y: NumContext,
     // Relative location contexts (for NEW_MARK, MATCHED_REFINE, MATCHED_COPY)
-    offset_type_dist: u8,           // Bit context: new row vs same row
-    rel_loc_x_last: NumContext,     // X offset for new row
-    rel_loc_y_last: NumContext,     // Y offset for new row
-    rel_loc_x_current: NumContext,  // X offset for same row
-    rel_loc_y_current: NumContext,  // Y offset for same row
+    offset_type_dist: u8,          // Bit context: new row vs same row
+    rel_loc_x_last: NumContext,    // X offset for new row
+    rel_loc_y_last: NumContext,    // Y offset for new row
+    rel_loc_x_current: NumContext, // X offset for same row
+    rel_loc_y_current: NumContext, // Y offset for same row
     // Relative location state tracking
     last_left: i32,
     last_right: i32,
@@ -257,10 +257,7 @@ impl<W: Write> JB2Encoder<W> {
     }
 
     /// Encode start of image record (record type 0)
-    fn encode_start_of_image(
-        &mut self,
-        zc: &mut ZEncoder<Vec<u8>>,
-    ) -> Result<(), Jb2Error> {
+    fn encode_start_of_image(&mut self, zc: &mut ZEncoder<Vec<u8>>) -> Result<(), Jb2Error> {
         // Encode record type
         self.num_coder.code_num(
             zc,
@@ -355,22 +352,14 @@ impl<W: Write> JB2Encoder<W> {
         )?;
         // For NON_MARK_DATA, top = bottom + rows - 1 + 1 (adjusted for 1-based)
         let top = abs_y + bitmap.height as i32;
-        self.num_coder.code_num(
-            zc,
-            &mut self.abs_loc_y,
-            1,
-            self.image_height as i32,
-            top,
-        )?;
+        self.num_coder
+            .code_num(zc, &mut self.abs_loc_y, 1, self.image_height as i32, top)?;
 
         Ok(())
     }
 
     /// Encode end of data record (record type 11)
-    fn encode_end_of_data(
-        &mut self,
-        zc: &mut ZEncoder<Vec<u8>>,
-    ) -> Result<(), Jb2Error> {
+    fn encode_end_of_data(&mut self, zc: &mut ZEncoder<Vec<u8>>) -> Result<(), Jb2Error> {
         // Encode record type only
         self.num_coder.code_num(
             zc,
@@ -487,10 +476,7 @@ impl<W: Write> JB2Encoder<W> {
     }
 
     /// Encode start of dictionary record (width=0, height=0 for dictionaries)
-    fn encode_start_of_dict(
-        &mut self,
-        zc: &mut ZEncoder<Vec<u8>>,
-    ) -> Result<(), Jb2Error> {
+    fn encode_start_of_dict(&mut self, zc: &mut ZEncoder<Vec<u8>>) -> Result<(), Jb2Error> {
         // Encode record type
         self.num_coder.code_num(
             zc,
@@ -501,20 +487,10 @@ impl<W: Write> JB2Encoder<W> {
         )?;
 
         // Dictionary has 0x0 dimensions
-        self.num_coder.code_num(
-            zc,
-            &mut self.image_size_dist,
-            0,
-            BIG_POSITIVE,
-            0,
-        )?;
-        self.num_coder.code_num(
-            zc,
-            &mut self.image_size_dist,
-            0,
-            BIG_POSITIVE,
-            0,
-        )?;
+        self.num_coder
+            .code_num(zc, &mut self.image_size_dist, 0, BIG_POSITIVE, 0)?;
+        self.num_coder
+            .code_num(zc, &mut self.image_size_dist, 0, BIG_POSITIVE, 0)?;
 
         // Encode eventual image refinement flag (0 = no refinement)
         zc.encode(false, &mut self.dist_refinement_flag)?;
@@ -541,20 +517,10 @@ impl<W: Write> JB2Encoder<W> {
         width: i32,
         height: i32,
     ) -> Result<(), Jb2Error> {
-        self.num_coder.code_num(
-            zc,
-            &mut self.abs_size_x,
-            0,
-            BIG_POSITIVE,
-            width,
-        )?;
-        self.num_coder.code_num(
-            zc,
-            &mut self.abs_size_y,
-            0,
-            BIG_POSITIVE,
-            height,
-        )?;
+        self.num_coder
+            .code_num(zc, &mut self.abs_size_x, 0, BIG_POSITIVE, width)?;
+        self.num_coder
+            .code_num(zc, &mut self.abs_size_y, 0, BIG_POSITIVE, height)?;
         Ok(())
     }
 
@@ -591,13 +557,8 @@ impl<W: Write> JB2Encoder<W> {
         index: i32,
         max_index: i32,
     ) -> Result<(), Jb2Error> {
-        self.num_coder.code_num(
-            zc,
-            &mut self.dist_match_index,
-            0,
-            max_index,
-            index,
-        )?;
+        self.num_coder
+            .code_num(zc, &mut self.dist_match_index, 0, max_index, index)?;
         Ok(())
     }
 

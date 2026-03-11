@@ -1,7 +1,7 @@
 use std::ffi::c_char;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::time::Instant;
 
 /// Type signature for a progress callback: task name, current step, total steps.

@@ -1,6 +1,6 @@
+use super::ZpEncoderCursor;
 use super::table::DEFAULT_ZP_TABLE;
 use super::zcodec::{BitContext, ZCodecError};
-use super::ZpEncoderCursor;
 use std::ffi::c_void;
 use std::io::{Cursor, Write};
 use std::marker::PhantomData;

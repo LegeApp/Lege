@@ -17,7 +17,7 @@
 //! }
 //! ```
 
-pub use log::{debug, error, info, trace, warn, Level};
+pub use log::{Level, debug, error, info, trace, warn};
 
 /// Initialize logging (no-op, applications should set up their own logger).
 ///
@@ -31,4 +31,3 @@ pub fn init_subscriber(_max_level: Level) {
     // No-op - applications should initialize their own logging backend
     // This function is kept for API compatibility
 }
-

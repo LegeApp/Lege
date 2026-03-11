@@ -1,10 +1,9 @@
 use crate::doc::djvu_dir::DjVmNav;
 use crate::doc::page_encoder::{EncodedPage, PageComponents, PageEncodeParams};
 use crate::{DjvuError, Result};
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone)]
 enum PageSlot {
     Pending,
     Ready(Arc<Vec<u8>>),
@@ -19,8 +18,11 @@ mod tests {
     #[test]
     fn document_builder_outputs_djvu_document() -> Result<()> {
         let builder = DocumentBuilder::new(1);
-        let page = PageComponents::new()
-            .with_background(RgbImage::from_pixel(4, 4, image::Rgb([255, 0, 0])))?;
+        let page = PageComponents::new().with_background(RgbImage::from_pixel(
+            4,
+            4,
+            image::Rgb([255, 0, 0]),
+        ))?;
         builder.encode_and_insert(0, page)?;
 
         let document = builder.build_document()?;
@@ -29,9 +31,13 @@ mod tests {
     }
 }
 
+/// Thread-safe, out-of-order page collection with per-slot locking.
+///
+/// Each page slot has its own `RwLock`, so concurrent insertions to different
+/// pages never contend with each other.
 pub struct PageCollection {
-    slots: RwLock<Vec<PageSlot>>,
-    metadata: RwLock<HashMap<usize, PageMetadata>>,
+    slots: Vec<RwLock<PageSlot>>,
+    metadata: Vec<RwLock<Option<PageMetadata>>>,
     total_pages: usize,
 }
 
@@ -44,10 +50,15 @@ pub struct PageMetadata {
 
 impl PageCollection {
     pub fn new(total_pages: usize) -> Self {
-        let slots = vec![PageSlot::Pending; total_pages];
+        let mut slots = Vec::with_capacity(total_pages);
+        let mut metadata = Vec::with_capacity(total_pages);
+        for _ in 0..total_pages {
+            slots.push(RwLock::new(PageSlot::Pending));
+            metadata.push(RwLock::new(None));
+        }
         Self {
-            slots: RwLock::new(slots),
-            metadata: RwLock::new(HashMap::new()),
+            slots,
+            metadata,
             total_pages,
         }
     }
@@ -69,36 +80,23 @@ impl PageCollection {
         }
 
         {
-            let mut slots = self.slots.write().unwrap();
-            match &slots[page_num] {
-                PageSlot::Ready(_) => {
-                    return Err(DjvuError::InvalidOperation(format!(
-                        "Page {} already exists",
-                        page_num
-                    )));
-                }
-                PageSlot::Pending => {
-                    slots[page_num] = PageSlot::Ready(Arc::clone(&page.data));
-                }
+            let mut slot = self.slots[page_num].write().unwrap();
+            if matches!(*slot, PageSlot::Ready(_)) {
+                return Err(DjvuError::InvalidOperation(format!(
+                    "Page {} already exists",
+                    page_num
+                )));
             }
+            *slot = PageSlot::Ready(Arc::clone(&page.data));
         }
 
         {
-            let mut metadata = self.metadata.write().unwrap();
-            match metadata.entry(page_num) {
-                Entry::Occupied(mut entry) => {
-                    let meta = entry.get_mut();
-                    meta.width = page.width;
-                    meta.height = page.height;
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(PageMetadata {
-                        width: page.width,
-                        height: page.height,
-                        id: None,
-                    });
-                }
-            }
+            let mut meta = self.metadata[page_num].write().unwrap();
+            *meta = Some(PageMetadata {
+                width: page.width,
+                height: page.height,
+                id: meta.as_ref().and_then(|m| m.id.clone()),
+            });
         }
 
         Ok(())
@@ -108,21 +106,20 @@ impl PageCollection {
         if page_num >= self.total_pages {
             return false;
         }
-
-        let slots = self.slots.read().unwrap();
-        matches!(slots[page_num], PageSlot::Ready(_))
+        let slot = self.slots[page_num].read().unwrap();
+        matches!(*slot, PageSlot::Ready(_))
     }
 
     pub fn is_complete(&self) -> bool {
-        let slots = self.slots.read().unwrap();
-        slots.iter().all(|slot| matches!(slot, PageSlot::Ready(_)))
+        self.slots
+            .iter()
+            .all(|s| matches!(*s.read().unwrap(), PageSlot::Ready(_)))
     }
 
     pub fn ready_count(&self) -> usize {
-        let slots = self.slots.read().unwrap();
-        slots
+        self.slots
             .iter()
-            .filter(|slot| matches!(slot, PageSlot::Ready(_)))
+            .filter(|s| matches!(*s.read().unwrap(), PageSlot::Ready(_)))
             .count()
     }
 
@@ -130,31 +127,55 @@ impl PageCollection {
         if page_num >= self.total_pages {
             return None;
         }
-
-        let slots = self.slots.read().unwrap();
-        match &slots[page_num] {
+        let slot = self.slots[page_num].read().unwrap();
+        match &*slot {
             PageSlot::Ready(data) => Some(Arc::clone(data)),
             PageSlot::Pending => None,
         }
     }
 
+    /// Collect all pages as `Arc` references (non-destructive).
     pub fn collect_all(&self) -> Option<Vec<Arc<Vec<u8>>>> {
-        let slots = self.slots.read().unwrap();
-
         let mut pages = Vec::with_capacity(self.total_pages);
-        for slot in slots.iter() {
-            match slot {
+        for slot_lock in &self.slots {
+            let slot = slot_lock.read().unwrap();
+            match &*slot {
                 PageSlot::Ready(data) => pages.push(Arc::clone(data)),
                 PageSlot::Pending => return None,
             }
         }
+        Some(pages)
+    }
 
+    /// Take all pages out of the collection, consuming the internal references.
+    ///
+    /// Each slot is swapped to `Pending`, dropping the collection's `Arc`
+    /// reference. This guarantees `Arc::try_unwrap` succeeds on the returned
+    /// values, avoiding deep clones during finalization.
+    pub fn take_all(&self) -> Option<Vec<Vec<u8>>> {
+        // Quick check: all slots must be Ready before we start swapping.
+        for slot_lock in &self.slots {
+            if !matches!(*slot_lock.read().unwrap(), PageSlot::Ready(_)) {
+                return None;
+            }
+        }
+
+        let mut pages = Vec::with_capacity(self.total_pages);
+        for slot_lock in &self.slots {
+            let mut slot = slot_lock.write().unwrap();
+            if let PageSlot::Ready(data) = std::mem::replace(&mut *slot, PageSlot::Pending) {
+                pages.push(Arc::try_unwrap(data).unwrap_or_else(|a| (*a).clone()));
+            }
+        }
         Some(pages)
     }
 
     pub fn get_metadata(&self, page_num: usize) -> Option<(u32, u32)> {
-        let metadata = self.metadata.read().unwrap();
-        metadata.get(&page_num).map(|m| (m.width, m.height))
+        if page_num >= self.total_pages {
+            return None;
+        }
+        let meta = self.metadata[page_num].read().unwrap();
+        meta.as_ref().map(|m| (m.width, m.height))
     }
 
     pub fn set_page_id(&self, page_num: usize, id: String) -> Result<()> {
@@ -165,26 +186,26 @@ impl PageCollection {
             )));
         }
 
-        let mut metadata = self.metadata.write().unwrap();
-        match metadata.entry(page_num) {
-            Entry::Occupied(mut entry) => {
-                entry.get_mut().id = Some(id);
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(PageMetadata {
+        let mut meta = self.metadata[page_num].write().unwrap();
+        match meta.as_mut() {
+            Some(m) => m.id = Some(id),
+            None => {
+                *meta = Some(PageMetadata {
                     width: 0,
                     height: 0,
                     id: Some(id),
                 });
             }
         }
-
         Ok(())
     }
 
     pub fn metadata_for(&self, page_num: usize) -> Option<PageMetadata> {
-        let metadata = self.metadata.read().unwrap();
-        metadata.get(&page_num).cloned()
+        if page_num >= self.total_pages {
+            return None;
+        }
+        let meta = self.metadata[page_num].read().unwrap();
+        meta.clone()
     }
 }
 
@@ -232,7 +253,8 @@ impl DocumentBuilder {
     }
 
     pub fn encode_and_insert(&self, page_num: usize, components: PageComponents) -> Result<()> {
-        let encoded = EncodedPage::from_components(page_num, components, &self.params, self.dpi, self.gamma)?;
+        let encoded =
+            EncodedPage::from_components(page_num, components, &self.params, self.dpi, self.gamma)?;
         self.pages.insert_page(page_num, encoded)
     }
 
@@ -267,17 +289,9 @@ impl DocumentBuilder {
             .map(|idx| pages.metadata_for(idx).and_then(|meta| meta.id.clone()))
             .collect();
 
-        let encoded = pages
-            .collect_all()
+        let page_data = pages
+            .take_all()
             .ok_or_else(|| DjvuError::InvalidOperation("Not all pages ready".to_string()))?;
-
-        // Drop the page slots so we can unwrap the Arc-backed page buffers.
-        drop(pages);
-
-        let page_data = encoded
-            .into_iter()
-            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone()))
-            .collect();
 
         Ok((page_data, identifiers))
     }

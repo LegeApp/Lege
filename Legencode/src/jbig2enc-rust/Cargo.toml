@@ -37,6 +37,7 @@ derive_builder = "0.20.2"
 lazy_static = { workspace = true }
 once_cell = { workspace = true }
 rustc-hash = "1.1"
+fax = { version = "0.2.6", default-features = false }
 
 [build-dependencies]
 vergen = { version = "9.0.6", default-features = false, features = ["build"] }

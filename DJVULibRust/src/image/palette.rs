@@ -10,7 +10,7 @@
 
 use crate::image::image_formats::{Pixel, Pixmap};
 use crate::utils::error::{DjvuError, Result};
-use bytemuck::{cast_slice, Pod, Zeroable};
+use bytemuck::{Pod, Zeroable, cast_slice};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{Cursor, Read, Write};
 
@@ -394,11 +394,7 @@ mod your_neuquant {
                 let a_init = if self.netsize <= 16 {
                     i as f32 * (255.0 / (self.netsize as f32 - 1.0).max(1.0))
                 } else {
-                    if i < 16 {
-                        (i as f32) * 16.0
-                    } else {
-                        255.0
-                    }
+                    if i < 16 { (i as f32) * 16.0 } else { 255.0 }
                 };
 
                 self.network.push(Neuron {

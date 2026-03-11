@@ -17,8 +17,6 @@ members = [
     "Legencode/src/jbig2enc-rust",
     "Legencode/src/TooJpeg-rust",
     "GUI/Dioxus",
-    "ort",           # Local ort fork with WebGPU cleanup fix
-    "ort/ort-sys",   # ONNX Runtime FFI bindings
 ]
 default-members = [
     ".",
@@ -161,7 +159,7 @@ djvu_encoder = { path = "DJVULibRust" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Local fork of ort with WebGPU cleanup fix - uses WebGPU with Vulkan backend (dynamic loading)
-ort = { path = "./ort", default-features = false, features = ["std", "ndarray", "tracing", "webgpu", "load-dynamic"] }
+ort = { path = "C:/Users/dk/Desktop/Testers/layout-test2/ort", default-features = false, features = ["std", "ndarray", "tracing", "webgpu", "load-dynamic"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = "0.14"
 wgpu = "28"
@@ -176,7 +174,7 @@ pollster = "0.4"
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
 # Local fork of ort with WebGPU cleanup fix - uses DirectML on Windows (dynamic loading)
-ort = { path = "./ort", default-features = false, features = ["std", "ndarray", "tracing", "directml", "load-dynamic"] }
+ort = { path = "C:/Users/dk/Desktop/Testers/layout-test2/ort", default-features = false, features = ["std", "ndarray", "tracing", "directml", "load-dynamic"] }
 winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
 windows = { workspace = true, features = [
     "Foundation",

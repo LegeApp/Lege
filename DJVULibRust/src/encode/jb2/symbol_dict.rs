@@ -340,11 +340,11 @@ mod tests {
     fn test_comparator_exact_match() {
         let mut img1 = BitImage::new(5, 5).unwrap();
         let mut img2 = BitImage::new(5, 5).unwrap();
-        
+
         // Set same pixels
         img1.set_usize(2, 2, true);
         img2.set_usize(2, 2, true);
-        
+
         let mut comp = Comparator::default();
         let result = comp.distance(&img1, &img2, 100);
         assert!(result.is_some());

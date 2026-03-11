@@ -29,10 +29,10 @@ fn create_djvu_from_jb2(jb2_data: &[u8], width: u16, height: u16) -> Vec<u8> {
     djvu_file.extend_from_slice(&width.to_be_bytes());
     djvu_file.extend_from_slice(&height.to_be_bytes());
     djvu_file.push(24); // minor
-    djvu_file.push(0);  // major
+    djvu_file.push(0); // major
     djvu_file.extend_from_slice(&300u16.to_le_bytes()); // dpi LE
     djvu_file.push(22); // gamma
-    djvu_file.push(1);  // flags
+    djvu_file.push(1); // flags
 
     // Sjbz chunk
     djvu_file.extend_from_slice(b"Sjbz");
@@ -49,7 +49,7 @@ fn create_djvu_from_jb2(jb2_data: &[u8], width: u16, height: u16) -> Vec<u8> {
 
 #[test]
 fn test_minimal_without_reset() {
-    use djvu_encoder::encode::jb2::num_coder::{NumCoder, BIG_POSITIVE};
+    use djvu_encoder::encode::jb2::num_coder::{BIG_POSITIVE, NumCoder};
     use djvu_encoder::encode::zc::ZEncoder;
 
     println!("=== Testing WITHOUT reset ===\n");
@@ -68,28 +68,59 @@ fn test_minimal_without_reset() {
     let mut dist_refinement_flag: u8 = 0;
 
     // START_OF_DATA
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, START_OF_DATA).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            START_OF_DATA,
+        )
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10)
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10)
+        .unwrap();
     zc.encode(false, &mut dist_refinement_flag).unwrap();
 
     // END_OF_DATA
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, END_OF_DATA).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            END_OF_DATA,
+        )
+        .unwrap();
 
     let buffer = zc.finish().expect("Failed to finish encoder");
-    println!("WITHOUT reset ({} bytes): {}", buffer.len(), hex_dump(&buffer, 64));
+    println!(
+        "WITHOUT reset ({} bytes): {}",
+        buffer.len(),
+        hex_dump(&buffer, 64)
+    );
 
     // Test
     let djvu_data = create_djvu_from_jb2(&buffer, 10, 10);
     fs::write("/tmp/test_no_reset.djvu", &djvu_data).unwrap();
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "/tmp/test_no_reset.djvu", "/tmp/test_no_reset.pbm"])
+        .args([
+            "-format=pbm",
+            "/tmp/test_no_reset.djvu",
+            "/tmp/test_no_reset.pbm",
+        ])
         .output()
         .unwrap();
     if output.status.success() {
         println!("WITHOUT reset: SUCCESS");
     } else {
-        println!("WITHOUT reset: FAILED - {}", String::from_utf8_lossy(&output.stderr));
+        println!(
+            "WITHOUT reset: FAILED - {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let _ = fs::remove_file("/tmp/test_no_reset.djvu");
     let _ = fs::remove_file("/tmp/test_no_reset.pbm");
@@ -97,7 +128,7 @@ fn test_minimal_without_reset() {
 
 #[test]
 fn test_minimal_with_reset() {
-    use djvu_encoder::encode::jb2::num_coder::{NumCoder, BIG_POSITIVE};
+    use djvu_encoder::encode::jb2::num_coder::{BIG_POSITIVE, NumCoder};
     use djvu_encoder::encode::zc::ZEncoder;
 
     println!("=== Testing WITH reset ===\n");
@@ -117,28 +148,59 @@ fn test_minimal_with_reset() {
     let mut dist_refinement_flag: u8 = 0;
 
     // START_OF_DATA
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, START_OF_DATA).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            START_OF_DATA,
+        )
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10)
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10)
+        .unwrap();
     zc.encode(false, &mut dist_refinement_flag).unwrap();
 
     // END_OF_DATA
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, END_OF_DATA).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            END_OF_DATA,
+        )
+        .unwrap();
 
     let buffer = zc.finish().expect("Failed to finish encoder");
-    println!("WITH reset ({} bytes): {}", buffer.len(), hex_dump(&buffer, 64));
+    println!(
+        "WITH reset ({} bytes): {}",
+        buffer.len(),
+        hex_dump(&buffer, 64)
+    );
 
     // Test
     let djvu_data = create_djvu_from_jb2(&buffer, 10, 10);
     fs::write("/tmp/test_with_reset.djvu", &djvu_data).unwrap();
     let output = Command::new("ddjvu")
-        .args(["-format=pbm", "/tmp/test_with_reset.djvu", "/tmp/test_with_reset.pbm"])
+        .args([
+            "-format=pbm",
+            "/tmp/test_with_reset.djvu",
+            "/tmp/test_with_reset.pbm",
+        ])
         .output()
         .unwrap();
     if output.status.success() {
         println!("WITH reset: SUCCESS");
     } else {
-        println!("WITH reset: FAILED - {}", String::from_utf8_lossy(&output.stderr));
+        println!(
+            "WITH reset: FAILED - {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let _ = fs::remove_file("/tmp/test_with_reset.djvu");
     let _ = fs::remove_file("/tmp/test_with_reset.pbm");
@@ -146,7 +208,7 @@ fn test_minimal_with_reset() {
 
 #[test]
 fn test_minimal_with_fresh_contexts() {
-    use djvu_encoder::encode::jb2::num_coder::{NumCoder, BIG_POSITIVE};
+    use djvu_encoder::encode::jb2::num_coder::{BIG_POSITIVE, NumCoder};
     use djvu_encoder::encode::zc::ZEncoder;
 
     println!("=== Testing with fresh NumContext variables (but NumCoder reset) ===\n");
@@ -167,16 +229,40 @@ fn test_minimal_with_fresh_contexts() {
     let mut dist_refinement_flag: u8 = 0;
 
     // START_OF_DATA
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, START_OF_DATA).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10).unwrap();
-    num_coder.code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            START_OF_DATA,
+        )
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10)
+        .unwrap();
+    num_coder
+        .code_num(&mut zc, &mut image_size_dist, 0, BIG_POSITIVE, 10)
+        .unwrap();
     zc.encode(false, &mut dist_refinement_flag).unwrap();
 
     // END_OF_DATA
-    num_coder.code_num(&mut zc, &mut dist_record_type, START_OF_DATA, END_OF_DATA, END_OF_DATA).unwrap();
+    num_coder
+        .code_num(
+            &mut zc,
+            &mut dist_record_type,
+            START_OF_DATA,
+            END_OF_DATA,
+            END_OF_DATA,
+        )
+        .unwrap();
 
     let buffer = zc.finish().expect("Failed to finish encoder");
-    println!("Fresh contexts ({} bytes): {}", buffer.len(), hex_dump(&buffer, 64));
+    println!(
+        "Fresh contexts ({} bytes): {}",
+        buffer.len(),
+        hex_dump(&buffer, 64)
+    );
 
     // This SHOULD work if the issue is only reset
     let djvu_data = create_djvu_from_jb2(&buffer, 10, 10);
@@ -188,7 +274,10 @@ fn test_minimal_with_fresh_contexts() {
     if output.status.success() {
         println!("Fresh contexts: SUCCESS");
     } else {
-        println!("Fresh contexts: FAILED - {}", String::from_utf8_lossy(&output.stderr));
+        println!(
+            "Fresh contexts: FAILED - {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let _ = fs::remove_file("/tmp/test_fresh.djvu");
     let _ = fs::remove_file("/tmp/test_fresh.pbm");

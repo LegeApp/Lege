@@ -6,8 +6,8 @@
 //! integrated into a larger JBIG2 encoding pipeline where binarization and
 //! preprocessing are already handled.
 
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
@@ -16,14 +16,13 @@ use std::collections::HashMap;
 mod trace_stubs {
     #[allow(unused_macros)]
     macro_rules! debug {
-        ($($arg:tt)*) => { println!($($arg)*); };
+        ($($arg:tt)*) => { std::convert::identity(format_args!($($arg)*)); };
     }
     #[allow(unused_macros)]
     macro_rules! trace {
         ($($arg:tt)*) => { std::convert::identity(format_args!($($arg)*)) };
     }
 }
-
 
 const JBIG2_MAX_CTX: usize = 65536;
 const TPGD_CTX: u32 = 0x9B25;
@@ -255,7 +254,7 @@ pub(crate) static FULL: Lazy<[State; 94]> = Lazy::new(|| {
         // Lower half: MPS = 0
         t[i] = State {
             qe: s.qe,
-            nmps: s.nmps,           // stays in lower half
+            nmps: s.nmps, // stays in lower half
             nlps: if s.switch { s.nlps + 47 } else { s.nlps },
             switch: s.switch,
         };
@@ -263,7 +262,7 @@ pub(crate) static FULL: Lazy<[State; 94]> = Lazy::new(|| {
         // Upper half: MPS = 1
         t[i + 47] = State {
             qe: s.qe,
-            nmps: s.nmps + 47,      // stays in upper half
+            nmps: s.nmps + 47, // stays in upper half
             // If LPS flips the MPS we must leave the upper half
             nlps: if s.switch { s.nlps } else { s.nlps + 47 },
             switch: s.switch,
@@ -285,8 +284,8 @@ pub struct Jbig2ArithCoder {
     bp: isize,     // Byte position in output
     data: Vec<u8>, // Output data
     context: Vec<usize>,
-    int_ctx: [[usize; 256]; 13], // Contexts for integer encoding, storing CTBL indices
-    iaid_ctx: [usize; 512],      // Dynamically sized context for IAID symbols, storing CTBL indices
+    int_ctx: [[usize; 512]; 13], // Contexts for integer encoding, storing CTBL indices
+    iaid_ctx: Vec<usize>,        // Dynamically sized context tree for IAID symbols
     refinement_contexts: [u8; 16], // Contexts for GRTEMPLATE=0 (16 states)
 }
 
@@ -342,8 +341,8 @@ impl Jbig2ArithCoder {
             bp: 0,
             data: Vec::new(),
             context: vec![Self::INITIAL_STATE; JBIG2_MAX_CTX],
-            int_ctx: [[0; 256]; 13],
-            iaid_ctx: [0; 512],
+            int_ctx: [[0; 512]; 13],
+            iaid_ctx: Vec::new(),
             refinement_contexts: [0; 16],
         };
         coder.reset();
@@ -467,29 +466,24 @@ impl Jbig2ArithCoder {
         }
     }
 
-    /// Encodes a single bit `d` in the given context `ctx`.
     #[inline(always)]
-    pub fn encode_bit(&mut self, ctx: usize, d: bool) {
-        let state_idx = self.context[ctx];
+    fn encode_bit_with_state_idx(&mut self, state_idx: usize, d: bool) -> usize {
         let state = FULL[state_idx];
         let qe = state.qe;
         let mps_val = state_idx >= 47;
-
+        let mut next_state = state_idx;
         let mut renorm_needed = false;
 
         if d != mps_val {
-            // LPS path
             self.a = self.a.wrapping_sub(qe);
             if self.a < qe {
                 self.c = self.c.wrapping_add(qe as u32);
             } else {
                 self.a = qe;
             }
-
-            self.context[ctx] = state.nlps as usize;
+            next_state = state.nlps as usize;
             renorm_needed = true;
         } else {
-            // MPS path
             self.a = self.a.wrapping_sub(qe);
             if (self.a & 0x8000) == 0 {
                 if self.a < qe {
@@ -497,7 +491,7 @@ impl Jbig2ArithCoder {
                 } else {
                     self.c = self.c.wrapping_add(qe as u32);
                 }
-                self.context[ctx] = state.nmps as usize;
+                next_state = state.nmps as usize;
                 renorm_needed = true;
             } else {
                 self.c = self.c.wrapping_add(qe as u32);
@@ -514,22 +508,62 @@ impl Jbig2ArithCoder {
                 }
             }
         }
+
+        next_state
+    }
+
+    #[inline(always)]
+    fn update_prev(prev: u32, bit: bool) -> u32 {
+        if (prev & 0x100) != 0 {
+            (((prev << 1) | (bit as u32)) & 0x1ff) | 0x100
+        } else {
+            (prev << 1) | (bit as u32)
+        }
+    }
+
+    /// Encodes a single bit `d` in the given context `ctx`.
+    #[inline(always)]
+    pub fn encode_bit(&mut self, ctx: usize, d: bool) {
+        let next_state = self.encode_bit_with_state_idx(self.context[ctx], d);
+        self.context[ctx] = next_state;
     }
 
     /// Encodes an integer `v` of `bits` width using a specific context `ctx`.
     #[inline]
     pub fn encode_int_with_ctx(&mut self, v: i32, bits: i32, ctx: IntProc) -> anyhow::Result<()> {
-        let mut prev = 1usize;
+        if bits <= 0 || bits > 32 {
+            return Err(anyhow!("encode_int_with_ctx: invalid bit width {}", bits));
+        }
+        let mut prev = 1u32;
+        let proc_idx = ctx as usize;
         for i in (0..bits).rev() {
-            let bit = ((v >> i) & 1) != 0; // Explicitly make bit a bool
-            let state_idx = self.int_ctx[ctx as usize][prev & 0xFF];
-            self.encode_bit(state_idx, bit);
-            prev = if bit {
-                // Use bool comparison directly
-                ((prev << 1) | 1) & 0x1ff | if prev & 0x100 != 0 { 0x100 } else { 0 }
-            } else {
-                (prev << 1) & 0x1ff | if prev & 0x100 != 0 { 0x100 } else { 0 }
-            };
+            let bit = ((v >> i) & 1) != 0;
+            let idx = (prev & 0x1ff) as usize;
+            let next_state = self.encode_bit_with_state_idx(self.int_ctx[proc_idx][idx], bit);
+            self.int_ctx[proc_idx][idx] = next_state;
+            prev = Self::update_prev(prev, bit);
+        }
+        Ok(())
+    }
+
+    /// Encodes an IAID-coded symbol identifier using the dedicated IAID context tree.
+    pub fn encode_iaid(&mut self, value: u32, bits: u8) -> anyhow::Result<()> {
+        if bits == 0 || bits > 24 {
+            return Err(anyhow!("encode_iaid: invalid symbol id bit width {}", bits));
+        }
+        let needed = 1usize << bits;
+        if self.iaid_ctx.len() < needed {
+            self.iaid_ctx.resize(needed, 0);
+        }
+        let mut prev: u32 = 1;
+        let mut shifted = value << (32 - bits);
+        for _ in 0..bits {
+            let bit = (shifted & 0x8000_0000) != 0;
+            let idx = (prev as usize).min(self.iaid_ctx.len() - 1);
+            let next_state = self.encode_bit_with_state_idx(self.iaid_ctx[idx], bit);
+            self.iaid_ctx[idx] = next_state;
+            prev = (prev << 1) | (bit as u32);
+            shifted <<= 1;
         }
         Ok(())
     }
@@ -543,32 +577,35 @@ impl Jbig2ArithCoder {
             .iter()
             .find(|r| r.bot <= value && r.top >= value)
             .expect("Value out of range");
-        let val_unsigned = (if value < 0 { -value } else { value }) as u32 - range_info.delta;
-        let context_idx = proc as usize;
-        let mut prev_ctx = 0u32;
+        let mut v = if value < 0 { -value } else { value } as u32;
+        v = v.saturating_sub(range_info.delta);
 
-        // Encode integer bits
-        for i in 0..range_info.intbits {
-            let bit = (val_unsigned & (1 << (range_info.intbits - 1 - i))) != 0;
-            let c_usize = (prev_ctx & 0xFF) as usize; // Cast c to usize for indexing
-            let state = &self.int_ctx[context_idx][c_usize];
-            self.encode_bit(*state, bit);
-            prev_ctx = if prev_ctx & 0x100 != 0 {
-                ((prev_ctx << 1) | bit as u32) & 0x1ff | 0x100
-            } else {
-                (prev_ctx << 1) | bit as u32
-            };
+        let context_idx = proc as usize;
+        let mut prev_ctx = 1u32;
+
+        // Prefix bits are emitted LSB-first from `data`, matching jbig2enc C implementation.
+        let mut prefix = range_info.data;
+        for _ in 0..range_info.bits {
+            let bit = (prefix & 1) != 0;
+            let idx = (prev_ctx & 0x1ff) as usize;
+            let next_state = self.encode_bit_with_state_idx(self.int_ctx[context_idx][idx], bit);
+            self.int_ctx[context_idx][idx] = next_state;
+            prev_ctx = Self::update_prev(prev_ctx, bit);
+            prefix >>= 1;
         }
 
-        // Encode prefix bits
-        for i in 0..range_info.bits {
-            let bit = (range_info.data & (1 << (range_info.bits - 1 - i))) != 0;
-            self.encode_bit(self.iaid_ctx[prev_ctx as usize], bit);
-            prev_ctx = if prev_ctx & 0x100 != 0 {
-                ((prev_ctx << 1) | bit as u32) & 0x1ff | 0x100
-            } else {
-                (prev_ctx << 1) | bit as u32
-            };
+        // Encode the range payload as MSB-first bits.
+        if range_info.intbits > 0 {
+            v <<= 32 - range_info.intbits;
+            for _ in 0..range_info.intbits {
+                let bit = (v & 0x8000_0000) != 0;
+                let idx = (prev_ctx & 0x1ff) as usize;
+                let next_state =
+                    self.encode_bit_with_state_idx(self.int_ctx[context_idx][idx], bit);
+                self.int_ctx[context_idx][idx] = next_state;
+                prev_ctx = Self::update_prev(prev_ctx, bit);
+                v <<= 1;
+            }
         }
         Ok(())
     }
@@ -577,43 +614,10 @@ impl Jbig2ArithCoder {
     /// The OOB signal is the bit pattern '1000' as per Table A.1 in the JBIG2 specification.
     pub fn encode_oob(&mut self, proc: IntProc) -> anyhow::Result<()> {
         let context_idx = proc as usize;
-        let mut prev_ctx = 0u32; // Initial PREV value for integer coding (start with 0, same as encode_integer)
-
-        // Encode the OOB bit pattern '1000'
-        // Bit 1 (first bit is '1')
-        let c_usize = (prev_ctx & 0xFF) as usize;
-        let state = &self.int_ctx[context_idx][c_usize];
-        self.encode_bit(*state, true);
-        prev_ctx = if prev_ctx & 0x100 != 0 {
-            ((prev_ctx << 1) | 1) & 0x1ff | 0x100
-        } else {
-            (prev_ctx << 1) | 1
-        };
-
-        // Bit 0 (second bit is '0')
-        let c_usize = (prev_ctx & 0xFF) as usize;
-        let state = &self.int_ctx[context_idx][c_usize];
-        self.encode_bit(*state, false);
-        prev_ctx = if prev_ctx & 0x100 != 0 {
-            ((prev_ctx << 1) | 0) & 0x1ff | 0x100
-        } else {
-            (prev_ctx << 1) | 0
-        };
-
-        // Bit 0 (third bit is '0')
-        let c_usize = (prev_ctx & 0xFF) as usize;
-        let state = &self.int_ctx[context_idx][c_usize];
-        self.encode_bit(*state, false);
-        prev_ctx = if prev_ctx & 0x100 != 0 {
-            ((prev_ctx << 1) | 0) & 0x1ff | 0x100
-        } else {
-            (prev_ctx << 1) | 0
-        };
-
-        // Bit 0 (fourth bit is '0')
-        let c_usize = (prev_ctx & 0xFF) as usize;
-        let state = &self.int_ctx[context_idx][c_usize];
-        self.encode_bit(*state, false);
+        for (idx, bit) in [(1usize, true), (3usize, false), (6usize, false), (12usize, false)] {
+            let next_state = self.encode_bit_with_state_idx(self.int_ctx[context_idx][idx], bit);
+            self.int_ctx[context_idx][idx] = next_state;
+        }
 
         Ok(())
     }
@@ -769,16 +773,15 @@ impl Jbig2ArithCoder {
             );
 
             if let Some(idx) = packed.iter().position(|w| *w != 0) {
-                println!("first non-zero word @ index {}", idx);
                 let first_bit = (idx * 32) + (31 - packed[idx].leading_zeros() as usize);
                 let row = first_bit / width;
                 let col = first_bit % width;
-                println!(
+                log::debug!(
                     "first black pixel according to Rust packer: ({}, {})",
                     col, row
                 );
             } else {
-                println!("packed data all zero - no black pixels");
+                log::debug!("packed data all zero - no black pixels");
             }
 
             match template {

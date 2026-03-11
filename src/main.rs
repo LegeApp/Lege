@@ -922,7 +922,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         }
     }
 
-    // 3) Dithering logic: 'c' flag enables dithering, otherwise original images
+    // 3) Dithering logic: 'c' flag enables dithering.
     let effective_enable_dithering = final_enable_dithering;
 
     // Create pipeline config with selected options (after precedence adjustments)
@@ -1110,7 +1110,7 @@ fn parse_format_selection_with_options(
 
     // Determine dithering:
     // ALL formats default to original images (no dithering)
-    // 'c' flag ENABLES dithering
+    // 'c' flag enables dithering.
     let enable_dithering = has_c_flag;
 
     // Parse additional options from the remaining parts

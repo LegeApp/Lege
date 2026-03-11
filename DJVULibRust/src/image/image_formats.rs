@@ -387,9 +387,15 @@ impl DjvuImageExt for Pixmap {
                     pixel.b = pixel.b.saturating_add(color.b);
                 } else {
                     let level = multipliers[alpha_val as usize];
-                    pixel.r = pixel.r.saturating_add(((color.r as u32 * level) >> 16) as u8);
-                    pixel.g = pixel.g.saturating_add(((color.g as u32 * level) >> 16) as u8);
-                    pixel.b = pixel.b.saturating_add(((color.b as u32 * level) >> 16) as u8);
+                    pixel.r = pixel
+                        .r
+                        .saturating_add(((color.r as u32 * level) >> 16) as u8);
+                    pixel.g = pixel
+                        .g
+                        .saturating_add(((color.g as u32 * level) >> 16) as u8);
+                    pixel.b = pixel
+                        .b
+                        .saturating_add(((color.b as u32 * level) >> 16) as u8);
                 }
             }
         }

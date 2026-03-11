@@ -1669,7 +1669,8 @@ async fn perform_document_analysis(
 
     let mut margin_inputs = Vec::new();
     let mut detection_cache = vec![Vec::new(); total_pages];
-    let limits = PipelineRuntimeLimits::from_config(&config);
+    // ORT + PDFium are intentionally single-worker for stability.
+    let analysis_infer_concurrency = 1usize;
     let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
         FuturesUnordered::new();
 
@@ -1737,7 +1738,7 @@ async fn perform_document_analysis(
             config.clone(),
         ));
 
-        while pending.len() >= limits.page_workers {
+        while pending.len() >= analysis_infer_concurrency {
             if let Some(result) = pending.next().await {
                 push_completed(result?, &mut margin_inputs, &mut detection_cache);
             }
@@ -1819,15 +1820,18 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     let page_end = page_range.as_ref().map(|r| r.end).unwrap_or(document_pages);
     let total_pages = page_end - page_start;
 
+    let infer_concurrency = 1usize;
+    let process_concurrency = 1usize;
+
     info_log!("[PDF-Parallel] Processing {} pages with:", total_pages);
     info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
     info_log!(
         "  - Inference concurrency: {}",
-        pipeline_config.page_workers
+        infer_concurrency
     );
     info_log!(
         "  - Process concurrency: {}",
-        pipeline_config.process_workers
+        process_concurrency
     );
 
     // Initialize shared resources
@@ -1969,7 +1973,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
         render_rx,
         infer_tx,
         detect_count.clone(),
-        pipeline_config.page_workers,
+        infer_concurrency,
         render_count.clone(),
         encode_count.clone(),
         progress_tracker.clone(),
@@ -1989,7 +1993,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
         process_tx,
         encode_count.clone(),
         page_start,
-        pipeline_config.process_workers,
+        process_concurrency,
         render_count.clone(),
         detect_count.clone(),
         progress_tracker.clone(),
