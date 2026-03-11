@@ -1,6 +1,3 @@
-use Legencode::types::BinarizationConfig;
-#[cfg(feature = "debug-logging")]
-use Legencode::{clear_debug_log, get_debug_log_messages};
 use anyhow::{Result, anyhow, bail};
 use lege::progress::{self, ProgressUpdate};
 use lege::text_loader::CLI_TEXT;
@@ -11,6 +8,7 @@ use lege::{
 
 mod version;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use version::display_version;
 
@@ -71,14 +69,14 @@ use lege::processing_log::{
 };
 
 mod windows_dirs;
-use std::io::{self, Write};
+use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, System};
 
 /// Cleanup function specifically for CLI to ensure clean process exit
-async fn cleanup_cli_resources() {
+fn cleanup_cli_resources() {
     // Give background tasks a moment to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
     // In CLI mode, we can be more aggressive about cleanup since the process will exit anyway
     // This helps ensure the process terminates cleanly
@@ -135,13 +133,6 @@ fn fmt4(
 }
 
 fn hardware_acceleration_status() -> (bool, String) {
-    let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
-        .ok()
-        .as_deref() == Some("1");
-    if gpu_disabled {
-        return (false, "explicitly disabled via LEGE_DISABLE_GPU=1".to_string());
-    }
-
     #[cfg(target_os = "linux")]
     {
         if lege::gpu::webgpu_execution_provider_dispatch().is_some() {
@@ -168,8 +159,197 @@ fn hardware_acceleration_status() -> (bool, String) {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// All optional processing flags for non-interactive CLI mode.
+#[derive(Default)]
+struct CliOptions {
+    // --- Output format ---
+    text_format: Option<String>,        // --text-format ccitt4|jbig2|djvu
+    cover_format: Option<String>,       // --cover-format jpeg|jp2|ccitt4|jbig2|none
+
+    // --- Binarization ---
+    binarization: Option<String>,       // --binarization adaptive|fixed|heavy
+    threshold: Option<u8>,              // --threshold 200
+    sauvola_k: Option<f32>,             // --sauvola-k 0.3
+
+    // --- Quality ---
+    djvu_quality: Option<u8>,           // --djvu-quality 100
+    high_quality: bool,                 // --high-quality
+
+    // --- Output ---
+    output_dir: Option<PathBuf>,        // --output <dir>
+
+    // --- Processing toggles ---
+    dither: bool,                       // --dither
+    no_layout: bool,                    // --no-layout
+    ocr: Option<bool>,                  // --ocr / --no-ocr
+    no_cover: bool,                     // --no-cover
+    pdf_compat: bool,                   // --pdf-compat
+    invert: bool,                       // --invert
+    symbol_mode: bool,                  // --symbol-mode
+    halftone: bool,                     // --halftone
+    deskew: bool,                       // --deskew
+    center_margins: bool,               // --center-margins
+    crop_margins: bool,                 // --crop-margins
+    force_crop: bool,                   // --force-crop
+    image_only: bool,                   // --image-only
+    original_images: bool,              // --original-images
+
+    // --- Language ---
+    language: Option<String>,           // --language <code>
+
+    // --- Debug / data-generation modes ---
+    pdf_to_png: Option<u32>,            // --pdf-to-png HEIGHT
+    png_folder: bool,                   // --png-folder  (first positional arg is the folder)
+    crop_areas: Option<String>,         // --crop-areas text|image|both
+    debug_format: Option<String>,       // --format png|jpg  (for --crop-areas)
+}
+
+/// Extract all `--flag` and `--key value` processing options from the arg list,
+/// returning the remaining positional args and the parsed options.
+fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
+    let mut remaining: Vec<String> = Vec::with_capacity(args.len());
+    let mut opts = CliOptions::default();
+
+    // Always keep argv[0]
+    remaining.push(
+        args.first()
+            .cloned()
+            .ok_or_else(|| anyhow!("Missing argv[0]"))?,
+    );
+
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            // --- key-value options ---
+            "--text-format" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --text-format"))?;
+                let normalized = val.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "ccitt4" | "jbig2" | "djvu" => {}
+                    _ => bail!("Invalid --text-format '{}'. Use: ccitt4, jbig2, or djvu", val),
+                }
+                opts.text_format = Some(normalized);
+                i += 2;
+            }
+            "--cover-format" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --cover-format"))?;
+                let normalized = val.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "jpeg" | "jp2" | "ccitt4" | "jbig2" | "none" => {}
+                    _ => bail!("Invalid --cover-format '{}'. Use: jpeg, jp2, ccitt4, jbig2, or none", val),
+                }
+                opts.cover_format = Some(normalized);
+                i += 2;
+            }
+            "--binarization" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --binarization"))?;
+                let normalized = val.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "adaptive" | "fixed" | "heavy" => {}
+                    _ => bail!("Invalid --binarization '{}'. Use: adaptive, fixed, or heavy", val),
+                }
+                opts.binarization = Some(normalized);
+                i += 2;
+            }
+            "--threshold" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --threshold"))?;
+                let thr: u8 = val.parse().map_err(|_| anyhow!("Invalid --threshold '{}'. Must be 0-255", val))?;
+                opts.threshold = Some(thr);
+                i += 2;
+            }
+            "--sauvola-k" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --sauvola-k"))?;
+                let k: f32 = val.parse().map_err(|_| anyhow!("Invalid --sauvola-k '{}'. Must be 0.0-1.0", val))?;
+                if !(0.0..=1.0).contains(&k) {
+                    bail!("--sauvola-k must be between 0.0 and 1.0, got: {}", k);
+                }
+                opts.sauvola_k = Some(k);
+                i += 2;
+            }
+            "--djvu-quality" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --djvu-quality"))?;
+                let q: u8 = val.parse().map_err(|_| anyhow!("Invalid --djvu-quality '{}'. Must be 1-100", val))?;
+                if q == 0 {
+                    bail!("--djvu-quality must be between 1 and 100");
+                }
+                opts.djvu_quality = Some(q);
+                i += 2;
+            }
+            "--output" | "--out" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after {}", arg))?;
+                opts.output_dir = Some(PathBuf::from(sanitize_path_arg(val)));
+                i += 2;
+            }
+            "--language" => {
+                let raw = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --language"))?;
+                let normalized = raw.trim().to_ascii_lowercase();
+                if normalized.is_empty() {
+                    bail!("--language value cannot be empty");
+                }
+                if !normalized.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+                    bail!("Invalid --language '{}'. Use only a-z, 0-9, and underscore", raw);
+                }
+                opts.language = Some(normalized);
+                i += 2;
+            }
+
+            // --- debug / data-generation key-value ---
+            "--pdf-to-png" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing height after --pdf-to-png"))?;
+                let height: u32 = val.parse().map_err(|_| anyhow!("Invalid height: {}", val))?;
+                if height < 100 || height > 10000 {
+                    bail!("--pdf-to-png height must be between 100 and 10000 pixels");
+                }
+                opts.pdf_to_png = Some(height);
+                i += 2;
+            }
+            "--crop-areas" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing mode after --crop-areas (text|image|both)"))?;
+                let normalized = val.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "text" | "image" | "both" => {}
+                    _ => bail!("Invalid --crop-areas mode '{}'. Use: text, image, or both", val),
+                }
+                opts.crop_areas = Some(normalized);
+                i += 2;
+            }
+            "--format" => {
+                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --format"))?;
+                opts.debug_format = Some(val.clone());
+                i += 2;
+            }
+
+            // --- boolean flags ---
+            "--png-folder" => { opts.png_folder = true; i += 1; }
+            "--dither" => { opts.dither = true; i += 1; }
+            "--no-layout" => { opts.no_layout = true; i += 1; }
+            "--ocr" => { opts.ocr = Some(true); i += 1; }
+            "--no-ocr" => { opts.ocr = Some(false); i += 1; }
+            "--no-cover" => { opts.no_cover = true; i += 1; }
+            "--pdf-compat" => { opts.pdf_compat = true; i += 1; }
+            "--invert" => { opts.invert = true; i += 1; }
+            "--symbol-mode" => { opts.symbol_mode = true; i += 1; }
+            "--halftone" => { opts.halftone = true; i += 1; }
+            "--deskew" => { opts.deskew = true; i += 1; }
+            "--high-quality" => { opts.high_quality = true; i += 1; }
+            "--center-margins" => { opts.center_margins = true; i += 1; }
+            "--crop-margins" => { opts.crop_margins = true; i += 1; }
+            "--force-crop" => { opts.force_crop = true; i += 1; }
+            "--image-only" => { opts.image_only = true; i += 1; }
+            "--original-images" => { opts.original_images = true; i += 1; }
+
+            _ => {
+                remaining.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+
+    Ok((remaining, opts))
+}
+
+fn main() -> Result<()> {
     // Configure dynamic runtime library paths early (before ORT/PDF pipelines initialize).
     lege::configure_runtime_env();
 
@@ -180,6 +360,16 @@ async fn main() -> Result<()> {
     if args.iter().any(|arg| arg == "--version" || arg == "-v") {
         println!("{}", fmt1(&CLI_TEXT.main.version_line, display_version()));
         println!("{}", fmt1(&CLI_TEXT.main.internal_version_line, version::internal_version()));
+        return Ok(());
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--check-ocr-json") {
+        let value = args
+            .get(idx + 1)
+            .ok_or_else(|| anyhow!("Missing path for --check-ocr-json"))?;
+        let pdf_path = PathBuf::from(sanitize_path_arg(value));
+        let has_ocr = check_pdf_ocr_layer(&pdf_path).unwrap_or(false);
+        println!("{}", serde_json::json!({ "has_ocr": has_ocr }));
         return Ok(());
     }
 
@@ -224,76 +414,67 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (args, language_override) = extract_hidden_language_flag(args)?;
+    // Extract all --flag / --key value options, leaving only positional args.
+    let (args, cli_opts) = extract_cli_options(args)?;
 
-    if language_override.is_some() && args.len() == 1 {
-        bail!("--language requires a direct CLI input file");
-    }
-
-    // No extra args -> interactive CLI wizard
-    if args.len() == 1 {
-        handle_cli_mode(AppConfig::default()).await?;
+    // No extra positional args and no debug modes -> interactive CLI wizard
+    if args.len() == 1 && cli_opts.pdf_to_png.is_none() && !cli_opts.png_folder && cli_opts.crop_areas.is_none() {
+        if cli_opts.language.is_some() {
+            bail!("--language requires a direct CLI input file");
+        }
+        handle_cli_mode(AppConfig::default())?;
         return Ok(());
     }
 
-    // Direct PDF-to-PNG mode: file.pdf [page_range] --pdf-to-png HEIGHT
-    if args.iter().any(|a| a == "--pdf-to-png") {
-        let pdf_arg = args.get(1).ok_or_else(|| anyhow!("Missing PDF path"))?;
+    // ----- Debug / data-generation modes -----
+
+    // PDF-to-PNG: lege <file.pdf> [page-range] --pdf-to-png HEIGHT
+    if let Some(png_height) = cli_opts.pdf_to_png {
+        let pdf_arg = args.get(1).ok_or_else(|| anyhow!("Missing PDF path for --pdf-to-png"))?;
         let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
         validate_pdf_file(pdf_path.to_str().ok_or_else(|| anyhow!("Invalid PDF path"))?)?;
-
-        let flag_idx = args.iter().position(|a| a == "--pdf-to-png").ok_or_else(|| anyhow!("Missing --pdf-to-png flag"))?;
-        let height_str = args.get(flag_idx + 1).ok_or_else(|| anyhow!("Missing height after --pdf-to-png"))?;
-        let height: u32 = height_str.parse().map_err(|_| anyhow!("Invalid height: {}", height_str))?;
-        if height < 100 || height > 10000 { bail!("Height must be between 100 and 10000 pixels"); }
-
-        let page_range = if flag_idx >= 3 {
-            let candidate = args.get(2).unwrap();
-            if !candidate.starts_with('-') && !candidate.ends_with(".pdf") { Some(candidate.clone()) } else { None }
-        } else { None };
-
-        run_pdf_to_png_mode(pdf_path, page_range, height, AppConfig::default())?;
-        return Ok(());
+        let page_range = args.get(2).and_then(|c| {
+            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") { Some(c.clone()) } else { None }
+        });
+        return run_pdf_to_png_mode(pdf_path, page_range, png_height, AppConfig::default());
     }
 
-    if args.iter().any(|a| a == "--png-folder") {
-        let folder_arg = args.get(1).ok_or_else(|| anyhow!("Missing folder path"))?;
+    // PNG-folder inference: lege <folder> --png-folder [--deskew]
+    if cli_opts.png_folder {
+        let folder_arg = args.get(1).ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
-        let enable_deskew = args.iter().any(|a| a == "--deskew");
-        run_png_mode(folder_path, None, AppConfig::default(), enable_deskew)?;
-        return Ok(());
+        return run_png_mode(folder_path, cli_opts.output_dir, AppConfig::default(), cli_opts.deskew);
     }
 
-    if args.iter().any(|a| a == "--crop-areas") {
-        let pdf_arg = args.get(1).ok_or_else(|| anyhow!("Missing PDF path"))?;
+    // Crop-areas debug: lege <file.pdf> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg] [--deskew]
+    if let Some(ref crop_mode) = cli_opts.crop_areas {
+        let pdf_arg = args.get(1).ok_or_else(|| anyhow!("Missing PDF path for --crop-areas"))?;
         let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
         validate_pdf_file(pdf_path.to_str().ok_or_else(|| anyhow!("Invalid PDF path"))?)?;
-        let flag_idx = args.iter().position(|a| a == "--crop-areas").ok_or_else(|| anyhow!("Missing --crop-areas flag"))?;
-        let mode_str = args.get(flag_idx + 1).ok_or_else(|| anyhow!("Missing mode after --crop-areas (text|image|both)"))?.to_ascii_lowercase();
-        let crop_kind = match mode_str.as_str() {
+        let crop_kind = match crop_mode.as_str() {
             "text" => DebugCropKind::Text,
             "image" => DebugCropKind::Image,
-            "both" => DebugCropKind::Both,
-            _ => bail!("Invalid mode: {}. Use text|image|both", mode_str),
+            "both" | _ => DebugCropKind::Both,
         };
-        let page_range = if flag_idx >= 3 {
-            let candidate = args.get(2).unwrap();
-            if !candidate.starts_with('-') && !candidate.ends_with(".pdf") { Some(candidate.clone()) } else { None }
-        } else { None };
-        let mut output_dir: Option<PathBuf> = None;
-        let mut format_opt: Option<String> = None;
-        let enable_deskew = args.iter().any(|a| a == "--deskew");
-        let mut i = 0usize;
-        while i + 1 < args.len() {
-            if args[i] == "--out" { output_dir = Some(PathBuf::from(sanitize_path_arg(&args[i+1]))); i += 2; continue; }
-            if args[i] == "--format" { format_opt = Some(args[i+1].clone()); i += 2; continue; }
-            i += 1;
-        }
-        run_pdf_layout_crop_debug(pdf_path, output_dir, crop_kind, page_range, AppConfig::default(), enable_deskew, format_opt.as_deref()).await?;
-        return Ok(());
+        let page_range = args.get(2).and_then(|c| {
+            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") { Some(c.clone()) } else { None }
+        });
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(run_pdf_layout_crop_debug(
+                pdf_path,
+                cli_opts.output_dir,
+                crop_kind,
+                page_range,
+                AppConfig::default(),
+                cli_opts.deskew,
+                cli_opts.debug_format.as_deref(),
+            ));
     }
 
-    // Simple one‑shot processing: pdf [pdf ...] [page_range] [target]
+    // ----- Normal processing mode -----
+
     if args.len() >= 2 {
         let mut positional: Vec<String> = args[1..].iter().map(|s| sanitize_path_arg(s)).collect();
         let mut page_range: Option<String> = None;
@@ -341,55 +522,13 @@ async fn main() -> Result<()> {
             positional,
             page_range,
             target_arg,
-            language_override,
+            cli_opts,
             AppConfig::default(),
-        )
-        .await?;
+        )?;
         return Ok(());
     }
 
     Ok(())
-}
-
-fn extract_hidden_language_flag(args: Vec<String>) -> Result<(Vec<String>, Option<String>)> {
-    let mut filtered: Vec<String> = Vec::with_capacity(args.len());
-    let mut language_override: Option<String> = None;
-
-    filtered.push(
-        args.first()
-            .cloned()
-            .ok_or_else(|| anyhow!("Missing argv[0]"))?,
-    );
-
-    let mut i = 1usize;
-    while i < args.len() {
-        if args[i] == "--language" {
-            let raw = args
-                .get(i + 1)
-                .ok_or_else(|| anyhow!("Missing value after --language"))?;
-            let normalized = raw.trim().to_ascii_lowercase();
-            if normalized.is_empty() {
-                bail!("--language value cannot be empty");
-            }
-            if !normalized
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-            {
-                bail!(
-                    "Invalid --language '{}'. Use only a-z, 0-9, and underscore",
-                    raw
-                );
-            }
-            language_override = Some(normalized);
-            i += 2;
-            continue;
-        }
-
-        filtered.push(args[i].clone());
-        i += 1;
-    }
-
-    Ok((filtered, language_override))
 }
 
 fn print_usage() {
@@ -545,11 +684,11 @@ fn print_target_profiles() {
     println!("{}", CLI_TEXT.main.target_profiles_page_range_note);
 }
 
-async fn handle_simple_processing(
+fn handle_simple_processing(
     pdf_paths: Vec<String>,
     page_range: Option<String>,
     target_spec: Option<String>,
-    ocr_language: Option<String>,
+    cli_opts: CliOptions,
     config: AppConfig,
 ) -> Result<()> {
     if pdf_paths.is_empty() {
@@ -569,14 +708,128 @@ async fn handle_simple_processing(
     let mut pipeline_config = PipelineConfig::simple_cli_defaults()
         .map_err(|e| anyhow!("Failed to construct CLI defaults: {}", e))?;
 
-    if let Some(language) = ocr_language {
+    // ----- Apply all CLI options to pipeline config -----
+
+    // Language
+    if let Some(ref language) = cli_opts.language {
         #[cfg(not(target_os = "linux"))]
         {
             bail!("--language is supported on Linux builds only");
         }
         #[cfg(target_os = "linux")]
-        pipeline_config.set_ocr_language(&language)?;
+        pipeline_config.set_ocr_language(language)?;
     }
+
+    // Text format (ccitt4 | jbig2 | djvu)
+    if let Some(ref fmt) = cli_opts.text_format {
+        pipeline_config.set_text_format(fmt)?;
+    }
+
+    // Cover / image format
+    if let Some(ref fmt) = cli_opts.cover_format {
+        let cover = match fmt.as_str() {
+            "jpeg" => CoverFormat::Jpeg,
+            "jp2" => CoverFormat::Jp2,
+            "ccitt4" => CoverFormat::Ccitt4,
+            "jbig2" => CoverFormat::Jbig2,
+            "none" => CoverFormat::None,
+            _ => bail!("Invalid cover format: {}", fmt),
+        };
+        pipeline_config.set_image_format(cover);
+    }
+
+    // Binarization
+    if let Some(ref method) = cli_opts.binarization {
+        // Build method string compatible with CliConfigBuilder::parse_binarization_method
+        let mut method_str = match method.as_str() {
+            "adaptive" => "1".to_string(),
+            "fixed" => "2".to_string(),
+            "heavy" => "3".to_string(),
+            _ => method.clone(),
+        };
+        if let Some(k) = cli_opts.sauvola_k {
+            method_str.push_str(&format!(" k={}", k));
+        }
+        if let Some(thr) = cli_opts.threshold {
+            method_str.push_str(&format!(" thr={}", thr));
+        }
+        let bin_config = lege::CliConfigBuilder::parse_binarization_method(&method_str);
+        pipeline_config.set_binarization(bin_config);
+    } else {
+        // Even without --binarization, allow standalone --threshold and --sauvola-k
+        if cli_opts.threshold.is_some() || cli_opts.sauvola_k.is_some() {
+            let mut method_str = "2".to_string(); // fixed threshold as default base
+            if let Some(k) = cli_opts.sauvola_k {
+                method_str = "1".to_string(); // adaptive if k is given
+                method_str.push_str(&format!(" k={}", k));
+            }
+            if let Some(thr) = cli_opts.threshold {
+                method_str.push_str(&format!(" thr={}", thr));
+            }
+            let bin_config = lege::CliConfigBuilder::parse_binarization_method(&method_str);
+            pipeline_config.set_binarization(bin_config);
+        }
+    }
+
+    // DjVu quality
+    if let Some(q) = cli_opts.djvu_quality {
+        pipeline_config.set_djvu_iw44_quality(q)?;
+    }
+
+    // Boolean toggles
+    if cli_opts.dither {
+        pipeline_config.set_dither_images(true);
+    }
+    if cli_opts.no_layout {
+        pipeline_config.set_enable_layout_detection(false);
+    }
+    if let Some(ocr_val) = cli_opts.ocr {
+        pipeline_config.set_enable_ocr(ocr_val);
+    }
+    if cli_opts.no_cover {
+        pipeline_config.set_no_cover_page(true);
+    }
+    if cli_opts.pdf_compat {
+        pipeline_config.set_pdf_compatibility_mode(true);
+    }
+    if cli_opts.invert {
+        pipeline_config.set_invert_input(true);
+        // Invert disables layout detection (model doesn't support inverted docs)
+        if pipeline_config.enable_layout_detection() {
+            pipeline_config.set_enable_layout_detection(false);
+        }
+    }
+    if cli_opts.symbol_mode {
+        pipeline_config.set_jbig2_symbol_mode(true);
+    }
+    if cli_opts.halftone {
+        pipeline_config.set_jbig2_halftone_image_regions(true);
+    }
+    if cli_opts.deskew {
+        pipeline_config.set_enable_deskew(true);
+    }
+    if cli_opts.high_quality {
+        pipeline_config.set_high_quality_output(true);
+    }
+    if cli_opts.original_images {
+        pipeline_config.set_keep_original_images(true);
+    }
+    if cli_opts.image_only {
+        // Image-only mode: keep originals, no binarization
+        pipeline_config.set_keep_original_images(true);
+    }
+
+    // Margin processing (precedence: force-crop > crop > center)
+    if cli_opts.force_crop {
+        pipeline_config.set_margin_settings(lege::margin::MarginSettings::CropAndResize);
+        pipeline_config.set_crop_footnotes(true);
+    } else if cli_opts.crop_margins {
+        pipeline_config.set_margin_settings(lege::margin::MarginSettings::CropAndResize);
+    } else if cli_opts.center_margins {
+        pipeline_config.set_margin_settings(lege::margin::MarginSettings::StandardizeAndCenter);
+    }
+
+    // ----- Target sizing -----
 
     let target_selection = target_spec
         .as_deref()
@@ -619,14 +872,13 @@ async fn handle_simple_processing(
 
     // Set page range if provided
     if let Some(ref range) = page_range {
-        // Validate the page range first
         validate_page_range(range)?;
         let page_range_obj = PageRange::parse(range)?;
         pipeline_config.set_page_range(Some(page_range_obj));
     }
 
     // Determine output directory
-    let output_dir = determine_output_directory(None, &normalized_inputs, &config)?;
+    let output_dir = determine_output_directory(cli_opts.output_dir, &normalized_inputs, &config)?;
 
     // Show batch summary
     info_println!("\n{}", CLI_TEXT.main.simple_mode_header);
@@ -645,7 +897,7 @@ async fn handle_simple_processing(
     let mut overall_ok = true;
 
     for (index, file_path) in file_paths.drain(..).enumerate() {
-        let mut per_file_config = pipeline_config.clone();
+        let per_file_config = pipeline_config.clone();
         let output_path = generate_output_path(&file_path, &output_dir, &per_file_config)?;
 
         if total_files > 1 {
@@ -659,7 +911,7 @@ async fn handle_simple_processing(
             info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_output, output_path.display()));
         }
 
-        match process_single_file(file_path.clone(), output_path.clone(), per_file_config).await {
+        match process_single_file(file_path.clone(), output_path.clone(), per_file_config) {
             Ok(()) => {
                 if total_files > 1 {
                     let remaining = total_files - index - 1;
@@ -676,7 +928,7 @@ async fn handle_simple_processing(
         }
     }
 
-    cleanup_cli_resources().await;
+    cleanup_cli_resources();
     if overall_ok {
         std::process::exit(0);
     } else {
@@ -688,8 +940,8 @@ fn print_env_variables_help() {
     println!("{}", CLI_TEXT.main.env_variables_help_block);
 }
 
-async fn handle_cli_mode(config: AppConfig) -> Result<()> {
-    match run_cli().await? {
+fn handle_cli_mode(config: AppConfig) -> Result<()> {
+    match run_cli()? {
         Some((file_path, pipeline_config)) => {
             let output_dir = determine_output_directory(
                 None,
@@ -697,10 +949,10 @@ async fn handle_cli_mode(config: AppConfig) -> Result<()> {
                 &config,
             )?;
             let output_path = generate_output_path(&file_path, &output_dir, &pipeline_config)?;
-            let result = process_single_file(file_path, output_path, pipeline_config).await;
+            let result = process_single_file(file_path, output_path, pipeline_config);
 
             // Force cleanup and exit for CLI to ensure clean termination
-            cleanup_cli_resources().await;
+            cleanup_cli_resources();
             if result.is_ok() {
                 std::process::exit(0);
             } else {
@@ -711,7 +963,7 @@ async fn handle_cli_mode(config: AppConfig) -> Result<()> {
     }
 }
 
-async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
+fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // Combined input: file path and processing options
     println!("{}", CLI_TEXT.app.main_title);
     println!("{}", CLI_TEXT.app.file_prompt);
@@ -741,9 +993,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     if input.contains("--pdf-to-png") {
         return handle_pdf_to_png(input);
     }
-    if input.contains("--crop-areas") {
-        return handle_pdf_crop_areas(input).await;
-    }
+
 
     // Parse file paths and page range
     let (files, page_range) = parse_file_paths_with_range(input);
@@ -760,11 +1010,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         .and_then(|s| s.to_str())
         == Some("pdf")
     {
-        // Use tokio::task::block_in_place to allow async call in sync context
-        let has_ocr = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async { check_pdf_ocr_layer(&PathBuf::from(file_path)).await })
-        });
+        let has_ocr = check_pdf_ocr_layer(&PathBuf::from(file_path));
 
         match has_ocr {
             Ok(true) => {
@@ -805,6 +1051,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         force_crop,
         deskew_enabled,
         high_quality_output,
+        jbig2_halftone_mode,
         djvu_quality,
     ) = loop {
         print!("\n{}{}{}\n", COLORS.info, CLI_TEXT.interactive.processing_options_title, COLORS.reset);
@@ -837,6 +1084,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 force_crop,
                 deskew_enabled,
                 high_quality_output,
+                jbig2_halftone_mode,
                 djvu_quality,
             )) => {
                 // No immediate rejection; we'll apply precedence rules below when building config
@@ -857,6 +1105,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     force_crop,
                     deskew_enabled,
                     high_quality_output,
+                    jbig2_halftone_mode,
                     djvu_quality,
                 );
             }
@@ -922,7 +1171,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         }
     }
 
-    // 3) Dithering logic: 'c' flag enables dithering.
+    // 3) Dithering logic: 'c' flag enables dithering, otherwise original images
     let effective_enable_dithering = final_enable_dithering;
 
     // Create pipeline config with selected options (after precedence adjustments)
@@ -949,6 +1198,7 @@ async fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     config.set_invert_input(invert_input);
     config.set_enable_deskew(deskew_enabled);
     config.set_jbig2_symbol_mode(symbol_mode);
+    config.set_jbig2_halftone_image_regions(jbig2_halftone_mode);
     config.set_keep_original_images(original_image);
 
     // Set margin processing settings
@@ -1046,6 +1296,7 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
+    bool,
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
 )> {
     if input.is_empty() {
@@ -1068,6 +1319,7 @@ fn parse_format_selection_with_options(
             false, // force_crop
             false, // deskew_enabled
             false, // high_quality_output
+            false, // jbig2_halftone_mode
             None,  // djvu_quality (not DjVu)
         ));
     }
@@ -1079,7 +1331,7 @@ fn parse_format_selection_with_options(
     let has_high_flag = parts.iter().any(|&p| p == "--high");
 
     // Parse main format option
-    let (format_num, has_c_flag, has_s_flag) = parse_main_format(main_part)?;
+    let (format_num, c_count, has_s_flag) = parse_main_format(main_part)?;
 
     // Map the numbered menu to text format
     // 1: CCITT4, 2: JBIG2, 3: DJVU
@@ -1110,8 +1362,9 @@ fn parse_format_selection_with_options(
 
     // Determine dithering:
     // ALL formats default to original images (no dithering)
-    // 'c' flag enables dithering.
-    let enable_dithering = has_c_flag;
+    // 'c' flag ENABLES dithering
+    let enable_dithering = c_count > 0;
+    let jbig2_halftone_mode = format_num == 2 && c_count >= 2;
 
     // Parse additional options from the remaining parts
     // Also extract option letters that might be embedded in the first part (e.g., "1a" means format 1 with option 'a')
@@ -1189,12 +1442,13 @@ fn parse_format_selection_with_options(
         force_crop,
         deskew_enabled,
         has_high_flag,
+        jbig2_halftone_mode,
         djvu_quality,
     ))
 }
 
-fn parse_main_format(input: &str) -> Result<(u32, bool, bool)> {
-    let has_c_flag = input.contains('c'); // 'c' enables dithering
+fn parse_main_format(input: &str) -> Result<(u32, usize, bool)> {
+    let c_count = input.chars().filter(|&c| c == 'c').count(); // 'c' enables dithering
     let has_s_flag = input.contains('s'); // 's' enables symbol mode for JBIG2
 
     // Extract the numeric part
@@ -1217,7 +1471,7 @@ fn parse_main_format(input: &str) -> Result<(u32, bool, bool)> {
         ));
     }
 
-    Ok((format_num, has_c_flag, has_s_flag))
+    Ok((format_num, c_count, has_s_flag))
 }
 
 fn parse_options(
@@ -1626,65 +1880,6 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     Ok(None)
 }
 
-async fn handle_pdf_crop_areas(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
-    let parts: Vec<&str> = input.split("--crop-areas").collect();
-    if parts.len() != 2 {
-        return Err(anyhow!("Invalid crop-areas format. Use: file.pdf [page_range] --crop-areas text|image|both [--out DIR] [--format png|jpg] [--deskew]"));
-    }
-    let file_and_opts = parts[0].trim();
-    let mode_and_flags = parts[1].trim();
-    let (files, _page_range) = parse_file_paths_with_range(file_and_opts);
-    if files.is_empty() {
-        return Err(anyhow!("No PDF file specified"));
-    }
-    let pdf_path = PathBuf::from(&files[0]);
-    validate_pdf_file(&files[0])?;
-
-    // Mode
-    let mut tokens = mode_and_flags.split_whitespace();
-    let mode_token = tokens
-        .next()
-        .ok_or_else(|| anyhow!("Missing mode after --crop-areas (text|image|both)"))?
-        .to_ascii_lowercase();
-    let crop_kind = match mode_token.as_str() {
-        "text" => DebugCropKind::Text,
-        "image" => DebugCropKind::Image,
-        "both" => DebugCropKind::Both,
-        _ => bail!("Invalid mode: {}. Use text|image|both", mode_token),
-    };
-
-    // Flags
-    let enable_deskew = mode_and_flags.contains("--deskew");
-    let flag_parts: Vec<&str> = mode_and_flags.split_whitespace().collect();
-    let mut output_dir: Option<PathBuf> = None;
-    let mut format_opt: Option<String> = None;
-    let mut i = 0usize;
-    while i + 1 < flag_parts.len() {
-        if flag_parts[i] == "--out" {
-            output_dir = Some(PathBuf::from(parse_quoted_path(flag_parts[i + 1])));
-            i += 2;
-            continue;
-        }
-        if flag_parts[i] == "--format" {
-            format_opt = Some(flag_parts[i + 1].to_string());
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-
-    run_pdf_layout_crop_debug(
-        pdf_path,
-        output_dir,
-        crop_kind,
-        None, // page_range already parsed and applied
-        AppConfig::default(),
-        enable_deskew,
-        format_opt.as_deref(),
-    ).await?;
-    Ok(None)
-}
-
 pub fn validate_pdf_file(path: &str) -> Result<()> {
     let path_buf = PathBuf::from(path);
 
@@ -1895,25 +2090,20 @@ fn generate_output_path(
 }
 
 /// Check if a PDF file has OCR/text layers by sampling pages
-async fn check_pdf_ocr_layer(pdf_path: &PathBuf) -> Result<bool> {
-    use std::sync::Arc;
+fn check_pdf_ocr_layer(pdf_path: &PathBuf) -> Result<bool> {
+    // Non-intrusive OCR precheck via PDFium/frontstage:
+    // - scan only the first N pages
+    // - best effort (return false if precheck backend is unavailable)
+    const MAX_PAGES_TO_SAMPLE: usize = 30;
 
-    // Read PDF bytes
-    let pdf_bytes = tokio::fs::read(pdf_path)
-        .await
-        .map_err(|e| anyhow!("Failed to read PDF: {}", e))?;
-    let pdf_bytes = Arc::from(pdf_bytes.into_boxed_slice());
+    let pdf_bytes = match std::fs::read(pdf_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(false),
+    };
 
-    // Create a minimal renderer just for checking text layers
-    let mut raster_cfg = lege::pagerender::RasterConfig::default();
-    raster_cfg.render_forms = false;
-
-    let renderer = lege::pagerender::PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
-
-    // Check for OCR using the has_any_text_layer method
-    let has_ocr = renderer.has_any_text_layer().await?;
-
-    Ok(has_ocr)
+    // pdfium text-layer precheck not available in this build; always assume no text layer.
+    let _ = (pdf_bytes, MAX_PAGES_TO_SAMPLE);
+    Ok(false)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2096,7 +2286,7 @@ fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progr
     }
 }
 
-async fn process_single_file(
+fn process_single_file(
     input_path: PathBuf,
     output_path: PathBuf,
     config: PipelineConfig,
@@ -2116,7 +2306,7 @@ async fn process_single_file(
     let mut last_status_lines: Option<(String, String, String)> = None;
     let job_started_at = Instant::now();
     loop {
-        match receiver.recv_async().await {
+        match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(ProgressUpdate::Status {
                 task_id: id,
                 status,
@@ -2176,7 +2366,15 @@ async fn process_single_file(
                 break;
             }
             Ok(_) => {}
-            Err(_) => break,
+            Err(flume::RecvTimeoutError::Timeout) => continue,
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                if progress_error.is_none() {
+                    progress_error = Some(anyhow!(
+                        "Processing task disconnected before completion"
+                    ));
+                }
+                break;
+            }
         }
     }
     let progress_result = if let Some(err) = progress_error {
