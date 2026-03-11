@@ -163,13 +163,19 @@ impl PaddleXEngine {
                 .as_deref() == Some("1");
 
             if gpu_disabled {
-                vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
-            } else {
-                vec![
-                    (vec![webgpu_execution_provider_dispatch().expect("Failed to initialize WebGPU provider")], vec!["WebGPU"]),
-                    (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-                ]
+                return vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])];
             }
+
+            let mut attempts = Vec::with_capacity(2);
+            if let Some(webgpu_provider) = webgpu_execution_provider_dispatch() {
+                // Register WebGPU first and CPU second so ORT can place unsupported ops on CPU.
+                attempts.push((
+                    vec![webgpu_provider, CPUExecutionProvider::default().build()],
+                    vec!["WebGPU", "CPU"],
+                ));
+            }
+            attempts.push((vec![CPUExecutionProvider::default().build()], vec!["CPU"]));
+            attempts
         }
 
         #[cfg(target_os = "windows")]

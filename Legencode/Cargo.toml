@@ -31,7 +31,7 @@ palette = { workspace = true }  # Used by linear RGB -> luma conversion
 lazy_static = { workspace = true }       # Used by LUT initialization in linearize.rs
 thiserror = { workspace = true }        # Used by ColorOpsError derive
 png = "0.17"                # For PNG encoding/decoding
-ort = { path = "C:/Users/dk/Desktop/Testers/layout-test2/ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }
+ort = { path = "../ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }
 once_cell = { workspace = true }          # For global static initialization
 
 # Additional dependencies for jbig2enc-rust
