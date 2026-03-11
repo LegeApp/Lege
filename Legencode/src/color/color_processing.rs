@@ -155,8 +155,8 @@ fn process_traditional_dithering(
         region_height,
     );
 
-    // Dither using 8x8 Bayer matrix
-    let dithered_1bit_data = dither_bayer8x8(&grayscale_region, region_width, region_height);
+    // Dither using phase-locked blue-noise (designed for CCITT4 run-length encoding)
+    let dithered_1bit_data = dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height);
 
     // Convert back to RGB format for compatibility
     let pixel_count = dithered_1bit_data.len();
@@ -654,6 +654,162 @@ fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
             ((pixel > threshold.wrapping_mul(4)) as u8).wrapping_mul(255)
         })
         .collect()
+}
+
+/// Deterministic hash-based blue-noise-like threshold sampler (0..255).
+#[inline]
+fn blue_noise_threshold_u8(x: i32, y: i32) -> u8 {
+    let mut v = (x as u32).wrapping_mul(0x1f123bb5)
+        ^ (y as u32).wrapping_mul(0x05491333)
+        ^ 0x9e3779b9;
+    v ^= v >> 16;
+    v = v.wrapping_mul(0x7feb352d);
+    v ^= v >> 15;
+    v = v.wrapping_mul(0x846ca68b);
+    v ^= v >> 16;
+    (v & 0xFF) as u8
+}
+
+#[inline]
+fn collect_transitions(line: &[u8]) -> Vec<u32> {
+    if line.is_empty() {
+        return Vec::new();
+    }
+    let mut transitions = Vec::with_capacity(line.len() / 4);
+    let mut prev = line[0];
+    for (x, &v) in line.iter().enumerate().skip(1) {
+        if v != prev {
+            transitions.push(x as u32);
+            prev = v;
+        }
+    }
+    transitions
+}
+
+#[inline]
+fn run_length_governor(line: &mut [u8], min_run: u32) {
+    if line.len() < 3 || min_run < 2 {
+        return;
+    }
+    let min_run = min_run as usize;
+    let mut i = 0;
+    while i < line.len() {
+        let v = line[i];
+        let mut j = i + 1;
+        while j < line.len() && line[j] == v {
+            j += 1;
+        }
+        let run_len = j - i;
+        if run_len < min_run && i > 0 && j < line.len() {
+            let left = line[i - 1];
+            let right = line[j];
+            if left == right && left != v {
+                line[i..j].fill(left);
+            }
+        }
+        i = j;
+    }
+}
+
+#[inline]
+fn ccitt4_proxy_rate_cost(curr_transitions: &[u32], prev_transitions: &[u32]) -> f32 {
+    let mut cost = (curr_transitions.len() as f32) * 4.0;
+    if prev_transitions.is_empty() || curr_transitions.is_empty() {
+        return cost;
+    }
+    let mut j = 0;
+    for &tx in curr_transitions {
+        while j + 1 < prev_transitions.len() && prev_transitions[j + 1] < tx {
+            j += 1;
+        }
+        let mut best = u32::MAX;
+        if j < prev_transitions.len() {
+            best = best.min(tx.abs_diff(prev_transitions[j]));
+        }
+        if j + 1 < prev_transitions.len() {
+            best = best.min(tx.abs_diff(prev_transitions[j + 1]));
+        }
+        // Favor the CCITT4 vertical window (|a1-b1| <= 3); penalize larger drifts.
+        cost += if best <= 3 { best as f32 } else { 8.0 };
+    }
+    cost
+}
+
+#[inline]
+fn lowpass_distortion_proxy(candidate_line: &[u8], grayscale_data: &[u8], row_offset: usize) -> f32 {
+    if candidate_line.is_empty() {
+        return 0.0;
+    }
+    let width = candidate_line.len();
+    let sample_err = |x: i32| -> f32 {
+        let clamped = x.clamp(0, (width - 1) as i32) as usize;
+        let cand = candidate_line[clamped] as f32;
+        let src = grayscale_data[row_offset + clamped] as f32;
+        cand - src
+    };
+    let mut sum = 0.0;
+    for x in 0..(width as i32) {
+        let e = (sample_err(x - 2)
+            + 4.0 * sample_err(x - 1)
+            + 6.0 * sample_err(x)
+            + 4.0 * sample_err(x + 1)
+            + sample_err(x + 2)) / 16.0;
+        sum += e.abs();
+    }
+    sum / (width as f32)
+}
+
+/// Dithers an image using phase-locked blue-noise thresholding and run-length governance.
+/// Optimised for CCITT4 output: minimises transitions between lines and enforces minimum
+/// run lengths so the encoder can use long vertical and horizontal runs.
+pub fn dither_phase_locked_blue_noise_rlg(
+    grayscale_data: &[u8],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let expected = w * h;
+    if expected == 0 || grayscale_data.len() < expected {
+        return Vec::new();
+    }
+    let mut out = vec![255; expected];
+    let mut prev_transitions: Vec<u32> = Vec::new();
+    let mut phase_x: i32 = 0;
+    const SHIFT_MIN: i32 = -3;
+    const SHIFT_MAX: i32 = 3;
+    const MIN_RUN: u32 = 2;
+    const DISTORTION_WEIGHT: f32 = 0.06;
+    let mut best_line = vec![255u8; w];
+    let mut candidate_line = vec![255u8; w];
+    for y in 0..h {
+        let row_off = y * w;
+        let mut best_cost = f32::INFINITY;
+        let mut best_shift = 0;
+        let mut best_transitions = Vec::new();
+        for shift in SHIFT_MIN..=SHIFT_MAX {
+            for x in 0..w {
+                let src = grayscale_data[row_off + x];
+                let thr = blue_noise_threshold_u8(x as i32 + phase_x + shift, y as i32);
+                candidate_line[x] = if src > thr { 255 } else { 0 };
+            }
+            run_length_governor(&mut candidate_line, MIN_RUN);
+            let transitions = collect_transitions(&candidate_line);
+            let rate = ccitt4_proxy_rate_cost(&transitions, &prev_transitions);
+            let distortion = lowpass_distortion_proxy(&candidate_line, grayscale_data, row_off);
+            let cost = rate + DISTORTION_WEIGHT * distortion;
+            if cost < best_cost {
+                best_cost = cost;
+                best_shift = shift;
+                best_line.copy_from_slice(&candidate_line);
+                best_transitions.clone_from(&transitions);
+            }
+        }
+        phase_x += best_shift;
+        out[row_off..row_off + w].copy_from_slice(&best_line);
+        prev_transitions = best_transitions;
+    }
+    out
 }
 
 /// Stucki error diffusion dithering - higher quality than Floyd-Steinberg

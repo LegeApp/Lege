@@ -5,10 +5,7 @@ use crate::types::BinarizationOptions;
 use anyhow::{anyhow, Result};
 use image::{GrayImage, Luma};
 use ndarray::Array4;
-#[cfg(target_os = "macos")]
-use ort::execution_providers::CoreMLExecutionProvider;
-#[cfg(target_os = "windows")]
-use ort::execution_providers::DirectMLExecutionProvider;
+// GPU execution providers intentionally excluded for HeavySauvola – CPU only.
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Value;
 use rayon::prelude::*;
@@ -59,43 +56,13 @@ impl HeavySauvolaProcessor {
         let builder =
             Session::builder()?.with_optimization_level(GraphOptimizationLevel::Level3)?;
 
-        // Try different execution providers with fallback to CPU
-        let session = 'provider_search: loop {
-            #[cfg(target_os = "macos")]
-            if let Ok(coreml_builder) = builder
-                .clone()
-                .with_execution_providers([CoreMLExecutionProvider::default().build()])
-            {
-                if let Ok(session) = coreml_builder.commit_from_file(&model_path) {
-                    #[cfg(feature = "debug-logging")]
-                    crate::streamline::log_debug_message(
-                        "Heavy-duty Sauvola: Using CoreML execution provider.",
-                    );
-                    break 'provider_search session;
-                }
-            }
-
-            #[cfg(target_os = "windows")]
-            if let Ok(directml_builder) = builder
-                .clone()
-                .with_execution_providers([DirectMLExecutionProvider::default().build()])
-            {
-                if let Ok(session) = directml_builder.commit_from_file(&model_path) {
-                    #[cfg(feature = "debug-logging")]
-                    crate::streamline::log_debug_message(
-                        "Heavy-duty Sauvola: Using DirectML execution provider",
-                    );
-                    break 'provider_search session;
-                }
-            }
-
-            // Fallback to CPU
-            #[cfg(feature = "debug-logging")]
-            crate::streamline::log_debug_message(
-                "Heavy-duty Sauvola: Using CPU execution provider",
-            );
-            break 'provider_search builder.commit_from_file(&model_path)?;
-        };
+        // Always use CPU; GPU execution providers are intentionally disabled for
+        // HeavySauvola to ensure deterministic, stable binarization output.
+        #[cfg(feature = "debug-logging")]
+        crate::streamline::log_debug_message(
+            "Heavy-duty Sauvola: Using CPU execution provider (forced)",
+        );
+        let session = builder.commit_from_file(&model_path)?;
 
         Ok(Self { session })
     }
