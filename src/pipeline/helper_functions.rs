@@ -1,5 +1,6 @@
 ﻿// helper_functions.rs - Shared helper functions for the pipeline
 use anyhow::{Result, anyhow};
+use image::RgbImage;
 use tokio::sync::Semaphore;
 
 use crate::ocr::check_tesseract_availability;
@@ -137,6 +138,51 @@ pub fn rounded_clamped_bbox(bbox: [f32; 4], page_width: u32, page_height: u32) -
 /// Fixed threshold used for blank-page fallback when adaptive binarization is active.
 pub const BLANK_PAGE_FALLBACK_THRESHOLD: u8 = 96;
 
+/// Fast heuristic: treat a page as visually blank only when almost all sampled pixels are near-white.
+///
+/// This prevents "no detections" failures from forcing blank-page thresholding on real content pages.
+pub fn is_visually_blank_page(image: &RgbImage) -> bool {
+    let raw = image.as_raw();
+    if raw.len() < 3 {
+        return true;
+    }
+
+    let pixel_count = (image.width() as usize).saturating_mul(image.height() as usize);
+    if pixel_count == 0 {
+        return true;
+    }
+
+    // Sample up to ~200k pixels for speed on large pages while keeping stable ratios.
+    let step = (pixel_count / 200_000).max(1);
+    let mut sampled = 0usize;
+    let mut non_white = 0usize;
+
+    for px_index in (0..pixel_count).step_by(step) {
+        let base = px_index * 3;
+        if base + 2 >= raw.len() {
+            break;
+        }
+
+        let r = raw[base] as u16;
+        let g = raw[base + 1] as u16;
+        let b = raw[base + 2] as u16;
+        // Integer luminance approximation.
+        let luma = (299u32 * r as u32 + 587u32 * g as u32 + 114u32 * b as u32) / 1000;
+
+        sampled += 1;
+        if luma < 245 {
+            non_white += 1;
+        }
+    }
+
+    if sampled == 0 {
+        return true;
+    }
+
+    let non_white_ratio = non_white as f32 / sampled as f32;
+    non_white_ratio < 0.003
+}
+
 /// Decide whether to force simple thresholding for blank pages.
 ///
 /// This uses final filtered detections from Paddle (`InferenceResult.has_no_detections`).
@@ -144,6 +190,7 @@ pub const BLANK_PAGE_FALLBACK_THRESHOLD: u8 = 96;
 pub fn should_force_blank_page_threshold(
     config: &PipelineConfig,
     has_no_filtered_detections: bool,
+    page_is_visually_blank: bool,
 ) -> bool {
     if !config.enable_layout_detection() {
         return false;
@@ -151,7 +198,7 @@ pub fn should_force_blank_page_threshold(
     if config.binarization().use_fixed_threshold || config.binarization().use_heavy_duty {
         return false;
     }
-    has_no_filtered_detections
+    has_no_filtered_detections && page_is_visually_blank
 }
 
 // Helper to encode a small image region; used by image overlays in the page pipeline
@@ -263,10 +310,17 @@ pub async fn encode_region_image(
         EncodingResult::Standard(data) => Ok((data, fmt_str)),
         EncodingResult::Jbig2WithGlobals {
             page_data,
-            mut global_data,
+            ..
         } => {
-            global_data.extend_from_slice(&page_data);
-            Ok((global_data, fmt_str))
+            if fmt_str != "jbig2" {
+                return Err(anyhow!(
+                    "Encoder returned JBIG2 data but format tag is '{}'",
+                    fmt_str
+                ));
+            }
+            // Region overlays do not carry a separate global stream in this path.
+            // Return the page stream only to avoid corrupting the JBIG2 payload.
+            Ok((page_data, fmt_str))
         }
     }
 }
@@ -684,6 +738,11 @@ pub async fn encode_page_data(
 
     match encoding_result {
         EncodingResult::Standard(data) => {
+            if base_format == "jbig2" {
+                return Err(anyhow::anyhow!(
+                    "JBIG2 text mode returned non-JBIG2 payload (Standard variant)"
+                ));
+            }
             if data.is_empty() {
                 return Err(anyhow::anyhow!(
                     "Encoder returned empty data for {}x{} image",
@@ -714,8 +773,13 @@ pub async fn encode_page_data(
         }
         EncodingResult::Jbig2WithGlobals {
             page_data,
-            mut global_data,
+            global_data,
         } => {
+            if base_format != "jbig2" {
+                return Err(anyhow::anyhow!(
+                    "Non-JBIG2 text mode returned JBIG2 payload (Jbig2WithGlobals variant)"
+                ));
+            }
             if page_data.is_empty() {
                 return Err(anyhow::anyhow!(
                     "Encoder returned empty data for {}x{} image",
@@ -723,9 +787,6 @@ pub async fn encode_page_data(
                     height
                 ));
             }
-
-            // Combine page and global data for PDF integration
-            global_data.extend_from_slice(&page_data);
 
             #[cfg(feature = "debug-logging")]
             crate::perf_log!(
@@ -827,60 +888,29 @@ pub fn spawn_pdf_writer_actor(
         crate::info_log!("[PdfWriterActor] Started, waiting for pages...");
 
         while let Some(msg) = rx.recv().await {
-            // Check memory pressure before processing each message - wait if critical
-            // Apply memory backpressure before accepting new messages
-            wait_for_memory_relief().await;
+            // NOTE: Do NOT block the writer for memory relief here.
+            // The writer is the component that FREES memory by flushing pages to disk.
+            // Blocking it makes memory pressure worse, not better.
 
             match msg {
                 WriterMessage::AppendPage { page, page_index } => {
-                    // Apply buffer-based backpressure: if buffer is getting large, wait for it to drain
-                    // This provides natural backpressure based on actual work completion
-                    const MAX_BUFFER_SIZE: usize = 50; // Maximum pages to buffer before applying backpressure
-                    while page_buffer.len() >= MAX_BUFFER_SIZE {
-                        crate::warn_log!(
-                            "[PdfWriterActor] Page buffer at capacity ({} pages), waiting for pages to be written to disk",
-                            page_buffer.len()
-                        );
-
-                        // Try to write any consecutive pages that are ready
-                        let mut wrote_any = false;
-                        for page in drain_ready_values(&mut page_buffer, &mut next_expected) {
-                            if let Err(e) = builder.add_page(&page) {
-                                let failed_page = next_expected.saturating_sub(1);
-                                crate::warn_log!(
-                                    "[PdfWriterActor] Failed to append page {}: {}",
-                                    failed_page,
-                                    e
-                                );
-                                return Err(anyhow::anyhow!(
-                                    "Failed to append page {}: {}",
-                                    failed_page,
-                                    e
-                                ));
-                            }
-                            pages_written += 1;
-                            wrote_any = true;
-                        }
-
-                        // If we couldn't write any pages (waiting for earlier page), sleep briefly
-                        if !wrote_any {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        }
-                    }
-
-                    // Buffer the incoming page
+                    // Always accept the incoming page immediately — never block the recv loop.
+                    // The channel capacity already provides backpressure to senders.
+                    // Blocking here before inserting causes a deadlock: the writer spins
+                    // waiting for `next_expected` to appear, but it can't receive it
+                    // because it stopped reading from the channel.
                     page_buffer.insert(page_index, page);
 
-                    // Log if buffer is still growing (but under threshold)
-                    if page_buffer.len() > 30 && page_buffer.len() % 10 == 0 {
-                        log::warn!(
-                            "[PdfWriterActor] Page buffer at {} pages (threshold: {})",
+                    // Log if buffer is growing large (informational only, no blocking)
+                    if page_buffer.len() > 50 && page_buffer.len() % 25 == 0 {
+                        crate::warn_log!(
+                            "[PdfWriterActor] Page buffer at {} pages (next_expected: {}, waiting for out-of-order page)",
                             page_buffer.len(),
-                            MAX_BUFFER_SIZE
+                            next_expected
                         );
                     }
 
-                    // Append all consecutive pages starting from next_expected
+                    // Drain all consecutive pages starting from next_expected
                     for page in drain_ready_values(&mut page_buffer, &mut next_expected) {
                         if let Err(e) = builder.add_page(&page) {
                             let failed_page = next_expected.saturating_sub(1);
@@ -915,10 +945,6 @@ pub fn spawn_pdf_writer_actor(
                             }
                         }
 
-                        // Additional memory check periodically during processing - wait if needed
-                        if pages_written % 10 == 0 {
-                            wait_for_memory_relief().await;
-                        }
                     }
                 }
                 WriterMessage::Finalize => {

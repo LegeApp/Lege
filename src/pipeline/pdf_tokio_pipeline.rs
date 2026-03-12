@@ -689,8 +689,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
-    let force_blank_threshold =
-        should_force_blank_page_threshold(&config, inference_result.has_no_detections);
+    let force_blank_threshold = should_force_blank_page_threshold(
+        &config,
+        inference_result.has_no_detections,
+        crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
+    );
 
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // In "jpeg" text format mode, skip binarization and use the RGB image directly for base encoding
@@ -1255,10 +1258,17 @@ fn encode_region_image_sync(
         EncodingResult::Standard(data) => Ok((data, fmt_str)),
         EncodingResult::Jbig2WithGlobals {
             page_data,
-            mut global_data,
+            ..
         } => {
-            global_data.extend_from_slice(&page_data);
-            Ok((global_data, fmt_str))
+            if fmt_str != "jbig2" {
+                return Err(anyhow!(
+                    "Encoder returned JBIG2 data but format tag is '{}'",
+                    fmt_str
+                ));
+            }
+            // Region overlays do not carry a separate global stream in this path.
+            // Return page data only to avoid producing invalid concatenated JBIG2 bytes.
+            Ok((page_data, fmt_str))
         }
     }
 }
@@ -1403,6 +1413,11 @@ async fn encode_base_layer(
 
     match encoding_result {
         EncodingResult::Standard(data) => {
+            if base_format == "jbig2" {
+                return Err(anyhow!(
+                    "JBIG2 text mode returned non-JBIG2 payload (Standard variant)"
+                ));
+            }
             if data.is_empty() {
                 return Err(anyhow!(
                     "Encoder returned empty data for {}x{} image",
@@ -1436,6 +1451,11 @@ async fn encode_base_layer(
             page_data,
             global_data,
         } => {
+            if base_format != "jbig2" {
+                return Err(anyhow!(
+                    "Non-JBIG2 text mode returned JBIG2 payload (Jbig2WithGlobals variant)"
+                ));
+            }
             if page_data.is_empty() {
                 return Err(anyhow!(
                     "Encoder returned empty data for {}x{} image",

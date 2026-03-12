@@ -159,7 +159,7 @@ djvu_encoder = { path = "DJVULibRust" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Local fork of ort with WebGPU cleanup fix - uses WebGPU with Vulkan backend (dynamic loading)
-ort = { path = "C:/Users/dk/Desktop/Testers/layout-test2/ort", default-features = false, features = ["std", "ndarray", "tracing", "webgpu", "load-dynamic"] }
+ort = { path = "ort", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "webgpu", "load-dynamic"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = "0.14"
 wgpu = "28"
@@ -174,7 +174,7 @@ pollster = "0.4"
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
 # Local fork of ort with WebGPU cleanup fix - uses DirectML on Windows (dynamic loading)
-ort = { path = "C:/Users/dk/Desktop/Testers/layout-test2/ort", default-features = false, features = ["std", "ndarray", "tracing", "directml", "load-dynamic"] }
+ort = { path = "ort", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "directml", "load-dynamic"] }
 winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
 windows = { workspace = true, features = [
     "Foundation",
@@ -274,9 +274,8 @@ assets = [
     ["/home/dk/Desktop/lege-run/installer/linux64/libpdfium.so", "usr/lib/lege/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so", "usr/lib/lege/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1", "usr/lib/lege/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1.23.0", "usr/lib/lege/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1.25.0", "usr/lib/lege/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime_providers_shared.so", "usr/lib/lege/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/libwebgpu_dawn.so", "usr/lib/lege/", "644"],
     # ONNX models
     ["/home/dk/Desktop/lege-run/installer/linux64/paddle-layout.onnx", "usr/share/lege/models/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/paddle-rotate.onnx", "usr/share/lege/models/", "644"],

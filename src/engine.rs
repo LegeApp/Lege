@@ -12,13 +12,33 @@ use ort::session::RunOptions;
 use ort::session::Session;
 use ort::session::SessionInputValue;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::tensor::TensorElementType;
 use ort::value::Value;
+use ort::value::ValueType;
 use std::fs::File;
 use std::cell::RefCell;
+#[cfg(feature = "debug-logging")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "debug-logging")]
+use std::time::Instant;
 
 use bytemuck;
 
 const PADDLE_IMG_SIZE: u32 = 640;
+
+#[cfg(feature = "debug-logging")]
+static DEBUG_UNTIL_FIRST_DETECTION_ENABLED: AtomicBool = AtomicBool::new(true);
+
+macro_rules! debug_until_first_detection {
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "debug-logging")]
+        {
+            if DEBUG_UNTIL_FIRST_DETECTION_ENABLED.load(Ordering::Relaxed) {
+                debug_println!($($arg)*);
+            }
+        }
+    }};
+}
 
 // Thread-local buffers to reduce allocations in preprocessing
 thread_local! {
@@ -96,22 +116,80 @@ unsafe impl Sync for PaddleXEngine {}
 
 impl PaddleXEngine {
     pub fn new(model_path: &str, config: PaddleXConfig) -> Result<Self> {
+        debug_until_first_detection!(
+            "PaddleXEngine::new: model_path='{}', thresholds(conf={}, nms={}, iou={}), batch_size={}",
+            model_path,
+            config.confidence_threshold,
+            config.nms_threshold,
+            config.iou_threshold,
+            config.batch_size
+        );
         // Ensure ONNX Runtime is initialized (this should be the FIRST time it happens)
         static ONNX_INIT: OnceCell<()> = OnceCell::new();
         ONNX_INIT.get_or_try_init(|| -> Result<()> {
+            debug_until_first_detection!("PaddleXEngine::new: initializing ONNX Runtime");
             ort::init()
                 .with_name("lege")
                 .commit();
+            debug_until_first_detection!("PaddleXEngine::new: ONNX Runtime initialized");
             Ok(())
         })?;
         let (session, provider_name) = Self::build_session(model_path)?;
+        debug_until_first_detection!(
+            "PaddleXEngine::new: session built with provider={}, outputs={}",
+            provider_name,
+            session.outputs.len()
+        );
+        for (i, output) in session.outputs.iter().enumerate() {
+            debug_until_first_detection!(
+                "PaddleXEngine::new: output[{}] name='{}' type={:?}",
+                i,
+                output.name,
+                output.output_type
+            );
+        }
         
-        // 1. Find the main detection output (usually float32)
+        let is_box_tensor_type = |o: &ort::session::Output| {
+            matches!(
+                o.output_type,
+                ValueType::Tensor {
+                    ty: TensorElementType::Float32 | TensorElementType::Int8 | TensorElementType::Uint8,
+                    ..
+                }
+            )
+        };
+        let is_count_tensor_type = |o: &ort::session::Output| {
+            matches!(
+                o.output_type,
+                ValueType::Tensor {
+                    ty: TensorElementType::Int32,
+                    ..
+                }
+            )
+        };
+
+        // 1. Find the main detection output (Nx6-like tensor). Prefer known output names first.
         let output_index = session
             .outputs
             .iter()
-            .position(|o| o.name == "reshape2_95.tmp_0" || o.output_type == ort::value::ValueType::Tensor { ty: ort::tensor::TensorElementType::Float32, shape: ort::tensor::Shape::new([-1, -1, -1, -1]), dimension_symbols: ort::tensor::SymbolicDimensions::new([String::default(), String::default(), String::default(), String::default()]) })
-            .ok_or_else(|| anyhow!("Missing box output 'reshape2_95.tmp_0'"))?;
+            .position(|o| {
+                if !is_box_tensor_type(o) {
+                    return false;
+                }
+                let name = o.name.to_ascii_lowercase();
+                name == "reshape2_95.tmp_0"
+                    || name.contains("bbox")
+                    || name.contains("multiclass_nms")
+                    || name.contains("nms")
+                    || name.contains("tmp_0")
+            })
+            .or_else(|| session.outputs.iter().position(is_box_tensor_type))
+            .ok_or_else(|| anyhow!("Could not locate model box output tensor"))?;
+        debug_until_first_detection!(
+            "PaddleXEngine::new: selected output_index={} name='{}'",
+            output_index,
+            session.outputs[output_index].name
+        );
 
         // 2. Find the count output (usually int32)
         // This is the magic key that lets us batch correctly.
@@ -119,15 +197,28 @@ impl PaddleXEngine {
         let count_index = session
             .outputs
             .iter()
-            .position(|o| 
-                o.name == "tile_3.tmp_0" || // Specific name from PaddlePaddle Graph 0
-                o.name.contains("bbox_num") || 
-                o.name.contains("multiclass_nms") ||
-                o.output_type == ort::value::ValueType::Tensor { ty: ort::tensor::TensorElementType::Int32, shape: ort::tensor::Shape::new([-1]), dimension_symbols: ort::tensor::SymbolicDimensions::new([String::default()]) }
-            );
+            .position(|o| {
+                let name = o.name.to_ascii_lowercase();
+                (name == "tile_3.tmp_0"
+                    || name.contains("bbox_num")
+                    || name.contains("bboxnum")
+                    || name.contains("tmp_2")
+                    || (name.contains("count") && name.contains("bbox"))
+                    || is_count_tensor_type(o))
+                    && o.name != session.outputs[output_index].name
+            });
 
         if count_index.is_none() {
             info_println!("Warning: Model lacks a 'bbox_num' (int32) output. Batching will be simulated sequentially.");
+            debug_until_first_detection!(
+                "PaddleXEngine::new: no count_index found; sequential fallback will be used for batch inference"
+            );
+        } else if let Some(idx) = count_index {
+            debug_until_first_detection!(
+                "PaddleXEngine::new: selected count_index={} name='{}'",
+                idx,
+                session.outputs[idx].name
+            );
         }
 
         Ok(Self {
@@ -141,6 +232,7 @@ impl PaddleXEngine {
 
     fn build_session(model_path: &str) -> Result<(Session, String)> {
         info!("Building session for model: {}", model_path);
+        debug_until_first_detection!("PaddleXEngine::build_session: opening model file '{}'", model_path);
         // Helper to create a new builder
         let new_builder = || -> anyhow::Result<ort::session::builder::SessionBuilder> {
             Ok(Session::builder()?
@@ -156,20 +248,20 @@ impl PaddleXEngine {
             Vec<&'static str>,
         )> {
             use ort::execution_providers::CPUExecutionProvider;
-            use crate::gpu::webgpu_execution_provider_dispatch;
+            use ort::execution_providers::cuda::CUDAExecutionProvider;
 
             let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
                 .ok()
                 .as_deref() == Some("1");
 
             if gpu_disabled {
-                vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
-            } else {
-                vec![
-                    (vec![webgpu_execution_provider_dispatch().expect("Failed to initialize WebGPU provider")], vec!["WebGPU"]),
-                    (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-                ]
+                return vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])];
             }
+
+            vec![
+                (vec![CUDAExecutionProvider::default().build()], vec!["CUDA"]),
+                (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
+            ]
         }
 
         #[cfg(target_os = "windows")]
@@ -178,6 +270,7 @@ impl PaddleXEngine {
             Vec<&'static str>,
         )> {
             use ort::execution_providers::CPUExecutionProvider;
+            use ort::execution_providers::cuda::CUDAExecutionProvider;
             use crate::gpu::directml_execution_provider_dispatch;
 
             let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
@@ -188,6 +281,7 @@ impl PaddleXEngine {
                 vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
             } else {
                 vec![
+                    (vec![CUDAExecutionProvider::default().build()], vec!["CUDA"]),
                     (vec![directml_execution_provider_dispatch()], vec!["DirectML"]),
                     (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
                 ]
@@ -217,17 +311,44 @@ impl PaddleXEngine {
 
         // Memory-map the model once to avoid extra file I/O and copies
         let file = File::open(model_path)?;
+        debug_until_first_detection!(
+            "PaddleXEngine::build_session: model file opened, size={} bytes",
+            file.metadata()?.len()
+        );
         let mmap = unsafe { Mmap::map(&file)? };
+        debug_until_first_detection!(
+            "PaddleXEngine::build_session: model memory-mapped, mapped_size={} bytes",
+            mmap.len()
+        );
 
         let provider_msg = CLI_TEXT.get_provider_messages();
 
         // Try each provider in order until one succeeds
         let provider_attempts = get_provider_attempts();
-        for (providers, names) in provider_attempts {
+        debug_until_first_detection!(
+            "PaddleXEngine::build_session: provider attempts available={}",
+            provider_attempts.len()
+        );
+        for (attempt_idx, (providers, names)) in provider_attempts.into_iter().enumerate() {
             let primary = names.first().copied().unwrap_or("CPU");
+            let chain = names.join(" -> ");
+            debug_until_first_detection!(
+                "PaddleXEngine::build_session: attempt {} primary={} chain={}",
+                attempt_idx + 1,
+                primary,
+                chain
+            );
+            #[cfg(feature = "debug-logging")]
+            let start = Instant::now();
 
             match new_builder()?.with_execution_providers(providers)?.commit_from_memory(&mmap) {
                 Ok(session) => {
+                    #[cfg(feature = "debug-logging")]
+                    debug_until_first_detection!(
+                        "PaddleXEngine::build_session: attempt {} succeeded in {:?}",
+                        attempt_idx + 1,
+                        start.elapsed()
+                    );
                     if primary == "CPU" {
                         info_println!("{}", provider_msg.using_cpu());
                     } else {
@@ -236,7 +357,16 @@ impl PaddleXEngine {
                     return Ok((session, primary.to_string()));
                 }
                 Err(e) => {
-                    if primary != "CPU" {
+                    #[cfg(feature = "debug-logging")]
+                    debug_until_first_detection!(
+                        "PaddleXEngine::build_session: attempt {} failed after {:?}: {}",
+                        attempt_idx + 1,
+                        start.elapsed(),
+                        e
+                    );
+                    if primary == "CUDA" {
+                        info_println!("CUDA failed: {}. Hint: ensure CUDA and cuDNN are installed and on PATH.", e);
+                    } else if primary != "CPU" {
                         info_println!("{} failed: {}, falling back...", primary, e);
                     }
                     continue;
@@ -383,6 +513,11 @@ impl PaddleXEngine {
     /// Asynchronously detects objects in a single image.
     /// This is the primary method for single-image inference.
     pub async fn detect_single_async(&mut self, image: &RgbImage) -> Result<Vec<Detection>> {
+        debug_until_first_detection!(
+            "PaddleXEngine::detect_single_async: image={}x{}",
+            image.width(),
+            image.height()
+        );
         let mut inputs = self.preprocess(image)?;
         let outputs = self.run_inference_single_async(&mut inputs).await?;
         let detections = self.postprocess_detections(&outputs, &inputs)?;
@@ -403,6 +538,11 @@ impl PaddleXEngine {
         page_indices: &[usize],
     ) -> Result<Vec<Vec<Detection>>> {
         let batch_size = images.len();
+        debug_until_first_detection!(
+            "PaddleXEngine::detect_batch_with_indices_async: images={}, page_indices={}",
+            batch_size,
+            page_indices.len()
+        );
         if batch_size == 0 {
             return Ok(Vec::new());
         }
@@ -439,6 +579,8 @@ impl PaddleXEngine {
         &mut self,
         inputs: &mut PaddleXPreprocessed,
     ) -> Result<Array<f32, ndarray::Ix2>> {
+        #[cfg(feature = "debug-logging")]
+        let start = Instant::now();
         // Consume the large image buffer to avoid an extra CPU copy before upload
         let image_data_vec = std::mem::take(&mut inputs.image_data);
         let image_data = Array::from_shape_vec(
@@ -454,12 +596,22 @@ impl PaddleXEngine {
         ];
         let run_options = RunOptions::new()?;
         let outputs = self.session.run_async(input_values, &run_options)?.await?;
+        #[cfg(feature = "debug-logging")]
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_single_async: run completed in {:?}, output_count={}",
+            start.elapsed(),
+            outputs.len()
+        );
         // Handle potentially different output tensor types (for int8 vs fp32 models)
         let output_value = &outputs[self.output_index];
 
         // Determine the tensor type by attempting to extract different types
         let out = if let Ok(tensor) = output_value.try_extract_tensor::<f32>() {
             let (shape, data) = tensor;
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_single_async: output type=f32 shape={:?}",
+                shape
+            );
             // Handle different output shapes: [B, N, 6], [N, 6], or flattened [Total, 6]
             // Match batch inference logic for consistency
             match &shape[..] {
@@ -488,6 +640,10 @@ impl PaddleXEngine {
         } else if let Ok(tensor) = output_value.try_extract_tensor::<i8>() {
             // Handle int8 output by converting to f32
             let (shape, data) = tensor;
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_single_async: output type=i8 shape={:?}",
+                shape
+            );
             // Convert i8 data to f32 data
             let f32_data: Vec<f32> = data.iter().map(|&x| x as f32).collect();
             // Handle different output shapes: [B, N, 6], [N, 6], or flattened [Total, 6]
@@ -517,6 +673,10 @@ impl PaddleXEngine {
         } else if let Ok(tensor) = output_value.try_extract_tensor::<u8>() {
             // Handle uint8 output by converting to f32
             let (shape, data) = tensor;
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_single_async: output type=u8 shape={:?}",
+                shape
+            );
             // Convert u8 data to f32 data
             let f32_data: Vec<f32> = data.iter().map(|&x| x as f32).collect();
             // Handle different output shapes: [B, N, 6], [N, 6], or flattened [Total, 6]
@@ -634,7 +794,7 @@ impl PaddleXEngine {
                         results.push(arr);
                     } else {
                         // Multiple images: decode page indices from concatenated output
-                        debug_println!(
+                        debug_until_first_detection!(
                             "Batch processing: got [N={}, K={}] for batch_size={}",
                             nn,
                             kk,
@@ -664,7 +824,7 @@ impl PaddleXEngine {
                             let page_idx = estimated_page_idx.min(batch_size - 1);
                             detections_per_page[page_idx].push(detection);
                         }
-                        debug_println!(
+                        debug_until_first_detection!(
                             "Heuristic assignment: {} detections distributed as {:?}",
                             total_detections,
                             detections_per_page
@@ -725,7 +885,7 @@ impl PaddleXEngine {
                         results.push(arr);
                     } else {
                         // Multiple images: decode page indices from concatenated output
-                        debug_println!(
+                        debug_until_first_detection!(
                             "Batch processing: got [N={}, K={}] for batch_size={}",
                             nn,
                             kk,
@@ -755,7 +915,7 @@ impl PaddleXEngine {
                             let page_idx = estimated_page_idx.min(batch_size - 1);
                             detections_per_page[page_idx].push(detection);
                         }
-                        debug_println!(
+                        debug_until_first_detection!(
                             "Heuristic assignment: {} detections distributed as {:?}",
                             total_detections,
                             detections_per_page
@@ -816,7 +976,7 @@ impl PaddleXEngine {
                         results.push(arr);
                     } else {
                         // Multiple images: decode page indices from concatenated output
-                        debug_println!(
+                        debug_until_first_detection!(
                             "Batch processing: got [N={}, K={}] for batch_size={}",
                             nn,
                             kk,
@@ -846,7 +1006,7 @@ impl PaddleXEngine {
                             let page_idx = estimated_page_idx.min(batch_size - 1);
                             detections_per_page[page_idx].push(detection);
                         }
-                        debug_println!(
+                        debug_until_first_detection!(
                             "Heuristic assignment: {} detections distributed as {:?}",
                             total_detections,
                             detections_per_page
@@ -886,11 +1046,21 @@ impl PaddleXEngine {
         batch_metadata: &[PaddleXPreprocessedMetadata],
         _page_indices: &[usize],
     ) -> Result<Vec<Array<f32, ndarray::Ix2>>> {
+        #[cfg(feature = "debug-logging")]
+        let start = Instant::now();
         let batch_size = batch_metadata.len();
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: batch_size={}, count_index={:?}",
+            batch_size,
+            self.count_index
+        );
         
         // SAFETY: If we didn't find the count_index during init, we MUST run sequentially
         // or we risk assigning detections to the wrong page.
         if self.count_index.is_none() {
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: count_index missing, using sequential fallback"
+            );
             return self.run_inference_sequential_fallback(batch_image_data, batch_metadata).await;
         }
         let count_idx = self.count_index.unwrap();
@@ -915,19 +1085,37 @@ impl PaddleXEngine {
         // 2. Run Inference (One big call to GPU)
         let run_options = RunOptions::new()?;
         let outputs = self.session.run_async(input_values, &run_options)?.await?;
+        #[cfg(feature = "debug-logging")]
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: batch run completed in {:?}, output_count={}",
+            start.elapsed(),
+            outputs.len()
+        );
 
         // 3. Extract The "Big List" of Boxes
         // Handle potentially different output tensor types (for int8 vs fp32 models)
         let box_value = &outputs[self.output_index];
         let all_boxes = if let Ok(tensor) = box_value.try_extract_tensor::<f32>() {
             let (_box_shape, box_data) = tensor;
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: box output type=f32 rows={}",
+                box_data.len() / 6
+            );
             Array::from_shape_vec((box_data.len() / 6, 6), box_data.to_vec())?
         } else if let Ok(tensor) = box_value.try_extract_tensor::<i8>() {
             let (_box_shape, box_data) = tensor;
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: box output type=i8 rows={}",
+                box_data.len() / 6
+            );
             let f32_data: Vec<f32> = box_data.iter().map(|&x| x as f32).collect();
             Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
         } else if let Ok(tensor) = box_value.try_extract_tensor::<u8>() {
             let (_box_shape, box_data) = tensor;
+            debug_until_first_detection!(
+                "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: box output type=u8 rows={}",
+                box_data.len() / 6
+            );
             let f32_data: Vec<f32> = box_data.iter().map(|&x| x as f32).collect();
             Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
         } else {
@@ -938,6 +1126,11 @@ impl PaddleXEngine {
         // Note: bbox_num typically remains i32 regardless of quantization of main output
         let count_tensor = outputs[count_idx].try_extract_tensor::<i32>()?;
         let (_count_shape, count_data) = count_tensor;
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: bbox_num entries={} total_boxes={}",
+            count_data.len(),
+            count_data.iter().copied().map(|v| v.max(0) as usize).sum::<usize>()
+        );
 
         // 5. Re-identify / Unzip
         let mut results = Vec::with_capacity(batch_size);
@@ -961,6 +1154,11 @@ impl PaddleXEngine {
             // Safety check
             if i >= batch_size { break; }
         }
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: produced page outputs={} in {:?}",
+            results.len(),
+            start.elapsed()
+        );
 
         Ok(results)
     }
@@ -971,7 +1169,13 @@ impl PaddleXEngine {
         batch_image_data: &[f32],
         batch_metadata: &[PaddleXPreprocessedMetadata],
     ) -> Result<Vec<Array<f32, ndarray::Ix2>>> {
+        #[cfg(feature = "debug-logging")]
+        let start = Instant::now();
         let batch_size = batch_metadata.len();
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_sequential_fallback: batch_size={}",
+            batch_size
+        );
         let item_len = 3 * (PADDLE_IMG_SIZE as usize) * (PADDLE_IMG_SIZE as usize);
         let mut results = Vec::with_capacity(batch_size); // Initialize results here
         let run_options = RunOptions::new()?; // Bind RunOptions to a variable
@@ -1028,6 +1232,11 @@ impl PaddleXEngine {
             };
             results.push(res);
         }
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_sequential_fallback: finished {} items in {:?}",
+            results.len(),
+            start.elapsed()
+        );
         Ok(results)
     }
     /// Postprocesses raw model output into a list of final detections.
@@ -1036,6 +1245,9 @@ impl PaddleXEngine {
         output: &Array<f32, ndarray::Ix2>,
         inputs: &PaddleXPreprocessed,
     ) -> Result<Vec<Detection>> {
+        let total_rows = output.shape()[0];
+        let mut confidence_kept = 0usize;
+        let mut geometry_rejected = 0usize;
         let mut detections = Vec::new();
         // No padding for PaddleX direct resize
         let scale_x = inputs.scale_factor[1];
@@ -1047,6 +1259,7 @@ impl PaddleXEngine {
             let class_id = row[0] as i32;
             let confidence = row[1];
             if confidence >= self.config.confidence_threshold {
+                confidence_kept += 1;
                 let raw_x1 = row[2].max(0.0);
                 let raw_y1 = row[3].max(0.0);
                 let raw_x2 = row[4].max(0.0);
@@ -1057,6 +1270,7 @@ impl PaddleXEngine {
                 let x2 = raw_x2 * scale_x;
                 let y2 = raw_y2 * scale_y;
                 if (x2 - x1) < 1.0 || (y2 - y1) < 1.0 {
+                    geometry_rejected += 1;
                     continue;
                 }
                 detections.push(Detection {
@@ -1089,6 +1303,14 @@ impl PaddleXEngine {
             self.config.nms_threshold,
             self.config.iou_threshold,
         );
+        debug_until_first_detection!(
+            "PaddleXEngine::postprocess_detections: rows={}, conf_kept={}, geometry_rejected={}, pre_nms={}, final={}",
+            total_rows,
+            confidence_kept,
+            geometry_rejected,
+            detections.len(),
+            kept_detections.len()
+        );
         let final_detections: Vec<Detection> = kept_detections
             .into_iter()
             .map(|d| Detection {
@@ -1099,6 +1321,10 @@ impl PaddleXEngine {
                 context: d.context,
             })
             .collect();
+        #[cfg(feature = "debug-logging")]
+        if !final_detections.is_empty() {
+            DEBUG_UNTIL_FIRST_DETECTION_ENABLED.store(false, Ordering::Relaxed);
+        }
         Ok(final_detections)
     }
 
