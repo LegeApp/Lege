@@ -1069,8 +1069,14 @@ impl ProcessingQueue {
             notify: Notify::new(),
         });
         let worker = queue.clone();
-        tokio::spawn(async move {
-            worker.worker_loop().await;
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create processing queue runtime");
+            runtime.block_on(async move {
+                worker.worker_loop().await;
+            });
         });
         queue
     }

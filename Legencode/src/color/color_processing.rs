@@ -9,6 +9,7 @@ use ort::value::Value;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use rayon::slice::ParallelSlice;
+use std::sync::OnceLock;
 
 // Global guardrails to ensure region operations remain safe and bounded.
 const MAX_OVERLAY_SIDE: u32 = 8192; // Prevent pathological overlays (encoder limits, memory safety)
@@ -155,8 +156,15 @@ fn process_traditional_dithering(
         region_height,
     );
 
-    // Dither using phase-locked blue-noise (designed for CCITT4 run-length encoding)
-    let dithered_1bit_data = dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height);
+    // Blue-noise RLG is quality-focused but expensive on very large regions.
+    // Fall back to Bayer for large blocks to avoid apparent mid-run hangs.
+    const BLUE_NOISE_MAX_PIXELS: u64 = 1_500_000;
+    let region_pixels = (region_width as u64).saturating_mul(region_height as u64);
+    let dithered_1bit_data = if region_pixels > BLUE_NOISE_MAX_PIXELS {
+        dither_bayer8x8(&grayscale_region, region_width, region_height)
+    } else {
+        dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height)
+    };
 
     // Convert back to RGB format for compatibility
     let pixel_count = dithered_1bit_data.len();
@@ -658,7 +666,7 @@ fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
 
 /// Deterministic hash-based blue-noise-like threshold sampler (0..255).
 #[inline]
-fn blue_noise_threshold_u8(x: i32, y: i32) -> u8 {
+fn blue_noise_hash_u8(x: i32, y: i32) -> u8 {
     let mut v = (x as u32).wrapping_mul(0x1f123bb5)
         ^ (y as u32).wrapping_mul(0x05491333)
         ^ 0x9e3779b9;
@@ -671,19 +679,17 @@ fn blue_noise_threshold_u8(x: i32, y: i32) -> u8 {
 }
 
 #[inline]
-fn collect_transitions(line: &[u8]) -> Vec<u32> {
-    if line.is_empty() {
-        return Vec::new();
-    }
-    let mut transitions = Vec::with_capacity(line.len() / 4);
-    let mut prev = line[0];
-    for (x, &v) in line.iter().enumerate().skip(1) {
-        if v != prev {
-            transitions.push(x as u32);
-            prev = v;
+fn blue_noise_tile_64() -> &'static [u8; 64 * 64] {
+    static TILE: OnceLock<[u8; 64 * 64]> = OnceLock::new();
+    TILE.get_or_init(|| {
+        let mut t = [0u8; 64 * 64];
+        for y in 0..64usize {
+            for x in 0..64usize {
+                t[y * 64 + x] = blue_noise_hash_u8(x as i32, y as i32);
+            }
         }
-    }
-    transitions
+        t
+    })
 }
 
 #[inline]
@@ -712,51 +718,54 @@ fn run_length_governor(line: &mut [u8], min_run: u32) {
 }
 
 #[inline]
-fn ccitt4_proxy_rate_cost(curr_transitions: &[u32], prev_transitions: &[u32]) -> f32 {
-    let mut cost = (curr_transitions.len() as f32) * 4.0;
-    if prev_transitions.is_empty() || curr_transitions.is_empty() {
-        return cost;
+fn edge_alignment_score(line: &[u8], prev_edges: &[u8], curr_edges: &mut [u8]) -> u32 {
+    if line.len() < 2 {
+        curr_edges.fill(0);
+        return 0;
     }
-    let mut j = 0;
-    for &tx in curr_transitions {
-        while j + 1 < prev_transitions.len() && prev_transitions[j + 1] < tx {
-            j += 1;
+
+    curr_edges.fill(0);
+    let mut score = 0u32;
+    let mut edge_count = 0u32;
+    let mut last = line[0];
+
+    for x in 1..line.len() {
+        let edge = (line[x] != last) as u8;
+        last = line[x];
+        curr_edges[x] = edge;
+        if edge != 0 {
+            edge_count += 1;
+            let lo = x.saturating_sub(3);
+            let hi = (x + 3).min(line.len() - 1);
+            let mut aligned = false;
+            for k in lo..=hi {
+                if prev_edges[k] != 0 {
+                    aligned = true;
+                    break;
+                }
+            }
+            score += if aligned { 1 } else { 8 };
         }
-        let mut best = u32::MAX;
-        if j < prev_transitions.len() {
-            best = best.min(tx.abs_diff(prev_transitions[j]));
-        }
-        if j + 1 < prev_transitions.len() {
-            best = best.min(tx.abs_diff(prev_transitions[j + 1]));
-        }
-        // Favor the CCITT4 vertical window (|a1-b1| <= 3); penalize larger drifts.
-        cost += if best <= 3 { best as f32 } else { 8.0 };
     }
-    cost
+
+    // Base transition penalty to discourage noisy rows.
+    score + edge_count.saturating_mul(4)
 }
 
 #[inline]
-fn lowpass_distortion_proxy(candidate_line: &[u8], grayscale_data: &[u8], row_offset: usize) -> f32 {
+fn cheap_distortion_proxy(candidate_line: &[u8], grayscale_data: &[u8], row_offset: usize) -> u32 {
     if candidate_line.is_empty() {
-        return 0.0;
+        return 0;
     }
-    let width = candidate_line.len();
-    let sample_err = |x: i32| -> f32 {
-        let clamped = x.clamp(0, (width - 1) as i32) as usize;
-        let cand = candidate_line[clamped] as f32;
-        let src = grayscale_data[row_offset + clamped] as f32;
-        cand - src
-    };
-    let mut sum = 0.0;
-    for x in 0..(width as i32) {
-        let e = (sample_err(x - 2)
-            + 4.0 * sample_err(x - 1)
-            + 6.0 * sample_err(x)
-            + 4.0 * sample_err(x + 1)
-            + sample_err(x + 2)) / 16.0;
-        sum += e.abs();
+
+    let mut sum = 0u32;
+    // Subsample for speed: good enough as a tie-breaker proxy.
+    for x in (0..candidate_line.len()).step_by(2) {
+        let cand = candidate_line[x] as i32;
+        let src = grayscale_data[row_offset + x] as i32;
+        sum = sum.saturating_add((cand - src).unsigned_abs());
     }
-    sum / (width as f32)
+    sum
 }
 
 /// Dithers an image using phase-locked blue-noise thresholding and run-length governance.
@@ -773,42 +782,68 @@ pub fn dither_phase_locked_blue_noise_rlg(
     if expected == 0 || grayscale_data.len() < expected {
         return Vec::new();
     }
+
+    let tile = blue_noise_tile_64();
     let mut out = vec![255; expected];
-    let mut prev_transitions: Vec<u32> = Vec::new();
+    let mut prev_edges = vec![0u8; w];
+    let mut curr_edges = vec![0u8; w];
+    let mut best_edges = vec![0u8; w];
     let mut phase_x: i32 = 0;
-    const SHIFT_MIN: i32 = -3;
-    const SHIFT_MAX: i32 = 3;
+    const SEARCH_EVERY_ROWS: usize = 4;
+    const SHIFT_CANDIDATES: [i32; 3] = [-1, 0, 1];
     const MIN_RUN: u32 = 2;
-    const DISTORTION_WEIGHT: f32 = 0.06;
     let mut best_line = vec![255u8; w];
     let mut candidate_line = vec![255u8; w];
+
     for y in 0..h {
+        #[cfg(feature = "debug-logging")]
+        if (y & 127) == 0 {
+            crate::streamline::log_debug_message(&format!(
+                "Blue-noise dithering: row {} / {}",
+                y + 1,
+                h
+            ));
+        }
+
         let row_off = y * w;
-        let mut best_cost = f32::INFINITY;
+        let mut best_cost = u32::MAX;
         let mut best_shift = 0;
-        let mut best_transitions = Vec::new();
-        for shift in SHIFT_MIN..=SHIFT_MAX {
+
+        // Re-evaluate phase only periodically; reuse current phase on intermediate rows.
+        let shifts: &[i32] = if y % SEARCH_EVERY_ROWS == 0 {
+            &SHIFT_CANDIDATES
+        } else {
+            &[0]
+        };
+
+        for &shift in shifts {
+            let px = phase_x + shift;
             for x in 0..w {
                 let src = grayscale_data[row_off + x];
-                let thr = blue_noise_threshold_u8(x as i32 + phase_x + shift, y as i32);
+                let tx = ((x as i32 + px) & 63) as usize;
+                let thr = tile[(y & 63) * 64 + tx];
                 candidate_line[x] = if src > thr { 255 } else { 0 };
             }
+
             run_length_governor(&mut candidate_line, MIN_RUN);
-            let transitions = collect_transitions(&candidate_line);
-            let rate = ccitt4_proxy_rate_cost(&transitions, &prev_transitions);
-            let distortion = lowpass_distortion_proxy(&candidate_line, grayscale_data, row_off);
-            let cost = rate + DISTORTION_WEIGHT * distortion;
+
+            let edge_score = edge_alignment_score(&candidate_line, &prev_edges, &mut curr_edges);
+            let distortion = cheap_distortion_proxy(&candidate_line, grayscale_data, row_off);
+            let cost = edge_score.saturating_add(distortion / 8);
+
             if cost < best_cost {
                 best_cost = cost;
                 best_shift = shift;
                 best_line.copy_from_slice(&candidate_line);
-                best_transitions.clone_from(&transitions);
+                best_edges.copy_from_slice(&curr_edges);
             }
         }
+
         phase_x += best_shift;
         out[row_off..row_off + w].copy_from_slice(&best_line);
-        prev_transitions = best_transitions;
+        prev_edges.copy_from_slice(&best_edges);
     }
+
     out
 }
 

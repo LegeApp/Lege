@@ -42,7 +42,7 @@ impl HeavySauvolaProcessor {
         })?;
 
         // Check model file size
-        if let Ok(_metadata) = std::fs::metadata(&model_path) {
+        if let Ok(metadata) = std::fs::metadata(&model_path) {
             #[cfg(feature = "debug-logging")]
             {
                 crate::streamline::log_debug_message(&format!(

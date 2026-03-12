@@ -803,7 +803,11 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
             .collect()
     } else {
         let force_blank_threshold =
-            should_force_blank_page_threshold(&config, inference_result.has_no_detections);
+            should_force_blank_page_threshold(
+                &config,
+                inference_result.has_no_detections,
+                crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
+            );
         binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
     };
 

@@ -684,6 +684,12 @@ impl CliConfigBuilder {
                     config.use_heavy_duty = false;
                     fixed_selected = true;
                 }
+            } else if fixed_selected {
+                if let Ok(threshold) = part.parse::<u8>() {
+                    config.fixed_threshold = threshold;
+                    config.use_fixed_threshold = true;
+                    config.use_heavy_duty = false;
+                }
             }
         }
 
@@ -731,24 +737,59 @@ impl CliConfigBuilder {
 
     /// Validate binarization method
     pub fn validate_binarization_method(method: &str) -> Result<(), anyhow::Error> {
-        let normalized = method.trim().to_lowercase();
-        let valid = matches!(
-            normalized.as_str(),
+        let trimmed = method.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        let choice = parts.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+        let is_fixed_choice = matches!(choice.as_str(), "2" | "fixed" | "threshold" | "thr");
+        let valid_choice = matches!(
+            choice.as_str(),
             "1" | "adaptive" | "sauvola" | "otsu"
                 | "2" | "fixed" | "threshold" | "thr"
                 | "3" | "heavy" | "sauvola_ai" | "onnx"
         );
-
-        if valid {
-            Ok(())
-        } else {
-            Err(anyhow!(
+        if !valid_choice {
+            return Err(anyhow!(
                 CLI_TEXT
                     .errors
                     .invalid_binarization_method
                     .replace("{}", method)
-            ))
+            ));
         }
+
+        let mut positional_threshold_seen = false;
+        for part in parts.iter().skip(1) {
+            if part.starts_with("k=") {
+                let raw = &part[2..];
+                let val = raw
+                    .parse::<f32>()
+                    .map_err(|_| anyhow!("Invalid k value: {}", raw))?;
+                if !(0.0..=1.0).contains(&val) {
+                    return Err(anyhow!("k must be between 0.0 and 1.0"));
+                }
+            } else if part.starts_with("thr=") {
+                let raw = &part[4..];
+                raw.parse::<u8>()
+                    .map_err(|_| anyhow!("Invalid threshold value: {}", raw))?;
+                positional_threshold_seen = true;
+            } else if is_fixed_choice && !positional_threshold_seen {
+                part.parse::<u8>()
+                    .map_err(|_| anyhow!("Invalid fixed threshold value: {}", part))?;
+                positional_threshold_seen = true;
+            } else {
+                return Err(anyhow!(
+                    CLI_TEXT
+                        .errors
+                        .invalid_binarization_method
+                        .replace("{}", method)
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// Get available binarization methods for interactive selection

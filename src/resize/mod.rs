@@ -10,6 +10,7 @@ use fast_image_resize::{
     Resizer,
 };
 use log::warn;
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 #[cfg(windows)]
 use once_cell::sync::OnceCell;
 #[cfg(windows)]
@@ -34,6 +35,28 @@ static GPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WGPU_RESIZER: OnceCell<Mutex<WgpuResizer>> = OnceCell::new();
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 static WGPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RESIZE_BACKEND_PREFERENCE: AtomicU8 = AtomicU8::new(0); // 0=auto, 1=fast_cpu
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeBackendPreference {
+    Auto,
+    FastCpu,
+}
+
+pub fn set_resize_backend_preference(preference: ResizeBackendPreference) {
+    let encoded = match preference {
+        ResizeBackendPreference::Auto => 0,
+        ResizeBackendPreference::FastCpu => 1,
+    };
+    RESIZE_BACKEND_PREFERENCE.store(encoded, AtomicOrdering::Relaxed);
+}
+
+pub fn resize_backend_preference() -> ResizeBackendPreference {
+    match RESIZE_BACKEND_PREFERENCE.load(AtomicOrdering::Relaxed) {
+        1 => ResizeBackendPreference::FastCpu,
+        _ => ResizeBackendPreference::Auto,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeMethod {
@@ -273,7 +296,7 @@ fn wgpu_resize_bytes(
 
 /// Resize image bytes using hardware acceleration when available.
 /// On Windows, uses HLSL/DirectX 12 compute shaders for GPU acceleration with CPU fallback.
-/// On Linux, uses CPU-based fast_image_resize (future: CUDA support).
+/// On Linux/macOS, uses WGPU shaders with CPU (`fast_image_resize`) fallback.
 pub fn resize_bytes(
     src_data: &[u8],
     src_width: u32,
@@ -281,6 +304,22 @@ pub fn resize_bytes(
     params: &ResizeParams,
     channel_count: u32,
 ) -> Result<Vec<u8>, ResizeError> {
+    if matches!(resize_backend_preference(), ResizeBackendPreference::FastCpu) {
+        return cpu_resize_bytes(src_data, src_width, src_height, params, channel_count).map_err(
+            |e| {
+                log::error!(
+                    "CPU-fast resize failed for {}x{} -> {}x{}: {}",
+                    src_width,
+                    src_height,
+                    params.target_width,
+                    params.target_height,
+                    e
+                );
+                e
+            },
+        );
+    }
+
     #[cfg(windows)]
     {
         // Windows: Try HLSL GPU acceleration first, fall back to CPU if needed

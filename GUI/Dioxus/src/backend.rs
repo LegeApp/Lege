@@ -77,7 +77,12 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
     // Map GUI binarization options to BinarizationConfig
     // Safety layer: invert_input takes precedence over binarization modes
     // When invert is enabled, we use simple binarize-then-invert (no dithering)
-    let heavy_enabled = options.use_heavy_binarization && !options.use_fixed_threshold;
+    // When layout detection is off, adaptive and heavy binarization are invalid because
+    // image regions on the full page skew adaptive algorithms — force fixed threshold.
+    let force_fixed = !options.layout_analysis;
+    let effective_fixed = options.use_fixed_threshold || force_fixed;
+    let heavy_enabled =
+        options.use_heavy_binarization && !effective_fixed && options.layout_analysis;
     let binarization_config = if options.invert_input {
         // When inverted, use a minimal config - the actual processing uses binarize-then-invert
         BinarizationConfig {
@@ -87,7 +92,7 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
             use_heavy_duty: false,
             patch_percentage: 0.0,
             no_patch: false,
-            use_fixed_threshold: options.use_fixed_threshold,
+            use_fixed_threshold: effective_fixed,
             fixed_threshold: options.threshold_value,
         }
     } else {
@@ -99,7 +104,7 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
             use_heavy_duty: heavy_enabled,
             patch_percentage: 0.0,
             no_patch: false,
-            use_fixed_threshold: options.use_fixed_threshold,
+            use_fixed_threshold: effective_fixed,
             fixed_threshold: options.threshold_value,
         }
     };
