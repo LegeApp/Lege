@@ -1910,9 +1910,12 @@ fn LeftSettingsPanel(state: Signal<AppState>) -> Element {
 
 #[component]
 fn RightSettingsPanel(state: Signal<AppState>) -> Element {
+    let layout_on = state.read().options.layout_analysis;
+
     let (use_threshold, numeric_value) = {
         let read = state.read();
-        let flag = read.options.use_fixed_threshold;
+        // When layout is off, always behave as if fixed threshold is selected
+        let flag = !layout_on || read.options.use_fixed_threshold;
         let value = if flag {
             read.threshold_input.clone()
         } else {
@@ -1940,77 +1943,114 @@ fn RightSettingsPanel(state: Signal<AppState>) -> Element {
         div {
             class: "settings-card settings-card-right",
 
-            // Binarization section header
-            div {
-                style: "font-weight: 600; margin-bottom: 8px;",
-                title: "Sauvola/Otsu fusion",
-                "Adaptive binarization"
-            }
-
-            // K-factor input
-            div { class: "setting-item",
-                label {
-                    class: "setting-label",
-                    title: "{title_text}",
-                    "{label_text}"
+            if layout_on {
+                // Full binarization controls when layout detection is on
+                div {
+                    style: "font-weight: 600; margin-bottom: 8px;",
+                    title: "Sauvola/Otsu fusion",
+                    "Adaptive binarization"
                 }
-                input {
-                    class: "setting-input",
-                    r#type: "number",
-                    step: "{step_value}",
-                    min: "{min_value}",
-                    max: "{max_value}",
-                    value: "{numeric_value}",
-                    oninput: move |evt| {
-                        let mut s = state.write();
-                        if use_threshold {
+
+                // K-factor / threshold input
+                div { class: "setting-item",
+                    label {
+                        class: "setting-label",
+                        title: "{title_text}",
+                        "{label_text}"
+                    }
+                    input {
+                        class: "setting-input",
+                        r#type: "number",
+                        step: "{step_value}",
+                        min: "{min_value}",
+                        max: "{max_value}",
+                        value: "{numeric_value}",
+                        oninput: move |evt| {
+                            let mut s = state.write();
+                            if use_threshold {
+                                s.threshold_input = evt.value();
+                                if let Ok(val) = evt.value().parse::<u16>() {
+                                    let clamped = val.min(255) as u8;
+                                    s.options.threshold_value = clamped;
+                                }
+                            } else {
+                                s.k_factor_input = evt.value();
+                                if let Ok(val) = evt.value().parse::<f32>() {
+                                    s.options.k_factor = val;
+                                }
+                            }
+                        },
+                    }
+                }
+
+                // Fixed threshold + Heavy model checkboxes
+                div {
+                    style: "margin-top: 8px; display: flex; gap: 12px; align-items: center;",
+                    label {
+                        class: "radio-label",
+                        title: "Use a fixed 0-255 threshold after linearization.",
+                        input {
+                            r#type: "checkbox",
+                            checked: use_threshold,
+                            onchange: move |evt| {
+                                let mut s = state.write();
+                                let enabled = evt.checked();
+                                s.options.use_fixed_threshold = enabled;
+                                if enabled {
+                                    s.options.use_heavy_binarization = false;
+                                }
+                            }
+                        }
+                        span { "Fixed threshold" }
+                    }
+                    label {
+                        class: "radio-label",
+                        title: "Neural model trained for degraded and historical documents. Slow.",
+                        input {
+                            r#type: "checkbox",
+                            checked: state.read().options.use_heavy_binarization,
+                            disabled: use_threshold,
+                            onchange: move |evt| {
+                                state.write().options.use_heavy_binarization = evt.checked();
+                            }
+                        }
+                        span { "Heavy model" }
+                    }
+                }
+            } else {
+                // Layout detection is off — only fixed threshold is meaningful
+                div {
+                    style: "font-weight: 600; margin-bottom: 6px;",
+                    title: "Adaptive binarization is unavailable without layout detection",
+                    "Fixed threshold binarization"
+                }
+                div {
+                    style: "font-size: 11px; color: var(--muted-text, #888); margin-bottom: 8px; line-height: 1.4;",
+                    "Adaptive and heavy binarization are disabled \u{2014} image regions on the full page skew adaptive algorithms."
+                }
+
+                // Threshold value input (always shown, always fixed mode)
+                div { class: "setting-item",
+                    label {
+                        class: "setting-label",
+                        title: "{GUI_TEXT.interactive.tooltips.threshold_value}",
+                        "Threshold:"
+                    }
+                    input {
+                        class: "setting-input",
+                        r#type: "number",
+                        step: "1",
+                        min: "0",
+                        max: "255",
+                        value: "{state.read().threshold_input}",
+                        oninput: move |evt| {
+                            let mut s = state.write();
                             s.threshold_input = evt.value();
                             if let Ok(val) = evt.value().parse::<u16>() {
-                                let clamped = val.min(255) as u8;
-                                s.options.threshold_value = clamped;
+                                s.options.threshold_value = val.min(255) as u8;
                             }
-                        } else {
-                            s.k_factor_input = evt.value();
-                            if let Ok(val) = evt.value().parse::<f32>() {
-                                s.options.k_factor = val;
-                            }
-                        }
-                    },
-                }
-            }
-
-            // Heavy model checkbox (below k-factor)
-            div {
-                style: "margin-top: 8px; display: flex; gap: 12px; align-items: center;",
-                label {
-                    class: "radio-label",
-                    title: "Use a fixed 0-255 threshold after linearization.",
-                    input {
-                        r#type: "checkbox",
-                        checked: use_threshold,
-                        onchange: move |evt| {
-                            let mut s = state.write();
-                            let enabled = evt.checked();
-                            s.options.use_fixed_threshold = enabled;
-                            if enabled {
-                                s.options.use_heavy_binarization = false;
-                            }
-                        }
+                        },
                     }
-                    span { "Fixed threshold" }
-                }
-                label {
-                    class: "radio-label",
-                    title: "Neural model trained for degraded and historical documents. Slow.",
-                    input {
-                        r#type: "checkbox",
-                        checked: state.read().options.use_heavy_binarization,
-                        disabled: use_threshold,
-                        onchange: move |evt| {
-                            state.write().options.use_heavy_binarization = evt.checked();
-                        }
-                    }
-                    span { "Heavy model" }
                 }
             }
         }

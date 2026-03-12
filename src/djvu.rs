@@ -629,7 +629,7 @@ pub fn spawn_djvu_writer_actor(
         crate::info_log!("[DjvuWriterActor] Started, waiting for pages...");
 
         while let Some(msg) = rx.recv().await {
-            crate::pipeline::helper_functions::wait_for_memory_relief().await;
+            // NOTE: Do NOT block the writer for memory relief — the writer frees memory by flushing to disk.
             match msg {
                 DjvuWriterMessage::AppendPage { page, page_index } => {
                     // Buffer the incoming page
