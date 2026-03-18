@@ -331,10 +331,9 @@ pub async fn perform_tiling_based_ocr(
             extract_region_from_image(binarized, page_width, page_height, bbox)?;
         let language = language.to_string();
         tasks.push(tokio::spawn(async move {
-            let hocr =
-                super::ocr::perform_ocr_on_binarized(&tile_data, tile_w, tile_h, &language)
-                    .await
-                    .ok();
+            let hocr = super::ocr::perform_ocr_on_binarized(&tile_data, tile_w, tile_h, &language)
+                .await
+                .ok();
             (hocr, bbox)
         }));
         if y_end == page_height {

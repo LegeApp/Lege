@@ -12,7 +12,7 @@ extern crate alloc;
 
 mod toojpeg;
 
-pub use toojpeg::{write_jpeg, BitCode, BitWriter, I16, I32, U16, U8};
+pub use toojpeg::{BitCode, BitWriter, I16, I32, U8, U16, write_jpeg};
 
 /// Image format options for the JPEG encoder
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

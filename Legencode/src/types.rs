@@ -20,7 +20,9 @@ impl std::fmt::Display for AppError {
             AppError::InvalidConfig(s) => write!(f, "Invalid configuration: {}", s),
             AppError::InvalidPageRange(s) => write!(f, "Invalid page range: {}", s),
             AppError::InvalidFormatOption(s) => write!(f, "Invalid format option: {}", s),
-            AppError::InvalidBinarizationMethod(s) => write!(f, "Invalid binarization method: {}", s),
+            AppError::InvalidBinarizationMethod(s) => {
+                write!(f, "Invalid binarization method: {}", s)
+            }
         }
     }
 }

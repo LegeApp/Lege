@@ -1,27 +1,24 @@
 // djvu.rs
 // Native Rust DJVU encoding using the djvu_encoder crate
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use unicode_normalization::UnicodeNormalization;
 use tokio::sync::mpsc;
+use unicode_normalization::UnicodeNormalization;
 
 // Import DJVU encoder types
 use djvu_encoder::doc::{DjvuBuilder, Page, PageBuilder, PageEncodeParams};
-use djvu_encoder::image::image_formats::{Bitmap, Pixmap, GrayPixel, Pixel};
+use djvu_encoder::image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 
 use crate::app_dirs;
-use crate::engine::Detection;
 use crate::dbglog;
+use crate::engine::Detection;
 
 fn djvu_hidden_text_enabled() -> bool {
-    std::env::var("LEGE_DJVU_HIDDEN_TEXT")
-        .ok()
-        .as_deref()
-        != Some("0")
+    std::env::var("LEGE_DJVU_HIDDEN_TEXT").ok().as_deref() != Some("0")
 }
 
 /// Configuration for native DJVU encoding
@@ -60,7 +57,7 @@ impl Default for DjvuConfig {
             dpi: 300,
             clean: true,
             lossy: None,
-            iw44_quality: 75,  // Good quality (85 slices, balanced quality/size)
+            iw44_quality: 75, // Good quality (85 slices, balanced quality/size)
             work_dir: app_dirs::djvu_base_dir(),
             pre_mask_color_layer: true,
             no_binarization_mode: false,
@@ -99,8 +96,6 @@ pub struct PageData {
     pub hocr: Option<String>,
 }
 
-
-
 /// Main native DJVU orchestrator
 pub struct DjvuOrchestrator {
     config: DjvuConfig,
@@ -113,9 +108,7 @@ impl DjvuOrchestrator {
         fs::create_dir_all(&config.work_dir)
             .with_context(|| format!("Failed to create work directory: {:?}", config.work_dir))?;
 
-        Ok(Self {
-            config,
-        })
+        Ok(Self { config })
     }
 
     /// Process a single page and encode it to DJVU format
@@ -131,8 +124,14 @@ impl DjvuOrchestrator {
 
         #[cfg(feature = "debug-logging")]
         match &result {
-            Ok(_) => crate::success_log!("[DJVU-Native] process_page COMPLETE: page {}", page_index),
-            Err(e) => crate::error_log!("[DJVU-Native] process_page FAILED: page {} - {}", page_index, e),
+            Ok(_) => {
+                crate::success_log!("[DJVU-Native] process_page COMPLETE: page {}", page_index)
+            }
+            Err(e) => crate::error_log!(
+                "[DJVU-Native] process_page FAILED: page {} - {}",
+                page_index,
+                e
+            ),
         }
 
         result
@@ -144,12 +143,17 @@ impl DjvuOrchestrator {
         let width = page_data.rgb_image.width();
         let height = page_data.rgb_image.height();
 
-        dbglog!("[djvu-native] Encoding page {}: {}x{}", page_num, width, height);
+        dbglog!(
+            "[djvu-native] Encoding page {}: {}x{}",
+            page_num,
+            width,
+            height
+        );
 
         // Extract image-type regions using centralized LabelClassifier
         let classifier = &crate::types::LABEL_CLASSIFIER;
         let mut image_regions = Vec::new();
-        
+
         if self.config.no_binarization_mode {
             // In no-binarization mode: treat the entire page as one IW44 image, no text layer
             image_regions.push(ImageRegion {
@@ -221,7 +225,8 @@ impl DjvuOrchestrator {
         };
 
         // Build page
-        page_builder.build()
+        page_builder
+            .build()
             .context("Failed to build no-binarization page")
     }
 
@@ -249,13 +254,15 @@ impl DjvuOrchestrator {
         }
 
         // 3. Build page with JB2 foreground (text layer)
-        let mut page_builder = PageBuilder::new(page_num, width, height)
-            .with_foreground(bitmap, 0, 0);
+        let mut page_builder =
+            PageBuilder::new(page_num, width, height).with_foreground(bitmap, 0, 0);
 
         // 4. Add IW44 color background if image regions exist
         if use_color_background && !image_regions.is_empty() {
-            let color_canvas = self.compose_color_canvas(page_data, image_regions, width, height)?;
-            page_builder = page_builder.with_background(color_canvas)
+            let color_canvas =
+                self.compose_color_canvas(page_data, image_regions, width, height)?;
+            page_builder = page_builder
+                .with_background(color_canvas)
                 .context("Failed to add background")?;
             dbglog!("[djvu-native] IW44 color background added");
         }
@@ -273,8 +280,7 @@ impl DjvuOrchestrator {
         }
 
         // 6. Build the final page
-        page_builder.build()
-            .context("Failed to build page")
+        page_builder.build().context("Failed to build page")
     }
 
     /// White out image regions in the binary bitmap
@@ -314,7 +320,7 @@ impl DjvuOrchestrator {
         height: u32,
     ) -> Result<Pixmap> {
         let rgb_image = &page_data.rgb_image;
-        
+
         // Create white canvas
         let mut canvas_vec = vec![Pixel::new(255, 255, 255); (width * height) as usize];
 
@@ -334,13 +340,17 @@ impl DjvuOrchestrator {
                 for x in x1..x2.min(width) {
                     if x < rgb_image.width() && y < rgb_image.height() {
                         let pixel = rgb_image.get_pixel(x, y);
-                        canvas_vec[(y * width + x) as usize] = Pixel::new(pixel[0], pixel[1], pixel[2]);
+                        canvas_vec[(y * width + x) as usize] =
+                            Pixel::new(pixel[0], pixel[1], pixel[2]);
                     }
                 }
             }
         }
 
-        dbglog!("[djvu-native] Composed color canvas with {} regions", regions.len());
+        dbglog!(
+            "[djvu-native] Composed color canvas with {} regions",
+            regions.len()
+        );
         Ok(Pixmap::from_vec(width, height, canvas_vec))
     }
 
@@ -411,7 +421,7 @@ impl DjvuOrchestrator {
         // Matches ocrx_word spans across newlines, with arbitrary attribute order and
         // extended title payloads (e.g. "bbox ...; x_wconf 95").
         let word_re = Regex::new(
-            r#"(?is)<span[^>]*class=['"][^'"]*\bocrx_word\b[^'"]*['"][^>]*title=['"]([^'"]*)['"][^>]*>(.*?)</span>"#
+            r#"(?is)<span[^>]*class=['"][^'"]*\bocrx_word\b[^'"]*['"][^>]*title=['"]([^'"]*)['"][^>]*>(.*?)</span>"#,
         )?;
         let bbox_re = Regex::new(r#"(?i)\bbbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)"#)?;
         let tag_re = Regex::new(r#"(?is)<[^>]+>"#)?;
@@ -425,10 +435,22 @@ impl DjvuOrchestrator {
             };
 
             // Parse as i32 first to tolerate slightly malformed negatives.
-            let x1_i: i32 = bbox_caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let y1_i: i32 = bbox_caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let x2_i: i32 = bbox_caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let y2_i: i32 = bbox_caps.get(4).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let x1_i: i32 = bbox_caps
+                .get(1)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let y1_i: i32 = bbox_caps
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let x2_i: i32 = bbox_caps
+                .get(3)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let y2_i: i32 = bbox_caps
+                .get(4)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
 
             // Clamp to page bounds and convert to unsigned after clamping.
             let x1_raw = x1_i.max(0).min(page_width as i32) as u32;
@@ -465,10 +487,7 @@ impl DjvuOrchestrator {
                 .replace("&gt;", ">")
                 .replace("&quot;", "\"")
                 .replace("&#39;", "'");
-            text = text
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
+            text = text.split_whitespace().collect::<Vec<_>>().join(" ");
             if text.is_empty() {
                 continue;
             }
@@ -481,7 +500,10 @@ impl DjvuOrchestrator {
         }
 
         #[cfg(feature = "debug-logging")]
-        crate::info_log!("[parse_hocr_to_words] Found {} words from HOCR", words.len());
+        crate::info_log!(
+            "[parse_hocr_to_words] Found {} words from HOCR",
+            words.len()
+        );
 
         Ok(words)
     }
@@ -496,8 +518,7 @@ impl DjvuOrchestrator {
         crate::info_log!("[DJVU-Native] Finalizing document");
 
         // Finalize and get bytes
-        let djvu_bytes = doc.finalize()
-            .context("Failed to finalize DJVU document")?;
+        let djvu_bytes = doc.finalize().context("Failed to finalize DJVU document")?;
 
         dbglog!("[djvu-native] Document built: {} bytes", djvu_bytes.len());
 
@@ -514,15 +535,13 @@ impl DjvuOrchestrator {
         Ok(())
     }
 
-
-
     /// Preflight check (no external dependencies needed for native encoder)
     pub fn preflight_check(&self, _require_text_layer: bool) -> Result<()> {
         // Native encoder has no external dependencies
         // Just verify work directory is writable
         fs::create_dir_all(&self.config.work_dir)
             .with_context(|| format!("Work directory not writable: {:?}", self.config.work_dir))?;
-        
+
         Ok(())
     }
 
@@ -598,7 +617,10 @@ pub fn spawn_djvu_writer_actor(
     iw44_quality: u8,
     progress_tracker: crate::progress::ProgressTracker,
     channel_capacity: usize,
-) -> (DjvuWriterHandle, tokio::task::JoinHandle<Result<(), anyhow::Error>>) {
+) -> (
+    DjvuWriterHandle,
+    tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+) {
     let (tx, mut rx) = mpsc::channel::<DjvuWriterMessage>(channel_capacity.max(1));
 
     let handle = DjvuWriterHandle { sender: tx };
@@ -608,9 +630,9 @@ pub fn spawn_djvu_writer_actor(
     // 50 = 74 slices (C44 default)
     // 0 = 50 slices (lower quality, smaller files)
     let slices = match iw44_quality {
-        100 => 97,  // High quality
-        q if q >= 50 => 74 + ((q as usize - 50) * 23 / 50),  // 74-97 range
-        q => 50 + (q as usize * 24 / 50),  // 50-74 range
+        100 => 97,                                          // High quality
+        q if q >= 50 => 74 + ((q as usize - 50) * 23 / 50), // 74-97 range
+        q => 50 + (q as usize * 24 / 50),                   // 50-74 range
     };
 
     let task = tokio::spawn(async move {
@@ -623,7 +645,8 @@ pub fn spawn_djvu_writer_actor(
             .build();
 
         let mut pages_written = 0usize;
-        let mut page_buffer: std::collections::BTreeMap<usize, Page> = std::collections::BTreeMap::new();
+        let mut page_buffer: std::collections::BTreeMap<usize, Page> =
+            std::collections::BTreeMap::new();
         let mut next_expected = 0usize;
 
         crate::info_log!("[DjvuWriterActor] Started, waiting for pages...");
@@ -660,7 +683,11 @@ pub fn spawn_djvu_writer_actor(
                     }
                 }
                 DjvuWriterMessage::Finalize => {
-                    crate::info_log!("[DjvuWriterActor] Finalize requested, written {} of {} pages", pages_written, total_pages);
+                    crate::info_log!(
+                        "[DjvuWriterActor] Finalize requested, written {} of {} pages",
+                        pages_written,
+                        total_pages
+                    );
 
                     // Check if all pages were received
                     if pages_written != total_pages {
@@ -726,7 +753,11 @@ mod tests {
         });
         let mut second_send = Box::pin(second_send);
 
-        assert!(timeout(Duration::from_millis(50), &mut second_send).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(50), &mut second_send)
+                .await
+                .is_err()
+        );
 
         let _ = rx.recv().await.expect("message");
 

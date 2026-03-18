@@ -232,32 +232,38 @@ async fn inference_stage_parallel(
                         }
                     }
                     Err(e) => {
-                        warn_log!("[PDF-Parallel-Infer] Inference task failed: {}", e);
+                        return Err(anyhow!(
+                            "[PDF-Parallel-Infer] Inference task failed: {}",
+                            e
+                        ));
                     }
                 }
             }
 
             // Accept new work if we have capacity
-            Some(rendered) = rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
-                let handle_clone = inference_handle.clone();
-                let cache_clone = detection_cache.clone();
-                let analysis_w = analysis_width;
+            recv_result = rx.recv(), if !input_exhausted && in_flight.len() < concurrency => {
+                match recv_result {
+                    Some(rendered) => {
+                        let handle_clone = inference_handle.clone();
+                        let cache_clone = detection_cache.clone();
+                        let analysis_w = analysis_width;
 
-                in_flight.push(build_inference_future(
-                    handle_clone,
-                    rendered,
-                    cache_clone,
-                    analysis_w,
-                ));
+                        in_flight.push(build_inference_future(
+                            handle_clone,
+                            rendered,
+                            cache_clone,
+                            analysis_w,
+                        ));
+                    }
+                    None => {
+                        input_exhausted = true;
+                        info_log!("[PDF-Parallel-Infer] Input exhausted, draining {} in-flight tasks", in_flight.len());
+                    }
+                }
             }
 
             // Input channel closed
             else => {
-                if !input_exhausted && rx.is_closed() {
-                    input_exhausted = true;
-                    info_log!("[PDF-Parallel-Infer] Input exhausted, draining {} in-flight tasks", in_flight.len());
-                }
-
                 // Exit when all work is done
                 if input_exhausted && in_flight.is_empty() {
                     break;
@@ -412,38 +418,42 @@ async fn processing_stage_parallel(
                         }
                     }
                     Ok(Err(e)) => {
-                        warn_log!("[PDF-Parallel-Process] Processing failed: {}", e);
+                        return Err(anyhow!("[PDF-Parallel-Process] Processing failed: {}", e));
                     }
                     Err(e) => {
-                        warn_log!("[PDF-Parallel-Process] Task join error: {}", e);
+                        return Err(anyhow!("[PDF-Parallel-Process] Task join error: {}", e));
                     }
                 }
             }
 
             // Accept new work if we have capacity
-            Some(inference_data) = rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
-                let config_clone = config.clone();
-                let pdf_renderer_clone = pdf_renderer.clone();
-                let margin_analysis_clone = margin_analysis.clone();
+            recv_result = rx.recv(), if !input_exhausted && in_flight.len() < concurrency => {
+                match recv_result {
+                    Some(inference_data) => {
+                        let config_clone = config.clone();
+                        let pdf_renderer_clone = pdf_renderer.clone();
+                        let margin_analysis_clone = margin_analysis.clone();
 
-                // Spawn processing task
-                let task = tokio::spawn(async move {
-                    process_single_page(
-                        config_clone,
-                        pdf_renderer_clone,
-                        inference_data,
-                        page_index_offset,
-                        margin_analysis_clone,
-                    ).await
-                });
+                        // Spawn processing task
+                        let task = tokio::spawn(async move {
+                            process_single_page(
+                                config_clone,
+                                pdf_renderer_clone,
+                                inference_data,
+                                page_index_offset,
+                                margin_analysis_clone,
+                            ).await
+                        });
 
-                in_flight.push(task);
+                        in_flight.push(task);
+                    }
+                    None => {
+                        input_exhausted = true;
+                    }
+                }
             }
 
             else => {
-                if !input_exhausted && rx.is_closed() {
-                    input_exhausted = true;
-                }
                 if input_exhausted && in_flight.is_empty() {
                     break;
                 }
@@ -1831,7 +1841,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     let total_pages = page_end - page_start;
 
     let infer_concurrency = 1usize;
-    let process_concurrency = 1usize;
+    let process_concurrency = pipeline_config.page_workers.max(1);
 
     info_log!("[PDF-Parallel] Processing {} pages with:", total_pages);
     info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
@@ -1844,11 +1854,10 @@ pub async fn create_and_run_pdf_parallel_pipeline(
         match crate::pipeline::inference::InferenceHandle::new(&config) {
             Ok(handle) => Some(Arc::new(handle)),
             Err(e) => {
-                warn_log!(
-                    "[PDF-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.",
+                return Err(anyhow!(
+                    "[PDF-Parallel] Failed to create InferenceHandle: {}",
                     e
-                );
-                None
+                ));
             }
         }
     } else {

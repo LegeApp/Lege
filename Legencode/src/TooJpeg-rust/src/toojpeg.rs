@@ -155,11 +155,7 @@ impl<W: FnMut(U8) -> Result<(), &'static str>> BitWriter<W> {
 }
 
 fn minimum<T: PartialOrd>(value: T, maximum: T) -> T {
-    if value <= maximum {
-        value
-    } else {
-        maximum
-    }
+    if value <= maximum { value } else { maximum }
 }
 
 fn clamp<T: PartialOrd>(value: T, min_value: T, max_value: T) -> T {

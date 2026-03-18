@@ -1,11 +1,11 @@
+use super::dx12::{ComputePipelineState, D3D12Context};
+use super::{BorderMode, FilterType, ResizerError, Result};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use super::{BorderMode, FilterType, ResizerError, Result};
-use super::dx12::{ComputePipelineState, D3D12Context};
 
 /// Specific use cases for the resizer with optimized settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,13 +182,13 @@ impl Drop for BufferSet {
             unsafe {
                 let ctx = &*ctx_ptr;
                 let cb_size_aligned = align_up(size_of::<ResizeParamsCbuf>(), 256);
-                
+
                 // Track deallocation of all buffers
                 ctx.deallocate_buffer(self.src_capacity); // upload_src
                 ctx.deallocate_buffer(self.src_capacity); // gpu_src
                 ctx.deallocate_buffer(self.dst_capacity); // gpu_dst
                 ctx.deallocate_buffer(self.dst_capacity); // readback
-                ctx.deallocate_buffer(cb_size_aligned);   // cb_upload
+                ctx.deallocate_buffer(cb_size_aligned); // cb_upload
             }
         }
     }
@@ -290,7 +290,11 @@ impl HlslResizer {
         if self.verbose {
             eprintln!(
                 "[Resizer] Resize {:?}: {}x{} -> {}x{}, channels(req)={}, filter={:?}, border={:?} val={}",
-                if cfg!(debug_assertions) { "debug" } else { "release" },
+                if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                },
                 params.src_width,
                 params.src_height,
                 params.dst_width,
@@ -317,16 +321,13 @@ impl HlslResizer {
         if self.verbose {
             eprintln!(
                 "[Resizer] GPU sizes: src={} bytes ({} px * 4), dst={} bytes ({} px * 4)",
-                gpu_src_size,
-                pixel_count_src,
-                gpu_dst_size,
-                pixel_count_dst
+                gpu_src_size, pixel_count_src, gpu_dst_size, pixel_count_dst
             );
         }
 
         self.ensure_buffers(gpu_src_size, gpu_dst_size)?;
         let src_rgba = expand_to_rgba(src_data, params.channel_count, pixel_count_src);
-        
+
         // Check if we need chunked processing due to dynamic buffer sizing
         let buffers = self.buffers.as_ref().unwrap();
         if buffers.src_capacity < gpu_src_size || buffers.dst_capacity < gpu_dst_size {
@@ -341,7 +342,7 @@ impl HlslResizer {
             }
             return self.resize_chunked(params, &src_rgba, gpu_src_size, gpu_dst_size);
         }
-        
+
         let result = self
             .dispatch_resize(params, &src_rgba, gpu_src_size, gpu_dst_size, true)?
             .ok_or_else(|| {
@@ -418,7 +419,9 @@ impl HlslResizer {
         let cb_size_aligned = align_up(size_of::<ResizeParamsCbuf>(), 256);
 
         let needs_new = match &self.buffers {
-            Some(existing) => existing.src_capacity < src_aligned || existing.dst_capacity < dst_aligned,
+            Some(existing) => {
+                existing.src_capacity < src_aligned || existing.dst_capacity < dst_aligned
+            }
             None => true,
         };
 
@@ -427,14 +430,13 @@ impl HlslResizer {
         }
 
         // Dynamic buffer sizing strategy to prevent memory pool exhaustion
-        let (final_src_size, final_dst_size) = self.calculate_dynamic_buffer_sizes(src_aligned, dst_aligned)?;
+        let (final_src_size, final_dst_size) =
+            self.calculate_dynamic_buffer_sizes(src_aligned, dst_aligned)?;
 
         if self.verbose {
             eprintln!(
                 "[Resizer] Allocating GPU buffers: src_capacity={} dst_capacity={} cb_size={}",
-                final_src_size,
-                final_dst_size,
-                cb_size_aligned
+                final_src_size, final_dst_size, cb_size_aligned
             );
             if final_src_size != src_aligned || final_dst_size != dst_aligned {
                 eprintln!(
@@ -444,7 +446,9 @@ impl HlslResizer {
             }
         }
 
-        let upload_src = self.ctx.create_buffer(final_src_size, D3D12_HEAP_TYPE_UPLOAD)?;
+        let upload_src = self
+            .ctx
+            .create_buffer(final_src_size, D3D12_HEAP_TYPE_UPLOAD)?;
         let gpu_src = self
             .ctx
             .create_buffer(final_src_size, D3D12_HEAP_TYPE_DEFAULT)?;
@@ -473,38 +477,45 @@ impl HlslResizer {
     }
 
     /// Calculate dynamic buffer sizes to prevent memory pool exhaustion
-    fn calculate_dynamic_buffer_sizes(&self, src_bytes: usize, dst_bytes: usize) -> Result<(usize, usize)> {
-        let current_allocated = self.ctx.allocated_memory.load(std::sync::atomic::Ordering::Relaxed);
+    fn calculate_dynamic_buffer_sizes(
+        &self,
+        src_bytes: usize,
+        dst_bytes: usize,
+    ) -> Result<(usize, usize)> {
+        let current_allocated = self
+            .ctx
+            .allocated_memory
+            .load(std::sync::atomic::Ordering::Relaxed);
         let available_memory = self.ctx.dedicated_video_memory;
         let memory_threshold = (available_memory * 80) / 100; // 80% threshold
-        
+
         // Calculate total memory needed for all buffers (upload + gpu + readback for each)
         let total_src_memory = src_bytes * 2; // upload_src + gpu_src
         let total_dst_memory = dst_bytes * 2; // gpu_dst + readback
         let total_needed = total_src_memory + total_dst_memory;
-        
+
         // Check if we can allocate at full size
         if current_allocated + total_needed as u64 <= memory_threshold {
             return Ok((src_bytes, dst_bytes));
         }
-        
+
         if self.verbose {
             eprintln!(
                 "[Resizer] Memory pressure detected: current={} MB, needed={} MB, threshold={} MB",
-                current_allocated / (1024*1024),
-                total_needed / (1024*1024),
-                memory_threshold / (1024*1024)
+                current_allocated / (1024 * 1024),
+                total_needed / (1024 * 1024),
+                memory_threshold / (1024 * 1024)
             );
         }
-        
+
         // Progressive sizing strategy
         let available_for_buffers = memory_threshold.saturating_sub(current_allocated) as usize;
-        
+
         if available_for_buffers < total_needed / 4 {
             // Very low memory - use minimal viable sizes
             let min_src = align_up(src_bytes / 4, 256).max(1024); // At least 1KB
             let min_dst = align_up(dst_bytes / 4, 256).max(1024);
-            
+
             if self.verbose {
                 eprintln!(
                     "[Resizer] Using minimal buffer sizes: src={} KB, dst={} KB",
@@ -512,13 +523,13 @@ impl HlslResizer {
                     min_dst / 1024
                 );
             }
-            
+
             return Ok((min_src, min_dst));
         } else if available_for_buffers < total_needed / 2 {
             // Medium memory pressure - use half sizes
             let half_src = align_up(src_bytes / 2, 256);
             let half_dst = align_up(dst_bytes / 2, 256);
-            
+
             if self.verbose {
                 eprintln!(
                     "[Resizer] Using half buffer sizes: src={} KB, dst={} KB",
@@ -526,13 +537,13 @@ impl HlslResizer {
                     half_dst / 1024
                 );
             }
-            
+
             return Ok((half_src, half_dst));
         } else {
             // Moderate memory pressure - use 75% sizes
             let reduced_src = align_up((src_bytes * 3) / 4, 256);
             let reduced_dst = align_up((dst_bytes * 3) / 4, 256);
-            
+
             if self.verbose {
                 eprintln!(
                     "[Resizer] Using reduced buffer sizes: src={} KB, dst={} KB",
@@ -540,13 +551,19 @@ impl HlslResizer {
                     reduced_dst / 1024
                 );
             }
-            
+
             return Ok((reduced_src, reduced_dst));
         }
-     }
+    }
 
     /// Handle resize operations when buffers are smaller than required data
-    fn resize_chunked(&mut self, params: &ResizeParameters, src_rgba: &[u8], gpu_src_size: usize, gpu_dst_size: usize) -> Result<Vec<u8>> {
+    fn resize_chunked(
+        &mut self,
+        params: &ResizeParameters,
+        src_rgba: &[u8],
+        gpu_src_size: usize,
+        gpu_dst_size: usize,
+    ) -> Result<Vec<u8>> {
         // For now, fall back to CPU resize when chunked processing would be needed
         // This is a safety mechanism to prevent crashes while maintaining functionality
         if self.verbose {
@@ -554,10 +571,10 @@ impl HlslResizer {
                 "[Resizer] Falling back to CPU resize due to insufficient GPU buffer capacity"
             );
         }
-        
+
         // Return an error that will trigger CPU fallback in the calling code
         Err(ResizerError::ResourceAllocationFailed(
-            "Insufficient GPU buffer capacity - falling back to CPU resize".to_string()
+            "Insufficient GPU buffer capacity - falling back to CPU resize".to_string(),
         ))
     }
 
@@ -569,14 +586,9 @@ impl HlslResizer {
         gpu_dst_size: usize,
         readback: bool,
     ) -> Result<Option<Vec<u8>>> {
-        let buffers = self
-            .buffers
-            .as_ref()
-            .ok_or_else(|| {
-                ResizerError::ResourceAllocationFailed(
-                    "Internal buffer state missing".to_string(),
-                )
-            })?;
+        let buffers = self.buffers.as_ref().ok_or_else(|| {
+            ResizerError::ResourceAllocationFailed("Internal buffer state missing".to_string())
+        })?;
 
         unsafe {
             let upload_src = buffers.upload_src.clone();
@@ -641,19 +653,21 @@ impl HlslResizer {
                 gpu_uav.ptr += self.ctx.cbv_srv_uav_descriptor_size as u64;
                 eprintln!(
                     "[Resizer] SRV NumElements={}, UAV NumElements={}, GPU SRV handle=0x{:X}, UAV handle=0x{:X}",
-                    srv_elements,
-                    uav_elements,
-                    gpu_srv.ptr,
-                    gpu_uav.ptr
+                    srv_elements, uav_elements, gpu_srv.ptr, gpu_uav.ptr
                 );
             }
 
             let heaps = [Some(self.ctx.descriptor_heap.clone())];
             self.ctx.command_list.SetDescriptorHeaps(&heaps);
 
-            let pso = self.pipelines.get(&params.filter).expect("Pipeline must be initialized");
+            let pso = self
+                .pipelines
+                .get(&params.filter)
+                .expect("Pipeline must be initialized");
             self.ctx.command_list.SetPipelineState(&pso.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pso.root_signature);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pso.root_signature);
 
             let scale_x = params.src_width as f32 / params.dst_width as f32;
             let scale_y = params.src_height as f32 / params.dst_height as f32;
@@ -712,13 +726,24 @@ impl HlslResizer {
                     },
                 };
                 self.ctx.command_list.ResourceBarrier(&[barrier]);
-                if self.verbose { eprintln!("[Resizer] Barrier: gpu_src COMMON -> COPY_DEST"); }
+                if self.verbose {
+                    eprintln!("[Resizer] Barrier: gpu_src COMMON -> COPY_DEST");
+                }
             }
 
-            self.ctx
-                .command_list
-                .CopyBufferRegion(&gpu_src, 0, &upload_src, 0, gpu_src_size as u64);
-            if self.verbose { eprintln!("[Resizer] CopyBufferRegion upload_src -> gpu_src ({} bytes)", gpu_src_size); }
+            self.ctx.command_list.CopyBufferRegion(
+                &gpu_src,
+                0,
+                &upload_src,
+                0,
+                gpu_src_size as u64,
+            );
+            if self.verbose {
+                eprintln!(
+                    "[Resizer] CopyBufferRegion upload_src -> gpu_src ({} bytes)",
+                    gpu_src_size
+                );
+            }
 
             // Transition gpu_src: COPY_DEST -> NON_PIXEL_SHADER_RESOURCE for SRV consumption
             {
@@ -736,7 +761,9 @@ impl HlslResizer {
                     },
                 };
                 self.ctx.command_list.ResourceBarrier(&[barrier]);
-                if self.verbose { eprintln!("[Resizer] Barrier: gpu_src COPY_DEST -> NON_PIXEL_SHADER_RESOURCE"); }
+                if self.verbose {
+                    eprintln!("[Resizer] Barrier: gpu_src COPY_DEST -> NON_PIXEL_SHADER_RESOURCE");
+                }
             }
 
             {
@@ -754,13 +781,17 @@ impl HlslResizer {
                     },
                 };
                 self.ctx.command_list.ResourceBarrier(&[barrier]);
-                if self.verbose { eprintln!("[Resizer] Barrier: gpu_dst COMMON -> UNORDERED_ACCESS"); }
+                if self.verbose {
+                    eprintln!("[Resizer] Barrier: gpu_dst COMMON -> UNORDERED_ACCESS");
+                }
             }
 
             let (tgx, tgy, _) = params.filter.thread_group_size();
             let groups_x = (params.dst_width + tgx - 1) / tgx;
             let groups_y = (params.dst_height + tgy - 1) / tgy;
-            if self.verbose { eprintln!("[Resizer] Dispatch: groups=({}, {}, 1)", groups_x, groups_y); }
+            if self.verbose {
+                eprintln!("[Resizer] Dispatch: groups=({}, {}, 1)", groups_x, groups_y);
+            }
             self.ctx.command_list.Dispatch(groups_x, groups_y, 1);
 
             if readback {
@@ -779,12 +810,20 @@ impl HlslResizer {
                 };
                 self.ctx.command_list.ResourceBarrier(&[barrier]);
 
-                if self.verbose { eprintln!("[Resizer] Barrier: gpu_dst UNORDERED_ACCESS -> COPY_SOURCE"); }
-                if self.verbose { eprintln!("[Resizer] Copy gpu_dst->readback: {} bytes", gpu_dst_size); }
+                if self.verbose {
+                    eprintln!("[Resizer] Barrier: gpu_dst UNORDERED_ACCESS -> COPY_SOURCE");
+                }
+                if self.verbose {
+                    eprintln!("[Resizer] Copy gpu_dst->readback: {} bytes", gpu_dst_size);
+                }
                 let readback = buffers.readback.clone();
-                self.ctx
-                    .command_list
-                    .CopyBufferRegion(&readback, 0, &gpu_dst, 0, gpu_dst_size as u64);
+                self.ctx.command_list.CopyBufferRegion(
+                    &readback,
+                    0,
+                    &gpu_dst,
+                    0,
+                    gpu_dst_size as u64,
+                );
             } else {
                 let transition = D3D12_RESOURCE_TRANSITION_BARRIER {
                     pResource: std::mem::ManuallyDrop::new(Some(gpu_dst.clone())),
@@ -800,7 +839,9 @@ impl HlslResizer {
                     },
                 };
                 self.ctx.command_list.ResourceBarrier(&[barrier]);
-                if self.verbose { eprintln!("[Resizer] Barrier: gpu_dst UNORDERED_ACCESS -> GENERIC_READ"); }
+                if self.verbose {
+                    eprintln!("[Resizer] Barrier: gpu_dst UNORDERED_ACCESS -> GENERIC_READ");
+                }
             }
 
             self.ctx.execute_command_list()?;

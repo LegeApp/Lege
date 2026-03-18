@@ -316,6 +316,8 @@ impl PipelineConfig {
     pub fn new() -> Result<Self> {
         #[cfg(target_os = "linux")]
         let yolo = runtime_asset_path("yolo-layout.onnx");
+        #[cfg(not(target_os = "linux"))]
+        let yolo = PathBuf::new();
         let optimized = runtime_asset_path("paddle-layout-optimized.onnx");
         let model_path = if cfg!(target_os = "linux") && yolo.exists() {
             yolo.to_string_lossy().to_string()

@@ -119,12 +119,7 @@ pub fn rgb_to_ycbcr_planes(img_raw: &[u8], out_y: &mut [i8], out_cb: &mut [i8], 
     }
 }
 
-pub fn rgb_to_ycbcr_buffers(
-    img: &Pixmap,
-    out_y: &mut [i8],
-    out_cb: &mut [i8],
-    out_cr: &mut [i8],
-) {
+pub fn rgb_to_ycbcr_buffers(img: &Pixmap, out_y: &mut [i8], out_cb: &mut [i8], out_cr: &mut [i8]) {
     let pixels: &[[u8; 3]] = bytemuck::cast_slice(img.as_raw());
     assert_eq!(out_y.len(), pixels.len());
     assert_eq!(out_cb.len(), pixels.len());
@@ -233,7 +228,7 @@ pub fn encoder_from_rgb_with_helpers(
         cr_codec,
         params,
         total_slices: 0,
-            serial: 0,
+        serial: 0,
         crcb_delay: match params.crcb_mode {
             CrcbMode::None => -1,
             CrcbMode::Half => 10,
@@ -264,8 +259,8 @@ pub fn encoder_from_gray_with_helpers(
         total_slices: 0,
         serial: 0,
         crcb_delay: -1,
-        crcb_half: false,  // Grayscale has no chroma
-        // Note: curbit/curband state is now owned by each codec (initialized in Codec::new)
+        crcb_half: false, // Grayscale has no chroma
+                          // Note: curbit/curband state is now owned by each codec (initialized in Codec::new)
     })
 }
 
@@ -277,8 +272,8 @@ pub struct IWEncoder {
     total_slices: usize,
     serial: u8,
     crcb_delay: i32,
-    crcb_half: bool,  // Added to match C++ behavior
-    // Note: curbit/curband state is now owned by each codec independently
+    crcb_half: bool, // Added to match C++ behavior
+                     // Note: curbit/curband state is now owned by each codec independently
 }
 
 impl IWEncoder {
@@ -406,7 +401,10 @@ impl IWEncoder {
             if !self.params.lossless {
                 if let Some(db_target) = self.params.decibels {
                     // Always check quality after first slice or when appropriate
-                    if slices_encoded > 0 || self.y_codec.curband == 0 || estdb >= db_target - super::constants::DECIBEL_PRUNE {
+                    if slices_encoded > 0
+                        || self.y_codec.curband == 0
+                        || estdb >= db_target - super::constants::DECIBEL_PRUNE
+                    {
                         estdb = self.y_codec.estimate_decibel(self.params.db_frac);
                         if estdb >= db_target {
                             self.y_codec.curbit = -1;
@@ -436,8 +434,11 @@ impl IWEncoder {
                         }
                     }
                     if matches > zp_data.len() / window_size / 2 {
-                        info!("WARNING: Detected repeating pattern of size {} in ZP data ({}% of file)", 
-                              window_size, (matches * 100) / (zp_data.len() / window_size));
+                        info!(
+                            "WARNING: Detected repeating pattern of size {} in ZP data ({}% of file)",
+                            window_size,
+                            (matches * 100) / (zp_data.len() / window_size)
+                        );
                         repeating_detected = true;
                         break;
                     }
@@ -449,9 +450,7 @@ impl IWEncoder {
         }
 
         if slices_encoded == 0 {
-            info!(
-                "encode_chunk: No slices encoded (slices_encoded=0). Returning empty chunk."
-            );
+            info!("encode_chunk: No slices encoded (slices_encoded=0). Returning empty chunk.");
             return Ok((Vec::new(), false));
         }
 
@@ -500,7 +499,7 @@ impl IWEncoder {
 
         // Append ZP payload
         chunk_data.extend_from_slice(&zp_data);
-        
+
         // Determine if more chunks are needed
         let more = self.y_codec.curbit >= 0;
 
@@ -509,5 +508,4 @@ impl IWEncoder {
 
         Ok((chunk_data, more))
     }
-    
 }

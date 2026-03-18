@@ -2,12 +2,12 @@
 // Document deskewing and rotation correction module
 // Integrates rotation classification and document unwarping models
 
-#[allow(unused_imports)]
-use crate::{debug_println, error_println, info_println};
-#[cfg(target_os = "linux")]
-use crate::gpu::webgpu_execution_provider_dispatch;
 #[cfg(windows)]
 use crate::gpu::directml_execution_provider_dispatch;
+#[cfg(target_os = "linux")]
+use crate::gpu::webgpu_execution_provider_dispatch;
+#[allow(unused_imports)]
+use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
 use image::{Rgb, RgbImage};
 use log::info;
@@ -16,8 +16,7 @@ use ndarray::Array;
 use once_cell::sync::OnceCell;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::tensor::Shape;
-use ort::value::Value;
+use ort::value::{Shape, Value};
 use std::fs::File;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
@@ -106,9 +105,7 @@ impl RotationClassifier {
         // Ensure ONNX Runtime is initialized (should already be done by main engine)
         static ONNX_INIT: OnceCell<()> = OnceCell::new();
         ONNX_INIT.get_or_try_init(|| -> Result<()> {
-            ort::init()
-                .with_name("lege")
-                .commit();
+            ort::init().with_name("lege").commit();
             Ok(())
         })?;
 
@@ -142,9 +139,12 @@ impl RotationClassifier {
             let attempt_result = catch_unwind(AssertUnwindSafe({
                 let mmap_ref = &mmap;
                 move || -> Result<Session> {
-                    let builder = Session::builder()?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)?
-                        .with_execution_providers(providers)?;
+                    let mut builder = Session::builder()
+                        .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                        .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?
+                        .with_execution_providers(providers)
+                        .map_err(|e| anyhow!("failed to set ORT execution providers: {e}"))?;
                     Ok(builder.commit_from_memory(mmap_ref)?)
                 }
             }));
@@ -184,9 +184,7 @@ impl RotationClassifier {
                 (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
             ]
         } else {
-            vec![
-                (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-            ]
+            vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
         }
     }
 
@@ -226,7 +224,8 @@ impl RotationClassifier {
         let preprocessed = self.preprocess(image)?;
 
         // Run inference
-        let input_value = Value::from_array(preprocessed)?;
+        let input_value = Value::from_array(preprocessed)
+            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?;
         let _ort_guard = crate::pipeline::runtime_limits::lock_ort_gate()?;
         let mut session = self
             .session
@@ -314,9 +313,7 @@ impl DocumentUnwarper {
         // Ensure ONNX Runtime is initialized
         static ONNX_INIT: OnceCell<()> = OnceCell::new();
         ONNX_INIT.get_or_try_init(|| -> Result<()> {
-            ort::init()
-                .with_name("lege")
-                .commit();
+            ort::init().with_name("lege").commit();
             Ok(())
         })?;
 
@@ -347,10 +344,14 @@ impl DocumentUnwarper {
             let attempt_result = catch_unwind(AssertUnwindSafe({
                 let mmap_ref = &mmap;
                 move || -> Result<Session> {
-                    let builder = Session::builder()?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)?
-                        .with_intra_threads(4)?
-                        .with_execution_providers(providers)?;
+                    let mut builder = Session::builder()
+                        .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)
+                        .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?
+                        .with_intra_threads(4)
+                        .map_err(|e| anyhow!("failed to set ORT intra-op threads: {e}"))?
+                        .with_execution_providers(providers)
+                        .map_err(|e| anyhow!("failed to set ORT execution providers: {e}"))?;
                     Ok(builder.commit_from_memory(mmap_ref)?)
                 }
             }));
@@ -390,9 +391,7 @@ impl DocumentUnwarper {
                 (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
             ]
         } else {
-            vec![
-                (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-            ]
+            vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
         }
     }
 
@@ -435,7 +434,8 @@ impl DocumentUnwarper {
         let preprocessed = self.preprocess(image)?;
 
         // Run inference
-        let input_value = Value::from_array(preprocessed)?;
+        let input_value = Value::from_array(preprocessed)
+            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?;
         let _ort_guard = crate::pipeline::runtime_limits::lock_ort_gate()?;
         let mut session = self
             .session

@@ -25,8 +25,8 @@ use lege::dbglog;
 use crate::backend;
 use crate::models::DocumentStatus;
 use crate::models::{
-    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat,
-    ProcessingOptions, ProcessingResult,
+    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat, ProcessingOptions,
+    ProcessingResult,
 };
 
 use crate::logging;
@@ -538,7 +538,6 @@ impl AppState {
             .unwrap_or_default();
         self.status_lines = (l1, l2, l3, String::new());
     }
-
 }
 
 #[component]
