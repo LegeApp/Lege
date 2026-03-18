@@ -31,6 +31,9 @@ pub mod types;
 // Custom image types (replaces image crate dependency)
 pub mod image_types;
 
+// TooJPEG encoder module
+pub mod toojpeg;
+
 // Colorquant modules removed - were only used by deleted indexed8 encoder
 
 /// Result type used throughout the crate
