@@ -1,12 +1,12 @@
+use Legencode::streamline::EncodingResult as LegeEncodingResult;
+use Legencode::streamline::jp2_config;
+use Legencode::streamline::{
+    EncodingManager, EncodingSettings, ImageBuffer as LegeImageBuffer, Jp2Settings, JpegSettings,
+};
 use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use Legencode::streamline::jp2_config;
-use Legencode::streamline::EncodingResult as LegeEncodingResult;
-use Legencode::streamline::{
-    EncodingManager, EncodingSettings, ImageBuffer as LegeImageBuffer, Jp2Settings, JpegSettings,
-};
 
 // Helper: encode JP2 at a given rate
 fn encode_jp2_at_rate(

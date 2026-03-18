@@ -77,19 +77,19 @@ impl LabelInfo {
             "aside_text",      // 22
         ];
 
-    // Image-like classes: treat charts (18) as text-like (thin lines threshold well),
-    // so exclude 18 to avoid unnecessary IW44 regions and background artifacts by default.
-    // Allow overriding this behavior via an env var for troubleshooting or special documents.
-    let mut image_class_ids: HashSet<i32> = [1, 20, 21].into_iter().collect();
-    if std::env::var("LEGE_TREAT_CHART_AS_IMAGE")
-        .map(|v| {
-            let v = v.to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        })
-        .unwrap_or(false)
-    {
-        image_class_ids.insert(18); // chart
-    }
+        // Image-like classes: treat charts (18) as text-like (thin lines threshold well),
+        // so exclude 18 to avoid unnecessary IW44 regions and background artifacts by default.
+        // Allow overriding this behavior via an env var for troubleshooting or special documents.
+        let mut image_class_ids: HashSet<i32> = [1, 20, 21].into_iter().collect();
+        if std::env::var("LEGE_TREAT_CHART_AS_IMAGE")
+            .map(|v| {
+                let v = v.to_ascii_lowercase();
+                v == "1" || v == "true" || v == "yes"
+            })
+            .unwrap_or(false)
+        {
+            image_class_ids.insert(18); // chart
+        }
         let text_class_ids: HashSet<i32> = [
             0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22,
         ]
@@ -743,13 +743,24 @@ impl CliConfigBuilder {
         }
 
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        let choice = parts.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+        let choice = parts
+            .first()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
         let is_fixed_choice = matches!(choice.as_str(), "2" | "fixed" | "threshold" | "thr");
         let valid_choice = matches!(
             choice.as_str(),
-            "1" | "adaptive" | "sauvola" | "otsu"
-                | "2" | "fixed" | "threshold" | "thr"
-                | "3" | "heavy" | "sauvola_ai" | "onnx"
+            "1" | "adaptive"
+                | "sauvola"
+                | "otsu"
+                | "2"
+                | "fixed"
+                | "threshold"
+                | "thr"
+                | "3"
+                | "heavy"
+                | "sauvola_ai"
+                | "onnx"
         );
         if !valid_choice {
             return Err(anyhow!(

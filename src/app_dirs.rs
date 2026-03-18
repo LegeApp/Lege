@@ -13,11 +13,13 @@ fn ensure_directory(path: &Path) -> PathBuf {
 
 pub fn data_dir() -> PathBuf {
     let base = dirs::data_dir()
-        .or_else(|| dirs::home_dir().map(|mut dir| {
-            dir.push(".local");
-            dir.push("share");
-            dir
-        }))
+        .or_else(|| {
+            dirs::home_dir().map(|mut dir| {
+                dir.push(".local");
+                dir.push("share");
+                dir
+            })
+        })
         .unwrap_or_else(|| PathBuf::from("."));
 
     ensure_directory(&base.join("Lege"))

@@ -152,8 +152,11 @@ pub fn get_tessdata_path_for_language(language: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    find_traineddata_path(&normalized)
-        .and_then(|traineddata| traineddata.parent().map(|p| p.to_string_lossy().to_string()))
+    find_traineddata_path(&normalized).and_then(|traineddata| {
+        traineddata
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+    })
 }
 
 #[cfg(target_os = "windows")]

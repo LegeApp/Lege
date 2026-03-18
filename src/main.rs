@@ -447,6 +447,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.jbig2_mode = Some(Jbig2Mode::SymUnify);
                 i += 1;
             }
+            "--unify" => {
+                opts.jbig2_mode = Some(Jbig2Mode::SymUnify);
+                i += 1;
+            }
             "--halftone" => {
                 opts.halftone = true;
                 i += 1;
@@ -1900,8 +1904,9 @@ fn parse_format_selection_with_options(
     let parts: Vec<&str> = input.split_whitespace().collect();
     let main_part = parts[0];
 
-    // Check for --high flag in remaining parts (hidden quality flag for DjVu)
+    // Check for standalone flags in remaining parts
     let has_high_flag = parts.iter().any(|&p| p == "--high");
+    let has_unify_flag = parts.iter().any(|&p| p == "--unify");
 
     // Parse main format option
     let (format_num, c_count, has_s_flag, has_u_flag) = parse_main_format(main_part)?;
@@ -1963,7 +1968,7 @@ fn parse_format_selection_with_options(
         .iter()
         .skip(options_start_index)
         .copied()
-        .filter(|&p| p != "--high") // Filter out --high flag
+        .filter(|&p| p != "--high" && p != "--unify") // Filter out hidden/standalone flags
         .collect();
     options_parts.extend(remaining_parts.iter().map(|s| s.to_string()));
 
@@ -1986,7 +1991,7 @@ fn parse_format_selection_with_options(
     let final_enable_dithering = enable_dithering;
 
     let jbig2_mode = if format_num == 2 {
-        if has_u_flag {
+        if has_u_flag || has_unify_flag {
             Jbig2Mode::SymUnify
         } else if has_s_flag || layout_detection {
             Jbig2Mode::Symbol

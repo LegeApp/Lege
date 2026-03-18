@@ -1,18 +1,19 @@
 // policies.rs - Pluggable detection and region policies for processing pipelines
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use image::RgbImage;
 
 use crate::engine::Detection;
-use crate::pipeline::config::{PipelineConfig, RenderedPageData, InferenceResult};
-use crate::resize_context::{InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page};
 use crate::margin;
+use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
+use crate::resize_context::{InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page};
 
 // Global standard dimensions for margin processing (typically set from first/cover page)
 static STANDARD_WIDTH: AtomicU32 = AtomicU32::new(0);
 static STANDARD_HEIGHT: AtomicU32 = AtomicU32::new(0);
-static STANDARD_DIMS_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STANDARD_DIMS_INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Reset standard dimensions (called at start of new document processing)
 pub fn reset_standard_dimensions() {
@@ -53,7 +54,12 @@ impl RegionTask {
     pub fn whole_page(page: &RenderedPageData, _cfg: &PipelineConfig) -> Self {
         RegionTask {
             page_index: page.index,
-            bbox: [0.0, 0.0, page.high_res_image.width() as f32, page.high_res_image.height() as f32],
+            bbox: [
+                0.0,
+                0.0,
+                page.high_res_image.width() as f32,
+                page.high_res_image.height() as f32,
+            ],
             binarize: true,
             prefer_original_quality: false,
         }
@@ -69,19 +75,42 @@ pub trait DetectionProvider: Send + Sync {
 pub trait RegionPolicy: Send + Sync {
     /// Transform the page image and detections (e.g., margin crop/center) and return adjusted outputs.
     /// Default behavior is identity transform with remapped detections to page space.
-    fn transform(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> (RgbImage, Vec<Detection>) {
+    fn transform(
+        &self,
+        page: &RenderedPageData,
+        inf: &InferenceResult,
+        cfg: &PipelineConfig,
+    ) -> (RgbImage, Vec<Detection>) {
         let mut dets = inf.detections.clone();
-        remap_detections_to_page(&mut dets, page.high_res_image.width(), page.high_res_image.height(), cfg);
+        remap_detections_to_page(
+            &mut dets,
+            page.high_res_image.width(),
+            page.high_res_image.height(),
+            cfg,
+        );
         ((*inf.high_res_image).clone(), dets)
     }
 
     /// Map (page + detections + config) into an ordered list of region tasks to process/encode.
     /// Default: if there are detections, create regions per detection; otherwise, whole page.
-    fn to_regions(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> Vec<RegionTask> {
+    fn to_regions(
+        &self,
+        page: &RenderedPageData,
+        inf: &InferenceResult,
+        cfg: &PipelineConfig,
+    ) -> Vec<RegionTask> {
         if inf.detections.is_empty() {
             vec![RegionTask::whole_page(page, cfg)]
         } else {
-            inf.detections.iter().map(|d| RegionTask { page_index: page.index, bbox: d.bbox, binarize: false, prefer_original_quality: true }).collect()
+            inf.detections
+                .iter()
+                .map(|d| RegionTask {
+                    page_index: page.index,
+                    bbox: d.bbox,
+                    binarize: false,
+                    prefer_original_quality: true,
+                })
+                .collect()
         }
     }
 }
@@ -157,7 +186,12 @@ impl RegionPolicy for NoLayoutFullPage {}
 pub struct MarginStandardizeAndCenter;
 
 impl RegionPolicy for MarginStandardizeAndCenter {
-    fn transform(&self, page: &RenderedPageData, inf: &InferenceResult, cfg: &PipelineConfig) -> (RgbImage, Vec<Detection>) {
+    fn transform(
+        &self,
+        page: &RenderedPageData,
+        inf: &InferenceResult,
+        cfg: &PipelineConfig,
+    ) -> (RgbImage, Vec<Detection>) {
         // Start from original image and remapped detections
         let mut dets = inf.detections.clone();
         let page_w = page.high_res_image.width();
@@ -166,7 +200,9 @@ impl RegionPolicy for MarginStandardizeAndCenter {
 
         // Compute content bounds: prefer detection-derived, else pixel-derived
         let bounds = if !dets.is_empty() {
-            margin::calculate_content_bounds(&dets, page_w, page_h, /*filter_for_cropping*/ true)
+            margin::calculate_content_bounds(
+                &dets, page_w, page_h, /*filter_for_cropping*/ true,
+            )
         } else {
             compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
         };
@@ -178,7 +214,10 @@ impl RegionPolicy for MarginStandardizeAndCenter {
             };
             if dims.width > 0 && dims.height > 0 {
                 let setting = match cfg.margin_settings() {
-                    margin::MarginSettings::StandardizeAndCenter | margin::MarginSettings::CropAndResize => margin::MarginSettings::StandardizeAndCenter,
+                    margin::MarginSettings::StandardizeAndCenter
+                    | margin::MarginSettings::CropAndResize => {
+                        margin::MarginSettings::StandardizeAndCenter
+                    }
                     margin::MarginSettings::None => margin::MarginSettings::None,
                 };
                 match margin::process_page_margins(
@@ -211,7 +250,6 @@ impl RegionPolicy for MarginStandardizeAndCenter {
     }
 }
 
-
 /// PaddleX-backed detection provider using existing InferenceHandle.
 pub struct PaddleDetectionProvider {
     pub config: Arc<PipelineConfig>,
@@ -229,7 +267,11 @@ pub struct PaddleDetectionProvider {
 impl DetectionProvider for PaddleDetectionProvider {
     async fn run_detection(&self, page: RenderedPageData) -> InferenceResult {
         // Run detection directly
-        let dets = match self.inference_handle.detect(page.index, page.inference_image.clone()).await {
+        let dets = match self
+            .inference_handle
+            .detect(page.index, page.inference_image.clone())
+            .await
+        {
             Ok(d) => d,
             Err(_) => Vec::new(),
         };
@@ -238,7 +280,10 @@ impl DetectionProvider for PaddleDetectionProvider {
 
         // Update progress tracking
         if let Some(callback) = &self.inference_callback {
-            let completed = self.completed_detections.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let completed = self
+                .completed_detections
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
             callback(completed, self.total_pages);
         }
 
@@ -257,8 +302,16 @@ impl DetectionProvider for PaddleDetectionProvider {
 
 // --- Helpers ---
 
-fn remap_detections_to_page(dets: &mut Vec<Detection>, page_w: u32, page_h: u32, cfg: &PipelineConfig) {
-    let spec = InferenceResizeSpec { target: cfg.inference_size(), ..Default::default() };
+fn remap_detections_to_page(
+    dets: &mut Vec<Detection>,
+    page_w: u32,
+    page_h: u32,
+    cfg: &PipelineConfig,
+) {
+    let spec = InferenceResizeSpec {
+        target: cfg.inference_size(),
+        ..Default::default()
+    };
     for d in dets.iter_mut() {
         if is_in_inference_space(&d.bbox, &spec) {
             d.bbox = map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
@@ -273,25 +326,37 @@ fn compute_pixel_bounds_for_margin(
     use Legencode::types::BinarizationOptions;
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
-    if want_invert_input && want_invert_output { want_invert_output = false; }
+    if want_invert_input && want_invert_output {
+        want_invert_output = false;
+    }
     let options = BinarizationOptions {
         invert: want_invert_output,
         invert_input: want_invert_input,
         k_factor: config.binarization().k_factor,
-        use_heavy_duty: config.binarization().use_heavy_duty && !config.binarization().use_fixed_threshold,
+        use_heavy_duty: config.binarization().use_heavy_duty
+            && !config.binarization().use_fixed_threshold,
         patch_percentage: config.binarization().patch_percentage,
         no_patch: config.binarization().no_patch,
         use_fixed_threshold: config.binarization().use_fixed_threshold,
         fixed_threshold: config.binarization().fixed_threshold,
     };
     let mut binarized = Legencode::color::binarization::binarize_image_raw(
-        image.as_raw(), image.width() as usize, image.height() as usize, &options,
+        image.as_raw(),
+        image.width() as usize,
+        image.height() as usize,
+        &options,
     );
-    if binarized.is_empty() { return None; }
+    if binarized.is_empty() {
+        return None;
+    }
     if binarized.iter().any(|&b| b > 1) {
-        for v in binarized.iter_mut() { *v = if *v > 128 { 1 } else { 0 }; }
+        for v in binarized.iter_mut() {
+            *v = if *v > 128 { 1 } else { 0 };
+        }
     }
     // Foreground black as 1 for content-bounds function
-    for v in binarized.iter_mut() { *v = if *v == 0 { 1 } else { 0 }; }
+    for v in binarized.iter_mut() {
+        *v = if *v == 0 { 1 } else { 0 };
+    }
     margin::calculate_content_bounds_from_binary_mask(&binarized, image.width(), image.height())
 }

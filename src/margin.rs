@@ -1,4 +1,4 @@
-﻿// src/margin.rs
+// src/margin.rs
 
 //! # Page Margin Processing Module
 //!
@@ -196,11 +196,7 @@ pub fn compute_pixel_bounds_for_margin(
         *value = if *value == 0 { 1 } else { 0 };
     }
 
-    calculate_content_bounds_from_binary_mask(
-        &binarized,
-        image.width(),
-        image.height(),
-    )
+    calculate_content_bounds_from_binary_mask(&binarized, image.width(), image.height())
 }
 
 /// Analyzes a set of detections to find the absolute outer bounds of the page content.
@@ -348,10 +344,10 @@ pub fn calculate_content_bounds_from_binary_mask(
         col_threshold = 4;
     }
 
-    let row_bounds = find_bounds(&row_counts, row_threshold)
-        .or_else(|| find_bounds(&row_counts, 1))?;
-    let col_bounds = find_bounds(&col_counts, col_threshold)
-        .or_else(|| find_bounds(&col_counts, 1))?;
+    let row_bounds =
+        find_bounds(&row_counts, row_threshold).or_else(|| find_bounds(&row_counts, 1))?;
+    let col_bounds =
+        find_bounds(&col_counts, col_threshold).or_else(|| find_bounds(&col_counts, 1))?;
 
     let (top, bottom) = row_bounds;
     let (left, right) = col_bounds;
@@ -392,14 +388,20 @@ pub fn process_page_margins(
     // Derive the standard aspect ratio from the first processed page dimensions
     // These should always be set by the renderer when the first page is seen.
     let standard_aspect_ratio: f32 = standard_dims.width as f32 / standard_dims.height as f32;
-    
+
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("MARGIN PROCESSING: Input image {}x{}, Settings {:?}, Standard dims {}x{} (aspect {:.3}), Target resize {}x{}",
-        original_image.width(), original_image.height(),
+    crate::debug_println!(
+        "MARGIN PROCESSING: Input image {}x{}, Settings {:?}, Standard dims {}x{} (aspect {:.3}), Target resize {}x{}",
+        original_image.width(),
+        original_image.height(),
         settings,
-        standard_dims.width, standard_dims.height, standard_aspect_ratio,
-        target_width_for_resize.unwrap_or(0), target_height_for_resize);
-    
+        standard_dims.width,
+        standard_dims.height,
+        standard_aspect_ratio,
+        target_width_for_resize.unwrap_or(0),
+        target_height_for_resize
+    );
+
     match settings {
         MarginSettings::StandardizeAndCenter => standardize_and_center_page(
             original_image,
@@ -421,7 +423,9 @@ pub fn process_page_margins(
         MarginSettings::None => {
             // Should not be called if settings are None, but we can gracefully return original.
             #[cfg(feature = "debug-logging")]
-            crate::debug_println!("MARGIN PROCESSING: No margin processing, returning original image");
+            crate::debug_println!(
+                "MARGIN PROCESSING: No margin processing, returning original image"
+            );
             Ok(original_image.clone())
         }
     }
@@ -437,7 +441,11 @@ pub fn compute_margin_correction(
     orig_image_dims: Option<(u32, u32)>,
 ) -> MarginCorrection {
     let standard_aspect_ratio: f32 = standard_dims.width as f32 / standard_dims.height as f32;
-    let target_width = resolve_target_width(target_width_for_resize, target_height_for_resize, standard_aspect_ratio);
+    let target_width = resolve_target_width(
+        target_width_for_resize,
+        target_height_for_resize,
+        standard_aspect_ratio,
+    );
 
     match settings {
         MarginSettings::StandardizeAndCenter => {
@@ -495,16 +503,9 @@ pub fn compute_margin_correction(
             //     final_y = (orig_y + ty) * sy
             // This is equivalent to: final_x = orig_x * sx + (tx * sx)
             //                        final_y = orig_y * sy + (ty * sy)
-            MarginCorrection::new(
-                (tx * sx) as f32,
-                (ty * sy) as f32,
-                sx as f32,
-                sy as f32,
-            )
+            MarginCorrection::new((tx * sx) as f32, (ty * sy) as f32, sx as f32, sy as f32)
         }
-        MarginSettings::None => {
-            MarginCorrection::default()
-        }
+        MarginSettings::None => MarginCorrection::default(),
     }
 }
 
@@ -532,11 +533,8 @@ pub fn transform_detections(
             let standard_aspect_ratio: f32 =
                 standard_dims.width as f32 / standard_dims.height as f32;
             let target_h = target_height_for_resize;
-            let target_w = resolve_target_width(
-                target_width_for_resize,
-                target_h,
-                standard_aspect_ratio,
-            );
+            let target_w =
+                resolve_target_width(target_width_for_resize, target_h, standard_aspect_ratio);
 
             // Use consistent floating-point precision for calculations
             // Convert to f64 for calculations to maintain precision, then back to f32
@@ -676,10 +674,7 @@ pub fn analyze_document_margins(
         let mut heights: Vec<u32> = all_page_data.iter().map(|p| p.page_height).collect();
         widths.sort();
         heights.sort();
-        (
-            widths[widths.len() / 2],
-            heights[heights.len() / 2]
-        )
+        (widths[widths.len() / 2], heights[heights.len() / 2])
     } else {
         (640, 800) // fallback default
     };
@@ -700,12 +695,7 @@ fn analyze_single_page_margins(page: &PageMarginInput) -> PageMarginData {
     let detection_bounds = if page.detections.is_empty() {
         None
     } else {
-        calculate_content_bounds(
-            &page.detections,
-            page.page_width,
-            page.page_height,
-            false,
-        )
+        calculate_content_bounds(&page.detections, page.page_width, page.page_height, false)
     };
 
     let content_bounds = detection_bounds.or(page.pixel_bounds);
@@ -790,8 +780,8 @@ fn is_full_page_image(
         coverage > 0.8
     } else if detections.is_empty() {
         if let Some(bounds) = content_bounds {
-            let coverage = (bounds.width() * bounds.height()) as f32
-                / (page_width * page_height) as f32;
+            let coverage =
+                (bounds.width() * bounds.height()) as f32 / (page_width * page_height) as f32;
             coverage > 0.8
         } else {
             false
@@ -934,7 +924,6 @@ pub fn apply_margin_analysis_to_page(
     )
 }
 
-
 /// Crops and resizes while maintaining standard aspect ratio for consistency
 fn crop_and_resize_with_standard_aspect_ratio(
     original_image: &RgbImage,
@@ -944,10 +933,16 @@ fn crop_and_resize_with_standard_aspect_ratio(
     target_height: u32,
 ) -> Result<RgbImage> {
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("RESIZE CROP_AND_RESIZE: Original image: {}x{}, Content bounds: ({},{}) to ({},{}), Standard aspect ratio: {:.3}", 
-        original_image.width(), original_image.height(),
-        bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y,
-        standard_aspect_ratio);
+    crate::debug_println!(
+        "RESIZE CROP_AND_RESIZE: Original image: {}x{}, Content bounds: ({},{}) to ({},{}), Standard aspect ratio: {:.3}",
+        original_image.width(),
+        original_image.height(),
+        bounds.min_x,
+        bounds.min_y,
+        bounds.max_x,
+        bounds.max_y,
+        standard_aspect_ratio
+    );
 
     let adjusted_bounds = adjust_bounds_to_standard_aspect_ratio(
         bounds,
@@ -957,9 +952,15 @@ fn crop_and_resize_with_standard_aspect_ratio(
     let final_bounds = adjusted_bounds;
 
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("RESIZE CROP_AND_RESIZE: Adjusted bounds: ({},{}) to ({},{}), Size: {}x{}", 
-        final_bounds.min_x, final_bounds.min_y, final_bounds.max_x, final_bounds.max_y,
-        final_bounds.width(), final_bounds.height());
+    crate::debug_println!(
+        "RESIZE CROP_AND_RESIZE: Adjusted bounds: ({},{}) to ({},{}), Size: {}x{}",
+        final_bounds.min_x,
+        final_bounds.min_y,
+        final_bounds.max_x,
+        final_bounds.max_y,
+        final_bounds.width(),
+        final_bounds.height()
+    );
 
     // Crop the content area from the original image using the final bounds
     let content_crop = image::imageops::crop_imm(
@@ -977,9 +978,13 @@ fn crop_and_resize_with_standard_aspect_ratio(
     }
 
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("RESIZE CROP_AND_RESIZE: Target dimensions: {}x{}, Crop dimensions: {}x{}", 
-        target_width, target_height,
-        final_bounds.width(), final_bounds.height());
+    crate::debug_println!(
+        "RESIZE CROP_AND_RESIZE: Target dimensions: {}x{}, Crop dimensions: {}x{}",
+        target_width,
+        target_height,
+        final_bounds.width(),
+        final_bounds.height()
+    );
 
     // Use hardware-accelerated resize (HLSL on Windows, CPU fallback)
     let (crop_width, crop_height) = (final_bounds.width(), final_bounds.height());
@@ -994,18 +999,17 @@ fn crop_and_resize_with_standard_aspect_ratio(
         swap_rb: false,
     };
 
-    let dst_data = crate::resize::resize_bytes(
-        &src_data,
-        crop_width,
-        crop_height,
-        &params,
-        3,
-    )
-    .map_err(|e| anyhow!("Margin crop resize failed: {}", e))?;
+    let dst_data = crate::resize::resize_bytes(&src_data, crop_width, crop_height, &params, 3)
+        .map_err(|e| anyhow!("Margin crop resize failed: {}", e))?;
 
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("RESIZE CROP_AND_RESIZE: Resize completed from {}x{} to {}x{}",
-        crop_width, crop_height, target_width, target_height);
+    crate::debug_println!(
+        "RESIZE CROP_AND_RESIZE: Resize completed from {}x{} to {}x{}",
+        crop_width,
+        crop_height,
+        target_width,
+        target_height
+    );
 
     // Create the final RgbImage from the resized data
     RgbImage::from_raw(target_width, target_height, dst_data)
@@ -1133,10 +1137,18 @@ fn standardize_and_center_page(
     let target_height = target_height;
 
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("MARGIN STANDARDIZE_AND_CENTER: Original image {}x{}, Content bounds ({},{}) to ({},{}), Target canvas {}x{}, Aspect ratio {:.3}",
-        original_image.width(), original_image.height(),
-        bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y,
-        target_width, target_height, standard_aspect_ratio);
+    crate::debug_println!(
+        "MARGIN STANDARDIZE_AND_CENTER: Original image {}x{}, Content bounds ({},{}) to ({},{}), Target canvas {}x{}, Aspect ratio {:.3}",
+        original_image.width(),
+        original_image.height(),
+        bounds.min_x,
+        bounds.min_y,
+        bounds.max_x,
+        bounds.max_y,
+        target_width,
+        target_height,
+        standard_aspect_ratio
+    );
 
     // Create a new blank (white) image with target dimensions
     let mut new_image = RgbImage::from_pixel(target_width, target_height, Rgb([255, 255, 255]));
@@ -1160,8 +1172,16 @@ fn standardize_and_center_page(
     let resized_h = (ch as f32 * scale).round() as u32;
 
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("MARGIN SCALING: Content crop {}x{}, Scale factors X={:.3} Y={:.3}, Using scale={:.3}, Resized to {}x{}",
-        cw, ch, scale_x, scale_y, scale, resized_w, resized_h);
+    crate::debug_println!(
+        "MARGIN SCALING: Content crop {}x{}, Scale factors X={:.3} Y={:.3}, Using scale={:.3}, Resized to {}x{}",
+        cw,
+        ch,
+        scale_x,
+        scale_y,
+        scale,
+        resized_w,
+        resized_h
+    );
 
     // Resize the content crop using hardware acceleration (HLSL on Windows, CPU fallback)
     let src_data = content_crop.into_raw();
@@ -1175,14 +1195,8 @@ fn standardize_and_center_page(
         swap_rb: false,
     };
 
-    let dst_data = crate::resize::resize_bytes(
-        &src_data,
-        cw,
-        ch,
-        &params,
-        3,
-    )
-    .map_err(|e| anyhow!("Margin center resize failed: {}", e))?;
+    let dst_data = crate::resize::resize_bytes(&src_data, cw, ch, &params, 3)
+        .map_err(|e| anyhow!("Margin center resize failed: {}", e))?;
 
     let resized = RgbImage::from_raw(resized_w, resized_h, dst_data)
         .ok_or_else(|| anyhow!("Failed to create resized image for centering"))?;
@@ -1190,13 +1204,17 @@ fn standardize_and_center_page(
     // Center the resized content onto the new canvas
     let target_x = ((target_width as i64 - resized_w as i64) / 2).max(0);
     let target_y = ((target_height as i64 - resized_h as i64) / 2).max(0);
-    
+
     #[cfg(feature = "debug-logging")]
-    crate::debug_println!("MARGIN CENTERING: Placing resized content at position ({},{}) on {}x{} canvas",
-        target_x, target_y, target_width, target_height);
-    
+    crate::debug_println!(
+        "MARGIN CENTERING: Placing resized content at position ({},{}) on {}x{} canvas",
+        target_x,
+        target_y,
+        target_width,
+        target_height
+    );
+
     image::imageops::overlay(&mut new_image, &resized, target_x, target_y);
 
     Ok(new_image)
 }
-

@@ -1,6 +1,6 @@
 //! JBIG2 encoder module
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Encode binary image data using JBIG2 compression
 ///

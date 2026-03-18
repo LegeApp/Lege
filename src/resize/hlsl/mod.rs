@@ -4,22 +4,22 @@
 //! and DirectX 12. Optimized for PaddleX inference, OCR preprocessing,
 //! and margin calculation workflows on Windows.
 
+mod converter;
+mod dx12;
 mod error;
 mod filters;
 mod resizer;
-mod converter;
-mod dx12;
 
-pub use error::{Result, ResizerError};
+pub use converter::{ConversionType, HlslConverter};
+pub use error::{ResizerError, Result};
 pub use filters::{BorderMode, FilterType};
 pub use resizer::{GpuResizeOutput, HlslResizer, ResizeParameters, UseCase};
-pub use converter::{HlslConverter, ConversionType};
 
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::resize::hlsl::{
-        BorderMode, FilterType, GpuResizeOutput, HlslResizer, ResizeParameters, UseCase, Result,
-        ResizerError,
+        BorderMode, FilterType, GpuResizeOutput, HlslResizer, ResizeParameters, ResizerError,
+        Result, UseCase,
     };
 }
 
@@ -44,4 +44,6 @@ mod shaders_include {
     pub const RGBA8_TO_NCHW_F32_SHADER: &[u8] = &[];
 }
 
-pub use shaders_include::{BELL_SHADER, BILINEAR_SHADER, LANCZOS3_SHADER, RGBA8_TO_NCHW_F32_SHADER};
+pub use shaders_include::{
+    BELL_SHADER, BILINEAR_SHADER, LANCZOS3_SHADER, RGBA8_TO_NCHW_F32_SHADER,
+};

@@ -4,15 +4,25 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    let profile = env::var("PROFILE").unwrap_or_default();
+    let debug_logging_enabled = env::var_os("CARGO_FEATURE_DEBUG_LOGGING").is_some();
+    if profile == "release" && debug_logging_enabled {
+        println!(
+            "cargo:warning=debug-logging is enabled in the release profile; Cargo's default release build still uses LTO."
+        );
+        println!(
+            "cargo:warning=Use `cargo build-debug-logging` or `cargo run-debug-logging` to build debug-logging with the repo's no-LTO profile."
+        );
+    }
+
     // Get external version from the file, with fallback to environment or default
-    let external_version = read_external_version_file()
-        .unwrap_or_else(|| {
-            env::var("LEGE_EXTERNAL_VERSION").unwrap_or_else(|_| "1.20.5.0".to_string())
-        });
+    let external_version = read_external_version_file().unwrap_or_else(|| {
+        env::var("LEGE_EXTERNAL_VERSION").unwrap_or_else(|_| "1.20.5.0".to_string())
+    });
 
     // Pass the version to the build script
     println!("cargo:rustc-env=LEGE_EXTERNAL_VERSION={}", external_version);
-    
+
     // Print a warning to help with debugging
     println!("cargo:warning=Using external version: {}", external_version);
 
@@ -88,7 +98,10 @@ fn main() {
     // Print build completion message with timestamp
     let now = std::time::SystemTime::now();
     let since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-    println!("cargo:warning=Build script completed at {} seconds since epoch", since_epoch.as_secs());
+    println!(
+        "cargo:warning=Build script completed at {} seconds since epoch",
+        since_epoch.as_secs()
+    );
 }
 
 /// Read external version from the file in the project root

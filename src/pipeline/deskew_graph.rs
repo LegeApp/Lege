@@ -1,9 +1,9 @@
 // deskew_graph.rs - Deskew model path utilities
-use std::sync::Arc;
 use anyhow::{Result, anyhow};
+use std::sync::Arc;
 
-use crate::pipeline::config::{PipelineConfig, runtime_asset_path_if_exists};
 use crate::info_log;
+use crate::pipeline::config::{PipelineConfig, runtime_asset_path_if_exists};
 
 pub(crate) fn locate_deskew_model_path(
     hint: Option<&std::path::PathBuf>,

@@ -7,7 +7,7 @@ fn get_external_version_from_main_project() -> Option<String> {
     // Look for the external version file in the project root
     // The GUI build runs from GUI/Dioxus/, so project root is two levels up
     let current_dir = std::env::current_dir().ok()?;
-    
+
     // Go up two levels to reach project root: GUI/Dioxus -> GUI -> project root
     if let Some(gui_dir) = current_dir.parent() {
         if let Some(project_root) = gui_dir.parent() {
@@ -16,14 +16,17 @@ fn get_external_version_from_main_project() -> Option<String> {
                 if let Ok(content) = fs::read_to_string(&version_file) {
                     let content = content.trim();
                     if !content.is_empty() {
-                        println!("cargo:warning=Found external version from file: {}", content);
+                        println!(
+                            "cargo:warning=Found external version from file: {}",
+                            content
+                        );
                         return Some(content.to_string());
                     }
                 }
             }
         }
     }
-    
+
     // As another approach, try to read directly from a relative path
     // Since Cargo typically runs with the workspace root as the current directory for workspace members
     let version_file = Path::new("external_version.txt");
@@ -31,34 +34,39 @@ fn get_external_version_from_main_project() -> Option<String> {
         if let Ok(content) = fs::read_to_string(&version_file) {
             let content = content.trim();
             if !content.is_empty() {
-                println!("cargo:warning=Found external version from file (relative path): {}", content);
+                println!(
+                    "cargo:warning=Found external version from file (relative path): {}",
+                    content
+                );
                 return Some(content.to_string());
             }
         }
     }
-    
+
     // Also try from a different relative perspective
     let version_file = Path::new("../external_version.txt");
     if version_file.exists() {
         if let Ok(content) = fs::read_to_string(&version_file) {
             let content = content.trim();
             if !content.is_empty() {
-                println!("cargo:warning=Found external version from file (../): {}", content);
+                println!(
+                    "cargo:warning=Found external version from file (../): {}",
+                    content
+                );
                 return Some(content.to_string());
             }
         }
     }
-    
+
     None
 }
 
 fn main() {
     // Try to get the external version from the main project build
-    let external_version = get_external_version_from_main_project()
-        .unwrap_or_else(|| {
-            // Fallback to environment variable or default
-            env::var("LEGE_EXTERNAL_VERSION").unwrap_or_else(|_| "1.1.5.0".to_string())
-        });
+    let external_version = get_external_version_from_main_project().unwrap_or_else(|| {
+        // Fallback to environment variable or default
+        env::var("LEGE_EXTERNAL_VERSION").unwrap_or_else(|_| "1.1.5.0".to_string())
+    });
 
     // Expose to Rust code in this crate.
     println!("cargo:rustc-env=LEGE_EXTERNAL_VERSION={}", external_version);

@@ -2,27 +2,32 @@ use log::info;
 use std::sync::OnceLock;
 
 #[cfg(target_os = "linux")]
-static WEBGPU_PROVIDER_CACHE: OnceLock<Option<ort::execution_providers::ExecutionProviderDispatch>> = OnceLock::new();
+static WEBGPU_PROVIDER_CACHE: OnceLock<
+    Option<ort::execution_providers::ExecutionProviderDispatch>,
+> = OnceLock::new();
 
 #[cfg(target_os = "linux")]
-pub fn webgpu_execution_provider_dispatch() -> Option<ort::execution_providers::ExecutionProviderDispatch> {
+pub fn webgpu_execution_provider_dispatch()
+-> Option<ort::execution_providers::ExecutionProviderDispatch> {
     // Clone cached provider to avoid rebuilding it for every engine instance
     // If provider creation fails, cache the None result to indicate unavailability
-    WEBGPU_PROVIDER_CACHE.get_or_init(|| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Some(build_webgpu_execution_provider())
-        })).unwrap_or_else(|_| {
-            log::error!("WebGPU provider initialization panicked, falling back to CPU");
-            None
+    WEBGPU_PROVIDER_CACHE
+        .get_or_init(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Some(build_webgpu_execution_provider())
+            }))
+            .unwrap_or_else(|_| {
+                log::error!("WebGPU provider initialization panicked, falling back to CPU");
+                None
+            })
         })
-    }).clone()
+        .clone()
 }
 
 #[cfg(target_os = "linux")]
 fn build_webgpu_execution_provider() -> ort::execution_providers::ExecutionProviderDispatch {
     use ort::execution_providers::{
-        WebGPUExecutionProvider, WebGPUDawnBackendType, WebGPUBufferCacheMode,
-        WebGPUValidationMode
+        WebGPUBufferCacheMode, WebGPUDawnBackendType, WebGPUExecutionProvider, WebGPUValidationMode,
     };
 
     info!("Initializing WebGPU with Vulkan backend");
@@ -42,7 +47,7 @@ fn build_webgpu_execution_provider() -> ort::execution_providers::ExecutionProvi
             WebGPUValidationMode::Disabled
         })
         .build()
-        // If WebGPU provider build fails, we'll let it propagate up to engine where it will be caught
+    // If WebGPU provider build fails, we'll let it propagate up to engine where it will be caught
 }
 
 /// Logs GPU memory statistics if available
@@ -60,15 +65,15 @@ static DIRECTML_ADAPTER_CACHE: OnceLock<Option<(i32, String)>> = OnceLock::new()
 #[cfg(windows)]
 fn preferred_directml_adapter() -> Option<(i32, String)> {
     // Return cached result if available
-    DIRECTML_ADAPTER_CACHE.get_or_init(|| {
-        probe_directml_adapter()
-    }).clone()
+    DIRECTML_ADAPTER_CACHE
+        .get_or_init(|| probe_directml_adapter())
+        .clone()
 }
 
 #[cfg(windows)]
 fn probe_directml_adapter() -> Option<(i32, String)> {
     use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
     };
 
     let factory: IDXGIFactory1 = unsafe {
@@ -100,9 +105,7 @@ fn probe_directml_adapter() -> Option<(i32, String)> {
         let desc = match unsafe { adapter.GetDesc1() } {
             Ok(desc) => desc,
             Err(err) => {
-                log::debug!(
-                    "DirectML adapter probe: GetDesc1 failed for adapter {index}: {err:?}"
-                );
+                log::debug!("DirectML adapter probe: GetDesc1 failed for adapter {index}: {err:?}");
                 index += 1;
                 continue;
             }
@@ -118,7 +121,9 @@ fn probe_directml_adapter() -> Option<(i32, String)> {
             .iter()
             .position(|&c| c == 0)
             .unwrap_or(desc.Description.len());
-        let name = String::from_utf16_lossy(&desc.Description[..name_len]).trim().to_string();
+        let name = String::from_utf16_lossy(&desc.Description[..name_len])
+            .trim()
+            .to_string();
         let dedicated_mem = desc.DedicatedVideoMemory as u64;
 
         let better = best
@@ -136,14 +141,16 @@ fn probe_directml_adapter() -> Option<(i32, String)> {
 }
 
 #[cfg(windows)]
-static DIRECTML_PROVIDER_CACHE: OnceLock<ort::execution_providers::ExecutionProviderDispatch> = OnceLock::new();
+static DIRECTML_PROVIDER_CACHE: OnceLock<ort::execution_providers::ExecutionProviderDispatch> =
+    OnceLock::new();
 
 #[cfg(windows)]
-pub fn directml_execution_provider_dispatch() -> ort::execution_providers::ExecutionProviderDispatch {
+pub fn directml_execution_provider_dispatch() -> ort::execution_providers::ExecutionProviderDispatch
+{
     // Clone cached provider to avoid rebuilding it for every engine instance
-    DIRECTML_PROVIDER_CACHE.get_or_init(|| {
-        build_directml_execution_provider()
-    }).clone()
+    DIRECTML_PROVIDER_CACHE
+        .get_or_init(|| build_directml_execution_provider())
+        .clone()
 }
 
 #[cfg(windows)]

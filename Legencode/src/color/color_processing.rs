@@ -156,15 +156,13 @@ fn process_traditional_dithering(
         region_height,
     );
 
-    // Blue-noise RLG is quality-focused but expensive on very large regions.
-    // Fall back to Bayer for large blocks to avoid apparent mid-run hangs.
-    const BLUE_NOISE_MAX_PIXELS: u64 = 1_500_000;
-    let region_pixels = (region_width as u64).saturating_mul(region_height as u64);
-    let dithered_1bit_data = if region_pixels > BLUE_NOISE_MAX_PIXELS {
-        dither_bayer8x8(&grayscale_region, region_width, region_height)
-    } else {
-        dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height)
-    };
+    // CCITT4 should always use Bayer 8x8. The experimental blue-noise/custom
+    // path looks worse here and compresses poorly, so keep it disabled until it
+    // is redesigned.
+    //
+    // let dithered_1bit_data =
+    //     dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height);
+    let dithered_1bit_data = dither_bayer8x8(&grayscale_region, region_width, region_height);
 
     // Convert back to RGB format for compatibility
     let pixel_count = dithered_1bit_data.len();
@@ -503,8 +501,10 @@ impl HeavyBinarizationProcessor {
             )
         })?;
 
-        let builder = Session::builder()?
-            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?;
+        let mut builder = Session::builder()
+            .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+            .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?;
 
         // Prefer platform-appropriate execution providers:
         // - Windows: DirectML
@@ -513,7 +513,7 @@ impl HeavyBinarizationProcessor {
         let mut session = {
             #[cfg(target_os = "windows")]
             {
-                if let Ok(dml_builder) = builder
+                if let Ok(mut dml_builder) = builder
                     .clone()
                     .with_execution_providers([DirectMLExecutionProvider::default().build()])
                 {
@@ -610,7 +610,8 @@ impl HeavyBinarizationProcessor {
         );
 
         // Run inference
-        let inputs = ort::inputs!["img01_inp" => Value::from_array(img_array)?];
+        let inputs = ort::inputs!["img01_inp" => Value::from_array(img_array)
+            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?];
         let outputs = self.session.run(inputs)?;
 
         // Process output
@@ -667,9 +668,8 @@ fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// Deterministic hash-based blue-noise-like threshold sampler (0..255).
 #[inline]
 fn blue_noise_hash_u8(x: i32, y: i32) -> u8 {
-    let mut v = (x as u32).wrapping_mul(0x1f123bb5)
-        ^ (y as u32).wrapping_mul(0x05491333)
-        ^ 0x9e3779b9;
+    let mut v =
+        (x as u32).wrapping_mul(0x1f123bb5) ^ (y as u32).wrapping_mul(0x05491333) ^ 0x9e3779b9;
     v ^= v >> 16;
     v = v.wrapping_mul(0x7feb352d);
     v ^= v >> 15;
@@ -1027,8 +1027,6 @@ pub fn merge_dithered_region(
     region_width: u32,
     region_height: u32,
 ) {
-    let dithered = dither_stucki_error_diffusion(grayscale_data, region_width, region_height);
-
     // Clamp bbox to page bounds
     let page_height = (binarized.len() as u32 / page_width).max(1);
     let mut x1 = bbox[0].max(0.0) as u32;
@@ -1049,8 +1047,8 @@ pub fn merge_dithered_region(
         for x in 0..max_w {
             let src_idx = y * region_width as usize + x;
             let dst_idx = (start_y + y) * page_width as usize + (start_x + x);
-            if src_idx < dithered.len() && dst_idx < binarized.len() {
-                binarized[dst_idx] = dithered[src_idx];
+            if src_idx < grayscale_data.len() && dst_idx < binarized.len() {
+                binarized[dst_idx] = grayscale_data[src_idx];
             }
         }
     }

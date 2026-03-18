@@ -1,17 +1,17 @@
+use super::{ResizerError, Result};
 use std::mem;
 use std::ptr;
+use windows::core::PCWSTR;
 use windows::{
-    core::*,
     Win32::Foundation::*,
     Win32::Graphics::{
         Direct3D::*,
         Direct3D12::*,
-        Dxgi::{*, Common::*},
+        Dxgi::{Common::*, *},
     },
     Win32::System::Threading::*,
+    core::*,
 };
-use windows::core::PCWSTR;
-use super::{ResizerError, Result};
 
 /// DirectX 12 context for compute operations
 pub struct D3D12Context {
@@ -64,7 +64,13 @@ impl D3D12Context {
 
                         // Try to create device with this adapter
                         let mut test_device: Option<ID3D12Device> = None;
-                        if D3D12CreateDevice(&candidate_adapter, D3D_FEATURE_LEVEL_11_0, &mut test_device).is_ok() {
+                        if D3D12CreateDevice(
+                            &candidate_adapter,
+                            D3D_FEATURE_LEVEL_11_0,
+                            &mut test_device,
+                        )
+                        .is_ok()
+                        {
                             adapter = Some(candidate_adapter);
                             break;
                         }
@@ -73,9 +79,9 @@ impl D3D12Context {
                 }
             }
 
-            let adapter = adapter.ok_or_else(||
+            let adapter = adapter.ok_or_else(|| {
                 ResizerError::D3D12InitializationFailed("No compatible adapter found".to_string())
-            )?;
+            })?;
 
             // Create device
             let mut device_opt: Option<ID3D12Device> = None;
@@ -108,7 +114,9 @@ impl D3D12Context {
             let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
             let fence_event = CreateEventW(None, false, false, PCWSTR::null())?;
             if fence_event.is_invalid() {
-                return Err(ResizerError::D3D12InitializationFailed("CreateEventW failed".to_string()));
+                return Err(ResizerError::D3D12InitializationFailed(
+                    "CreateEventW failed".to_string(),
+                ));
             }
 
             // Create descriptor heap for UAV/SRV
@@ -120,8 +128,8 @@ impl D3D12Context {
             };
             let descriptor_heap = device.CreateDescriptorHeap(&heap_desc)?;
 
-            let cbv_srv_uav_descriptor_size = device
-                .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            let cbv_srv_uav_descriptor_size =
+                device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
             // Get dedicated video memory from adapter
             let dedicated_video_memory = if let Ok(desc1) = adapter.GetDesc1() {
@@ -153,10 +161,19 @@ impl D3D12Context {
                         let len = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
                         String::from_utf16_lossy(&slice[..len])
                     };
-                    eprintln!("[DX12] Adapter: {} (Vendor {:04X}, Device {:04X})", name, desc1.VendorId, desc1.DeviceId);
-                    eprintln!("[DX12] DedicatedVideoMemory: {} MB", (ctx.dedicated_video_memory / (1024*1024)));
+                    eprintln!(
+                        "[DX12] Adapter: {} (Vendor {:04X}, Device {:04X})",
+                        name, desc1.VendorId, desc1.DeviceId
+                    );
+                    eprintln!(
+                        "[DX12] DedicatedVideoMemory: {} MB",
+                        (ctx.dedicated_video_memory / (1024 * 1024))
+                    );
                 }
-                eprintln!("[DX12] Descriptor increment size (CBV/SRV/UAV): {}", ctx.cbv_srv_uav_descriptor_size);
+                eprintln!(
+                    "[DX12] Descriptor increment size (CBV/SRV/UAV): {}",
+                    ctx.cbv_srv_uav_descriptor_size
+                );
             }
 
             Ok(ctx)
@@ -174,7 +191,8 @@ impl D3D12Context {
                 Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
                 NodeMask: 0,
             };
-            let command_queue: ID3D12CommandQueue = existing_device.CreateCommandQueue(&queue_desc)?;
+            let command_queue: ID3D12CommandQueue =
+                existing_device.CreateCommandQueue(&queue_desc)?;
 
             // Create command allocator
             let command_allocator: ID3D12CommandAllocator =
@@ -193,7 +211,9 @@ impl D3D12Context {
             let fence: ID3D12Fence = existing_device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
             let fence_event = CreateEventW(None, false, false, PCWSTR::null())?;
             if fence_event.is_invalid() {
-                return Err(ResizerError::D3D12InitializationFailed("CreateEventW failed".to_string()));
+                return Err(ResizerError::D3D12InitializationFailed(
+                    "CreateEventW failed".to_string(),
+                ));
             }
 
             // Create descriptor heap for UAV/SRV
@@ -224,7 +244,10 @@ impl D3D12Context {
             };
 
             if ctx.verbose {
-                eprintln!("[DX12] Shared device context created. Descriptor increment size (CBV/SRV/UAV): {}", ctx.cbv_srv_uav_descriptor_size);
+                eprintln!(
+                    "[DX12] Shared device context created. Descriptor increment size (CBV/SRV/UAV): {}",
+                    ctx.cbv_srv_uav_descriptor_size
+                );
             }
 
             Ok(ctx)
@@ -235,28 +258,37 @@ impl D3D12Context {
     pub fn create_buffer(&self, size: usize, heap_type: D3D12_HEAP_TYPE) -> Result<ID3D12Resource> {
         unsafe {
             // Check for memory pressure before allocation
-            let current_allocated = self.allocated_memory.load(std::sync::atomic::Ordering::Relaxed);
+            let current_allocated = self
+                .allocated_memory
+                .load(std::sync::atomic::Ordering::Relaxed);
             let new_total = current_allocated + size as u64;
-            
+
             // Use 80% of dedicated video memory as threshold to prevent exhaustion
             let memory_threshold = (self.dedicated_video_memory * 80) / 100;
-            
+
             if new_total > memory_threshold {
                 if self.verbose {
-                    eprintln!("[DX12] Memory pressure detected: current={} MB, requested={} MB, threshold={} MB", 
-                        current_allocated / (1024*1024), 
-                        size / (1024*1024), 
-                        memory_threshold / (1024*1024));
+                    eprintln!(
+                        "[DX12] Memory pressure detected: current={} MB, requested={} MB, threshold={} MB",
+                        current_allocated / (1024 * 1024),
+                        size / (1024 * 1024),
+                        memory_threshold / (1024 * 1024)
+                    );
                 }
                 return Err(ResizerError::ResourceAllocationFailed(format!(
-                    "GPU memory pressure: would exceed {}% of available memory ({} MB)", 
-                    80, memory_threshold / (1024*1024)
+                    "GPU memory pressure: would exceed {}% of available memory ({} MB)",
+                    80,
+                    memory_threshold / (1024 * 1024)
                 )));
             }
-            
+
             if self.verbose {
-                eprintln!("[DX12] Create buffer: size={} bytes, heap={:?}, allocated={} MB", 
-                    size, heap_type, current_allocated / (1024*1024));
+                eprintln!(
+                    "[DX12] Create buffer: size={} bytes, heap={:?}, allocated={} MB",
+                    size,
+                    heap_type,
+                    current_allocated / (1024 * 1024)
+                );
             }
             let heap_props = D3D12_HEAP_PROPERTIES {
                 Type: heap_type,
@@ -304,18 +336,23 @@ impl D3D12Context {
             match resource {
                 Some(res) => {
                     // Track allocated memory
-                    self.allocated_memory.fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
+                    self.allocated_memory
+                        .fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
                     if self.verbose {
-                        let total_allocated = self.allocated_memory.load(std::sync::atomic::Ordering::Relaxed);
-                        eprintln!("[DX12] Buffer allocated successfully. Total allocated: {} MB", 
-                            total_allocated / (1024*1024));
+                        let total_allocated = self
+                            .allocated_memory
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        eprintln!(
+                            "[DX12] Buffer allocated successfully. Total allocated: {} MB",
+                            total_allocated / (1024 * 1024)
+                        );
                     }
                     Ok(res)
                 }
                 None => Err(ResizerError::ResourceAllocationFailed(format!(
-                    "Failed to create DirectX buffer: size={} bytes, heap_type={:?}", 
+                    "Failed to create DirectX buffer: size={} bytes, heap_type={:?}",
                     size, heap_type
-                )))
+                ))),
             }
         }
     }
@@ -324,11 +361,13 @@ impl D3D12Context {
     pub fn wait_for_gpu(&mut self) -> Result<()> {
         unsafe {
             let current_fence_value = self.fence_value;
-            self.command_queue.Signal(&self.fence, current_fence_value)?;
+            self.command_queue
+                .Signal(&self.fence, current_fence_value)?;
             self.fence_value += 1;
 
             if self.fence.GetCompletedValue() < current_fence_value {
-                self.fence.SetEventOnCompletion(current_fence_value, self.fence_event)?;
+                self.fence
+                    .SetEventOnCompletion(current_fence_value, self.fence_event)?;
                 WaitForSingleObject(self.fence_event, INFINITE);
             }
         }
@@ -338,7 +377,9 @@ impl D3D12Context {
     /// Reset command list for recording new commands
     pub fn reset_command_list(&self) -> Result<()> {
         unsafe {
-            if self.verbose { eprintln!("[DX12] Reset command list"); }
+            if self.verbose {
+                eprintln!("[DX12] Reset command list");
+            }
             self.command_allocator.Reset()?;
             self.command_list.Reset(&self.command_allocator, None)?;
         }
@@ -348,18 +389,26 @@ impl D3D12Context {
     /// Execute command list
     pub fn execute_command_list(&mut self) -> Result<()> {
         unsafe {
-            if self.verbose { eprintln!("[DX12] Close and submit command list"); }
+            if self.verbose {
+                eprintln!("[DX12] Close and submit command list");
+            }
             self.command_list.Close()?;
 
             let command_lists = [Some(self.command_list.cast()?)];
             self.command_queue.ExecuteCommandLists(&command_lists);
 
             if self.verbose {
-                eprintln!("[DX12] ExecuteCommandLists submitted; waiting for GPU fence {}", self.fence_value);
+                eprintln!(
+                    "[DX12] ExecuteCommandLists submitted; waiting for GPU fence {}",
+                    self.fence_value
+                );
             }
             self.wait_for_gpu()?;
             if self.verbose {
-                eprintln!("[DX12] GPU work completed (fence advanced to {})", self.fence_value);
+                eprintln!(
+                    "[DX12] GPU work completed (fence advanced to {})",
+                    self.fence_value
+                );
             }
         }
         Ok(())
@@ -390,10 +439,15 @@ impl D3D12Context {
 
     /// Track buffer deallocation for memory management
     pub fn deallocate_buffer(&self, size: usize) {
-        let current = self.allocated_memory.fetch_sub(size as u64, std::sync::atomic::Ordering::Relaxed);
+        let current = self
+            .allocated_memory
+            .fetch_sub(size as u64, std::sync::atomic::Ordering::Relaxed);
         if self.verbose {
-            eprintln!("[DX12] Buffer deallocated: size={} bytes, remaining={} MB", 
-                size, (current - size as u64) / (1024*1024));
+            eprintln!(
+                "[DX12] Buffer deallocated: size={} bytes, remaining={} MB",
+                size,
+                (current - size as u64) / (1024 * 1024)
+            );
         }
     }
 }

@@ -1,10 +1,10 @@
 use crate::{debug_println, pipeline::config::runtime_asset_path_if_exists};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use once_cell::sync::Lazy;
 use pdfium_render::prelude::*;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
-use std::cell::RefCell;
 
 struct PdfiumWorkerContext {
     pdf_data: Arc<[u8]>,
@@ -95,11 +95,11 @@ impl PdfiumWorkerContext {
             ));
         }
         let page = document.pages().get(page_index as u16)?;
-        
+
         // Capture original PDF dimensions in points
         let page_width_pts = page.width().value;
         let page_height_pts = page.height().value;
-        
+
         #[cfg(feature = "debug-logging")]
         {
             debug_println!(
@@ -113,10 +113,10 @@ impl PdfiumWorkerContext {
                 self.cached_width
             );
         }
-        
+
         let bitmap = page.render_with_config(&self.config)?;
         let img = bitmap.as_image().to_rgb8();
-        
+
         #[cfg(feature = "debug-logging")]
         {
             debug_println!(
@@ -126,7 +126,7 @@ impl PdfiumWorkerContext {
                 img.height()
             );
         }
-        
+
         Ok(RgbPage {
             width: img.width(),
             height: img.height(),
@@ -183,9 +183,8 @@ thread_local! {
 }
 
 // Global Pdfium instance - MUST be accessed through proper synchronization
-pub static PDFIUM: Lazy<Pdfium> = Lazy::new(|| {
-    bind_pdfium_once().expect("Failed to initialize Pdfium")
-});
+pub static PDFIUM: Lazy<Pdfium> =
+    Lazy::new(|| bind_pdfium_once().expect("Failed to initialize Pdfium"));
 
 /// CRITICAL: Single global mutex for ALL Pdfium operations
 /// Pdfium is not thread-safe for ANY concurrent operations, even on different documents
@@ -195,9 +194,8 @@ fn bind_pdfium_from_runtime_dirs() -> Result<Box<dyn PdfiumLibraryBindings>, any
     // Only look in the runtime directory
     let lib_name = Pdfium::pdfium_platform_library_name();
     match runtime_asset_path_if_exists(lib_name.to_string_lossy().as_ref()) {
-        Some(path) if path.exists() => {
-            Pdfium::bind_to_library(path).map_err(|e| anyhow!("Failed to load PDFium library: {:?}", e))
-        },
+        Some(path) if path.exists() => Pdfium::bind_to_library(path)
+            .map_err(|e| anyhow!("Failed to load PDFium library: {:?}", e)),
         _ => Err(anyhow!("PDFium library not found in runtime directory")),
     }
 }
@@ -206,10 +204,12 @@ fn bind_pdfium_once() -> Result<Pdfium> {
     // Try to bind to PDFium library from runtime directory
     let bindings = bind_pdfium_from_runtime_dirs()?;
     let pdfium = Pdfium::new(bindings);
-    
+
     // Verify we can create a document
-    pdfium.create_new_pdf().map_err(|e| anyhow!("Failed to create PDF document: {:?}", e))?;
-    
+    pdfium
+        .create_new_pdf()
+        .map_err(|e| anyhow!("Failed to create PDF document: {:?}", e))?;
+
     Ok(pdfium)
 }
 
@@ -225,7 +225,7 @@ impl PdfiumRenderer {
     /// Create new renderer and pre-cache page count
     pub fn new_from_bytes(pdf_bytes: Arc<[u8]>, raster_cfg: RasterConfig) -> Result<Self> {
         let page_count = Self::get_page_count_internal(&pdf_bytes)?;
-        
+
         Ok(Self {
             pdf_bytes,
             raster_cfg,
@@ -235,9 +235,10 @@ impl PdfiumRenderer {
 
     /// Internal method to get page count with proper locking
     fn get_page_count_internal(pdf_bytes: &[u8]) -> Result<u16> {
-        let _guard = PDFIUM_GLOBAL_LOCK.lock()
+        let _guard = PDFIUM_GLOBAL_LOCK
+            .lock()
             .map_err(|e| anyhow!("Failed to acquire Pdfium lock: {}", e))?;
-        
+
         let document = PDFIUM.load_pdf_from_byte_slice(pdf_bytes, None)?;
         Ok(document.pages().len())
     }
@@ -255,12 +256,16 @@ impl PdfiumRenderer {
         target_width: Option<u32>,
     ) -> Result<RgbPage> {
         if page_index >= self.page_count as u32 {
-            return Err(anyhow!("Page index {} out of bounds (0..{})", page_index, self.page_count));
+            return Err(anyhow!(
+                "Page index {} out of bounds (0..{})",
+                page_index,
+                self.page_count
+            ));
         }
 
         let pdf_bytes = self.pdf_bytes.clone();
         let raster_cfg = self.raster_cfg.clone();
-        
+
         // Perform rendering in blocking task to avoid blocking async runtime
         tokio::task::spawn_blocking(move || {
             Self::render_page_blocking(
@@ -270,7 +275,36 @@ impl PdfiumRenderer {
                 target_width,
                 &raster_cfg,
             )
-        }).await?
+        })
+        .await?
+    }
+
+    /// Synchronous version of render_page_rgb for use in blocking contexts
+    pub fn render_page_rgb_sync(
+        &self,
+        page_index: u32,
+        target_height: u32,
+        target_width: Option<u32>,
+    ) -> Result<RgbPage> {
+        if page_index >= self.page_count as u32 {
+            return Err(anyhow!(
+                "Page index {} out of bounds (0..{})",
+                page_index,
+                self.page_count
+            ));
+        }
+
+        let pdf_bytes = self.pdf_bytes.clone();
+        let raster_cfg = self.raster_cfg.clone();
+
+        // Direct call to blocking function (no spawn_blocking to avoid task cancellation)
+        Self::render_page_blocking(
+            pdf_bytes,
+            page_index,
+            target_height,
+            target_width,
+            &raster_cfg,
+        )
     }
 
     /// Returns true if the given page has any extractable text (non-whitespace).
@@ -312,7 +346,8 @@ impl PdfiumRenderer {
 
                 ctx.has_text_layer(page_index)
             })
-        }).await?
+        })
+        .await?
     }
 
     /// Check if the document has any text layers (OCR) by sampling first pages.
@@ -389,7 +424,8 @@ impl PdfiumRenderer {
                 let text = page.text()?.all();
                 Ok(text)
             })
-        }).await?
+        })
+        .await?
     }
 
     /// Blocking render implementation with proper Pdfium synchronization
@@ -449,7 +485,7 @@ impl PdfiumRenderer {
         let pdf_bytes = self.pdf_bytes.clone();
         let raster_cfg = self.raster_cfg.clone();
         let indices = page_indices.to_vec();
-        
+
         tokio::task::spawn_blocking(move || {
             let mut results = Vec::with_capacity(indices.len());
             for &page_index in &indices {
@@ -463,7 +499,8 @@ impl PdfiumRenderer {
                 results.push(rendered);
             }
             Ok(results)
-        }).await?
+        })
+        .await?
     }
 
     /// Clean shutdown
@@ -505,7 +542,7 @@ pub fn maybe_run_pdfium_worker_and_exit() {
 }
 
 pub mod prelude {
-    pub use super::{PdfiumRenderer, RasterConfig, RgbPage, PDFIUM};
+    pub use super::{PDFIUM, PdfiumRenderer, RasterConfig, RgbPage};
 }
 
 // Optional performance metrics
@@ -515,9 +552,9 @@ impl PdfiumRenderer {
         // Pdfium doesn't expose memory stats directly, but we can estimate
         let doc_size = self.pdf_bytes.len();
         let estimated_raster_memory = (self.page_count as usize) * 10 * 1024 * 1024; // ~10MB per page
-        
+
         Ok(format!(
-            "PDF: {}, Estimated raster: {}", 
+            "PDF: {}, Estimated raster: {}",
             format_memory_size(doc_size),
             format_memory_size(estimated_raster_memory)
         ))

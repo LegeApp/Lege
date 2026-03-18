@@ -994,11 +994,11 @@ pub fn spawn_pdf_writer_actor(
 
                     // Check if we have all pages
                     if pages_written != total_pages {
-                        crate::warn_log!(
-                            "[PdfWriterActor] Finalize called but only {} of {} pages written",
+                        return Err(anyhow::anyhow!(
+                            "[PdfWriterActor] Refusing to finalize incomplete PDF: wrote {} of {} pages",
                             pages_written,
                             total_pages
-                        );
+                        ));
                     }
 
                     // Determine if any page has OCR text

@@ -1,4 +1,4 @@
-use crate::{app_dirs, margin::MarginSettings, CoverFormat, PipelineConfig};
+use crate::{CoverFormat, PipelineConfig, app_dirs, margin::MarginSettings};
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -192,18 +192,18 @@ impl ProcessingOptions {
         };
 
         if options.output_format == OutputFormat::Pdf {
-        options.compression_type = match config.text_format() {
-            "jbig2" => CompressionType::Jbig2,
-            "ccitt4" => CompressionType::Ccitt4,
-            _ => CompressionType::Ccitt4,
-        };
-    }
+            options.compression_type = match config.text_format() {
+                "jbig2" => CompressionType::Jbig2,
+                "ccitt4" => CompressionType::Ccitt4,
+                _ => CompressionType::Ccitt4,
+            };
+        }
 
-    options.cover_image_type = match *config.cover_format() {
-        CoverFormat::Jpeg => CoverImageType::Jpeg,
-        CoverFormat::Jp2 => CoverImageType::Jpeg2000,
-        CoverFormat::None | CoverFormat::Ccitt4 | CoverFormat::Jbig2 => CoverImageType::None,
-    };
+        options.cover_image_type = match *config.cover_format() {
+            CoverFormat::Jpeg => CoverImageType::Jpeg,
+            CoverFormat::Jp2 => CoverImageType::Jpeg2000,
+            CoverFormat::None | CoverFormat::Ccitt4 | CoverFormat::Jbig2 => CoverImageType::None,
+        };
 
         options.image_processing_type = if config.dither_images() {
             ImageProcessingType::Dithered
@@ -211,8 +211,9 @@ impl ProcessingOptions {
             ImageProcessingType::Original
         };
         // Infer checkbox value: when text is CCITT4 and dithering is enabled, we treat it as "CCITT4 text with dithered images".
-        options.ccitt4_dithered_images = matches!(options.image_processing_type, ImageProcessingType::Dithered)
-            && matches!(config.text_format(), "ccitt4");
+        options.ccitt4_dithered_images =
+            matches!(options.image_processing_type, ImageProcessingType::Dithered)
+                && matches!(config.text_format(), "ccitt4");
 
         options.original_cover = config.enable_cover_page();
         options.no_front_cover = config.no_cover_page();
@@ -223,8 +224,10 @@ impl ProcessingOptions {
         options.high_quality_output = config.high_quality_output();
         options.invert_input = config.invert_input();
 
-        options.center_margins =
-            matches!(config.margin_settings(), MarginSettings::StandardizeAndCenter);
+        options.center_margins = matches!(
+            config.margin_settings(),
+            MarginSettings::StandardizeAndCenter
+        );
         options.crop_margins = matches!(config.margin_settings(), MarginSettings::CropAndResize);
         options.crop_footnotes = config.crop_footnotes();
         options.deskew_documents = config.enable_deskew();
@@ -327,7 +330,8 @@ impl LogEntry {
     pub fn format_timestamp(&self) -> String {
         let datetime = chrono::DateTime::from_timestamp(self.timestamp as i64, 0)
             .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap());
-        datetime.with_timezone(&Local)
+        datetime
+            .with_timezone(&Local)
             .format("%Y-%m-%d %H:%M:%S")
             .to_string()
     }
@@ -385,8 +389,7 @@ pub fn load_log_entries() -> Result<Vec<LogEntry>> {
 pub fn save_log_entries(entries: &[LogEntry]) -> Result<()> {
     let log_path = get_log_file_path();
     if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("Creating {}", parent.display()))?;
     }
     let content = serde_json::to_string_pretty(entries)?;
     fs::write(&log_path, content).with_context(|| format!("Writing {}", log_path.display()))?;
@@ -403,7 +406,8 @@ pub fn add_log_entry(result: &ProcessingResult, options: &ProcessingOptions) -> 
         entry.options.input_path = Some(PathBuf::from(&entry.input_path));
     }
     if entry.options.output_path.is_none() {
-        entry.options
+        entry
+            .options
             .output_path
             .replace(PathBuf::from(&entry.output_path));
     }

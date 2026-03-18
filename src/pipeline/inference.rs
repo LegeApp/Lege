@@ -1,23 +1,16 @@
-// inference_fixed.rs
-// Improved inference actor with better concurrency handling
-//
-// Key changes:
-// 1. Removed fake "prefetching" - it didn't actually prefetch
-// 2. Simplified to just process jobs as they come
-// 3. Added send_and_forget() for fire-and-forget inference
-// 4. Fixed the nested runtime issue
+// inference.rs
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::engine::{Detection, PaddleXConfig, PaddleXEngine};
+use crate::pipeline::config::PipelineConfig;
 use anyhow::Result;
 use image::RgbImage;
 use log::{error, info};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use crate::engine::{PaddleXEngine, PaddleXConfig, Detection};
-use crate::pipeline::config::PipelineConfig;
 
 const DEFAULT_MAX_BATCH_SIZE: usize = 16;
-const DEFAULT_BATCH_TIMEOUT_MS: u64 = 10;  // Reduced from higher values
+const DEFAULT_BATCH_TIMEOUT_MS: u64 = 10; // Reduced from higher values
 
 pub struct InferenceJob {
     pub page_index: usize,
@@ -49,17 +42,26 @@ impl InferenceActor {
             batch_size: config.batch_size(),
         };
 
-        let max_batch_size = config.max_inference_batch_size()
+        let max_batch_size = config
+            .max_inference_batch_size()
             .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
-        let batch_timeout_ms = config.batch_timeout_ms()
-            .min(DEFAULT_BATCH_TIMEOUT_MS);  // Cap at 10ms
+        let batch_timeout_ms = config.batch_timeout_ms().min(DEFAULT_BATCH_TIMEOUT_MS); // Cap at 10ms
         let initial_single_pages = config.initial_single_pages();
 
-        info!("InferenceActor: Creating PaddleXEngine with model: {}", config.model_path());
-        info!("InferenceActor: Max batch size: {}, timeout: {}ms", max_batch_size, batch_timeout_ms);
+        info!(
+            "InferenceActor: Creating PaddleXEngine with model: {}",
+            config.model_path()
+        );
+        info!(
+            "InferenceActor: Max batch size: {}, timeout: {}ms",
+            max_batch_size, batch_timeout_ms
+        );
 
         let engine = PaddleXEngine::new(config.model_path(), engine_config)?;
-        info!("InferenceActor: Engine initialized with {}", engine.provider_name());
+        info!(
+            "InferenceActor: Engine initialized with {}",
+            engine.provider_name()
+        );
 
         Ok(InferenceActor {
             receiver,
@@ -73,18 +75,6 @@ impl InferenceActor {
     /// Main run loop - simplified, no fake prefetching
     fn run(mut self) {
         info!("InferenceActor: Starting inference loop");
-
-        // Create a tokio runtime for async inference
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                error!("Failed to create runtime: {}", e);
-                return;
-            }
-        };
 
         let mut processed_count: usize = 0;
         let is_gpu = self.engine.provider_name() != "CPU";
@@ -122,24 +112,22 @@ impl InferenceActor {
                 let result = {
                     let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
                     match _guard {
-                        Ok(_guard) => rt.block_on(self.engine.detect_single_async(&job.image)),
+                        Ok(_guard) => self.engine.detect_single_blocking(&job.image),
                         Err(e) => Err(e),
                     }
                 };
                 let _ = job.response_tx.send(result);
             } else {
                 // Batch processing
-                let images: Vec<RgbImage> = jobs.iter()
-                    .map(|j| (*j.image).clone())
-                    .collect();
+                let images: Vec<RgbImage> = jobs.iter().map(|j| (*j.image).clone()).collect();
                 let indices: Vec<usize> = (0..images.len()).collect();
 
                 let batch_result = {
                     let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
                     match _guard {
-                        Ok(_guard) => rt.block_on(
-                            self.engine.detect_batch_with_indices_async(&images, &indices)
-                        ),
+                        Ok(_guard) => {
+                            self.engine.detect_batch_with_indices_blocking(&images, &indices)
+                        }
                         Err(e) => Err(e),
                     }
                 };
@@ -162,7 +150,10 @@ impl InferenceActor {
             processed_count += batch_size;
         }
 
-        info!("InferenceActor: Shutting down after {} pages", processed_count);
+        info!(
+            "InferenceActor: Shutting down after {} pages",
+            processed_count
+        );
     }
 }
 
@@ -176,15 +167,28 @@ impl InferenceHandle {
         // Larger buffer for better throughput
         let (sender, receiver) = mpsc::channel(256);
         let config_clone = config.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
         std::thread::Builder::new()
             .name("inference-actor".to_string())
-            .spawn(move || {
-                match InferenceActor::new(receiver, &config_clone) {
-                    Ok(actor) => actor.run(),
-                    Err(e) => error!("InferenceActor failed to initialize: {}", e),
+            .spawn(move || match InferenceActor::new(receiver, &config_clone) {
+                Ok(actor) => {
+                    let _ = ready_tx.send(Ok(()));
+                    actor.run();
+                }
+                Err(e) => {
+                    error!("InferenceActor failed to initialize: {}", e);
+                    crate::warn_log!("InferenceActor failed to initialize: {}", e);
+                    let _ = ready_tx.send(Err(anyhow::anyhow!(
+                        "InferenceActor failed to initialize: {}",
+                        e
+                    )));
                 }
             })?;
+
+        ready_rx
+            .recv()
+            .map_err(|_| anyhow::anyhow!("Inference actor startup handshake failed"))??;
 
         info!("InferenceHandle: Actor thread spawned (buffer: 256)");
         Ok(Self { sender })
@@ -193,22 +197,39 @@ impl InferenceHandle {
     /// Standard detect - waits for result
     pub async fn detect(&self, page_index: usize, image: Arc<RgbImage>) -> Result<Vec<Detection>> {
         let (response_tx, response_rx) = oneshot::channel();
-        let job = InferenceJob { page_index, image, response_tx };
+        let job = InferenceJob {
+            page_index,
+            image,
+            response_tx,
+        };
 
-        self.sender.send(job).await
+        self.sender
+            .send(job)
+            .await
             .map_err(|_| anyhow::anyhow!("Inference actor channel closed"))?;
 
-        response_rx.await
+        response_rx
+            .await
             .map_err(|_| anyhow::anyhow!("Inference actor dropped response"))?
     }
 
     /// Fire-and-forget - submits job without waiting
     /// Useful when caller wants to overlap inference with other work
-    pub async fn submit(&self, page_index: usize, image: Arc<RgbImage>) -> Result<oneshot::Receiver<Result<Vec<Detection>>>> {
+    pub async fn submit(
+        &self,
+        page_index: usize,
+        image: Arc<RgbImage>,
+    ) -> Result<oneshot::Receiver<Result<Vec<Detection>>>> {
         let (response_tx, response_rx) = oneshot::channel();
-        let job = InferenceJob { page_index, image, response_tx };
+        let job = InferenceJob {
+            page_index,
+            image,
+            response_tx,
+        };
 
-        self.sender.send(job).await
+        self.sender
+            .send(job)
+            .await
             .map_err(|_| anyhow::anyhow!("Inference actor channel closed"))?;
 
         Ok(response_rx)
@@ -241,11 +262,9 @@ impl InferencePool {
 
             std::thread::Builder::new()
                 .name(format!("inference-worker-{}", i))
-                .spawn(move || {
-                    match InferenceActor::new(receiver, &config_clone) {
-                        Ok(actor) => actor.run(),
-                        Err(e) => error!("InferenceWorker {} failed: {}", i, e),
-                    }
+                .spawn(move || match InferenceActor::new(receiver, &config_clone) {
+                    Ok(actor) => actor.run(),
+                    Err(e) => error!("InferenceWorker {} failed: {}", i, e),
                 })?;
 
             senders.push(sender);
@@ -260,16 +279,25 @@ impl InferencePool {
 
     /// Round-robin job distribution
     pub async fn detect(&self, page_index: usize, image: Arc<RgbImage>) -> Result<Vec<Detection>> {
-        let worker_idx = self.next_worker.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        let worker_idx = self
+            .next_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % self.senders.len();
 
         let (response_tx, response_rx) = oneshot::channel();
-        let job = InferenceJob { page_index, image, response_tx };
+        let job = InferenceJob {
+            page_index,
+            image,
+            response_tx,
+        };
 
-        self.senders[worker_idx].send(job).await
+        self.senders[worker_idx]
+            .send(job)
+            .await
             .map_err(|_| anyhow::anyhow!("Inference worker {} closed", worker_idx))?;
 
-        response_rx.await
+        response_rx
+            .await
             .map_err(|_| anyhow::anyhow!("Inference worker dropped response"))?
     }
 }

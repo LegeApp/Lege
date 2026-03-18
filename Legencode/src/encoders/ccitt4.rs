@@ -1,5 +1,5 @@
 use crate::{EncodingError, Result};
-use fax::{encoder::Encoder, slice_bits, Color, VecWriter};
+use fax::{Color, VecWriter, encoder::Encoder, slice_bits};
 
 /// Normalize and bit-pack binary data for CCITT4 encoding
 ///
@@ -68,7 +68,7 @@ fn prepare_pbm_data(input: &[u8], width: u32, height: u32, channels: u8) -> Resu
 pub fn encode(input: &[u8], width: u32, height: u32, channels: u8) -> Result<Vec<u8>> {
     // Normalize and bit-pack input data
     let pbm_data = prepare_pbm_data(input, width, height, channels)?;
-    
+
     let bytes_per_row = ((width as usize) + 7) / 8;
     let writer = VecWriter::new();
     let mut encoder = Encoder::new(writer);
@@ -78,13 +78,9 @@ pub fn encode(input: &[u8], width: u32, height: u32, channels: u8) -> Result<Vec
         let line = &pbm_data[start..start + bytes_per_row];
 
         // Map each bit to Color across actual width (ignore padding bits on the right)
-        let colors = slice_bits(line).take(width as usize).map(|bit| {
-            if bit {
-                Color::Black
-            } else {
-                Color::White
-            }
-        });
+        let colors = slice_bits(line)
+            .take(width as usize)
+            .map(|bit| if bit { Color::Black } else { Color::White });
 
         encoder
             .encode_line(colors, width as u16)
