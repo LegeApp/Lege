@@ -27,7 +27,7 @@ use crate::pipeline::policies::{
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
-use crate::resize_context::{InferenceResizeSpec, build_inference_image};
+use crate::resize_context::build_inference_image;
 use crate::{info_log, success_log, warn_log};
 
 use Legencode::streamline::Jbig2Mode;
@@ -133,10 +133,7 @@ async fn render_stage(
 
         // Build inference-sized image
         let inference_img = if config.enable_layout_detection() {
-            let spec = InferenceResizeSpec {
-                target: config.inference_size(),
-                ..Default::default()
-            };
+            let spec = config.inference_resize_spec();
             build_inference_image(high_res_arc.as_ref(), &spec)
                 .unwrap_or_else(|_| (*high_res_arc).clone())
         } else {
@@ -863,18 +860,13 @@ fn apply_margin_analysis_to_page(
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
-    use crate::resize_context::{
-        InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page,
-    };
+    use crate::resize_context::{is_in_inference_space, map_bbox_infer_to_page};
 
     // Remap detections to page space
     let mut dets = inf.detections.clone();
     let page_w = page.high_res_image.width();
     let page_h = page.high_res_image.height();
-    let spec = InferenceResizeSpec {
-        target: cfg.inference_size(),
-        ..Default::default()
-    };
+    let spec = cfg.inference_resize_spec();
     for d in dets.iter_mut() {
         if is_in_inference_space(&d.bbox, &spec) {
             d.bbox = map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
@@ -1648,10 +1640,7 @@ fn build_margin_analysis_future(
         } = prepared;
 
         let detections = if let Some(handle) = inference_handle {
-            let spec = InferenceResizeSpec {
-                target: config.inference_size(),
-                ..Default::default()
-            };
+            let spec = config.inference_resize_spec();
             let inference_img = build_inference_image(&analysis_image, &spec)
                 .unwrap_or_else(|_| analysis_image.clone());
 
