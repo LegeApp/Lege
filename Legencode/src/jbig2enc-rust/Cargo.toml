@@ -1,6 +1,6 @@
 [package]
 name = "jbig2enc-rust"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 description = "JBIG2 encoder implementation in Rust with PDF fragment support"
 license = "MIT OR Apache-2.0"
@@ -13,34 +13,38 @@ path = "src/lib.rs"
 tracing = { version = "0.1", features = ["std"], optional = true }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "registry", "std"], optional = true }
 clap = { version = "4.5.41", features = ["derive"] }
-ndarray = { workspace = true }
-bytemuck = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-log = { workspace = true }
+ndarray = "0.16.1"
+bytemuck = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
 env_logger = "0.10"
-byteorder = { workspace = true }
-lopdf = { workspace = true }
-serde_json = { workspace = true }
+byteorder = "1.4"
+lopdf = "0.39"
+serde_json = "1.0"
 glob = "0.3"
-bitvec = { workspace = true }
-lutz = "1.4.1"
+bitvec = "1.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 smallvec = "1.15"
 tinyvec = "1.9"
 bitfrob = "1.3"
-serde = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
-chrono = { workspace = true }
+chrono = "0.4"
 fnv = "1.0"
 derive_builder = "0.20.2"
-lazy_static = { workspace = true }
-once_cell = { workspace = true }
+lazy_static = "1.4"
+once_cell = "1.19"
 rustc-hash = "1.1"
 fax = { version = "0.2.6", default-features = false }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"], optional = true }
+rayon = { version = "1.10", optional = true }
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [build-dependencies]
 vergen = { version = "9.0.6", default-features = false, features = ["build"] }
+cc = "1.2"
+pkg-config = "0.3"
 
 [features]
 default = []
@@ -50,6 +54,16 @@ trace_arith = []
 line_verify = []
 cc-analysis = []
 symboldict = ["cc-analysis"]
+refine = []
+halftone_bin = ["dep:image"]
+parallel = ["dep:rayon"]
+profiling = ["dep:pprof"]
+c-encoder-bench = []
+
+[[bin]]
+name = "halftone_tester"
+path = "src/bin/halftone_tester.rs"
+required-features = ["halftone_bin"]
 
 [dev-dependencies]
 tracing = { version = "0.1", features = ["std"] }

@@ -5,19 +5,19 @@ const TEST_IMAGE1_PBM: &str = "tests/fixtures/test_image1.pbm";
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
-use jbig2::jbig2sym;
 use jbig2::jbig2enc::{encode_page_with_symbol_dictionary, encode_symbol_dict};
 use jbig2::jbig2structs::Jbig2Config;
-use jbig2::jbig2sym::{array_to_bitimage, BitImage};
+use jbig2::jbig2sym;
+use jbig2::jbig2sym::{BitImage, array_to_bitimage};
 use ndarray::Array2;
 
 /// Load a PBM file and convert to BitImage
 pub fn load_pbm(path: &str) -> BitImage {
     let mut file = std::fs::File::open(path).expect("Failed to open PBM file");
-    
+
     // Get file length first
     let file_len = file.metadata().unwrap().len();
-    
+
     let mut reader = BufReader::new(&mut file);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -44,7 +44,10 @@ pub fn load_pbm(path: &str) -> BitImage {
     let data_len = file_len - start_pos;
     let bytes_per_row = (width + 7) / 8;
     let expected_data_len = bytes_per_row * height;
-    assert_eq!(data_len as usize, expected_data_len, "Unexpected PBM data length");
+    assert_eq!(
+        data_len as usize, expected_data_len,
+        "Unexpected PBM data length"
+    );
 
     let mut data = vec![0u8; expected_data_len];
     reader.read_exact(&mut data).unwrap();
@@ -72,6 +75,3 @@ fn load_test_pbm() -> BitImage {
     }
     img
 }
-
-
-

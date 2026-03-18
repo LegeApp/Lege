@@ -93,7 +93,8 @@ Lege requires several external files to be placed alongside the executables:
 #### Required for all platforms:
 
 **ONNX Models** (AI inference):
-- `paddle-layout.onnx` - Layout detection (21 element types)
+- `yolo-layout.onnx` - Layout detection (Linux production model)
+- `paddle-layout.onnx` - Layout detection (legacy/non-Linux fallback)
 - `paddle-rotate.onnx` - Page orientation detection
 - `paddle-deskew.onnx` - Page deskew correction
 - `sauvola.onnx` - Adaptive binarization

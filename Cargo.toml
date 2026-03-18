@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.0"
+version = "1.4.5"
 edition = "2024"
 description = "Fully automatic PDF processor especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -277,7 +277,7 @@ assets = [
     ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1.25.0", "usr/lib/lege/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime_providers_shared.so", "usr/lib/lege/", "644"],
     # ONNX models
-    ["/home/dk/Desktop/lege-run/installer/linux64/paddle-layout.onnx", "usr/share/lege/models/", "644"],
+    ["/home/dk/Desktop/lege-run/installer/linux64/yolo-layout.onnx", "usr/share/lege/models/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/paddle-rotate.onnx", "usr/share/lege/models/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/paddle-deskew.onnx", "usr/share/lege/models/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/sauvola.onnx", "usr/share/lege/models/", "644"],

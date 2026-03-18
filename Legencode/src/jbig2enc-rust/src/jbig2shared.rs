@@ -5,6 +5,38 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy)]
+pub struct ComponentBox {
+    pub min_x: usize,
+    pub min_y: usize,
+    pub max_x: usize,
+    pub max_y: usize,
+}
+
+impl ComponentBox {
+    #[inline]
+    pub fn width(self) -> usize {
+        self.max_x - self.min_x + 1
+    }
+
+    #[inline]
+    pub fn height(self) -> usize {
+        self.max_y - self.min_y + 1
+    }
+
+    #[inline]
+    pub fn area(self) -> usize {
+        self.width() * self.height()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TinyComponent {
+    pub pixels: Vec<(usize, usize)>,
+    pub bbox: ComponentBox,
+    pub pixel_count: usize,
+}
+
 // ==============================================
 // Type conversion utilities
 // ==============================================
@@ -46,6 +78,271 @@ pub fn save_debug_pbm(image: &BitImage, filename: &str) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn extract_symbol_components(symbol: &BitImage) -> Vec<TinyComponent> {
+    let w = symbol.width;
+    let h = symbol.height;
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+
+    let mut visited = vec![false; w * h];
+    let mut out = Vec::new();
+    let idx = |x: usize, y: usize| y * w + x;
+
+    for y in 0..h {
+        for x in 0..w {
+            if visited[idx(x, y)] || !symbol.get_usize(x, y) {
+                continue;
+            }
+
+            let mut stack = vec![(x, y)];
+            visited[idx(x, y)] = true;
+            let mut pixels = Vec::new();
+            let mut min_x = x;
+            let mut max_x = x;
+            let mut min_y = y;
+            let mut max_y = y;
+
+            while let Some((cx, cy)) = stack.pop() {
+                pixels.push((cx, cy));
+                min_x = min_x.min(cx);
+                max_x = max_x.max(cx);
+                min_y = min_y.min(cy);
+                max_y = max_y.max(cy);
+
+                let x0 = cx.saturating_sub(1);
+                let y0 = cy.saturating_sub(1);
+                let x1 = (cx + 1).min(w - 1);
+                let y1 = (cy + 1).min(h - 1);
+
+                for ny in y0..=y1 {
+                    for nx in x0..=x1 {
+                        let i = idx(nx, ny);
+                        if visited[i] || !symbol.get_usize(nx, ny) {
+                            continue;
+                        }
+                        visited[i] = true;
+                        stack.push((nx, ny));
+                    }
+                }
+            }
+
+            out.push(TinyComponent {
+                pixel_count: pixels.len(),
+                pixels,
+                bbox: ComponentBox {
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                },
+            });
+        }
+    }
+
+    out
+}
+
+#[inline]
+pub fn symbol_likely_punctuation_or_mark(symbol: &BitImage) -> bool {
+    let w = symbol.width;
+    let h = symbol.height;
+    let black = symbol.count_ones();
+
+    (w <= 4 && h <= 4 && black >= 1)
+        || (w <= 3 && h <= 6 && black <= 10)
+        || (w <= 4 && h <= 10 && black <= 20)
+        || (w <= 8 && h <= 6 && black <= 24)
+}
+
+#[inline]
+fn looks_like_tiny_terminal_punctuation(symbol: &BitImage, comp: &TinyComponent) -> bool {
+    let bw = comp.bbox.width();
+    let bh = comp.bbox.height();
+
+    if bw <= 3 && bh <= 3 && comp.pixel_count >= 1 {
+        return true;
+    }
+
+    if bw <= 2 && bh <= 5 && comp.pixel_count >= 2 {
+        return true;
+    }
+
+    if comp.bbox.max_y + 1 >= symbol.height.saturating_sub(1)
+        && bw <= 4
+        && bh <= 4
+        && comp.pixel_count <= 8
+    {
+        return true;
+    }
+
+    false
+}
+
+#[inline]
+fn looks_like_dot_above_stem(
+    symbol: &BitImage,
+    comp_index: usize,
+    components: &[TinyComponent],
+) -> bool {
+    let comp = &components[comp_index];
+    let bw = comp.bbox.width();
+    let bh = comp.bbox.height();
+
+    if bw > 4 || bh > 4 || comp.pixel_count > 10 {
+        return false;
+    }
+    if comp.bbox.max_y > symbol.height / 2 {
+        return false;
+    }
+
+    let cx = (comp.bbox.min_x + comp.bbox.max_x) / 2;
+    for (other_index, other) in components.iter().enumerate() {
+        if other_index == comp_index {
+            continue;
+        }
+        let ow = other.bbox.width();
+        let oh = other.bbox.height();
+        if other.bbox.min_y <= comp.bbox.max_y {
+            continue;
+        }
+        if oh < 4 || ow > 6 {
+            continue;
+        }
+        let ox0 = other.bbox.min_x.saturating_sub(2);
+        let ox1 = other.bbox.max_x + 2;
+        if cx >= ox0 && cx <= ox1 {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[inline]
+fn looks_like_upper_diacritic_component(
+    symbol: &BitImage,
+    comp_index: usize,
+    components: &[TinyComponent],
+) -> bool {
+    let comp = &components[comp_index];
+    let bw = comp.bbox.width();
+    let bh = comp.bbox.height();
+
+    if bw > 8 || bh > 5 || comp.pixel_count > 24 {
+        return false;
+    }
+    if comp.bbox.max_y > (symbol.height * 2) / 5 {
+        return false;
+    }
+
+    let center_x = (comp.bbox.min_x + comp.bbox.max_x) / 2;
+    for (other_index, other) in components.iter().enumerate() {
+        if other_index == comp_index {
+            continue;
+        }
+        let ow = other.bbox.width();
+        let oh = other.bbox.height();
+        if other.bbox.min_y <= comp.bbox.max_y {
+            continue;
+        }
+        if oh < 4 || ow < 2 {
+            continue;
+        }
+        let ox0 = other.bbox.min_x.saturating_sub(3);
+        let ox1 = other.bbox.max_x + 3;
+        if center_x >= ox0 && center_x <= ox1 {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[inline]
+fn looks_like_lower_diacritic_component(
+    symbol: &BitImage,
+    comp_index: usize,
+    components: &[TinyComponent],
+) -> bool {
+    let comp = &components[comp_index];
+    let bw = comp.bbox.width();
+    let bh = comp.bbox.height();
+
+    if bw > 8 || bh > 6 || comp.pixel_count > 24 {
+        return false;
+    }
+    if comp.bbox.min_y < (symbol.height * 3) / 5 {
+        return false;
+    }
+
+    let center_x = (comp.bbox.min_x + comp.bbox.max_x) / 2;
+    for (other_index, other) in components.iter().enumerate() {
+        if other_index == comp_index {
+            continue;
+        }
+        let ow = other.bbox.width();
+        let oh = other.bbox.height();
+        if other.bbox.max_y >= comp.bbox.min_y {
+            continue;
+        }
+        if oh < 4 || ow < 2 {
+            continue;
+        }
+        let ox0 = other.bbox.min_x.saturating_sub(3);
+        let ox1 = other.bbox.max_x + 3;
+        if center_x >= ox0 && center_x <= ox1 {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn denoise_symbol_preserving_marks(symbol: &BitImage, preserve_exact: bool) -> BitImage {
+    if preserve_exact || symbol.width == 0 || symbol.height == 0 {
+        return symbol.clone();
+    }
+
+    let components = extract_symbol_components(symbol);
+    if components.is_empty() {
+        return symbol.clone();
+    }
+
+    let mut cleaned = symbol.clone();
+    for (i, comp) in components.iter().enumerate() {
+        let keep = if components.len() == 1 {
+            true
+        } else if looks_like_tiny_terminal_punctuation(symbol, comp) {
+            true
+        } else if looks_like_dot_above_stem(symbol, i, &components) {
+            true
+        } else if looks_like_upper_diacritic_component(symbol, i, &components) {
+            true
+        } else if looks_like_lower_diacritic_component(symbol, i, &components) {
+            true
+        } else {
+            let bw = comp.bbox.width();
+            let bh = comp.bbox.height();
+            let near_edge = comp.bbox.min_x == 0
+                || comp.bbox.min_y == 0
+                || comp.bbox.max_x + 1 >= symbol.width
+                || comp.bbox.max_y + 1 >= symbol.height;
+            !((comp.pixel_count <= 2 && bw <= 2 && bh <= 2)
+                || (near_edge && comp.pixel_count <= 3 && bw <= 2 && bh <= 2))
+        };
+
+        if !keep {
+            for &(x, y) in &comp.pixels {
+                cleaned.set_usize(x, y, false);
+            }
+        }
+    }
+
+    let (_, trimmed) = cleaned.trim();
+    trimmed
 }
 
 // (PDF helpers removed - this crate no longer creates PDFs directly.)

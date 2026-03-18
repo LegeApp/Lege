@@ -17,9 +17,9 @@ use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, init_encode_semaphore, rounded_clamped_bbox,
-    should_force_blank_page_threshold, should_treat_as_cover_page, spawn_pdf_writer_actor,
-    wait_for_memory_relief, BLANK_PAGE_FALLBACK_THRESHOLD,
+    BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
+    rounded_clamped_bbox, should_force_blank_page_threshold, should_treat_as_cover_page,
+    spawn_pdf_writer_actor, wait_for_memory_relief,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
@@ -27,9 +27,10 @@ use crate::pipeline::policies::{
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
-use crate::resize_context::{InferenceResizeSpec, build_inference_image};
+use crate::resize_context::build_inference_image;
 use crate::{info_log, success_log, warn_log};
 
+use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationOptions;
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture;
@@ -115,10 +116,8 @@ async fn render_stage(
         if let Some(engine) = &deskew_engine {
             let engine = engine.clone();
             let image_for_deskew = rendered_image.clone();
-            if let Ok(Ok(corrected)) = tokio::task::spawn_blocking(move || {
-                engine.process_image(&image_for_deskew)
-            })
-            .await
+            if let Ok(Ok(corrected)) =
+                tokio::task::spawn_blocking(move || engine.process_image(&image_for_deskew)).await
             {
                 rendered_image = corrected;
             }
@@ -134,10 +133,7 @@ async fn render_stage(
 
         // Build inference-sized image
         let inference_img = if config.enable_layout_detection() {
-            let spec = InferenceResizeSpec {
-                target: config.inference_size(),
-                ..Default::default()
-            };
+            let spec = config.inference_resize_spec();
             build_inference_image(high_res_arc.as_ref(), &spec)
                 .unwrap_or_else(|_| (*high_res_arc).clone())
         } else {
@@ -864,18 +860,13 @@ fn apply_margin_analysis_to_page(
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
-    use crate::resize_context::{
-        InferenceResizeSpec, is_in_inference_space, map_bbox_infer_to_page,
-    };
+    use crate::resize_context::{is_in_inference_space, map_bbox_infer_to_page};
 
     // Remap detections to page space
     let mut dets = inf.detections.clone();
     let page_w = page.high_res_image.width();
     let page_h = page.high_res_image.height();
-    let spec = InferenceResizeSpec {
-        target: cfg.inference_size(),
-        ..Default::default()
-    };
+    let spec = cfg.inference_resize_spec();
     for d in dets.iter_mut() {
         if is_in_inference_space(&d.bbox, &spec) {
             d.bbox = map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
@@ -1209,7 +1200,13 @@ fn encode_region_image_sync(
 
     let (settings, fmt_str) = match format {
         crate::types::CoverFormat::Jpeg => {
-            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
+            let q = if high_quality {
+                95
+            } else if is_cover {
+                50
+            } else {
+                40
+            };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -1224,14 +1221,20 @@ fn encode_region_image_sync(
         crate::types::CoverFormat::Jbig2 => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
-                symbol_mode: false,
+                mode: Jbig2Mode::Generic,
             }),
             "jbig2".to_string(),
         ),
         crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
         _ => {
             // Treat any other formats as JPEG fallback
-            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
+            let q = if high_quality {
+                95
+            } else if is_cover {
+                50
+            } else {
+                40
+            };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -1256,10 +1259,7 @@ fn encode_region_image_sync(
 
     match encoding_result {
         EncodingResult::Standard(data) => Ok((data, fmt_str)),
-        EncodingResult::Jbig2WithGlobals {
-            page_data,
-            ..
-        } => {
+        EncodingResult::Jbig2WithGlobals { page_data, .. } => {
             if fmt_str != "jbig2" {
                 return Err(anyhow!(
                     "Encoder returned JBIG2 data but format tag is '{}'",
@@ -1283,10 +1283,8 @@ async fn perform_ocr(
     page_index: usize,
 ) -> Result<Option<String>> {
     // Note: This function is only called when config.enable_ocr() is true
-    let use_regions = crate::ocr::ocr::should_use_region_ocr(
-        config.enable_layout_detection(),
-        detections,
-    );
+    let use_regions =
+        crate::ocr::ocr::should_use_region_ocr(config.enable_layout_detection(), detections);
 
     let result = if use_regions {
         crate::ocr::ocr::perform_region_based_ocr(
@@ -1298,13 +1296,8 @@ async fn perform_ocr(
         )
         .await
     } else {
-        crate::ocr::ocr::perform_tiling_based_ocr(
-            binarized,
-            width,
-            height,
-            config.ocr_language(),
-        )
-        .await
+        crate::ocr::ocr::perform_tiling_based_ocr(binarized, width, height, config.ocr_language())
+            .await
     };
 
     match result {
@@ -1365,7 +1358,7 @@ async fn encode_base_layer(
         "jbig2" => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
-                symbol_mode: config.jbig2_symbol_mode(),
+                mode: config.jbig2_mode(),
             }),
             "jbig2",
         ),
@@ -1647,10 +1640,7 @@ fn build_margin_analysis_future(
         } = prepared;
 
         let detections = if let Some(handle) = inference_handle {
-            let spec = InferenceResizeSpec {
-                target: config.inference_size(),
-                ..Default::default()
-            };
+            let spec = config.inference_resize_spec();
             let inference_img = build_inference_image(&analysis_image, &spec)
                 .unwrap_or_else(|_| analysis_image.clone());
 
@@ -1845,14 +1835,8 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
     info_log!("[PDF-Parallel] Processing {} pages with:", total_pages);
     info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
-    info_log!(
-        "  - Inference concurrency: {}",
-        infer_concurrency
-    );
-    info_log!(
-        "  - Process concurrency: {}",
-        process_concurrency
-    );
+    info_log!("  - Inference concurrency: {}", infer_concurrency);
+    info_log!("  - Process concurrency: {}", process_concurrency);
 
     // Initialize shared resources
     let deskew_engine = prepare_shared_deskew_engine(&config)?;
