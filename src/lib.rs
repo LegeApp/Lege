@@ -3,45 +3,66 @@
 pub mod accumulator;
 pub mod app_dirs;
 pub mod cli_progress;
+pub mod colorquant;
 pub mod debug_log;
 pub mod deskew;
-pub mod djvu;  // Native Rust DJVU encoder
+pub mod djvu; // Native Rust DJVU encoder
+#[cfg_attr(target_os = "linux", path = "engine_yolo_linux.rs")]
+#[cfg_attr(not(target_os = "linux"), path = "engine.rs")]
 pub mod engine;
-pub mod gpu;
 pub mod errors;
+pub mod gpu;
 pub mod icon;
 pub mod margin;
 pub mod nms;
 pub mod ocr;
 pub mod pagerender;
 pub mod pdf_to_png;
-pub mod pipeline;         // Modular pipeline actions (includes config, inference, processing)
+pub mod pipeline; // Modular pipeline actions (includes config, inference, processing)
 pub mod pnginference;
 pub mod preprocess;
+pub mod processing_log;
 pub mod progress;
 pub mod resize;
 pub mod resize_context;
-pub mod processing_log;
 pub mod target_profiles;
 pub mod text_loader;
 pub mod types;
 pub mod unicode_font;
 pub mod windows_dirs;
 pub use pdf_to_png::run_pdf_to_png_mode;
-pub use pnginference::{run_png_mode, run_pdf_layout_crop_debug, DebugCropKind}; // Re-export for CLI debug cropping
+pub use pnginference::{
+    DebugCropKind, run_images_to_images_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
+    run_png_mode,
+}; // Re-export for CLI debug cropping and new image modes
+
+// Re-export TooJPEG functionality for image encoding
+pub use Legencode::toojpeg::{EncodeOptions, ImageFormat, encode_jpeg};
 
 // Re-export key types from pipeline submodules for convenience
 pub use pipeline::{
-    // Config types
-    PipelineConfig, PageRange, PageTask, RenderedPageData, ProcessingPipeline,
-    runtime_asset_path, runtime_asset_path_if_exists, ensure_pdfium_available,
+    InferenceActor,
     // Inference types
-    InferenceHandle, InferenceActor, InferenceJob,
+    InferenceHandle,
+    InferenceJob,
+    PageRange,
+    PageTask,
+    // Config types
+    PipelineConfig,
+    ProcessingPipeline,
+    RenderedPageData,
+    ShutdownReason,
     // Helper functions and types
-    ShutdownSignal, ShutdownReason, get_available_ram_gb,
-    should_treat_as_cover_page, build_hocr_from_pdf_text, is_ocr_available,
+    ShutdownSignal,
+    build_hocr_from_pdf_text,
+    ensure_pdfium_available,
+    get_available_ram_gb,
+    is_ocr_available,
     // Other
     prepare_shared_deskew_engine,
+    runtime_asset_path,
+    runtime_asset_path_if_exists,
+    should_treat_as_cover_page,
 };
 
 // #[global_allocator]
@@ -144,11 +165,13 @@ macro_rules! dprintln {
 
 // DAG-related imports
 // Added missing imports and type aliases
- // brings debug_log!, info_println!, error_println!
+// brings debug_log!, info_println!, error_println!
 // resize params now centralized in resize_context for inference path; keep legacy resize module for other callers
 pub use crate::types::{AppConfig, CliConfigBuilder, CoverFormat};
-#[allow(unused_imports)] use fast_image_resize::PixelType;
-#[allow(unused_imports)] use fast_image_resize::images::Image as FirImage;
+#[allow(unused_imports)]
+use fast_image_resize::PixelType;
+#[allow(unused_imports)]
+use fast_image_resize::images::Image as FirImage;
 // Action types are re-exported from the top-level pub use pipeline::...
 
 // ShutdownReason and ShutdownSignal are now in pipeline::helper_functions
@@ -183,10 +206,3 @@ pub fn configure_runtime_env() {
         }
     }
 }
-
-
-
-
-
-
-

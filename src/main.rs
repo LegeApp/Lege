@@ -203,6 +203,8 @@ struct CliOptions {
     debug_format: Option<String>, // --format png|jpg  (for --crop-areas)
     pdf_to_images: bool,          // --pdf-to-images
     images_to_images: bool,       // --images-to-images
+    png_quantize: bool,           // --png-quantize
+    png_colors: u16,              // --png-colors N
 }
 
 /// Extract all `--flag` and `--key value` processing options from the arg list,
@@ -210,6 +212,7 @@ struct CliOptions {
 fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
     let mut remaining: Vec<String> = Vec::with_capacity(args.len());
     let mut opts = CliOptions::default();
+    opts.png_colors = 256;
 
     // Always keep argv[0]
     remaining.push(
@@ -375,6 +378,19 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.debug_format = Some(val.clone());
                 i += 2;
             }
+            "--png-colors" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --png-colors"))?;
+                let colors: u16 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid --png-colors value: {}", val))?;
+                if !(1..=256).contains(&colors) {
+                    bail!("--png-colors must be between 1 and 256");
+                }
+                opts.png_colors = colors;
+                i += 2;
+            }
 
             // --- debug / data-generation boolean flags ---
             "--png-folder" => {
@@ -387,6 +403,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--images-to-images" => {
                 opts.images_to_images = true;
+                i += 1;
+            }
+            "--png-quantize" => {
+                opts.png_quantize = true;
                 i += 1;
             }
 
@@ -607,7 +627,14 @@ fn main() -> Result<()> {
                 None
             }
         });
-        return run_pdf_to_png_mode(pdf_path, page_range, png_height, AppConfig::default());
+        return run_pdf_to_png_mode(
+            pdf_path,
+            page_range,
+            png_height,
+            AppConfig::default(),
+            cli_opts.png_quantize,
+            cli_opts.png_colors,
+        );
     }
 
     // PNG-folder inference: lege <folder> --png-folder [--deskew]
@@ -658,6 +685,8 @@ fn main() -> Result<()> {
                 AppConfig::default(),
                 cli_opts.deskew,
                 cli_opts.debug_format.as_deref(),
+                cli_opts.png_quantize,
+                cli_opts.png_colors,
             ));
     }
 
@@ -710,6 +739,8 @@ fn main() -> Result<()> {
             !cli_opts.no_layout,
             cli_opts.deskew,
             cli_opts.image_only,
+            cli_opts.png_quantize,
+            cli_opts.png_colors,
         );
     }
 
@@ -726,6 +757,8 @@ fn main() -> Result<()> {
             !cli_opts.no_layout,
             cli_opts.deskew,
             cli_opts.image_only,
+            cli_opts.png_quantize,
+            cli_opts.png_colors,
         );
     }
 
@@ -2500,7 +2533,7 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     }
 
     // Call the PDF-to-PNG processing function
-    run_pdf_to_png_mode(pdf_path, page_range, height, AppConfig::default())?;
+    run_pdf_to_png_mode(pdf_path, page_range, height, AppConfig::default(), false, 256)?;
 
     // Return None to indicate PDF-to-PNG mode was handled
     Ok(None)
@@ -2560,6 +2593,8 @@ fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>
         enable_layout,
         enable_deskew,
         false, // image_only - default to false in interactive mode
+        false,
+        256,
     )?;
 
     // Return None to indicate PDF-to-Images mode was handled
@@ -2621,6 +2656,8 @@ fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfi
         enable_layout,
         enable_deskew,
         false, // image_only - default to false in interactive mode
+        false,
+        256,
     )?;
 
     // Return None to indicate Images-to-Images mode was handled

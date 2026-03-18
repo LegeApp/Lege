@@ -11,31 +11,30 @@
 //! - **Concurrent document assembly** - pages are added to the document as they're processed
 //!
 //! The pipeline is kept separate to avoid conflicts between PDF and DJVU requirements.
-use crate::pipeline::config::PipelineConfig;
-use crate::pipeline::config::{RenderedPageData, InferenceResult};
-use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData, spawn_djvu_writer_actor};  // Use native encoder + writer actor
+use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData, spawn_djvu_writer_actor}; // Use native encoder + writer actor
 use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::pipeline::config::PipelineConfig;
+use crate::pipeline::config::{InferenceResult, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    init_encode_semaphore, build_hocr_from_pdf_text,
+    BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
     rounded_clamped_bbox, should_force_blank_page_threshold, wait_for_memory_relief,
-    BLANK_PAGE_FALLBACK_THRESHOLD,
 };
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
-use crate::resize_context::{build_inference_image, InferenceResizeSpec};
-use futures;
+use crate::resize_context::build_inference_image;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
+use futures;
 use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
+use log::warn;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use log::warn;
-use futures::stream::{FuturesUnordered, StreamExt};
 /// Result from inference stage (after layout detection)
 #[derive(Debug, Clone)]
 pub struct DjvuInferenceData {
@@ -68,13 +67,16 @@ pub fn create_djvu_pipeline_config(
 ) -> Result<DjvuConfig> {
     let work_dir = crate::app_dirs::djvu_work_dir_for(Some(output_path));
     let margin_setting = config.margin_settings();
-    let center_active = matches!(margin_setting, crate::margin::MarginSettings::StandardizeAndCenter);
+    let center_active = matches!(
+        margin_setting,
+        crate::margin::MarginSettings::StandardizeAndCenter
+    );
     let crop_active = matches!(margin_setting, crate::margin::MarginSettings::CropAndResize);
     let djvu_config = DjvuConfig {
         dpi: config.output_dpi(),
         clean: config.binarization().use_heavy_duty,
         lossy: None,
-        iw44_quality: config.djvu_iw44_quality(),  // Use quality from pipeline config
+        iw44_quality: config.djvu_iw44_quality(), // Use quality from pipeline config
         work_dir,
         early_page_assembly: !(center_active || crop_active),
         pre_mask_color_layer: true,
@@ -103,15 +105,25 @@ pub async fn create_and_run_djvu_pipeline(
     #[cfg(feature = "debug-logging")]
     {
         info_log!("[DJVU-Parallel] Entering parallel tokio pipeline");
-        info_log!("[DJVU-Parallel] Layout detection: {}", config.enable_layout_detection());
-        info_log!("[DJVU-Parallel] Margin settings: {:?}", config.margin_settings());
+        info_log!(
+            "[DJVU-Parallel] Layout detection: {}",
+            config.enable_layout_detection()
+        );
+        info_log!(
+            "[DJVU-Parallel] Margin settings: {:?}",
+            config.margin_settings()
+        );
         info_log!("[DJVU-Parallel] OCR enabled: {}", config.enable_ocr());
     }
 
     // Check for cancellation before starting
     if let Ok(signal) = shutdown_rx.try_recv() {
-        return Err(anyhow::anyhow!("Processing cancelled: {}",
-            signal.message.unwrap_or_else(|| "User requested cancellation".to_string())));
+        return Err(anyhow::anyhow!(
+            "Processing cancelled: {}",
+            signal
+                .message
+                .unwrap_or_else(|| "User requested cancellation".to_string())
+        ));
     }
 
     // Reset standard dimensions at the start of each new document
@@ -120,13 +132,20 @@ pub async fn create_and_run_djvu_pipeline(
     let mut raster_cfg = PdfRasterConfig::default();
     raster_cfg.render_forms = false;
     raster_cfg.target_width = config.target_width();
-    let pdf_renderer = Arc::new(PdfiumRenderer::new_from_bytes(pdf_bytes.clone(), raster_cfg)?);
+    let pdf_renderer = Arc::new(PdfiumRenderer::new_from_bytes(
+        pdf_bytes.clone(),
+        raster_cfg,
+    )?);
     // Calculate total pages
     let document_pages = pdf_renderer.page_count() as usize;
     let total_pages = match &page_range {
         Some(range) => {
             if range.end > document_pages {
-                return Err(anyhow!("Requested page range {:?} exceeds document length ({})", range, document_pages));
+                return Err(anyhow!(
+                    "Requested page range {:?} exceeds document length ({})",
+                    range,
+                    document_pages
+                ));
             }
             range.len()
         }
@@ -137,8 +156,8 @@ pub async fn create_and_run_djvu_pipeline(
     info_log!("[DJVU-Parallel] Total pages to process: {}", total_pages);
     // Create DJVU orchestrator
     let djvu_config = create_djvu_pipeline_config(output_path, &config)?;
-    let dpi = djvu_config.dpi;  // Extract DPI before config is moved
-    let iw44_quality = djvu_config.iw44_quality;  // Extract quality setting (0-100)
+    let dpi = djvu_config.dpi; // Extract DPI before config is moved
+    let iw44_quality = djvu_config.iw44_quality; // Extract quality setting (0-100)
     let orchestrator = Arc::new(DjvuOrchestrator::new(djvu_config)?);
     // Create shared inference handle if layout detection is enabled
     let shared_inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>> =
@@ -147,7 +166,10 @@ pub async fn create_and_run_djvu_pipeline(
                 Ok(handle) => Some(Arc::new(handle)),
                 Err(e) => {
                     #[cfg(feature = "debug-logging")]
-                    warn_log!("[DJVU-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.", e);
+                    warn_log!(
+                        "[DJVU-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.",
+                        e
+                    );
                     None
                 }
             }
@@ -172,7 +194,8 @@ pub async fn create_and_run_djvu_pipeline(
         mpsc::channel::<DjvuBinarizedData>(pipeline_config.channel_capacity);
     // Setup progress tracking
     let layout_enabled = config.enable_layout_detection();
-    let external_cb: Arc<dyn Fn(usize, usize) + Send + Sync + 'static> = Arc::new(progress_callback);
+    let external_cb: Arc<dyn Fn(usize, usize) + Send + Sync + 'static> =
+        Arc::new(progress_callback);
     let (render_count, detect_count, encode_count) = if layout_enabled {
         (
             Arc::new(AtomicUsize::new(0)),
@@ -198,7 +221,10 @@ pub async fn create_and_run_djvu_pipeline(
         let ec = encode_count.clone();
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Render] Starting render stage for {} pages", total_pages);
+            info_log!(
+                "[DJVU-Parallel-Render] Starting render stage for {} pages",
+                total_pages
+            );
             for page_index in page_start..page_end {
                 // Memory check - but don't over-check
                 if page_index % 10 == 0 {
@@ -206,35 +232,36 @@ pub async fn create_and_run_djvu_pipeline(
                 }
                 // Render the page
                 let rgb_page = pdf_renderer
-                    .render_page_rgb(page_index as u32, config.target_height(), config.target_width())
+                    .render_page_rgb(
+                        page_index as u32,
+                        config.target_height(),
+                        config.target_width(),
+                    )
                     .await?;
                 // Convert RgbPage to ImageBuffer
-                let rendered_image = match RgbImage::from_raw(
-                    rgb_page.width,
-                    rgb_page.height,
-                    rgb_page.data,
-                ) {
-                    Some(img) => img,
-                    None => {
-                        return Err(anyhow!(
-                            "Failed to create ImageBuffer from RgbPage for page {} ({}x{})",
-                            page_index,
-                            rgb_page.width,
-                            rgb_page.height
-                        ));
-                    }
-                };
+                let rendered_image =
+                    match RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data) {
+                        Some(img) => img,
+                        None => {
+                            return Err(anyhow!(
+                                "Failed to create ImageBuffer from RgbPage for page {} ({}x{})",
+                                page_index,
+                                rgb_page.width,
+                                rgb_page.height
+                            ));
+                        }
+                    };
 
                 // Set standard dimensions from first page for margin processing
-                crate::pipeline::set_standard_dimensions_once(rendered_image.width(), rendered_image.height());
+                crate::pipeline::set_standard_dimensions_once(
+                    rendered_image.width(),
+                    rendered_image.height(),
+                );
 
                 let high_res_arc = Arc::new(rendered_image);
                 // Create inference-sized image
                 let inference_img = if config.enable_layout_detection() {
-                    let spec = InferenceResizeSpec {
-                        target: config.inference_size(),
-                        ..Default::default()
-                    };
+                    let spec = config.inference_resize_spec();
                     match build_inference_image(high_res_arc.as_ref(), &spec) {
                         Ok(img) => img,
                         Err(e) => {
@@ -255,12 +282,21 @@ pub async fn create_and_run_djvu_pipeline(
                     original_width_pts: rgb_page.original_width_pts,
                     original_height_pts: rgb_page.original_height_pts,
                 };
-                render_tx.send(rendered).await.map_err(|e| anyhow!("Render send failed: {}", e))?;
+                render_tx
+                    .send(rendered)
+                    .await
+                    .map_err(|e| anyhow!("Render send failed: {}", e))?;
                 if layout_enabled {
                     let rendered_val = rc.fetch_add(1, Ordering::Relaxed) + 1;
                     let detected_val = dc.load(Ordering::Relaxed);
                     let encoded_val = ec.load(Ordering::Relaxed);
-                    tracker.publish_layout_progress(rendered_val, detected_val, encoded_val, 0, total_pages);
+                    tracker.publish_layout_progress(
+                        rendered_val,
+                        detected_val,
+                        encoded_val,
+                        0,
+                        total_pages,
+                    );
                 } else {
                     let rendered_val = rc.fetch_add(1, Ordering::Relaxed) + 1;
                     tracker.publish_no_layout_progress(rendered_val, 0, total_pages);
@@ -284,7 +320,10 @@ pub async fn create_and_run_djvu_pipeline(
         let concurrency = pipeline_config.page_workers;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Infer] Starting inference stage with concurrency={}", concurrency);
+            info_log!(
+                "[DJVU-Parallel-Infer] Starting inference stage with concurrency={}",
+                concurrency
+            );
             // Track in-flight inference tasks
             let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<DjvuInferenceData>>> =
                 FuturesUnordered::new();
@@ -352,7 +391,10 @@ pub async fn create_and_run_djvu_pipeline(
         let concurrency = pipeline_config.process_workers;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Process] Starting binarization & text extraction stage with concurrency={}", concurrency);
+            info_log!(
+                "[DJVU-Parallel-Process] Starting binarization & text extraction stage with concurrency={}",
+                concurrency
+            );
             let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
             let mut input_exhausted = false;
             loop {
@@ -436,7 +478,10 @@ pub async fn create_and_run_djvu_pipeline(
         let concurrency = pipeline_config.djvu_encode_workers;
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Encode] Starting encoding stage with concurrency={}", concurrency);
+            info_log!(
+                "[DJVU-Parallel-Encode] Starting encoding stage with concurrency={}",
+                concurrency
+            );
             let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<EncodedDjvuPage>>> =
                 FuturesUnordered::new();
             let mut input_exhausted = false;
@@ -485,7 +530,7 @@ pub async fn create_and_run_djvu_pipeline(
             }
 
             djvu_writer.finalize().await?;
-            
+
             #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Encode] Encoding stage complete");
             Ok(())
@@ -679,9 +724,9 @@ async fn process_single_djvu_page(
         inference_result: inference_data.inference_result,
         config: config_clone,
     };
-    let cpu_result = tokio::task::spawn_blocking(move || {
-        process_djvu_cpu_intensive_work(input)
-    }).await.map_err(|e| anyhow!("CPU task panicked: {}", e))??;
+    let cpu_result = tokio::task::spawn_blocking(move || process_djvu_cpu_intensive_work(input))
+        .await
+        .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
     let DjvuPageProcessingOutput {
         adjusted_image,
         adjusted_detections,
@@ -700,7 +745,8 @@ async fn process_single_djvu_page(
         height,
         &adjusted_detections,
         page_index,
-    ).await;
+    )
+    .await;
     Ok(Some(DjvuBinarizedData {
         index: local_index,
         adjusted_image: Arc::new(adjusted_image),
@@ -729,25 +775,26 @@ struct DjvuPageProcessingOutput {
     original_height_pts: f32,
 }
 /// Consolidated CPU-intensive work for a single DJVU page (binarization only)
-fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<DjvuPageProcessingOutput> {
+fn process_djvu_cpu_intensive_work(
+    input: DjvuPageProcessingInput,
+) -> Result<DjvuPageProcessingOutput> {
     let DjvuPageProcessingInput {
         rendered,
         inference_result,
         config,
     } = input;
     // 1. Apply region policy (CPU-heavy: image resizing/cropping)
-    let (mut adjusted_image, mut adjusted_detections) = apply_djvu_region_policy(
-        &rendered,
-        &inference_result,
-        &config,
-    )?;
+    let (mut adjusted_image, mut adjusted_detections) =
+        apply_djvu_region_policy(&rendered, &inference_result, &config)?;
     // 2. Resize to target height if needed (CPU-heavy: Lanczos3 filtering)
     if config.enable_layout_detection() && adjusted_image.height() != config.target_height() {
         let current_w = adjusted_image.width();
         let current_h = adjusted_image.height();
         let target_h = config.target_height();
         let aspect_ratio = current_w as f32 / current_h as f32;
-        let target_w = config.target_width().unwrap_or_else(|| (target_h as f32 * aspect_ratio).round() as u32);
+        let target_w = config
+            .target_width()
+            .unwrap_or_else(|| (target_h as f32 * aspect_ratio).round() as u32);
         if target_w > 0 && target_h > 0 {
             // Scale detection bboxes
             let sx = target_w as f32 / current_w as f32;
@@ -768,7 +815,13 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
                 border_value: 0.0,
                 swap_rb: false,
             };
-            match crate::resize::resize_bytes(adjusted_image.as_raw(), current_w, current_h, &params, 3) {
+            match crate::resize::resize_bytes(
+                adjusted_image.as_raw(),
+                current_w,
+                current_h,
+                &params,
+                3,
+            ) {
                 Ok(bytes) => {
                     if let Some(buf) = RgbImage::from_raw(target_w, target_h, bytes) {
                         adjusted_image = buf;
@@ -777,7 +830,12 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
                 }
                 Err(e) => {
                     // Fallback resize
-                    adjusted_image = image::imageops::resize(&adjusted_image, target_w, target_h, image::imageops::FilterType::Lanczos3);
+                    adjusted_image = image::imageops::resize(
+                        &adjusted_image,
+                        target_w,
+                        target_h,
+                        image::imageops::FilterType::Lanczos3,
+                    );
                     adjusted_detections = scaled_detections; // Keep scaled detections
                 }
             }
@@ -802,12 +860,11 @@ fn process_djvu_cpu_intensive_work(input: DjvuPageProcessingInput) -> Result<Djv
             })
             .collect()
     } else {
-        let force_blank_threshold =
-            should_force_blank_page_threshold(
-                &config,
-                inference_result.has_no_detections,
-                crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
-            );
+        let force_blank_threshold = should_force_blank_page_threshold(
+            &config,
+            inference_result.has_no_detections,
+            crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
+        );
         binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
     };
 
@@ -874,13 +931,15 @@ async fn extract_djvu_text_layer(
     page_index: usize,
 ) -> Option<String> {
     if config.enable_ocr() {
-        let use_regions = crate::ocr::ocr::should_use_region_ocr(
-            config.enable_layout_detection(),
-            detections,
-        );
+        let use_regions =
+            crate::ocr::ocr::should_use_region_ocr(config.enable_layout_detection(), detections);
         #[cfg(feature = "debug-logging")]
-        info_log!("[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}", 
-            page_index, use_regions, detections.len());
+        info_log!(
+            "[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}",
+            page_index,
+            use_regions,
+            detections.len()
+        );
         let result = if use_regions {
             crate::ocr::ocr::perform_region_based_ocr(
                 binarized,
@@ -902,7 +961,11 @@ async fn extract_djvu_text_layer(
         match result {
             Ok(text) => {
                 #[cfg(feature = "debug-logging")]
-                info_log!("[extract_djvu_text_layer] Page {}: OCR returned {} chars", page_index, text.len());
+                info_log!(
+                    "[extract_djvu_text_layer] Page {}: OCR returned {} chars",
+                    page_index,
+                    text.len()
+                );
                 Some(text)
             }
             Err(e) => {
@@ -912,20 +975,22 @@ async fn extract_djvu_text_layer(
         }
     } else {
         match pdf_renderer.has_text_layer(page_index as u32).await {
-            Ok(true) => {
-                match pdf_renderer.extract_page_text(page_index as u32).await {
-                    Ok(raw_text) => {
-                        let hocr = build_hocr_from_pdf_text(&raw_text, width as u32, height as u32);
-                        #[cfg(feature = "debug-logging")]
-                        info_log!("[extract_djvu_text_layer] Page {}: PDF text extracted, HOCR {} chars", page_index, hocr.len());
-                        Some(hocr)
-                    }
-                    Err(e) => {
-                        warn_log!("Failed to extract text from page {}: {}", page_index, e);
-                        None
-                    }
+            Ok(true) => match pdf_renderer.extract_page_text(page_index as u32).await {
+                Ok(raw_text) => {
+                    let hocr = build_hocr_from_pdf_text(&raw_text, width as u32, height as u32);
+                    #[cfg(feature = "debug-logging")]
+                    info_log!(
+                        "[extract_djvu_text_layer] Page {}: PDF text extracted, HOCR {} chars",
+                        page_index,
+                        hocr.len()
+                    );
+                    Some(hocr)
                 }
-            }
+                Err(e) => {
+                    warn_log!("Failed to extract text from page {}: {}", page_index, e);
+                    None
+                }
+            },
             Ok(false) => None,
             Err(e) => {
                 warn_log!("Failed to check text layer for page {}: {}", page_index, e);
@@ -941,7 +1006,8 @@ fn apply_djvu_region_policy(
     config: &PipelineConfig,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
     let policy: Arc<dyn crate::pipeline::policies::RegionPolicy> = match config.margin_settings() {
-        crate::margin::MarginSettings::StandardizeAndCenter | crate::margin::MarginSettings::CropAndResize => {
+        crate::margin::MarginSettings::StandardizeAndCenter
+        | crate::margin::MarginSettings::CropAndResize => {
             Arc::new(crate::pipeline::policies::MarginStandardizeAndCenter)
         }
         crate::margin::MarginSettings::None => {
@@ -975,7 +1041,10 @@ fn binarize_djvu_image(
         );
         (true, BLANK_PAGE_FALLBACK_THRESHOLD)
     } else {
-        (config.binarization().use_fixed_threshold, config.binarization().fixed_threshold)
+        (
+            config.binarization().use_fixed_threshold,
+            config.binarization().fixed_threshold,
+        )
     };
     let options = Legencode::types::BinarizationOptions {
         invert: want_invert_output,
