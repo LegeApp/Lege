@@ -28,9 +28,7 @@ pub enum Jbig2Error {
     BufferTooSmall { expected: usize, actual: usize },
 
     /// Array shape error during conversion
-    ArrayShapeError {
-        source: ndarray::ShapeError,
-    },
+    ArrayShapeError { source: ndarray::ShapeError },
 
     /// Encoding failed
     EncodingFailed { message: String },
@@ -54,9 +52,18 @@ pub enum Jbig2Error {
 impl std::fmt::Display for Jbig2Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Jbig2Error::BufferSizeMismatch { expected, actual, width, height, ratio } => {
-                write!(f, "Input buffer size mismatch: expected {}, got {} for {}x{} image (ratio: {:.3})",
-                       expected, actual, width, height, ratio)
+            Jbig2Error::BufferSizeMismatch {
+                expected,
+                actual,
+                width,
+                height,
+                ratio,
+            } => {
+                write!(
+                    f,
+                    "Input buffer size mismatch: expected {}, got {} for {}x{} image (ratio: {:.3})",
+                    expected, actual, width, height, ratio
+                )
             }
             Jbig2Error::BufferTooSmall { expected, actual } => {
                 write!(f, "Buffer too small: expected {}, got {}", expected, actual)
@@ -71,12 +78,22 @@ impl std::fmt::Display for Jbig2Error {
                 write!(f, "Dictionary creation failed: {}", message)
             }
             Jbig2Error::PackedDataDetected => {
-                write!(f, "Input appears to be packed binary data (1 bit per pixel), but JBIG2 encoder expects unpacked data (1 byte per pixel)")
+                write!(
+                    f,
+                    "Input appears to be packed binary data (1 bit per pixel), but JBIG2 encoder expects unpacked data (1 byte per pixel)"
+                )
             }
             Jbig2Error::StreamCountMismatch { expected, actual } => {
-                write!(f, "Expected {} stream(s) for single image encoding, got {}", expected, actual)
+                write!(
+                    f,
+                    "Expected {} stream(s) for single image encoding, got {}",
+                    expected, actual
+                )
             }
-            Jbig2Error::SegmentWriteFailed { segment_type, message } => {
+            Jbig2Error::SegmentWriteFailed {
+                segment_type,
+                message,
+            } => {
                 write!(f, "Failed to write {} segment: {}", segment_type, message)
             }
         }
@@ -100,21 +117,25 @@ impl From<ndarray::ShapeError> for Jbig2Error {
 
 // Module declarations
 pub mod jbig2arith;
-pub mod jbig2comparator;
-pub mod jbig2enc;
-pub mod jbig2halftone;
 #[cfg(feature = "cc-analysis")]
 pub mod jbig2cc;
+pub mod jbig2classify;
+pub mod jbig2comparator;
+pub mod jbig2context;
+pub mod jbig2cost;
+pub mod jbig2enc;
+pub mod jbig2halftone;
 pub mod jbig2shared;
 pub mod jbig2structs;
 pub mod jbig2sym;
+pub mod jbig2unify;
 
 // Re-export the main encode functions and config
 pub use crate::jbig2arith::Jbig2ArithCoder;
+#[cfg(feature = "cc-analysis")]
+pub use jbig2cc::{BBox, CC, CCImage, Run, analyze_page, extract_symbols_for_jbig2};
 pub use jbig2enc::encode_document;
 pub use jbig2structs::Jbig2Config;
-#[cfg(feature = "cc-analysis")]
-pub use jbig2cc::{analyze_page, extract_symbols_for_jbig2, BBox, CCImage, CC, Run};
 
 use jbig2enc::Jbig2Encoder;
 use jbig2sym::binary_pixels_to_bitimage;
@@ -261,6 +282,16 @@ pub fn encode_single_image_lossless(
     encode_single_bitimage(bitimage, Jbig2Context::with_lossless_config(pdf_mode))
 }
 
+pub fn encode_single_image_with_config(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    context: Jbig2Context,
+) -> Result<Jbig2EncodeResult, Jbig2Error> {
+    let bitimage = validate_and_build_bitimage(input, width, height)?;
+    encode_single_bitimage(bitimage, context)
+}
+
 fn validate_and_build_bitimage(
     input: &[u8],
     width: u32,
@@ -292,8 +323,10 @@ fn encode_single_bitimage(
 ) -> Result<Jbig2EncodeResult, Jbig2Error> {
     let mut enc_config = ctx.config.clone();
     enc_config.want_full_headers = !ctx.get_pdf_mode();
-    enc_config.auto_thresh = false;
-    enc_config.refine = false;
+    if !enc_config.symbol_mode {
+        enc_config.refine = false;
+        enc_config.text_refine = false;
+    }
 
     let global_data = if ctx.get_symbol_mode() && ctx.get_pdf_mode() {
         let mut dict_encoder = Jbig2Encoder::new(&enc_config).dict_only();
@@ -351,11 +384,10 @@ pub fn encode_rois(
     // Initialize encoder configuration - use the context's config instead of default
     let mut enc_config = ctx.config.clone();
     enc_config.want_full_headers = !ctx.get_pdf_mode(); // PDF mode shouldn't have file headers
-    enc_config.auto_thresh = false; // Disable auto-threshold to avoid index errors
-                                    // IMPORTANT: Disable refinement to ensure text regions are encoded with payloads
-                                    // The current encoder's refine path is not wired in `flush()`, which can
-                                    // lead to empty ImmediateTextRegion payloads and invalid JBIG2 files.
-    enc_config.refine = false;
+    if !enc_config.symbol_mode {
+        enc_config.refine = false;
+        enc_config.text_refine = false;
+    }
 
     // For PDF mode with symbol encoding, create global dictionary
     let global_dict = if ctx.get_symbol_mode() && ctx.get_pdf_mode() {

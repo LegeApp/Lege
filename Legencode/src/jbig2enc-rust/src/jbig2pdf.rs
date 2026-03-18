@@ -176,6 +176,13 @@ pub fn create_jbig2_pdf(
         pages.entry(roi.page_index).or_default().push(roi);
     }
 
+    // Create a single JBIG2Globals stream object for the whole document (if present).
+    // Per ISO 32000-1 §8.9.5.6, this must be a bare stream with no /Type or /Subtype keys.
+    let globals_id = input.symbol_dict.as_ref().map(|sym_data| {
+        let global_stream = Stream::new(Dictionary::new(), sym_data.clone());
+        doc.add_object(global_stream)
+    });
+
     for (page_idx, rois) in &pages {
         let (page_width, page_height) = page_dims.get(*page_idx).copied().unwrap_or((612.0, 792.0)); // Default 8.5x11 inches
 
@@ -211,15 +218,9 @@ pub fn create_jbig2_pdf(
             img_dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
 
             // Add symbol dictionary if present
-            if let Some(sym_data) = &input.symbol_dict {
-                let mut sym_dict = Dictionary::new();
-                sym_dict.set("Type", Object::Name(b"XObject".to_vec()));
-                sym_dict.set("Subtype", Object::Name(b"JBIG2Decode".to_vec()));
-                let sym_stream = Stream::new(sym_dict, sym_data.clone());
-                let sym_id = doc.add_object(sym_stream);
-
+            if let Some(ref sym_id) = globals_id {
                 let mut decode_parms = Dictionary::new();
-                decode_parms.set("JBIG2Globals", Object::Reference(sym_id));
+                decode_parms.set("JBIG2Globals", Object::Reference(*sym_id));
                 img_dict.set("DecodeParms", Object::Dictionary(decode_parms));
             }
 

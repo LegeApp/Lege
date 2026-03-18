@@ -9,13 +9,7 @@
 //! 1. **Runs** compress horizontal spans into (y, x1, x2) triples — a typical
 //!    document page might have ~50 000 runs vs millions of pixels.
 //! 2. **Union-find** with path compression gives near-O(n) labeling.
-//! 3. **merge_and_split_ccs** handles the two pathological cases that cause
-//!    "too many symbols":
-//!    - Tiny fragments (noise, serifs, diacritical marks that got disconnected)
-//!      are **merged** into grid cells.
-//!    - Huge components (touching characters, rules, decorative borders) are
-//!      **split** along grid lines.
-//! 4. **Reading-order sort** groups components into text lines, which is
+//! 3. **Reading-order sort** groups components into text lines, which is
 //!    critical for efficient dictionary encoding (similar shapes appear near
 //!    each other).
 //!
@@ -127,6 +121,15 @@ pub struct CC {
     pub nrun: i32,
     /// Index of the first run in the sorted runs array.
     pub frun: i32,
+}
+
+/// Lightweight handle for a connected component before bitmap materialization.
+#[derive(Clone, Copy, Debug)]
+pub struct ShapeRef {
+    pub ccid: usize,
+    pub bbox: BBox,
+    pub black_pixels: usize,
+    pub run_count: usize,
 }
 
 // ─── CCImage ────────────────────────────────────────────────────────────────
@@ -749,34 +752,41 @@ impl CCImage {
     ///
     /// 1. `make_ccids_by_analysis()` — union-find labeling
     /// 2. `make_ccs_from_ccids()` — build descriptors
-    /// 3. `erase_tiny_ccs()` — remove noise (only if losslevel > 0)
-    /// 4. `merge_and_split_ccs()` — grid-based merge/split
-    /// 5. `sort_in_reading_order()` — reading-order sort
+    /// 3. `sort_in_reading_order()` — reading-order sort
     ///
     /// After this, iterate `0..self.ccs.len()` and call
     /// `get_bitmap_for_cc(i)` to extract symbol bitmaps.
     pub fn analyze(&mut self, losslevel: i32) {
+        let _ = losslevel;
         self.make_ccids_by_analysis();
         self.make_ccs_from_ccids();
-
-        if losslevel > 0 {
-            self.erase_tiny_ccs();
-        }
-
-        self.merge_and_split_ccs();
         self.sort_in_reading_order();
+    }
+
+    /// Return lightweight component descriptors without allocating bitmaps.
+    pub fn extract_shape_refs(&self) -> Vec<ShapeRef> {
+        let mut shapes = Vec::with_capacity(self.ccs.len());
+        for (ccid, cc) in self.ccs.iter().enumerate() {
+            if cc.nrun <= 0 {
+                continue;
+            }
+            shapes.push(ShapeRef {
+                ccid,
+                bbox: cc.bb,
+                black_pixels: cc.npix.max(0) as usize,
+                run_count: cc.nrun.max(0) as usize,
+            });
+        }
+        shapes
     }
 
     /// Convert the analyzed CCs into (bitmap, bounding_box) pairs ready
     /// for JB2 encoding, filtering out empty results.
     pub fn extract_shapes(&self) -> Vec<(BitImage, BBox)> {
         let mut shapes = Vec::with_capacity(self.ccs.len());
-        for ccid in 0..self.ccs.len() {
-            if self.ccs[ccid].nrun <= 0 {
-                continue;
-            }
-            if let Some(bm) = self.get_bitmap_for_cc(ccid) {
-                shapes.push((bm, self.ccs[ccid].bb));
+        for shape in self.extract_shape_refs() {
+            if let Some(bm) = self.get_bitmap_for_cc(shape.ccid) {
+                shapes.push((bm, shape.bbox));
             }
         }
         shapes
