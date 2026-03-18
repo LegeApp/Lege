@@ -7,10 +7,7 @@ use rayon::prelude::*;
 
 type Result<T> = std::result::Result<T, ResizeError>;
 
-pub fn resize_batch_cpu<T>(
-    batch: &[T],
-    params: &ResizeParams,
-) -> Result<Vec<RgbImage>>
+pub fn resize_batch_cpu<T>(batch: &[T], params: &ResizeParams) -> Result<Vec<RgbImage>>
 where
     T: IntoImageView + Sync + Clone,
 {
@@ -38,12 +35,7 @@ fn fir_algorithm(m: ResizeMethod) -> ResizeAlg {
 
 // Removed compute_letterbox function - no longer needed for PaddleX direct resize
 
-pub fn resize_single<T>(
-    src: T,
-    params: &ResizeParams,
-    tw: u32,
-    th: u32,
-) -> Result<RgbImage>
+pub fn resize_single<T>(src: T, params: &ResizeParams, tw: u32, th: u32) -> Result<RgbImage>
 where
     T: IntoImageView,
 {

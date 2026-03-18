@@ -13,20 +13,21 @@ pub fn display_version() -> &'static str {
     // Try multiple methods to get the external version, in order of preference
     // 1. Try to get from the main lege crate (which should have read from the file via build.rs)
     match lege::get_external_version() {
-        "0.0.0" | "" | "1.0.0" => {  // Add common placeholder versions
+        "0.0.0" | "" | "1.0.0" => {
+            // Add common placeholder versions
             // 2. Try to read from the version file directly during runtime
             if let Ok(content) = read_external_version_file() {
                 if !content.is_empty() && content != "0.0.0" {
                     return Box::leak(content.into_boxed_str());
                 }
             }
-            
+
             // 3. Fallback to environment variable set by build.rs
             match option_env!("LEGE_EXTERNAL_VERSION") {
                 Some(external_version) if !external_version.is_empty() => external_version,
                 _ => INTERNAL_VERSION,
             }
-        },
+        }
         version => version,
     }
 }
@@ -36,10 +37,10 @@ fn read_external_version_file() -> Result<String, Box<dyn std::error::Error>> {
     // Try different possible locations for the version file
     let possible_paths = [
         "../../../external_version.txt", // From GUI/Dioxus/src/
-        "../../external_version.txt",   // From GUI/Dioxus/src (alternative)
-        "../external_version.txt",      // From GUI/Dioxus/
-        "./external_version.txt",       // From current dir
-        "external_version.txt",         // From relative path
+        "../../external_version.txt",    // From GUI/Dioxus/src (alternative)
+        "../external_version.txt",       // From GUI/Dioxus/
+        "./external_version.txt",        // From current dir
+        "external_version.txt",          // From relative path
     ];
 
     for path_str in &possible_paths {
@@ -53,7 +54,7 @@ fn read_external_version_file() -> Result<String, Box<dyn std::error::Error>> {
             }
         }
     }
-    
+
     Err("Version file not found".into())
 }
 

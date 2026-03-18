@@ -7,8 +7,7 @@ use ndarray::Array;
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{RunOptions, Session, SessionInputValue};
-use ort::tensor::TensorElementType;
-use ort::value::{DynValue, Value, ValueType};
+use ort::value::{DynValue, TensorElementType, Value, ValueType};
 
 #[path = "engine.rs"]
 mod paddle_fallback;
@@ -127,11 +126,11 @@ impl YoloLinuxEngine {
 
         let (session, provider_name) = Self::build_session(model_path)?;
         let output_index = session
-            .outputs
+            .outputs()
             .iter()
             .position(|o| {
                 matches!(
-                    o.output_type,
+                    o.dtype(),
                     ValueType::Tensor {
                         ty: TensorElementType::Float32,
                         ..
@@ -152,9 +151,12 @@ impl YoloLinuxEngine {
         use ort::execution_providers::CPUExecutionProvider;
 
         let new_builder = || -> anyhow::Result<ort::session::builder::SessionBuilder> {
-            Ok(Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_memory_pattern(true)?)
+            Ok(Session::builder()
+                .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?
+                .with_memory_pattern(true)
+                .map_err(|e| anyhow!("failed to enable ORT memory pattern: {e}"))?)
         };
 
         let gpu_disabled = std::env::var("LEGE_DISABLE_GPU").ok().as_deref() == Some("1");
@@ -201,7 +203,10 @@ impl YoloLinuxEngine {
             (1, 3, YOLO_IMG_SIZE as usize, YOLO_IMG_SIZE as usize),
             inputs.image_data.clone(),
         )?;
-        let input_values = [SessionInputValue::from(Value::from_array(image_data)?)];
+        let input_values = [SessionInputValue::from(
+            Value::from_array(image_data)
+                .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+        )];
         let run_options = RunOptions::new()?;
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         let outputs = rt.block_on(self.session.run_async(input_values, &run_options)?)?;

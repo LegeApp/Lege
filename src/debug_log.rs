@@ -15,7 +15,11 @@
 
 // Enable debug logging infrastructure if either feature flag is present.
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
-use std::{fs::{OpenOptions, File}, io::Write, sync::Mutex};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    sync::Mutex,
+};
 
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
 fn debug_file() -> &'static Mutex<Option<File>> {
@@ -86,7 +90,9 @@ macro_rules! dbglog {
 
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
-macro_rules! dbglog { ($($arg:tt)*) => {}; }
+macro_rules! dbglog {
+    ($($arg:tt)*) => {};
+}
 
 // Legacy aliases forward to dbglog!
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
@@ -95,7 +101,9 @@ macro_rules! debug_log { ($($arg:tt)*) => { $crate::dbglog!($($arg)*); } }
 
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
-macro_rules! debug_log { ($($arg:tt)*) => {}; }
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
 
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
 #[macro_export]
@@ -103,7 +111,9 @@ macro_rules! debug_println { ($($arg:tt)*) => { $crate::dbglog!($($arg)*); } }
 
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
-macro_rules! debug_println { ($($arg:tt)*) => {}; }
+macro_rules! debug_println {
+    ($($arg:tt)*) => {};
+}
 
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
 #[macro_export]
@@ -111,7 +121,9 @@ macro_rules! debug_eprintln { ($($arg:tt)*) => { $crate::dbglog!($($arg)*); } }
 
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
-macro_rules! debug_eprintln { ($($arg:tt)*) => {}; }
+macro_rules! debug_eprintln {
+    ($($arg:tt)*) => {};
+}
 
 /// Always print important messages (PDF info, ONNX provider, final results)
 #[macro_export]

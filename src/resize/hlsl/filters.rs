@@ -15,9 +15,9 @@ impl FilterType {
     /// Get the shader bytecode for this filter type
     pub fn shader_bytecode(&self) -> &'static [u8] {
         match self {
-              FilterType::Bilinear => BILINEAR_SHADER,
-              FilterType::Bell => BELL_SHADER,
-              FilterType::Lanczos3 => LANCZOS3_SHADER,
+            FilterType::Bilinear => BILINEAR_SHADER,
+            FilterType::Bell => BELL_SHADER,
+            FilterType::Lanczos3 => LANCZOS3_SHADER,
         }
     }
 
@@ -33,8 +33,8 @@ impl FilterType {
     /// Get recommended filter for different use cases
     pub fn recommended_for_use_case(use_case: super::UseCase) -> Self {
         match use_case {
-            super::UseCase::PaddleX => FilterType::Bilinear,  // Speed is important
-            super::UseCase::OCR => FilterType::Bell,          // Good quality for text
+            super::UseCase::PaddleX => FilterType::Bilinear, // Speed is important
+            super::UseCase::OCR => FilterType::Bell,         // Good quality for text
             super::UseCase::MarginCalculation => FilterType::Bilinear, // Speed over quality
         }
     }

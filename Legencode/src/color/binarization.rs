@@ -2,11 +2,11 @@
 //! Replicates OpenCV Sauvola-based precision binarization and PBM encoding
 
 use crate::types::BinarizationOptions;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use image::{GrayImage, Luma};
 use ndarray::Array4;
 // GPU execution providers intentionally excluded for HeavySauvola – CPU only.
-use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Value;
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
@@ -53,8 +53,10 @@ impl HeavySauvolaProcessor {
             }
         }
 
-        let builder =
-            Session::builder()?.with_optimization_level(GraphOptimizationLevel::Level3)?;
+        let mut builder = Session::builder()
+            .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?;
 
         // Always use CPU; GPU execution providers are intentionally disabled for
         // HeavySauvola to ensure deterministic, stable binarization output.
@@ -104,7 +106,8 @@ impl HeavySauvolaProcessor {
             },
         );
 
-        let inputs = ort::inputs!["img01_inp" => Value::from_array(img_array)?];
+        let inputs = ort::inputs!["img01_inp" => Value::from_array(img_array)
+            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?];
         let outputs = self.session.run(inputs)?;
 
         let output = outputs
@@ -159,7 +162,8 @@ impl HeavySauvolaProcessor {
             });
 
         // Run inference
-        let img_value = Value::from_array(img_array)?;
+        let img_value = Value::from_array(img_array)
+            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?;
         let inputs = ort::inputs!["img01_inp" => img_value];
         let outputs = self.session.run(inputs)?;
 
@@ -230,7 +234,13 @@ pub fn binarize_image(
     #[cfg(feature = "debug-logging")]
     crate::streamline::log_debug_message(&format!(
         "[Binarization] Input: {}x{} RGB ({} bytes), heavy_duty={}, fixed_threshold={}, invert_input={}, invert_output={}",
-        width, height, image.len(), options.use_heavy_duty, options.use_fixed_threshold, options.invert_input, options.invert
+        width,
+        height,
+        image.len(),
+        options.use_heavy_duty,
+        options.use_fixed_threshold,
+        options.invert_input,
+        options.invert
     ));
 
     let bin = binarize_image_raw(image, width, height, options);
@@ -929,17 +939,11 @@ mod tests {
 
     #[test]
     fn apply_threshold_sets_expected_binary_values() {
-        let gray = vec![
-            0u8, 100, 200, 255,
-            50, 150, 151, 149,
-        ];
+        let gray = vec![0u8, 100, 200, 255, 50, 150, 151, 149];
         let mut bin = vec![0u8; gray.len()];
 
         apply_threshold(&gray, 150, &mut bin, 4, 2);
 
-        assert_eq!(bin, vec![
-            0, 0, 255, 255,
-            0, 0, 255, 0,
-        ]);
+        assert_eq!(bin, vec![0, 0, 255, 255, 0, 0, 255, 0,]);
     }
 }

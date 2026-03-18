@@ -1,4 +1,4 @@
-﻿//! A module for accumulating concurrently processed pages and assembling them into a final PDF.
+//! A module for accumulating concurrently processed pages and assembling them into a final PDF.
 //!
 //! This provides two main mechanisms:
 //! 1. `PageAccumulator`: A thread-safe collector that gathers `Page` objects from
@@ -228,34 +228,38 @@ impl PageAccumulator {
     /// Estimate memory usage of a page in bytes
     fn estimate_page_memory_usage(&self, page: &Page) -> u64 {
         let mut total = 0u64;
-        
+
         // Base page struct fields
         total += std::mem::size_of::<Page>() as u64;
-        
+
         // Elements
         total += (std::mem::size_of::<ContentElement>() as u64) * page.elements.len() as u64;
         for element in &page.elements {
             match &element.content {
                 ContentType::EncodedImage { data, .. } => {
                     total += data.len() as u64;
-                },
-                ContentType::Jbig2ImageWithGlobals { page_data, global_data, .. } => {
+                }
+                ContentType::Jbig2ImageWithGlobals {
+                    page_data,
+                    global_data,
+                    ..
+                } => {
                     total += page_data.len() as u64;
                     total += global_data.len() as u64;
                 }
             }
         }
-        
+
         // HOCR text
         if let Some(ref text) = page.hocr_text {
             total += text.len() as u64;
         }
-        
+
         // Binarized data
         if let Some(ref binarized) = page.binarized {
             total += binarized.len() as u64;
         }
-        
+
         total
     }
 
@@ -270,12 +274,15 @@ impl PageAccumulator {
     pub fn add_page(&self, page_index: usize, page: Page) -> bool {
         // Estimate memory usage before inserting
         let page_memory = self.estimate_page_memory_usage(&page);
-        let old_memory = self.approx_memory_used.load(std::sync::atomic::Ordering::Relaxed);
+        let old_memory = self
+            .approx_memory_used
+            .load(std::sync::atomic::Ordering::Relaxed);
         let new_memory = old_memory + page_memory;
-        
+
         // Update the accumulator's memory tracking
-        self.approx_memory_used.store(new_memory, std::sync::atomic::Ordering::Relaxed);
-        
+        self.approx_memory_used
+            .store(new_memory, std::sync::atomic::Ordering::Relaxed);
+
         // Update the global memory counter
         TOTAL_ACCUMULATED_MEMORY.fetch_add(page_memory, std::sync::atomic::Ordering::Relaxed);
 
@@ -309,7 +316,8 @@ impl PageAccumulator {
 
     /// Get approximate memory usage in bytes
     pub fn get_approx_memory_usage(&self) -> u64 {
-        self.approx_memory_used.load(std::sync::atomic::Ordering::Relaxed)
+        self.approx_memory_used
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Check if memory usage is approaching safe limits
@@ -518,6 +526,20 @@ impl StreamingPdfBuilder {
             let xobject_id = self.add_content_to_pdf(&element.content, &mut xobject_dict)?;
             xobject_dict.set::<&str, _>(xobject_name.as_ref(), Object::Reference(xobject_id));
 
+            #[cfg(feature = "debug-logging")]
+            crate::debug_println!(
+                "PDF ASSEMBLY: page {} xobject {} -> obj {:?}, element rect ({:.1},{:.1},{:.1},{:.1}), content {}x{}",
+                page.index,
+                xobject_name,
+                xobject_id,
+                element.x,
+                element.y,
+                element.width,
+                element.height,
+                element.content.width(),
+                element.content.height()
+            );
+
             // Add drawing operation
             operations.push(Operation::new("q", vec![])); // Save graphics state
 
@@ -558,6 +580,17 @@ impl StreamingPdfBuilder {
                 "Do",
                 vec![Object::Name(xobject_name.as_bytes().to_vec())],
             ));
+
+            #[cfg(feature = "debug-logging")]
+            crate::debug_println!(
+                "PDF ASSEMBLY: page {} issued Do for {} at pdf ({:.1},{:.1}) size {:.1}x{:.1}",
+                page.index,
+                xobject_name,
+                element.x,
+                pdf_y,
+                element.width,
+                element.height
+            );
             operations.push(Operation::new("Q", vec![])); // Restore graphics state
         }
 
@@ -586,10 +619,10 @@ impl StreamingPdfBuilder {
         page_dict.set(
             "MediaBox",
             Object::Array(vec![
-                0.into(),              // lower-left x
-                0.into(),              // lower-left y
-                page.width.into(),     // upper-right x
-                page.height.into(),    // upper-right y
+                0.into(),           // lower-left x
+                0.into(),           // lower-left y
+                page.width.into(),  // upper-right x
+                page.height.into(), // upper-right y
             ]),
         );
 
@@ -691,10 +724,15 @@ impl StreamingPdfBuilder {
                         // Interpolation should be disabled for 1-bit bilevel images to avoid artifacts
                         dict.set("Interpolate", false);
                         dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
-                        // Decode array: map 0â†’white, 1â†’black to match encoder output
-                        dict.set("Decode", vec![1.into(), 0.into()]);
                         // JBIG2 is already compressed, store raw bytes without re-encoding
                         let stream = Stream::new(dict, data.to_vec());
+                        #[cfg(feature = "debug-logging")]
+                        crate::debug_println!(
+                            "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, {} bytes, no globals",
+                            pixel_width,
+                            pixel_height,
+                            data.len()
+                        );
                         return Ok(self.doc.add_object(stream));
                     }
                     "ccitt" | "ccitt4" => {
@@ -766,10 +804,14 @@ impl StreamingPdfBuilder {
                 let global_id = match self.global_resources.entry(global_bytes.clone()) {
                     Entry::Occupied(existing) => *existing.get(),
                     Entry::Vacant(vacant) => {
-                        let mut global_dict = Dictionary::new();
-                        global_dict.set("Type", Object::Name(b"JBIG2Globals".to_vec()));
-                        let global_stream = Stream::new(global_dict, global_bytes.clone());
+                        let global_stream = Stream::new(Dictionary::new(), global_bytes.clone());
                         let id = self.doc.add_object(global_stream);
+                        #[cfg(feature = "debug-logging")]
+                        crate::debug_println!(
+                            "PDF ASSEMBLY: created JBIG2 globals obj {:?}, {} bytes",
+                            id,
+                            global_bytes.len()
+                        );
                         vacant.insert(id);
                         id
                     }
@@ -783,8 +825,6 @@ impl StreamingPdfBuilder {
                 dict.set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
                 dict.set("BitsPerComponent", Object::Integer(1));
                 dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
-                // Decode array: map 0â†’white, 1â†’black to match encoder output
-                dict.set("Decode", vec![1.into(), 0.into()]);
 
                 // Add global dictionary reference if provided
                 {
@@ -795,6 +835,15 @@ impl StreamingPdfBuilder {
 
                 // JBIG2 is already compressed, store raw bytes without re-encoding
                 let stream = Stream::new(dict, page_data.to_vec());
+                #[cfg(feature = "debug-logging")]
+                crate::debug_println!(
+                    "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, page {} bytes, globals obj {:?} ({} bytes)",
+                    pixel_width,
+                    pixel_height,
+                    page_data.len(),
+                    global_id,
+                    global_data.len()
+                );
                 Ok(self.doc.add_object(stream))
             }
         }
@@ -834,10 +883,10 @@ impl StreamingPdfBuilder {
         };
 
         // Begin text object with proper text state reset
-        operations.push(Operation::new("BT", vec![]));              // Begin text
+        operations.push(Operation::new("BT", vec![])); // Begin text
         operations.push(Operation::new("Tr", vec![Object::Integer(3)])); // Invisible text
-        operations.push(Operation::new("Tc", vec![Object::Real(0.0)]));  // Zero character spacing
-        operations.push(Operation::new("Tw", vec![Object::Real(0.0)]));  // Zero word spacing
+        operations.push(Operation::new("Tc", vec![Object::Real(0.0)])); // Zero character spacing
+        operations.push(Operation::new("Tw", vec![Object::Real(0.0)])); // Zero word spacing
         operations.push(Operation::new("Tz", vec![Object::Real(100.0)])); // 100% horizontal scale (no stretch)
         operations.push(Operation::new(
             "Tf",
@@ -856,7 +905,7 @@ impl StreamingPdfBuilder {
 
             // Position text at line coordinates (PDF coordinates are bottom-left origin)
             let y_pdf = page_height - line.baseline; // Convert baseline to PDF coordinate system
-            let font_scale = line.height.max(1.0);   // Use line height as font scale
+            let font_scale = line.height.max(1.0); // Use line height as font scale
 
             // Set text matrix for the entire line
             operations.push(Operation::new(
@@ -864,7 +913,7 @@ impl StreamingPdfBuilder {
                 vec![
                     Object::Real(font_scale), // a: horizontal scale
                     Object::Real(0.0),        // b: horizontal skew
-                    Object::Real(0.0),        // c: vertical skew  
+                    Object::Real(0.0),        // c: vertical skew
                     Object::Real(font_scale), // d: vertical scale
                     Object::Real(line.x),     // e: x position
                     Object::Real(y_pdf),      // f: y position (baseline)
@@ -900,53 +949,69 @@ impl StreamingPdfBuilder {
     fn create_pdfa_metadata(&mut self) -> Result<()> {
         // Set PDF version first, before any other operations
         self.doc.version = "1.4".to_string();
-        
+
         // Prepare OutputIntent for PDF/A-1B
         let output_intent = Dictionary::from_iter([
             ("Type", Object::Name(b"OutputIntent".to_vec())),
             ("S", Object::Name(b"GTS_PDFA1".to_vec())),
-            ("OutputConditionIdentifier", Object::string_literal("sRGB IEC61966-2.1")),
+            (
+                "OutputConditionIdentifier",
+                Object::string_literal("sRGB IEC61966-2.1"),
+            ),
             ("Info", Object::string_literal("sRGB IEC61966-2.1")),
-            ("OutputCondition", Object::string_literal("sRGB IEC61966-2.1")),
-            ("RegistryName", Object::string_literal("http://www.color.org")),
+            (
+                "OutputCondition",
+                Object::string_literal("sRGB IEC61966-2.1"),
+            ),
+            (
+                "RegistryName",
+                Object::string_literal("http://www.color.org"),
+            ),
         ]);
-        
+
         // Add the output intent to the document
         let output_intent_id = self.doc.add_object(output_intent);
-        
+
         // Now get the catalog and update it
         let catalog = self.doc.catalog_mut()?;
-        catalog.set("OutputIntents", Object::Array(vec![Object::Reference(output_intent_id)]));
-        
+        catalog.set(
+            "OutputIntents",
+            Object::Array(vec![Object::Reference(output_intent_id)]),
+        );
+
         // Mark document as tagged PDF (required for PDF/UA and some PDF/A levels)
         catalog.set(
             "MarkInfo",
-            Object::Dictionary(Dictionary::from_iter([
-                ("Marked", Object::Boolean(true)),
-            ]))
+            Object::Dictionary(Dictionary::from_iter([("Marked", Object::Boolean(true))])),
         );
-        
+
         // Prepare document information
         let mut info = Dictionary::new();
         info.set("Producer", Object::string_literal("Lege PDF Generator"));
         info.set("Creator", Object::string_literal("Lege"));
-        info.set("CreationDate", Object::string_literal(chrono::Local::now().to_rfc3339()));
-        info.set("ModDate", Object::string_literal(chrono::Local::now().to_rfc3339()));
+        info.set(
+            "CreationDate",
+            Object::string_literal(chrono::Local::now().to_rfc3339()),
+        );
+        info.set(
+            "ModDate",
+            Object::string_literal(chrono::Local::now().to_rfc3339()),
+        );
         info.set("Title", Object::string_literal("Document"));
         info.set("Author", Object::string_literal("Lege"));
         info.set("Subject", Object::string_literal("PDF/A Document"));
         info.set("Keywords", Object::string_literal("PDF/A-1b"));
         info.set("Trapped", Object::Name(b"False".to_vec()));
-        
+
         // Add info dictionary to document
         let info_id = self.doc.add_object(info);
         self.doc.trailer.set("Info", Object::Reference(info_id));
-        
+
         // Ensure all fonts are embedded
         if let Some(ref mut _font_cache) = self.unicode_font {
             self.ensure_unicode_font()?;
         }
-        
+
         Ok(())
     }
 
@@ -959,7 +1024,10 @@ impl StreamingPdfBuilder {
         // Prepare PDF/A if OCR content is present
         if has_ocr_content {
             if let Err(e) = self.create_pdfa_metadata() {
-                log::warn!("Failed to create PDF/A metadata: {}. Falling back to standard PDF.", e);
+                log::warn!(
+                    "Failed to create PDF/A metadata: {}. Falling back to standard PDF.",
+                    e
+                );
             }
         }
 
@@ -1045,7 +1113,6 @@ pub struct HocrLine {
     pub raw_text: Option<String>,
 }
 
-
 /// The main assembly function that creates the final PDF from a list of pages.
 ///
 /// It decides whether to build the PDF entirely in memory or to use the
@@ -1107,22 +1174,36 @@ pub fn assemble_pdf(
         for (j, element) in page.elements.iter().enumerate() {
             crate::debug_println!(
                 "PDF ASSEMBLY: Page {} Element {}: position ({:.1},{:.1}) size {}x{}, content {}x{}",
-                i, j,
-                element.x, element.y,
-                element.width, element.height,
-                element.content.width(), element.content.height()
+                i,
+                j,
+                element.x,
+                element.y,
+                element.width,
+                element.height,
+                element.content.width(),
+                element.content.height()
             );
             match &element.content {
                 ContentType::EncodedImage { data, format, .. } => {
                     crate::debug_println!(
                         "PDF ASSEMBLY: Page {} Element {}: {} format, {} bytes",
-                        i, j, format, data.len()
+                        i,
+                        j,
+                        format,
+                        data.len()
                     );
                 }
-                ContentType::Jbig2ImageWithGlobals { page_data, global_data, .. } => {
+                ContentType::Jbig2ImageWithGlobals {
+                    page_data,
+                    global_data,
+                    ..
+                } => {
                     crate::debug_println!(
                         "PDF ASSEMBLY: Page {} Element {}: JBIG2 with globals, page {} bytes, global {} bytes",
-                        i, j, page_data.len(), global_data.len()
+                        i,
+                        j,
+                        page_data.len(),
+                        global_data.len()
                     );
                 }
             }
@@ -1348,7 +1429,7 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
             let l_area = (lx2 - lx1).max(0.0) * (ly2 - ly1).max(0.0);
             let mut best_idx: Option<usize> = None;
             let mut best_score: f32 = 0.0;
-            
+
             // First try to find a raw line that matches our line's bounding box
             for (i, (rx1, ry1, rx2, ry2, _)) in raw_lines.iter().enumerate() {
                 let ix = (lx2.min(*rx2) - lx1.max(*rx1)).max(0.0);
@@ -1360,7 +1441,7 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
                     best_idx = Some(i);
                 }
             }
-            
+
             // If we found a good match, use that raw text
             if let Some(i) = best_idx.take() {
                 if best_score > 0.2 {
@@ -1404,7 +1485,8 @@ mod tests {
         assert_eq!(snapshot_indices, vec![0, 1, 2, 3, 4, 5]);
 
         // Consuming into_pages returns ordered pages as well
-        let consumed_indices: Vec<usize> = acc.clone().into_pages().iter().map(|p| p.index).collect();
+        let consumed_indices: Vec<usize> =
+            acc.clone().into_pages().iter().map(|p| p.index).collect();
         assert_eq!(consumed_indices, vec![0, 1, 2, 3, 4, 5]);
     }
 }
@@ -1517,8 +1599,6 @@ fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
     lines
 }
 
-
-
 // Remove adjacent repeated words introduced by tiling overlaps (same text, high vertical
 // overlap, and small horizontal gap). Operates per-line to avoid cross-line removals.
 fn dedup_adjacent_repeats(lines: &mut Vec<HocrLine>) {
@@ -1531,7 +1611,8 @@ fn dedup_adjacent_repeats(lines: &mut Vec<HocrLine>) {
             if let Some(prev) = cleaned.last() {
                 let same_text = prev.text.trim() == w.text.trim();
                 let gap = w.x - (prev.x + prev.width);
-                let v_overlap = ((prev.y + prev.height).min(w.y + w.height) - prev.y.max(w.y)).max(0.0);
+                let v_overlap =
+                    ((prev.y + prev.height).min(w.y + w.height) - prev.y.max(w.y)).max(0.0);
                 let v_overlap_ratio = v_overlap / prev.height.max(w.height).max(1.0);
                 if same_text && gap < line.height * 0.25 && v_overlap_ratio > 0.5 {
                     // Skip duplicate

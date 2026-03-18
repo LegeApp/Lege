@@ -1,15 +1,15 @@
-use std::collections::{VecDeque, HashMap};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use flume::{Sender, Receiver};
-use tokio::sync::{broadcast, Notify};
 use crate::ShutdownSignal;
+use anyhow::{Context, Result};
+use flume::{Receiver, Sender};
+use tokio::sync::{Notify, broadcast};
 
 /// Detailed processing states that can be surfaced to both CLI and GUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,18 +19,34 @@ pub enum ProcessingStatus {
     /// Document is being assembled/written to disk.
     AssemblingOutput,
     /// Processing finished successfully with a human readable message.
-    Complete { message: String },
+    Complete {
+        message: String,
+    },
     /// Processing failed with a captured error string.
-    Error { error: String },
+    Error {
+        error: String,
+    },
 
     // --- Special notifications ---
-    FootnotesDetected { message: String },
-    OcrLayerDetected { has_ocr: bool },
+    FootnotesDetected {
+        message: String,
+    },
+    OcrLayerDetected {
+        has_ocr: bool,
+    },
     MarginPass1Analyzing,
-    MarginAnalysisSummary { summary: String },
-    PdfAppend { current: usize, total: usize },
+    MarginAnalysisSummary {
+        summary: String,
+    },
+    PdfAppend {
+        current: usize,
+        total: usize,
+    },
     /// Same as PdfAppend but keeps the header stable for Margin Mode to avoid flicker
-    PdfAppendMargin { current: usize, total: usize },
+    PdfAppendMargin {
+        current: usize,
+        total: usize,
+    },
 
     // --- Progress variants for different modes ---
     LayoutProgress {
@@ -124,22 +140,49 @@ impl ProcessingStatus {
                 summary.clone(),
             ),
             Self::PdfAppend { current, total } => {
-                let pct = if *total > 0 { ((*current as f64 / *total as f64) * 100.0).round() as usize } else { 0 };
+                let pct = if *total > 0 {
+                    ((*current as f64 / *total as f64) * 100.0).round() as usize
+                } else {
+                    0
+                };
                 (
                     "[Encode]".to_string(),
-                    format!("\x1b[95mPage encoded\x1b[0m: \x1b[92m{}/{}\x1b[0m ({}%)", current, total, pct.min(100)),
+                    format!(
+                        "\x1b[95mPage encoded\x1b[0m: \x1b[92m{}/{}\x1b[0m ({}%)",
+                        current,
+                        total,
+                        pct.min(100)
+                    ),
                     String::new(),
                 )
             }
             Self::PdfAppendMargin { current, total } => {
-                let pct = if *total > 0 { ((*current as f64 / *total as f64) * 100.0).round() as usize } else { 0 };
+                let pct = if *total > 0 {
+                    ((*current as f64 / *total as f64) * 100.0).round() as usize
+                } else {
+                    0
+                };
                 (
                     "[Encode+Margin]".to_string(),
-                    format!("\x1b[95mPage encoded\x1b[0m: \x1b[92m{}/{}\x1b[0m ({}%)", current, total, pct.min(100)),
+                    format!(
+                        "\x1b[95mPage encoded\x1b[0m: \x1b[92m{}/{}\x1b[0m ({}%)",
+                        current,
+                        total,
+                        pct.min(100)
+                    ),
                     String::new(),
                 )
             }
-            Self::LayoutProgress { rendered, detected, encoded, deskewed, total, enable_layout_detection: _, enable_deskew, eta: _ } => {
+            Self::LayoutProgress {
+                rendered,
+                detected,
+                encoded,
+                deskewed,
+                total,
+                enable_layout_detection: _,
+                enable_deskew,
+                eta: _,
+            } => {
                 let total = *total;
                 let r = (*rendered).min(total);
                 let d = (*detected).min(total);
@@ -147,60 +190,110 @@ impl ProcessingStatus {
                 let ds = (*deskewed).min(total);
 
                 // Color codes for visual pleasure
-                let render_color = "\x1b[96m";   // Bright cyan for render
-                let detect_color = "\x1b[93m";   // Bright yellow for detect/infer
-                let encode_color = "\x1b[95m";   // Bright magenta for encode
-                let deskew_color = "\x1b[94m";   // Bright blue for deskew
+                let render_color = "\x1b[96m"; // Bright cyan for render
+                let detect_color = "\x1b[93m"; // Bright yellow for detect/infer
+                let encode_color = "\x1b[95m"; // Bright magenta for encode
+                let deskew_color = "\x1b[94m"; // Bright blue for deskew
                 let reset = "\x1b[0m";
 
                 let line1 = format!(
                     "{}Render{} {} {}/{} | {}Infer{} {} {}/{}",
-                    render_color, reset, mini_bar(r, total), r, total,
-                    detect_color, reset, mini_bar(d, total), d, total
+                    render_color,
+                    reset,
+                    mini_bar(r, total),
+                    r,
+                    total,
+                    detect_color,
+                    reset,
+                    mini_bar(d, total),
+                    d,
+                    total
                 );
 
                 let line2 = if *enable_deskew {
                     format!(
                         "{}Encode{} {} {}/{} | {}Deskew{} {} {}/{}",
-                        encode_color, reset, mini_bar(e, total), e, total,
-                        deskew_color, reset, mini_bar(ds, total), ds, total
+                        encode_color,
+                        reset,
+                        mini_bar(e, total),
+                        e,
+                        total,
+                        deskew_color,
+                        reset,
+                        mini_bar(ds, total),
+                        ds,
+                        total
                     )
                 } else {
                     format!(
                         "{}Encode{} {} {}/{}",
-                        encode_color, reset, mini_bar(e, total), e, total
+                        encode_color,
+                        reset,
+                        mini_bar(e, total),
+                        e,
+                        total
                     )
                 };
                 ("[Layout Mode]".to_string(), line1, line2)
             }
-            Self::NoLayoutProgress { rendered, encoded, deskewed, total, enable_deskew, eta: _ } => {
+            Self::NoLayoutProgress {
+                rendered,
+                encoded,
+                deskewed,
+                total,
+                enable_deskew,
+                eta: _,
+            } => {
                 let total = *total;
                 let r = (*rendered).min(total);
                 let e = (*encoded).min(total);
                 let ds = (*deskewed).min(total);
 
                 // Color codes for visual pleasure
-                let render_color = "\x1b[96m";   // Bright cyan for render
-                let encode_color = "\x1b[95m";   // Bright magenta for encode
-                let deskew_color = "\x1b[94m";   // Bright blue for deskew
+                let render_color = "\x1b[96m"; // Bright cyan for render
+                let encode_color = "\x1b[95m"; // Bright magenta for encode
+                let deskew_color = "\x1b[94m"; // Bright blue for deskew
                 let reset = "\x1b[0m";
 
                 let line1 = format!(
                     "{}Render{} {} {}/{} | {}Encode{} {} {}/{}",
-                    render_color, reset, mini_bar(r, total), r, total,
-                    encode_color, reset, mini_bar(e, total), e, total
+                    render_color,
+                    reset,
+                    mini_bar(r, total),
+                    r,
+                    total,
+                    encode_color,
+                    reset,
+                    mini_bar(e, total),
+                    e,
+                    total
                 );
 
                 let line2 = if *enable_deskew && ds > 0 {
-                    format!("{}Deskew{} {} {}/{}",
-                            deskew_color, reset, mini_bar(ds, total), ds, total)
+                    format!(
+                        "{}Deskew{} {} {}/{}",
+                        deskew_color,
+                        reset,
+                        mini_bar(ds, total),
+                        ds,
+                        total
+                    )
                 } else {
                     String::new() // Only show deskew line if deskew is enabled AND progress is happening
                 };
 
                 ("[No-Layout Mode]".to_string(), line1, line2)
             }
-            Self::MarginProgress { pass1_rendered, pass1_detected, pass2_processed, deskewed, total, enable_layout_detection, enable_deskew, eta: _ } => {
+            Self::MarginProgress {
+                pass1_rendered,
+                pass1_detected,
+                pass2_processed,
+                deskewed,
+                total,
+                enable_layout_detection,
+                enable_deskew,
+                eta: _,
+            } => {
                 let total = *total;
                 let r = (*pass1_rendered).min(total);
                 let d = (*pass1_detected).min(total);
@@ -210,19 +303,29 @@ impl ProcessingStatus {
                 if !enable_layout_detection {
                     // Margin no-layout mode: render + margin calculation (combined)
                     // For no-layout margin mode, margin calculation is integrated into rendering
-                    let render_color = "\x1b[96m";   // Bright cyan
-                    let deskew_color = "\x1b[94m";   // Bright blue for deskew
+                    let render_color = "\x1b[96m"; // Bright cyan
+                    let deskew_color = "\x1b[94m"; // Bright blue for deskew
                     let reset = "\x1b[0m";
 
                     let render_progress = r.min(total);
                     let line1 = format!(
                         "{}Render{} {} {}/{}",
-                        render_color, reset, mini_bar(render_progress, total), render_progress, total
+                        render_color,
+                        reset,
+                        mini_bar(render_progress, total),
+                        render_progress,
+                        total
                     );
 
                     let line2 = if *enable_deskew && ds > 0 {
-                        format!("{}Deskew{} {} {}/{}",
-                                deskew_color, reset, mini_bar(ds, total), ds, total)
+                        format!(
+                            "{}Deskew{} {} {}/{}",
+                            deskew_color,
+                            reset,
+                            mini_bar(ds, total),
+                            ds,
+                            total
+                        )
                     } else {
                         String::new() // Only show deskew line if deskew is enabled AND progress is happening
                     };
@@ -230,39 +333,62 @@ impl ProcessingStatus {
                 } else {
                     // Margin layout mode: render, inference, and separate margin calculation
                     // Color codes
-                    let render_color = "\x1b[96m";   // Bright cyan
-                    let detect_color = "\x1b[93m";   // Bright yellow
-                    let pass2_color = "\x1b[95m";    // Bright magenta
-                    let deskew_color = "\x1b[94m";   // Bright blue for deskew
+                    let render_color = "\x1b[96m"; // Bright cyan
+                    let detect_color = "\x1b[93m"; // Bright yellow
+                    let pass2_color = "\x1b[95m"; // Bright magenta
+                    let deskew_color = "\x1b[94m"; // Bright blue for deskew
                     let reset = "\x1b[0m";
 
                     let line1 = format!(
                         "{}Render{} {} {}/{} | {}Inference{} {} {}/{}",
-                        render_color, reset, mini_bar(r, total), r, total,
-                        detect_color, reset, mini_bar(d, total), d, total
+                        render_color,
+                        reset,
+                        mini_bar(r, total),
+                        r,
+                        total,
+                        detect_color,
+                        reset,
+                        mini_bar(d, total),
+                        d,
+                        total
                     );
 
                     // Show either margin calculation or deskew progress on line 2
                     let line2 = if *enable_deskew && ds > 0 && ds > p2 {
                         // If deskew is enabled and progress is ahead of pass2, show deskew
-                        format!("{}Deskew{} {} {}/{}",
-                                deskew_color, reset, mini_bar(ds, total), ds, total)
+                        format!(
+                            "{}Deskew{} {} {}/{}",
+                            deskew_color,
+                            reset,
+                            mini_bar(ds, total),
+                            ds,
+                            total
+                        )
                     } else if p2 > 0 {
                         // Otherwise show pass2/margin calculation
                         let stage_label = "Pass 2";
                         let stage_progress = p2.min(total);
-                        format!("{}{}{} {} {}/{}",
-                                pass2_color, stage_label, reset,
-                                mini_bar(stage_progress, total),
-                                stage_progress, total)
+                        format!(
+                            "{}{}{} {} {}/{}",
+                            pass2_color,
+                            stage_label,
+                            reset,
+                            mini_bar(stage_progress, total),
+                            stage_progress,
+                            total
+                        )
                     } else {
                         // Show margin calc as before
                         let stage1 = r.min(d);
                         let stage_progress = stage1.min(total);
-                        format!("{}Margin Calc{} {} {}/{}",
-                                "\x1b[94m", reset,
-                                mini_bar(stage_progress, total),
-                                stage_progress, total)
+                        format!(
+                            "{}Margin Calc{} {} {}/{}",
+                            "\x1b[94m",
+                            reset,
+                            mini_bar(stage_progress, total),
+                            stage_progress,
+                            total
+                        )
                     };
 
                     ("[Margin Mode]".to_string(), line1, line2)
@@ -327,12 +453,19 @@ impl ProcessingStatus {
             // PdfAppend and PdfAppendMargin: These "page completed" messages are
             // suppressed to avoid flickering and align with the 3-part progress display pattern
             // (render/inference/encoding). Return empty strings to suppress them.
-            Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => (
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-            Self::LayoutProgress { rendered, detected, encoded, deskewed, total, enable_layout_detection: _, enable_deskew, eta: _ } => {
+            Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => {
+                (String::new(), String::new(), String::new())
+            }
+            Self::LayoutProgress {
+                rendered,
+                detected,
+                encoded,
+                deskewed,
+                total,
+                enable_layout_detection: _,
+                enable_deskew,
+                eta: _,
+            } => {
                 let total = *total;
                 let r = (*rendered).min(total);
                 let d = (*detected).min(total);
@@ -341,25 +474,37 @@ impl ProcessingStatus {
 
                 let line1 = format!(
                     "Render {} {}/{} | Infer {} {}/{}",
-                    mini_bar(r, total), r, total,
-                    mini_bar(d, total), d, total
+                    mini_bar(r, total),
+                    r,
+                    total,
+                    mini_bar(d, total),
+                    d,
+                    total
                 );
 
                 let line2 = if *enable_deskew {
                     format!(
                         "Encode {} {}/{} | Deskew {} {}/{}",
-                        mini_bar(e, total), e, total,
-                        mini_bar(ds, total), ds, total
+                        mini_bar(e, total),
+                        e,
+                        total,
+                        mini_bar(ds, total),
+                        ds,
+                        total
                     )
                 } else {
-                    format!(
-                        "Encode {} {}/{}",
-                        mini_bar(e, total), e, total
-                    )
+                    format!("Encode {} {}/{}", mini_bar(e, total), e, total)
                 };
                 ("[Layout Mode]".to_string(), line1, line2)
             }
-            Self::NoLayoutProgress { rendered, encoded, deskewed, total, enable_deskew, eta: _ } => {
+            Self::NoLayoutProgress {
+                rendered,
+                encoded,
+                deskewed,
+                total,
+                enable_deskew,
+                eta: _,
+            } => {
                 let total = *total;
                 let r = (*rendered).min(total);
                 let e = (*encoded).min(total);
@@ -367,20 +512,32 @@ impl ProcessingStatus {
 
                 let line1 = format!(
                     "Render {} {}/{} | Encode {} {}/{}",
-                    mini_bar(r, total), r, total,
-                    mini_bar(e, total), e, total
+                    mini_bar(r, total),
+                    r,
+                    total,
+                    mini_bar(e, total),
+                    e,
+                    total
                 );
 
                 let line2 = if *enable_deskew && ds > 0 {
-                    format!("Deskew {} {}/{}",
-                            mini_bar(ds, total), ds, total)
+                    format!("Deskew {} {}/{}", mini_bar(ds, total), ds, total)
                 } else {
                     String::new() // Only show deskew line if deskew is enabled AND progress is happening
                 };
 
                 ("[No-Layout Mode]".to_string(), line1, line2)
             }
-            Self::MarginProgress { pass1_rendered, pass1_detected, pass2_processed, deskewed, total, enable_layout_detection, enable_deskew, eta: _ } => {
+            Self::MarginProgress {
+                pass1_rendered,
+                pass1_detected,
+                pass2_processed,
+                deskewed,
+                total,
+                enable_layout_detection,
+                enable_deskew,
+                eta: _,
+            } => {
                 let total = *total;
                 let r = (*pass1_rendered).min(total);
                 let d = (*pass1_detected).min(total);
@@ -393,12 +550,13 @@ impl ProcessingStatus {
                     let render_progress = r.min(total);
                     let line1 = format!(
                         "Render {} {}/{}",
-                        mini_bar(render_progress, total), render_progress, total
+                        mini_bar(render_progress, total),
+                        render_progress,
+                        total
                     );
 
                     let line2 = if *enable_deskew && ds > 0 {
-                        format!("Deskew {} {}/{}",
-                                mini_bar(ds, total), ds, total)
+                        format!("Deskew {} {}/{}", mini_bar(ds, total), ds, total)
                     } else {
                         String::new() // Only show deskew line if deskew is enabled AND progress is happening
                     };
@@ -407,30 +565,39 @@ impl ProcessingStatus {
                     // Margin layout mode: render, inference, and separate margin calculation
                     let line1 = format!(
                         "Render {} {}/{} | Inference {} {}/{}",
-                        mini_bar(r, total), r, total,
-                        mini_bar(d, total), d, total
+                        mini_bar(r, total),
+                        r,
+                        total,
+                        mini_bar(d, total),
+                        d,
+                        total
                     );
 
                     // Show either margin calculation or deskew progress on line 2
                     let line2 = if *enable_deskew && ds > 0 && ds > p2 {
                         // If deskew is enabled and progress is ahead of pass2, show deskew
-                        format!("Deskew {} {}/{}",
-                                mini_bar(ds, total), ds, total)
+                        format!("Deskew {} {}/{}", mini_bar(ds, total), ds, total)
                     } else if p2 > 0 {
                         // Otherwise show pass2/margin calculation
                         let stage_label = "Pass 2";
                         let stage_progress = p2.min(total);
-                        format!("{} {} {}/{}",
-                                stage_label,
-                                mini_bar(stage_progress, total),
-                                stage_progress, total)
+                        format!(
+                            "{} {} {}/{}",
+                            stage_label,
+                            mini_bar(stage_progress, total),
+                            stage_progress,
+                            total
+                        )
                     } else {
                         // Show margin calc as before
                         let stage1 = r.min(d);
                         let stage_progress = stage1.min(total);
-                        format!("Margin Calc {} {}/{}",
-                                mini_bar(stage_progress, total),
-                                stage_progress, total)
+                        format!(
+                            "Margin Calc {} {}/{}",
+                            mini_bar(stage_progress, total),
+                            stage_progress,
+                            total
+                        )
                     };
 
                     ("[Margin Mode]".to_string(), line1, line2)
@@ -459,9 +626,21 @@ fn mini_bar(done: usize, total: usize) -> String {
 /// Broadcast events emitted by the processing pipeline to both CLI and GUI.
 #[derive(Debug, Clone)]
 pub enum ProgressUpdate {
-    Status { task_id: u64, status: ProcessingStatus, metrics: Option<ProgressMetrics> },
-    Completed { task_id: u64, message: String, metrics: Option<ProgressMetrics> },
-    Error { task_id: u64, error: String, metrics: Option<ProgressMetrics> },
+    Status {
+        task_id: u64,
+        status: ProcessingStatus,
+        metrics: Option<ProgressMetrics>,
+    },
+    Completed {
+        task_id: u64,
+        message: String,
+        metrics: Option<ProgressMetrics>,
+    },
+    Error {
+        task_id: u64,
+        error: String,
+        metrics: Option<ProgressMetrics>,
+    },
 }
 
 /// Unified numeric snapshot so GUI and CLI can render without parsing strings.
@@ -497,7 +676,13 @@ impl Default for ProgressMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ProgressMode { Unknown, NoLayout, Layout, Margin, HeavySequential }
+pub enum ProgressMode {
+    Unknown,
+    NoLayout,
+    Layout,
+    Margin,
+    HeavySequential,
+}
 
 /// Unified numeric snapshot so GUI and CLI can render without parsing strings.
 pub type ProcessingMetrics = ProgressMetrics;
@@ -539,7 +724,9 @@ impl ProgressTracker {
         }
     }
 
-    pub fn task_id(&self) -> u64 { self.task_id }
+    pub fn task_id(&self) -> u64 {
+        self.task_id
+    }
 
     pub fn set_total_pages(&self, total: usize) {
         let mut state = self.state.lock().unwrap();
@@ -560,7 +747,7 @@ impl ProgressTracker {
         let mut state = self.state.lock().unwrap();
         state.metrics.is_djvu = is_djvu;
     }
-    
+
     pub fn set_heavy_sequential_mode(&self) {
         let mut state = self.state.lock().unwrap();
         state.metrics.mode = ProgressMode::HeavySequential;
@@ -583,11 +770,20 @@ impl ProgressTracker {
             ProgressMode::Layout | ProgressMode::Margin => {
                 if state.metrics.enable_deskew {
                     // In layout/margin mode with deskew enabled, ETA should consider all steps
-                    state.metrics.rendered.min(state.metrics.detected).min(state.metrics.encoded).min(state.metrics.deskewed)
+                    state
+                        .metrics
+                        .rendered
+                        .min(state.metrics.detected)
+                        .min(state.metrics.encoded)
+                        .min(state.metrics.deskewed)
                 } else {
-                    state.metrics.rendered.min(state.metrics.detected).min(state.metrics.encoded)
+                    state
+                        .metrics
+                        .rendered
+                        .min(state.metrics.detected)
+                        .min(state.metrics.encoded)
                 }
-            },
+            }
             ProgressMode::NoLayout | ProgressMode::HeavySequential => {
                 if state.metrics.enable_deskew {
                     // In no-layout mode with deskew enabled, consider both encoding and deskewing
@@ -595,14 +791,14 @@ impl ProgressTracker {
                 } else {
                     state.metrics.encoded
                 }
-            },
+            }
             ProgressMode::Unknown => {
                 if state.metrics.enable_deskew {
                     state.metrics.encoded.min(state.metrics.deskewed)
                 } else {
                     state.metrics.encoded
                 }
-            },
+            }
         } as usize;
         let total = state.metrics.pages_total as usize;
 
@@ -613,9 +809,13 @@ impl ProgressTracker {
 
         if let Some(start) = state.start_time {
             let elapsed = start.elapsed();
-            if elapsed < Duration::from_millis(800) { return; }
+            if elapsed < Duration::from_millis(800) {
+                return;
+            }
             let remaining = total.saturating_sub(completed);
-            if remaining == 0 { return; }
+            if remaining == 0 {
+                return;
+            }
 
             let secs_per_page = elapsed.as_secs_f64() / completed as f64;
             let eta_secs = secs_per_page * remaining as f64;
@@ -626,7 +826,7 @@ impl ProgressTracker {
     fn should_send_update(&self, state: &TrackerState) -> bool {
         let throttle_ms = self.update_throttle_ms.load(Ordering::Relaxed);
         let min_duration = Duration::from_millis(throttle_ms as u64);
-        
+
         match state.last_update {
             Some(last) => last.elapsed() >= min_duration,
             None => true, // Always send first update
@@ -639,7 +839,9 @@ impl ProgressTracker {
         if total == 0 {
             return ProcessingStatus::Initializing;
         }
-        let eta = m.eta_seconds.map(|s| human_duration(Duration::from_secs(s as u64)));
+        let eta = m
+            .eta_seconds
+            .map(|s| human_duration(Duration::from_secs(s as u64)));
 
         match m.mode {
             ProgressMode::NoLayout => ProcessingStatus::NoLayoutProgress {
@@ -648,7 +850,7 @@ impl ProgressTracker {
                 deskewed: m.deskewed as usize,
                 total,
                 enable_deskew: m.enable_deskew,
-                eta
+                eta,
             },
             ProgressMode::Layout => ProcessingStatus::LayoutProgress {
                 rendered: m.rendered as usize,
@@ -658,7 +860,7 @@ impl ProgressTracker {
                 total,
                 enable_layout_detection: m.enable_layout_detection,
                 enable_deskew: m.enable_deskew,
-                eta
+                eta,
             },
             ProgressMode::Margin => ProcessingStatus::MarginProgress {
                 pass1_rendered: m.rendered as usize,
@@ -668,7 +870,7 @@ impl ProgressTracker {
                 total,
                 enable_layout_detection: m.enable_layout_detection,
                 enable_deskew: m.enable_deskew,
-                eta
+                eta,
             },
             ProgressMode::HeavySequential => ProcessingStatus::NoLayoutProgress {
                 rendered: m.rendered as usize,
@@ -676,7 +878,7 @@ impl ProgressTracker {
                 deskewed: m.deskewed as usize,
                 total,
                 enable_deskew: m.enable_deskew,
-                eta
+                eta,
             }, // Heavy sequential behaves like no-layout but with more consistent updates
             ProgressMode::Unknown => ProcessingStatus::Initializing,
         }
@@ -687,7 +889,14 @@ impl ProgressTracker {
         state.metrics
     }
 
-    pub fn publish_layout_progress(&self, rendered: usize, detected: usize, encoded: usize, deskewed: usize, total: usize) {
+    pub fn publish_layout_progress(
+        &self,
+        rendered: usize,
+        detected: usize,
+        encoded: usize,
+        deskewed: usize,
+        total: usize,
+    ) {
         let mut state = self.state.lock().unwrap();
 
         // Only update if values are actually different or if it's a significant change
@@ -707,17 +916,19 @@ impl ProgressTracker {
             state.metrics.rendered = state.metrics.rendered.min(state.metrics.detected);
         }
 
-    // Consider any stage starting as the beginning of work to improve ETA stability
-    self.ensure_started_nolock(&mut state, rendered > 0 || detected > 0 || encoded > 0 || deskewed > 0);
+        // Consider any stage starting as the beginning of work to improve ETA stability
+        self.ensure_started_nolock(
+            &mut state,
+            rendered > 0 || detected > 0 || encoded > 0 || deskewed > 0,
+        );
         self.compute_eta_nolock(&mut state);
 
         // Check if this is a meaningful progress update
-        let is_meaningful_change =
-            state.metrics.rendered != old_rendered ||
-            state.metrics.detected != old_detected ||
-            state.metrics.encoded != old_encoded ||
-            state.metrics.deskewed != old_deskewed ||
-            state.last_update.is_none(); // Always send first update
+        let is_meaningful_change = state.metrics.rendered != old_rendered
+            || state.metrics.detected != old_detected
+            || state.metrics.encoded != old_encoded
+            || state.metrics.deskewed != old_deskewed
+            || state.last_update.is_none(); // Always send first update
 
         if !is_meaningful_change {
             return; // Skip if no meaningful change
@@ -736,7 +947,7 @@ impl ProgressTracker {
         drop(state); // Release lock before sending
         self.send_update(status, metrics);
     }
-    
+
     pub fn publish_no_layout_progress(&self, processed: usize, deskewed: usize, total: usize) {
         let mut state = self.state.lock().unwrap();
 
@@ -756,10 +967,9 @@ impl ProgressTracker {
         self.compute_eta_nolock(&mut state);
 
         // Check if this is a meaningful progress update
-        let is_meaningful_change =
-            state.metrics.encoded != old_encoded ||
-            state.metrics.deskewed != old_deskewed ||
-            state.last_update.is_none(); // Always send first update
+        let is_meaningful_change = state.metrics.encoded != old_encoded
+            || state.metrics.deskewed != old_deskewed
+            || state.last_update.is_none(); // Always send first update
 
         if !is_meaningful_change {
             return; // Skip if no meaningful change
@@ -779,7 +989,14 @@ impl ProgressTracker {
         self.send_update(status, metrics);
     }
 
-    pub fn publish_margin_progress(&self, pass1_rendered: usize, pass1_detected: usize, pass2_processed: usize, deskewed: usize, total: usize) {
+    pub fn publish_margin_progress(
+        &self,
+        pass1_rendered: usize,
+        pass1_detected: usize,
+        pass2_processed: usize,
+        deskewed: usize,
+        total: usize,
+    ) {
         let mut state = self.state.lock().unwrap();
 
         // Only update if values are actually different
@@ -795,17 +1012,19 @@ impl ProgressTracker {
         state.metrics.encoded = pass2_processed as u32; // 'encoded' maps to pass2
         state.metrics.deskewed = deskewed as u32;
 
-    // Start timing as soon as we make visible progress in any pass
-    self.ensure_started_nolock(&mut state, pass1_rendered > 0 || pass1_detected > 0 || pass2_processed > 0 || deskewed > 0);
+        // Start timing as soon as we make visible progress in any pass
+        self.ensure_started_nolock(
+            &mut state,
+            pass1_rendered > 0 || pass1_detected > 0 || pass2_processed > 0 || deskewed > 0,
+        );
         self.compute_eta_nolock(&mut state);
 
         // Check if this is a meaningful progress update
-        let is_meaningful_change =
-            state.metrics.rendered != old_rendered ||
-            state.metrics.detected != old_detected ||
-            state.metrics.encoded != old_encoded ||
-            state.metrics.deskewed != old_deskewed ||
-            state.last_update.is_none(); // Always send first update
+        let is_meaningful_change = state.metrics.rendered != old_rendered
+            || state.metrics.detected != old_detected
+            || state.metrics.encoded != old_encoded
+            || state.metrics.deskewed != old_deskewed
+            || state.last_update.is_none(); // Always send first update
 
         if !is_meaningful_change {
             return; // Skip if no meaningful change
@@ -840,8 +1059,7 @@ impl ProgressTracker {
 
         // Check if this is a meaningful progress update
         let is_meaningful_change =
-            state.metrics.deskewed != old_deskewed ||
-            state.last_update.is_none(); // Always send first update
+            state.metrics.deskewed != old_deskewed || state.last_update.is_none(); // Always send first update
 
         if !is_meaningful_change {
             return; // Skip if no meaningful change
@@ -863,7 +1081,13 @@ impl ProgressTracker {
 
     /// Updates progress specifically for sequential or heavy processing modes like heavy sauvola
     /// where progress is more linear but potentially slower
-    pub fn publish_heavy_processing_progress(&self, current: usize, total: usize, processed_pages: Option<usize>, deskewed: Option<usize>) {
+    pub fn publish_heavy_processing_progress(
+        &self,
+        current: usize,
+        total: usize,
+        processed_pages: Option<usize>,
+        deskewed: Option<usize>,
+    ) {
         let mut state = self.state.lock().unwrap();
 
         // Update the main total
@@ -900,10 +1124,9 @@ impl ProgressTracker {
         // Check if this is a meaningful progress update
         let old_encoded = state.metrics.encoded;
         let old_deskewed = state.metrics.deskewed;
-        let is_meaningful_change =
-            state.metrics.encoded != old_encoded ||
-            state.metrics.deskewed != old_deskewed ||
-            state.last_update.is_none(); // Always send first update
+        let is_meaningful_change = state.metrics.encoded != old_encoded
+            || state.metrics.deskewed != old_deskewed
+            || state.last_update.is_none(); // Always send first update
 
         if !is_meaningful_change {
             return; // Skip if no meaningful change
@@ -929,21 +1152,25 @@ impl ProgressTracker {
         let metrics = self.current_metrics();
         self.send_update(status, metrics);
     }
-    
+
     fn send_update(&self, status: ProcessingStatus, metrics: ProgressMetrics) {
-        if self.is_done.load(Ordering::Relaxed) { return; }
+        if self.is_done.load(Ordering::Relaxed) {
+            return;
+        }
         // Use try_send: non-blocking. If the UI is completely frozen, we'd rather
         // drop an intermediate frame than block the processing thread.
         // For guaranteed delivery, use `sender.send_async(...)` in an async context.
-        let _ = self.sender.try_send(ProgressUpdate::Status { 
-            task_id: self.task_id, 
-            status, 
-            metrics: Some(metrics) 
+        let _ = self.sender.try_send(ProgressUpdate::Status {
+            task_id: self.task_id,
+            status,
+            metrics: Some(metrics),
         });
     }
 
     pub fn finish(&self, message: &str) {
-        if self.is_done.swap(true, Ordering::Relaxed) { return; }
+        if self.is_done.swap(true, Ordering::Relaxed) {
+            return;
+        }
 
         let metrics = {
             let mut state = self.state.lock().unwrap();
@@ -957,20 +1184,30 @@ impl ProgressTracker {
         };
 
         let message = message.to_string();
-        self.update(ProcessingStatus::Complete { message: message.clone() });
+        self.update(ProcessingStatus::Complete {
+            message: message.clone(),
+        });
         let _ = self.sender.send(ProgressUpdate::Completed {
-            task_id: self.task_id, message, metrics: Some(metrics)
+            task_id: self.task_id,
+            message,
+            metrics: Some(metrics),
         });
     }
-    
+
     pub fn finish_with_error(&self, error: anyhow::Error) {
-        if self.is_done.swap(true, Ordering::Relaxed) { return; }
-        
+        if self.is_done.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
         let metrics = self.state.lock().unwrap().metrics;
         let error_text = error.to_string();
-        self.update(ProcessingStatus::Error { error: error_text.clone() });
+        self.update(ProcessingStatus::Error {
+            error: error_text.clone(),
+        });
         let _ = self.sender.send(ProgressUpdate::Error {
-            task_id: self.task_id, error: error_text, metrics: Some(metrics)
+            task_id: self.task_id,
+            error: error_text,
+            metrics: Some(metrics),
         });
     }
 }
@@ -991,23 +1228,29 @@ impl ProgressManager {
         // Create an unbounded flume channel.
         // For backpressure, you could use `flume::bounded(256)`.
         let (sender, receiver) = flume::unbounded();
-        Self { sender, receiver, next_task_id: Arc::new(Mutex::new(1)) }
+        Self {
+            sender,
+            receiver,
+            next_task_id: Arc::new(Mutex::new(1)),
+        }
     }
 
     pub fn create_tracker(&self) -> ProgressTracker {
         let task_id = {
             let mut guard = self.next_task_id.lock().unwrap();
-            let current = *guard; *guard += 1; current
+            let current = *guard;
+            *guard += 1;
+            current
         };
-        
+
         // NO MORE `tokio::spawn` PER TRACKER!
         // The tracker is now a simple, lightweight struct.
         ProgressTracker::new(task_id, self.sender.clone())
     }
 
     // The GUI will call this once to get the receiver.
-    pub fn subscribe(&self) -> Receiver<ProgressUpdate> { 
-        self.receiver.clone() 
+    pub fn subscribe(&self) -> Receiver<ProgressUpdate> {
+        self.receiver.clone()
     }
 }
 
@@ -1047,7 +1290,9 @@ impl ProcessingJob {
             self.config,
             tracker.clone(),
             shutdown_rx,
-        ).await {
+        )
+        .await
+        {
             Ok(message) => tracker.finish(&message),
             Err(error) => tracker.finish_with_error(error),
         }
@@ -1094,7 +1339,8 @@ impl ProcessingQueue {
         let mut guard = self.queue.lock().expect("processing queue mutex poisoned");
         if let Some(pos) = guard.iter().position(|j| j.tracker.task_id() == task_id) {
             let job = guard.remove(pos).expect("queue removal failed");
-            job.tracker.finish_with_error(anyhow::anyhow!("Operation aborted"));
+            job.tracker
+                .finish_with_error(anyhow::anyhow!("Operation aborted"));
             true
         } else {
             false
@@ -1119,9 +1365,13 @@ impl ProcessingQueue {
 
 static PROGRESS_MANAGER: std::sync::OnceLock<ProgressManager> = std::sync::OnceLock::new();
 static PROCESSING_QUEUE: std::sync::OnceLock<Arc<ProcessingQueue>> = std::sync::OnceLock::new();
-static CANCEL_REGISTRY: std::sync::OnceLock<Mutex<HashMap<u64, broadcast::Sender<ShutdownSignal>>>> = std::sync::OnceLock::new();
+static CANCEL_REGISTRY: std::sync::OnceLock<
+    Mutex<HashMap<u64, broadcast::Sender<ShutdownSignal>>>,
+> = std::sync::OnceLock::new();
 
-pub fn get_progress_manager() -> &'static ProgressManager { PROGRESS_MANAGER.get_or_init(ProgressManager::new) }
+pub fn get_progress_manager() -> &'static ProgressManager {
+    PROGRESS_MANAGER.get_or_init(ProgressManager::new)
+}
 
 fn get_processing_queue() -> &'static Arc<ProcessingQueue> {
     PROCESSING_QUEUE.get_or_init(ProcessingQueue::new)
@@ -1133,13 +1383,17 @@ fn get_cancel_registry() -> &'static Mutex<HashMap<u64, broadcast::Sender<Shutdo
 
 /// Register a cancel sender for a running task so UI can request cancellation.
 pub fn register_cancel_sender(task_id: u64, sender: broadcast::Sender<ShutdownSignal>) {
-    let mut reg = get_cancel_registry().lock().expect("cancel registry poisoned");
+    let mut reg = get_cancel_registry()
+        .lock()
+        .expect("cancel registry poisoned");
     reg.insert(task_id, sender);
 }
 
 /// Clear the cancel sender registration once the task is done.
 pub fn clear_cancel_sender(task_id: u64) {
-    let mut reg = get_cancel_registry().lock().expect("cancel registry poisoned");
+    let mut reg = get_cancel_registry()
+        .lock()
+        .expect("cancel registry poisoned");
     reg.remove(&task_id);
 }
 
@@ -1150,7 +1404,9 @@ pub fn cancel_task(task_id: u64) -> bool {
     // We do this before checking the queue to handle the race where a job
     // transitions from queued->running between our checks
     let sent_signal = {
-        let reg = get_cancel_registry().lock().expect("cancel registry poisoned");
+        let reg = get_cancel_registry()
+            .lock()
+            .expect("cancel registry poisoned");
         if let Some(sender) = reg.get(&task_id) {
             let _ = sender.send(ShutdownSignal {
                 reason: crate::ShutdownReason::UserCancellation,
@@ -1250,20 +1506,29 @@ async fn process_file_with_tracker(
     let pipeline = crate::ProcessingPipeline::new(pdf_bytes, config.clone())?;
 
     let doc_pages = pipeline.get_page_count();
-    let intended_pages = config.page_range().map(|r| r.page_count()).unwrap_or(doc_pages);
+    let intended_pages = config
+        .page_range()
+        .map(|r| r.page_count())
+        .unwrap_or(doc_pages);
     let total_pages = intended_pages.min(doc_pages).max(1);
     tracker.set_total_pages(total_pages);
 
-    pipeline.process_document_dag(&output_path, &tracker, shutdown_rx, |_current, _total| {
-        // Progress is tracked via publish_*_progress methods, no need for callback updates
-    }).await?;
+    pipeline
+        .process_document_dag(&output_path, &tracker, shutdown_rx, |_current, _total| {
+            // Progress is tracked via publish_*_progress methods, no need for callback updates
+        })
+        .await?;
 
     // DJVU assembly can continue after page encoding has reached total; suppressing
     // a separate "finalizing" phase keeps progress aligned with the 3-stage model.
     if config.text_format() != "djvu" {
         tracker.update(ProcessingStatus::AssemblingOutput);
     }
-    Ok(format!("Successfully processed {} pages to {}", total_pages, output_path.display()))
+    Ok(format!(
+        "Successfully processed {} pages to {}",
+        total_pages,
+        output_path.display()
+    ))
 }
 
 fn human_duration(d: Duration) -> String {
@@ -1271,9 +1536,13 @@ fn human_duration(d: Duration) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;
-    if h > 0 { format!("{}h{:02}m{:02}s", h, m, s) }
-    else if m > 0 { format!("{:02}m{:02}s", m, s) }
-    else { format!("{:02}s", s) }
+    if h > 0 {
+        format!("{}h{:02}m{:02}s", h, m, s)
+    } else if m > 0 {
+        format!("{:02}m{:02}s", m, s)
+    } else {
+        format!("{:02}s", s)
+    }
 }
 
 // Perform unified dependency checks (pdfium presence heuristic, OCR if requested, DJVU runtime readiness if needed)
@@ -1311,7 +1580,10 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
     // DJVU preflight (native Rust encoder): validate runtime state/workdir
     if config.text_format() == "djvu" {
         let temp_dir = crate::app_dirs::djvu_base_dir();
-        let djvu_cfg = crate::djvu::DjvuConfig { work_dir: temp_dir, ..Default::default() };
+        let djvu_cfg = crate::djvu::DjvuConfig {
+            work_dir: temp_dir,
+            ..Default::default()
+        };
         match crate::djvu::DjvuOrchestrator::new(djvu_cfg) {
             Ok(orchestrator) => {
                 if let Err(e) = orchestrator.preflight_check(config.enable_ocr()) {

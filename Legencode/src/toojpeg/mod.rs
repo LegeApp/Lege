@@ -1,5 +1,5 @@
 //! TooJpeg JPEG encoder module
-//! 
+//!
 //! This module provides JPEG encoding functionality using the TooJpeg algorithm.
 
 // Re-export the main API from the TooJpeg-rust implementation

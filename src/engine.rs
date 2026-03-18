@@ -1,7 +1,7 @@
+use crate::nms::{Detection as NmsDetection, DetectionContext, two_pass_nms};
 use crate::text_loader::CLI_TEXT;
 #[allow(unused_imports)] // Protect debug macros from removal - used conditionally
 use crate::{debug_println, error_println, info_println};
-use crate::nms::{Detection as NmsDetection, DetectionContext, two_pass_nms};
 use anyhow::{Result, anyhow};
 use image::RgbImage;
 use log::info;
@@ -12,11 +12,9 @@ use ort::session::RunOptions;
 use ort::session::Session;
 use ort::session::SessionInputValue;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::tensor::TensorElementType;
-use ort::value::Value;
-use ort::value::ValueType;
-use std::fs::File;
+use ort::value::{TensorElementType, Value, ValueType};
 use std::cell::RefCell;
+use std::fs::File;
 #[cfg(feature = "debug-logging")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "debug-logging")]
@@ -54,7 +52,6 @@ pub struct Detection {
     pub bbox: [f32; 4], // [x1, y1, x2, y2]
     pub context: Option<DetectionContext>,
 }
-
 
 #[derive(Debug, Clone)]
 /// Configuration for PaddleX engine
@@ -106,7 +103,7 @@ struct PaddleXPreprocessedMetadata {
 pub struct PaddleXEngine {
     session: Session,
     config: PaddleXConfig,
-    output_index: usize,      // The index for the Bounding Boxes (float32)
+    output_index: usize,        // The index for the Bounding Boxes (float32)
     count_index: Option<usize>, // The index for the Box Counts (int32) - NEW
     provider_name: String,
 }
@@ -128,9 +125,7 @@ impl PaddleXEngine {
         static ONNX_INIT: OnceCell<()> = OnceCell::new();
         ONNX_INIT.get_or_try_init(|| -> Result<()> {
             debug_until_first_detection!("PaddleXEngine::new: initializing ONNX Runtime");
-            ort::init()
-                .with_name("lege")
-                .commit();
+            ort::init().with_name("lege").commit();
             debug_until_first_detection!("PaddleXEngine::new: ONNX Runtime initialized");
             Ok(())
         })?;
@@ -138,29 +133,31 @@ impl PaddleXEngine {
         debug_until_first_detection!(
             "PaddleXEngine::new: session built with provider={}, outputs={}",
             provider_name,
-            session.outputs.len()
+            session.outputs().len()
         );
-        for (i, output) in session.outputs.iter().enumerate() {
+        for (i, output) in session.outputs().iter().enumerate() {
             debug_until_first_detection!(
                 "PaddleXEngine::new: output[{}] name='{}' type={:?}",
                 i,
-                output.name,
-                output.output_type
+                output.name(),
+                output.dtype()
             );
         }
-        
-        let is_box_tensor_type = |o: &ort::session::Output| {
+
+        let is_box_tensor_type = |o: &ort::value::Outlet| {
             matches!(
-                o.output_type,
+                o.dtype(),
                 ValueType::Tensor {
-                    ty: TensorElementType::Float32 | TensorElementType::Int8 | TensorElementType::Uint8,
+                    ty: TensorElementType::Float32
+                        | TensorElementType::Int8
+                        | TensorElementType::Uint8,
                     ..
                 }
             )
         };
-        let is_count_tensor_type = |o: &ort::session::Output| {
+        let is_count_tensor_type = |o: &ort::value::Outlet| {
             matches!(
-                o.output_type,
+                o.dtype(),
                 ValueType::Tensor {
                     ty: TensorElementType::Int32,
                     ..
@@ -170,46 +167,45 @@ impl PaddleXEngine {
 
         // 1. Find the main detection output (Nx6-like tensor). Prefer known output names first.
         let output_index = session
-            .outputs
+            .outputs()
             .iter()
             .position(|o| {
                 if !is_box_tensor_type(o) {
                     return false;
                 }
-                let name = o.name.to_ascii_lowercase();
+                let name = o.name().to_ascii_lowercase();
                 name == "reshape2_95.tmp_0"
                     || name.contains("bbox")
                     || name.contains("multiclass_nms")
                     || name.contains("nms")
                     || name.contains("tmp_0")
             })
-            .or_else(|| session.outputs.iter().position(is_box_tensor_type))
+            .or_else(|| session.outputs().iter().position(is_box_tensor_type))
             .ok_or_else(|| anyhow!("Could not locate model box output tensor"))?;
         debug_until_first_detection!(
             "PaddleXEngine::new: selected output_index={} name='{}'",
             output_index,
-            session.outputs[output_index].name
+            session.outputs()[output_index].name()
         );
 
         // 2. Find the count output (usually int32)
         // This is the magic key that lets us batch correctly.
         // Common names in Paddle exports: "bbox_num", "multiclass_nms3_0.tmp_2"
-        let count_index = session
-            .outputs
-            .iter()
-            .position(|o| {
-                let name = o.name.to_ascii_lowercase();
-                (name == "tile_3.tmp_0"
-                    || name.contains("bbox_num")
-                    || name.contains("bboxnum")
-                    || name.contains("tmp_2")
-                    || (name.contains("count") && name.contains("bbox"))
-                    || is_count_tensor_type(o))
-                    && o.name != session.outputs[output_index].name
-            });
+        let count_index = session.outputs().iter().position(|o| {
+            let name = o.name().to_ascii_lowercase();
+            (name == "tile_3.tmp_0"
+                || name.contains("bbox_num")
+                || name.contains("bboxnum")
+                || name.contains("tmp_2")
+                || (name.contains("count") && name.contains("bbox"))
+                || is_count_tensor_type(o))
+                && o.name() != session.outputs()[output_index].name()
+        });
 
         if count_index.is_none() {
-            info_println!("Warning: Model lacks a 'bbox_num' (int32) output. Batching will be simulated sequentially.");
+            info_println!(
+                "Warning: Model lacks a 'bbox_num' (int32) output. Batching will be simulated sequentially."
+            );
             debug_until_first_detection!(
                 "PaddleXEngine::new: no count_index found; sequential fallback will be used for batch inference"
             );
@@ -217,7 +213,7 @@ impl PaddleXEngine {
             debug_until_first_detection!(
                 "PaddleXEngine::new: selected count_index={} name='{}'",
                 idx,
-                session.outputs[idx].name
+                session.outputs()[idx].name()
             );
         }
 
@@ -232,13 +228,50 @@ impl PaddleXEngine {
 
     fn build_session(model_path: &str) -> Result<(Session, String)> {
         info!("Building session for model: {}", model_path);
-        debug_until_first_detection!("PaddleXEngine::build_session: opening model file '{}'", model_path);
-        // Helper to create a new builder
-        let new_builder = || -> anyhow::Result<ort::session::builder::SessionBuilder> {
-            Ok(Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                // Memory optimization: Enable memory pattern
-                .with_memory_pattern(true)?)
+        debug_until_first_detection!(
+            "PaddleXEngine::build_session: opening model file '{}'",
+            model_path
+        );
+        // Helper to create a new builder while tolerating older runtime DLLs that
+        // reject newer optimization enum values.
+        let new_builder = || -> anyhow::Result<(
+            ort::session::builder::SessionBuilder,
+            GraphOptimizationLevel,
+        )> {
+            let base = Session::builder()
+                .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?;
+
+            let mut last_opt_error = None;
+            let mut builder_with_opt = None;
+            for level in [
+                GraphOptimizationLevel::Level3,
+                GraphOptimizationLevel::Level2,
+                GraphOptimizationLevel::Level1,
+                GraphOptimizationLevel::Disable,
+            ] {
+                match base.clone().with_optimization_level(level) {
+                    Ok(builder) => {
+                        builder_with_opt = Some((builder, level));
+                        break;
+                    }
+                    Err(e) => {
+                        last_opt_error = Some(format!("{level:?}: {}", e));
+                    }
+                }
+            }
+
+            let (builder, chosen_level) = builder_with_opt.ok_or_else(|| {
+                anyhow!(
+                    "failed to set any ORT optimization level: {}",
+                    last_opt_error.unwrap_or_else(|| "unknown error".to_string())
+                )
+            })?;
+
+            let builder = builder
+                .with_memory_pattern(true)
+                .map_err(|e| anyhow!("failed to enable ORT memory pattern: {e}"))?;
+
+            Ok((builder, chosen_level))
         };
 
         // Platform-specific GPU provider attempts
@@ -248,11 +281,9 @@ impl PaddleXEngine {
             Vec<&'static str>,
         )> {
             use ort::execution_providers::CPUExecutionProvider;
-            use ort::execution_providers::cuda::CUDAExecutionProvider;
+            use ort::execution_providers::CUDAExecutionProvider;
 
-            let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
-                .ok()
-                .as_deref() == Some("1");
+            let gpu_disabled = std::env::var("LEGE_DISABLE_GPU").ok().as_deref() == Some("1");
 
             if gpu_disabled {
                 return vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])];
@@ -269,20 +300,21 @@ impl PaddleXEngine {
             Vec<ort::execution_providers::ExecutionProviderDispatch>,
             Vec<&'static str>,
         )> {
-            use ort::execution_providers::CPUExecutionProvider;
-            use ort::execution_providers::cuda::CUDAExecutionProvider;
             use crate::gpu::directml_execution_provider_dispatch;
+            use ort::execution_providers::CPUExecutionProvider;
+            use ort::execution_providers::CUDAExecutionProvider;
 
-            let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
-                .ok()
-                .as_deref() == Some("1");
+            let gpu_disabled = std::env::var("LEGE_DISABLE_GPU").ok().as_deref() == Some("1");
 
             if gpu_disabled {
                 vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
             } else {
                 vec![
                     (vec![CUDAExecutionProvider::default().build()], vec!["CUDA"]),
-                    (vec![directml_execution_provider_dispatch()], vec!["DirectML"]),
+                    (
+                        vec![directml_execution_provider_dispatch()],
+                        vec!["DirectML"],
+                    ),
                     (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
                 ]
             }
@@ -295,15 +327,16 @@ impl PaddleXEngine {
         )> {
             use ort::execution_providers::{CPUExecutionProvider, CoreMLExecutionProvider};
 
-            let gpu_disabled = std::env::var("LEGE_DISABLE_GPU")
-                .ok()
-                .as_deref() == Some("1");
+            let gpu_disabled = std::env::var("LEGE_DISABLE_GPU").ok().as_deref() == Some("1");
 
             if gpu_disabled {
                 vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
             } else {
                 vec![
-                    (vec![CoreMLExecutionProvider::default().build()], vec!["CoreML"]),
+                    (
+                        vec![CoreMLExecutionProvider::default().build()],
+                        vec!["CoreML"],
+                    ),
                     (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
                 ]
             }
@@ -341,7 +374,18 @@ impl PaddleXEngine {
             #[cfg(feature = "debug-logging")]
             let start = Instant::now();
 
-            match new_builder()?.with_execution_providers(providers)?.commit_from_memory(&mmap) {
+            let (mut builder, chosen_opt_level) = new_builder()?;
+            if chosen_opt_level != GraphOptimizationLevel::Level3 {
+                info_println!(
+                    "ONNX Runtime accepted {:?} graph optimization level (newer levels rejected by loaded runtime)",
+                    chosen_opt_level
+                );
+            }
+            builder = builder
+                .with_execution_providers(providers)
+                .map_err(|e| anyhow!("failed to set ORT execution providers: {e}"))?;
+
+            match builder.commit_from_memory(&mmap) {
                 Ok(session) => {
                     #[cfg(feature = "debug-logging")]
                     debug_until_first_detection!(
@@ -354,6 +398,7 @@ impl PaddleXEngine {
                     } else {
                         info_println!("Using {} execution for ONNX Runtime", primary);
                     }
+                    info_println!("ONNX graph optimization level: {:?}", chosen_opt_level);
                     return Ok((session, primary.to_string()));
                 }
                 Err(e) => {
@@ -365,7 +410,10 @@ impl PaddleXEngine {
                         e
                     );
                     if primary == "CUDA" {
-                        info_println!("CUDA failed: {}. Hint: ensure CUDA and cuDNN are installed and on PATH.", e);
+                        info_println!(
+                            "CUDA failed: {}. Hint: ensure CUDA and cuDNN are installed and on PATH.",
+                            e
+                        );
                     } else if primary != "CPU" {
                         info_println!("{} failed: {}, falling back...", primary, e);
                     }
@@ -393,11 +441,11 @@ impl PaddleXEngine {
         };
         // fast_image_resize: convert to Image and resize via our CPU helper
         // Reuse thread-local u8 buffer for image data
-    let resized = PREPROCESS_U8_BUFFER.with(|buf_cell| -> Result<RgbImage> {
+        let resized = PREPROCESS_U8_BUFFER.with(|buf_cell| -> Result<RgbImage> {
             let mut buf = buf_cell.borrow_mut();
             buf.clear();
             buf.extend_from_slice(img.as_raw());
-            
+
             let src_image = fast_image_resize::images::Image::from_slice_u8(
                 img.width(),
                 img.height(),
@@ -405,22 +453,22 @@ impl PaddleXEngine {
                 fast_image_resize::PixelType::U8x3,
             )
             .map_err(|e| anyhow!("Failed to create source image: {:?}", e))?;
-            
+
             crate::resize::cpu::resize_single(src_image, &resize_params, target_size, target_size)
                 .map_err(|e| anyhow!("Resize failed: {:?}", e))
         })?;
-        
+
         // Simple scale factors - no padding to account for
         let scale_x = orig_width as f32 / target_size as f32;
         let scale_y = orig_height as f32 / target_size as f32;
-        
+
         // Convert to NCHW and normalize, channel order B, G, R (as in last working impl)
         // Reuse thread-local f32 buffer for preprocessed data
         let input_data = PREPROCESS_F32_BUFFER.with(|buf_cell| {
             let mut buf = buf_cell.borrow_mut();
             buf.clear();
             buf.resize((3 * target_size * target_size) as usize, 0.0);
-            
+
             let channel_size = (target_size * target_size) as usize;
             for y in 0..target_size {
                 for x in 0..target_size {
@@ -431,10 +479,10 @@ impl PaddleXEngine {
                     buf[base + 2 * channel_size] = (p[0] as f32) / 255.0; // R
                 }
             }
-            
+
             buf.clone() // Clone is needed since we need to return owned data
         });
-        
+
         Ok(PaddleXPreprocessed {
             image_data: input_data,
             im_shape: [orig_height as f32, orig_width as f32],
@@ -461,11 +509,11 @@ impl PaddleXEngine {
             swap_rb: false,
         };
         // Reuse thread-local u8 buffer for image data
-    let resized = PREPROCESS_U8_BUFFER.with(|buf_cell| -> Result<RgbImage> {
+        let resized = PREPROCESS_U8_BUFFER.with(|buf_cell| -> Result<RgbImage> {
             let mut buf = buf_cell.borrow_mut();
             buf.clear();
             buf.extend_from_slice(img.as_raw());
-            
+
             let src_image = fast_image_resize::images::Image::from_slice_u8(
                 img.width(),
                 img.height(),
@@ -473,11 +521,11 @@ impl PaddleXEngine {
                 fast_image_resize::PixelType::U8x3,
             )
             .map_err(|e| anyhow!("Failed to create source image: {:?}", e))?;
-            
+
             crate::resize::cpu::resize_single(src_image, &resize_params, target_size, target_size)
                 .map_err(|e| anyhow!("Resize failed: {:?}", e))
         })?;
-        
+
         let scale_x = orig_width as f32 / target_size as f32;
         let scale_y = orig_height as f32 / target_size as f32;
         let channel_size = (target_size * target_size) as usize;
@@ -507,7 +555,22 @@ impl PaddleXEngine {
     /// Use detect_single_async instead.
     #[deprecated(note = "This method is deprecated. Use detect_single_async instead.")]
     pub fn detect_single(&mut self, _image: &RgbImage) -> Result<Vec<Detection>> {
-        anyhow::bail!("Synchronous inference is deprecated and no longer supported. Use detect_single_async instead.")
+        anyhow::bail!(
+            "Synchronous inference is deprecated and no longer supported. Use detect_single_async instead."
+        )
+    }
+
+    /// Blocking inference path used by the dedicated inference actor thread.
+    pub fn detect_single_blocking(&mut self, image: &RgbImage) -> Result<Vec<Detection>> {
+        debug_until_first_detection!(
+            "PaddleXEngine::detect_single_blocking: image={}x{}",
+            image.width(),
+            image.height()
+        );
+        let mut inputs = self.preprocess(image)?;
+        let outputs = self.run_inference_single_blocking(&mut inputs)?;
+        let detections = self.postprocess_detections(&outputs, &inputs)?;
+        Ok(detections)
     }
 
     /// Asynchronously detects objects in a single image.
@@ -556,12 +619,55 @@ impl PaddleXEngine {
             let meta = self.preprocess_into(image, &mut batch_image_data[start..end])?;
             batch_metadata.push(meta);
         }
-        let batch_outputs = self.run_inference_batch_with_indices_from_flat_async(
+        let batch_outputs = self
+            .run_inference_batch_with_indices_from_flat_async(
+                &batch_image_data,
+                &batch_metadata,
+                page_indices,
+            )
+            .await?;
+        let mut results = Vec::with_capacity(batch_outputs.len());
+        for (i, output) in batch_outputs.iter().enumerate() {
+            let pseudo_inputs = PaddleXPreprocessed {
+                image_data: Vec::new(),
+                im_shape: batch_metadata[i].im_shape,
+                scale_factor: batch_metadata[i].scale_factor,
+            };
+            let detections = self.postprocess_detections(output, &pseudo_inputs)?;
+            results.push(detections);
+        }
+        Ok(results)
+    }
+
+    pub fn detect_batch_with_indices_blocking(
+        &mut self,
+        images: &[RgbImage],
+        page_indices: &[usize],
+    ) -> Result<Vec<Vec<Detection>>> {
+        let batch_size = images.len();
+        debug_until_first_detection!(
+            "PaddleXEngine::detect_batch_with_indices_blocking: images={}, page_indices={}",
+            batch_size,
+            page_indices.len()
+        );
+        if batch_size == 0 {
+            return Ok(Vec::new());
+        }
+        let item_elems = 3 * PADDLE_IMG_SIZE as usize * PADDLE_IMG_SIZE as usize;
+        let total_elems = batch_size * item_elems;
+        let mut batch_image_data = vec![0.0f32; total_elems];
+        let mut batch_metadata = Vec::with_capacity(batch_size);
+        for (i, image) in images.iter().enumerate() {
+            let start = i * item_elems;
+            let end = start + item_elems;
+            let meta = self.preprocess_into(image, &mut batch_image_data[start..end])?;
+            batch_metadata.push(meta);
+        }
+        let batch_outputs = self.run_inference_batch_with_indices_from_flat_blocking(
             &batch_image_data,
             &batch_metadata,
             page_indices,
-        )
-        .await?;
+        )?;
         let mut results = Vec::with_capacity(batch_outputs.len());
         for (i, output) in batch_outputs.iter().enumerate() {
             let pseudo_inputs = PaddleXPreprocessed {
@@ -590,9 +696,18 @@ impl PaddleXEngine {
         let im_shape = Array::from_shape_vec((1, 2), inputs.im_shape.to_vec())?;
         let scale_factor = Array::from_shape_vec((1, 2), inputs.scale_factor.to_vec())?;
         let input_values = [
-            SessionInputValue::from(Value::from_array(im_shape)?),
-            SessionInputValue::from(Value::from_array(image_data)?),
-            SessionInputValue::from(Value::from_array(scale_factor)?),
+            SessionInputValue::from(
+                Value::from_array(im_shape)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(image_data)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(scale_factor)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
         ];
         let run_options = RunOptions::new()?;
         let outputs = self.session.run_async(input_values, &run_options)?.await?;
@@ -618,8 +733,10 @@ impl PaddleXEngine {
                 // [B, N, 6] where B=1 for single inference
                 [b, n, k] => {
                     anyhow::ensure!(*b == 1 && *k == 6, "Unexpected output shape: {:?}", shape);
-                    let tmp =
-                        Array::from_shape_vec((*b as usize, *n as usize, *k as usize), data.to_vec())?;
+                    let tmp = Array::from_shape_vec(
+                        (*b as usize, *n as usize, *k as usize),
+                        data.to_vec(),
+                    )?;
                     tmp.slice(s![0, .., ..]).to_owned()
                 }
                 // [N, 6] - single batch case
@@ -710,6 +827,118 @@ impl PaddleXEngine {
         Ok(out)
     }
 
+    fn run_inference_single_blocking(
+        &mut self,
+        inputs: &mut PaddleXPreprocessed,
+    ) -> Result<Array<f32, ndarray::Ix2>> {
+        #[cfg(feature = "debug-logging")]
+        let start = Instant::now();
+        let image_data_vec = std::mem::take(&mut inputs.image_data);
+        let image_data = Array::from_shape_vec(
+            (1, 3, PADDLE_IMG_SIZE as usize, PADDLE_IMG_SIZE as usize),
+            image_data_vec,
+        )?;
+        let im_shape = Array::from_shape_vec((1, 2), inputs.im_shape.to_vec())?;
+        let scale_factor = Array::from_shape_vec((1, 2), inputs.scale_factor.to_vec())?;
+        let input_values = [
+            SessionInputValue::from(
+                Value::from_array(im_shape)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(image_data)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(scale_factor)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+        ];
+        let run_options = RunOptions::new()?;
+        let outputs = self.session.run_with_options(input_values, &run_options)?;
+        #[cfg(feature = "debug-logging")]
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_single_blocking: run completed in {:?}, output_count={}",
+            start.elapsed(),
+            outputs.len()
+        );
+        let output_value = &outputs[self.output_index];
+
+        let out = if let Ok(tensor) = output_value.try_extract_tensor::<f32>() {
+            let (shape, data) = tensor;
+            match &shape[..] {
+                [b, n, k] => {
+                    anyhow::ensure!(*b == 1 && *k == 6, "Unexpected output shape: {:?}", shape);
+                    let tmp = Array::from_shape_vec(
+                        (*b as usize, *n as usize, *k as usize),
+                        data.to_vec(),
+                    )?;
+                    tmp.slice(s![0, .., ..]).to_owned()
+                }
+                [n, k] => {
+                    anyhow::ensure!(*k == 6, "Unexpected K ({}), expected 6", k);
+                    Array::from_shape_vec((*n as usize, *k as usize), data.to_vec())?
+                }
+                _ => {
+                    anyhow::ensure!(
+                        data.len() % 6 == 0,
+                        "Output size {} not divisible by 6",
+                        data.len()
+                    );
+                    Array::from_shape_vec((data.len() / 6, 6), data.to_vec())?
+                }
+            }
+        } else if let Ok(tensor) = output_value.try_extract_tensor::<i8>() {
+            let (shape, data) = tensor;
+            let f32_data: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+            match &shape[..] {
+                [b, n, k] => {
+                    anyhow::ensure!(*b == 1 && *k == 6, "Unexpected output shape: {:?}", shape);
+                    let tmp =
+                        Array::from_shape_vec((*b as usize, *n as usize, *k as usize), f32_data)?;
+                    tmp.slice(s![0, .., ..]).to_owned()
+                }
+                [n, k] => {
+                    anyhow::ensure!(*k == 6, "Unexpected K ({}), expected 6", k);
+                    Array::from_shape_vec((*n as usize, *k as usize), f32_data)?
+                }
+                _ => {
+                    anyhow::ensure!(
+                        f32_data.len() % 6 == 0,
+                        "Output size {} not divisible by 6",
+                        f32_data.len()
+                    );
+                    Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
+                }
+            }
+        } else if let Ok(tensor) = output_value.try_extract_tensor::<u8>() {
+            let (shape, data) = tensor;
+            let f32_data: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+            match &shape[..] {
+                [b, n, k] => {
+                    anyhow::ensure!(*b == 1 && *k == 6, "Unexpected output shape: {:?}", shape);
+                    let tmp =
+                        Array::from_shape_vec((*b as usize, *n as usize, *k as usize), f32_data)?;
+                    tmp.slice(s![0, .., ..]).to_owned()
+                }
+                [n, k] => {
+                    anyhow::ensure!(*k == 6, "Unexpected K ({}), expected 6", k);
+                    Array::from_shape_vec((*n as usize, *k as usize), f32_data)?
+                }
+                _ => {
+                    anyhow::ensure!(
+                        f32_data.len() % 6 == 0,
+                        "Output size {} not divisible by 6",
+                        f32_data.len()
+                    );
+                    Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
+                }
+            }
+        } else {
+            return Err(anyhow::anyhow!("Unsupported tensor element type in output"));
+        };
+        Ok(out)
+    }
 
     /// Core async inference logic for a batch of preprocessed images.
     #[allow(dead_code)]
@@ -753,9 +982,18 @@ impl PaddleXEngine {
         let im_shape = Array::from_shape_vec((batch_size, 2), im_shapes)?;
         let scale_factor = Array::from_shape_vec((batch_size, 2), scale_factors)?;
         let input_values = [
-            SessionInputValue::from(Value::from_array(im_shape)?),
-            SessionInputValue::from(Value::from_array(image_data)?),
-            SessionInputValue::from(Value::from_array(scale_factor)?),
+            SessionInputValue::from(
+                Value::from_array(im_shape)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(image_data)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(scale_factor)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
         ];
         let run_options = RunOptions::new()?;
         let outputs = self.session.run_async(input_values, &run_options)?.await?;
@@ -801,9 +1039,11 @@ impl PaddleXEngine {
                             batch_size
                         );
                         let total_detections = *nn as usize;
-                        let arr = Array::from_shape_vec((*nn as usize, *kk as usize), data.to_vec())?;
+                        let arr =
+                            Array::from_shape_vec((*nn as usize, *kk as usize), data.to_vec())?;
                         // Create per-page detection collections
-                        let mut detections_per_page: Vec<Vec<[f32; 6]>> = vec![Vec::new(); batch_size];
+                        let mut detections_per_page: Vec<Vec<[f32; 6]>> =
+                            vec![Vec::new(); batch_size];
                         // Process each detection and assign to correct page based on encoded information
                         for i in 0..total_detections {
                             let raw_class_id = arr[[i, 0]];
@@ -879,7 +1119,8 @@ impl PaddleXEngine {
                 [nn, kk] => {
                     anyhow::ensure!(*kk == 6, "Unexpected K ({}), expected 6", kk);
                     // This happens when the model concatenates all batch outputs into a single [N, 6] tensor
-                    let arr = Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
+                    let arr =
+                        Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
                     if batch_size == 1 {
                         // Single image case
                         results.push(arr);
@@ -892,9 +1133,11 @@ impl PaddleXEngine {
                             batch_size
                         );
                         let total_detections = *nn as usize;
-                        let arr = Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
+                        let arr =
+                            Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
                         // Create per-page detection collections
-                        let mut detections_per_page: Vec<Vec<[f32; 6]>> = vec![Vec::new(); batch_size];
+                        let mut detections_per_page: Vec<Vec<[f32; 6]>> =
+                            vec![Vec::new(); batch_size];
                         // Process each detection and assign to correct page based on encoded information
                         for i in 0..total_detections {
                             let raw_class_id = arr[[i, 0]];
@@ -970,7 +1213,8 @@ impl PaddleXEngine {
                 [nn, kk] => {
                     anyhow::ensure!(*kk == 6, "Unexpected K ({}), expected 6", kk);
                     // This happens when the model concatenates all batch outputs into a single [N, 6] tensor
-                    let arr = Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
+                    let arr =
+                        Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
                     if batch_size == 1 {
                         // Single image case
                         results.push(arr);
@@ -983,9 +1227,11 @@ impl PaddleXEngine {
                             batch_size
                         );
                         let total_detections = *nn as usize;
-                        let arr = Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
+                        let arr =
+                            Array::from_shape_vec((*nn as usize, *kk as usize), f32_data.to_vec())?;
                         // Create per-page detection collections
-                        let mut detections_per_page: Vec<Vec<[f32; 6]>> = vec![Vec::new(); batch_size];
+                        let mut detections_per_page: Vec<Vec<[f32; 6]>> =
+                            vec![Vec::new(); batch_size];
                         // Process each detection and assign to correct page based on encoded information
                         for i in 0..total_detections {
                             let raw_class_id = arr[[i, 0]];
@@ -1054,32 +1300,54 @@ impl PaddleXEngine {
             batch_size,
             self.count_index
         );
-        
+
         // SAFETY: If we didn't find the count_index during init, we MUST run sequentially
         // or we risk assigning detections to the wrong page.
         if self.count_index.is_none() {
             debug_until_first_detection!(
                 "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: count_index missing, using sequential fallback"
             );
-            return self.run_inference_sequential_fallback(batch_image_data, batch_metadata).await;
+            return self
+                .run_inference_sequential_fallback(batch_image_data, batch_metadata)
+                .await;
         }
         let count_idx = self.count_index.unwrap();
 
         // 1. Prepare Batch Tensors
         let im_shapes_pairs: Vec<[f32; 2]> = batch_metadata.iter().map(|m| m.im_shape).collect();
         let scale_pairs: Vec<[f32; 2]> = batch_metadata.iter().map(|m| m.scale_factor).collect();
-        
+
         let image_data = Array::from_shape_vec(
-            (batch_size, 3, PADDLE_IMG_SIZE as usize, PADDLE_IMG_SIZE as usize),
+            (
+                batch_size,
+                3,
+                PADDLE_IMG_SIZE as usize,
+                PADDLE_IMG_SIZE as usize,
+            ),
             batch_image_data.to_vec(),
         )?;
-        let im_shape = Array::from_shape_vec((batch_size, 2), bytemuck::cast_vec::<[f32; 2], f32>(im_shapes_pairs))?;
-        let scale_factor = Array::from_shape_vec((batch_size, 2), bytemuck::cast_vec::<[f32; 2], f32>(scale_pairs))?;
+        let im_shape = Array::from_shape_vec(
+            (batch_size, 2),
+            bytemuck::cast_vec::<[f32; 2], f32>(im_shapes_pairs),
+        )?;
+        let scale_factor = Array::from_shape_vec(
+            (batch_size, 2),
+            bytemuck::cast_vec::<[f32; 2], f32>(scale_pairs),
+        )?;
 
         let input_values = [
-            SessionInputValue::from(Value::from_array(im_shape)?),
-            SessionInputValue::from(Value::from_array(image_data)?),
-            SessionInputValue::from(Value::from_array(scale_factor)?),
+            SessionInputValue::from(
+                Value::from_array(im_shape)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(image_data)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(scale_factor)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
         ];
 
         // 2. Run Inference (One big call to GPU)
@@ -1119,7 +1387,9 @@ impl PaddleXEngine {
             let f32_data: Vec<f32> = box_data.iter().map(|&x| x as f32).collect();
             Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
         } else {
-            return Err(anyhow::anyhow!("Unsupported tensor element type for box output"));
+            return Err(anyhow::anyhow!(
+                "Unsupported tensor element type for box output"
+            ));
         };
 
         // 4. Extract The "Map" (bbox_num) - This should remain as i32 since it's counting boxes
@@ -1129,7 +1399,11 @@ impl PaddleXEngine {
         debug_until_first_detection!(
             "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: bbox_num entries={} total_boxes={}",
             count_data.len(),
-            count_data.iter().copied().map(|v| v.max(0) as usize).sum::<usize>()
+            count_data
+                .iter()
+                .copied()
+                .map(|v| v.max(0) as usize)
+                .sum::<usize>()
         );
 
         // 5. Re-identify / Unzip
@@ -1142,7 +1416,9 @@ impl PaddleXEngine {
             if count > 0 {
                 // Slice the exact rows belonging to this page
                 // Corresponds to batch_metadata[i]
-                let page_boxes = all_boxes.slice(s![current_offset..current_offset + count, ..]).to_owned();
+                let page_boxes = all_boxes
+                    .slice(s![current_offset..current_offset + count, ..])
+                    .to_owned();
                 results.push(page_boxes);
                 current_offset += count;
             } else {
@@ -1152,13 +1428,121 @@ impl PaddleXEngine {
             }
 
             // Safety check
-            if i >= batch_size { break; }
+            if i >= batch_size {
+                break;
+            }
         }
         debug_until_first_detection!(
             "PaddleXEngine::run_inference_batch_with_indices_from_flat_async: produced page outputs={} in {:?}",
             results.len(),
             start.elapsed()
         );
+
+        Ok(results)
+    }
+
+    fn run_inference_batch_with_indices_from_flat_blocking(
+        &mut self,
+        batch_image_data: &[f32],
+        batch_metadata: &[PaddleXPreprocessedMetadata],
+        _page_indices: &[usize],
+    ) -> Result<Vec<Array<f32, ndarray::Ix2>>> {
+        #[cfg(feature = "debug-logging")]
+        let start = Instant::now();
+        let batch_size = batch_metadata.len();
+
+        if self.count_index.is_none() {
+            return self.run_inference_sequential_fallback_blocking(batch_image_data, batch_metadata);
+        }
+        let count_idx = self.count_index.unwrap();
+
+        let im_shapes_pairs: Vec<[f32; 2]> = batch_metadata.iter().map(|m| m.im_shape).collect();
+        let scale_pairs: Vec<[f32; 2]> = batch_metadata.iter().map(|m| m.scale_factor).collect();
+
+        let image_data = Array::from_shape_vec(
+            (
+                batch_size,
+                3,
+                PADDLE_IMG_SIZE as usize,
+                PADDLE_IMG_SIZE as usize,
+            ),
+            batch_image_data.to_vec(),
+        )?;
+        let im_shape = Array::from_shape_vec(
+            (batch_size, 2),
+            bytemuck::cast_vec::<[f32; 2], f32>(im_shapes_pairs),
+        )?;
+        let scale_factor = Array::from_shape_vec(
+            (batch_size, 2),
+            bytemuck::cast_vec::<[f32; 2], f32>(scale_pairs),
+        )?;
+
+        let input_values = [
+            SessionInputValue::from(
+                Value::from_array(im_shape)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(image_data)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+            SessionInputValue::from(
+                Value::from_array(scale_factor)
+                    .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+            ),
+        ];
+
+        let run_options = RunOptions::new()?;
+        let outputs = self.session.run_with_options(input_values, &run_options)?;
+        #[cfg(feature = "debug-logging")]
+        debug_until_first_detection!(
+            "PaddleXEngine::run_inference_batch_with_indices_from_flat_blocking: batch run completed in {:?}, output_count={}",
+            start.elapsed(),
+            outputs.len()
+        );
+
+        let box_value = &outputs[self.output_index];
+        let all_boxes = if let Ok(tensor) = box_value.try_extract_tensor::<f32>() {
+            let (_box_shape, box_data) = tensor;
+            Array::from_shape_vec((box_data.len() / 6, 6), box_data.to_vec())?
+        } else if let Ok(tensor) = box_value.try_extract_tensor::<i8>() {
+            let (_box_shape, box_data) = tensor;
+            let f32_data: Vec<f32> = box_data.iter().map(|&x| x as f32).collect();
+            Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
+        } else if let Ok(tensor) = box_value.try_extract_tensor::<u8>() {
+            let (_box_shape, box_data) = tensor;
+            let f32_data: Vec<f32> = box_data.iter().map(|&x| x as f32).collect();
+            Array::from_shape_vec((f32_data.len() / 6, 6), f32_data)?
+        } else {
+            return Err(anyhow::anyhow!(
+                "Unsupported tensor element type for box output"
+            ));
+        };
+
+        let count_tensor = outputs[count_idx].try_extract_tensor::<i32>()?;
+        let (_count_shape, count_data) = count_tensor;
+
+        let mut results = Vec::with_capacity(batch_size);
+        let mut current_offset = 0;
+
+        for (i, &count) in count_data.iter().enumerate() {
+            let count = count as usize;
+
+            if count > 0 {
+                let page_boxes = all_boxes
+                    .slice(s![current_offset..current_offset + count, ..])
+                    .to_owned();
+                results.push(page_boxes);
+                current_offset += count;
+            } else {
+                let empty = Array::from_shape_vec((0, 6), vec![])?;
+                results.push(empty);
+            }
+
+            if i >= batch_size {
+                break;
+            }
+        }
 
         Ok(results)
     }
@@ -1183,18 +1567,31 @@ impl PaddleXEngine {
         for i in 0..batch_size {
             let start = i * item_len;
             let slice = &batch_image_data[start..start + item_len];
-            
+
             // Construct single-item inputs
             let im_shape = Array::from_shape_vec((1, 2), batch_metadata[i].im_shape.to_vec())?;
-            let scale_factor = Array::from_shape_vec((1, 2), batch_metadata[i].scale_factor.to_vec())?;
-            let img = Array::from_shape_vec((1, 3, PADDLE_IMG_SIZE as usize, PADDLE_IMG_SIZE as usize), slice.to_vec())?;
+            let scale_factor =
+                Array::from_shape_vec((1, 2), batch_metadata[i].scale_factor.to_vec())?;
+            let img = Array::from_shape_vec(
+                (1, 3, PADDLE_IMG_SIZE as usize, PADDLE_IMG_SIZE as usize),
+                slice.to_vec(),
+            )?;
 
             let inputs = [
-                SessionInputValue::from(Value::from_array(im_shape)?),
-                SessionInputValue::from(Value::from_array(img)?),
-                SessionInputValue::from(Value::from_array(scale_factor)?),
+                SessionInputValue::from(
+                    Value::from_array(im_shape)
+                        .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+                ),
+                SessionInputValue::from(
+                    Value::from_array(img)
+                        .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+                ),
+                SessionInputValue::from(
+                    Value::from_array(scale_factor)
+                        .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+                ),
             ];
-            
+
             let out = self.session.run_async(inputs, &run_options)?.await?; // Use the bound variable
             // Handle potentially different output tensor types (for int8 vs fp32 models)
             let output_value = &out[self.output_index];
@@ -1228,7 +1625,9 @@ impl PaddleXEngine {
                     Array::from_shape_vec((dims[0] as usize, 6), f32_data)?
                 }
             } else {
-                return Err(anyhow::anyhow!("Unsupported tensor element type in sequential fallback"));
+                return Err(anyhow::anyhow!(
+                    "Unsupported tensor element type in sequential fallback"
+                ));
             };
             results.push(res);
         }
@@ -1239,6 +1638,80 @@ impl PaddleXEngine {
         );
         Ok(results)
     }
+
+    fn run_inference_sequential_fallback_blocking(
+        &mut self,
+        batch_image_data: &[f32],
+        batch_metadata: &[PaddleXPreprocessedMetadata],
+    ) -> Result<Vec<Array<f32, ndarray::Ix2>>> {
+        let batch_size = batch_metadata.len();
+        let item_len = 3 * (PADDLE_IMG_SIZE as usize) * (PADDLE_IMG_SIZE as usize);
+        let mut results = Vec::with_capacity(batch_size);
+        let run_options = RunOptions::new()?;
+
+        for i in 0..batch_size {
+            let start = i * item_len;
+            let slice = &batch_image_data[start..start + item_len];
+
+            let im_shape = Array::from_shape_vec((1, 2), batch_metadata[i].im_shape.to_vec())?;
+            let scale_factor =
+                Array::from_shape_vec((1, 2), batch_metadata[i].scale_factor.to_vec())?;
+            let img = Array::from_shape_vec(
+                (1, 3, PADDLE_IMG_SIZE as usize, PADDLE_IMG_SIZE as usize),
+                slice.to_vec(),
+            )?;
+
+            let inputs = [
+                SessionInputValue::from(
+                    Value::from_array(im_shape)
+                        .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+                ),
+                SessionInputValue::from(
+                    Value::from_array(img)
+                        .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+                ),
+                SessionInputValue::from(
+                    Value::from_array(scale_factor)
+                        .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
+                ),
+            ];
+
+            let out = self.session.run_with_options(inputs, &run_options)?;
+            let output_value = &out[self.output_index];
+            let res = if let Ok(tensor) = output_value.try_extract_tensor::<f32>() {
+                let (dims, data) = tensor;
+                if dims.len() == 3 {
+                    Array::from_shape_vec((dims[1] as usize, 6), data.to_vec())?
+                } else {
+                    Array::from_shape_vec((dims[0] as usize, 6), data.to_vec())?
+                }
+            } else if let Ok(tensor) = output_value.try_extract_tensor::<i8>() {
+                let (dims, data) = tensor;
+                let f32_data: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+                if dims.len() == 3 {
+                    Array::from_shape_vec((dims[1] as usize, 6), f32_data)?
+                } else {
+                    Array::from_shape_vec((dims[0] as usize, 6), f32_data)?
+                }
+            } else if let Ok(tensor) = output_value.try_extract_tensor::<u8>() {
+                let (dims, data) = tensor;
+                let f32_data: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+                if dims.len() == 3 {
+                    Array::from_shape_vec((dims[1] as usize, 6), f32_data)?
+                } else {
+                    Array::from_shape_vec((dims[0] as usize, 6), f32_data)?
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Unsupported tensor element type in sequential fallback"
+                ));
+            };
+            results.push(res);
+        }
+
+        Ok(results)
+    }
+
     /// Postprocesses raw model output into a list of final detections.
     fn postprocess_detections(
         &self,

@@ -1,5 +1,5 @@
-use crate::{streamline::JpegSettings, EncodingError, Result};
-use toojpeg::{encode_jpeg, EncodeOptions, ImageFormat as TooJpegFormat};
+use crate::{EncodingError, Result, streamline::JpegSettings};
+use toojpeg::{EncodeOptions, ImageFormat as TooJpegFormat, encode_jpeg};
 
 pub fn encode(
     input: &[u8],

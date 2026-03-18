@@ -1,10 +1,11 @@
-use crate::{streamline::Jp2Settings, EncodingError, Result};
+use crate::{EncodingError, Result, streamline::Jp2Settings};
 
 #[cfg(feature = "debug-logging")]
 use crate::streamline::log_debug_message;
 use openjp2::{
+    CODEC_FORMAT, Codec, OPJ_CLRSPC_GRAY, OPJ_CLRSPC_SRGB, Stream,
     openjpeg::opj_set_default_encoder_parameters, opj_cparameters_t, opj_image,
-    opj_image_comptparm, Codec, Stream, CODEC_FORMAT, OPJ_CLRSPC_GRAY, OPJ_CLRSPC_SRGB,
+    opj_image_comptparm,
 };
 
 pub fn encode(
@@ -240,7 +241,7 @@ pub fn encode(
             return Err(EncodingError::IoError(format!(
                 "Failed to create JP2 output stream at {}: {}",
                 temp_path, e
-            )))
+            )));
         }
     };
 

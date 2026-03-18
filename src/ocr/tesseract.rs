@@ -87,8 +87,14 @@ pub fn run_tesseract(
         return None;
     }
 
-    let mut tess = if let Some(tessdata_path) = super::get_tessdata_path_for_language(&normalized_language) {
-        match Tesseract::new_with_oem(Some(&tessdata_path), Some(&normalized_language), OcrEngineMode::LstmOnly) {
+    let mut tess = if let Some(tessdata_path) =
+        super::get_tessdata_path_for_language(&normalized_language)
+    {
+        match Tesseract::new_with_oem(
+            Some(&tessdata_path),
+            Some(&normalized_language),
+            OcrEngineMode::LstmOnly,
+        ) {
             Ok(t) => t,
             Err(path_err) => {
                 #[cfg(feature = "debug-logging")]
@@ -96,7 +102,11 @@ pub fn run_tesseract(
                     "[DEBUG OCR] Failed to initialize Tesseract with tessdata path '{}' and language '{}': {:?}. Falling back to default search path.",
                     tessdata_path, normalized_language, path_err
                 );
-                match Tesseract::new_with_oem(None, Some(&normalized_language), OcrEngineMode::LstmOnly) {
+                match Tesseract::new_with_oem(
+                    None,
+                    Some(&normalized_language),
+                    OcrEngineMode::LstmOnly,
+                ) {
                     Ok(t) => t,
                     Err(e) => {
                         #[cfg(feature = "debug-logging")]

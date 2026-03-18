@@ -2,9 +2,9 @@
 
 //! Lightweight image buffer types for Legencode.
 //!
-//! This module provides minimal, custom implementations of `Rgb`, `GrayPixel`, 
+//! This module provides minimal, custom implementations of `Rgb`, `GrayPixel`,
 //! `RgbImage`, and `GrayImage` types to replace the `image` crate dependency.
-//! 
+//!
 //! These types are optimized for our encoding workflows and provide zero-copy
 //! byte access where safe (via repr(C) and careful unsafe blocks).
 
@@ -34,14 +34,22 @@ impl Rgb {
 
     #[inline]
     pub const fn white() -> Self {
-        Rgb { r: 255, g: 255, b: 255 }
+        Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        }
     }
 }
 
 impl From<[u8; 3]> for Rgb {
     #[inline]
     fn from(arr: [u8; 3]) -> Self {
-        Rgb { r: arr[0], g: arr[1], b: arr[2] }
+        Rgb {
+            r: arr[0],
+            g: arr[1],
+            b: arr[2],
+        }
     }
 }
 
@@ -118,12 +126,12 @@ impl RgbImage {
         if data.len() != expected_len {
             return None;
         }
-        
+
         let pixels: Vec<Rgb> = data
             .chunks_exact(3)
             .map(|chunk| Rgb::new(chunk[0], chunk[1], chunk[2]))
             .collect();
-        
+
         Some(RgbImage {
             width,
             height,
@@ -136,7 +144,11 @@ impl RgbImage {
         if data.len() != (width as usize) * (height as usize) {
             return None;
         }
-        Some(RgbImage { width, height, data })
+        Some(RgbImage {
+            width,
+            height,
+            data,
+        })
     }
 
     /// Creates an image filled with a single pixel value.
@@ -159,7 +171,11 @@ impl RgbImage {
                 data.push(f(x, y));
             }
         }
-        RgbImage { width, height, data }
+        RgbImage {
+            width,
+            height,
+            data,
+        }
     }
 
     #[inline]
@@ -206,34 +222,24 @@ impl RgbImage {
     }
 
     /// Returns raw pixel data as a byte slice (RGB triplets).
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This is safe because:
     /// - Rgb is #[repr(C)] with three u8 fields
     /// - The alignment and size constraints are satisfied
     /// - No padding exists in the struct
     pub fn as_raw(&self) -> &[u8] {
-        unsafe {
-            slice::from_raw_parts(
-                self.data.as_ptr() as *const u8,
-                self.data.len() * 3,
-            )
-        }
+        unsafe { slice::from_raw_parts(self.data.as_ptr() as *const u8, self.data.len() * 3) }
     }
 
     /// Returns mutable raw pixel data as a byte slice.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// Same safety reasoning as as_raw().
     pub fn as_raw_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            slice::from_raw_parts_mut(
-                self.data.as_mut_ptr() as *mut u8,
-                self.data.len() * 3,
-            )
-        }
+        unsafe { slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut u8, self.data.len() * 3) }
     }
 
     /// Converts to a grayscale image using BT.709 luminance formula.
@@ -294,9 +300,9 @@ impl GrayImage {
         if data.len() != expected_len {
             return None;
         }
-        
+
         let pixels: Vec<GrayPixel> = data.into_iter().map(GrayPixel::new).collect();
-        
+
         Some(GrayImage {
             width,
             height,
@@ -309,7 +315,11 @@ impl GrayImage {
         if data.len() != (width as usize) * (height as usize) {
             return None;
         }
-        Some(GrayImage { width, height, data })
+        Some(GrayImage {
+            width,
+            height,
+            data,
+        })
     }
 
     /// Creates an image filled with a single pixel value.
@@ -332,7 +342,11 @@ impl GrayImage {
                 data.push(f(x, y));
             }
         }
-        GrayImage { width, height, data }
+        GrayImage {
+            width,
+            height,
+            data,
+        }
     }
 
     #[inline]
@@ -379,34 +393,24 @@ impl GrayImage {
     }
 
     /// Returns raw pixel data as a byte slice.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This is safe because:
     /// - GrayPixel is #[repr(C)] with a single u8 field
     /// - The alignment and size constraints are satisfied
     /// - No padding exists in the struct
     pub fn as_raw(&self) -> &[u8] {
-        unsafe {
-            slice::from_raw_parts(
-                self.data.as_ptr() as *const u8,
-                self.data.len(),
-            )
-        }
+        unsafe { slice::from_raw_parts(self.data.as_ptr() as *const u8, self.data.len()) }
     }
 
     /// Returns mutable raw pixel data as a byte slice.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// Same safety reasoning as as_raw().
     pub fn as_raw_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            slice::from_raw_parts_mut(
-                self.data.as_mut_ptr() as *mut u8,
-                self.data.len(),
-            )
-        }
+        unsafe { slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut u8, self.data.len()) }
     }
 
     /// Consumes the image and returns the underlying byte vector.
@@ -506,7 +510,11 @@ impl DynamicImage {
                     .collect();
                 RgbImage::from_vec(width, height, data).unwrap()
             }
-            DynamicImage::ImageLuma16 { width, height, data } => {
+            DynamicImage::ImageLuma16 {
+                width,
+                height,
+                data,
+            } => {
                 let pixels = data
                     .iter()
                     .map(|&y| {
@@ -516,7 +524,11 @@ impl DynamicImage {
                     .collect();
                 RgbImage::from_vec(*width, *height, pixels).unwrap()
             }
-            DynamicImage::ImageRgb16 { width, height, data } => {
+            DynamicImage::ImageRgb16 {
+                width,
+                height,
+                data,
+            } => {
                 let pixels = data
                     .chunks(3)
                     .map(|rgb| {
@@ -536,11 +548,22 @@ impl DynamicImage {
         match self {
             DynamicImage::ImageLuma8(img) => img.clone(),
             DynamicImage::ImageRgb8(img) => img.to_luma(),
-            DynamicImage::ImageLuma16 { width, height, data } => {
-                let pixels = data.iter().map(|&y| GrayPixel::new((y >> 8) as u8)).collect();
+            DynamicImage::ImageLuma16 {
+                width,
+                height,
+                data,
+            } => {
+                let pixels = data
+                    .iter()
+                    .map(|&y| GrayPixel::new((y >> 8) as u8))
+                    .collect();
                 GrayImage::from_vec(*width, *height, pixels).unwrap()
             }
-            DynamicImage::ImageRgb16 { width, height, data } => {
+            DynamicImage::ImageRgb16 {
+                width,
+                height,
+                data,
+            } => {
                 let pixels = data
                     .chunks(3)
                     .map(|rgb| {

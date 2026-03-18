@@ -17,7 +17,7 @@ pub use crate::types::{BinarizationConfig, BinarizationOptions};
 pub use error::{ColorOpsError, Result};
 
 // Export essential binarization utilities
-pub use binarization::{binarize_image, binarize_image_raw, HeavySauvolaProcessor};
+pub use binarization::{HeavySauvolaProcessor, binarize_image, binarize_image_raw};
 
 // Export color processing utilities
 pub use color_processing::process_image_region;

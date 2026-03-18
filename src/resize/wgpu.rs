@@ -131,7 +131,11 @@ impl std::fmt::Display for WgpuResizeError {
             }
             Self::InvalidChannelCount(ch) => write!(f, "Invalid channel count: {}", ch),
             Self::BufferSizeMismatch { expected, actual } => {
-                write!(f, "Buffer size mismatch: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "Buffer size mismatch: expected {}, got {}",
+                    expected, actual
+                )
             }
             Self::Initialization(msg) => write!(f, "Initialization failed: {}", msg),
             Self::Shader(msg) => write!(f, "Shader error: {}", msg),
@@ -319,7 +323,9 @@ impl WgpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|e| WgpuResizeError::Initialization(format!("request_adapter failed: {e:?}")))?;
+            .map_err(|e| {
+                WgpuResizeError::Initialization(format!("request_adapter failed: {e:?}"))
+            })?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -387,7 +393,8 @@ impl WgpuResizer {
         let gpu_src_size = pixel_count_src * 4;
         let gpu_dst_size = pixel_count_dst * 4;
 
-        let gpu_out = self.dispatch_resize(params, &src_rgba, gpu_src_size, gpu_dst_size, true)?
+        let gpu_out = self
+            .dispatch_resize(params, &src_rgba, gpu_src_size, gpu_dst_size, true)?
             .ok_or_else(|| WgpuResizeError::Execution("missing readback data".to_string()))?;
 
         Ok(compact_from_rgba(
@@ -417,10 +424,9 @@ impl WgpuResizer {
         let gpu_dst_size = pixel_count_dst * 4;
 
         self.dispatch_resize(params, &src_rgba, gpu_src_size, gpu_dst_size, false)?;
-        let buffers = self
-            .resize_buffers
-            .as_ref()
-            .ok_or_else(|| WgpuResizeError::Execution("resize buffers not initialized".to_string()))?;
+        let buffers = self.resize_buffers.as_ref().ok_or_else(|| {
+            WgpuResizeError::Execution("resize buffers not initialized".to_string())
+        })?;
 
         Ok(WgpuResizeOutput {
             buffer: buffers.gpu_dst.clone(),
@@ -448,10 +454,9 @@ impl WgpuResizer {
             batch_size * 3 * input.width as usize * input.height as usize * size_of::<f32>();
         self.ensure_convert_buffers(dst_bytes)?;
 
-        let buffers = self
-            .convert_buffers
-            .as_ref()
-            .ok_or_else(|| WgpuResizeError::Execution("converter buffers not initialized".to_string()))?;
+        let buffers = self.convert_buffers.as_ref().ok_or_else(|| {
+            WgpuResizeError::Execution("converter buffers not initialized".to_string())
+        })?;
         let pipeline = self
             .convert_pipelines
             .get(&ConversionType::Rgba8ToNchwF32)
@@ -489,12 +494,12 @@ impl WgpuResizer {
                 ],
             });
 
-        let mut encoder =
-            self.ctx
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("lege-wgpu-convert-encoder"),
-                });
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("lege-wgpu-convert-encoder"),
+            });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -528,19 +533,18 @@ impl WgpuResizer {
         batch_size: usize,
     ) -> Result<Vec<f32>> {
         let _output = self.convert_to_nchw_f32_on_gpu(input, batch_size)?;
-        let buffers = self
-            .convert_buffers
-            .as_ref()
-            .ok_or_else(|| WgpuResizeError::Execution("converter buffers not initialized".to_string()))?;
+        let buffers = self.convert_buffers.as_ref().ok_or_else(|| {
+            WgpuResizeError::Execution("converter buffers not initialized".to_string())
+        })?;
         let dst_bytes =
             batch_size * 3 * input.width as usize * input.height as usize * size_of::<f32>();
 
-        let mut encoder =
-            self.ctx
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("lege-wgpu-convert-readback-encoder"),
-                });
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("lege-wgpu-convert-readback-encoder"),
+            });
         encoder.copy_buffer_to_buffer(
             &buffers.gpu_dst_nchw,
             0,
@@ -635,17 +639,17 @@ impl WgpuResizer {
                     immediate_size: 0,
                 });
 
-        let pipeline =
-            self.ctx
-                .device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("lege-wgpu-resize-pipeline"),
-                    layout: Some(&pipeline_layout),
-                    module: &module,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                });
+        let pipeline = self
+            .ctx
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("lege-wgpu-resize-pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         self.resize_pipelines.insert(
             filter,
@@ -773,17 +777,17 @@ impl WgpuResizer {
                     immediate_size: 0,
                 });
 
-        let pipeline =
-            self.ctx
-                .device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("lege-wgpu-convert-pipeline"),
-                    layout: Some(&pipeline_layout),
-                    module: &module,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                });
+        let pipeline = self
+            .ctx
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("lege-wgpu-convert-pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         self.convert_pipelines.insert(
             conversion,
@@ -850,10 +854,9 @@ impl WgpuResizer {
         self.ensure_pipeline(params.filter)?;
         self.ensure_buffers(gpu_src_size, gpu_dst_size)?;
 
-        let buffers = self
-            .resize_buffers
-            .as_ref()
-            .ok_or_else(|| WgpuResizeError::Execution("resize buffers not initialized".to_string()))?;
+        let buffers = self.resize_buffers.as_ref().ok_or_else(|| {
+            WgpuResizeError::Execution("resize buffers not initialized".to_string())
+        })?;
         let pipeline = self
             .resize_pipelines
             .get(&params.filter)
@@ -901,12 +904,12 @@ impl WgpuResizer {
                 ],
             });
 
-        let mut encoder =
-            self.ctx
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("lege-wgpu-resize-encoder"),
-                });
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("lege-wgpu-resize-encoder"),
+            });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -947,7 +950,8 @@ impl WgpuResizer {
             return Ok(None);
         }
 
-        self.read_mapped_bytes(&buffers.readback, gpu_dst_size).map(Some)
+        self.read_mapped_bytes(&buffers.readback, gpu_dst_size)
+            .map(Some)
     }
 
     fn read_mapped_bytes(&self, buffer: &wgpu::Buffer, size: usize) -> Result<Vec<u8>> {
