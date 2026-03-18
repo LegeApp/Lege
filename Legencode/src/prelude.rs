@@ -5,6 +5,7 @@ pub use crate::streamline::{
     EncodingResult,
     EncodingSettings,
     ImageBuffer,
+    Jbig2Mode,
     Jbig2Settings,
     Jp2Settings,
     JpegSettings,

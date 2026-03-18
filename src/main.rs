@@ -1,9 +1,11 @@
+use Legencode::streamline::Jbig2Mode;
 use anyhow::{Result, anyhow, bail};
 use lege::progress::{self, ProgressUpdate};
 use lege::text_loader::CLI_TEXT;
 use lege::{
-    AppConfig, CoverFormat, PageRange, PipelineConfig, error_println, info_println,
-    is_ocr_available, run_pdf_to_png_mode, run_png_mode, run_pdf_layout_crop_debug, DebugCropKind, target_profiles,
+    AppConfig, CoverFormat, DebugCropKind, PageRange, PipelineConfig, error_println, info_println,
+    is_ocr_available, run_images_to_images_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
+    run_pdf_to_png_mode, run_png_mode, target_profiles,
 };
 
 mod version;
@@ -17,25 +19,25 @@ use version::display_version;
 // ============================================================================
 pub struct ColorConfig {
     // Interactive prompts
-    pub prompt: &'static str,           // Prompt color (empty = terminal default)
-    pub info: &'static str,             // Info color (empty = terminal default)
-    pub highlight: &'static str,        // Highlight color (empty = terminal default)
-    
+    pub prompt: &'static str,    // Prompt color (empty = terminal default)
+    pub info: &'static str,      // Info color (empty = terminal default)
+    pub highlight: &'static str, // Highlight color (empty = terminal default)
+
     // Processing stages - subtle, muted colors for visual pleasure
-    pub page_start: &'static str,       // Soft blue for page starting
-    pub page_complete: &'static str,    // Medium-bright green - MOST STRIKING
-    pub ocr: &'static str,              // Muted purple/gray for OCR operations
-    pub render: &'static str,           // Soft cyan for rendering
-    pub detect: &'static str,           // Soft yellow for detection/inference
-    pub encode: &'static str,           // Soft magenta for encoding
-    pub worker: &'static str,           // Dim cyan for worker/slot messages
-    pub dag: &'static str,              // Very dim for DAG internals
-    
+    pub page_start: &'static str,    // Soft blue for page starting
+    pub page_complete: &'static str, // Medium-bright green - MOST STRIKING
+    pub ocr: &'static str,           // Muted purple/gray for OCR operations
+    pub render: &'static str,        // Soft cyan for rendering
+    pub detect: &'static str,        // Soft yellow for detection/inference
+    pub encode: &'static str,        // Soft magenta for encoding
+    pub worker: &'static str,        // Dim cyan for worker/slot messages
+    pub dag: &'static str,           // Very dim for DAG internals
+
     // Status labels
-    pub status_label: &'static str,     // Dim blue for "Status" label
-    pub detail_label: &'static str,     // Dim cyan for "Detail" label
-    
-    pub reset: &'static str,            // Reset to default
+    pub status_label: &'static str, // Dim blue for "Status" label
+    pub detail_label: &'static str, // Dim cyan for "Detail" label
+
+    pub reset: &'static str, // Reset to default
 }
 
 pub const COLORS: ColorConfig = ColorConfig {
@@ -44,22 +46,22 @@ pub const COLORS: ColorConfig = ColorConfig {
     prompt: "",
     info: "",
     highlight: "",
-    
+
     // Processing stages - subtle palette
-    page_start: "\x1b[94m",      // Bright blue (soft)
-    page_complete: "\x1b[92m",   // Bright green (STRIKING) - the star of the show
-    ocr: "\x1b[90m",             // Bright black (muted gray)
-    render: "\x1b[96m",          // Bright cyan (soft)
-    detect: "\x1b[93m",          // Bright yellow (soft)
-    encode: "\x1b[95m",          // Bright magenta (soft)
-    worker: "\x1b[2;36m",        // Dim cyan (very subtle)
-    dag: "\x1b[2;90m",           // Dim bright-black (almost invisible)
-    
+    page_start: "\x1b[94m",    // Bright blue (soft)
+    page_complete: "\x1b[92m", // Bright green (STRIKING) - the star of the show
+    ocr: "\x1b[90m",           // Bright black (muted gray)
+    render: "\x1b[96m",        // Bright cyan (soft)
+    detect: "\x1b[93m",        // Bright yellow (soft)
+    encode: "\x1b[95m",        // Bright magenta (soft)
+    worker: "\x1b[2;36m",      // Dim cyan (very subtle)
+    dag: "\x1b[2;90m",         // Dim bright-black (almost invisible)
+
     // Status labels
-    status_label: "\x1b[2;34m",  // Dim blue
-    detail_label: "\x1b[2;36m",  // Dim cyan
-    
-    reset: "\x1b[0m",            // Reset
+    status_label: "\x1b[2;34m", // Dim blue
+    detail_label: "\x1b[2;36m", // Dim cyan
+
+    reset: "\x1b[0m", // Reset
 };
 // ============================================================================
 
@@ -96,11 +98,7 @@ fn fmt1(template: &str, a: impl std::fmt::Display) -> String {
     template.replacen("{}", &a.to_string(), 1)
 }
 
-fn fmt2(
-    template: &str,
-    a: impl std::fmt::Display,
-    b: impl std::fmt::Display,
-) -> String {
+fn fmt2(template: &str, a: impl std::fmt::Display, b: impl std::fmt::Display) -> String {
     template
         .replacen("{}", &a.to_string(), 1)
         .replacen("{}", &b.to_string(), 1)
@@ -163,46 +161,48 @@ fn hardware_acceleration_status() -> (bool, String) {
 #[derive(Default)]
 struct CliOptions {
     // --- Output format ---
-    text_format: Option<String>,        // --text-format ccitt4|jbig2|djvu
-    cover_format: Option<String>,       // --cover-format jpeg|jp2|ccitt4|jbig2|none
+    text_format: Option<String>,  // --text-format ccitt4|jbig2|djvu
+    cover_format: Option<String>, // --cover-format jpeg|jp2|ccitt4|jbig2|none
 
     // --- Binarization ---
-    binarization: Option<String>,       // --binarization adaptive|fixed|heavy
-    threshold: Option<u8>,              // --threshold 200
-    sauvola_k: Option<f32>,             // --sauvola-k 0.3
+    binarization: Option<String>, // --binarization adaptive|fixed|heavy
+    threshold: Option<u8>,        // --threshold 200
+    sauvola_k: Option<f32>,       // --sauvola-k 0.3
 
     // --- Quality ---
-    djvu_quality: Option<u8>,           // --djvu-quality 100
-    high_quality: bool,                 // --high-quality
+    djvu_quality: Option<u8>, // --djvu-quality 100
+    high_quality: bool,       // --high-quality
 
     // --- Output ---
-    output_dir: Option<PathBuf>,        // --output <dir>
+    output_dir: Option<PathBuf>, // --output <dir>
 
     // --- Processing toggles ---
-    dither: bool,                       // --dither
-    no_layout: bool,                    // --no-layout
-    ocr: Option<bool>,                  // --ocr / --no-ocr
-    no_cover: bool,                     // --no-cover
-    pdf_compat: bool,                   // --pdf-compat
-    invert: bool,                       // --invert
-    symbol_mode: bool,                  // --symbol-mode
-    halftone: bool,                     // --halftone
-    deskew: bool,                       // --deskew
-    center_margins: bool,               // --center-margins
-    crop_margins: bool,                 // --crop-margins
-    force_crop: bool,                   // --force-crop
-    image_only: bool,                   // --image-only
-    original_images: bool,              // --original-images
-    fast_resize: bool,                  // --fast-resize (force CPU fast_image_resize backend)
+    dither: bool,                  // --dither
+    no_layout: bool,               // --no-layout
+    ocr: Option<bool>,             // --ocr / --no-ocr
+    no_cover: bool,                // --no-cover
+    pdf_compat: bool,              // --pdf-compat
+    invert: bool,                  // --invert
+    jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
+    halftone: bool,                // --halftone
+    deskew: bool,                  // --deskew
+    center_margins: bool,          // --center-margins
+    crop_margins: bool,            // --crop-margins
+    force_crop: bool,              // --force-crop
+    image_only: bool,              // --image-only
+    original_images: bool,         // --original-images
+    fast_resize: bool,             // --fast-resize (force CPU fast_image_resize backend)
 
     // --- Language ---
-    language: Option<String>,           // --language <code>
+    language: Option<String>, // --language <code>
 
     // --- Debug / data-generation modes ---
-    pdf_to_png: Option<u32>,            // --pdf-to-png HEIGHT
-    png_folder: bool,                   // --png-folder  (first positional arg is the folder)
-    crop_areas: Option<String>,         // --crop-areas text|image|both
-    debug_format: Option<String>,       // --format png|jpg  (for --crop-areas)
+    pdf_to_png: Option<u32>,      // --pdf-to-png HEIGHT
+    png_folder: bool,             // --png-folder  (first positional arg is the folder)
+    crop_areas: Option<String>,   // --crop-areas text|image|both
+    debug_format: Option<String>, // --format png|jpg  (for --crop-areas)
+    pdf_to_images: bool,          // --pdf-to-images
+    images_to_images: bool,       // --images-to-images
 }
 
 /// Extract all `--flag` and `--key value` processing options from the arg list,
@@ -224,44 +224,74 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
         match arg.as_str() {
             // --- key-value options ---
             "--text-format" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --text-format"))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --text-format"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
                     "ccitt4" | "jbig2" | "djvu" => {}
-                    _ => bail!("Invalid --text-format '{}'. Use: ccitt4, jbig2, or djvu", val),
+                    _ => bail!(
+                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, or djvu",
+                        val
+                    ),
                 }
                 opts.text_format = Some(normalized);
                 i += 2;
             }
             "--cover-format" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --cover-format"))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --cover-format"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
                     "jpeg" | "jp2" | "ccitt4" | "jbig2" | "none" => {}
-                    _ => bail!("Invalid --cover-format '{}'. Use: jpeg, jp2, ccitt4, jbig2, or none", val),
+                    _ => bail!(
+                        "Invalid --cover-format '{}'. Use: jpeg, jp2, ccitt4, jbig2, or none",
+                        val
+                    ),
                 }
                 opts.cover_format = Some(normalized);
                 i += 2;
             }
+            "--jbig2-mode" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --jbig2-mode"))?;
+                opts.jbig2_mode = Some(parse_jbig2_mode_flag(val)?);
+                i += 2;
+            }
             "--binarization" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --binarization"))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --binarization"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
                     "adaptive" | "fixed" | "heavy" => {}
-                    _ => bail!("Invalid --binarization '{}'. Use: adaptive, fixed, or heavy", val),
+                    _ => bail!(
+                        "Invalid --binarization '{}'. Use: adaptive, fixed, or heavy",
+                        val
+                    ),
                 }
                 opts.binarization = Some(normalized);
                 i += 2;
             }
             "--threshold" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --threshold"))?;
-                let thr: u8 = val.parse().map_err(|_| anyhow!("Invalid --threshold '{}'. Must be 0-255", val))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --threshold"))?;
+                let thr: u8 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid --threshold '{}'. Must be 0-255", val))?;
                 opts.threshold = Some(thr);
                 i += 2;
             }
             "--sauvola-k" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --sauvola-k"))?;
-                let k: f32 = val.parse().map_err(|_| anyhow!("Invalid --sauvola-k '{}'. Must be 0.0-1.0", val))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --sauvola-k"))?;
+                let k: f32 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid --sauvola-k '{}'. Must be 0.0-1.0", val))?;
                 if !(0.0..=1.0).contains(&k) {
                     bail!("--sauvola-k must be between 0.0 and 1.0, got: {}", k);
                 }
@@ -269,8 +299,12 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 i += 2;
             }
             "--djvu-quality" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --djvu-quality"))?;
-                let q: u8 = val.parse().map_err(|_| anyhow!("Invalid --djvu-quality '{}'. Must be 1-100", val))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --djvu-quality"))?;
+                let q: u8 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid --djvu-quality '{}'. Must be 1-100", val))?;
                 if q == 0 {
                     bail!("--djvu-quality must be between 1 and 100");
                 }
@@ -278,18 +312,28 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 i += 2;
             }
             "--output" | "--out" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after {}", arg))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after {}", arg))?;
                 opts.output_dir = Some(PathBuf::from(sanitize_path_arg(val)));
                 i += 2;
             }
             "--language" => {
-                let raw = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --language"))?;
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --language"))?;
                 let normalized = raw.trim().to_ascii_lowercase();
                 if normalized.is_empty() {
                     bail!("--language value cannot be empty");
                 }
-                if !normalized.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
-                    bail!("Invalid --language '{}'. Use only a-z, 0-9, and underscore", raw);
+                if !normalized
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                {
+                    bail!(
+                        "Invalid --language '{}'. Use only a-z, 0-9, and underscore",
+                        raw
+                    );
                 }
                 opts.language = Some(normalized);
                 i += 2;
@@ -297,8 +341,12 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
 
             // --- debug / data-generation key-value ---
             "--pdf-to-png" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing height after --pdf-to-png"))?;
-                let height: u32 = val.parse().map_err(|_| anyhow!("Invalid height: {}", val))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing height after --pdf-to-png"))?;
+                let height: u32 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid height: {}", val))?;
                 if height < 100 || height > 10000 {
                     bail!("--pdf-to-png height must be between 100 and 10000 pixels");
                 }
@@ -306,40 +354,115 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 i += 2;
             }
             "--crop-areas" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing mode after --crop-areas (text|image|both)"))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing mode after --crop-areas (text|image|both)"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
                     "text" | "image" | "both" => {}
-                    _ => bail!("Invalid --crop-areas mode '{}'. Use: text, image, or both", val),
+                    _ => bail!(
+                        "Invalid --crop-areas mode '{}'. Use: text, image, or both",
+                        val
+                    ),
                 }
                 opts.crop_areas = Some(normalized);
                 i += 2;
             }
             "--format" => {
-                let val = args.get(i + 1).ok_or_else(|| anyhow!("Missing value after --format"))?;
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --format"))?;
                 opts.debug_format = Some(val.clone());
                 i += 2;
             }
 
+            // --- debug / data-generation boolean flags ---
+            "--png-folder" => {
+                opts.png_folder = true;
+                i += 1;
+            }
+            "--pdf-to-images" => {
+                opts.pdf_to_images = true;
+                i += 1;
+            }
+            "--images-to-images" => {
+                opts.images_to_images = true;
+                i += 1;
+            }
+
             // --- boolean flags ---
-            "--png-folder" => { opts.png_folder = true; i += 1; }
-            "--dither" => { opts.dither = true; i += 1; }
-            "--no-layout" => { opts.no_layout = true; i += 1; }
-            "--ocr" => { opts.ocr = Some(true); i += 1; }
-            "--no-ocr" => { opts.ocr = Some(false); i += 1; }
-            "--no-cover" => { opts.no_cover = true; i += 1; }
-            "--pdf-compat" => { opts.pdf_compat = true; i += 1; }
-            "--invert" => { opts.invert = true; i += 1; }
-            "--symbol-mode" => { opts.symbol_mode = true; i += 1; }
-            "--halftone" => { opts.halftone = true; i += 1; }
-            "--deskew" => { opts.deskew = true; i += 1; }
-            "--high-quality" => { opts.high_quality = true; i += 1; }
-            "--center-margins" => { opts.center_margins = true; i += 1; }
-            "--crop-margins" => { opts.crop_margins = true; i += 1; }
-            "--force-crop" => { opts.force_crop = true; i += 1; }
-            "--image-only" => { opts.image_only = true; i += 1; }
-            "--original-images" => { opts.original_images = true; i += 1; }
-            "--fast-resize" => { opts.fast_resize = true; i += 1; }
+            "--dither" => {
+                opts.dither = true;
+                i += 1;
+            }
+            "--no-layout" => {
+                opts.no_layout = true;
+                i += 1;
+            }
+            "--ocr" => {
+                opts.ocr = Some(true);
+                i += 1;
+            }
+            "--no-ocr" => {
+                opts.ocr = Some(false);
+                i += 1;
+            }
+            "--no-cover" => {
+                opts.no_cover = true;
+                i += 1;
+            }
+            "--pdf-compat" => {
+                opts.pdf_compat = true;
+                i += 1;
+            }
+            "--invert" => {
+                opts.invert = true;
+                i += 1;
+            }
+            "--symbol-mode" => {
+                opts.jbig2_mode = Some(Jbig2Mode::Symbol);
+                i += 1;
+            }
+            "--sym-unify" => {
+                opts.jbig2_mode = Some(Jbig2Mode::SymUnify);
+                i += 1;
+            }
+            "--halftone" => {
+                opts.halftone = true;
+                i += 1;
+            }
+            "--deskew" => {
+                opts.deskew = true;
+                i += 1;
+            }
+            "--high-quality" => {
+                opts.high_quality = true;
+                i += 1;
+            }
+            "--center-margins" => {
+                opts.center_margins = true;
+                i += 1;
+            }
+            "--crop-margins" => {
+                opts.crop_margins = true;
+                i += 1;
+            }
+            "--force-crop" => {
+                opts.force_crop = true;
+                i += 1;
+            }
+            "--image-only" => {
+                opts.image_only = true;
+                i += 1;
+            }
+            "--original-images" => {
+                opts.original_images = true;
+                i += 1;
+            }
+            "--fast-resize" => {
+                opts.fast_resize = true;
+                i += 1;
+            }
 
             _ => {
                 remaining.push(args[i].clone());
@@ -349,6 +472,19 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
     }
 
     Ok((remaining, opts))
+}
+
+fn parse_jbig2_mode_flag(raw: &str) -> Result<Jbig2Mode> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "generic" => Ok(Jbig2Mode::Generic),
+        "symbol" => Ok(Jbig2Mode::Symbol),
+        "sym-unify" | "sym_unify" | "symunify" => Ok(Jbig2Mode::SymUnify),
+        _ => bail!(
+            "Invalid --jbig2-mode '{}'. Use: generic, symbol, or sym-unify",
+            raw
+        ),
+    }
 }
 
 fn main() -> Result<()> {
@@ -361,7 +497,13 @@ fn main() -> Result<()> {
     // Version flag
     if args.iter().any(|arg| arg == "--version" || arg == "-v") {
         println!("{}", fmt1(&CLI_TEXT.main.version_line, display_version()));
-        println!("{}", fmt1(&CLI_TEXT.main.internal_version_line, version::internal_version()));
+        println!(
+            "{}",
+            fmt1(
+                &CLI_TEXT.main.internal_version_line,
+                version::internal_version()
+            )
+        );
         return Ok(());
     }
 
@@ -431,7 +573,13 @@ fn main() -> Result<()> {
     }
 
     // No extra positional args and no debug modes -> interactive CLI wizard
-    if args.len() == 1 && cli_opts.pdf_to_png.is_none() && !cli_opts.png_folder && cli_opts.crop_areas.is_none() {
+    if args.len() == 1
+        && cli_opts.pdf_to_png.is_none()
+        && !cli_opts.png_folder
+        && cli_opts.crop_areas.is_none()
+        && !cli_opts.pdf_to_images
+        && !cli_opts.images_to_images
+    {
         if cli_opts.language.is_some() {
             bail!("--language requires a direct CLI input file");
         }
@@ -443,34 +591,61 @@ fn main() -> Result<()> {
 
     // PDF-to-PNG: lege <file.pdf> [page-range] --pdf-to-png HEIGHT
     if let Some(png_height) = cli_opts.pdf_to_png {
-        let pdf_arg = args.get(1).ok_or_else(|| anyhow!("Missing PDF path for --pdf-to-png"))?;
+        let pdf_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing PDF path for --pdf-to-png"))?;
         let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
-        validate_pdf_file(pdf_path.to_str().ok_or_else(|| anyhow!("Invalid PDF path"))?)?;
+        validate_pdf_file(
+            pdf_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
+        )?;
         let page_range = args.get(2).and_then(|c| {
-            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") { Some(c.clone()) } else { None }
+            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                Some(c.clone())
+            } else {
+                None
+            }
         });
         return run_pdf_to_png_mode(pdf_path, page_range, png_height, AppConfig::default());
     }
 
     // PNG-folder inference: lege <folder> --png-folder [--deskew]
     if cli_opts.png_folder {
-        let folder_arg = args.get(1).ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
+        let folder_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
-        return run_png_mode(folder_path, cli_opts.output_dir, AppConfig::default(), cli_opts.deskew);
+        return run_png_mode(
+            folder_path,
+            cli_opts.output_dir,
+            AppConfig::default(),
+            cli_opts.deskew,
+        );
     }
 
     // Crop-areas debug: lege <file.pdf> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg] [--deskew]
     if let Some(ref crop_mode) = cli_opts.crop_areas {
-        let pdf_arg = args.get(1).ok_or_else(|| anyhow!("Missing PDF path for --crop-areas"))?;
+        let pdf_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing PDF path for --crop-areas"))?;
         let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
-        validate_pdf_file(pdf_path.to_str().ok_or_else(|| anyhow!("Invalid PDF path"))?)?;
+        validate_pdf_file(
+            pdf_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
+        )?;
         let crop_kind = match crop_mode.as_str() {
             "text" => DebugCropKind::Text,
             "image" => DebugCropKind::Image,
             "both" | _ => DebugCropKind::Both,
         };
         let page_range = args.get(2).and_then(|c| {
-            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") { Some(c.clone()) } else { None }
+            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                Some(c.clone())
+            } else {
+                None
+            }
         });
         return tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -484,6 +659,74 @@ fn main() -> Result<()> {
                 cli_opts.deskew,
                 cli_opts.debug_format.as_deref(),
             ));
+    }
+
+    // PDF-to-Images: lege <file.pdf> [page-range] --pdf-to-images [--deskew] [--no-layout]
+    // Or: lege --pdf-to-images <file.pdf> [page-range] [--deskew] [--no-layout]
+    if cli_opts.pdf_to_images {
+        // Find PDF path - could be args[1] or args[2] depending on order
+        let pdf_arg = if args.len() > 1
+            && !args[1].starts_with('-')
+            && args[1].to_lowercase().ends_with(".pdf")
+        {
+            args[1].clone()
+        } else if args.len() > 2
+            && !args[2].starts_with('-')
+            && args[2].to_lowercase().ends_with(".pdf")
+        {
+            args[2].clone()
+        } else {
+            return Err(anyhow!(
+                "Missing PDF path for --pdf-to-images. Usage: lege <file.pdf> --pdf-to-images [page-range] [options...] or lege --pdf-to-images <file.pdf> [page-range] [options...]"
+            ));
+        };
+        let pdf_path = PathBuf::from(sanitize_path_arg(&pdf_arg));
+        validate_pdf_file(
+            pdf_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
+        )?;
+
+        // Find page range - check both positions, preferring the non-PDF one
+        let page_range = if args.len() > 2
+            && !args[2].starts_with('-')
+            && !args[2].to_lowercase().ends_with(".pdf")
+        {
+            Some(args[2].clone())
+        } else if args.len() > 1
+            && !args[1].starts_with('-')
+            && !args[1].to_lowercase().ends_with(".pdf")
+        {
+            Some(args[1].clone())
+        } else {
+            None
+        };
+
+        return run_pdf_to_images_mode(
+            pdf_path,
+            page_range,
+            cli_opts.output_dir,
+            AppConfig::default(),
+            !cli_opts.no_layout,
+            cli_opts.deskew,
+            cli_opts.image_only,
+        );
+    }
+
+    // Images-to-Images: lege <folder> --images-to-images [--deskew] [--no-layout]
+    if cli_opts.images_to_images {
+        let folder_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing folder path for --images-to-images"))?;
+        let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
+        return run_images_to_images_mode(
+            folder_path,
+            cli_opts.output_dir,
+            AppConfig::default(),
+            !cli_opts.no_layout,
+            cli_opts.deskew,
+            cli_opts.image_only,
+        );
     }
 
     // ----- Normal processing mode -----
@@ -617,12 +860,18 @@ fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
     // e.g. "1600 1200" => height 1600, width 1200.
     let whitespace_parts: Vec<&str> = trimmed.split_whitespace().collect();
     if whitespace_parts.len() == 2 {
-        let height: u32 = whitespace_parts[0]
-            .parse()
-            .map_err(|_| anyhow!("Invalid height in target specification: {}", whitespace_parts[0]))?;
-        let width: u32 = whitespace_parts[1]
-            .parse()
-            .map_err(|_| anyhow!("Invalid width in target specification: {}", whitespace_parts[1]))?;
+        let height: u32 = whitespace_parts[0].parse().map_err(|_| {
+            anyhow!(
+                "Invalid height in target specification: {}",
+                whitespace_parts[0]
+            )
+        })?;
+        let width: u32 = whitespace_parts[1].parse().map_err(|_| {
+            anyhow!(
+                "Invalid width in target specification: {}",
+                whitespace_parts[1]
+            )
+        })?;
         if width == 0 || height == 0 {
             bail!("Target dimensions must be greater than zero");
         }
@@ -689,9 +938,23 @@ fn slugify_profile_name(name: &str) -> String {
 fn print_target_profiles() {
     println!("{}", CLI_TEXT.main.target_profiles_header);
     for profile in target_profiles::TARGET_DEVICE_PROFILES {
-        println!("{}", fmt3(&CLI_TEXT.main.target_profile_item, profile.name, profile.width, profile.height));
+        println!(
+            "{}",
+            fmt3(
+                &CLI_TEXT.main.target_profile_item,
+                profile.name,
+                profile.width,
+                profile.height
+            )
+        );
     }
-    println!("{}", fmt1(&CLI_TEXT.main.target_profile_proportional, target_profiles::PROPORTIONAL_OPTION_LABEL));
+    println!(
+        "{}",
+        fmt1(
+            &CLI_TEXT.main.target_profile_proportional,
+            target_profiles::PROPORTIONAL_OPTION_LABEL
+        )
+    );
     println!();
     println!("{}", CLI_TEXT.main.target_profiles_custom_note);
     println!("{}", CLI_TEXT.main.target_profiles_page_range_note);
@@ -828,8 +1091,15 @@ fn handle_simple_processing(
             pipeline_config.set_binarization(fixed_config);
         }
     }
-    if cli_opts.symbol_mode {
-        pipeline_config.set_jbig2_symbol_mode(true);
+    if pipeline_config.text_format() == "jbig2" {
+        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or_else(|| {
+            if pipeline_config.enable_layout_detection() {
+                Jbig2Mode::Symbol
+            } else {
+                Jbig2Mode::Generic
+            }
+        });
+        pipeline_config.set_jbig2_mode(selected_mode);
     }
     if cli_opts.halftone {
         pipeline_config.set_jbig2_halftone_image_regions(true);
@@ -911,15 +1181,30 @@ fn handle_simple_processing(
 
     // Show batch summary
     info_println!("\n{}", CLI_TEXT.main.simple_mode_header);
-    info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_files_queued, file_paths.len()));
+    info_println!(
+        "{}",
+        fmt1(&CLI_TEXT.main.simple_mode_files_queued, file_paths.len())
+    );
     for path in &file_paths {
-        info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_file_item, path.display()));
+        info_println!(
+            "{}",
+            fmt1(&CLI_TEXT.main.simple_mode_file_item, path.display())
+        );
     }
     if let Some(ref range) = page_range {
         info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_page_range, range));
     }
-    info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_settings, &target_description));
-    info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_output_directory, output_dir.display()));
+    info_println!(
+        "{}",
+        fmt1(&CLI_TEXT.main.simple_mode_settings, &target_description)
+    );
+    info_println!(
+        "{}",
+        fmt1(
+            &CLI_TEXT.main.simple_mode_output_directory,
+            output_dir.display()
+        )
+    );
     info_println!("{}\n", CLI_TEXT.main.simple_mode_footer);
 
     let total_files = file_paths.len();
@@ -932,12 +1217,29 @@ fn handle_simple_processing(
         if total_files > 1 {
             info_println!(
                 "{}",
-                fmt3(&CLI_TEXT.main.simple_mode_batch_item, index + 1, total_files, file_path.display())
+                fmt3(
+                    &CLI_TEXT.main.simple_mode_batch_item,
+                    index + 1,
+                    total_files,
+                    file_path.display()
+                )
             );
-            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_batch_output, output_path.display()));
+            info_println!(
+                "{}",
+                fmt1(
+                    &CLI_TEXT.main.simple_mode_batch_output,
+                    output_path.display()
+                )
+            );
         } else {
-            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_input, file_path.display()));
-            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_output, output_path.display()));
+            info_println!(
+                "{}",
+                fmt1(&CLI_TEXT.main.simple_mode_input, file_path.display())
+            );
+            info_println!(
+                "{}",
+                fmt1(&CLI_TEXT.main.simple_mode_output, output_path.display())
+            );
         }
 
         match process_single_file(file_path.clone(), output_path.clone(), per_file_config) {
@@ -946,13 +1248,25 @@ fn handle_simple_processing(
                     let remaining = total_files - index - 1;
                     info_println!(
                         "{}",
-                        fmt3(&CLI_TEXT.main.simple_mode_batch_completed, index + 1, total_files, remaining)
+                        fmt3(
+                            &CLI_TEXT.main.simple_mode_batch_completed,
+                            index + 1,
+                            total_files,
+                            remaining
+                        )
                     );
                 }
             }
             Err(error) => {
                 overall_ok = false;
-                error_println!("{}", fmt2(&CLI_TEXT.main.simple_mode_error_processing, file_path.display(), error));
+                error_println!(
+                    "{}",
+                    fmt2(
+                        &CLI_TEXT.main.simple_mode_error_processing,
+                        file_path.display(),
+                        error
+                    )
+                );
             }
         }
     }
@@ -996,7 +1310,10 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // Combined input: file path and processing options
     println!("{}", CLI_TEXT.app.main_title);
     println!("{}", CLI_TEXT.app.file_prompt);
-    print!("{}{} {}", COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset);
+    print!(
+        "{}{} {}",
+        COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset
+    );
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -1023,6 +1340,13 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         return handle_pdf_to_png(input);
     }
 
+    if input.contains("--pdf-to-images") {
+        return handle_pdf_to_images(input);
+    }
+
+    if input.contains("--images-to-images") {
+        return handle_images_to_images(input);
+    }
 
     // Parse file paths and page range
     let (files, page_range) = parse_file_paths_with_range(input);
@@ -1046,12 +1370,18 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
 
         match has_ocr {
             Ok(true) => {
-                println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.messages.ocr_detected, COLORS.reset);
+                println!(
+                    "\n{}{}{}",
+                    COLORS.info, CLI_TEXT.interactive.messages.ocr_detected, COLORS.reset
+                );
                 println!("{}", CLI_TEXT.interactive.messages.ocr_detected_msg);
                 println!("{}\n", CLI_TEXT.interactive.messages.ocr_detected_tip);
             }
             Ok(false) => {
-                println!("\n{}{}{}", COLORS.highlight, CLI_TEXT.interactive.messages.no_ocr_detected, COLORS.reset);
+                println!(
+                    "\n{}{}{}",
+                    COLORS.highlight, CLI_TEXT.interactive.messages.no_ocr_detected, COLORS.reset
+                );
                 println!("{}\n", CLI_TEXT.interactive.messages.no_ocr_detected_msg);
             }
             Err(e) => {
@@ -1077,7 +1407,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         pdf_compatibility,
         no_binarization,
         invert_input,
-        symbol_mode,
+        jbig2_mode,
         center_margins,
         crop_margins,
         force_crop,
@@ -1086,12 +1416,30 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         jbig2_halftone_mode,
         djvu_quality,
     ) = loop {
-        print!("\n{}{}{}\n", COLORS.info, CLI_TEXT.interactive.processing_options_title, COLORS.reset);
-        println!("{}{}{}", COLORS.prompt, CLI_TEXT.interactive.format_prompt, COLORS.reset);
-        println!("{}{}{}", COLORS.prompt, CLI_TEXT.interactive.modifiers_prompt, COLORS.reset);
-        println!("{}{}{}", COLORS.highlight, CLI_TEXT.interactive.examples_prompt, COLORS.reset);
-        println!("{}{}{}", COLORS.info, CLI_TEXT.interactive.default_prompt, COLORS.reset);
-        print!("{}{} {}", COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset);
+        print!(
+            "\n{}{}{}\n",
+            COLORS.info, CLI_TEXT.interactive.processing_options_title, COLORS.reset
+        );
+        println!(
+            "{}{}{}",
+            COLORS.prompt, CLI_TEXT.interactive.format_prompt, COLORS.reset
+        );
+        println!(
+            "{}{}{}",
+            COLORS.prompt, CLI_TEXT.interactive.modifiers_prompt, COLORS.reset
+        );
+        println!(
+            "{}{}{}",
+            COLORS.highlight, CLI_TEXT.interactive.examples_prompt, COLORS.reset
+        );
+        println!(
+            "{}{}{}",
+            COLORS.info, CLI_TEXT.interactive.default_prompt, COLORS.reset
+        );
+        print!(
+            "{}{} {}",
+            COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset
+        );
         io::stdout().flush()?;
 
         let mut format_input = String::new();
@@ -1110,7 +1458,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 pdf_compatibility,
                 no_binarization,
                 invert_input,
-                symbol_mode,
+                jbig2_mode,
                 center_margins,
                 crop_margins,
                 force_crop,
@@ -1131,7 +1479,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     pdf_compatibility,
                     no_binarization,
                     invert_input,
-                    symbol_mode,
+                    jbig2_mode,
                     center_margins,
                     crop_margins,
                     force_crop,
@@ -1152,14 +1500,27 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // When layout detection is disabled, only fixed threshold is valid — adaptive Sauvola
     // and heavy Sauvola are affected by image regions on the full uncroped page.
     let binarization_method = if layout_detection_enabled {
-        println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset);
-        println!("{}", fmt3(&CLI_TEXT.main.binarization_choices_template,
-            &CLI_TEXT.interactive.binarization_methods[0],
-            &CLI_TEXT.interactive.binarization_methods[1],
-            &CLI_TEXT.interactive.binarization_methods[2]
-        ));
-        println!("{}{}{}", COLORS.highlight, CLI_TEXT.interactive.binarization_advanced, COLORS.reset);
-        print!("{}{} {} ", COLORS.prompt, CLI_TEXT.interactive.binarization_prompt, COLORS.reset);
+        println!(
+            "\n{}{}{}",
+            COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset
+        );
+        println!(
+            "{}",
+            fmt3(
+                &CLI_TEXT.main.binarization_choices_template,
+                &CLI_TEXT.interactive.binarization_methods[0],
+                &CLI_TEXT.interactive.binarization_methods[1],
+                &CLI_TEXT.interactive.binarization_methods[2]
+            )
+        );
+        println!(
+            "{}{}{}",
+            COLORS.highlight, CLI_TEXT.interactive.binarization_advanced, COLORS.reset
+        );
+        print!(
+            "{}{} {} ",
+            COLORS.prompt, CLI_TEXT.interactive.binarization_prompt, COLORS.reset
+        );
         io::stdout().flush()?;
 
         let mut binarization_input = String::new();
@@ -1168,11 +1529,26 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
 
         parse_binarization_method(binarization_input)?
     } else {
-        println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset);
-        println!("{}{}{}", COLORS.highlight, CLI_TEXT.interactive.binarization_no_layout_note, COLORS.reset);
-        println!("{}[2] {}{}", COLORS.info, CLI_TEXT.interactive.binarization_methods[1], COLORS.reset);
-        println!("{}{}{}", COLORS.highlight, "Advanced: Specify value as '2 200' or '2 thr=200'", COLORS.reset);
-        print!("{}{} {} ", COLORS.prompt, "Fixed threshold value (0-255, default: 200):", COLORS.reset);
+        println!(
+            "\n{}{}{}",
+            COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset
+        );
+        println!(
+            "{}{}{}",
+            COLORS.highlight, CLI_TEXT.interactive.binarization_no_layout_note, COLORS.reset
+        );
+        println!(
+            "{}[2] {}{}",
+            COLORS.info, CLI_TEXT.interactive.binarization_methods[1], COLORS.reset
+        );
+        println!(
+            "{}{}{}",
+            COLORS.highlight, "Advanced: Specify value as '2 200' or '2 thr=200'", COLORS.reset
+        );
+        print!(
+            "{}{} {} ",
+            COLORS.prompt, "Fixed threshold value (0-255, default: 200):", COLORS.reset
+        );
         io::stdout().flush()?;
 
         let mut binarization_input = String::new();
@@ -1185,14 +1561,18 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
             format!("2 thr={}", raw)
         } else {
             // Validate it's a fixed-threshold form; reject adaptive/heavy
-            match raw.split_whitespace().next().unwrap_or("").to_lowercase().as_str() {
+            match raw
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_lowercase()
+                .as_str()
+            {
                 "1" | "adaptive" | "sauvola" | "otsu" | "3" | "heavy" | "sauvola_ai" | "onnx" => {
                     println!("{}", CLI_TEXT.interactive.binarization_no_layout_note);
                     "2".to_string()
                 }
-                _ => {
-                    parse_binarization_method(raw).unwrap_or_else(|_| "2".to_string())
-                }
+                _ => parse_binarization_method(raw).unwrap_or_else(|_| "2".to_string()),
             }
         }
     };
@@ -1203,19 +1583,13 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     let (effective_center_margins, effective_crop_margins, effective_force_crop) = if force_crop {
         // Force crop overrides everything
         if crop_margins || center_margins {
-            println!(
-                "{}",
-                CLI_TEXT.main.precedence_force_crop_note
-            );
+            println!("{}", CLI_TEXT.main.precedence_force_crop_note);
         }
         (false, true, true)
     } else if crop_margins {
         // Crop overrides center
         if center_margins {
-            println!(
-                "{}",
-                CLI_TEXT.main.precedence_crop_over_center_note
-            );
+            println!("{}", CLI_TEXT.main.precedence_crop_over_center_note);
         }
         (false, true, false)
     } else {
@@ -1226,10 +1600,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // When disabled, margin processing uses pixel-based analysis
     let effective_layout_detection = layout_detection_enabled;
     if (effective_center_margins || effective_crop_margins) && !layout_detection_enabled {
-        println!(
-            "{}",
-            CLI_TEXT.main.margin_without_layout_note
-        );
+        println!("{}", CLI_TEXT.main.margin_without_layout_note);
         if effective_crop_margins && !effective_force_crop {
             println!("{}", CLI_TEXT.main.footnote_override_note);
         }
@@ -1261,7 +1632,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     config.set_pdf_compatibility_mode(pdf_compatibility);
     config.set_invert_input(invert_input);
     config.set_enable_deskew(deskew_enabled);
-    config.set_jbig2_symbol_mode(symbol_mode);
+    config.set_jbig2_mode(jbig2_mode);
     config.set_jbig2_halftone_image_regions(jbig2_halftone_mode);
     config.set_keep_original_images(original_image);
 
@@ -1280,18 +1651,42 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     let target_summary = prompt_target_device(&mut config)?;
 
     // Log the selected options
-    println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.selected_options_title, COLORS.reset);
-    let text_format_display = if config.text_format() == "jbig2" && config.jbig2_symbol_mode() {
-        "jbig2 (symbol mode)".to_string()
+    println!(
+        "\n{}{}{}",
+        COLORS.info, CLI_TEXT.interactive.selected_options_title, COLORS.reset
+    );
+    let text_format_display = if config.text_format() == "jbig2" {
+        format!("jbig2 ({})", config.jbig2_mode().as_str())
     } else {
         config.text_format().to_string()
     };
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_text_encoding, COLORS.reset, text_format_display);
-    println!("{}{}:{} {:?}", COLORS.info, CLI_TEXT.main.selected_options_image_format, COLORS.reset, config.image_format());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_dithering, COLORS.reset, config.dither_images());
     println!(
         "{}{}:{} {}",
-        COLORS.info, CLI_TEXT.main.selected_options_original_quality, COLORS.reset, config.keep_original_images()
+        COLORS.info,
+        CLI_TEXT.main.selected_options_text_encoding,
+        COLORS.reset,
+        text_format_display
+    );
+    println!(
+        "{}{}:{} {:?}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_image_format,
+        COLORS.reset,
+        config.image_format()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_dithering,
+        COLORS.reset,
+        config.dither_images()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_original_quality,
+        COLORS.reset,
+        config.keep_original_images()
     );
     println!(
         "{}{}:{} {}",
@@ -1300,31 +1695,112 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         COLORS.reset,
         config.high_quality_output()
     );
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_target_output, COLORS.reset, target_summary);
+    println!(
+        "{}{}:{} {}",
+        COLORS.info, CLI_TEXT.main.selected_options_target_output, COLORS.reset, target_summary
+    );
 
     let original_layout_detection = config.enable_layout_detection();
     if config.invert_input() && original_layout_detection {
         println!(
             "{}{}:{} {} (disabled - inverted documents not supported)",
-            COLORS.info, CLI_TEXT.main.selected_options_layout_detection, COLORS.reset, original_layout_detection
+            COLORS.info,
+            CLI_TEXT.main.selected_options_layout_detection,
+            COLORS.reset,
+            original_layout_detection
         );
-        println!("{}{}:{} {}", COLORS.highlight, CLI_TEXT.main.selected_options_note, COLORS.reset, CLI_TEXT.interactive.messages.layout_disabled_inverted);
-        println!("{}{}:{} {}", COLORS.highlight, CLI_TEXT.main.selected_options_reason, COLORS.reset, CLI_TEXT.interactive.messages.layout_disabled_reason);
+        println!(
+            "{}{}:{} {}",
+            COLORS.highlight,
+            CLI_TEXT.main.selected_options_note,
+            COLORS.reset,
+            CLI_TEXT.interactive.messages.layout_disabled_inverted
+        );
+        println!(
+            "{}{}:{} {}",
+            COLORS.highlight,
+            CLI_TEXT.main.selected_options_reason,
+            COLORS.reset,
+            CLI_TEXT.interactive.messages.layout_disabled_reason
+        );
         config.set_enable_layout_detection(false);
     } else {
-        println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_layout_detection, COLORS.reset, config.enable_layout_detection());
+        println!(
+            "{}{}:{} {}",
+            COLORS.info,
+            CLI_TEXT.main.selected_options_layout_detection,
+            COLORS.reset,
+            config.enable_layout_detection()
+        );
     }
 
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_ocr_enabled, COLORS.reset, config.enable_ocr());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_no_cover_page, COLORS.reset, config.no_cover_page());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_pdf_compatibility, COLORS.reset, config.pdf_compatibility_mode());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_invert_input, COLORS.reset, config.invert_input());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_deskew_enabled, COLORS.reset, config.enable_deskew());
-    println!("{}{}:{} {:?}", COLORS.info, CLI_TEXT.main.selected_options_margin_processing, COLORS.reset, config.margin_settings());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_force_crop, COLORS.reset, config.crop_footnotes());
-    println!("{}{}:{} {}", COLORS.info, CLI_TEXT.main.selected_options_max_retries, COLORS.reset, config.max_retries());
-    println!("{}{}:{} {}ms", COLORS.info, CLI_TEXT.main.selected_options_retry_delay, COLORS.reset, config.retry_delay_ms());
-    println!("{}{}{}\n", COLORS.info, CLI_TEXT.main.selected_options_footer, COLORS.reset);
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_ocr_enabled,
+        COLORS.reset,
+        config.enable_ocr()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_no_cover_page,
+        COLORS.reset,
+        config.no_cover_page()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_pdf_compatibility,
+        COLORS.reset,
+        config.pdf_compatibility_mode()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_invert_input,
+        COLORS.reset,
+        config.invert_input()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_deskew_enabled,
+        COLORS.reset,
+        config.enable_deskew()
+    );
+    println!(
+        "{}{}:{} {:?}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_margin_processing,
+        COLORS.reset,
+        config.margin_settings()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_force_crop,
+        COLORS.reset,
+        config.crop_footnotes()
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_max_retries,
+        COLORS.reset,
+        config.max_retries()
+    );
+    println!(
+        "{}{}:{} {}ms",
+        COLORS.info,
+        CLI_TEXT.main.selected_options_retry_delay,
+        COLORS.reset,
+        config.retry_delay_ms()
+    );
+    println!(
+        "{}{}{}\n",
+        COLORS.info, CLI_TEXT.main.selected_options_footer, COLORS.reset
+    );
 
     // Set binarization method (inversion no longer changes binarization selection)
     if !no_binarization {
@@ -1354,7 +1830,7 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
-    bool,
+    Jbig2Mode,
     bool,
     bool,
     bool,
@@ -1377,7 +1853,7 @@ fn parse_format_selection_with_options(
             false, // pdf_compatibility
             false, // no_binarization
             false, // invert_input
-            false, // symbol_mode
+            Jbig2Mode::Symbol,
             false, // center_margins
             false, // crop_margins
             false, // force_crop
@@ -1395,7 +1871,7 @@ fn parse_format_selection_with_options(
     let has_high_flag = parts.iter().any(|&p| p == "--high");
 
     // Parse main format option
-    let (format_num, c_count, has_s_flag) = parse_main_format(main_part)?;
+    let (format_num, c_count, has_s_flag, has_u_flag) = parse_main_format(main_part)?;
 
     // Map the numbered menu to text format
     // 1: CCITT4, 2: JBIG2, 3: DJVU
@@ -1450,8 +1926,11 @@ fn parse_format_selection_with_options(
         1 // Include everything after the format number
     };
 
-    let remaining_parts: Vec<&str> = parts.iter().skip(options_start_index).copied()
-        .filter(|&p| p != "--high")  // Filter out --high flag
+    let remaining_parts: Vec<&str> = parts
+        .iter()
+        .skip(options_start_index)
+        .copied()
+        .filter(|&p| p != "--high") // Filter out --high flag
         .collect();
     options_parts.extend(remaining_parts.iter().map(|s| s.to_string()));
 
@@ -1473,18 +1952,28 @@ fn parse_format_selection_with_options(
     // Disable dithering if 'c' flag is specified (original quality)
     let final_enable_dithering = enable_dithering;
 
-    let symbol_mode = format_num == 2 && has_s_flag;
+    let jbig2_mode = if format_num == 2 {
+        if has_u_flag {
+            Jbig2Mode::SymUnify
+        } else if has_s_flag || layout_detection {
+            Jbig2Mode::Symbol
+        } else {
+            Jbig2Mode::Generic
+        }
+    } else {
+        Jbig2Mode::Generic
+    };
 
     // Determine DjVu quality based on --high flag
     let djvu_quality = if format_num == 3 {
         // DjVu format
         if has_high_flag {
-            Some(100)  // High quality mode (97 slices)
+            Some(100) // High quality mode (97 slices)
         } else {
-            Some(75)   // Default quality (85 slices)
+            Some(75) // Default quality (85 slices)
         }
     } else {
-        None  // Not DjVu format
+        None // Not DjVu format
     };
 
     // Note: We do not offer "Original+JBIG2" because JBIG2's advantage is its superior dithering.
@@ -1500,7 +1989,7 @@ fn parse_format_selection_with_options(
         pdf_compatibility,
         no_binarization,
         invert_input,
-        symbol_mode,
+        jbig2_mode,
         center_margins,
         crop_margins,
         force_crop,
@@ -1511,9 +2000,10 @@ fn parse_format_selection_with_options(
     ))
 }
 
-fn parse_main_format(input: &str) -> Result<(u32, usize, bool)> {
+fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool)> {
     let c_count = input.chars().filter(|&c| c == 'c').count(); // 'c' enables dithering
     let has_s_flag = input.contains('s'); // 's' enables symbol mode for JBIG2
+    let has_u_flag = input.contains('u'); // 'u' enables sym-unify for JBIG2
 
     // Extract the numeric part
     let numeric_part: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -1528,14 +2018,14 @@ fn parse_main_format(input: &str) -> Result<(u32, usize, bool)> {
         ));
     }
 
-    // Symbol mode only works with JBIG2 (format 2); error for other formats
-    if has_s_flag && format_num != 2 {
+    // JBIG2-specific modifiers only work with format 2.
+    if (has_s_flag || has_u_flag) && format_num != 2 {
         return Err(anyhow!(
-            "Symbol mode ('s') is only available with JBIG2 format (2)"
+            "JBIG2 mode flags ('s' for symbol, 'u' for sym-unify) are only available with JBIG2 format (2)"
         ));
     }
 
-    Ok((format_num, c_count, has_s_flag))
+    Ok((format_num, c_count, has_s_flag, has_u_flag))
 }
 
 fn parse_options(
@@ -1562,7 +2052,7 @@ fn parse_options(
     let original_image = !options.contains(&"c");
     let no_cover_page = options.contains(&"d");
     let pdf_compatibility = options.contains(&"e");
-    let no_binarization = options.contains(&"i");  // 'i' for image-only (no binarization)
+    let no_binarization = options.contains(&"i"); // 'i' for image-only (no binarization)
     let invert_input = options.contains(&"g");
     let deskew_enabled = options.contains(&"h");
     let center_margins = options.contains(&"m");
@@ -1763,12 +2253,18 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
             .collect();
 
     loop {
-        println!("\n{}{}{}", COLORS.info, CLI_TEXT.interactive.target_device_title, COLORS.reset);
+        println!(
+            "\n{}{}{}",
+            COLORS.info, CLI_TEXT.interactive.target_device_title, COLORS.reset
+        );
         println!(
             "{}[0]{} {}",
             COLORS.prompt,
             COLORS.reset,
-            fmt1(&CLI_TEXT.interactive.target_device_default, config.target_height())
+            fmt1(
+                &CLI_TEXT.interactive.target_device_default,
+                config.target_height()
+            )
         );
         for (idx, profile, _slug) in &profile_entries {
             println!(
@@ -1776,8 +2272,14 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 COLORS.prompt, idx, COLORS.reset, profile.name, profile.width, profile.height
             );
         }
-        println!("{}{}{}", COLORS.highlight, CLI_TEXT.main.target_device_custom_with_hw, COLORS.reset);
-        print!("{}{} {}", COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset);
+        println!(
+            "{}{}{}",
+            COLORS.highlight, CLI_TEXT.main.target_device_custom_with_hw, COLORS.reset
+        );
+        print!(
+            "{}{} {}",
+            COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset
+        );
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -1791,7 +2293,12 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
         {
             let height = config.target_height();
             if let Err(e) = config.set_high_res_render_height(height) {
-                println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
+                println!(
+                    "{}{}{}",
+                    COLORS.highlight,
+                    fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
+                    COLORS.reset
+                );
                 continue;
             }
             return Ok(format!("{}px height (proportional width)", height));
@@ -1828,21 +2335,41 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 Ok(Some(selection)) => {
                     if let Some(width) = selection.width {
                         if let Err(e) = config.set_target_dimensions(width, selection.height) {
-                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_apply_dimensions_error, e), COLORS.reset);
+                            println!(
+                                "{}{}{}",
+                                COLORS.highlight,
+                                fmt1(&CLI_TEXT.main.target_device_apply_dimensions_error, e),
+                                COLORS.reset
+                            );
                             continue;
                         }
                         if let Err(e) = config.set_high_res_render_height(selection.height) {
-                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
+                            println!(
+                                "{}{}{}",
+                                COLORS.highlight,
+                                fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
+                                COLORS.reset
+                            );
                             continue;
                         }
                         return Ok(format!("{}x{} px", width, selection.height));
                     } else {
                         if let Err(e) = config.set_target_height(selection.height) {
-                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_set_target_height_error, e), COLORS.reset);
+                            println!(
+                                "{}{}{}",
+                                COLORS.highlight,
+                                fmt1(&CLI_TEXT.main.target_device_set_target_height_error, e),
+                                COLORS.reset
+                            );
                             continue;
                         }
                         if let Err(e) = config.set_high_res_render_height(selection.height) {
-                            println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
+                            println!(
+                                "{}{}{}",
+                                COLORS.highlight,
+                                fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
+                                COLORS.reset
+                            );
                             continue;
                         }
                         return Ok(format!(
@@ -1854,20 +2381,35 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 Ok(None) => {
                     let height = config.target_height();
                     if let Err(e) = config.set_high_res_render_height(height) {
-                        println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
+                        println!(
+                            "{}{}{}",
+                            COLORS.highlight,
+                            fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
+                            COLORS.reset
+                        );
                         continue;
                     }
                     return Ok(format!("{}px height (proportional width)", height));
                 }
                 Err(e) => {
-                    println!("{}{}{}", COLORS.highlight, fmt2(&CLI_TEXT.main.target_device_invalid_spec_error, spec, e), COLORS.reset);
+                    println!(
+                        "{}{}{}",
+                        COLORS.highlight,
+                        fmt2(&CLI_TEXT.main.target_device_invalid_spec_error, spec, e),
+                        COLORS.reset
+                    );
                     continue;
                 }
             }
         } else {
             let height = config.target_height();
             if let Err(e) = config.set_high_res_render_height(height) {
-                println!("{}{}{}", COLORS.highlight, fmt1(&CLI_TEXT.main.target_device_render_height_error, e), COLORS.reset);
+                println!(
+                    "{}{}{}",
+                    COLORS.highlight,
+                    fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
+                    COLORS.reset
+                );
                 continue;
             }
             return Ok(format!("{}px height (proportional width)", height));
@@ -1893,7 +2435,13 @@ fn handle_png_folder(
     }
 
     println!("{}", CLI_TEXT.main.image_folder_mode_title);
-    println!("{}", fmt1(&CLI_TEXT.main.image_folder_mode_input, folder_path.display()));
+    println!(
+        "{}",
+        fmt1(
+            &CLI_TEXT.main.image_folder_mode_input,
+            folder_path.display()
+        )
+    );
     if enable_deskew {
         println!("{}", CLI_TEXT.main.image_folder_mode_deskew);
     }
@@ -1937,8 +2485,14 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     validate_pdf_file(&files[0])?;
 
     println!("{}", CLI_TEXT.main.pdf_to_png_mode_title);
-    println!("{}", fmt1(&CLI_TEXT.main.pdf_to_png_mode_input, pdf_path.display()));
-    println!("{}", fmt1(&CLI_TEXT.main.pdf_to_png_mode_target_height, height));
+    println!(
+        "{}",
+        fmt1(&CLI_TEXT.main.pdf_to_png_mode_input, pdf_path.display())
+    );
+    println!(
+        "{}",
+        fmt1(&CLI_TEXT.main.pdf_to_png_mode_target_height, height)
+    );
     if let Some(ref range) = page_range {
         println!("{}", fmt1(&CLI_TEXT.main.pdf_to_png_mode_page_range, range));
     } else {
@@ -1949,6 +2503,127 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     run_pdf_to_png_mode(pdf_path, page_range, height, AppConfig::default())?;
 
     // Return None to indicate PDF-to-PNG mode was handled
+    Ok(None)
+}
+
+fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
+    // Parse input: "file.pdf [page_range] --pdf-to-images [--deskew] [--no-layout]"
+    let parts: Vec<&str> = input.split("--pdf-to-images").collect();
+    if parts.len() != 2 {
+        return Err(anyhow!(
+            "Invalid PDF-to-Images format. Use: file.pdf [page_range] --pdf-to-images [--deskew] [--no-layout]"
+        ));
+    }
+
+    let file_and_range = parts[0].trim();
+    let options_str = parts[1].trim();
+
+    // Parse options
+    let enable_deskew = options_str.contains("--deskew");
+    let enable_layout = !options_str.contains("--no-layout");
+
+    // Parse file path and page range
+    let (files, page_range) = parse_file_paths_with_range(file_and_range);
+    if files.is_empty() {
+        return Err(anyhow!("No PDF file specified"));
+    }
+
+    let pdf_path = PathBuf::from(&files[0]);
+    validate_pdf_file(&files[0])?;
+
+    println!("PDF to Images Mode");
+    println!("Input PDF: {}", pdf_path.display());
+    println!(
+        "Layout detection: {}",
+        if enable_layout {
+            "ENABLED (PNG output)"
+        } else {
+            "DISABLED (PBM output)"
+        }
+    );
+    println!(
+        "Deskew: {}",
+        if enable_deskew { "ENABLED" } else { "disabled" }
+    );
+    if let Some(ref range) = page_range {
+        println!("Page range: {}", range);
+    } else {
+        println!("Page range: all pages");
+    }
+
+    // Call the PDF-to-Images processing function
+    run_pdf_to_images_mode(
+        pdf_path,
+        page_range,
+        None, // Use default output directory
+        AppConfig::default(),
+        enable_layout,
+        enable_deskew,
+        false, // image_only - default to false in interactive mode
+    )?;
+
+    // Return None to indicate PDF-to-Images mode was handled
+    Ok(None)
+}
+
+fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
+    // Parse input: "folder --images-to-images [--deskew] [--no-layout]"
+    let parts: Vec<&str> = input.split("--images-to-images").collect();
+    if parts.len() != 2 {
+        return Err(anyhow!(
+            "Invalid Images-to-Images format. Use: folder --images-to-images [--deskew] [--no-layout]"
+        ));
+    }
+
+    let folder_str = parts[0].trim();
+    let options_str = parts[1].trim();
+
+    // Parse options
+    let enable_deskew = options_str.contains("--deskew");
+    let enable_layout = !options_str.contains("--no-layout");
+
+    let folder_path = parse_quoted_path(folder_str);
+    let folder_path = PathBuf::from(folder_path);
+
+    if !folder_path.exists() {
+        return Err(anyhow!(
+            "Image folder does not exist: {}",
+            folder_path.display()
+        ));
+    }
+    if !folder_path.is_dir() {
+        return Err(anyhow!(
+            "Path is not a directory: {}",
+            folder_path.display()
+        ));
+    }
+
+    println!("Images to Images Mode");
+    println!("Input folder: {}", folder_path.display());
+    println!(
+        "Layout detection: {}",
+        if enable_layout {
+            "ENABLED (PNG output)"
+        } else {
+            "DISABLED (PBM output)"
+        }
+    );
+    println!(
+        "Deskew: {}",
+        if enable_deskew { "ENABLED" } else { "disabled" }
+    );
+
+    // Call the Images-to-Images processing function
+    run_images_to_images_mode(
+        folder_path,
+        None, // Use default output directory
+        AppConfig::default(),
+        enable_layout,
+        enable_deskew,
+        false, // image_only - default to false in interactive mode
+    )?;
+
+    // Return None to indicate Images-to-Images mode was handled
     Ok(None)
 }
 
@@ -2065,13 +2740,22 @@ fn show_system_status() -> Result<()> {
 
     let (accel_enabled, accel_detail) = hardware_acceleration_status();
     let accel_text = if accel_enabled {
-        fmt1(&CLI_TEXT.main.system_hardware_acceleration_enabled, accel_detail)
+        fmt1(
+            &CLI_TEXT.main.system_hardware_acceleration_enabled,
+            accel_detail,
+        )
     } else {
-        fmt1(&CLI_TEXT.main.system_hardware_acceleration_disabled, accel_detail)
+        fmt1(
+            &CLI_TEXT.main.system_hardware_acceleration_disabled,
+            accel_detail,
+        )
     };
     info_println!(
         "{}",
-        fmt1(&CLI_TEXT.main.system_hardware_acceleration_label, accel_text)
+        fmt1(
+            &CLI_TEXT.main.system_hardware_acceleration_label,
+            accel_text
+        )
     );
 
     // Disk space
@@ -2101,7 +2785,14 @@ fn show_system_status() -> Result<()> {
         } else {
             CLI_TEXT.main.system_config_missing.as_str()
         };
-        info_println!("{}", fmt2(&CLI_TEXT.main.system_config_file, config_path.display(), config_status));
+        info_println!(
+            "{}",
+            fmt2(
+                &CLI_TEXT.main.system_config_file,
+                config_path.display(),
+                config_status
+            )
+        );
     }
 
     info_println!("{}", CLI_TEXT.main.system_footer_divider);
@@ -2156,7 +2847,9 @@ fn generate_output_path(
     // For PDF: use text format as the identifier (no cover format suffix)
     let output_filename = format!(
         "{}_processed_{}_{}.pdf",
-        input_stem, config.text_format(), timestamp
+        input_stem,
+        config.text_format(),
+        timestamp
     );
     Ok(output_dir.join(output_filename))
 }
@@ -2271,7 +2964,10 @@ fn print_stage_progress_line(
     print_timestamped_line(&line);
 }
 
-fn emit_cli_stage_progress(snapshot: &mut CliStageSnapshot, metrics: lege::progress::ProgressMetrics) {
+fn emit_cli_stage_progress(
+    snapshot: &mut CliStageSnapshot,
+    metrics: lege::progress::ProgressMetrics,
+) {
     let total = metrics.pages_total.max(1);
     let mut events: Vec<CliStageEvent<'static>> = Vec::new();
 
@@ -2446,9 +3142,8 @@ fn process_single_file(
             Err(flume::RecvTimeoutError::Timeout) => continue,
             Err(flume::RecvTimeoutError::Disconnected) => {
                 if progress_error.is_none() {
-                    progress_error = Some(anyhow!(
-                        "Processing task disconnected before completion"
-                    ));
+                    progress_error =
+                        Some(anyhow!("Processing task disconnected before completion"));
                 }
                 break;
             }
