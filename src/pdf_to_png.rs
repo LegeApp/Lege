@@ -1,6 +1,6 @@
+use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use image::RgbImage;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -11,6 +11,8 @@ pub fn run_pdf_to_png_mode(
     page_range: Option<String>,
     target_height: u32,
     _config: crate::types::AppConfig,
+    png_quantize: bool,
+    png_colors: u16,
 ) -> Result<()> {
     // Simple prints for progress in this utility mode
     use std::fs;
@@ -64,10 +66,17 @@ pub fn run_pdf_to_png_mode(
             (*page_num - 1) as u32,
             target_height,
             &output_dir,
+            png_quantize,
+            png_colors,
         ) {
             Ok(output_path) => {
                 let elapsed = page_start.elapsed().as_secs_f64() * 1000.0;
-                info_println!("Page {} rendered in {:.2} ms -> {}", page_num, elapsed, output_path.display());
+                info_println!(
+                    "Page {} rendered in {:.2} ms -> {}",
+                    page_num,
+                    elapsed,
+                    output_path.display()
+                );
             }
             Err(e) => {
                 error_println!("Failed to render page {}: {}", page_num, e);
@@ -77,7 +86,11 @@ pub fn run_pdf_to_png_mode(
 
     println!("PDF rendering complete");
     let total_elapsed = overall_start.elapsed().as_secs_f64();
-    let throughput = if total_elapsed > 0.0 { pages_to_render.len() as f64 / total_elapsed } else { 0.0 };
+    let throughput = if total_elapsed > 0.0 {
+        pages_to_render.len() as f64 / total_elapsed
+    } else {
+        0.0
+    };
     info_println!(
         "PDF rendering completed in {:.2} s ({:.2} pages/s). {} PNG files saved to {}",
         total_elapsed,
@@ -95,15 +108,23 @@ fn render_pdf_page_to_png(
     page_index: u32,
     target_height: u32,
     output_dir: &std::path::Path,
+    png_quantize: bool,
+    png_colors: u16,
 ) -> Result<std::path::PathBuf> {
     let rgb = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(renderer.render_page_rgb(page_index, target_height, None)))?
+        tokio::task::block_in_place(|| {
+            handle.block_on(renderer.render_page_rgb(page_index, target_height, None))
+        })?
     } else {
         let rt = Runtime::new()?;
         rt.block_on(renderer.render_page_rgb(page_index, target_height, None))?
     };
-    let img = RgbImage::from_raw(rgb.width, rgb.height, rgb.data)
-        .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_index + 1))?;
+    let img = RgbImage::from_raw(rgb.width, rgb.height, rgb.data).ok_or_else(|| {
+        anyhow!(
+            "Failed to construct image buffer for page {}",
+            page_index + 1
+        )
+    })?;
 
     debug_println!(
         "Page {}: rendered to {}x{} px",
@@ -116,10 +137,18 @@ fn render_pdf_page_to_png(
     let output_filename = format!("page_{:04}.png", page_index as usize + 1);
     let output_path = output_dir.join(output_filename);
 
-    img
-        .save(&output_path)
-        .map_err(anyhow::Error::msg)
-        .with_context(|| format!("Failed to save PNG: {}", output_path.display()))?;
+    if png_quantize {
+        crate::colorquant::write_quantized_rgb_png(
+            &img,
+            &output_path,
+            crate::colorquant::PngQuantizationOptions { colors: png_colors },
+        )
+        .with_context(|| format!("Failed to save quantized PNG: {}", output_path.display()))?;
+    } else {
+        img.save(&output_path)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("Failed to save PNG: {}", output_path.display()))?;
+    }
 
     Ok(output_path)
 }

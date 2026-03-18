@@ -17,6 +17,7 @@ use pdfium_render::prelude::Pdfium;
 use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
 use crate::engine::PaddleXEngine;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::resize_context::{InferenceResizeSpec, ResizePolicy};
 use crate::types::CoverFormat;
 use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
@@ -313,14 +314,19 @@ pub struct PipelineConfig {
 
 impl PipelineConfig {
     pub fn new() -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let yolo = runtime_asset_path("yolo-layout.onnx");
         let optimized = runtime_asset_path("paddle-layout-optimized.onnx");
-        let model_path = if optimized.exists() {
+        let model_path = if cfg!(target_os = "linux") && yolo.exists() {
+            yolo.to_string_lossy().to_string()
+        } else if optimized.exists() {
             optimized.to_string_lossy().to_string()
         } else {
             runtime_asset_path("paddle-layout.onnx")
                 .to_string_lossy()
                 .to_string()
         };
+        let use_yolo_model = is_yolo_doclayout_model_path(&model_path);
         let config = Self {
             model_path,
             confidence_threshold: 0.4,
@@ -362,7 +368,11 @@ impl PipelineConfig {
             deskew_unwarp_model: None,
             deskew_config: crate::deskew::DeskewConfig::default(),
             high_res_render_height: 1200,
-            inference_size: 640,
+            inference_size: if use_yolo_model {
+                1024
+            } else {
+                640
+            },
             keep_original_images: false,
             djvu_iw44_quality: 75, // Default to good quality
         };
@@ -596,6 +606,16 @@ impl PipelineConfig {
     }
     pub fn inference_size(&self) -> u32 {
         self.inference_size
+    }
+    pub fn inference_resize_spec(&self) -> InferenceResizeSpec {
+        InferenceResizeSpec {
+            target: self.inference_size,
+            policy: if is_yolo_doclayout_model_path(&self.model_path) {
+                ResizePolicy::Letterbox
+            } else {
+                ResizePolicy::Direct
+            },
+        }
     }
     pub fn keep_original_images(&self) -> bool {
         self.keep_original_images
@@ -849,6 +869,14 @@ pub fn runtime_asset_path_if_exists(file_name: &str) -> Option<PathBuf> {
 
 pub fn runtime_asset_path(file_name: &str) -> PathBuf {
     runtime_asset_path_if_exists(file_name).unwrap_or_else(|| PathBuf::from(file_name))
+}
+
+pub fn is_yolo_doclayout_model_path(model_path: &str) -> bool {
+    model_path
+        .rsplit(std::path::MAIN_SEPARATOR)
+        .next()
+        .unwrap_or(model_path)
+        .contains("yolo-layout.onnx")
 }
 
 pub fn locate_pdfium_in_runtime_dirs() -> Option<PathBuf> {
