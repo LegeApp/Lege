@@ -1,4 +1,4 @@
-﻿// helper_functions.rs - Shared helper functions for the pipeline
+// helper_functions.rs - Shared helper functions for the pipeline
 use anyhow::{Result, anyhow};
 use image::RgbImage;
 use tokio::sync::Semaphore;
@@ -7,6 +7,7 @@ use crate::ocr::check_tesseract_availability;
 use crate::pipeline::config::PipelineConfig;
 use crate::types::CoverFormat;
 use crate::{info_log, warn_log};
+use Legencode::streamline::Jbig2Mode;
 use log;
 
 // Memory monitoring and limits
@@ -29,7 +30,6 @@ pub fn get_encode_semaphore() -> Option<std::sync::Arc<Semaphore>> {
         .get()
         .and_then(|semaphore| semaphore.lock().ok().map(|guard| guard.clone()))
 }
-
 
 /// Enum to differentiate between user cancellation and worker abort signals
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,10 +82,7 @@ impl ShutdownSignal {
     }
 }
 
-
-
 // Legacy builders removed: unified builder below supersedes individual create_and_run_*_dagrs_pipeline variants
-
 
 pub fn is_ocr_available() -> bool {
     check_tesseract_availability().is_ok()
@@ -100,7 +97,11 @@ pub fn get_ocr_status() -> String {
 }
 
 /// Convert a floating-point bbox into integer pixel bounds using rounding and clamping
-pub fn rounded_clamped_bbox(bbox: [f32; 4], page_width: u32, page_height: u32) -> (u32, u32, u32, u32) {
+pub fn rounded_clamped_bbox(
+    bbox: [f32; 4],
+    page_width: u32,
+    page_height: u32,
+) -> (u32, u32, u32, u32) {
     let mut x1 = bbox[0].round() as i64;
     let mut y1 = bbox[1].round() as i64;
     let mut x2 = bbox[2].round() as i64;
@@ -219,14 +220,17 @@ pub async fn encode_region_image(
     if width > MAX_OVERLAY_SIDE || height > MAX_OVERLAY_SIDE {
         return Err(anyhow!(
             "Region exceeds max side limit ({} or {} > {})",
-            width, height, MAX_OVERLAY_SIDE
+            width,
+            height,
+            MAX_OVERLAY_SIDE
         ));
     }
     let expected_len = width as usize * height as usize * CHANNELS;
     if image_data.len() < expected_len {
         return Err(anyhow!(
             "Region buffer shorter than expected ({} < {})",
-            image_data.len(), expected_len
+            image_data.len(),
+            expected_len
         ));
     }
     if image_data.len() > expected_len {
@@ -234,7 +238,8 @@ pub async fn encode_region_image(
         #[cfg(feature = "debug-logging")]
         crate::debug_log!(
             "encode_region_image: trimming padded buffer ({} -> {})",
-            image_data.len(), expected_len
+            image_data.len(),
+            expected_len
         );
     }
     use Legencode::streamline::{
@@ -246,13 +251,20 @@ pub async fn encode_region_image(
     if image_data.len() < expected_len {
         return Err(anyhow!(
             "Region buffer shorter than expected ({} < {})",
-            image_data.len(), expected_len
+            image_data.len(),
+            expected_len
         ));
     }
 
     let (settings, fmt_str) = match format {
         CoverFormat::Jpeg => {
-            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
+            let q = if high_quality {
+                95
+            } else if is_cover {
+                50
+            } else {
+                40
+            };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -267,14 +279,20 @@ pub async fn encode_region_image(
         CoverFormat::Jbig2 => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
-                symbol_mode: false,
+                mode: Jbig2Mode::Generic,
             }),
             "jbig2".to_string(),
         ),
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),
         _ => {
             // Treat any other formats as JPEG fallback
-            let q = if high_quality { 95 } else if is_cover { 50 } else { 40 };
+            let q = if high_quality {
+                95
+            } else if is_cover {
+                50
+            } else {
+                40
+            };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -308,10 +326,7 @@ pub async fn encode_region_image(
 
     match encoding_result {
         EncodingResult::Standard(data) => Ok((data, fmt_str)),
-        EncodingResult::Jbig2WithGlobals {
-            page_data,
-            ..
-        } => {
+        EncodingResult::Jbig2WithGlobals { page_data, .. } => {
             if fmt_str != "jbig2" {
                 return Err(anyhow!(
                     "Encoder returned JBIG2 data but format tag is '{}'",
@@ -371,78 +386,78 @@ pub fn build_hocr_from_pdf_text(text: &str, width: u32, height: u32) -> String {
         }
         out
     }
-    
+
     let page_w = width.max(1);
     let page_h = height.max(1);
-    
+
     // Split text into lines and create proper HOCR structure
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         return String::new();
     }
-    
+
     let mut hocr = String::with_capacity(text.len() * 2);
     hocr.push_str(&format!(
         "<div class='ocr_page' id='page_1' title='bbox 0 0 {} {}'>",
         page_w, page_h
     ));
-    
+
     // Distribute lines evenly across the page height
     let line_height = if lines.len() > 1 {
         page_h as f32 / lines.len() as f32
     } else {
         page_h as f32
     };
-    
+
     for (i, line) in lines.iter().enumerate() {
         let line_text = line.trim();
         if line_text.is_empty() {
             continue;
         }
-        
+
         let y1 = (i as f32 * line_height) as u32;
         let y2 = ((i as f32 + 1.0) * line_height) as u32;
         let escaped = escape_minimal(line_text);
-        
+
         // Split line into words for better text layer quality
         let words: Vec<&str> = line_text.split_whitespace().collect();
         if words.is_empty() {
             continue;
         }
-        
+
         hocr.push_str(&format!(
             "<span class='ocr_line' title='bbox 5 {} {} {}; baseline 0 0'>",
             y1,
             page_w.saturating_sub(10),
             y2
         ));
-        
+
         // Create individual word spans
         let word_width = if words.len() > 1 {
             (page_w.saturating_sub(20)) as f32 / words.len() as f32
         } else {
             (page_w.saturating_sub(20)) as f32
         };
-        
+
         for (j, word) in words.iter().enumerate() {
             let x1 = 10 + (j as f32 * word_width) as u32;
             let x2 = 10 + ((j as f32 + 1.0) * word_width) as u32;
             let escaped_word = escape_minimal(word);
-            
+
             hocr.push_str(&format!(
                 "<span class='ocrx_word' title='bbox {} {} {} {}'>{}</span>",
                 x1, y1, x2, y2, escaped_word
             ));
-            
+
             // Add space between words (except for last word)
             if j < words.len() - 1 {
                 hocr.push(' ');
             }
         }
-        
+
         hocr.push_str("</span>");
     }
-    
+
     hocr.push_str("</div>");
     hocr
 }
@@ -512,9 +527,9 @@ impl MemoryMonitor {
     pub fn get_current_usage_bytes(&self) -> u64 {
         #[cfg(target_os = "windows")]
         {
-            use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-            use winapi::um::processthreadsapi::GetCurrentProcess;
             use winapi::shared::minwindef::DWORD;
+            use winapi::um::processthreadsapi::GetCurrentProcess;
+            use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 
             let mut pmc: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
             pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
@@ -561,14 +576,17 @@ impl MemoryMonitor {
         let system_ram_gb = get_available_ram_gb();
         if system_ram_gb >= 16 {
             LOGGED_DISABLE.call_once(|| {
-                info_log!("Memory management disabled - system has {}GB RAM (â‰¥16GB)", system_ram_gb);
+                info_log!(
+                    "Memory management disabled - system has {}GB RAM (â‰¥16GB)",
+                    system_ram_gb
+                );
             });
             return MemoryPressure::Low;
         }
-        
+
         let current_gb = self.get_current_usage_gb();
         let limit_gb = self.limit_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        
+
         let pressure = current_gb / limit_gb;
         if pressure >= 0.9 {
             MemoryPressure::Critical
@@ -597,7 +615,7 @@ pub fn get_memory_monitor() -> &'static MemoryMonitor {
 /// Wait for memory pressure to decrease below critical level.
 /// This implements backpressure by pausing processing when memory is too high.
 /// Returns immediately if memory pressure is not critical.
-/// 
+///
 /// Unlike a simple time-based wait, this checks memory frequently (every 50ms)
 /// expecting that as other pages complete processing and get written to disk,
 /// memory will be freed naturally.
@@ -605,10 +623,10 @@ pub async fn wait_for_memory_relief() {
     let monitor = get_memory_monitor();
     let mut wait_count = 0;
     let initial_usage = monitor.get_current_usage_gb();
-    
+
     loop {
         let pressure = monitor.get_memory_pressure();
-        
+
         if pressure != MemoryPressure::Critical {
             if wait_count > 0 {
                 let current_usage = monitor.get_current_usage_gb();
@@ -621,7 +639,7 @@ pub async fn wait_for_memory_relief() {
             }
             break;
         }
-        
+
         if wait_count == 0 {
             warn_log!(
                 "[MemoryBackpressure] Critical memory pressure detected ({:.2} GB / {:.2} GB), pausing until other pages complete",
@@ -635,9 +653,9 @@ pub async fn wait_for_memory_relief() {
                 monitor.get_current_usage_gb()
             );
         }
-        
+
         wait_count += 1;
-        
+
         // Wait 50ms before checking again - short enough to respond quickly when memory frees
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
@@ -676,27 +694,23 @@ pub async fn encode_page_data(
 
     // Determine encoding settings
     let (encoding_settings, base_format) = match config.text_format() {
-        "jbig2" => {
-            (
-                EncodingSettings::Jbig2(Jbig2Settings {
-                    pdf_fragment_mode: true,
-                    symbol_mode: config.jbig2_symbol_mode(),
-                }),
-                "jbig2",
-            )
-        }
+        "jbig2" => (
+            EncodingSettings::Jbig2(Jbig2Settings {
+                pdf_fragment_mode: true,
+                mode: config.jbig2_mode(),
+            }),
+            "jbig2",
+        ),
         "ccitt4" => (EncodingSettings::Ccitt4, "ccitt"),
-        "jpeg" => {
-            (
-                EncodingSettings::Jpeg(JpegSettings {
-                    quality: if config.high_quality_output() { 95 } else { 40 },
-                    baseline: true,
-                    optimized: true,
-                    downsample: false,
-                }),
-                "jpeg",
-            )
-        }
+        "jpeg" => (
+            EncodingSettings::Jpeg(JpegSettings {
+                quality: if config.high_quality_output() { 95 } else { 40 },
+                baseline: true,
+                optimized: true,
+                downsample: false,
+            }),
+            "jpeg",
+        ),
         "djvu" => {
             // DJVU encoding is handled by DjvuOrchestrator via accept_full_page_data()
             // Return a placeholder that won't be used - the sink handles encoding
@@ -828,7 +842,10 @@ fn drain_ready_values<T>(
 #[derive(Clone, Debug)]
 pub enum WriterMessage {
     /// Append a page to the PDF
-    AppendPage { page: crate::accumulator::Page, page_index: usize },
+    AppendPage {
+        page: crate::accumulator::Page,
+        page_index: usize,
+    },
     /// Signal that all pages have been sent and PDF should be finalized
     Finalize,
 }
@@ -872,7 +889,10 @@ pub fn spawn_pdf_writer_actor(
     progress_tracker: crate::progress::ProgressTracker,
     use_margin_label: bool,
     channel_capacity: usize,
-) -> (PdfWriterHandle, tokio::task::JoinHandle<Result<(), anyhow::Error>>) {
+) -> (
+    PdfWriterHandle,
+    tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+) {
     let (tx, mut rx) = mpsc::channel::<WriterMessage>(channel_capacity.max(1));
 
     let handle = PdfWriterHandle { sender: tx };
@@ -882,7 +902,8 @@ pub fn spawn_pdf_writer_actor(
             pdf_compatibility_mode,
         );
         let mut pages_written = 0usize;
-        let mut page_buffer: std::collections::BTreeMap<usize, crate::accumulator::Page> = std::collections::BTreeMap::new();
+        let mut page_buffer: std::collections::BTreeMap<usize, crate::accumulator::Page> =
+            std::collections::BTreeMap::new();
         let mut next_expected = 0usize;
 
         crate::info_log!("[PdfWriterActor] Started, waiting for pages...");
@@ -933,29 +954,41 @@ pub fn spawn_pdf_writer_actor(
                         let should_update = is_last_page || pages_written % 5 == 0;
                         if should_update {
                             if use_margin_label {
-                                progress_tracker.update(crate::progress::ProcessingStatus::PdfAppendMargin {
-                                    current: pages_written,
-                                    total: total_pages,
-                                });
+                                progress_tracker.update(
+                                    crate::progress::ProcessingStatus::PdfAppendMargin {
+                                        current: pages_written,
+                                        total: total_pages,
+                                    },
+                                );
                             } else {
-                                progress_tracker.update(crate::progress::ProcessingStatus::PdfAppend {
-                                    current: pages_written,
-                                    total: total_pages,
-                                });
+                                progress_tracker.update(
+                                    crate::progress::ProcessingStatus::PdfAppend {
+                                        current: pages_written,
+                                        total: total_pages,
+                                    },
+                                );
                             }
                         }
-
                     }
                 }
                 WriterMessage::Finalize => {
-                    crate::info_log!("[PdfWriterActor] Finalize requested, written {} of {} pages", pages_written, total_pages);
+                    crate::info_log!(
+                        "[PdfWriterActor] Finalize requested, written {} of {} pages",
+                        pages_written,
+                        total_pages
+                    );
 
                     // Check memory before finalizing if it's a large document
-                    if total_pages > 50 { // Only check for documents with more than 50 pages
+                    if total_pages > 50 {
+                        // Only check for documents with more than 50 pages
                         let memory_monitor = get_memory_monitor();
-                        if memory_monitor.get_memory_pressure() == MemoryPressure::High ||
-                           memory_monitor.get_memory_pressure() == MemoryPressure::Critical {
-                            crate::warn_log!("[PdfWriterActor] High memory pressure before finalizing large document ({} pages)", total_pages);
+                        if memory_monitor.get_memory_pressure() == MemoryPressure::High
+                            || memory_monitor.get_memory_pressure() == MemoryPressure::Critical
+                        {
+                            crate::warn_log!(
+                                "[PdfWriterActor] High memory pressure before finalizing large document ({} pages)",
+                                total_pages
+                            );
                         }
                     }
 
@@ -963,13 +996,14 @@ pub fn spawn_pdf_writer_actor(
                     if pages_written != total_pages {
                         crate::warn_log!(
                             "[PdfWriterActor] Finalize called but only {} of {} pages written",
-                            pages_written, total_pages
+                            pages_written,
+                            total_pages
                         );
                     }
 
                     // Determine if any page has OCR text
                     let has_ocr = false; // We don't have access to hocr_text here anymore
-                                        // This is acceptable since finalize() will check during assembly
+                    // This is acceptable since finalize() will check during assembly
 
                     // Finalize the PDF
                     if let Err(e) = builder.finalize(
@@ -981,7 +1015,10 @@ pub fn spawn_pdf_writer_actor(
                         return Err(anyhow::anyhow!("Finalize failed: {}", e));
                     }
 
-                    crate::success_log!("[PdfWriterActor] PDF written to: {}", output_path.display());
+                    crate::success_log!(
+                        "[PdfWriterActor] PDF written to: {}",
+                        output_path.display()
+                    );
                     break;
                 }
             }
@@ -1032,7 +1069,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<WriterMessage>(1);
         let handle = PdfWriterHandle { sender: tx };
 
-        handle.send_page(empty_page(0), 0).await.expect("first send");
+        handle
+            .send_page(empty_page(0), 0)
+            .await
+            .expect("first send");
 
         let second_send = tokio::spawn({
             let handle = handle.clone();
@@ -1040,7 +1080,11 @@ mod tests {
         });
         let mut second_send = Box::pin(second_send);
 
-        assert!(timeout(Duration::from_millis(50), &mut second_send).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(50), &mut second_send)
+                .await
+                .is_err()
+        );
 
         let _ = rx.recv().await.expect("message");
 

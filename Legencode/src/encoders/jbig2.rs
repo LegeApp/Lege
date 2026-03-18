@@ -1,10 +1,13 @@
-use crate::streamline::Jbig2Settings;
+use crate::streamline::{Jbig2Mode, Jbig2Settings};
 use crate::{EncodingError, Result};
-use jbig2enc_rust::{encode_single_image, encode_single_image_lossless, Jbig2EncodeResult};
+use jbig2enc_rust::{
+    Jbig2Config, Jbig2Context, Jbig2EncodeResult, encode_single_image_lossless,
+    encode_single_image_with_config,
+};
 use std::borrow::Cow;
 
 /// Normalize binary data from various formats to 0/1 per byte for JBIG2 encoding
-/// 
+///
 /// Accepts:
 /// - channels=0: Already normalized 0/1 data (pass through)
 /// - channels=1: Grayscale 0/255 data (normalize to 0/1)
@@ -17,7 +20,7 @@ fn normalize_binary_data<'a>(
     let expected_len = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| EncodingError::InvalidInput("Dimensions too large".to_string()))?;
-    
+
     match channels {
         0 => {
             // Already normalized 0/1 data - verify and use as-is
@@ -31,7 +34,7 @@ fn normalize_binary_data<'a>(
             if input.len() < expected_len {
                 return Err(EncodingError::InputBufferTooSmall);
             }
-            
+
             // Check if already normalized (all values are 0 or 1)
             let already_binary = input[..expected_len].iter().all(|&b| b <= 1);
             if already_binary {
@@ -63,15 +66,27 @@ pub fn encode(
     // Normalize input data to 0/1 format required by jbig2enc_rust
     let normalized = normalize_binary_data(input, width, height, channels)?;
 
-    // Choose encoding function based on symbol_mode setting
-    if settings.symbol_mode {
-        // Use normal symbol dictionaries (original behavior)
-        encode_single_image(normalized.as_ref(), width, height, settings.pdf_fragment_mode)
-            .map_err(|e| EncodingError::EncoderError(e.to_string()))
-    } else {
-        // Use the lossless encoding function that creates proper JBIG2 segments
-        // This includes end-of-page and end-of-file segments required for PDF embedding
-        encode_single_image_lossless(normalized.as_ref(), width, height, settings.pdf_fragment_mode)
-            .map_err(|e| EncodingError::EncoderError(e.to_string()))
+    match settings.mode {
+        Jbig2Mode::Generic => encode_single_image_lossless(
+            normalized.as_ref(),
+            width,
+            height,
+            settings.pdf_fragment_mode,
+        )
+        .map_err(|e| EncodingError::EncoderError(e.to_string())),
+        Jbig2Mode::Symbol => encode_single_image_with_config(
+            normalized.as_ref(),
+            width,
+            height,
+            Jbig2Context::with_config(Jbig2Config::text(), settings.pdf_fragment_mode),
+        )
+        .map_err(|e| EncodingError::EncoderError(e.to_string())),
+        Jbig2Mode::SymUnify => encode_single_image_with_config(
+            normalized.as_ref(),
+            width,
+            height,
+            Jbig2Context::with_config(Jbig2Config::text_symbol_unify(), settings.pdf_fragment_mode),
+        )
+        .map_err(|e| EncodingError::EncoderError(e.to_string())),
     }
 }

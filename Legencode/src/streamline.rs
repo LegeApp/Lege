@@ -283,8 +283,13 @@ pub mod jp2_config {
             let target_bytes = calculate_jp2_target_bytes(height, width, is_cover);
             crate::streamline::log_debug_message(&format!(
                 "JP2 settings created: {}x{} -> target: {}KB, rate: {:.1}, num_resolutions: {:?}, irreversible: {:?}, codeblock: {:?}",
-                width, height, target_bytes / 1024, settings.rate.unwrap_or(0.0),
-                settings.num_resolutions, settings.irreversible, settings.codeblock
+                width,
+                height,
+                target_bytes / 1024,
+                settings.rate.unwrap_or(0.0),
+                settings.num_resolutions,
+                settings.irreversible,
+                settings.codeblock
             ));
         }
 
@@ -462,23 +467,38 @@ impl Default for JpegSettings {
 }
 
 #[derive(Debug, Clone)]
+pub enum Jbig2Mode {
+    Generic,
+    Symbol,
+    SymUnify,
+}
+
+impl Jbig2Mode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Symbol => "symbol",
+            Self::SymUnify => "sym-unify",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 /// Settings for JBIG2 encoding.
 pub struct Jbig2Settings {
     /// Use PDF fragment mode (true) or standalone mode (false).
     /// PDF fragment mode creates data suitable for embedding in PDF XObjects.
     /// Standalone mode creates complete JBIG2 files with headers.
     pub pdf_fragment_mode: bool,
-    /// Enable symbol dictionaries (true) or use lossless standalone mode (false).
-    /// Setting to false creates standalone JBIG2 streams without global dictionaries,
-    /// which can resolve PDF display issues with some viewers.
-    pub symbol_mode: bool,
+    /// Selects the JBIG2 encoding strategy.
+    pub mode: Jbig2Mode,
 }
 
 impl Default for Jbig2Settings {
     fn default() -> Self {
         Self {
             pdf_fragment_mode: true, // Default to PDF fragment mode for PDF assembly
-            symbol_mode: true,       // Use real symbol dictionary for better compression
+            mode: Jbig2Mode::Symbol,
         }
     }
 }

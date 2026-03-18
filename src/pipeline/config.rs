@@ -1,8 +1,8 @@
-﻿// config.rs
+// config.rs
 // Pipeline configuration and related utilities
 
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow};
@@ -14,11 +14,12 @@ use image::RgbImage;
 use once_cell::sync::OnceCell;
 use pdfium_render::prelude::Pdfium;
 
-use crate::types::CoverFormat;
+use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
 use crate::engine::PaddleXEngine;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::types::CoverFormat;
+use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
-use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
 
 static INFERENCE_ENGINE: OnceCell<PaddleXEngine> = OnceCell::new();
 
@@ -45,7 +46,6 @@ pub enum ProcessingError {
     PdfAssembly(String),
 }
 
-
 /// Detection results from inference worker
 #[derive(Debug, Clone)]
 pub struct InferenceResult {
@@ -55,8 +55,8 @@ pub struct InferenceResult {
     pub detections: Vec<crate::engine::Detection>,
     pub text_layer: Option<String>,
     // Legacy fields still used by margin mode
-    pub original_width_pts: f32,  
-    pub original_height_pts: f32, 
+    pub original_width_pts: f32,
+    pub original_height_pts: f32,
     pub has_no_detections: bool,
 }
 
@@ -78,8 +78,8 @@ pub struct RenderedPageData {
     pub index: usize,
     pub high_res_image: Arc<RgbImage>,
     pub inference_image: Arc<RgbImage>, // Always square (e.g. 640x640)
-    pub original_width_pts: f32,  // Original PDF page width in points
-    pub original_height_pts: f32, // Original PDF page height in points
+    pub original_width_pts: f32,        // Original PDF page width in points
+    pub original_height_pts: f32,       // Original PDF page height in points
 }
 impl Default for PipelineConfig {
     fn default() -> Self {
@@ -285,7 +285,7 @@ pub struct PipelineConfig {
     pub(crate) ocr_binarization_threshold: Option<u8>,
     pub(crate) ocr_preserve_grayscale: bool,
     pub(crate) invert_input: bool,
-    pub(crate) jbig2_symbol_mode: bool,
+    pub(crate) jbig2_mode: Jbig2Mode,
     pub(crate) jbig2_halftone_image_regions: bool,
     pub(crate) max_retries: u32,
     pub(crate) retry_delay_ms: u64,
@@ -317,7 +317,9 @@ impl PipelineConfig {
         let model_path = if optimized.exists() {
             optimized.to_string_lossy().to_string()
         } else {
-            runtime_asset_path("paddle-layout.onnx").to_string_lossy().to_string()
+            runtime_asset_path("paddle-layout.onnx")
+                .to_string_lossy()
+                .to_string()
         };
         let config = Self {
             model_path,
@@ -344,7 +346,7 @@ impl PipelineConfig {
             ocr_binarization_threshold: None,
             ocr_preserve_grayscale: false,
             invert_input: false,
-            jbig2_symbol_mode: false,
+            jbig2_mode: Jbig2Mode::Symbol,
             jbig2_halftone_image_regions: false,
             max_retries: 3,
             retry_delay_ms: 1000,
@@ -362,7 +364,7 @@ impl PipelineConfig {
             high_res_render_height: 1200,
             inference_size: 640,
             keep_original_images: false,
-            djvu_iw44_quality: 75,  // Default to good quality
+            djvu_iw44_quality: 75, // Default to good quality
         };
 
         config.validate()?;
@@ -541,8 +543,11 @@ impl PipelineConfig {
     pub fn invert_input(&self) -> bool {
         self.invert_input
     }
+    pub fn jbig2_mode(&self) -> Jbig2Mode {
+        self.jbig2_mode.clone()
+    }
     pub fn jbig2_symbol_mode(&self) -> bool {
-        self.jbig2_symbol_mode
+        matches!(self.jbig2_mode, Jbig2Mode::Symbol | Jbig2Mode::SymUnify)
     }
     pub fn jbig2_halftone_image_regions(&self) -> bool {
         self.jbig2_halftone_image_regions
@@ -704,19 +709,22 @@ impl PipelineConfig {
     pub fn set_enable_deskew(&mut self, enable: bool) {
         self.enable_deskew = enable;
     }
-    pub fn set_deskew_model_paths(
-        &mut self,
-        rotation: Option<PathBuf>,
-        unwarp: Option<PathBuf>,
-    ) {
+    pub fn set_deskew_model_paths(&mut self, rotation: Option<PathBuf>, unwarp: Option<PathBuf>) {
         self.deskew_rotation_model = rotation;
         self.deskew_unwarp_model = unwarp;
     }
     pub fn set_deskew_config(&mut self, config: crate::deskew::DeskewConfig) {
         self.deskew_config = config;
     }
+    pub fn set_jbig2_mode(&mut self, mode: Jbig2Mode) {
+        self.jbig2_mode = mode;
+    }
     pub fn set_jbig2_symbol_mode(&mut self, symbol_mode: bool) {
-        self.jbig2_symbol_mode = symbol_mode;
+        self.jbig2_mode = if symbol_mode {
+            Jbig2Mode::Symbol
+        } else {
+            Jbig2Mode::Generic
+        };
     }
     pub fn set_jbig2_halftone_image_regions(&mut self, enabled: bool) {
         self.jbig2_halftone_image_regions = enabled;
