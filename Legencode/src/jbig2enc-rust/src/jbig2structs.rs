@@ -25,12 +25,12 @@ pub struct Jbig2Config {
     pub sd_at: [(i8, i8); 4], // Symbol dictionary AT pixels
 
     // Text region settings
-    pub text_ds_offset: u8,       // SBDSOFFSET
+    pub text_ds_offset: i8,       // SBDSOFFSET (signed 5-bit)
     pub text_refine: bool,        // SBREFINE
     pub text_log_strips: u8,      // LOGSBSTRIPS (0-3)
-    pub text_ref_corner: u8,      // REFCORNER (0-3)
-    pub text_transposed: bool,    // TRANSPOSED
-    pub text_comb_op: u8,         // SBCOMBOP (0-4)
+    pub text_ref_corner: u8, // REFCORNER (0-3): 0=BOTTOMLEFT, 1=TOPLEFT, 2=BOTTOMRIGHT, 3=TOPRIGHT
+    pub text_transposed: bool, // TRANSPOSED
+    pub text_comb_op: u8,    // SBCOMBOP (0-4)
     pub text_refine_template: u8, // SBRTEMPLATE (0 or 1)
 
     // Halftone region settings
@@ -47,6 +47,37 @@ pub struct Jbig2Config {
     pub want_full_headers: bool,
     pub is_lossless: bool,
     pub default_pixel: bool,
+    /// Pixel-error tolerance divisor for symbol matching.
+    /// max_err = (width * height) / match_tolerance
+    /// Lower = more aggressive matching (smaller files, lower quality).
+    /// Typical range: 4 (aggressive) to 10 (conservative). Default: 7.
+    pub match_tolerance: u32,
+    pub lossy_symbol_mode: LossySymbolMode,
+    pub sym_unify_min_class_size: usize,
+    pub sym_unify_max_err: u32,
+    pub sym_unify_max_dx: i32,
+    pub sym_unify_max_dy: i32,
+    pub sym_unify_class_accept_limit: u32,
+    pub sym_unify_core_close_threshold: u32,
+    pub sym_unify_min_core_ratio_permille: u16,
+    pub sym_unify_min_class_usage: usize,
+    pub sym_unify_min_page_span: usize,
+    pub sym_unify_min_estimated_gain: i32,
+    pub sym_unify_context_mode: SymbolContextMode,
+    pub sym_unify_border_score_slack: u32,
+    pub sym_unify_score_rescue_slack: u32,
+    pub sym_unify_max_border_outside_ink: u32,
+    pub sym_unify_refine_min_subcluster_size: usize,
+    pub sym_unify_refine_min_usage: usize,
+    pub sym_unify_refine_min_page_span: usize,
+    pub sym_unify_refine_max_score: u32,
+    pub sym_unify_refine_min_gain: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossySymbolMode {
+    Off,
+    SymbolUnify,
 }
 
 /// Configuration for halftone encoding
@@ -72,6 +103,13 @@ pub struct HalftoneConfig {
     pub dict_mmr: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolContextMode {
+    WeightedJaccard,
+    Cosine,
+    Hybrid,
+}
+
 impl Default for HalftoneConfig {
     fn default() -> Self {
         Self {
@@ -95,7 +133,7 @@ impl Default for Jbig2Config {
             text_ds_offset: 0,
             text_refine: false,
             text_log_strips: 0,
-            text_ref_corner: 0,
+            text_ref_corner: 1,
             text_transposed: false,
             text_comb_op: 0,
             text_refine_template: 0,
@@ -110,6 +148,27 @@ impl Default for Jbig2Config {
             want_full_headers: true,
             is_lossless: false,
             default_pixel: false,
+            match_tolerance: 7,
+            lossy_symbol_mode: LossySymbolMode::Off,
+            sym_unify_min_class_size: 2,
+            sym_unify_max_err: 12,
+            sym_unify_max_dx: 1,
+            sym_unify_max_dy: 1,
+            sym_unify_class_accept_limit: 16,
+            sym_unify_core_close_threshold: 11,
+            sym_unify_min_core_ratio_permille: 350,
+            sym_unify_min_class_usage: 2,
+            sym_unify_min_page_span: 1,
+            sym_unify_min_estimated_gain: 0,
+            sym_unify_context_mode: SymbolContextMode::Hybrid,
+            sym_unify_border_score_slack: 4,
+            sym_unify_score_rescue_slack: 2,
+            sym_unify_max_border_outside_ink: 1,
+            sym_unify_refine_min_subcluster_size: 2,
+            sym_unify_refine_min_usage: 12,
+            sym_unify_refine_min_page_span: 3,
+            sym_unify_refine_max_score: 8,
+            sym_unify_refine_min_gain: 20,
         }
     }
 }
@@ -126,7 +185,47 @@ impl Jbig2Config {
         cfg.symbol_mode = true;
         cfg.auto_thresh = true;
         cfg.duplicate_line_removal = true;
+        // Refinement remains opt-in on the preset because SBREFINE=1 adds
+        // per-instance overhead. Enable it explicitly when clustering or
+        // near-match preservation is expected to pay off.
         cfg
+    }
+
+    pub fn text_symbol_unify() -> Self {
+        let mut cfg = Self::text();
+        cfg.lossy_symbol_mode = LossySymbolMode::SymbolUnify;
+        cfg.refine = false;
+        cfg.text_refine = false;
+        cfg.sym_unify_min_class_size = 2;
+        cfg.sym_unify_max_err = 12;
+        cfg.sym_unify_max_dx = 1;
+        cfg.sym_unify_max_dy = 1;
+        cfg.sym_unify_class_accept_limit = 16;
+        cfg.sym_unify_core_close_threshold = 11;
+        cfg.sym_unify_min_core_ratio_permille = 350;
+        cfg.sym_unify_min_class_usage = 2;
+        cfg.sym_unify_min_page_span = 1;
+        cfg.sym_unify_min_estimated_gain = 0;
+        cfg.sym_unify_context_mode = SymbolContextMode::Hybrid;
+        cfg.sym_unify_border_score_slack = 4;
+        cfg.sym_unify_score_rescue_slack = 2;
+        cfg.sym_unify_max_border_outside_ink = 1;
+        cfg.sym_unify_refine_min_subcluster_size = 2;
+        cfg.sym_unify_refine_min_usage = 12;
+        cfg.sym_unify_refine_min_page_span = 3;
+        cfg.sym_unify_refine_max_score = 8;
+        cfg.sym_unify_refine_min_gain = 20;
+        cfg
+    }
+
+    #[inline]
+    pub fn uses_symbol_unify(&self) -> bool {
+        self.lossy_symbol_mode == LossySymbolMode::SymbolUnify
+    }
+
+    #[inline]
+    pub fn uses_lossy_symbol_dictionary(&self) -> bool {
+        self.lossy_symbol_mode != LossySymbolMode::Off
     }
 
     /// Creates a configuration for lossless image encoding
@@ -475,19 +574,45 @@ impl From<GenericRegionConfig> for GenericRegionParams {
 pub struct SymbolDictParams {
     pub sd_template: u8,   // Symbol dictionary template (0-3)
     pub at: [(i8, i8); 4], // Adaptive template coordinates (a1x, a1y, ..., a4x, a4y)
-    pub exsyms: u32,       // Number of exported symbols
-    pub newsyms: u32,      // Number of new symbols
+    pub refine_aggregate: bool,
+    pub refine_template: u8,
+    pub refine_at: [(i8, i8); 2],
+    pub exsyms: u32,  // Number of exported symbols
+    pub newsyms: u32, // Number of new symbols
 }
 
 impl SymbolDictParams {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(2 + 8 + 4 + 4);
-        let b = self.sd_template & 0x03; // SDTEMPLATE in low 2 bits
-        buf.push(b);
-        buf.push(0); // Reserved flags
+        let mut buf = Vec::with_capacity(
+            2 + 8
+                + if self.refine_aggregate && self.refine_template == 0 {
+                    4
+                } else {
+                    0
+                }
+                + 4
+                + 4,
+        );
+
+        let mut flags = 0u16;
+        flags |= ((self.sd_template & 0x03) as u16) << 10;
+        if self.refine_aggregate {
+            flags |= 1 << 1; // SDREFAGG
+        }
+        if self.refine_aggregate && (self.refine_template & 0x01) == 1 {
+            flags |= 1 << 12; // SDRTEMPLATE
+        }
+
+        buf.write_u16::<BigEndian>(flags).unwrap();
         for &(x, y) in &self.at {
             buf.push(x as u8);
             buf.push(y as u8);
+        }
+        if self.refine_aggregate && self.refine_template == 0 {
+            for &(x, y) in &self.refine_at {
+                buf.push(x as u8);
+                buf.push(y as u8);
+            }
         }
         buf.write_u32::<BigEndian>(self.exsyms).unwrap();
         buf.write_u32::<BigEndian>(self.newsyms).unwrap();
@@ -506,7 +631,7 @@ pub struct TextRegionParams {
     pub height: u32,         // Region height in pixels
     pub x: u32,              // X-coordinate of the top-left corner
     pub y: u32,              // Y-coordinate of the top-left corner
-    pub ds_offset: u8,       // Signed 5-bit offset (SBDSOFFSET)
+    pub ds_offset: i8,       // Signed 5-bit offset (SBDSOFFSET)
     pub refine: bool,        // SBREFINE flag
     pub log_strips: u8,      // LOGSBSTRIPS (0-3)
     pub ref_corner: u8,      // REFCORNER (0-3)
@@ -528,7 +653,7 @@ impl TextRegionParams {
         // Layout mirrors jbig2enc's packed jbig2_text_region bitfields.
         let mut flags0 = 0u8;
         flags0 |= ((self.comb_op >> 1) & 0x01) as u8; // SBCOMBOP bit 1 (sbcombop2)
-        flags0 |= (self.ds_offset & 0x1F) << 2; // SBDSOFFSET
+        flags0 |= ((self.ds_offset as u8) & 0x1F) << 2; // SBDSOFFSET (signed → u8 → 5-bit)
         if self.refine && self.refine_template == 1 {
             flags0 |= 1 << 7; // SBRTEMPLATE
         }
@@ -546,9 +671,10 @@ impl TextRegionParams {
         flags1 |= (self.comb_op & 0x01) << 7; // SBCOMBOP bit 0 (sbcombop1)
         buf.write_u8(flags1).unwrap();
 
-        // Refinement AT flags default to (-1, -1), (-1, -1) like jbig2enc.
-        if self.refine {
-            buf.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        // Refinement AT flags: only written for SBRTEMPLATE=0 (which uses 2 AT pixels = 4 bytes).
+        // SBRTEMPLATE=1 has no AT pixels.
+        if self.refine && self.refine_template == 0 {
+            buf.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // (-1,-1), (-1,-1)
         }
         buf
     }

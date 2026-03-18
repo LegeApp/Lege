@@ -119,6 +119,7 @@ pub mod jbig2arith;
 #[cfg(feature = "cc-analysis")]
 pub mod jbig2cc;
 pub mod jbig2comparator;
+pub mod jbig2cost;
 pub mod jbig2enc;
 pub mod jbig2halftone;
 pub mod jbig2shared;

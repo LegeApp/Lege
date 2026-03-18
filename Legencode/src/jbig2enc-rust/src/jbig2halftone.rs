@@ -880,11 +880,7 @@ fn gray_coded_bitplanes(gray_image: &Array2<u8>) -> Vec<BitImage> {
             for x in 0..w {
                 let current_bit = raw_bitplanes[i].get_usize(x, y);
                 let higher_bit = raw_bitplanes[i + 1].get_usize(x, y);
-                gray_planes[i].set(
-                    usize_to_u32(x),
-                    usize_to_u32(y),
-                    current_bit ^ higher_bit,
-                );
+                gray_planes[i].set(usize_to_u32(x), usize_to_u32(y), current_bit ^ higher_bit);
             }
         }
     }

@@ -9,6 +9,7 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use once_cell::sync::Lazy;
+#[cfg(debug_assertions)]
 use std::collections::HashMap;
 
 #[cfg(not(feature = "trace_arith"))]
@@ -273,7 +274,7 @@ pub(crate) static FULL: Lazy<[State; 94]> = Lazy::new(|| {
 });
 
 /// Context-adaptive arithmetic encoder for JBIG2.
-const NUM_REFINEMENT_CX_STATES: usize = 17; // For GRTEMPLATE=0, contexts 0-16
+const NUM_REFINEMENT_CONTEXTS: usize = 1 << 13; // 8192 for GRTEMPLATE=0 (13-bit context)
 /// Initial index into CTBL for new contexts, typically 0 (MPS=0, Qe=0x5601).
 
 pub struct Jbig2ArithCoder {
@@ -286,7 +287,7 @@ pub struct Jbig2ArithCoder {
     context: Vec<usize>,
     int_ctx: [[usize; 512]; 13], // Contexts for integer encoding, storing CTBL indices
     iaid_ctx: Vec<usize>,        // Dynamically sized context tree for IAID symbols
-    refinement_contexts: [u8; 16], // Contexts for GRTEMPLATE=0 (16 states)
+    refinement_contexts: Vec<usize>, // Contexts for refinement region (GRTEMPLATE=0: 8192 states)
 }
 
 impl Jbig2ArithCoder {
@@ -343,7 +344,7 @@ impl Jbig2ArithCoder {
             context: vec![Self::INITIAL_STATE; JBIG2_MAX_CTX],
             int_ctx: [[0; 512]; 13],
             iaid_ctx: Vec::new(),
-            refinement_contexts: [0; 16],
+            refinement_contexts: vec![0; NUM_REFINEMENT_CONTEXTS],
         };
         coder.reset();
         coder
@@ -614,7 +615,12 @@ impl Jbig2ArithCoder {
     /// The OOB signal is the bit pattern '1000' as per Table A.1 in the JBIG2 specification.
     pub fn encode_oob(&mut self, proc: IntProc) -> anyhow::Result<()> {
         let context_idx = proc as usize;
-        for (idx, bit) in [(1usize, true), (3usize, false), (6usize, false), (12usize, false)] {
+        for (idx, bit) in [
+            (1usize, true),
+            (3usize, false),
+            (6usize, false),
+            (12usize, false),
+        ] {
             let next_state = self.encode_bit_with_state_idx(self.int_ctx[context_idx][idx], bit);
             self.int_ctx[context_idx][idx] = next_state;
         }
@@ -778,7 +784,8 @@ impl Jbig2ArithCoder {
                 let col = first_bit % width;
                 log::debug!(
                     "first black pixel according to Rust packer: ({}, {})",
-                    col, row
+                    col,
+                    row
                 );
             } else {
                 log::debug!("packed data all zero - no black pixels");
@@ -791,76 +798,73 @@ impl Jbig2ArithCoder {
             }
         }
 
-        // Helper function matching the original C code's image_get
-        let image_get = |x: i32, y: i32| -> u8 {
-            if y < 0 || x >= width as i32 || y >= height as i32 {
-                return 0;
-            }
-            if x < 0 {
-                return 0;
-            }
-            Self::sample(packed, width, height, x, y) as u8
-        };
+        let words_per_row = (width + 31) / 32;
 
+        #[cfg(debug_assertions)]
         let mut context_distribution: HashMap<usize, usize> = HashMap::new();
-        let progress_interval = (height as f32 * 0.1).ceil() as i32;
+        #[cfg(debug_assertions)]
         let mut last_reported_progress = -1;
 
-        for y in 0..height as i32 {
-            // Report progress at 10% intervals
-            let progress = (y * 10) / height as i32;
-            if progress > last_reported_progress {
-                last_reported_progress = progress;
-                let unique_contexts = context_distribution.len();
-                let total_samples: usize = context_distribution.values().sum();
-                let avg_occurrences = if unique_contexts > 0 {
-                    total_samples / unique_contexts
-                } else {
-                    0
-                };
+        for y in 0..height {
+            #[cfg(debug_assertions)]
+            {
+                let progress = (y as i32 * 10) / height as i32;
+                if progress > last_reported_progress {
+                    last_reported_progress = progress;
+                    let unique_contexts = context_distribution.len();
+                    let total_samples: usize = context_distribution.values().sum();
+                    let avg_occurrences = if unique_contexts > 0 {
+                        total_samples / unique_contexts
+                    } else {
+                        0
+                    };
 
-                log::debug!(
-                    "Progress: {}% - Line {}/{} - Contexts: {} unique (avg {:.1} uses/context)",
-                    progress * 10,
-                    y,
-                    height,
-                    unique_contexts,
-                    avg_occurrences as f32
-                );
-
-                // Reset for next interval
-                context_distribution.clear();
+                    log::debug!(
+                        "Progress: {}% - Line {}/{} - Contexts: {} unique (avg {:.1} uses/context)",
+                        progress * 10,
+                        y,
+                        height,
+                        unique_contexts,
+                        avg_occurrences as f32
+                    );
+                    context_distribution.clear();
+                }
             }
 
-            // Initialize context values for this row, matching C code exactly
-            let x = 0;
-            let mut c1 = (image_get(x, y - 2) as u16) << 2
-                | (image_get(x + 1, y - 2) as u16) << 1
-                | (image_get(x + 2, y - 2) as u16);
-            let mut c2 = (image_get(x, y - 1) as u16) << 3
-                | (image_get(x + 1, y - 1) as u16) << 2
-                | (image_get(x + 2, y - 1) as u16) << 1
-                | (image_get(x + 3, y - 1) as u16);
+            let row = &packed[y * words_per_row..(y + 1) * words_per_row];
+            let prev1 = if y > 0 {
+                Some(&packed[(y - 1) * words_per_row..y * words_per_row])
+            } else {
+                None
+            };
+            let prev2 = if y > 1 {
+                Some(&packed[(y - 2) * words_per_row..(y - 1) * words_per_row])
+            } else {
+                None
+            };
+
+            let mut c1 = (Self::sample_row(prev2, width, 0) << 2)
+                | (Self::sample_row(prev2, width, 1) << 1)
+                | Self::sample_row(prev2, width, 2);
+            let mut c2 = (Self::sample_row(prev1, width, 0) << 3)
+                | (Self::sample_row(prev1, width, 1) << 2)
+                | (Self::sample_row(prev1, width, 2) << 1)
+                | Self::sample_row(prev1, width, 3);
             let mut c3: u16 = 0;
 
-            for x in 0..width as i32 {
-                // Form the context exactly as in the C code
+            for x in 0..width {
                 let tval = (c1 << 11) | (c2 << 4) | c3;
-                let pixel = image_get(x, y);
+                let pixel = Self::sample_row(Some(row), width, x);
 
                 self.encode_bit(tval as usize, pixel != 0);
-                *context_distribution.entry(tval as usize).or_insert(0) += 1;
+                #[cfg(debug_assertions)]
+                {
+                    *context_distribution.entry(tval as usize).or_insert(0) += 1;
+                }
 
-                // Update context values for next pixel, matching C code
-                c1 <<= 1;
-                c2 <<= 1;
-                c3 <<= 1;
-                c1 |= image_get(x + 3, y - 2) as u16;
-                c2 |= image_get(x + 4, y - 1) as u16;
-                c3 |= pixel as u16;
-                c1 &= 31; // keep only 5 bits
-                c2 &= 127; // keep only 7 bits
-                c3 &= 15; // keep only 4 bits
+                c1 = ((c1 << 1) | Self::sample_row(prev2, width, x + 3)) & 31;
+                c2 = ((c2 << 1) | Self::sample_row(prev1, width, x + 4)) & 127;
+                c3 = ((c3 << 1) | pixel) & 15;
             }
 
             #[cfg(debug_assertions)]
@@ -878,43 +882,15 @@ impl Jbig2ArithCoder {
     /// Reads from packed data in row-major order with MSb-first bit orientation,
     /// matching the format produced by BitImage::to_packed_words().
     #[inline(always)]
-    fn sample(packed: &[u32], width: usize, height: usize, x: i32, y: i32) -> u32 {
-        let result = if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
-            #[cfg(debug_assertions)]
-            if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
-                log::trace!(
-                    "sample: out of bounds access x={}, y={} (width={}, height={})",
-                    x,
-                    y,
-                    width,
-                    height
-                );
-            }
-            0
-        } else {
-            let words_per_row = (width + 31) / 32;
-            let row_offset = (y as usize) * words_per_row;
-            let word_in_row = (x as usize) / 32;
-            let idx = row_offset + word_in_row;
-            if idx >= packed.len() {
-                #[cfg(debug_assertions)]
-                log::warn!(
-                    "sample: index out of bounds: idx={}, packed.len()={}",
-                    idx,
-                    packed.len()
-                );
-                return 0;
-            }
-            // MSb-first bit ordering within each word
-            let word = packed[idx];
-            let bit_pos = 31 - (x as usize % 32); // Keep MSB-first
-            (word >> bit_pos) & 1
+    fn sample_row(row: Option<&[u32]>, width: usize, x: usize) -> u16 {
+        if x >= width {
+            return 0;
+        }
+        let Some(row) = row else {
+            return 0;
         };
-
-        #[cfg(debug_assertions)]
-        log::trace!("sample: x={}, y={} -> {}", x, y, result);
-
-        result
+        let word = row[x >> 5];
+        ((word >> (31 - (x & 31))) & 1) as u16
     }
     #[cfg(feature = "line_verify")]
     fn verify_line_contexts(
@@ -980,6 +956,102 @@ impl Jbig2ArithCoder {
             idx += 1;
         }
         Ok(())
+    }
+
+    /// Encodes a refinement region using the JBIG2 generic refinement procedure (§6.3).
+    ///
+    /// The target bitmap is encoded pixel-by-pixel using a 13-bit context formed
+    /// from 3 already-coded target pixels + 9 reference pixels (3×3 neighbourhood)
+    /// + 1 adaptive template (AT) pixel from the reference. This matches the
+    /// GRTEMPLATE=0 context layout from T.88 Table 12, verified against jbig2dec.
+    ///
+    /// # Arguments
+    /// * `target` - The bitmap to encode (the actual instance glyph)
+    /// * `reference` - The prototype/dictionary symbol used as predictor
+    /// * `grdx` - Horizontal offset: reference pos = target pos − (grdx, grdy)
+    /// * `grdy` - Vertical offset
+    /// * `template` - GRTEMPLATE (0 or 1). Only 0 is implemented.
+    /// * `grat` - Adaptive template pixel offsets; for GRTEMPLATE=0 supply one (x,y) pair
+    pub fn encode_refinement_region(
+        &mut self,
+        target: &crate::jbig2sym::BitImage,
+        reference: &crate::jbig2sym::BitImage,
+        grdx: i32,
+        grdy: i32,
+        template: u8,
+        grat: &[(i8, i8)],
+    ) -> Result<()> {
+        // GRTEMPLATE=0: 13-bit context → 8192 possible contexts
+        // Context bit layout (matching jbig2dec for interoperability):
+        //   bit  0: ref(rx-1, ry-1)    upper-left in reference
+        //   bit  1: ref(rx,   ry-1)    upper-center
+        //   bit  2: ref(rx+1, ry-1)    upper-right
+        //   bit  3: ref(rx-1, ry)      middle-left
+        //   bit  4: ref(rx,   ry)      center (the prediction pixel)
+        //   bit  5: ref(rx+1, ry)      middle-right
+        //   bit  6: target(x-1, y)     left (already coded)
+        //   bit  7: ref(rx-1, ry+1)    lower-left
+        //   bit  8: ref(rx,   ry+1)    lower-center
+        //   bit  9: ref(rx+1, ry+1)    lower-right
+        //   bit 10: target(x+1, y-1)   above-right (already coded)
+        //   bit 11: target(x, y-1)     above (already coded)
+        //   bit 12: ref AT pixel       adaptive template
+
+        let grat_x = grat.first().map_or(2i8, |g| g.0);
+        let grat_y = grat.first().map_or(-1i8, |g| g.1);
+
+        for y in 0..target.height as i32 {
+            for x in 0..target.width as i32 {
+                // Reference center for this target pixel
+                let rx = x - grdx;
+                let ry = y - grdy;
+
+                let mut cx: usize = 0;
+
+                // Reference pixels (bits 0-5, 7-9)
+                cx |= reference.get_pixel_safely(rx - 1, ry - 1) as usize;
+                cx |= (reference.get_pixel_safely(rx, ry - 1) as usize) << 1;
+                cx |= (reference.get_pixel_safely(rx + 1, ry - 1) as usize) << 2;
+                cx |= (reference.get_pixel_safely(rx - 1, ry) as usize) << 3;
+                cx |= (reference.get_pixel_safely(rx, ry) as usize) << 4;
+                cx |= (reference.get_pixel_safely(rx + 1, ry) as usize) << 5;
+
+                // Target pixel (bit 6) — left neighbor, already coded
+                cx |= (target.get_pixel_safely(x - 1, y) as usize) << 6;
+
+                // Reference lower row (bits 7-9)
+                cx |= (reference.get_pixel_safely(rx - 1, ry + 1) as usize) << 7;
+                cx |= (reference.get_pixel_safely(rx, ry + 1) as usize) << 8;
+                cx |= (reference.get_pixel_safely(rx + 1, ry + 1) as usize) << 9;
+
+                // Target pixels (bits 10-11) — above, already coded
+                cx |= (target.get_pixel_safely(x + 1, y - 1) as usize) << 10;
+                cx |= (target.get_pixel_safely(x, y - 1) as usize) << 11;
+
+                // Adaptive template pixel from reference (bit 12)
+                if template == 0 {
+                    cx |= (reference.get_pixel_safely(rx + grat_x as i32, ry + grat_y as i32)
+                        as usize)
+                        << 12;
+                }
+
+                let pixel = target.get_pixel_safely(x, y) != 0;
+
+                // Encode using the dedicated refinement context array
+                let next_state =
+                    self.encode_bit_with_state_idx(self.refinement_contexts[cx], pixel);
+                self.refinement_contexts[cx] = next_state;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resets only the refinement contexts, keeping other state intact.
+    /// Call this between successive refinement regions within the same text region
+    /// segment so that each symbol instance starts from a clean prediction state.
+    pub fn reset_refinement_contexts(&mut self) {
+        self.refinement_contexts.fill(0);
     }
 
     /// Returns the output buffer as a Vec<u8>.
