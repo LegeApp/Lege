@@ -27,7 +27,12 @@ fn normalize_binary_data<'a>(
             if input.len() < expected_len {
                 return Err(EncodingError::InputBufferTooSmall);
             }
-            Ok(Cow::Borrowed(&input[..expected_len]))
+            // Invert polarity for JBIG2 (0=white, 1=black)
+            let mut inverted = input[..expected_len].to_vec();
+            for byte in &mut inverted {
+                *byte = 255 - *byte;
+            }
+            Ok(Cow::Owned(inverted))
         }
         1 => {
             // Grayscale 0/255 data - normalize to 0/1
@@ -38,14 +43,20 @@ fn normalize_binary_data<'a>(
             // Check if already normalized (all values are 0 or 1)
             let already_binary = input[..expected_len].iter().all(|&b| b <= 1);
             if already_binary {
-                return Ok(Cow::Borrowed(&input[..expected_len]));
+                // Invert polarity for JBIG2 (0=white, 1=black)
+                let mut inverted = input[..expected_len].to_vec();
+                for byte in &mut inverted {
+                    *byte = 255 - *byte;
+                }
+                return Ok(Cow::Owned(inverted));
             }
 
             // Normalize: >128 = white (1), <=128 = black (0)
+            // Then invert for JBIG2 polarity
             Ok(Cow::Owned(
                 input[..expected_len]
                     .iter()
-                    .map(|&b| if b > 128 { 1 } else { 0 })
+                    .map(|&b| if b > 128 { 0 } else { 1 })  // Inverted: white=0, black=1
                     .collect(),
             ))
         }
