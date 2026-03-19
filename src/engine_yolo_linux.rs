@@ -108,6 +108,34 @@ impl PaddleXEngine {
         }
     }
 
+    pub fn detect_single_blocking(&mut self, image: &RgbImage) -> Result<Vec<Detection>> {
+        match &mut self.backend {
+            EngineBackend::Yolo(engine) => engine.detect_single_sync(image),
+            EngineBackend::Paddle(engine) => {
+                // Use tokio runtime to call async method from sync context
+                let rt = tokio::runtime::Handle::try_current()
+                    .or_else(|_| tokio::runtime::Runtime::new().map(|rt| rt.handle().clone()))?;
+                rt.block_on(engine.detect_single_async(image))
+            }
+        }
+    }
+
+    pub fn detect_batch_with_indices_blocking(
+        &mut self,
+        images: &[RgbImage],
+        page_indices: &[usize],
+    ) -> Result<Vec<Vec<Detection>>> {
+        match &mut self.backend {
+            EngineBackend::Yolo(engine) => engine.detect_batch_sync(images),
+            EngineBackend::Paddle(engine) => {
+                // Use tokio runtime to call async method from sync context
+                let rt = tokio::runtime::Handle::try_current()
+                    .or_else(|_| tokio::runtime::Runtime::new().map(|rt| rt.handle().clone()))?;
+                rt.block_on(engine.detect_batch_with_indices_async(images, page_indices))
+            }
+        }
+    }
+
     pub fn provider_name(&self) -> &str {
         match &self.backend {
             EngineBackend::Yolo(engine) => &engine.provider_name,
@@ -169,16 +197,32 @@ impl YoloLinuxEngine {
         attempts.push((vec![CPUExecutionProvider::default().build()], "CPU"));
 
         for (providers, name) in attempts {
-            if let Ok(session) = new_builder()?
-                .with_execution_providers(providers)?
-                .commit_from_file(model_path)
-            {
-                if name == "CPU" {
-                    info_println!("Using CPU execution for ONNX Runtime");
-                } else {
-                    info_println!("Using {} execution for ONNX Runtime", name);
+            match new_builder() {
+                Ok(mut builder) => {
+                    match builder.with_execution_providers(providers) {
+                        Ok(mut builder_with_providers) => {
+                            match builder_with_providers.commit_from_file(model_path) {
+                                Ok(session) => {
+                                    if name == "CPU" {
+                                        info_println!("Using CPU execution for ONNX Runtime");
+                                    } else {
+                                        info_println!("Using {} execution for ONNX Runtime", name);
+                                    }
+                                    return Ok((session, name.to_string()));
+                                }
+                                Err(e) => {
+                                    debug_println!("Failed to commit session with {}: {:?}", name, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug_println!("Failed to add {} providers: {:?}", name, e);
+                        }
+                    }
                 }
-                return Ok((session, name.to_string()));
+                Err(e) => {
+                    debug_println!("Failed to create builder: {:?}", e);
+                }
             }
         }
 

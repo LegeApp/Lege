@@ -26,25 +26,20 @@ pub fn webgpu_execution_provider_dispatch()
 
 #[cfg(target_os = "linux")]
 fn build_webgpu_execution_provider() -> ort::execution_providers::ExecutionProviderDispatch {
-    use ort::execution_providers::{
-        WebGPUBufferCacheMode, WebGPUDawnBackendType, WebGPUExecutionProvider, WebGPUValidationMode,
-    };
+    use ort::execution_providers::webgpu::{WebGPU, BufferCacheMode, DawnBackendType, ValidationMode};
 
     info!("Initializing WebGPU with Vulkan backend");
 
-    WebGPUExecutionProvider::default()
-        .with_dawn_backend_type(WebGPUDawnBackendType::Vulkan)
-        // REMOVED: .with_preferred_layout(WebGPUPreferredLayout::NCHW)
-        // Let ORT/Dawn choose the optimal layout. WebGPU often performs better with NHWC
-        // even though models are typically NCHW, due to memory access patterns on GPU.
-        .with_storage_buffer_cache_mode(WebGPUBufferCacheMode::Bucket)
-        .with_uniform_buffer_cache_mode(WebGPUBufferCacheMode::LazyRelease)
-        .with_default_buffer_cache_mode(WebGPUBufferCacheMode::LazyRelease)
-        .with_enable_graph_capture(true) // Keep graph capture enabled (safe optimization)
+    WebGPU::default()
+        .with_dawn_backend_type(DawnBackendType::Vulkan)
+        .with_storage_buffer_cache_mode(BufferCacheMode::Bucket)
+        .with_uniform_buffer_cache_mode(BufferCacheMode::LazyRelease)
+        .with_default_buffer_cache_mode(BufferCacheMode::LazyRelease)
+        .with_enable_graph_capture(true)
         .with_validation_mode(if cfg!(debug_assertions) {
-            WebGPUValidationMode::Basic
+            ValidationMode::Basic
         } else {
-            WebGPUValidationMode::Disabled
+            ValidationMode::Disabled
         })
         .build()
     // If WebGPU provider build fails, we'll let it propagate up to engine where it will be caught
