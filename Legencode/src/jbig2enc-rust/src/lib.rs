@@ -282,16 +282,6 @@ pub fn encode_single_image_lossless(
     encode_single_bitimage(bitimage, Jbig2Context::with_lossless_config(pdf_mode))
 }
 
-pub fn encode_single_image_with_config(
-    input: &[u8],
-    width: u32,
-    height: u32,
-    context: Jbig2Context,
-) -> Result<Jbig2EncodeResult, Jbig2Error> {
-    let bitimage = validate_and_build_bitimage(input, width, height)?;
-    encode_single_bitimage(bitimage, context)
-}
-
 fn validate_and_build_bitimage(
     input: &[u8],
     width: u32,

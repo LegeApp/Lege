@@ -1,0 +1,257 @@
+See discussions, stats, and author profiles for this publication at: https://www.researchgate.net/publication/2824514
+Dept. of Electrical and Computer Eng. The UniversityofTexas at Austin Austin,
+TX 78712-1084 USA
+Article · July 1999
+Source: CiteSeer
+CITATIONS                                                                                                    READS
+0                                                                                                            143
+3 authors, including:
+             Brian L. Evans
+             University of Texas at Austin
+             446 PUBLICATIONS 11,746 CITATIONS
+                 SEE PROFILE
+ All content following this page was uploaded by Brian L. Evans on 05 August 2021.
+ The user has requested enhancement of the downloaded file.
+        LOSSY COMPRESSION OF STOCHASTIC HALFTONES WITH JBIG2
+  Magesh Valliappan and Brian L. Evans                        Dave A. D. Tompkins and Faouzi Kossentini
+   Dept. of Electrical and Computer Eng.                           Dept. of Electrical and Computer Eng.
+      The University of Texas at Austin                                  University of British Columbia
+          Austin, TX 78712-1084 USA                                   Vancouver, B.C. V6T 1Z4 Canada
+       fmagesh,bevansg@ece.utexas.edu                                       fdavet,faouzig@ece.ubc.ca
+                       ABSTRACT                               ibility for encoder designs. An encoder could segment bi-
+The JBIG2 standard supports lossless and lossy coding mod-    level images into text, halftone, and generic regions, and
+els for text, halftone, and generic regions in bi-level im-   encode each region separately [3, 4]. For halftone regions,
+ages. For the JBIG2 lossy halftone compression mode,          JBIG2 supports very high lossy compression rates. This
+halftones are descreened before encoding. Previous JBIG2      paper develops a new high-quality lossy JBIG2 encoding
+descreening implementations produce high-quality images       method tailored for stochastic halftones. We develop visual
+for clustered dot halftones at high compression rates but     quality measures, which we use for rate-distortion tradeo s.
+signi cantly degrade the image quality for stochastic half-   We achieve an additional 35% compression over the best re-
+tones, even at much lower rates. In this paper, we develop    ported method [5]. We implement the method in the JBIG2
+(1) a exible, computationally ecient, JBIG2-compliant        codec available at http://spmg.ece.ubc.ca/jbig2.
+method for compressing stochastic halftones that reduces                         2. BACKGROUND
+noise, artifacts, and blurring; (2) quality measures for lin-
+ear and nonlinear distortion in compressed halftones; and     JBIG2 uses a form of vector quantization for compressing
+(3) rate-distortion tradeo s for the encoder parameters.      halftones. First, the encoder descreens (inverse halftone)
+                                                              the bi-level image into a grayscale image with reduced spa-
+                  1. INTRODUCTION                             tial resolution. Gray levels serve as indices into a halftone
+                                                              pattern dictionary, which is chosen by the encoder. Then,
+Digital halftoning converts a continuous-tone image into a    the encoder encodes the halftone pattern dictionary and
+bi-level image (halftone) for printing and display on binary  grayscale image bitplanes losslessly using the generic mode
+devices. Bi-level images consist of a single rectangular bit  of operation, and chooses the orientation for the halftoning
+plane. Pixels are either assigned black or white to create    grid. The decoder rst decodes the bitplanes to construct
+an illusion of continuous shades of gray.                     the grayscale image and then constructs the bi-level im-
+    Halftoning by ordered dithering thresholds a grayscale    age by placing the dictionary patterns corresponding to the
+image by using a periodic mask of threshold values. In        grayscale values at their appropriate positions and orienta-
+clustered dot ordered dithering, black dots are clustered     tions. Thus, the spatial resolution and number of gray levels
+in large blobs. Since clustered dot halftones are resistant   directly a ect the quality and compression ratio. Perceptu-
+to ink spread, they are the most common among printed         ally lossless compression is achieved by preserving the local
+halftones. Stochastic halftoning varies the thresholding ac-  average gray level but not the bi-level image itself.
+cording to local statistics in the image in order to shape         One descreening method [5] maps each non-overlapping
+the quantization noise into the high frequencies where the    M  M window of halftone pixels to one grayscale pixel
+human visual system is less sensitive. Stochastic halfton-    value that is equal to the number of black pixels in the
+ing requires more computation and generally yields better     halftone window. For non-angled grids, this method yields
+visual quality than ordered dithering [1].                    M 2 + 1 gray levels. For angled grids, a mask is used with
+    Current fax machines only support one lossless com-       the window so that adjacent patterns do not overlap, and
+pression mode that has been optimized for textual data [2]    the number of gray levels is area of the mask +1  M 2 +1.
+and causes data expansion when applied to halftones. The      This method is conceptually and computationally simple,
+Joint Bi-Level Experts Group (JBIG) is a subcommittee of      and works well for ordered dithered halftones. When this
+both the ISO/IEC and the ITU-T that is developing a sec-      method is applied to stochastic halftones, the grayscale im-
+ond international standard for bi-level image compression     age su ers from noise, blur, and artifacts, which degrade
+for use in printers, fax machines, scanners, and document     the reconstructed halftone quality [5].
+storage and archiving. JBIG2 adds lossy compression and            For stochastic halftones, inverse halftoning methods in
+supports several di erent coding models for text, halftone    descending order of quality are set theoretic [10], nonlinear
+and generic regions. JBIG2 should be nalized in Fall 1999.    denoising [7], adaptive smoothing [6], overcomplete wavelet
+    JBIG2 speci es the bit stream syntax, which places        expansion [8], wavelet denoising [9], projection onto convex
+strict requirements on decoder designs but leaves much ex-    sets [11], and vector quantization [12]. The inverse halftones
+     M. Valliappan and B. Evans were supported by a US Na-    have the same spatial resolution as the halftone but with
+tional Science Foundation CAREER Award under grant MIP-       6{8 bits of precision per pixel. For higher compression,
+9701707. D. Tompkins and F. Kossentini were supported by the  a JBIG2 encoder would create a grayscale image at lower
+Natural Sciences and Engineering Research Council of Canada.  spatial resolution and fewer gray levels.
+       3. PROPOSED ENCODING METHOD                                             4. QUALITY METRICS
+The proposed encoder in Fig. 1 takes a stochastic halftone     We develop quality metrics to evaluate the performance
+as input and generates a JBIG2-compliant bitstream as out-     of the proposed encoding method. The proposed encod-
+put. The free parameters are grid size and orientation, num-   ing method attempts to preserve the useful information
+ber of quantization levels, and sharpening control.            present in the stochastic halftone while discarding as much
+     The pre lter should suppress high-frequency noise, spu-   noise and distortion as possible. So, we compare the input
+rious tones, and Nyquist frequencies in stochastic halftones,  halftone with the original grayscale image.
+and it should have a at passband response to minimize              Signal to noise ratios (SNRs) assume that the only source
+distortion [13]. To meet these criteria while maintaining      of degradation in a processed signal is additive noise. Com-
+computational simplicity, we design a symmetric 3  3 -        pression and halftoning also introduce linear and nonlinear
+nite impulse
+      " 1 2 response       lter with power-of-two coecients   distortion. Because the human visual system responds in-
+                   1#                                          dependently to linear distortion and noise, we develop a
+[13]: 2 4 2 . The pre lter produces a grayscale image          quality measure for each e ect [13, 18]. We quantify the
+        1 2 1                                                  linear distortion by constructing a minimum mean squared
+at the same spatial resolution as the halftone.                error Weiner lter so that the residual image is uncorre-
+     The decimator consists of a lowpass anti-aliasing lter    lated with the input image. The residual image represents
+followed by downsampling by M in each dimension. The           the nonlinear distortion plus additive independent noise.
+  lter sums the pixel intensities within the pattern mask.         To quantify the e ect of nonlinear distortion and noise
+For unangled grids, this corresponds to a cuto frequency       on quality, we spectrally weight the residual by a contrast
+of M in each dimension. This process is very similar to       sensitivity function (CSF). A CSF is a linear approximation
+[5] except that the mask and the window are applied to         of the human visual system response to a sine wave of a
+the ltered grayscale values instead of the bi-level image      single frequency [13, 18]. A lowpass CSF assumes that the
+and that the number of resulting gray levels is signi cantly   observer does not focus on one point in the image but freely
+higher. In our implementation, we combine the pre lter         moves the eyes around the image. We form a weighted SNR
+and the anti-aliasing lter. Since the input would be a bi-                               P P jX (u; v)C (u; v)j2 
+level image, we replace multiplications with additions. For          WSNR = 10 log10 Pu Pv
+a 3  3 smoothing lter and a window size of M  M , we                                       u   v jD(u; v)C (u; v)j2
+need at most (M + 2)2 additions for each grayscale value.
+     The quantizer uses N gray levels (N  M 2 + 1). Con-      where C (u; v) is a lowpass CSF, and X (u; v) and D(u; v)
+ventional quantization with 32 or fewer levels (M  5)         are the Fourier transforms of windowed original and residual
+would create false contours [14]. To avoid contouring, we      images, respectively. A higher WSNR means higher quality.
+dither the input image using a multi-level version [15] of     To prevent WSNRs to be biased by large DC components,
+modi ed error di usion [16]. Error di usion, which is a        we initially remove the DC component of the images.
+type of 2-D sigma-delta modulation, shapes the quantiza-           To quantify the e ect of linear distortion, we compute
+tion noise into the higher frequencies. Modi ed error dif-     a Linear Distortion Measure
+fusion controls the amount of linear distortion by means of                    P P j1 , H (u; v)jjX (u; v)C (u; v)j
+a sharpening control parameter L, which requires an extra             LDM = u P        v P
+addition and multiplication per input pixel. We choose L                                 u v jX (u; v)C (u; v)j
+to compensate for the blurring in the previous stages. To
+achieve higher compression, we could further quantize the      where H (u; v) is the Fourier transform of the Weiner lter
+gray levels with a slight loss in quality. In our implementa-  that models the process. H (u; v) is lowpass, so 1 , H (u; v)
+tion, we use a four-tap Floyd-Steinberg error di usion lter    is highpass. Because of the weighting by X (u; v), the LDM
+which has dyadic coecients. It is the smallest error di u-    only measures those frequencies which are present in the
+sion lter known to produce high-quality halftones [13, 17].    original image. A higher LDM means lower quality.
+     The size, shape, and orientation of the patterns directly
+a ect the reconstructed halftone quality. Halftone patterns                            5. RESULTS
+oriented at 45o can yield perceptually better results [1]. The
+possible patterns depend on the rendering device. We use       We compress the 512  512 Floyd-Steinberg error di used
+methods similar to [5] to generate halftone patterns for both  halftone of the grayscale image barbara shown in Fig. 2.
+angled and non-angled clustered dot masks.                     Figs. 3{9 show the e ect of the encoding parameters. Table
+                                                               1 gives the compression rates and distortion. The distortion
+                                                               measures assume a 600 dpi rendering device and a 40 cm
+                                                               viewing distance. For lossy compression, the encoder uses a
+         Prefilter    Decimator     Quantizer
+                                                Lossless       pattern dictionary generated by clustered dot halftones [5].
+                                                 Encoder
+                                                                   As shown in Table 1, the existing Group 4 MMR fax
+                                                               standard expands the original image by 148% whereas the
+                                                               arithmetic JBIG2 generic MQ lossless coder gives a com-
+                                     Symbol                    pression ratio of 1.73. If the image is encoded without
+                                   Dictionary
+                                                               a pre lter, then the noise introduced by stochastic half-
+                                                               toning is visible (Fig. 3). By pre ltering, we reduce the
+Figure 1: Proposed JBIG2 encoding method for compress-         high-frequency noise and some of the detail (Fig. 4). We
+ing halftones. Free parameters are pattern grid size M ,       compensate for the frequency distortion by adjusting the
+number of quantization levels N , and sharpening control L.    sharpening parameter (Fig. 5). The sharpening parameter
+The pre lter would be applied only for stochastic halftones.   improves visual quality but decreases the compression ratio
+     Figure 2: Original halftone of the barbara image.         Figure 3: Reconstructed halftone without pre ltering using
+                                                               a 4  4 grid (M = 4) and N = 17 gray levels. Same as [5].
+(Fig. 4{6). Fig. 6 depicts oversharpening (contrast distor-
+tion).
+    Using a larger grid size and an angled screen can achieve
+better quality for the same bit rate (Figs. 5 and 7). In-
+creasing the grid size increases compression (Figs. 7 and 8).
+Quantizing the descreened image to fewer gray levels further
+increases compression (Fig. 9). Rate-distortion curves (Fig.
+10) represent the variation of distortion and compressed im-
+age size with respect to the grid size and sharpening control
+parameter. For linear distortion, an optimal value of the
+sharpening control parameter exists. Beyond the optimal
+value, the reconstructed halftones are oversharpened and
+distortion increases, which increases both rate and distor-
+tion. WSNR does not change signi cantly with the sharp-
+ening control parameter but changes dramatically with the
+grid size. The sharpness control parameter can be used to
+trade o compressed image size for improved quality.
+            Encoder Parameters           Distortion       Size
+  Image      L    M     N           LDM WSNR Bytes
+   Orig.     {    {      {     {        {         {     32768
+  MMR        {    {      {     {        {         {     81420  Figure 4: Reconstructed halftone with a pre lter using a
+   MQ        {    {      {     {        {         {     18907  4  4 grid (M = 4) with all 17 gray levels (N = 17).
+  Fig. 3     {    4     17    0o     0.163 15.4 dB 5374
+  Fig. 4     {    4     17    0o     0.181 16.5 dB 4356
+  Fig. 5    0.5   4     17    0o     0.091 16.0 dB 5152                           6. CONCLUSION
+  Fig. 6    1.5   4     17    0o     0.292 14.8 dB 6352        We have developed a JBIG2-compliant method for encod-
+  Fig. 7    0.5   6     19    45o    0.116 18.7 dB 4961        ing stochastic halftones. To descreen the halftone, we pre-
+  Fig. 8    0.5   8     33    45o    0.155 15.7 dB 3983          lter, decimate, and quantize. Pre ltering reduces high-
+  Fig. 9    0.5   8     16    45o    0.158 14.0 dB 3318        frequency noise, spurious tones, and Nyquist frequencies.
+                                                               Decimation reduces spatial resolution. Quantization uses
+Table 1: Visual quality and size of the JBIG2 bitstream for    modi ed Floyd-Steinberg error di usion to shape the quan-
+the barbara image for the encoder parameters: sharpening       tization error into the higher frequencies and control the
+control L, M  M block size, N quantization levels, and        sharpness. We analyze the rate-distortion tradeo s for the
+orientation . Section 4 de nes LDM and WSNR. MMR              encoder parameters: orientation of the halftone grid; deci-
+and MQ are lossless JBIG2 modes. MMR is same as the            mation factor which also speci es the halftone grid; number
+current fax standard. MQ uses arithmetic coding.               of quantization levels; and sharpening control. To measure
+Figure 5: Reconstructed halftone with pre ltering and Figure 7: Reconstructed halftone with pre ltering and
+sharpening (L = 0:5) using a 4  4 grid (M = 4) with  sharpening (L = 0:5) using a 6  6 grid (M = 6) angled
+all 17 gray levels (N = 17).                          at 45o with all 19 gray levels (N = 19).
+Figure 6: Reconstructed halftone with pre ltering and Figure 8: Reconstructed halftone with pre ltering and
+sharpening (L = 1:5) using a 4  4 grid (M = 4) with  sharpening (L = 0:5) using an 8  8 grid (M = 8) angled
+all 17 gray levels (N = 17).                          at 45o with all 33 graylevels (N = 33).
+distortion, we develop a quality measure for linear distor-
+tion and one for nonlinear distortion and additive noise.
+For the same level of distortion, our method can achieve an
+additional 35% compression over the method in [5], as seen
+by comparing the results Figs. 3 and 8 in Table 1.
+                      7.   REFERENCES
+ [1] R. Ulichney, Digital Halftoning. MIT Press, 1987.
+ [2] Fascimile Coding Schemes, vol. VII. Geneva, Switzerland:
+     CCITT Rec. T.4 T.6, 1984.
+ [3] K. Denecker, S. Van Assche, and I. Lemahieu, \A fast au-
+     tocorrelation based context template selection scheme for
+     lossless compression of halftone images," Proc. SPIE Color
+     Imaging Conf., vol. 3300, pp. pp. 262{272, Jan. 1998.
+ [4] D. A. D. Tompkins and F. Kossentini, \A fast segmentation
+     algorithm for bi-level image compression using JBIG2," in
+     Proc. IEEE Int. Conf. Image Proc., Oct. 1999.
+ [5] B. Martins and S. Forchhammer, \Halftone coding with
+     JBIG2," IEEE Trans. Image Proc., to appear.                               Figure 9: Reconstructed halftone with pre ltering, sharp-
+ [6] T. D. Kite, N. Damera-Venkata, B. L. Evans, and A. C.                     ening (L=0.5) and quantized to N = 16 gray levels using
+     Bovik, \A high quality, fast inverse halftoning algorithm for             an 8  8 grid (M = 8) angled at 45o .
+     error di used halftones," in Proc. IEEE Int. Conf. Image
+     Proc., vol. 2, pp. 64{8, Oct. 1998.                                                    0.4
+ [7] N. Damera-Venkata, T. D. Kite, M. Venkataraman, and                                                8
+                                                                                                                                                    Sharpness Parameter
+     B. L. Evans, \Fast blind inverse halftoning," in Proc. IEEE                       0.35                                                           L = 0.0
+     Int. Conf. Image Proc., vol. 2, pp. 71{4, Oct. 1998.                                                   7                                         L = 1.0
+                                                                                            0.3
+ [8] J. Luo, R. de Queiroz, and Z. Fan, \A robust technique for
+                                                                                                                6
+     image descreening based on the wavelet transform," IEEE
+     Trans. Signal Proc., vol. 46, pp. 1179{94, Apr. 1998.
+                                                                                       0.25                             5
+                                                                                 LDM
+ [9] Z. Xiong, M. Orchard, and K. Ramachandran, \Inverse half-                              0.2
+     toning using wavelets," in Proc. IEEE Int. Conf. Image
+     Proc., vol. 1, pp. 569{72, Sept. 1996.                                            0.15
+[10] N. T. Thao, \Set theoretic inverse halftoning," Proc. IEEE                             0.1
+     Int. Conf. Image Proc., vol. 1, pp. 783{6, Oct. 1997.                                                                       4
+[11] S. Hein and A. Zakhor, \Halftone to continuous-toneconver-
+                                                                                       0.05
+                                                                                                                                                3
+     sion of error-di usion coded images," IEEE Trans. Image                                                                                                              2
+     Proc., vol. 4, pp. 208{16, Feb. 1995.
+                                                                                              0
+                                                                                             2000       3000        4000      5000   6000    7000     8000         9000       10000   11000
+                                                                                                                              Compressed Image Size (bytes)
+[12] J. Z. C. Lai and J. Y. Yen, \Inverse error-di usion using                                                  (a) Linear distortion measure
+     classi ed vector quantization," IEEE Trans. Image Proc.,                                0
+     vol. 7, pp. 1753{8, Dec. 1998.                                                                 8                                               Sharpness Parameter
+[13] T. D. Kite, Design and Quality Assessment of Forward and
+                                                                                                                                                      L = 0.0
+                                                                                                        7                                             L = 1.0
+     Inverse Error Di usion Halftoning Algorithms. PhD thesis,                               5
+     The University of Texas, Austin, Texas, Aug. 1998.                                                     6
+[14] R. W. G. Hunt, The Reproduction of Colour. Fountain                                    10
+     Press, 1995.
+                                                                                     WSNR
+                                                                                                                    5
+[15] T. Morita and H. Ochi, \Progressive transmission of contin-
+     uous tone images using multi-level error di usion method,"                             15
+     IEICE Trans. Comm., vol. 82-B, pp. 103{11, Jan. 1999.                                                              4
+[16] R. Eschbach and K. Knox, \Error-di usion algorithm with
+     edge enhancement," J. Opt. Soc. Am. A, vol. 8, pp. 1844{
+                                                                                            20
+                                                                                                                                     3
+     50, Dec. 1991.                                                                                                                                          2
+[17] R. Floyd and L. Steinberg, \An adaptive algorithm for spa-                             25
+     tial grayscale," Proc. Soc. Image Display, vol. 17, no. 2,
+                                                                                            2000        3000    4000         5000        6000   7000      8000    9000    10000       11000
+                                                                                                                            Compressed Image Size (bytes)
+     pp. 75{7, 1976.                                                                         (b) Weighted signal-to-noise ratio
+[18] N. Damera-Venkata, T. D. Kite, W. S. Geisler, B. L. Evans,                Figure 10: Rate-distortion curves for the barbara image.
+     and A. C. Bovik, \Image quality assessment based on a
+     degradation model," IEEE Trans. Image Proc., to appear.                   Each curve is plotted by varying the sharpness parameter
+                                                                               L 2 [0; 1] for a speci c value of M 2 f2; 3; 4; 5; 6; 7; 8g.
+V   i   e   w     p   u    b   l   i   c   a   t   i   o   n   s   t   a   t     s
