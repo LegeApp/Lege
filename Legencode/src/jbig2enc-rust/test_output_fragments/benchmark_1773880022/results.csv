@@ -1,5 +1,0 @@
-pages,mode,encode_secs,ms_per_page,mpix_per_s,raw_jbig2_bytes,globals_bytes,local_dict_bytes,text_region_bytes,generic_region_bytes,savings_vs_baseline,savings_vs_pbm,cc_secs,match_secs,cluster_secs,planning_secs,dict_secs,text_secs,generic_secs,symbols_discovered,symbols_exported,avg_symbol_reuse,global_symbol_count,local_symbol_count,avg_local_dict_kb,max_local_dict_kb,avg_text_region_kb,avg_generic_region_kb,max_generic_region_kb
-1,symbol,0.0091,9.07,98.52,23574,0,0,0,23533,0.00,79.11,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0081,0,0,0.0000,0,0,0.0000,0.0000,0.0000,22.9814,22.9814
-1,sym_unify,0.0092,9.21,97.06,23574,0,0,0,23533,0.00,79.11,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0082,0,0,0.0000,0,0,0.0000,0.0000,0.0000,22.9814,22.9814
-2,symbol,0.0176,8.81,101.48,40572,0,0,0,40490,0.00,82.02,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0157,0,0,0.0000,0,0,0.0000,0.0000,0.0000,19.7705,22.9814
-2,sym_unify,0.0230,11.52,77.61,40572,0,0,0,40490,0.00,82.02,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0203,0,0,0.0000,0,0,0.0000,0.0000,0.0000,19.7705,22.9814
