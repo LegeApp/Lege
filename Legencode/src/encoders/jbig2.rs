@@ -65,6 +65,9 @@ pub fn encode(
 ) -> Result<Jbig2EncodeResult> {
     // Normalize input data to 0/1 format required by jbig2enc_rust
     let normalized = normalize_binary_data(input, width, height, channels)?;
+    
+    // Debug: Log input characteristics
+    log::debug!("JBIG2 encode: {}x{}, {} bytes, mode={:?}", width, height, normalized.len(), settings.mode);
 
     match settings.mode {
         Jbig2Mode::Generic => encode_single_image_lossless(
@@ -80,13 +83,19 @@ pub fn encode(
             height,
             Jbig2Context::with_config(Jbig2Config::text(), settings.pdf_fragment_mode),
         )
-        .map_err(|e: jbig2enc_rust::Jbig2Error| EncodingError::EncoderError(e.to_string())),
+        .map_err(|e: jbig2enc_rust::Jbig2Error| {
+            log::error!("JBIG2 encoding failed: {:?}", e);
+            EncodingError::EncoderError(e.to_string())
+        }),
         Jbig2Mode::SymUnify => encode_single_image_with_config(
             normalized.as_ref(),
             width,
             height,
             Jbig2Context::with_config(Jbig2Config::text_symbol_unify(), settings.pdf_fragment_mode),
         )
-        .map_err(|e: jbig2enc_rust::Jbig2Error| EncodingError::EncoderError(e.to_string())),
+        .map_err(|e: jbig2enc_rust::Jbig2Error| {
+            log::error!("JBIG2 encoding failed: {:?}", e);
+            EncodingError::EncoderError(e.to_string())
+        }),
     }
 }
