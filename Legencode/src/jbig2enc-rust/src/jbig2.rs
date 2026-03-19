@@ -115,25 +115,14 @@ impl From<ndarray::ShapeError> for Jbig2Error {
     }
 }
 
-pub mod jbig2arith;
-#[cfg(feature = "cc-analysis")]
-pub mod jbig2cc;
-pub mod jbig2comparator;
-pub mod jbig2cost;
-pub mod jbig2enc;
-pub mod jbig2halftone;
-pub mod jbig2shared;
-pub mod jbig2structs;
-pub mod jbig2sym;
-
 pub use crate::jbig2arith::Jbig2ArithCoder;
 #[cfg(feature = "cc-analysis")]
-pub use jbig2cc::{BBox, CC, CCImage, Run, analyze_page, extract_symbols_for_jbig2};
-pub use jbig2enc::{PdfSplitOutput, encode_document};
-pub use jbig2structs::Jbig2Config;
+pub use crate::jbig2cc::{BBox, CC, CCImage, Run, analyze_page, extract_symbols_for_jbig2};
+pub use crate::jbig2enc::{PdfSplitOutput, encode_document};
+pub use crate::jbig2structs::Jbig2Config;
 
-use jbig2enc::Jbig2Encoder;
-use jbig2sym::{BitImage, binary_pixels_to_bitimage};
+use crate::jbig2enc::Jbig2Encoder;
+use crate::jbig2sym::{BitImage, binary_pixels_to_bitimage};
 use log::info;
 use std::env;
 
@@ -248,7 +237,7 @@ fn validate_and_build_bitimage(
     input: &[u8],
     width: u32,
     height: u32,
-) -> Result<jbig2sym::BitImage, Jbig2Error> {
+) -> Result<crate::jbig2sym::BitImage, Jbig2Error> {
     let expected_len = (width as usize) * (height as usize);
     if input.len() != expected_len {
         let ratio = if expected_len > 0 {
@@ -273,13 +262,13 @@ fn validate_and_build_bitimage(
         return Err(Jbig2Error::PackedDataDetected);
     }
 
-    binary_pixels_to_bitimage(input, width as usize, height as usize).map_err(|message| {
+    crate::jbig2sym::binary_pixels_to_bitimage(input, width as usize, height as usize).map_err(|message| {
         Jbig2Error::EncodingFailed { message }
     })
 }
 
 fn encode_single_bitimage(
-    bitimage: BitImage,
+    bitimage: crate::jbig2sym::BitImage,
     context: Jbig2Context,
 ) -> Result<Jbig2PdfSplitResult, Jbig2Error> {
     let mut encoder = Jbig2Encoder::new(&context.config);
@@ -313,7 +302,7 @@ fn encode_single_bitimage(
     }
 }
 
-fn bitimage_to_array(bitimage: &BitImage) -> Array2<u8> {
+fn bitimage_to_array(bitimage: &crate::jbig2sym::BitImage) -> Array2<u8> {
     let mut out = Array2::<u8>::zeros((bitimage.height, bitimage.width));
     for y in 0..bitimage.height {
         for x in 0..bitimage.width {
