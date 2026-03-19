@@ -318,7 +318,7 @@ pub struct FileHeader {
 
 impl FileHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
-        const MAGIC: &[u8] = b"\x97JB2\r\n\x1A\n";
+        const MAGIC: &[u8] = b"\x97JBIG2\r\n\x1A\n";
         let mut buf = Vec::with_capacity(8 + 1 + if self.unknown_n_pages { 0 } else { 4 });
         buf.extend_from_slice(MAGIC);
 

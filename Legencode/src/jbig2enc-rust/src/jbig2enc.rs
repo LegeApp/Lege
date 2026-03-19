@@ -787,7 +787,7 @@ impl<'a> Jbig2Encoder<'a> {
             hash_map: FxHashMap::default(),
             pages: Vec::new(),
             page_symbol_indices: Vec::new(),
-            next_segment_number: 0,
+            next_segment_number: 1,
             global_dict_segment_numbers: Vec::new(),
             metrics: EncoderMetrics::default(),
         }
@@ -2671,13 +2671,20 @@ impl<'a> Jbig2Encoder<'a> {
         self.alias_local_symbols_to_globals()?;
         self.validate_symbol_instance_indices()?;
 
-        let multi_page_candidates: Vec<usize> = self
-            .global_symbols
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.symbol_page_count[*i] > 1 || self.pages.len() == 1)
-            .map(|(i, _)| i)
-            .collect();
+        // For PDF split mode, ALL symbols go in the global dictionary
+        // because page streams cannot have local dictionaries
+        let multi_page_candidates: Vec<usize> = if self.state.pdf_mode {
+            // PDF mode: include all symbols in global dictionary
+            (0..self.global_symbols.len()).collect()
+        } else {
+            // Standalone mode: only multi-page symbols in global dict
+            self.global_symbols
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| self.symbol_page_count[*i] > 1 || self.pages.len() == 1)
+                .map(|(i, _)| i)
+                .collect()
+        };
         let global_symbol_indices: Vec<usize> = multi_page_candidates.clone();
         let global_set: HashSet<usize> = global_symbol_indices.iter().copied().collect();
         let estimated_global_dict_bytes =
@@ -2718,17 +2725,21 @@ impl<'a> Jbig2Encoder<'a> {
             }
         }
 
-        let mut page_local_symbols: Vec<Vec<usize>> = self
-            .page_symbol_indices
-            .iter()
-            .map(|symbols| {
-                symbols
-                    .iter()
-                    .copied()
-                    .filter(|i| !global_set.contains(i))
-                    .collect()
-            })
-            .collect();
+        // For PDF split mode, no local symbols - all are in global dictionary
+        let mut page_local_symbols: Vec<Vec<usize>> = if self.state.pdf_mode {
+            vec![Vec::new(); self.pages.len()]
+        } else {
+            self.page_symbol_indices
+                .iter()
+                .map(|symbols| {
+                    symbols
+                        .iter()
+                        .copied()
+                        .filter(|i| !global_set.contains(i))
+                        .collect()
+                })
+                .collect()
+        };
         let mut page_residual_symbols = vec![Vec::new(); self.pages.len()];
         let mut page_residual_anchor_remaps: Vec<FxHashMap<usize, usize>> = (0..self.pages.len())
             .map(|_| FxHashMap::default())
@@ -3985,6 +3996,16 @@ impl<'a> Jbig2Encoder<'a> {
         }
         let num_global_dict_symbols = encoded_global_dict.exported_symbol_count;
 
+        // Debug: check for out-of-range mappings
+        if self.state.pdf_mode {
+            for (gs_idx, &dict_pos) in global_sym_to_dict_pos.iter().enumerate() {
+                if dict_pos != u32::MAX && dict_pos >= num_global_dict_symbols {
+                    log::warn!("BUG: global_sym_to_dict_pos[{}] = {} but num_global_dict_symbols = {}",
+                              gs_idx, dict_pos, num_global_dict_symbols);
+                }
+            }
+        }
+
         let mut planned_local_export_count = 0usize;
         self.metrics.symbol_stats.global_symbol_count = num_global_dict_symbols as usize;
 
@@ -4230,7 +4251,14 @@ impl<'a> Jbig2Encoder<'a> {
             && !page.symbol_instances.is_empty()
             && !layout.use_generic_region
         {
-            let mut referred_to_for_text_region = self.global_dict_segment_numbers.clone();
+            // In PDF split mode, the global dictionary is in a separate PDF object.
+            // The text region segment must reference it as segment 1 in its referred_to field.
+            // The PDF /DecodeParms points to the actual global dict PDF object.
+            let mut referred_to_for_text_region = if self.state.pdf_mode {
+                vec![1u32]  // Reference global dictionary as segment 1
+            } else {
+                self.global_dict_segment_numbers.clone()
+            };
             let residual_set: HashSet<usize> = layout.residual_symbols.iter().copied().collect();
             let residual_anchor_remaps = &layout.residual_anchor_remaps;
 
@@ -4268,20 +4296,24 @@ impl<'a> Jbig2Encoder<'a> {
                     }
                 }
 
-                for segment_number in layout.local_dict_segment_numbers.iter().copied() {
-                    page_segments.push(Segment {
-                        number: segment_number,
-                        seg_type: SegmentType::SymbolDictionary,
-                        deferred_non_retain: false,
-                        retain_flags: 0,
-                        page_association_type: 0,
-                        referred_to: Vec::new(),
-                        page: Some(layout.page_number),
-                        payload: encoded_local_dict.payload.clone(),
-                    });
+                // For PDF split mode, skip local dictionary segments
+                // All symbols should be in the global dictionary for PDF embedding
+                if !self.state.pdf_mode {
+                    for segment_number in layout.local_dict_segment_numbers.iter().copied() {
+                        page_segments.push(Segment {
+                            number: segment_number,
+                            seg_type: SegmentType::SymbolDictionary,
+                            deferred_non_retain: false,
+                            retain_flags: 0,
+                            page_association_type: 0,
+                            referred_to: Vec::new(),
+                            page: Some(layout.page_number),
+                            payload: encoded_local_dict.payload.clone(),
+                        });
+                    }
+                    referred_to_for_text_region
+                        .extend(layout.local_dict_segment_numbers.iter().copied());
                 }
-                referred_to_for_text_region
-                    .extend(layout.local_dict_segment_numbers.iter().copied());
                 encoded_local_dict.exported_symbol_count
             } else {
                 0
@@ -4318,6 +4350,15 @@ impl<'a> Jbig2Encoder<'a> {
                     instance.refinement_dy = refinement.refinement_dy;
                     needs_family_refinement = true;
                 }
+            }
+
+            if self.state.pdf_mode {
+                for instance in &mut planned_instances {
+                    instance.needs_refinement = false;
+                    instance.refinement_dx = 0;
+                    instance.refinement_dy = 0;
+                }
+                needs_family_refinement = false;
             }
 
             if !planned_instances.is_empty() {
@@ -4407,16 +4448,19 @@ impl<'a> Jbig2Encoder<'a> {
             });
         }
 
-        page_segments.push(Segment {
-            number: layout.end_of_page_segment_number,
-            seg_type: SegmentType::EndOfPage,
-            deferred_non_retain: false,
-            retain_flags: 0,
-            page_association_type: 0,
-            referred_to: Vec::new(),
-            page: Some(layout.page_number),
-            payload: Vec::new(),
-        });
+        // For PDF split mode, skip EndOfPage segment - not needed for PDF embedding
+        if !self.state.pdf_mode {
+            page_segments.push(Segment {
+                number: layout.end_of_page_segment_number,
+                seg_type: SegmentType::EndOfPage,
+                deferred_non_retain: false,
+                retain_flags: 0,
+                page_association_type: 0,
+                referred_to: Vec::new(),
+                page: Some(layout.page_number),
+                payload: Vec::new(),
+            });
+        }
 
         Ok(BuiltPage {
             page: PlannedPage {
@@ -6175,7 +6219,7 @@ pub fn encode_text_region_mapped(
             let current_strip = encoded_instances[sim_idx].strip_base;
             // Compute delta_t the same way the encoder did
             let delta_t = if sim_idx == 0 && current_strip == 0 {
-                0 // first IADT is always 0 (the initial STRIPT)
+                0 // first IADT is the initial STRIPT value
             } else if sim_idx == strip_start {
                 // Changed strip: the encoder emits IADT = (current_strip - prev_strip_t) / strip_width
                 // But we need to replay the exact values. Let's just recompute.
