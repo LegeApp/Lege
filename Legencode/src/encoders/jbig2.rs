@@ -2,7 +2,7 @@ use crate::streamline::{Jbig2Mode, Jbig2Settings};
 use crate::{EncodingError, Result};
 use jbig2enc_rust::{
     Jbig2Config, Jbig2Context, Jbig2EncodeResult, encode_single_image_lossless,
-    encode_single_image,
+    encode_single_image_with_config,
 };
 use std::borrow::Cow;
 
@@ -74,18 +74,18 @@ pub fn encode(
             settings.pdf_fragment_mode,
         )
         .map_err(|e: jbig2enc_rust::Jbig2Error| EncodingError::EncoderError(e.to_string())),
-        Jbig2Mode::Symbol => encode_single_image(
+        Jbig2Mode::Symbol => encode_single_image_with_config(
             normalized.as_ref(),
             width,
             height,
-            settings.pdf_fragment_mode,
+            Jbig2Context::with_config(Jbig2Config::text(), settings.pdf_fragment_mode),
         )
         .map_err(|e: jbig2enc_rust::Jbig2Error| EncodingError::EncoderError(e.to_string())),
-        Jbig2Mode::SymUnify => encode_single_image(
+        Jbig2Mode::SymUnify => encode_single_image_with_config(
             normalized.as_ref(),
             width,
             height,
-            settings.pdf_fragment_mode,
+            Jbig2Context::with_config(Jbig2Config::text_symbol_unify(), settings.pdf_fragment_mode),
         )
         .map_err(|e: jbig2enc_rust::Jbig2Error| EncodingError::EncoderError(e.to_string())),
     }
