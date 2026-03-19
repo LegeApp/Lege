@@ -123,6 +123,7 @@ pub mod jbig2classify;
 pub mod jbig2comparator;
 pub mod jbig2context;
 pub mod jbig2cost;
+pub mod jbig2;
 pub mod jbig2enc;
 pub mod jbig2halftone;
 pub mod jbig2shared;
@@ -257,6 +258,29 @@ pub fn encode_single_image(
 ) -> Result<Jbig2EncodeResult, Jbig2Error> {
     let bitimage = validate_and_build_bitimage(input, width, height)?;
     encode_single_bitimage(bitimage, Jbig2Context::with_pdf_mode(pdf_mode))
+}
+
+/// Encodes a single binary image into JBIG2 format with custom configuration.
+///
+/// This function allows specifying custom JBIG2 configurations for symbol encoding.
+///
+/// # Arguments
+/// * `input` - Binary image data (0/1 values)
+/// * `width` - Image width in pixels
+/// * `height` - Image height in pixels
+/// * `context` - JBIG2 encoding context with configuration
+///
+/// # Returns
+/// A `Jbig2EncodeResult` containing separate global and page data for PDF embedding,
+/// or combined data for standalone files.
+pub fn encode_single_image_with_config(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    context: Jbig2Context,
+) -> Result<Jbig2EncodeResult, Jbig2Error> {
+    let bitimage = validate_and_build_bitimage(input, width, height)?;
+    encode_single_bitimage(bitimage, context)
 }
 
 /// Encodes a single binary image into JBIG2 format using lossless configuration.
