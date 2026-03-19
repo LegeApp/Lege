@@ -4,6 +4,11 @@ version = "0.5.0"
 edition = "2024"
 description = "JBIG2 encoder implementation in Rust with PDF fragment support"
 license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/jbig2enc-rust"
+homepage = "https://github.com/LegeApp/jbig2enc-rust"
+repository = "https://github.com/LegeApp/jbig2enc-rust"
+keywords = ["jbig2", "encoder", "compression", "image", "pdf"]
+categories = ["multimedia::encoding", "multimedia::images"]
 
 [lib]
 name = "jbig2enc_rust"
@@ -43,14 +48,6 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [build-dependencies]
 vergen = { version = "9.0.6", default-features = false, features = ["build"] }
-cc = "1.2"
-pkg-config = "0.3"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
 
 [features]
 default = []
@@ -64,12 +61,17 @@ refine = []
 halftone_bin = ["dep:image"]
 parallel = ["dep:rayon"]
 profiling = ["dep:pprof"]
-c-encoder-bench = []
 
 [[bin]]
 name = "halftone_tester"
 path = "src/bin/halftone_tester.rs"
 required-features = ["halftone_bin"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [dev-dependencies]
 tracing = { version = "0.1", features = ["std"] }
