@@ -17,7 +17,7 @@ use pdfium_render::prelude::Pdfium;
 use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
 use crate::engine::PaddleXEngine;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::resize_context::{InferenceResizeSpec, ResizePolicy};
+use crate::pipeline::policies::{InferenceResizeSpec, PaddleXResizeConfig, YoloResizeConfig};
 use crate::types::CoverFormat;
 use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
@@ -310,6 +310,9 @@ pub struct PipelineConfig {
     pub(crate) inference_size: u32,
     // Keep original image quality for detected image regions
     pub(crate) keep_original_images: bool,
+    /// Expand near–full-page figure boxes to the full raster (fixes YOLO under-segmentation).
+    /// Overlap-merge skips full-page vs small inset pairs to avoid collapsing distinct figures.
+    pub(crate) expand_full_bleed_figure_bboxes: bool,
     // DjVu IW44 quality (0-100 scale, maps to slices)
     pub(crate) djvu_iw44_quality: u8,
 }
@@ -339,7 +342,7 @@ impl PipelineConfig {
             enable_ocr_hint: true,
             target_height: 1200,
             target_width: None,
-            image_region_dither_mode: ImageRegionDitherMode::Stucki,
+            image_region_dither_mode: ImageRegionDitherMode::None,
             binarization: BinarizationConfig::default(),
             enable_ocr: false,
             ocr_language: "eng".to_string(),
@@ -376,7 +379,8 @@ impl PipelineConfig {
             } else {
                 640
             },
-            keep_original_images: false,
+            keep_original_images: true,
+            expand_full_bleed_figure_bboxes: true,
             djvu_iw44_quality: 75, // Default to good quality
         };
 
@@ -401,6 +405,9 @@ impl PipelineConfig {
             fixed_threshold: 200,
         };
         cfg.set_binarization(bin);
+        // Simple mode: keep figure regions as encoded originals (cover format, default JPEG)
+        // unless the user passes `--dither` / `--halftone` (handled in main).
+        cfg.set_dither_images(false);
         cfg.validate()?;
         Ok(cfg)
     }
@@ -612,17 +619,17 @@ impl PipelineConfig {
         self.inference_size
     }
     pub fn inference_resize_spec(&self) -> InferenceResizeSpec {
-        InferenceResizeSpec {
-            target: self.inference_size,
-            policy: if is_yolo_doclayout_model_path(&self.model_path) {
-                ResizePolicy::Letterbox
-            } else {
-                ResizePolicy::Direct
-            },
+        if is_yolo_doclayout_model_path(&self.model_path) {
+            YoloResizeConfig { target: self.inference_size, ..Default::default() }.into()
+        } else {
+            PaddleXResizeConfig { target: self.inference_size }.into()
         }
     }
     pub fn keep_original_images(&self) -> bool {
         self.keep_original_images
+    }
+    pub fn expand_full_bleed_figure_bboxes(&self) -> bool {
+        self.expand_full_bleed_figure_bboxes
     }
     pub fn djvu_iw44_quality(&self) -> u8 {
         self.djvu_iw44_quality
@@ -703,6 +710,9 @@ impl PipelineConfig {
     }
     pub fn set_keep_original_images(&mut self, keep: bool) {
         self.keep_original_images = keep;
+    }
+    pub fn set_expand_full_bleed_figure_bboxes(&mut self, enable: bool) {
+        self.expand_full_bleed_figure_bboxes = enable;
     }
     pub fn set_heavy_sauvola_concurrency(&mut self, concurrency: usize) -> Result<()> {
         if concurrency == 0 {

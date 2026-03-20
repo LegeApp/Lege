@@ -1457,15 +1457,7 @@ async fn process_file_with_tracker(
 
     crate::ensure_pdfium_available()?;
 
-    // Clear debug.log at pipeline start for fresh run capture
     crate::debug_log::clear_debug_log();
-
-    // Immediate test to verify debug.log is created and writable
-    crate::debug_log!("=== Lege Pipeline Starting ===");
-    crate::debug_log!("Input: {}", input_path.display());
-    crate::debug_log!("Output: {}", output_path.display());
-    crate::debug_log!("Layout Detection: {}", config.enable_layout_detection());
-    crate::debug_log!("Keep Original Images: {}", config.keep_original_images());
 
     // Unified dependency preflight (runs once per file start)
     if let Err(e) = unified_dependency_preflight(&config) {
