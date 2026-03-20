@@ -737,26 +737,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
 
-    // Expand sole-image pages to full page, then edge-snap near-full-bleed plates, then merge overlaps.
+    // Use raw post-NMS YOLO bboxes (no full-page expansion).
+    // We still merge overlaps to prevent double-encodes.
     if config.enable_layout_detection() {
         let classifier = &crate::types::LABEL_CLASSIFIER;
-        let enable_yolo_top_fill =
-            matches!(config.inference_resize_spec().policy, crate::pipeline::policies::ResizePolicy::Letterbox);
-        maybe_expand_sole_image_to_full_page(
-            &mut adjusted_detections,
-            width as u32,
-            height as u32,
-            classifier,
-        );
-        if config.expand_full_bleed_figure_bboxes() {
-            apply_full_bleed_image_bbox_expansion(
-                &mut adjusted_detections,
-                width as u32,
-                height as u32,
-                classifier,
-                enable_yolo_top_fill,
-            );
-        }
         merge_overlapping_image_detections(
             &mut adjusted_detections,
             classifier,
@@ -804,10 +788,9 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // We keep the original `adjusted_image` intact for dithering later.
     let classifier = &crate::types::LABEL_CLASSIFIER;
     // White out figure regions before binarization so Sauvola only sees text content.
-    // Detected image areas will always be overlaid (original, dithered, or re-encoded),
+    // Detected image areas are later overlaid (original, dithered, or re-encoded),
     // so the bilevel base layer must be blank in those areas.
-    let premask_images = config.enable_layout_detection()
-        && config.text_format() != "jpeg";
+    let premask_images = config.enable_layout_detection() && config.text_format() != "jpeg";
 
     let binarization_image: std::borrow::Cow<'_, RgbImage> = if premask_images {
         let mut masked_rgb = adjusted_image.as_raw().clone();
