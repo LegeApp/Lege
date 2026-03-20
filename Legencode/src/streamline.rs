@@ -492,6 +492,10 @@ pub struct Jbig2Settings {
     pub pdf_fragment_mode: bool,
     /// Selects the JBIG2 encoding strategy.
     pub mode: Jbig2Mode,
+    /// When true, encode the bilevel page with `jbig2enc_rust::jbig2halftone` (pattern dictionary +
+    /// halftone region per ISO/JBIG2). Used when pipeline `ImageRegionDitherMode::Halftone` is set
+    /// for JBIG2 text output; symbol/generic modes are not used in this path.
+    pub use_jbig2_halftone_segments: bool,
 }
 
 impl Default for Jbig2Settings {
@@ -499,6 +503,7 @@ impl Default for Jbig2Settings {
         Self {
             pdf_fragment_mode: true, // Default to PDF fragment mode for PDF assembly
             mode: Jbig2Mode::Symbol,
+            use_jbig2_halftone_segments: false,
         }
     }
 }
@@ -635,4 +640,35 @@ mod tests {
         let result = EncodingManager::encode(&buffer, &settings);
         assert!(result.is_ok());
     }
+}
+
+/// Encode grayscale image data as a JBIG2 halftone region (for PDF embedding).
+///
+/// Returns `(global_data, page_data)` — the caller stores `global_data` as a
+/// JBIG2 Globals stream and `page_data` as the XObject stream, matching
+/// the existing split pattern used by Symbol/Generic JBIG2 encoding.
+pub fn encode_halftone_region_grayscale(
+    grayscale: &[u8],
+    width: u32,
+    height: u32,
+) -> std::result::Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+    use jbig2enc_rust::Jbig2Config;
+    use jbig2enc_rust::jbig2halftone::encode_halftone_pdf_split_auto_from_grayscale;
+    use jbig2enc_rust::jbig2structs::GenericRegionParams;
+
+    let mut jcfg = Jbig2Config::default();
+    jcfg.want_full_headers = false;
+    let region_params = GenericRegionParams::new(width, height, jcfg.dpi);
+
+    let (global_data, page_data) = encode_halftone_pdf_split_auto_from_grayscale(
+        grayscale,
+        width,
+        height,
+        &jcfg,
+        &region_params,
+        1,
+        Some(1),
+    )?;
+
+    Ok((global_data, page_data))
 }

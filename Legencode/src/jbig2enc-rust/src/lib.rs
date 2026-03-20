@@ -342,38 +342,45 @@ fn encode_single_bitimage(
         enc_config.text_refine = false;
     }
 
-    let global_data = if ctx.get_symbol_mode() && ctx.get_pdf_mode() {
-        let mut dict_encoder = Jbig2Encoder::new(&enc_config).dict_only();
-        dict_encoder
-            .add_page_bitimage(bitimage.clone())
-            .map_err(|e| Jbig2Error::DictionaryFailed {
-                message: e.to_string(),
-            })?;
-        Some(
-            dict_encoder
-                .flush_dict()
-                .map_err(|e| Jbig2Error::DictionaryFailed {
-                    message: e.to_string(),
-                })?,
-        )
-    } else {
-        None
-    };
-
     let mut encoder = Jbig2Encoder::new(&enc_config);
     encoder
         .add_page_bitimage(bitimage)
         .map_err(|e| Jbig2Error::EncodingFailed {
             message: e.to_string(),
         })?;
-    let page_data = encoder.flush().map_err(|e| Jbig2Error::EncodingFailed {
-        message: e.to_string(),
-    })?;
 
-    Ok(Jbig2EncodeResult {
-        global_data,
-        page_data,
-    })
+    if ctx.get_pdf_mode() {
+        // PDF embedding must use the same planning/serialization as tests/pdf_variants:
+        // one encoder, flush_pdf_split() → globals stream + page stream with matching
+        // segment references. The previous approach (dict_only().flush_dict() on one
+        // encoder + flush() on a second) paired unrelated streams and broke decoders
+        // (solid black/white pages, etc.).
+        let split = encoder
+            .flush_pdf_split()
+            .map_err(|e| Jbig2Error::EncodingFailed {
+                message: e.to_string(),
+            })?;
+        let n = split.page_streams.len();
+        if n != 1 {
+            return Err(Jbig2Error::StreamCountMismatch {
+                expected: 1,
+                actual: n,
+            });
+        }
+        let page_data = split.page_streams.into_iter().next().unwrap();
+        Ok(Jbig2EncodeResult {
+            global_data: split.global_segments,
+            page_data,
+        })
+    } else {
+        let page_data = encoder.flush().map_err(|e| Jbig2Error::EncodingFailed {
+            message: e.to_string(),
+        })?;
+        Ok(Jbig2EncodeResult {
+            global_data: None,
+            page_data,
+        })
+    }
 }
 
 /// Encodes a list of text-only binary PBM ROIs into JBIG2 streams.

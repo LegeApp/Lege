@@ -308,10 +308,7 @@ fn remap_detections_to_page(
     page_h: u32,
     cfg: &PipelineConfig,
 ) {
-    let spec = InferenceResizeSpec {
-        target: cfg.inference_size(),
-        ..Default::default()
-    };
+    let spec = cfg.inference_resize_spec();
     for d in dets.iter_mut() {
         if is_in_inference_space(&d.bbox, &spec) {
             d.bbox = map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);

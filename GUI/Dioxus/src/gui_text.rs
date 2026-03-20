@@ -164,7 +164,7 @@ fn default_gui_text() -> GuiText {
                 pdf_compatibility_mode: "disable object streams and compression for better reader support (e.g., Okular)".to_string(),
                 high_quality_output: "Use higher-quality image encoding. PDF uses JPEG quality 95; DJVU uses the highest IW44 setting and keeps dithered image areas inside JB2 when enabled. Keep unchecked for outputs intended for e-ink readers.".to_string(),
                 cover_format_no_cover: "treat first page same as others; image format affects all non-binarized images".to_string(),
-                cover_format_dithered: "CCITT4 text with Bayer 8x8 dithered images (global)".to_string(),
+                cover_format_dithered: "CCITT4 text with blue-noise dithered image regions where enabled (global)".to_string(),
                 cover_format_original: "keep original color images (global)".to_string(),
                 page_range: "Specify page range (e.g., 1-10, 5-20)".to_string(),
                 target_height: "Select a preset or use proportional scaling".to_string(),
