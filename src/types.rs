@@ -235,6 +235,24 @@ impl LabelClassifier {
         detection.category.is_image()
     }
 
+    /// True when a detection is substantive body text that should block
+    /// full-page image expansion (paragraphs, tables, formulas, code, etc.).
+    /// Returns false for minor peripheral content: page numbers, titles,
+    /// headers, footers, captions, abandon, seals, aside text.
+    pub fn is_substantive_text(&self, detection: &Detection) -> bool {
+        if detection.category.is_image() || matches!(detection.category, ContentCategory::Abandon) {
+            return false;
+        }
+        !matches!(
+            detection.class_name.as_deref(),
+            Some(
+                "title" | "page_number" | "doc_title" | "header" | "footer"
+                    | "footnote" | "figure_caption" | "table_caption" | "formula_caption"
+                    | "chart_title" | "formula_number" | "seal" | "aside_text" | "abandon"
+            )
+        )
+    }
+
     /// Get the primary category for a detection
     pub fn get_category(&self, detection: &Detection) -> ContentCategory {
         detection.category

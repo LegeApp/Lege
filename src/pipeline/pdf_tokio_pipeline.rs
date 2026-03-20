@@ -18,6 +18,8 @@ use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig
 use crate::pipeline::config::{ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
     BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
+    apply_full_bleed_image_bbox_expansion, maybe_expand_sole_image_to_full_page,
+    merge_overlapping_image_detections,
     rounded_clamped_bbox, should_force_blank_page_threshold, should_treat_as_cover_page,
     spawn_pdf_writer_actor, wait_for_memory_relief,
 };
@@ -27,7 +29,7 @@ use crate::pipeline::policies::{
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
-use crate::resize_context::build_inference_image;
+use crate::pipeline::policies::build_inference_image;
 use crate::{info_log, success_log, warn_log};
 
 use Legencode::streamline::Jbig2Mode;
@@ -508,6 +510,12 @@ async fn process_single_page(
     let mut elements: Vec<crate::accumulator::ContentElement> = Vec::new();
 
     if let Some((encoded_data, format)) = cover_encoded_data {
+        crate::bbox_trace!(
+            "PAGE {} PDF queue cover fullpage fmt={} bytes={}",
+            page_index,
+            format,
+            encoded_data.len()
+        );
         elements.push(crate::accumulator::ContentElement {
             x: 0.0,
             y: 0.0,
@@ -524,9 +532,17 @@ async fn process_single_page(
 
     for region_result in region_processing_results {
         if let Some((encoded_data, format)) = region_result.encoded_data {
-            let (ix1, iy1, ix2, iy2) =
-                rounded_clamped_bbox(region_result.detection.bbox, width as u32, height as u32);
-
+            crate::bbox_trace!(
+                "PAGE {} PDF queue overlay tl=({},{}) wh=({}x{}) fmt={} bytes={} dither_path={}",
+                page_index,
+                region_result.region_x,
+                region_result.region_y,
+                region_result.region_w,
+                region_result.region_h,
+                format,
+                encoded_data.len(),
+                region_result.should_dither
+            );
             let content = if let Some(global_data) = region_result.encoded_global_data {
                 crate::accumulator::ContentType::Jbig2ImageWithGlobals {
                     page_data: Arc::from(encoded_data),
@@ -544,10 +560,10 @@ async fn process_single_page(
             };
 
             elements.push(crate::accumulator::ContentElement {
-                x: ix1 as f32,
-                y: iy1 as f32,
-                width: (ix2 - ix1) as f32,
-                height: (iy2 - iy1) as f32,
+                x: region_result.region_x as f32,
+                y: region_result.region_y as f32,
+                width: region_result.region_w as f32,
+                height: region_result.region_h as f32,
                 content,
             });
         }
@@ -620,6 +636,9 @@ struct PageProcessingInput {
 struct RegionProcessingResult {
     detection: crate::engine::Detection,
     region_data: Vec<u8>,
+    /// Integer top-left used for extraction, masking, and PDF placement (must stay in sync).
+    region_x: u32,
+    region_y: u32,
     region_w: u32,
     region_h: u32,
     should_dither: bool,
@@ -659,28 +678,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         // Use per-page policy (1-pass mode)
         apply_region_policy(&rendered, &inference_result, &config)?
     };
-
-    // DEBUG: log all detections after remapping to page space
-    #[cfg(feature = "debug-logging")]
-    {
-        let classifier = &crate::types::LABEL_CLASSIFIER;
-        crate::debug_println!(
-            "PAGE {} — {} raw detections, image={}x{}",
-            page_index, adjusted_detections.len(),
-            adjusted_image.width(), adjusted_image.height()
-        );
-        for (i, det) in adjusted_detections.iter().enumerate() {
-            let is_img = classifier.is_image_label(det);
-            crate::debug_println!(
-                "  det[{}] class={} ({}) conf={:.2} bbox=[{:.0},{:.0},{:.0},{:.0}] is_image={}",
-                i, det.class_id,
-                det.class_name.as_deref().unwrap_or("?"),
-                det.confidence,
-                det.bbox[0], det.bbox[1], det.bbox[2], det.bbox[3],
-                is_img
-            );
-        }
-    }
 
     // 2. Resize to target height (CPU-heavy: Lanczos3 filtering)
     if config.enable_layout_detection() && adjusted_image.height() != config.target_height() {
@@ -739,6 +736,63 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
+
+    // Expand sole-image pages to full page, then edge-snap near-full-bleed plates, then merge overlaps.
+    if config.enable_layout_detection() {
+        let classifier = &crate::types::LABEL_CLASSIFIER;
+        let enable_yolo_top_fill =
+            matches!(config.inference_resize_spec().policy, crate::pipeline::policies::ResizePolicy::Letterbox);
+        maybe_expand_sole_image_to_full_page(
+            &mut adjusted_detections,
+            width as u32,
+            height as u32,
+            classifier,
+        );
+        if config.expand_full_bleed_figure_bboxes() {
+            apply_full_bleed_image_bbox_expansion(
+                &mut adjusted_detections,
+                width as u32,
+                height as u32,
+                classifier,
+                enable_yolo_top_fill,
+            );
+        }
+        merge_overlapping_image_detections(
+            &mut adjusted_detections,
+            classifier,
+            width as u32,
+            height as u32,
+        );
+        crate::bbox_trace!(
+            "PAGE {} [layout] page={}x{} expand_full_bleed={} keep_original={} premask_figures={} image_labels={}",
+            page_index,
+            width,
+            height,
+            config.expand_full_bleed_figure_bboxes(),
+            config.keep_original_images(),
+            config.enable_layout_detection()
+                && config.text_format() != "jpeg"
+                && (config.dither_images() || config.keep_original_images()),
+            adjusted_detections.iter().filter(|d| classifier.is_image_label(d)).count()
+        );
+        if crate::bbox_trace::enabled() {
+            for (i, det) in adjusted_detections.iter().enumerate() {
+                if classifier.is_image_label(det) {
+                    eprintln!(
+                        "  PAGE {} img_det[{}] bbox=({:.1},{:.1},{:.1},{:.1}) conf={:.2}",
+                        page_index,
+                        i,
+                        det.bbox[0],
+                        det.bbox[1],
+                        det.bbox[2],
+                        det.bbox[3],
+                        det.confidence
+                    );
+                }
+            }
+        }
+    }
+
     let force_blank_threshold = should_force_blank_page_threshold(
         &config,
         inference_result.has_no_detections,
@@ -749,8 +803,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // Image content would skew the adaptive threshold calculations.
     // We keep the original `adjusted_image` intact for dithering later.
     let classifier = &crate::types::LABEL_CLASSIFIER;
-    let premask_images = config.dither_images()
-        && config.enable_layout_detection()
+    // White out figure regions before binarization so Sauvola only sees text content.
+    // Detected image areas will always be overlaid (original, dithered, or re-encoded),
+    // so the bilevel base layer must be blank in those areas.
+    let premask_images = config.enable_layout_detection()
         && config.text_format() != "jpeg";
 
     let binarization_image: std::borrow::Cow<'_, RgbImage> = if premask_images {
@@ -775,13 +831,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 }
             }
         }
-        #[cfg(feature = "debug-logging")]
-        crate::debug_println!(
-            "PAGE {} — Pre-masked {} image regions (pad={}px) before binarization",
-            page_index,
-            adjusted_detections.iter().filter(|d| classifier.is_image_label(d)).count(),
-            MASK_PAD
-        );
         std::borrow::Cow::Owned(RgbImage::from_raw(w, h, masked_rgb).unwrap())
     } else {
         std::borrow::Cow::Borrowed(&adjusted_image)
@@ -843,17 +892,16 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
         // Skip regions that are completely outside the new image bounds after margin correction
         if bbox_x2 <= bbox_x1 || bbox_y2 <= bbox_y1 {
-            #[cfg(feature = "debug-logging")]
-            crate::debug_println!(
-                "Skipping image region with invalid bounds after margin correction: ({}, {})-({}, {}) for original bbox {:?}",
-                bbox_x1,
-                bbox_y1,
-                bbox_x2,
-                bbox_y2,
-                det.bbox
-            );
             continue;
         }
+
+        // Single integer-aligned bbox for crop, mask, merge, and PDF placement (avoids 1px drift).
+        let exact_bbox = [
+            bbox_x1 as f32,
+            bbox_y1 as f32,
+            bbox_x2 as f32,
+            bbox_y2 as f32,
+        ];
 
         // Image-region dithering (Stucki vs halftone) requires layout detection; if layout is off,
         // `image_region_mode` is None and we only mask/crop — full-page binarization is unchanged.
@@ -871,42 +919,17 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
         let should_dither = image_region_mode != ImageRegionDitherMode::None;
 
-        #[cfg(feature = "debug-logging")]
-        crate::debug_println!(
-            "PAGE {} — IMAGE REGION class={} bbox=[{:.0},{:.0},{:.0},{:.0}] → \
-             clamped=({},{},{},{}) mode={:?} should_dither={} fmt={} page={}x{}",
-            page_index,
-            det.class_id,
-            det.bbox[0], det.bbox[1], det.bbox[2], det.bbox[3],
-            bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-            image_region_mode,
-            should_dither,
-            config.text_format(),
-            width, height
-        );
-
-        // CPU-heavy: Extract and process region
+        // CPU-heavy: Extract and process region (same bounds as masking / placement)
         let (region_data, region_w, region_h) =
             Legencode::color::color_processing::process_image_region(
                 adjusted_image.as_raw(),
                 width as u32,
                 height as u32,
-                det.bbox,
+                exact_bbox,
                 image_region_mode,
                 config.text_format(),
                 false,
             )?;
-
-        #[cfg(feature = "debug-logging")]
-        {
-            let black_count = region_data.chunks(3).filter(|rgb| rgb[0] == 0).count();
-            let total = (region_w as usize) * (region_h as usize);
-            let pct = if total > 0 { black_count * 100 / total } else { 0 };
-            crate::debug_println!(
-                "PAGE {} — DITHER RESULT region={}x{} bytes={} black_pct={}% (black={}/{})",
-                page_index, region_w, region_h, region_data.len(), pct, black_count, total
-            );
-        }
 
         let mut processed_for_masking = false;
         let mut encoded_data = None;
@@ -915,12 +938,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         if should_dither && !is_cover_page {
             // Mask the region in the base layer with padding so the overlay fully
             // covers any remnant binarized pixels at the edges.
-            let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, width as u32, height as u32);
             let pad: u32 = 3;
-            let mx1 = ix1.saturating_sub(pad);
-            let my1 = iy1.saturating_sub(pad);
-            let mx2 = (ix2 + pad).min(width as u32);
-            let my2 = (iy2 + pad).min(height as u32);
+            let mx1 = bbox_x1.saturating_sub(pad);
+            let my1 = bbox_y1.saturating_sub(pad);
+            let mx2 = (bbox_x2 + pad).min(width as u32);
+            let my2 = (bbox_y2 + pad).min(height as u32);
             Legencode::color::color_processing::mask_region(
                 &mut binarized,
                 width as u32,
@@ -944,30 +966,14 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     if g >= 245 { 0u8 } else { 255u8 - g }
                 }).collect();
 
-                #[cfg(feature = "debug-logging")]
-                crate::debug_println!(
-                    "PAGE {} — HALFTONE OVERLAY: {}x{} encoding with jbig2halftone (inverted grayscale)",
-                    page_index, region_w, region_h
-                );
-
                 match Legencode::streamline::encode_halftone_region_grayscale(
                     &inverted_gray, region_w, region_h,
                 ) {
                     Ok((global_data, page_data)) => {
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "PAGE {} — HALFTONE OVERLAY: page={} global={} bytes",
-                            page_index, page_data.len(), global_data.len()
-                        );
                         encoded_global_data = Some(global_data);
                         encoded_data = Some((page_data, "jbig2".to_string()));
                     }
-                    Err(e) => {
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "PAGE {} — HALFTONE OVERLAY encode failed: {}, falling back to Generic",
-                            page_index, e
-                        );
+                    Err(_e) => {
                         // Fall back to JBIG2 Generic
                         use Legencode::streamline::{
                             EncodingManager, EncodingResult, EncodingSettings,
@@ -991,22 +997,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                                 }
                             }
                         }
+                        // If halftone + generic JBIG2 both fail, fall through to merge below
                     }
                 }
             } else {
                 // Stucki / Bayer overlay: bilevel data, encode matching the page format
-                #[cfg(feature = "debug-logging")]
-                {
-                    let black = grayscale_data.iter().filter(|&&v| v == 0).count();
-                    let fmt_label = config.text_format();
-                    crate::debug_println!(
-                        "PAGE {} — DITHER OVERLAY: {}x{} black_pct={}% encoding as {} overlay",
-                        page_index, region_w, region_h,
-                        if grayscale_data.is_empty() { 0 } else { black * 100 / grayscale_data.len() },
-                        fmt_label
-                    );
-                }
-
                 use Legencode::streamline::{
                     EncodingManager, EncodingResult, EncodingSettings,
                     ImageBuffer as LegeImageBuffer, Jbig2Settings,
@@ -1031,41 +1026,35 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     Ok(EncodingResult::Standard(data)) => {
                         encoded_data = Some((data, overlay_fmt));
                     }
-                    Ok(EncodingResult::Jbig2WithGlobals { page_data, global_data }) => {
+                    Ok(EncodingResult::Jbig2WithGlobals { page_data, global_data: _ }) => {
                         encoded_data = Some((page_data, overlay_fmt));
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "PAGE {} — DITHER OVERLAY: returned globals ({} bytes), discarding",
-                            page_index, global_data.len()
-                        );
                     }
-                    Err(e) => {
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "PAGE {} — DITHER OVERLAY encode failed: {}, falling back to merge",
-                            page_index, e
-                        );
-                        Legencode::color::color_processing::merge_dithered_region(
-                            &mut binarized,
-                            &grayscale_data,
-                            width as u32,
-                            det.bbox,
-                        );
-                    }
+                    Err(_e) => {}
                 }
             }
-        } else {
-            // CPU-heavy: Mask region
-            let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, width as u32, height as u32);
-            let px = ix1 as f32;
-            let py = iy1 as f32;
-            let pw = (ix2 - ix1) as f32;
-            let ph = (iy2 - iy1) as f32;
 
+            // Masked for overlay but no bitmap produced (encoder failure / halftone fallback miss):
+            // merge dithered grayscale into base so the page is not an empty white hole.
+            if encoded_data.is_none() {
+                Legencode::color::color_processing::merge_dithered_region(
+                    &mut binarized,
+                    &grayscale_data,
+                    width as u32,
+                    exact_bbox,
+                );
+            }
+        } else {
+            // Mask the region in the base layer with padding so the overlay fully
+            // covers any remnant binarized pixels at the edges.
+            let pad: u32 = 3;
+            let mx1 = bbox_x1.saturating_sub(pad);
+            let my1 = bbox_y1.saturating_sub(pad);
+            let mx2 = (bbox_x2 + pad).min(width as u32);
+            let my2 = (bbox_y2 + pad).min(height as u32);
             Legencode::color::color_processing::mask_region(
                 &mut binarized,
                 width as u32,
-                [px, py, px + pw, py + ph],
+                [mx1 as f32, my1 as f32, mx2 as f32, my2 as f32],
             );
             processed_for_masking = true;
 
@@ -1085,9 +1074,26 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             }
         }
 
+        if let Some((ref enc, ref fmt)) = encoded_data {
+            crate::bbox_trace!(
+                "PAGE {} ENCODE xywh=({},{},{},{}) fmt={} bytes={} dither={} halftone_globals={}",
+                page_index,
+                bbox_x1,
+                bbox_y1,
+                region_w,
+                region_h,
+                fmt,
+                enc.len(),
+                should_dither,
+                encoded_global_data.is_some()
+            );
+        }
+
         region_processing_results.push(RegionProcessingResult {
             detection: det.clone(),
             region_data,
+            region_x: bbox_x1,
+            region_y: bbox_y1,
             region_w,
             region_h,
             should_dither,
@@ -1118,7 +1124,7 @@ fn apply_margin_analysis_to_page(
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
-    use crate::resize_context::{is_in_inference_space, map_bbox_infer_to_page};
+    use crate::pipeline::policies::{is_in_inference_space, map_bbox_infer_to_page};
 
     // Remap detections to page space
     let mut dets = inf.detections.clone();
@@ -1186,36 +1192,9 @@ fn apply_margin_analysis_to_page(
                     scaled_baseline
                 };
 
-                #[cfg(feature = "debug-logging")]
-                crate::debug_println!(
-                    "CropAndResize bounds for page {}: scaled_baseline=({},{})-({},{}) per-page=({},{})-({},{}) final=({},{})-({},{})",
-                    page_index,
-                    scaled_baseline.min_x,
-                    scaled_baseline.min_y,
-                    scaled_baseline.max_x,
-                    scaled_baseline.max_y,
-                    pb.min_x,
-                    pb.min_y,
-                    pb.max_x,
-                    pb.max_y,
-                    final_bounds.min_x,
-                    final_bounds.min_y,
-                    final_bounds.max_x,
-                    final_bounds.max_y
-                );
-
                 Some(final_bounds)
             }
             None => {
-                #[cfg(feature = "debug-logging")]
-                crate::debug_println!(
-                    "CropAndResize bounds for page {}: using scaled baseline only ({},{})-({},{})",
-                    page_index,
-                    scaled_baseline.min_x,
-                    scaled_baseline.min_y,
-                    scaled_baseline.max_x,
-                    scaled_baseline.max_y
-                );
                 Some(scaled_baseline)
             }
         }
@@ -1294,27 +1273,7 @@ fn apply_margin_analysis_to_page(
                     // Only keep detections that have valid bounds (not completely outside image)
                     if det.bbox[0] < det.bbox[2] && det.bbox[1] < det.bbox[3] {
                         validated_detections.push(det);
-                    } else {
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "Discarding detection outside image bounds after transformation: page {}, bbox {:?}",
-                            page_index,
-                            det.bbox
-                        );
                     }
-                }
-
-                // Log margin correction for debugging if needed
-                #[cfg(feature = "debug-logging")]
-                if _margin_correction.scale_x != 0.0 || _margin_correction.scale_y != 0.0 {
-                    crate::debug_println!(
-                        "Margin correction for page {}: offset=({}, {}), scale=({}, {})",
-                        page_index,
-                        _margin_correction.offset_x,
-                        _margin_correction.offset_y,
-                        _margin_correction.scale_x,
-                        _margin_correction.scale_y
-                    );
                 }
 
                 return Ok((img, validated_detections));
@@ -1368,11 +1327,6 @@ fn binarize_image(
     // Special handling for blank pages in adaptive + layout mode:
     // use fixed threshold to avoid static/noise artifacts.
     let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
-        #[cfg(feature = "debug-logging")]
-        crate::debug_log!(
-            "Blank page detected via filtered detections, forcing fixed threshold {}",
-            BLANK_PAGE_FALLBACK_THRESHOLD
-        );
         (true, BLANK_PAGE_FALLBACK_THRESHOLD)
     } else {
         (
@@ -1432,16 +1386,6 @@ fn encode_region_image_sync(
             expected_len
         ));
     }
-    if image_data.len() > expected_len {
-        // Allow larger buffers if caller provided padded region; slice to expected
-        #[cfg(feature = "debug-logging")]
-        crate::debug_log!(
-            "encode_region_image: trimming padded buffer ({} -> {})",
-            image_data.len(),
-            expected_len
-        );
-    }
-
     use Legencode::streamline::{
         EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
         Jbig2Settings, JpegSettings,
