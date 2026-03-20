@@ -274,7 +274,7 @@ impl YoloLinuxEngine {
                 continue;
             }
 
-            let legacy_class_id = map_yolo_class_id_to_legacy(row.class_id);
+            let category = yolo_class_to_category(row.class_id);
             let x1 = ((row.x1 - inputs.transform.pad_x) * inv_scale)
                 .clamp(0.0, inputs.original_width as f32);
             let y1 = ((row.y1 - inputs.transform.pad_y) * inv_scale)
@@ -289,8 +289,9 @@ impl YoloLinuxEngine {
             }
 
             detections.push(Detection {
-                class_id: legacy_class_id,
-                class_name: Some(get_paddlex_class_name(legacy_class_id)),
+                class_id: row.class_id,
+                class_name: Some(yolo_class_name(row.class_id).to_string()),
+                category,
                 confidence: row.confidence,
                 bbox: [x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)],
                 context: Some(DetectionContext {
@@ -322,6 +323,7 @@ impl YoloLinuxEngine {
             .map(|d| Detection {
                 class_id: d.class_id,
                 class_name: d.class_name,
+                category: yolo_class_to_category(d.class_id),
                 confidence: d.confidence,
                 bbox: d.bbox,
                 context: d.context,
@@ -470,20 +472,44 @@ fn parse_yolo_rows(output_value: &DynValue) -> Result<Vec<DetectionRow>> {
     Err(anyhow!("Unsupported YOLO output shape: {:?}", shape))
 }
 
-fn map_yolo_class_id_to_legacy(class_id: i32) -> i32 {
+/// Map YOLO DocLayout class IDs to PaddleX legacy class IDs used by LabelInfo.
+///
+/// YOLO: {0:title, 1:plain_text, 2:abandon, 3:figure, 4:figure_caption,
+///        5:table, 6:table_caption, 7:table_footnote, 8:isolate_formula, 9:formula_caption}
+///
+/// Legacy: {0:paragraph_title, 1:image, 2:text, 6:figure_title, 7:formula,
+///          8:table, 9:table_title, 12:footnote, 19:formula_number}
+/// Map YOLO DocLayout class IDs directly to broad content categories.
+fn yolo_class_to_category(class_id: i32) -> crate::types::ContentCategory {
+    use crate::types::ContentCategory;
     match class_id {
-        0 => 6,
-        1 => 12,
-        2 => 7,
-        3 => 2,
-        4 => 15,
-        5 => 13,
-        6 => 1,
-        7 => 0,
-        8 => 8,
-        9 => 2,
-        10 => 11,
-        _ => 2,
+        0 => ContentCategory::Text,     // title
+        1 => ContentCategory::Text,     // plain_text
+        2 => ContentCategory::Abandon,  // abandon
+        3 => ContentCategory::Image,    // figure
+        4 => ContentCategory::Text,     // figure_caption
+        5 => ContentCategory::Table,    // table
+        6 => ContentCategory::Text,     // table_caption
+        7 => ContentCategory::Text,     // table_footnote
+        8 => ContentCategory::Text,     // isolate_formula
+        9 => ContentCategory::Text,     // formula_caption
+        _ => ContentCategory::Text,     // unknown
+    }
+}
+
+fn yolo_class_name(class_id: i32) -> &'static str {
+    match class_id {
+        0 => "title",
+        1 => "plain_text",
+        2 => "abandon",
+        3 => "figure",
+        4 => "figure_caption",
+        5 => "table",
+        6 => "table_caption",
+        7 => "table_footnote",
+        8 => "isolate_formula",
+        9 => "formula_caption",
+        _ => "unknown",
     }
 }
 

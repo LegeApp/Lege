@@ -22,6 +22,8 @@ use crate::types::CoverFormat;
 use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
 
+pub use Legencode::color::ImageRegionDitherMode;
+
 static INFERENCE_ENGINE: OnceCell<PaddleXEngine> = OnceCell::new();
 
 #[derive(Debug)]
@@ -269,7 +271,8 @@ pub struct PipelineConfig {
     pub(crate) enable_ocr_hint: bool,
     pub(crate) target_height: u32,
     pub(crate) target_width: Option<u32>,
-    pub(crate) dither_images: bool,
+    /// Dithering for **layout image regions** only (not body text). Ignored when layout detection is off.
+    pub(crate) image_region_dither_mode: ImageRegionDitherMode,
     pub(crate) binarization: BinarizationConfig,
     pub(crate) enable_ocr: bool,
     pub(crate) ocr_language: String,
@@ -287,7 +290,6 @@ pub struct PipelineConfig {
     pub(crate) ocr_preserve_grayscale: bool,
     pub(crate) invert_input: bool,
     pub(crate) jbig2_mode: Jbig2Mode,
-    pub(crate) jbig2_halftone_image_regions: bool,
     pub(crate) max_retries: u32,
     pub(crate) retry_delay_ms: u64,
     pub(crate) max_parallel_pages: Option<usize>,
@@ -337,9 +339,9 @@ impl PipelineConfig {
             enable_ocr_hint: true,
             target_height: 1200,
             target_width: None,
-            dither_images: true,
+            image_region_dither_mode: ImageRegionDitherMode::Stucki,
             binarization: BinarizationConfig::default(),
-            enable_ocr: true,
+            enable_ocr: false,
             ocr_language: "eng".to_string(),
             cover_format: CoverFormat::Jpeg,
             text_format: "jbig2".to_string(),
@@ -355,7 +357,6 @@ impl PipelineConfig {
             ocr_preserve_grayscale: false,
             invert_input: false,
             jbig2_mode: Jbig2Mode::Symbol,
-            jbig2_halftone_image_regions: false,
             max_retries: 3,
             retry_delay_ms: 1000,
             max_parallel_pages: Some(4),
@@ -497,7 +498,11 @@ impl PipelineConfig {
         self.target_width
     }
     pub fn dither_images(&self) -> bool {
-        self.dither_images
+        self.image_region_dither_mode != ImageRegionDitherMode::None
+    }
+
+    pub fn image_region_dither_mode(&self) -> ImageRegionDitherMode {
+        self.image_region_dither_mode
     }
     pub fn binarization(&self) -> &BinarizationConfig {
         &self.binarization
@@ -560,9 +565,6 @@ impl PipelineConfig {
     }
     pub fn jbig2_symbol_mode(&self) -> bool {
         matches!(self.jbig2_mode, Jbig2Mode::Symbol | Jbig2Mode::SymUnify)
-    }
-    pub fn jbig2_halftone_image_regions(&self) -> bool {
-        self.jbig2_halftone_image_regions
     }
     pub fn max_retries(&self) -> u32 {
         self.max_retries
@@ -677,7 +679,15 @@ impl PipelineConfig {
         Ok(())
     }
     pub fn set_dither_images(&mut self, dither: bool) {
-        self.dither_images = dither;
+        self.image_region_dither_mode = if dither {
+            ImageRegionDitherMode::Stucki
+        } else {
+            ImageRegionDitherMode::None
+        };
+    }
+
+    pub fn set_image_region_dither_mode(&mut self, mode: ImageRegionDitherMode) {
+        self.image_region_dither_mode = mode;
     }
     pub fn set_enable_ocr(&mut self, enable: bool) {
         self.enable_ocr = enable;
@@ -747,9 +757,6 @@ impl PipelineConfig {
         } else {
             Jbig2Mode::Generic
         };
-    }
-    pub fn set_jbig2_halftone_image_regions(&mut self, enabled: bool) {
-        self.jbig2_halftone_image_regions = enabled;
     }
     pub fn set_initial_single_pages(&mut self, n: usize) {
         self.initial_single_pages = n;

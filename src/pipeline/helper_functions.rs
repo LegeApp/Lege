@@ -4,7 +4,7 @@ use image::RgbImage;
 use tokio::sync::Semaphore;
 
 use crate::ocr::check_tesseract_availability;
-use crate::pipeline::config::PipelineConfig;
+use crate::pipeline::config::{ImageRegionDitherMode, PipelineConfig};
 use crate::types::CoverFormat;
 use crate::{info_log, warn_log};
 use Legencode::streamline::Jbig2Mode;
@@ -280,6 +280,7 @@ pub async fn encode_region_image(
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
                 mode: Jbig2Mode::Generic,
+                use_jbig2_halftone_segments: false,
             }),
             "jbig2".to_string(),
         ),
@@ -698,6 +699,7 @@ pub async fn encode_page_data(
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
                 mode: config.jbig2_mode(),
+                use_jbig2_halftone_segments: false,
             }),
             "jbig2",
         ),
@@ -752,11 +754,6 @@ pub async fn encode_page_data(
 
     match encoding_result {
         EncodingResult::Standard(data) => {
-            if base_format == "jbig2" {
-                return Err(anyhow::anyhow!(
-                    "JBIG2 text mode returned non-JBIG2 payload (Standard variant)"
-                ));
-            }
             if data.is_empty() {
                 return Err(anyhow::anyhow!(
                     "Encoder returned empty data for {}x{} image",
@@ -778,6 +775,7 @@ pub async fn encode_page_data(
             } else {
                 base_format.to_string()
             };
+            // JBIG2 generic (lossless) has no global dictionary → Standard variant is valid.
             Ok(crate::accumulator::ContentType::EncodedImage {
                 data: std::sync::Arc::from(data),
                 pixel_width: width as u32,

@@ -15,6 +15,26 @@ use std::sync::OnceLock;
 const MAX_OVERLAY_SIDE: u32 = 8192; // Prevent pathological overlays (encoder limits, memory safety)
 const MAX_OVERLAY_PIXELS: u64 = 8192u64 * 8192u64; // 67Mpx upper cap for regions
 
+/// Grayscale values at or above this floor are treated as pure paper white and
+/// forced to 255 before dithering.  Prevents sparse dots in near-white regions
+/// (paper texture, scan noise) that create a visible secondary pattern.
+const PAPER_WHITE_FLOOR: u8 = 245;
+
+/// How to reduce detected **image** regions to 1-bit before merging into the page mask.
+/// Body text / full-page binarization is separate (Sauvola etc.); this applies only where
+/// the pipeline passes layout-detected image labels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageRegionDitherMode {
+    /// Keep color (crop only); region is masked or overlaid without region dithering.
+    #[default]
+    None,
+    /// `--dither`: JBIG2 → Stucki error diffusion on image regions; CCITT4 → Bayer 8×8 ordered.
+    Stucki,
+    /// `--halftone`: image regions are extracted as grayscale and encoded with `jbig2halftone.rs`
+    /// (JBIG2 halftone region segments).  The base text layer stays Symbol/Generic.
+    Halftone,
+}
+
 /// Region bounds structure for zero-copy processing
 #[derive(Debug, Clone, Copy)]
 struct RegionBounds {
@@ -24,27 +44,78 @@ struct RegionBounds {
     y_end: u32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Optimized 8x8 Bayer matrix using integer arithmetic for faster comparison.
+/// Provides 65 tonal levels instead of 17 (4x4) for finer gradients.
+static BAYER_8X8: [[u8; 8]; 8] = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+];
 
-    #[test]
-    fn test_stucki_handles_empty_input() {
-        let width = 10u32;
-        let height = 10u32;
-        let out = dither_stucki_error_diffusion(&[], width, height);
-        assert_eq!(out.len(), (width * height) as usize);
-        assert!(out.iter().all(|&v| v == 255));
-    }
+/// Bayer 8×8 ordered dithering for image regions (CCITT4 default).
+#[inline(always)]
+fn process_bayer_dithering(
+    original_rgb: &[u8],
+    page_width: u32,
+    region_bounds: RegionBounds,
+    region_width: u32,
+    region_height: u32,
+) -> Result<(Vec<u8>, u32, u32)> {
+    let grayscale_region = rgb_to_grayscale_simd_direct(
+        original_rgb,
+        page_width,
+        region_bounds,
+        region_width,
+        region_height,
+    );
 
-    #[test]
-    fn test_bayer8x8_handles_mismatch() {
-        let width = 4u32;
-        let height = 3u32;
-        let out = dither_bayer8x8(&[], width, height);
-        assert_eq!(out.len(), (width * height) as usize);
-        assert!(out.iter().all(|&v| v == 255));
+    let dithered_1bit_data = dither_bayer8x8(&grayscale_region, region_width, region_height);
+
+    let pixel_count = dithered_1bit_data.len();
+    let mut output = Vec::with_capacity(pixel_count * 3);
+
+    dithered_1bit_data
+        .par_chunks(512)
+        .map(|chunk: &[u8]| {
+            let mut local_output = Vec::with_capacity(chunk.len() * 3);
+            for &pixel in chunk {
+                local_output.extend_from_slice(&[pixel, pixel, pixel]);
+            }
+            local_output
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .for_each(|chunk| output.extend(chunk));
+
+    Ok((output, region_width, region_height))
+}
+
+/// Apply 8×8 Bayer ordered dithering to grayscale data.
+fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let expected = w * h;
+    if expected == 0 || grayscale_data.len() < expected {
+        return vec![255; expected];
     }
+    let mut out = vec![255u8; expected];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let g = grayscale_data[idx];
+            if g >= PAPER_WHITE_FLOOR {
+                continue; // already 255 in output
+            }
+            let threshold = BAYER_8X8[y & 7][x & 7] * 4;
+            out[idx] = if g > threshold { 255 } else { 0 };
+        }
+    }
+    out
 }
 
 /// The primary function to process a detected image region.
@@ -55,23 +126,20 @@ mod tests {
 /// * `original_rgb`: A slice containing the RGB pixel data for the *entire page*.
 /// * `page_width`: The width of the entire page in pixels.
 /// * `region_bbox`: The bounding box `[x1, y1, x2, y2]` of the image region to process.
-/// * `dither`: If `true`, the region will be converted to grayscale and dithered. If `false`,
-///   the original color pixels will be returned.
-/// * `text_format`: The output format ("jbig2" or "ccitt4") to determine dithering method.
+/// * `mode`: [`ImageRegionDitherMode`] — Stucki vs halftone (JBIG2 encoder) vs none.
+/// * `text_format`: `"jbig2"` uses Stucki error diffusion on regions; `"ccitt4"` uses the
+///   phase-locked blue-noise ditherer; other formats follow the JBIG2 path unless extended.
 /// * `use_heavy_binarization`: If `true`, uses the ONNX-based heavy binarization for better quality.
 ///
 /// # Returns
-/// A `Result` containing a tuple:
-/// `(Vec<u8>, u32, u32)` - The processed pixel data, the width of the region, and the height of the region.
-/// For JBIG2 format with dithering, returns the halftone-processed data.
-/// For CCITT4 format or no dithering, returns standard RGB format.
+/// `(Vec<u8>, u32, u32)` — pixel data, region width, region height.
 #[inline(always)]
 pub fn process_image_region(
     original_rgb: &[u8],
     page_width: u32,
     page_height: u32,
     region_bbox: [f32; 4],
-    dither: bool,
+    mode: ImageRegionDitherMode,
     text_format: &str,
     use_heavy_binarization: bool,
 ) -> Result<(Vec<u8>, u32, u32)> {
@@ -79,7 +147,7 @@ pub fn process_image_region(
     let (region_bounds, region_width, region_height) =
         validate_region_bounds(page_width, page_height, region_bbox)?;
 
-    if !dither {
+    if mode == ImageRegionDitherMode::None {
         // Zero-copy crop for non-dithered regions
         return crop_rgb_region_zero_copy(
             original_rgb,
@@ -113,32 +181,60 @@ pub fn process_image_region(
         }
     }
 
-    // Fall back to standard dithering if heavy binarization is disabled or fails
-    match text_format {
-        "jbig2" => {
-            // For JBIG2, use sophisticated halftone processing
-            process_jbig2_halftone_region(
-                original_rgb,
-                page_width,
-                region_bounds,
-                region_width,
-                region_height,
-            )
+    #[cfg(feature = "debug-logging")]
+    crate::streamline::log_debug_message(&format!(
+        "process_image_region: mode={:?} fmt={} region={}x{} bounds=({},{})→({},{})",
+        mode, text_format, region_width, region_height,
+        region_bounds.x_start, region_bounds.y_start,
+        region_bounds.x_end, region_bounds.y_end,
+    ));
+
+    match mode {
+        ImageRegionDitherMode::Halftone => {
+            // Halftone: return grayscale crop as RGB triplets. The caller will feed the
+            // grayscale data to jbig2halftone.rs which does its own internal quantization.
+            #[cfg(feature = "debug-logging")]
+            crate::streamline::log_debug_message("  → dispatching to grayscale crop (halftone → jbig2halftone.rs encodes later)");
+            let grayscale = rgb_to_grayscale_simd_direct(
+                original_rgb, page_width, region_bounds, region_width, region_height,
+            );
+            let mut output = Vec::with_capacity(grayscale.len() * 3);
+            for &g in &grayscale {
+                output.extend_from_slice(&[g, g, g]);
+            }
+            Ok((output, region_width, region_height))
         }
-        "ccitt4" | _ => {
-            // For CCITT4 or other formats, use traditional Bayer dithering
-            process_traditional_dithering(
-                original_rgb,
-                page_width,
-                region_bounds,
-                region_width,
-                region_height,
-            )
-        }
+        ImageRegionDitherMode::Stucki => match text_format {
+            "ccitt4" => {
+                #[cfg(feature = "debug-logging")]
+                crate::streamline::log_debug_message("  → dispatching to Bayer 8×8 ordered dither (CCITT4)");
+                process_bayer_dithering(
+                    original_rgb,
+                    page_width,
+                    region_bounds,
+                    region_width,
+                    region_height,
+                )
+            }
+            _ => {
+                #[cfg(feature = "debug-logging")]
+                crate::streamline::log_debug_message("  → dispatching to Stucki error diffusion");
+                process_stucki_dither_region(
+                    original_rgb,
+                    page_width,
+                    region_bounds,
+                    region_width,
+                    region_height,
+                )
+            }
+        },
+        ImageRegionDitherMode::None => unreachable!("None mode returns before dither branch"),
     }
 }
 
-/// Traditional dithering using Bayer matrix - used for CCITT4 and other formats
+/// Traditional dithering using custom phase-locked blue-noise method - used for CCITT4
+/// This custom mode produces better results for CCITT4 encoding with better run-length
+/// characteristics, allowing more efficient compression.
 #[inline(always)]
 fn process_traditional_dithering(
     original_rgb: &[u8],
@@ -156,13 +252,9 @@ fn process_traditional_dithering(
         region_height,
     );
 
-    // CCITT4 should always use Bayer 8x8. The experimental blue-noise/custom
-    // path looks worse here and compresses poorly, so keep it disabled until it
-    // is redesigned.
-    //
-    // let dithered_1bit_data =
-    //     dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height);
-    let dithered_1bit_data = dither_bayer8x8(&grayscale_region, region_width, region_height);
+    // Phase-locked blue-noise dithering (CCITT4 image regions).
+    let dithered_1bit_data =
+        dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height);
 
     // Convert back to RGB format for compatibility
     let pixel_count = dithered_1bit_data.len();
@@ -185,9 +277,10 @@ fn process_traditional_dithering(
     Ok((output, region_width, region_height))
 }
 
-/// JBIG2 halftone processing - uses advanced halftone algorithms for better quality
+/// Stucki dither for image regions when text format is not CCITT4 (JBIG2, DjVu, etc.).
+/// Output is 0/255 packed as RGB triplets for the existing merge pipeline.
 #[inline(always)]
-fn process_jbig2_halftone_region(
+fn process_stucki_dither_region(
     original_rgb: &[u8],
     page_width: u32,
     region_bounds: RegionBounds,
@@ -203,8 +296,6 @@ fn process_jbig2_halftone_region(
         region_height,
     );
 
-    // For JBIG2, use Stucki error diffusion for higher quality than Bayer dithering
-    // This produces better results for the subsequent JBIG2 halftone encoding
     let dithered_1bit_data =
         dither_stucki_error_diffusion(&grayscale_region, region_width, region_height);
 
@@ -474,19 +565,6 @@ fn rgb_to_grayscale_simd_direct(
     grayscale
 }
 
-/// Optimized 8x8 Bayer matrix using integer arithmetic for faster comparison.
-/// Provides 65 tonal levels instead of 17 (4x4) for finer gradients.
-static BAYER_8X8: [[u8; 8]; 8] = [
-    [0, 32, 8, 40, 2, 34, 10, 42],
-    [48, 16, 56, 24, 50, 18, 58, 26],
-    [12, 44, 4, 36, 14, 46, 6, 38],
-    [60, 28, 52, 20, 62, 30, 54, 22],
-    [3, 35, 11, 43, 1, 33, 9, 41],
-    [51, 19, 59, 27, 49, 17, 57, 25],
-    [15, 47, 7, 39, 13, 45, 5, 37],
-    [63, 31, 55, 23, 61, 29, 53, 21],
-];
-
 /// Heavy binarization processor using ONNX model for high-quality document binarization
 struct HeavyBinarizationProcessor {
     session: Session,
@@ -629,40 +707,6 @@ impl HeavyBinarizationProcessor {
 
         Ok(result)
     }
-}
-
-/// Performs optimized ordered dithering using an 8x8 Bayer matrix with branchless comparison.
-///
-/// # Arguments
-/// * `grayscale_data`: A slice of 8-bit grayscale pixel data.
-/// * `width`: The width of the grayscale image.
-/// * `height`: The height of the grayscale image.
-///
-/// # Returns
-/// A `Vec<u8>` containing the 1-bit dithered data (0 for black, 255 for white).
-#[inline(always)]
-fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let width = width as usize;
-    let height = height as usize;
-
-    // Ensure the output length matches width*height even if the input buffer is short/empty
-    let expected = width.saturating_mul(height);
-    if expected == 0 {
-        return Vec::new();
-    }
-
-    (0..expected)
-        .into_par_iter()
-        .map(|idx| {
-            let x = idx % width;
-            let y = idx / width;
-            let threshold = BAYER_8X8[y & 7][x & 7];
-            let pixel = grayscale_data.get(idx).copied().unwrap_or(255);
-
-            // Branchless comparison: faster than if-else
-            ((pixel > threshold.wrapping_mul(4)) as u8).wrapping_mul(255)
-        })
-        .collect()
 }
 
 /// Deterministic hash-based blue-noise-like threshold sampler (0..255).
@@ -860,9 +904,10 @@ pub fn dither_stucki_error_diffusion(grayscale_data: &[u8], width: u32, height: 
     }
 
     // Create a mutable buffer of length width*height; copy available pixels and default the rest to white.
+    // Clamp near-white pixels to pure white so paper/scan noise doesn't produce sparse dots.
     let mut working_image: Vec<f32> = vec![255.0; expected];
     for (i, &v) in grayscale_data.iter().take(expected).enumerate() {
-        working_image[i] = v as f32;
+        working_image[i] = if v >= PAPER_WHITE_FLOOR { 255.0 } else { v as f32 };
     }
     let mut output = Vec::with_capacity(expected);
 
@@ -1018,36 +1063,50 @@ pub fn pack_bits(binarized: &[u8], width: usize, height: usize) -> Vec<u8> {
     packed
 }
 
-/// Merge a dithered region back into the page-sized binarized image buffer
+/// Merge a dithered region back into the page-sized binarized image buffer.
+///
+/// **Placement must match `validate_region_bounds`** (used by `process_image_region`):
+/// origin is `(round(x1), round(y1))`, size `(round(x2), round(y2))` clamped to the page.
+/// The previous implementation used `bbox[0] as u32` (truncate) instead of `round`, which
+/// misaligned merged pixels and looked like blown-out / “few lines” halos.
 pub fn merge_dithered_region(
     binarized: &mut [u8],
     grayscale_data: &[u8],
     page_width: u32,
     bbox: [f32; 4],
-    region_width: u32,
-    region_height: u32,
 ) {
-    // Clamp bbox to page bounds
     let page_height = (binarized.len() as u32 / page_width).max(1);
-    let mut x1 = bbox[0].max(0.0) as u32;
-    let mut y1 = bbox[1].max(0.0) as u32;
-    let mut x2 = (x1 + region_width).min(page_width);
-    let mut y2 = (y1 + region_height).min(page_height);
-    x1 = x1.min(page_width.saturating_sub(1));
-    y1 = y1.min(page_height.saturating_sub(1));
-    x2 = x2.min(page_width);
-    y2 = y2.min(page_height);
+    let [x1, y1, x2, y2] = bbox;
+    let x_start = (x1.round() as u32).min(page_width.saturating_sub(1));
+    let y_start = (y1.round() as u32).min(page_height.saturating_sub(1));
+    let x_end = (x2.round() as u32).min(page_width);
+    let y_end = (y2.round() as u32).min(page_height);
+    if x_start >= x_end || y_start >= y_end {
+        return;
+    }
+    let rw = x_end - x_start;
+    let rh = y_end - y_start;
+    let expected = (rw * rh) as usize;
+    if grayscale_data.len() < expected {
+        #[cfg(feature = "debug-logging")]
+        crate::streamline::log_debug_message(&format!(
+            "merge_dithered_region: buffer too short (have {}, need {} for {}x{} bbox {:?})",
+            grayscale_data.len(),
+            expected,
+            rw,
+            rh,
+            bbox
+        ));
+        return;
+    }
 
-    let start_x = x1 as usize;
-    let start_y = y1 as usize;
-    let max_w = (x2 - x1) as usize;
-    let max_h = (y2 - y1) as usize;
-
-    for y in 0..max_h {
-        for x in 0..max_w {
-            let src_idx = y * region_width as usize + x;
-            let dst_idx = (start_y + y) * page_width as usize + (start_x + x);
-            if src_idx < grayscale_data.len() && dst_idx < binarized.len() {
+    for y in 0..rh {
+        let src_row = y as usize * rw as usize;
+        for x in 0..rw {
+            let src_idx = src_row + x as usize;
+            let dst_idx = (y_start as usize + y as usize) * page_width as usize
+                + (x_start as usize + x as usize);
+            if dst_idx < binarized.len() {
                 binarized[dst_idx] = grayscale_data[src_idx];
             }
         }

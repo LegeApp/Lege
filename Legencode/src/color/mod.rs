@@ -20,6 +20,6 @@ pub use error::{ColorOpsError, Result};
 pub use binarization::{HeavySauvolaProcessor, binarize_image, binarize_image_raw};
 
 // Export color processing utilities
-pub use color_processing::process_image_region;
+pub use color_processing::{process_image_region, ImageRegionDitherMode};
 
 // GPU-related convenience functions removed - using direct binarization and dithering functions instead

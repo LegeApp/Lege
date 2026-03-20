@@ -3,9 +3,10 @@ use anyhow::{Result, anyhow, bail};
 use lege::progress::{self, ProgressUpdate};
 use lege::text_loader::CLI_TEXT;
 use lege::{
-    AppConfig, CoverFormat, DebugCropKind, PageRange, PipelineConfig, error_println, info_println,
-    is_ocr_available, run_images_to_images_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
-    run_pdf_to_png_mode, run_png_mode, target_profiles,
+    AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PipelineConfig,
+    error_println, info_println, is_ocr_available, run_images_to_images_mode,
+    run_pdf_layout_crop_debug, run_pdf_to_images_mode, run_pdf_to_png_mode, run_png_mode,
+    target_profiles,
 };
 
 mod version;
@@ -79,9 +80,22 @@ use sysinfo::{Disks, System};
 fn cleanup_cli_resources() {
     // Give background tasks a moment to complete
     std::thread::sleep(std::time::Duration::from_millis(200));
+}
 
-    // In CLI mode, we can be more aggressive about cleanup since the process will exit anyway
-    // This helps ensure the process terminates cleanly
+/// Terminate the process without running C atexit handlers.
+/// ORT's WebGPU/Dawn backend registers atexit hooks that can segfault during
+/// Vulkan teardown; `_exit` bypasses them while still flushing Rust I/O.
+fn fast_exit(code: i32) -> ! {
+    // Flush stdout/stderr so all output is visible
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(code);
+    }
+    #[cfg(not(unix))]
+    std::process::exit(code);
 }
 
 // Binarization parsing moved to CliConfigBuilder in types.rs
@@ -184,7 +198,7 @@ struct CliOptions {
     pdf_compat: bool,              // --pdf-compat
     invert: bool,                  // --invert
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
-    halftone: bool,                // --halftone
+    halftone: bool,                // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
     deskew: bool,                  // --deskew
     center_margins: bool,          // --center-margins
     crop_margins: bool,            // --crop-margins
@@ -1089,9 +1103,12 @@ fn handle_simple_processing(
         pipeline_config.set_djvu_iw44_quality(q)?;
     }
 
-    // Boolean toggles
-    if cli_opts.dither {
-        pipeline_config.set_dither_images(true);
+    // Boolean toggles — image-region dithering only (requires layout detection; see pipeline).
+    // `--halftone` wins over `--dither` (jbig2halftone.rs page encode vs symbol/generic JBIG2).
+    if cli_opts.halftone {
+        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
+    } else if cli_opts.dither {
+        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
     }
     if cli_opts.no_layout {
         pipeline_config.set_enable_layout_detection(false);
@@ -1137,9 +1154,6 @@ fn handle_simple_processing(
             }
         });
         pipeline_config.set_jbig2_mode(selected_mode);
-    }
-    if cli_opts.halftone {
-        pipeline_config.set_jbig2_halftone_image_regions(true);
     }
     if cli_opts.deskew {
         pipeline_config.set_enable_deskew(true);
@@ -1310,9 +1324,9 @@ fn handle_simple_processing(
 
     cleanup_cli_resources();
     if overall_ok {
-        std::process::exit(0);
+        fast_exit(0);
     } else {
-        std::process::exit(1);
+        fast_exit(1);
     }
 }
 
@@ -1331,12 +1345,11 @@ fn handle_cli_mode(config: AppConfig) -> Result<()> {
             let output_path = generate_output_path(&file_path, &output_dir, &pipeline_config)?;
             let result = process_single_file(file_path, output_path, pipeline_config);
 
-            // Force cleanup and exit for CLI to ensure clean termination
             cleanup_cli_resources();
             if result.is_ok() {
-                std::process::exit(0);
+                fast_exit(0);
             } else {
-                std::process::exit(1);
+                fast_exit(1);
             }
         }
         None => Ok(()),
@@ -1450,7 +1463,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         force_crop,
         deskew_enabled,
         high_quality_output,
-        jbig2_halftone_mode,
         djvu_quality,
     ) = loop {
         print!(
@@ -1501,7 +1513,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 force_crop,
                 deskew_enabled,
                 high_quality_output,
-                jbig2_halftone_mode,
                 djvu_quality,
             )) => {
                 // No immediate rejection; we'll apply precedence rules below when building config
@@ -1522,7 +1533,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     force_crop,
                     deskew_enabled,
                     high_quality_output,
-                    jbig2_halftone_mode,
                     djvu_quality,
                 );
             }
@@ -1670,7 +1680,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     config.set_invert_input(invert_input);
     config.set_enable_deskew(deskew_enabled);
     config.set_jbig2_mode(jbig2_mode);
-    config.set_jbig2_halftone_image_regions(jbig2_halftone_mode);
     config.set_keep_original_images(original_image);
 
     // Set margin processing settings
@@ -1873,7 +1882,6 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
-    bool,
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
 )> {
     if input.is_empty() {
@@ -1896,7 +1904,6 @@ fn parse_format_selection_with_options(
             false, // force_crop
             false, // deskew_enabled
             false, // high_quality_output
-            false, // jbig2_halftone_mode
             None,  // djvu_quality (not DjVu)
         ));
     }
@@ -1940,9 +1947,8 @@ fn parse_format_selection_with_options(
 
     // Determine dithering:
     // ALL formats default to original images (no dithering)
-    // 'c' flag ENABLES dithering
+    // 'c' flag ENABLES image-region dithering (JBIG2: Stucki; CCITT4: blue-noise) — not body text.
     let enable_dithering = c_count > 0;
-    let jbig2_halftone_mode = format_num == 2 && c_count >= 2;
 
     // Parse additional options from the remaining parts
     // Also extract option letters that might be embedded in the first part (e.g., "1a" means format 1 with option 'a')
@@ -2033,7 +2039,6 @@ fn parse_format_selection_with_options(
         force_crop,
         deskew_enabled,
         has_high_flag,
-        jbig2_halftone_mode,
         djvu_quality,
     ))
 }

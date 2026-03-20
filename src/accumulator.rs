@@ -724,6 +724,9 @@ impl StreamingPdfBuilder {
                         // Interpolation should be disabled for 1-bit bilevel images to avoid artifacts
                         dict.set("Interpolate", false);
                         dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
+                        // Match jbig2enc-rust tests/pdf_variants (decode_inverted=false → [0 1]) for
+                        // streams from flush_pdf_split(); required for correct polarity with this encoder.
+                        dict.set("Decode", vec![0.into(), 1.into()]);
                         // JBIG2 is already compressed, store raw bytes without re-encoding
                         let stream = Stream::new(dict, data.to_vec());
                         #[cfg(feature = "debug-logging")]
@@ -800,50 +803,66 @@ impl StreamingPdfBuilder {
                 pixel_width,
                 pixel_height,
             } => {
-                let global_bytes = global_data.to_vec();
-                let global_id = match self.global_resources.entry(global_bytes.clone()) {
-                    Entry::Occupied(existing) => *existing.get(),
-                    Entry::Vacant(vacant) => {
-                        let global_stream = Stream::new(Dictionary::new(), global_bytes.clone());
-                        let id = self.doc.add_object(global_stream);
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "PDF ASSEMBLY: created JBIG2 globals obj {:?}, {} bytes",
-                            id,
-                            global_bytes.len()
-                        );
-                        vacant.insert(id);
-                        id
-                    }
-                };
-
                 let mut dict = Dictionary::new();
                 dict.set("Type", Object::Name(b"XObject".to_vec()));
                 dict.set("Subtype", Object::Name(b"Image".to_vec()));
                 dict.set("Width", Object::Integer(*pixel_width as i64));
                 dict.set("Height", Object::Integer(*pixel_height as i64));
+                dict.set("Length", Object::Integer(page_data.len() as i64));
                 dict.set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
                 dict.set("BitsPerComponent", Object::Integer(1));
+                // Interpolation should be disabled for 1-bit bilevel images to avoid artifacts
+                dict.set("Interpolate", false);
                 dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
+                // Halftone JBIG2: default_pixel=0 with OR'd pattern dots=1.
+                // Decode [1, 0] maps 0→white (background), 1→black (dots) for
+                // traditional halftone polarity (black dots on white paper).
+                // The grayscale input is inverted before encoding so that
+                // bright→few dots→white, dark→many dots→black.
+                dict.set("Decode", vec![1.into(), 0.into()]);
 
-                // Add global dictionary reference if provided
-                {
+                // Only attach JBIG2Globals when non-empty; empty stream breaks many viewers.
+                if !global_data.is_empty() {
+                    let global_bytes = global_data.to_vec();
+                    let global_id = match self.global_resources.entry(global_bytes.clone()) {
+                        Entry::Occupied(existing) => *existing.get(),
+                        Entry::Vacant(vacant) => {
+                            let global_stream = Stream::new(Dictionary::new(), global_bytes.clone());
+                            let id = self.doc.add_object(global_stream);
+                            #[cfg(feature = "debug-logging")]
+                            crate::debug_println!(
+                                "PDF ASSEMBLY: created JBIG2 globals obj {:?}, {} bytes",
+                                id,
+                                global_bytes.len()
+                            );
+                            vacant.insert(id);
+                            id
+                        }
+                    };
                     let mut decode_params = Dictionary::new();
                     decode_params.set("JBIG2Globals", Object::Reference(global_id));
                     dict.set("DecodeParms", Object::Dictionary(decode_params));
+                    #[cfg(feature = "debug-logging")]
+                    crate::debug_println!(
+                        "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, page {} bytes, globals obj {:?} ({} bytes)",
+                        pixel_width,
+                        pixel_height,
+                        page_data.len(),
+                        global_id,
+                        global_data.len()
+                    );
+                } else {
+                    #[cfg(feature = "debug-logging")]
+                    crate::debug_println!(
+                        "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, page {} bytes, no globals",
+                        pixel_width,
+                        pixel_height,
+                        page_data.len(),
+                    );
                 }
 
                 // JBIG2 is already compressed, store raw bytes without re-encoding
                 let stream = Stream::new(dict, page_data.to_vec());
-                #[cfg(feature = "debug-logging")]
-                crate::debug_println!(
-                    "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, page {} bytes, globals obj {:?} ({} bytes)",
-                    pixel_width,
-                    pixel_height,
-                    page_data.len(),
-                    global_id,
-                    global_data.len()
-                );
                 Ok(self.doc.add_object(stream))
             }
         }

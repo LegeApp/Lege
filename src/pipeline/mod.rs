@@ -12,8 +12,8 @@ pub mod runtime_limits;
 
 // Re-export key types
 pub use config::{
-    PageRange, PageTask, PipelineConfig, ProcessingPipeline, RenderedPageData,
-    ensure_pdfium_available, runtime_asset_path, runtime_asset_path_if_exists,
+    ImageRegionDitherMode, PageRange, PageTask, PipelineConfig, ProcessingPipeline,
+    RenderedPageData, ensure_pdfium_available, runtime_asset_path, runtime_asset_path_if_exists,
 };
 pub use deskew_graph::prepare_shared_deskew_engine;
 pub use djvu_pipeline::{

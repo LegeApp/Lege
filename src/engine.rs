@@ -50,6 +50,7 @@ pub struct Detection {
     pub class_name: Option<String>,
     pub confidence: f32,
     pub bbox: [f32; 4], // [x1, y1, x2, y2]
+    pub category: crate::types::ContentCategory,
     pub context: Option<DetectionContext>,
 }
 
@@ -1751,6 +1752,7 @@ impl PaddleXEngine {
                     class_name: Some(get_paddlex_class_name(class_id)),
                     confidence,
                     bbox: [x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)],
+                    category: paddlex_class_to_category(class_id),
                     context: Some(DetectionContext {
                         original_width: inputs.im_shape[1],
                         original_height: inputs.im_shape[0],
@@ -1788,6 +1790,7 @@ impl PaddleXEngine {
             .into_iter()
             .map(|d| Detection {
                 class_id: d.class_id,
+                category: paddlex_class_to_category(d.class_id),
                 class_name: d.class_name,
                 confidence: d.confidence,
                 bbox: d.bbox,
@@ -1822,4 +1825,14 @@ static LABEL_INFO: Lazy<LabelInfo> = Lazy::new(|| LabelInfo::new());
 
 pub fn get_paddlex_class_name(class_id: i32) -> String {
     LABEL_INFO.get_class_name(class_id)
+}
+
+/// Map PaddleX class IDs to broad content categories.
+pub fn paddlex_class_to_category(class_id: i32) -> crate::types::ContentCategory {
+    use crate::types::ContentCategory;
+    match class_id {
+        1 | 20 | 21 => ContentCategory::Image, // image, header_image, footer_image
+        8           => ContentCategory::Table,  // table
+        _           => ContentCategory::Text,   // everything else
+    }
 }
