@@ -204,7 +204,8 @@ struct CliOptions {
     crop_margins: bool,            // --crop-margins
     force_crop: bool,              // --force-crop
     image_only: bool,              // --image-only
-    original_images: bool,         // --original-images
+    original_images: bool,         // --original-images (default is already original; explicit opt-in)
+    reencode_image_regions: bool,  // --reencode-image-regions (JPEG/JP2 regions + allow dither path)
     fast_resize: bool,             // --fast-resize (force CPU fast_image_resize backend)
 
     // --- Language ---
@@ -495,6 +496,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--original-images" => {
                 opts.original_images = true;
+                i += 1;
+            }
+            "--reencode-image-regions" => {
+                opts.reencode_image_regions = true;
                 i += 1;
             }
             "--fast-resize" => {
@@ -1161,11 +1166,11 @@ fn handle_simple_processing(
     if cli_opts.high_quality {
         pipeline_config.set_high_quality_output(true);
     }
-    if cli_opts.original_images {
-        pipeline_config.set_keep_original_images(true);
+    // Default: keep raster crops as originals (PipelineConfig::new). Opt into re-encoding/dither paths.
+    if cli_opts.halftone || cli_opts.dither || cli_opts.reencode_image_regions {
+        pipeline_config.set_keep_original_images(false);
     }
-    if cli_opts.image_only {
-        // Image-only mode: keep originals, no binarization
+    if cli_opts.original_images || cli_opts.image_only {
         pipeline_config.set_keep_original_images(true);
     }
 

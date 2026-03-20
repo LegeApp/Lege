@@ -16,12 +16,14 @@ use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
+    BLANK_PAGE_FALLBACK_THRESHOLD, apply_full_bleed_image_bbox_expansion,
+    build_hocr_from_pdf_text, init_encode_semaphore, maybe_expand_sole_image_to_full_page,
+    merge_overlapping_image_detections,
     rounded_clamped_bbox, should_force_blank_page_threshold, wait_for_memory_relief,
 };
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
-use crate::resize_context::build_inference_image;
+use crate::pipeline::policies::build_inference_image;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
 use futures;
@@ -842,6 +844,34 @@ fn process_djvu_cpu_intensive_work(
     }
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
+
+    if config.enable_layout_detection() {
+        let classifier = &crate::types::LABEL_CLASSIFIER;
+        let enable_yolo_top_fill =
+            matches!(config.inference_resize_spec().policy, crate::pipeline::policies::ResizePolicy::Letterbox);
+        maybe_expand_sole_image_to_full_page(
+            &mut adjusted_detections,
+            width as u32,
+            height as u32,
+            classifier,
+        );
+        if config.expand_full_bleed_figure_bboxes() {
+            apply_full_bleed_image_bbox_expansion(
+                &mut adjusted_detections,
+                width as u32,
+                height as u32,
+                classifier,
+                enable_yolo_top_fill,
+            );
+        }
+        merge_overlapping_image_detections(
+            &mut adjusted_detections,
+            classifier,
+            width as u32,
+            height as u32,
+        );
+    }
+
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // In "jpeg" text format mode, skip binarization and use grayscale version for OCR/text layer
     let mut binarized = if config.text_format() == "jpeg" {

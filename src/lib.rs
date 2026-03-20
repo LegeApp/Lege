@@ -2,6 +2,7 @@
 // Module declarations
 pub mod accumulator;
 pub mod app_dirs;
+pub mod bbox_trace;
 pub mod cli_progress;
 pub mod colorquant;
 pub mod debug_log;
@@ -24,7 +25,7 @@ pub mod preprocess;
 pub mod processing_log;
 pub mod progress;
 pub mod resize;
-pub mod resize_context;
+// resize context is now merged into pipeline::policies
 pub mod target_profiles;
 pub mod text_loader;
 pub mod types;
@@ -164,10 +165,20 @@ macro_rules! dprintln {
     };
 }
 
+/// `LEGE_BBOX_TRACE=1` → stderr lines for layout bboxes, region encodes, PDF `Do` placement.
+#[macro_export]
+macro_rules! bbox_trace {
+    ($($arg:tt)*) => {{
+        if $crate::bbox_trace::enabled() {
+            eprintln!($($arg)*);
+        }
+    }};
+}
+
 // DAG-related imports
 // Added missing imports and type aliases
 // brings debug_log!, info_println!, error_println!
-// resize params now centralized in resize_context for inference path; keep legacy resize module for other callers
+// resize params now centralized in pipeline::policies for inference path; keep legacy resize module for other callers
 pub use crate::types::{AppConfig, CliConfigBuilder, CoverFormat};
 #[allow(unused_imports)]
 use fast_image_resize::PixelType;

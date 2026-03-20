@@ -15,7 +15,7 @@
 //!     e-readers.
 
 use crate::engine::Detection;
-use crate::resize_context::MarginCorrection;
+use crate::pipeline::policies::MarginCorrection;
 use anyhow::{Result, anyhow};
 use image::{Rgb, RgbImage};
 use std::collections::HashMap;

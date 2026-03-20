@@ -292,20 +292,6 @@ impl PageAccumulator {
         let current_count = pages.len();
         let is_complete = current_count == self.total_pages;
 
-        // Add debug logging to track accumulator progress (visible when debug-logging is enabled)
-        crate::debug_log!(
-            "PageAccumulator: Added page {} ({} / {}), memory: {} MB, complete: {}",
-            page_index,
-            current_count,
-            self.total_pages,
-            new_memory / (1024 * 1024),
-            is_complete
-        );
-
-        if is_complete {
-            crate::debug_log!("PageAccumulator: All pages collected");
-        }
-
         is_complete
     }
 
@@ -526,20 +512,6 @@ impl StreamingPdfBuilder {
             let xobject_id = self.add_content_to_pdf(&element.content, &mut xobject_dict)?;
             xobject_dict.set::<&str, _>(xobject_name.as_ref(), Object::Reference(xobject_id));
 
-            #[cfg(feature = "debug-logging")]
-            crate::debug_println!(
-                "PDF ASSEMBLY: page {} xobject {} -> obj {:?}, element rect ({:.1},{:.1},{:.1},{:.1}), content {}x{}",
-                page.index,
-                xobject_name,
-                xobject_id,
-                element.x,
-                element.y,
-                element.width,
-                element.height,
-                element.content.width(),
-                element.content.height()
-            );
-
             // Add drawing operation
             operations.push(Operation::new("q", vec![])); // Save graphics state
 
@@ -550,17 +522,18 @@ impl StreamingPdfBuilder {
             // XObjects are normalized to 1x1 unit space, so we scale them to the element dimensions
             let pdf_y = page.height - element.y - element.height; // Convert from top-left to bottom-left
 
-            #[cfg(feature = "debug-logging")]
-            crate::dprintln!(
-                "PDF Transform: element={}x{} at ({},{}) -> PDF coords ({},{}) with scale {}x{}",
-                element.content.width(),
-                element.content.height(),
+            crate::bbox_trace!(
+                "ASSEMBLY page={} {} obj={:?} raster_tl=({:.1},{:.1}) size=({:.1},{:.1}) pdf_ty={:.1} content_px={}x{}",
+                page.index,
+                xobject_name,
+                xobject_id,
                 element.x,
                 element.y,
-                element.x,
-                pdf_y,
                 element.width,
-                element.height
+                element.height,
+                pdf_y,
+                element.content.width(),
+                element.content.height()
             );
 
             operations.push(Operation::new(
@@ -581,16 +554,6 @@ impl StreamingPdfBuilder {
                 vec![Object::Name(xobject_name.as_bytes().to_vec())],
             ));
 
-            #[cfg(feature = "debug-logging")]
-            crate::debug_println!(
-                "PDF ASSEMBLY: page {} issued Do for {} at pdf ({:.1},{:.1}) size {:.1}x{:.1}",
-                page.index,
-                xobject_name,
-                element.x,
-                pdf_y,
-                element.width,
-                element.height
-            );
             operations.push(Operation::new("Q", vec![])); // Restore graphics state
         }
 
@@ -729,13 +692,6 @@ impl StreamingPdfBuilder {
                         dict.set("Decode", vec![0.into(), 1.into()]);
                         // JBIG2 is already compressed, store raw bytes without re-encoding
                         let stream = Stream::new(dict, data.to_vec());
-                        #[cfg(feature = "debug-logging")]
-                        crate::debug_println!(
-                            "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, {} bytes, no globals",
-                            pixel_width,
-                            pixel_height,
-                            data.len()
-                        );
                         return Ok(self.doc.add_object(stream));
                     }
                     "ccitt" | "ccitt4" => {
@@ -814,12 +770,11 @@ impl StreamingPdfBuilder {
                 // Interpolation should be disabled for 1-bit bilevel images to avoid artifacts
                 dict.set("Interpolate", false);
                 dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
-                // Halftone JBIG2: default_pixel=0 with OR'd pattern dots=1.
-                // Decode [1, 0] maps 0→white (background), 1→black (dots) for
-                // traditional halftone polarity (black dots on white paper).
-                // The grayscale input is inverted before encoding so that
-                // bright→few dots→white, dark→many dots→black.
-                dict.set("Decode", vec![1.into(), 0.into()]);
+                // Keep JBIG2 polarity consistent with the jbig2enc-rust
+                // flush_pdf_split() test expectations: decode_inverted=false
+                // corresponds to Decode [0 1]. Halftone polarity is handled
+                // upstream by inverting the grayscale input before encoding.
+                dict.set("Decode", vec![0.into(), 1.into()]);
 
                 // Only attach JBIG2Globals when non-empty; empty stream breaks many viewers.
                 if !global_data.is_empty() {
@@ -829,12 +784,6 @@ impl StreamingPdfBuilder {
                         Entry::Vacant(vacant) => {
                             let global_stream = Stream::new(Dictionary::new(), global_bytes.clone());
                             let id = self.doc.add_object(global_stream);
-                            #[cfg(feature = "debug-logging")]
-                            crate::debug_println!(
-                                "PDF ASSEMBLY: created JBIG2 globals obj {:?}, {} bytes",
-                                id,
-                                global_bytes.len()
-                            );
                             vacant.insert(id);
                             id
                         }
@@ -842,23 +791,6 @@ impl StreamingPdfBuilder {
                     let mut decode_params = Dictionary::new();
                     decode_params.set("JBIG2Globals", Object::Reference(global_id));
                     dict.set("DecodeParms", Object::Dictionary(decode_params));
-                    #[cfg(feature = "debug-logging")]
-                    crate::debug_println!(
-                        "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, page {} bytes, globals obj {:?} ({} bytes)",
-                        pixel_width,
-                        pixel_height,
-                        page_data.len(),
-                        global_id,
-                        global_data.len()
-                    );
-                } else {
-                    #[cfg(feature = "debug-logging")]
-                    crate::debug_println!(
-                        "PDF ASSEMBLY: creating JBIG2 image stream {}x{}, page {} bytes, no globals",
-                        pixel_width,
-                        pixel_height,
-                        page_data.len(),
-                    );
                 }
 
                 // JBIG2 is already compressed, store raw bytes without re-encoding
@@ -881,12 +813,7 @@ impl StreamingPdfBuilder {
         let mut lines = parse_hocr(hocr_text)?;
         dedup_adjacent_repeats(&mut lines);
 
-        #[cfg(feature = "debug-logging")]
-        println!("DEBUG OCR: Adding text layer with {} lines", lines.len());
-
         if lines.is_empty() {
-            #[cfg(feature = "debug-logging")]
-            println!("DEBUG OCR: No lines found in HOCR text");
             return Ok(operations);
         }
 
@@ -1154,81 +1081,6 @@ pub fn assemble_pdf(
             output_path
         ));
     }
-    // Calculate total input data size
-    #[allow(unused_variables)]
-    let total_encoded_size: usize = pages
-        .iter()
-        .flat_map(|page| &page.elements)
-        .map(|element| match &element.content {
-            ContentType::EncodedImage { data, .. } => data.len(),
-            ContentType::Jbig2ImageWithGlobals {
-                page_data,
-                global_data,
-                ..
-            } => page_data.len() + global_data.len(),
-        })
-        .sum();
-
-    #[cfg(feature = "debug-logging")]
-    crate::debug_println!(
-        "PDF ASSEMBLY: Starting assembly with {} pages, total encoded data: {} bytes, streaming_threshold={}, compatibility_mode={}, output_path=\"{}\"",
-        pages.len(),
-        total_encoded_size,
-        streaming_threshold,
-        compatibility_mode,
-        output_path
-    );
-
-    // Debug all pages content dimensions
-    #[cfg(feature = "debug-logging")]
-    for (i, page) in pages.iter().enumerate() {
-        crate::debug_println!(
-            "PDF ASSEMBLY: Page {} dimensions: {}x{}, {} elements, index={}",
-            i,
-            page.width,
-            page.height,
-            page.elements.len(),
-            page.index
-        );
-        for (j, element) in page.elements.iter().enumerate() {
-            crate::debug_println!(
-                "PDF ASSEMBLY: Page {} Element {}: position ({:.1},{:.1}) size {}x{}, content {}x{}",
-                i,
-                j,
-                element.x,
-                element.y,
-                element.width,
-                element.height,
-                element.content.width(),
-                element.content.height()
-            );
-            match &element.content {
-                ContentType::EncodedImage { data, format, .. } => {
-                    crate::debug_println!(
-                        "PDF ASSEMBLY: Page {} Element {}: {} format, {} bytes",
-                        i,
-                        j,
-                        format,
-                        data.len()
-                    );
-                }
-                ContentType::Jbig2ImageWithGlobals {
-                    page_data,
-                    global_data,
-                    ..
-                } => {
-                    crate::debug_println!(
-                        "PDF ASSEMBLY: Page {} Element {}: JBIG2 with globals, page {} bytes, global {} bytes",
-                        i,
-                        j,
-                        page_data.len(),
-                        global_data.len()
-                    );
-                }
-            }
-        }
-    }
-
     // Check if any pages contain OCR text content
     let has_ocr_content = pages.iter().any(|page| {
         page.hocr_text
@@ -1237,16 +1089,7 @@ pub fn assemble_pdf(
             .unwrap_or(false)
     });
 
-    #[cfg(feature = "debug-logging")]
-    crate::debug_println!(
-        "PDF ASSEMBLY: OCR content detected: {}, compatibility_mode: {}",
-        has_ocr_content,
-        compatibility_mode
-    );
-
     let result = if pages.len() > streaming_threshold {
-        #[cfg(feature = "debug-logging")]
-        crate::debug_println!("PDF ASSEMBLY: Using streaming assembly for large document");
         // Use streaming for large documents to conserve memory.
         let mut builder = StreamingPdfBuilder::with_compatibility_mode(compatibility_mode);
         for page in pages {
@@ -1254,8 +1097,6 @@ pub fn assemble_pdf(
         }
         builder.finalize(output_path, has_ocr_content, compatibility_mode)
     } else {
-        #[cfg(feature = "debug-logging")]
-        crate::debug_println!("PDF ASSEMBLY: Using in-memory assembly for small document");
         // Use simpler in-memory creation for smaller documents.
         create_pdf_in_memory(pages, output_path, has_ocr_content, compatibility_mode)
     };
@@ -1265,12 +1106,6 @@ pub fn assemble_pdf(
     match fs::metadata(output_path) {
         Ok(meta) => {
             let size = meta.len();
-            #[cfg(feature = "debug-logging")]
-            crate::debug_println!(
-                "PDF ASSEMBLY: Final PDF written: {} bytes at {}",
-                size,
-                output_path
-            );
             if size == 0 {
                 return Err(anyhow!(
                     "Final PDF exists but is zero bytes: {}",

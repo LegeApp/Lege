@@ -411,8 +411,11 @@ fn crop_rgb_region_zero_copy(
     let mut region_pixels = Vec::with_capacity((region_width * region_height * 3) as usize);
     let source_width = source_width as usize;
 
-    // Sanity: ensure the requested region rows are within the source buffer
-    let last_row_end = ((bounds.y_end as usize * source_width) + bounds.x_end as usize) * 3;
+    // Sanity: ensure the requested region rows are within the source buffer.
+    // `y_end` is exclusive (`for y in y_start..y_end`), so the last row index is `y_end - 1`.
+    // Using `y_end` here would address one row past the crop (and fail for full-page crops).
+    let last_row = (bounds.y_end - 1) as usize;
+    let last_row_end = (last_row * source_width + bounds.x_end as usize) * 3;
     if last_row_end > source_rgb.len() {
         return Err(anyhow!(
             "Crop bounds exceed source buffer (end={} > len={})",
