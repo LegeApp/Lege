@@ -15,7 +15,7 @@
 
 use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
+use crate::pipeline::config::{ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
     BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
     rounded_clamped_bbox, should_force_blank_page_threshold, should_treat_as_cover_page,
@@ -526,17 +526,29 @@ async fn process_single_page(
         if let Some((encoded_data, format)) = region_result.encoded_data {
             let (ix1, iy1, ix2, iy2) =
                 rounded_clamped_bbox(region_result.detection.bbox, width as u32, height as u32);
+
+            let content = if let Some(global_data) = region_result.encoded_global_data {
+                crate::accumulator::ContentType::Jbig2ImageWithGlobals {
+                    page_data: Arc::from(encoded_data),
+                    global_data: Arc::from(global_data),
+                    pixel_width: region_result.region_w,
+                    pixel_height: region_result.region_h,
+                }
+            } else {
+                crate::accumulator::ContentType::EncodedImage {
+                    data: Arc::from(encoded_data),
+                    pixel_width: region_result.region_w,
+                    pixel_height: region_result.region_h,
+                    format,
+                }
+            };
+
             elements.push(crate::accumulator::ContentElement {
                 x: ix1 as f32,
                 y: iy1 as f32,
                 width: (ix2 - ix1) as f32,
                 height: (iy2 - iy1) as f32,
-                content: crate::accumulator::ContentType::EncodedImage {
-                    data: Arc::from(encoded_data),
-                    pixel_width: region_result.region_w,
-                    pixel_height: region_result.region_h,
-                    format,
-                },
+                content,
             });
         }
     }
@@ -556,12 +568,19 @@ async fn process_single_page(
         extract_pdf_text(&pdf_renderer, page_index, &adjusted_image).await?
     };
 
+    // If any region on this page is Abandon and we're using JBIG2 Symbol mode,
+    // force the base layer to Generic to avoid Symbol-mode corruption of noisy pixels.
+    let force_jbig2_generic = config.text_format() == "jbig2"
+        && adjusted_detections
+            .iter()
+            .any(|d| d.category.force_generic_jbig2());
+
     // Encode base layer - in "jpeg" mode, encode the full RGB image instead of grayscale
     let base_layer = if config.text_format() == "jpeg" {
-        // In JPEG-only mode, encode the full RGB image directly
         encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?
     } else {
-        encode_base_layer(&binarized, width, height, &config, page_index).await?
+        encode_base_layer(&binarized, width, height, &config, page_index, force_jbig2_generic)
+            .await?
     };
 
     elements.insert(
@@ -604,8 +623,11 @@ struct RegionProcessingResult {
     region_w: u32,
     region_h: u32,
     should_dither: bool,
-    processed_for_masking: bool, // Whether the region was already processed for binarized masking
-    encoded_data: Option<(Vec<u8>, String)>, // For non-dithered regions that need overlay encoding
+    processed_for_masking: bool,
+    encoded_data: Option<(Vec<u8>, String)>,
+    /// JBIG2 globals (pattern dictionary for halftone, symbol dict for Symbol mode).
+    /// When present, the overlay must use `Jbig2ImageWithGlobals` in the PDF.
+    encoded_global_data: Option<Vec<u8>>,
 }
 
 struct PageProcessingOutput {
@@ -637,6 +659,28 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         // Use per-page policy (1-pass mode)
         apply_region_policy(&rendered, &inference_result, &config)?
     };
+
+    // DEBUG: log all detections after remapping to page space
+    #[cfg(feature = "debug-logging")]
+    {
+        let classifier = &crate::types::LABEL_CLASSIFIER;
+        crate::debug_println!(
+            "PAGE {} — {} raw detections, image={}x{}",
+            page_index, adjusted_detections.len(),
+            adjusted_image.width(), adjusted_image.height()
+        );
+        for (i, det) in adjusted_detections.iter().enumerate() {
+            let is_img = classifier.is_image_label(det);
+            crate::debug_println!(
+                "  det[{}] class={} ({}) conf={:.2} bbox=[{:.0},{:.0},{:.0},{:.0}] is_image={}",
+                i, det.class_id,
+                det.class_name.as_deref().unwrap_or("?"),
+                det.confidence,
+                det.bbox[0], det.bbox[1], det.bbox[2], det.bbox[3],
+                is_img
+            );
+        }
+    }
 
     // 2. Resize to target height (CPU-heavy: Lanczos3 filtering)
     if config.enable_layout_detection() && adjusted_image.height() != config.target_height() {
@@ -701,25 +745,65 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
     );
 
+    // 2b. Pre-mask image regions before binarization so Sauvola only sees text.
+    // Image content would skew the adaptive threshold calculations.
+    // We keep the original `adjusted_image` intact for dithering later.
+    let classifier = &crate::types::LABEL_CLASSIFIER;
+    let premask_images = config.dither_images()
+        && config.enable_layout_detection()
+        && config.text_format() != "jpeg";
+
+    let binarization_image: std::borrow::Cow<'_, RgbImage> = if premask_images {
+        let mut masked_rgb = adjusted_image.as_raw().clone();
+        let w = width as u32;
+        let h = height as u32;
+        const MASK_PAD: u32 = 3;
+        for det in &adjusted_detections {
+            if !classifier.is_image_label(det) {
+                continue;
+            }
+            let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, w, h);
+            let mx1 = ix1.saturating_sub(MASK_PAD);
+            let my1 = iy1.saturating_sub(MASK_PAD);
+            let mx2 = (ix2 + MASK_PAD).min(w);
+            let my2 = (iy2 + MASK_PAD).min(h);
+            for y in my1..my2 {
+                let row_start = (y as usize * width + mx1 as usize) * 3;
+                let row_end = (y as usize * width + mx2 as usize) * 3;
+                if row_end <= masked_rgb.len() {
+                    masked_rgb[row_start..row_end].fill(255);
+                }
+            }
+        }
+        #[cfg(feature = "debug-logging")]
+        crate::debug_println!(
+            "PAGE {} — Pre-masked {} image regions (pad={}px) before binarization",
+            page_index,
+            adjusted_detections.iter().filter(|d| classifier.is_image_label(d)).count(),
+            MASK_PAD
+        );
+        std::borrow::Cow::Owned(RgbImage::from_raw(w, h, masked_rgb).unwrap())
+    } else {
+        std::borrow::Cow::Borrowed(&adjusted_image)
+    };
+
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // In "jpeg" text format mode, skip binarization and use the RGB image directly for base encoding
     let mut binarized = if config.text_format() == "jpeg" {
-        // For JPEG-only mode: create grayscale representation of the full RGB image
-        // Convert RGB to grayscale (this will be used for the base layer in JPEG mode)
-        adjusted_image
+        binarization_image
             .as_raw()
             .chunks_exact(3)
             .map(|rgb| {
-                // Standard luminance conversion: 0.299*R + 0.587*G + 0.114*B
                 let r = rgb[0] as f32;
                 let g = rgb[1] as f32;
                 let b = rgb[2] as f32;
-                ((0.299 * r + 0.587 * g + 0.114 * b) as u8).max(1) // Ensure non-zero to avoid issues
+                ((0.299 * r + 0.587 * g + 0.114 * b) as u8).max(1)
             })
             .collect()
     } else {
-        binarize_image(&adjusted_image, &config, force_blank_threshold)
+        binarize_image(&binarization_image, &config, force_blank_threshold)
     };
+    drop(binarization_image);
 
     let is_cover_page = should_treat_as_cover_page(page_index, &config);
 
@@ -743,8 +827,9 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             None
         };
 
-    // 5. Process all image regions (consolidate all region work into this single blocking call)
-    let classifier = &crate::types::LABEL_CLASSIFIER;
+    // 5. Process all image regions (consolidate all region work into this single blocking call).
+    // Stucki (JBIG2) / blue-noise (CCITT4) on image labels only when layout detection is on — never
+    // on full-page text / HOCR. JBIG2 `--halftone` selects jbig2halftone.rs at encode time.
     let mut region_processing_results = Vec::new();
 
     for det in &adjusted_detections {
@@ -770,15 +855,35 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             continue;
         }
 
-        let should_dither = if config.keep_original_images() {
-            false
+        // Image-region dithering (Stucki vs halftone) requires layout detection; if layout is off,
+        // `image_region_mode` is None and we only mask/crop — full-page binarization is unchanged.
+        let image_region_mode = if config.keep_original_images() {
+            ImageRegionDitherMode::None
         } else if is_cover_page {
-            false
+            ImageRegionDitherMode::None
         } else if config.text_format() == "djvu" || config.text_format() == "jpeg" {
-            false
+            ImageRegionDitherMode::None
+        } else if !config.enable_layout_detection() {
+            ImageRegionDitherMode::None
         } else {
-            config.dither_images()
+            config.image_region_dither_mode()
         };
+
+        let should_dither = image_region_mode != ImageRegionDitherMode::None;
+
+        #[cfg(feature = "debug-logging")]
+        crate::debug_println!(
+            "PAGE {} — IMAGE REGION class={} bbox=[{:.0},{:.0},{:.0},{:.0}] → \
+             clamped=({},{},{},{}) mode={:?} should_dither={} fmt={} page={}x{}",
+            page_index,
+            det.class_id,
+            det.bbox[0], det.bbox[1], det.bbox[2], det.bbox[3],
+            bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+            image_region_mode,
+            should_dither,
+            config.text_format(),
+            width, height
+        );
 
         // CPU-heavy: Extract and process region
         let (region_data, region_w, region_h) =
@@ -787,26 +892,168 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 width as u32,
                 height as u32,
                 det.bbox,
-                should_dither,
+                image_region_mode,
                 config.text_format(),
                 false,
             )?;
 
+        #[cfg(feature = "debug-logging")]
+        {
+            let black_count = region_data.chunks(3).filter(|rgb| rgb[0] == 0).count();
+            let total = (region_w as usize) * (region_h as usize);
+            let pct = if total > 0 { black_count * 100 / total } else { 0 };
+            crate::debug_println!(
+                "PAGE {} — DITHER RESULT region={}x{} bytes={} black_pct={}% (black={}/{})",
+                page_index, region_w, region_h, region_data.len(), pct, black_count, total
+            );
+        }
+
         let mut processed_for_masking = false;
         let mut encoded_data = None;
+        let mut encoded_global_data: Option<Vec<u8>> = None;
 
         if should_dither && !is_cover_page {
-            // CPU-heavy: Merge dithered region
-            let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
-            Legencode::color::color_processing::merge_dithered_region(
+            // Mask the region in the base layer with padding so the overlay fully
+            // covers any remnant binarized pixels at the edges.
+            let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, width as u32, height as u32);
+            let pad: u32 = 3;
+            let mx1 = ix1.saturating_sub(pad);
+            let my1 = iy1.saturating_sub(pad);
+            let mx2 = (ix2 + pad).min(width as u32);
+            let my2 = (iy2 + pad).min(height as u32);
+            Legencode::color::color_processing::mask_region(
                 &mut binarized,
-                &grayscale_data,
                 width as u32,
-                det.bbox,
-                region_w,
-                region_h,
+                [mx1 as f32, my1 as f32, mx2 as f32, my2 as f32],
             );
             processed_for_masking = true;
+
+            let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
+
+            if image_region_mode == ImageRegionDitherMode::Halftone
+                && config.text_format() == "jbig2"
+            {
+                // Halftone overlay: grayscale → jbig2halftone.rs (halftone region segments)
+                // Invert grayscale so that bright→low pattern index (few dots) and
+                // dark→high pattern index (many dots).  Combined with Decode [1, 0]
+                // in the PDF this yields black dots on a white default — traditional
+                // halftone polarity whose white background blends with the base layer.
+                // Also clamp near-white to pure white before inverting to avoid sparse
+                // dots from paper texture / scan noise.
+                let inverted_gray: Vec<u8> = grayscale_data.iter().map(|&g| {
+                    if g >= 245 { 0u8 } else { 255u8 - g }
+                }).collect();
+
+                #[cfg(feature = "debug-logging")]
+                crate::debug_println!(
+                    "PAGE {} — HALFTONE OVERLAY: {}x{} encoding with jbig2halftone (inverted grayscale)",
+                    page_index, region_w, region_h
+                );
+
+                match Legencode::streamline::encode_halftone_region_grayscale(
+                    &inverted_gray, region_w, region_h,
+                ) {
+                    Ok((global_data, page_data)) => {
+                        #[cfg(feature = "debug-logging")]
+                        crate::debug_println!(
+                            "PAGE {} — HALFTONE OVERLAY: page={} global={} bytes",
+                            page_index, page_data.len(), global_data.len()
+                        );
+                        encoded_global_data = Some(global_data);
+                        encoded_data = Some((page_data, "jbig2".to_string()));
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "debug-logging")]
+                        crate::debug_println!(
+                            "PAGE {} — HALFTONE OVERLAY encode failed: {}, falling back to Generic",
+                            page_index, e
+                        );
+                        // Fall back to JBIG2 Generic
+                        use Legencode::streamline::{
+                            EncodingManager, EncodingResult, EncodingSettings,
+                            ImageBuffer as LegeImageBuffer, Jbig2Settings,
+                        };
+                        let buffer = LegeImageBuffer {
+                            data: &grayscale_data, width: region_w, height: region_h, channels: 1,
+                        };
+                        let settings = EncodingSettings::Jbig2(Jbig2Settings {
+                            pdf_fragment_mode: true,
+                            mode: Jbig2Mode::Generic,
+                            use_jbig2_halftone_segments: false,
+                        });
+                        if let Ok(result) = EncodingManager::encode(&buffer, &settings) {
+                            match result {
+                                EncodingResult::Standard(data) => {
+                                    encoded_data = Some((data, "jbig2".to_string()));
+                                }
+                                EncodingResult::Jbig2WithGlobals { page_data, .. } => {
+                                    encoded_data = Some((page_data, "jbig2".to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Stucki / Bayer overlay: bilevel data, encode matching the page format
+                #[cfg(feature = "debug-logging")]
+                {
+                    let black = grayscale_data.iter().filter(|&&v| v == 0).count();
+                    let fmt_label = config.text_format();
+                    crate::debug_println!(
+                        "PAGE {} — DITHER OVERLAY: {}x{} black_pct={}% encoding as {} overlay",
+                        page_index, region_w, region_h,
+                        if grayscale_data.is_empty() { 0 } else { black * 100 / grayscale_data.len() },
+                        fmt_label
+                    );
+                }
+
+                use Legencode::streamline::{
+                    EncodingManager, EncodingResult, EncodingSettings,
+                    ImageBuffer as LegeImageBuffer, Jbig2Settings,
+                };
+
+                let buffer = LegeImageBuffer {
+                    data: &grayscale_data,
+                    width: region_w,
+                    height: region_h,
+                    channels: 1,
+                };
+                let overlay_settings = match config.text_format() {
+                    "ccitt4" => EncodingSettings::Ccitt4,
+                    _ => EncodingSettings::Jbig2(Jbig2Settings {
+                        pdf_fragment_mode: true,
+                        mode: Jbig2Mode::Generic,
+                        use_jbig2_halftone_segments: false,
+                    }),
+                };
+                let overlay_fmt = config.text_format().to_string();
+                match EncodingManager::encode(&buffer, &overlay_settings) {
+                    Ok(EncodingResult::Standard(data)) => {
+                        encoded_data = Some((data, overlay_fmt));
+                    }
+                    Ok(EncodingResult::Jbig2WithGlobals { page_data, global_data }) => {
+                        encoded_data = Some((page_data, overlay_fmt));
+                        #[cfg(feature = "debug-logging")]
+                        crate::debug_println!(
+                            "PAGE {} — DITHER OVERLAY: returned globals ({} bytes), discarding",
+                            page_index, global_data.len()
+                        );
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "debug-logging")]
+                        crate::debug_println!(
+                            "PAGE {} — DITHER OVERLAY encode failed: {}, falling back to merge",
+                            page_index, e
+                        );
+                        Legencode::color::color_processing::merge_dithered_region(
+                            &mut binarized,
+                            &grayscale_data,
+                            width as u32,
+                            det.bbox,
+                        );
+                    }
+                }
+            }
         } else {
             // CPU-heavy: Mask region
             let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, width as u32, height as u32);
@@ -846,6 +1093,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             should_dither,
             processed_for_masking,
             encoded_data,
+            encoded_global_data,
         });
     }
 
@@ -1232,6 +1480,7 @@ fn encode_region_image_sync(
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
                 mode: Jbig2Mode::Generic,
+                use_jbig2_halftone_segments: false,
             }),
             "jbig2".to_string(),
         ),
@@ -1346,13 +1595,15 @@ async fn extract_pdf_text(
 }
 
 /// Encode base layer (binarized image) using the full encoding pipeline
-/// Supports JBIG2, CCITT4, and JPEG formats with proper settings
+/// Supports JBIG2, CCITT4, and JPEG formats with proper settings.
+/// `force_jbig2_generic` overrides Symbol/SymUnify → Generic when abandon regions are present.
 async fn encode_base_layer(
     binarized: &[u8],
     width: usize,
     height: usize,
     config: &PipelineConfig,
     page_index: usize,
+    force_jbig2_generic: bool,
 ) -> Result<crate::accumulator::ContentType> {
     use crate::accumulator::ContentType;
     use Legencode::streamline::{
@@ -1364,11 +1615,17 @@ async fn encode_base_layer(
     let encoding_start = std::time::Instant::now();
 
     // Determine encoding settings
+    let jbig2_mode = if force_jbig2_generic {
+        Legencode::streamline::Jbig2Mode::Generic
+    } else {
+        config.jbig2_mode()
+    };
     let (encoding_settings, base_format) = match config.text_format() {
         "jbig2" => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
-                mode: config.jbig2_mode(),
+                mode: jbig2_mode,
+                use_jbig2_halftone_segments: false,
             }),
             "jbig2",
         ),
@@ -1416,11 +1673,6 @@ async fn encode_base_layer(
 
     match encoding_result {
         EncodingResult::Standard(data) => {
-            if base_format == "jbig2" {
-                return Err(anyhow!(
-                    "JBIG2 text mode returned non-JBIG2 payload (Standard variant)"
-                ));
-            }
             if data.is_empty() {
                 return Err(anyhow!(
                     "Encoder returned empty data for {}x{} image",
@@ -1443,6 +1695,7 @@ async fn encode_base_layer(
                 base_format.to_string()
             };
 
+            // JBIG2 generic (lossless) has no global dictionary → EncodingManager uses Standard.
             Ok(ContentType::EncodedImage {
                 data: Arc::from(data),
                 pixel_width: width as u32,

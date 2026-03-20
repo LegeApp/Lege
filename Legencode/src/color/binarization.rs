@@ -749,8 +749,13 @@ pub fn apply_heavy_duty_binarization_raw(
         process_in_patches(processor, image, width, height, options)?
     };
 
-    // Convert to binary data and apply inversion if needed
+    // Convert to binary data.
     let mut bin_data = result_img.into_raw();
+    // ONNX postprocess uses 255 = model foreground (text). Adaptive Sauvola uses 0 = ink, 255 =
+    // paper. Invert so heavy-duty output matches the rest of the pipeline (CCITT, JBIG2, masks).
+    bin_data
+        .par_iter_mut()
+        .for_each(|pixel| *pixel = 255 - *pixel);
     if options.invert {
         bin_data
             .par_iter_mut()

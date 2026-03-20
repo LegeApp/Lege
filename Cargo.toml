@@ -164,6 +164,7 @@ ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = "0.14"
 wgpu = "28"
 pollster = "0.4"
+libc = "0.2"
 
 # macOS-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]

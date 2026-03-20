@@ -14,8 +14,7 @@
 use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData, spawn_djvu_writer_actor}; // Use native encoder + writer actor
 use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::pipeline::config::PipelineConfig;
-use crate::pipeline::config::{InferenceResult, RenderedPageData};
+use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
     BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
     rounded_clamped_bbox, should_force_blank_page_threshold, wait_for_memory_relief,
@@ -893,8 +892,8 @@ fn process_djvu_cpu_intensive_work(
                     width as u32,
                     height as u32,
                     det.bbox,
-                    true,
-                    "jbig2",
+                    config.image_region_dither_mode(),
+                    "djvu",
                     false,
                 )?;
 
@@ -904,8 +903,6 @@ fn process_djvu_cpu_intensive_work(
                 &grayscale_data,
                 width as u32,
                 det.bbox,
-                region_w,
-                region_h,
             );
         }
     }

@@ -48,6 +48,7 @@ pub use pipeline::{
     PageRange,
     PageTask,
     // Config types
+    ImageRegionDitherMode,
     PipelineConfig,
     ProcessingPipeline,
     RenderedPageData,

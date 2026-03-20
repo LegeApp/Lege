@@ -7,31 +7,55 @@ use std::path::PathBuf;
 use crate::engine::Detection;
 use anyhow::anyhow;
 
-/// Type of content in a document region
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RegionType {
-    /// Text region
+/// Broad content category assigned to every layout detection.
+///
+/// Both YOLO and PaddleX engines map their raw class IDs to one of these
+/// categories.  All downstream decisions (dithering, masking, OCR region
+/// selection, JBIG2 encoding mode) are driven by this enum — never by raw
+/// class IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContentCategory {
+    /// Textual content: titles, paragraphs, captions, formulas, references, …
     Text,
-    /// Image region
+    /// Photographic / illustrative content: figures, header/footer images.
     Image,
-    /// Table region
+    /// Tabular content.  Treated as text-like for binarization (no dithering).
     Table,
-    /// Figure region
-    Figure,
-    /// Other/unknown region type
-    Other,
+    /// Noise / artifact regions (YOLO "abandon").
+    /// Treated as text-like but forces JBIG2 Generic encoding on the page
+    /// to avoid Symbol-mode corruption of noisy pixels.
+    Abandon,
 }
 
-/// Standardized label classification for detected regions
-/// Provides clear separation of concerns across different processing stages
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LabelCategory {
-    /// Labels used for margin calculation (includes all content for centering, excludes page numbers/footnotes for cropping)
-    MarginCalc,
-    /// Labels suitable for OCR processing (text-like content)
+impl ContentCategory {
+    /// Is this an image region that should be dithered?
+    pub fn is_image(&self) -> bool {
+        matches!(self, Self::Image)
+    }
+
+    /// Is this a text-like region (binarize normally, no dithering)?
+    pub fn is_text_like(&self) -> bool {
+        !self.is_image()
+    }
+
+    /// Should the presence of this category on a page force
+    /// JBIG2 Generic encoding for the base layer?
+    pub fn force_generic_jbig2(&self) -> bool {
+        matches!(self, Self::Abandon)
+    }
+}
+
+/// Legacy alias kept for any remaining references.
+pub type LabelCategory = ContentCategory;
+
+/// Type of content in a document region (used by `Region` struct)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RegionType {
     Text,
-    /// Labels suitable for image processing and dithering (image-like content)
     Image,
+    Table,
+    Figure,
+    Other,
 }
 
 use std::collections::HashSet;
@@ -203,23 +227,17 @@ impl LabelClassifier {
 
     /// Classify a detection as text-like (suitable for OCR)
     pub fn is_text_label(&self, detection: &Detection) -> bool {
-        // Use the efficient hash table lookup based on class ID
-        !self.label_info.is_image_class(detection.class_id)
+        detection.category.is_text_like()
     }
 
     /// Classify a detection as image-like (suitable for image processing/dithering)
     pub fn is_image_label(&self, detection: &Detection) -> bool {
-        // Use the efficient hash table lookup based on class ID
-        self.label_info.is_image_class(detection.class_id)
+        detection.category.is_image()
     }
 
     /// Get the primary category for a detection
-    pub fn get_category(&self, detection: &Detection) -> LabelCategory {
-        if self.is_image_label(detection) {
-            LabelCategory::Image
-        } else {
-            LabelCategory::Text
-        }
+    pub fn get_category(&self, detection: &Detection) -> ContentCategory {
+        detection.category
     }
 
     /// Check if detection should be included in margin calculation
@@ -229,12 +247,12 @@ impl LabelClassifier {
 
     /// Check if detection should be processed with OCR
     pub fn should_process_with_ocr(&self, detection: &Detection) -> bool {
-        self.is_text_label(detection)
+        detection.category.is_text_like()
     }
 
     /// Check if detection should be dithered (image processing)
     pub fn should_dither(&self, detection: &Detection) -> bool {
-        self.is_image_label(detection)
+        detection.category.is_image()
     }
 
     /// Get the underlying label info for direct access to efficient lookups
@@ -419,7 +437,7 @@ impl AppConfig {
         }
 
         if let Some(keep_color) = self.keep_color_images {
-            pipeline_config.dither_images = !keep_color;
+            pipeline_config.set_dither_images(!keep_color);
         }
 
         if let Some(disable_layout) = self.disable_layout {
@@ -609,7 +627,7 @@ impl CliConfigBuilder {
         }
 
         // Apply processing options
-        config.dither_images = self.enable_dithering;
+        config.set_dither_images(self.enable_dithering);
         config.enable_layout_detection = self.enable_layout_detection;
         config.enable_ocr = self.enable_ocr;
         config.pdf_compatibility_mode = self.pdf_compatibility_mode;
