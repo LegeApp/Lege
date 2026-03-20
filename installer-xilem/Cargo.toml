@@ -1,0 +1,21 @@
+[package]
+name = "lege-installer-xilem"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+xilem = { path = "xilem/xilem" }
+zstd = "0.13.3"
+tar = "0.4.44"
+tempfile = "3.26.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
