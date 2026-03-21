@@ -487,7 +487,6 @@ pub struct CliConfigBuilder {
     pub enable_layout_detection: bool,
     pub enable_ocr: bool,
     pub target_height: Option<u32>,
-    pub pdf_compatibility_mode: bool,
 
     // Binarization
     pub binarization_method: Option<String>,
@@ -506,7 +505,6 @@ impl CliConfigBuilder {
             enable_layout_detection: true, // Default to enabled
             enable_cover_page: Some(true), // Default to enabled
             no_cover_page: false,          // Default to disabled
-            pdf_compatibility_mode: false, // Default to disabled (use modern compression)
             ..Default::default()
         }
     }
@@ -541,12 +539,6 @@ impl CliConfigBuilder {
     /// Set OCR option
     pub fn with_ocr(mut self, enable: bool) -> Self {
         self.enable_ocr = enable;
-        self
-    }
-
-    /// Set PDF compatibility mode (disables object streams and compression for better reader support)
-    pub fn with_pdf_compatibility(mut self, enable: bool) -> Self {
-        self.pdf_compatibility_mode = enable;
         self
     }
 
@@ -648,7 +640,6 @@ impl CliConfigBuilder {
         config.set_dither_images(self.enable_dithering);
         config.enable_layout_detection = self.enable_layout_detection;
         config.enable_ocr = self.enable_ocr;
-        config.pdf_compatibility_mode = self.pdf_compatibility_mode;
 
         // Apply height
         if let Some(height) = self.target_height {

@@ -359,7 +359,6 @@ pub struct StreamingPdfBuilder {
     doc: Document,
     page_ids: Vec<ObjectId>,
     global_resources: HashMap<Vec<u8>, ObjectId>, // Shared resources like JBIG2 globals
-    compatibility_mode: bool, // Whether to avoid compression for better compatibility
     unicode_font: Option<CachedUnicodeFont>,
 }
 
@@ -370,18 +369,6 @@ impl StreamingPdfBuilder {
             doc: Document::new(),
             page_ids: Vec::new(),
             global_resources: HashMap::new(),
-            compatibility_mode: false,
-            unicode_font: get_unicode_font().map(CachedUnicodeFont::new),
-        }
-    }
-
-    /// Creates a new StreamingPdfBuilder with compatibility mode setting.
-    pub fn with_compatibility_mode(compatibility_mode: bool) -> Self {
-        Self {
-            doc: Document::new(),
-            page_ids: Vec::new(),
-            global_resources: HashMap::new(),
-            compatibility_mode,
             unicode_font: get_unicode_font().map(CachedUnicodeFont::new),
         }
     }
@@ -594,12 +581,10 @@ impl StreamingPdfBuilder {
         let encoded_content = content.encode()?;
 
         // Add Flate compression for content streams when they contain HOCR text data
-        // unless compatibility mode is enabled (which avoids compression for better reader support)
-        let content_stream = if !self.compatibility_mode
-            && page.hocr_text.is_some()
+        let content_stream = if page.hocr_text.is_some()
             && !page.hocr_text.as_ref().unwrap().trim().is_empty()
         {
-            // HOCR content present and not in compatibility mode - compress stream content
+            // HOCR present — compress stream content
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
             encoder.write_all(&encoded_content)?;
             let compressed_content = encoder.finish()?;
@@ -609,7 +594,7 @@ impl StreamingPdfBuilder {
             self.doc
                 .add_object(Stream::new(stream_dict, compressed_content))
         } else {
-            // No HOCR content or compatibility mode enabled - use uncompressed stream
+            // No HOCR — uncompressed stream
             self.doc
                 .add_object(Stream::new(Dictionary::new(), encoded_content))
         };
@@ -961,12 +946,7 @@ impl StreamingPdfBuilder {
         Ok(())
     }
 
-    pub fn finalize(
-        mut self,
-        output_path: &str,
-        has_ocr_content: bool,
-        compatibility_mode: bool,
-    ) -> Result<()> {
+    pub fn finalize(mut self, output_path: &str, has_ocr_content: bool) -> Result<()> {
         // Prepare PDF/A if OCR content is present
         if has_ocr_content {
             if let Err(e) = self.create_pdfa_metadata() {
@@ -1008,22 +988,20 @@ impl StreamingPdfBuilder {
 
         doc.trailer.set("Root", Object::Reference(catalog_id));
 
-        // Choose PDF compression strategy based on content and compatibility requirements
-        let options = if compatibility_mode || !has_ocr_content {
-            // Compatibility mode: disable problematic features for better reader support
-            // Also use when no OCR content exists (object streams only benefit text compression)
+        // Save strategy: lighter xref/stream settings when there is no OCR text; full modern
+        // compression when a text layer is present (object streams help text-heavy PDFs).
+        let options = if !has_ocr_content {
             SaveOptions::builder()
-                .use_object_streams(false) // Disable object streams for compatibility
-                .use_xref_streams(false) // Use traditional xref tables
-                .compression_level(1) // Light compression
+                .use_object_streams(false)
+                .use_xref_streams(false)
+                .compression_level(1)
                 .build()
         } else {
-            // Modern compression mode: only when OCR text content exists and compatibility not required
             SaveOptions::builder()
-                .use_object_streams(true) // Enable object streams for text compression
-                .use_xref_streams(true) // Enable cross-reference streams
-                .max_objects_per_stream(200) // Max objects per stream
-                .compression_level(9) // Maximum compression level
+                .use_object_streams(true)
+                .use_xref_streams(true)
+                .max_objects_per_stream(200)
+                .compression_level(9)
                 .build()
         };
 
@@ -1068,12 +1046,10 @@ pub struct HocrLine {
 /// * `pages`: A vector of `Page` objects, sorted in the correct order.
 /// * `output_path`: The path to save the final PDF file.
 /// * `streaming_threshold`: The number of pages above which streaming mode will be used.
-/// * `compatibility_mode`: Whether to use compatibility mode for better reader support.
 pub fn assemble_pdf(
     pages: &[Page],
     output_path: &str,
     streaming_threshold: usize,
-    compatibility_mode: bool,
 ) -> Result<()> {
     if pages.is_empty() {
         return Err(anyhow!(
@@ -1091,14 +1067,14 @@ pub fn assemble_pdf(
 
     let result = if pages.len() > streaming_threshold {
         // Use streaming for large documents to conserve memory.
-        let mut builder = StreamingPdfBuilder::with_compatibility_mode(compatibility_mode);
+        let mut builder = StreamingPdfBuilder::new();
         for page in pages {
             builder.add_page(page)?;
         }
-        builder.finalize(output_path, has_ocr_content, compatibility_mode)
+        builder.finalize(output_path, has_ocr_content)
     } else {
         // Use simpler in-memory creation for smaller documents.
-        create_pdf_in_memory(pages, output_path, has_ocr_content, compatibility_mode)
+        create_pdf_in_memory(pages, output_path, has_ocr_content)
     };
 
     // Verify output file was created and has size
@@ -1132,13 +1108,12 @@ fn create_pdf_in_memory(
     pages: &[Page],
     output_path: &str,
     has_ocr_content: bool,
-    compatibility_mode: bool,
 ) -> Result<()> {
-    let mut builder = StreamingPdfBuilder::with_compatibility_mode(compatibility_mode);
+    let mut builder = StreamingPdfBuilder::new();
     for page in pages {
         builder.add_page(page)?;
     }
-    builder.finalize(output_path, has_ocr_content, compatibility_mode)
+    builder.finalize(output_path, has_ocr_content)
 }
 
 pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {

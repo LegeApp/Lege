@@ -133,7 +133,6 @@ pub struct ProcessingOptions {
     pub png_folder_mode: bool,
     pub layout_analysis: bool,
     pub use_ocr: bool,
-    pub pdf_compatibility_mode: bool,
     pub high_quality_output: bool,
     pub invert_input: bool,
 
@@ -168,7 +167,6 @@ impl ProcessingOptions {
             png_folder_mode: false,
             layout_analysis: true,
             use_ocr: false,
-            pdf_compatibility_mode: false,
             high_quality_output: false,
             invert_input: false,
             center_margins: false,
@@ -220,7 +218,6 @@ impl ProcessingOptions {
         options.target_height = Some(config.target_height());
         options.layout_analysis = config.enable_layout_detection();
         options.use_ocr = config.enable_ocr();
-        options.pdf_compatibility_mode = config.pdf_compatibility_mode();
         options.high_quality_output = config.high_quality_output();
         options.invert_input = config.invert_input();
 

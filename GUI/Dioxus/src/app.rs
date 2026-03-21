@@ -1890,18 +1890,6 @@ fn LeftSettingsPanel(state: Signal<AppState>) -> Element {
                 span { "{GUI_TEXT.interactive.labels.high_quality_output}" }
             }
 
-            // PDF compatibility mode - only show when OCR is enabled AND output is PDF
-            if state.read().options.use_ocr && matches!(state.read().options.output_format, OutputFormat::Pdf) {
-                label { class: "radio-label", title: "{GUI_TEXT.interactive.tooltips.pdf_compatibility_mode}",
-                    input {
-                        r#type: "checkbox",
-                        checked: state.read().options.pdf_compatibility_mode,
-                        onchange: move |evt| { state.write().options.pdf_compatibility_mode = evt.checked(); }
-                    }
-                    span { "{GUI_TEXT.interactive.labels.pdf_compatibility_mode}" }
-                }
-            }
-
             // (removed) CCITT4 text with dithered images toggle - now controlled by base format toggle in no-layout mode
         }
     }

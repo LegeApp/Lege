@@ -528,14 +528,34 @@ pub fn is_visually_blank_page(image: &RgbImage) -> bool {
     non_white_ratio < 0.003
 }
 
+/// Sum of detection bounding-box areas divided by page area (0.0–1.0). Overlapping boxes may
+/// double-count; this is only used as a coarse “how much of the page is covered?” heuristic.
+pub fn detections_bbox_area_fraction(detections: &[Detection], width: u32, height: u32) -> f32 {
+    let page_area = (width as f64) * (height as f64);
+    if page_area <= 0.0 {
+        return 0.0;
+    }
+    let mut sum: f64 = 0.0;
+    for det in detections {
+        let (x1, y1, x2, y2) = rounded_clamped_bbox(det.bbox, width, height);
+        let w = (x2.saturating_sub(x1)) as f64;
+        let h = (y2.saturating_sub(y1)) as f64;
+        sum += w * h;
+    }
+    (sum / page_area).min(1.0) as f32
+}
+
 /// Decide whether to force simple thresholding for blank pages.
 ///
-/// This uses final filtered detections from Paddle (`InferenceResult.has_no_detections`).
-/// It is intentionally gated to adaptive + layout detection mode.
+/// Uses `InferenceResult.has_no_detections` plus a visual blank check. If the page is almost
+/// entirely paper-white but the layout model still returns a few small boxes (common on blank
+/// scans), [`detections_bbox_area_fraction`] can be below the cutoff so adaptive Sauvola noise is
+/// still avoided.
 pub fn should_force_blank_page_threshold(
     config: &PipelineConfig,
     has_no_filtered_detections: bool,
     page_is_visually_blank: bool,
+    detections_area_fraction: f32,
 ) -> bool {
     if !config.enable_layout_detection() {
         return false;
@@ -543,7 +563,12 @@ pub fn should_force_blank_page_threshold(
     if config.binarization().use_fixed_threshold || config.binarization().use_heavy_duty {
         return false;
     }
-    has_no_filtered_detections && page_is_visually_blank
+    if !page_is_visually_blank {
+        return false;
+    }
+    // Ignore stray layout boxes up to this fraction of page area when the page is visually blank.
+    const MAX_SPOOF_FRACTION: f32 = 0.02;
+    has_no_filtered_detections || detections_area_fraction <= MAX_SPOOF_FRACTION
 }
 
 // Helper to encode a small image region; used by image overlays in the page pipeline
@@ -1217,7 +1242,6 @@ impl PdfWriterHandle {
 pub fn spawn_pdf_writer_actor(
     output_path: PathBuf,
     total_pages: usize,
-    pdf_compatibility_mode: bool,
     progress_tracker: crate::progress::ProgressTracker,
     use_margin_label: bool,
     channel_capacity: usize,
@@ -1230,9 +1254,7 @@ pub fn spawn_pdf_writer_actor(
     let handle = PdfWriterHandle { sender: tx };
 
     let task = tokio::spawn(async move {
-        let mut builder = crate::accumulator::StreamingPdfBuilder::with_compatibility_mode(
-            pdf_compatibility_mode,
-        );
+        let mut builder = crate::accumulator::StreamingPdfBuilder::new();
         let mut pages_written = 0usize;
         let mut page_buffer: std::collections::BTreeMap<usize, crate::accumulator::Page> =
             std::collections::BTreeMap::new();
@@ -1341,7 +1363,6 @@ pub fn spawn_pdf_writer_actor(
                     if let Err(e) = builder.finalize(
                         output_path.to_str().unwrap_or("output.pdf"),
                         has_ocr,
-                        pdf_compatibility_mode,
                     ) {
                         crate::warn_log!("[PdfWriterActor] Finalize failed: {}", e);
                         return Err(anyhow::anyhow!("Finalize failed: {}", e));

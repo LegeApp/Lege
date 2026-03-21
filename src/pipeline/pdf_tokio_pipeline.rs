@@ -1,18 +1,4 @@
 // pdf_tokio_pipeline.rs
-//! Parallel tokio-based PDF pipeline with TRUE concurrency
-//!
-//! Key changes from original:
-//! 1. Inference stage spawns concurrent inference tasks (not sequential)
-//! 2. Processing stage spawns concurrent workers (not sequential)
-//! 3. Larger channel buffers to enable pipelining
-//! 4. FuturesUnordered for concurrent async task management
-//!
-//! Architecture:
-//!   [Render] ──┬──> [Inference Pool] ──┬──> [Process Pool] ──> [PDF Writer]
-//!              │    (N concurrent)     │    (M concurrent)
-//!              └────────────────────────────────────────────────────────────
-//!                          Backpressure via bounded channels
-
 use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData};
@@ -372,10 +358,9 @@ fn build_inference_future(
 }
 
 //==============================================================================
-// Stage 3: Processing (PARALLEL - key fix!)
+// Stage 3: Processing 
 //==============================================================================
 
-/// Processing stage with TRUE concurrency
 async fn processing_stage_parallel(
     config: Arc<PipelineConfig>,
     pdf_renderer: Arc<PdfiumRenderer>,
@@ -777,10 +762,16 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
     }
 
+    let det_area_frac = crate::pipeline::helper_functions::detections_bbox_area_fraction(
+        &adjusted_detections,
+        width as u32,
+        height as u32,
+    );
     let force_blank_threshold = should_force_blank_page_threshold(
         &config,
         inference_result.has_no_detections,
         crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
+        det_area_frac,
     );
 
     // 2b. Pre-mask image regions before binarization so Sauvola only sees text.
@@ -860,8 +851,8 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         };
 
     // 5. Process all image regions (consolidate all region work into this single blocking call).
-    // Stucki (JBIG2) / blue-noise (CCITT4) on image labels only when layout detection is on — never
-    // on full-page text / HOCR. JBIG2 `--halftone` selects jbig2halftone.rs at encode time.
+    // JBIG2: Stucki or halftone (`jbig2halftone.rs`) on image labels. CCITT4: Bayer or `--cdot` clustered 4×4.
+    // Modes are format-locked in `process_image_region`. Layout must be on — never on full-page text / HOCR.
     let mut region_processing_results = Vec::new();
 
     for det in &adjusted_detections {
@@ -886,7 +877,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             bbox_y2 as f32,
         ];
 
-        // Image-region dithering (Stucki vs halftone) requires layout detection; if layout is off,
+        // Image-region dithering (format-specific; see `process_image_region`) requires layout; if layout is off,
         // `image_region_mode` is None and we only mask/crop — full-page binarization is unchanged.
         let image_region_mode = if config.keep_original_images() {
             ImageRegionDitherMode::None
@@ -2106,7 +2097,6 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     let (pdf_writer_handle, mut pdf_writer_task) = spawn_pdf_writer_actor(
         output_path.to_path_buf(),
         total_pages,
-        config.pdf_compatibility_mode,
         progress_tracker.clone(),
         use_margin_label,
         pipeline_config.channel_capacity,
