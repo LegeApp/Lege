@@ -207,8 +207,6 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
 
     config.set_enable_cover_page(enable_cover);
     config.set_no_cover_page(no_cover);
-    config.set_pdf_compatibility_mode(options.pdf_compatibility_mode);
-
     // Set margin processing settings
     let margin_settings = if options.center_margins {
         lege::margin::MarginSettings::StandardizeAndCenter

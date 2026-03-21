@@ -183,7 +183,7 @@ fn process_single_image(
             + ".pdf",
     );
 
-    assemble_pdf(&[page], output_pdf.to_str().unwrap(), 25, false)?;
+    assemble_pdf(&[page], output_pdf.to_str().unwrap(), 25)?;
     Ok(())
 }
 
