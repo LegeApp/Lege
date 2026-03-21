@@ -283,7 +283,6 @@ pub struct PipelineConfig {
     pub(crate) page_range: Option<PageRange>,
     pub(crate) enable_cover_page: bool,
     pub(crate) no_cover_page: bool,
-    pub(crate) pdf_compatibility_mode: bool,
     pub(crate) high_quality_output: bool,
     pub(crate) channel_buffer_size: Option<usize>,
     pub(crate) ocr_binarization_threshold: Option<u8>,
@@ -353,7 +352,6 @@ impl PipelineConfig {
             page_range: None,
             enable_cover_page: true,
             no_cover_page: false,
-            pdf_compatibility_mode: false,
             high_quality_output: false,
             channel_buffer_size: None,
             ocr_binarization_threshold: None,
@@ -548,9 +546,6 @@ impl PipelineConfig {
     pub fn no_cover_page(&self) -> bool {
         self.no_cover_page
     }
-    pub fn pdf_compatibility_mode(&self) -> bool {
-        self.pdf_compatibility_mode
-    }
     pub fn high_quality_output(&self) -> bool {
         self.high_quality_output
     }
@@ -729,9 +724,6 @@ impl PipelineConfig {
     }
     pub fn set_no_cover_page(&mut self, no_cover: bool) {
         self.no_cover_page = no_cover;
-    }
-    pub fn set_pdf_compatibility_mode(&mut self, compat: bool) {
-        self.pdf_compatibility_mode = compat;
     }
     pub fn set_high_quality_output(&mut self, high_quality: bool) {
         self.high_quality_output = high_quality;

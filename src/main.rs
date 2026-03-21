@@ -192,10 +192,10 @@ struct CliOptions {
 
     // --- Processing toggles ---
     dither: bool,                  // --dither
+    cdot: bool,                    // --cdot (CCITT4: clustered 4x4 on image regions instead of Bayer)
     no_layout: bool,               // --no-layout
     ocr: Option<bool>,             // --ocr / --no-ocr
     no_cover: bool,                // --no-cover
-    pdf_compat: bool,              // --pdf-compat
     invert: bool,                  // --invert
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
     halftone: bool,                // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
@@ -205,7 +205,6 @@ struct CliOptions {
     force_crop: bool,              // --force-crop
     image_only: bool,              // --image-only
     original_images: bool,         // --original-images (default is already original; explicit opt-in)
-    reencode_image_regions: bool,  // --reencode-image-regions (JPEG/JP2 regions + allow dither path)
     fast_resize: bool,             // --fast-resize (force CPU fast_image_resize backend)
 
     // --- Language ---
@@ -430,6 +429,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.dither = true;
                 i += 1;
             }
+            "--cdot" => {
+                opts.cdot = true;
+                i += 1;
+            }
             "--no-layout" => {
                 opts.no_layout = true;
                 i += 1;
@@ -444,10 +447,6 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--no-cover" => {
                 opts.no_cover = true;
-                i += 1;
-            }
-            "--pdf-compat" => {
-                opts.pdf_compat = true;
                 i += 1;
             }
             "--invert" => {
@@ -496,10 +495,6 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--original-images" => {
                 opts.original_images = true;
-                i += 1;
-            }
-            "--reencode-image-regions" => {
-                opts.reencode_image_regions = true;
                 i += 1;
             }
             "--fast-resize" => {
@@ -1109,12 +1104,30 @@ fn handle_simple_processing(
     }
 
     // Boolean toggles — image-region dithering only (requires layout detection; see pipeline).
-    // `--halftone` wins over `--dither` (jbig2halftone.rs page encode vs symbol/generic JBIG2).
+    // `--halftone` wins over `--cdot` / `--dither` (jbig2halftone.rs page encode vs symbol/generic JBIG2).
     if cli_opts.halftone {
         pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
+    } else if cli_opts.cdot {
+        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
     } else if cli_opts.dither {
         pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
     }
+
+    // Image-region modes are format-specific: no mixing JBIG2 halftone/Stucki with CCITT4 ordered dither.
+    let tf = pipeline_config.text_format();
+    if cli_opts.halftone && tf != "jbig2" {
+        bail!(
+            "--halftone requires --text-format jbig2 (got {}). Halftone segments are JBIG2-only.",
+            tf
+        );
+    }
+    if cli_opts.cdot && tf != "ccitt4" {
+        bail!(
+            "--cdot requires --text-format ccitt4 (got {}). Clustered-dot dither is for CCITT4 image regions only.",
+            tf
+        );
+    }
+
     if cli_opts.no_layout {
         pipeline_config.set_enable_layout_detection(false);
     }
@@ -1123,9 +1136,6 @@ fn handle_simple_processing(
     }
     if cli_opts.no_cover {
         pipeline_config.set_no_cover_page(true);
-    }
-    if cli_opts.pdf_compat {
-        pipeline_config.set_pdf_compatibility_mode(true);
     }
     if cli_opts.invert {
         pipeline_config.set_invert_input(true);
@@ -1167,7 +1177,7 @@ fn handle_simple_processing(
         pipeline_config.set_high_quality_output(true);
     }
     // Default: keep raster crops as originals (PipelineConfig::new). Opt into re-encoding/dither paths.
-    if cli_opts.halftone || cli_opts.dither || cli_opts.reencode_image_regions {
+    if cli_opts.halftone || cli_opts.dither || cli_opts.cdot {
         pipeline_config.set_keep_original_images(false);
     }
     if cli_opts.original_images || cli_opts.image_only {
@@ -1459,7 +1469,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         ocr_enabled,
         original_image,
         no_cover_page,
-        pdf_compatibility,
         no_binarization,
         invert_input,
         jbig2_mode,
@@ -1468,6 +1477,8 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         force_crop,
         deskew_enabled,
         high_quality_output,
+        cdot_clustered,
+        interactive_halftone,
         djvu_quality,
     ) = loop {
         print!(
@@ -1509,7 +1520,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 ocr_enabled,
                 original_image,
                 no_cover_page,
-                pdf_compatibility,
                 no_binarization,
                 invert_input,
                 jbig2_mode,
@@ -1518,6 +1528,8 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 force_crop,
                 deskew_enabled,
                 high_quality_output,
+                cdot_clustered,
+                interactive_halftone,
                 djvu_quality,
             )) => {
                 // No immediate rejection; we'll apply precedence rules below when building config
@@ -1529,7 +1541,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     ocr_enabled,
                     original_image,
                     no_cover_page,
-                    pdf_compatibility,
                     no_binarization,
                     invert_input,
                     jbig2_mode,
@@ -1538,6 +1549,8 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     force_crop,
                     deskew_enabled,
                     high_quality_output,
+                    cdot_clustered,
+                    interactive_halftone,
                     djvu_quality,
                 );
             }
@@ -1677,11 +1690,20 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     config.set_high_quality_output(high_quality_output);
     // Use unified image format setter for non-binarized images
     config.set_image_format(cover_format);
-    config.set_dither_images(effective_enable_dithering);
+    if interactive_halftone {
+        config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
+    } else if effective_enable_dithering {
+        if cdot_clustered {
+            config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+        } else {
+            config.set_dither_images(true);
+        }
+    } else {
+        config.set_dither_images(false);
+    }
     config.set_enable_layout_detection(effective_layout_detection);
     config.set_enable_ocr(ocr_enabled);
     config.set_no_cover_page(no_cover_page);
-    config.set_pdf_compatibility_mode(pdf_compatibility);
     config.set_invert_input(invert_input);
     config.set_enable_deskew(deskew_enabled);
     config.set_jbig2_mode(jbig2_mode);
@@ -1726,11 +1748,11 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         config.image_format()
     );
     println!(
-        "{}{}:{} {}",
+        "{}{}:{} {:?}",
         COLORS.info,
         CLI_TEXT.main.selected_options_dithering,
         COLORS.reset,
-        config.dither_images()
+        config.image_region_dither_mode()
     );
     println!(
         "{}{}:{} {}",
@@ -1798,13 +1820,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         CLI_TEXT.main.selected_options_no_cover_page,
         COLORS.reset,
         config.no_cover_page()
-    );
-    println!(
-        "{}{}:{} {}",
-        COLORS.info,
-        CLI_TEXT.main.selected_options_pdf_compatibility,
-        COLORS.reset,
-        config.pdf_compatibility_mode()
     );
     println!(
         "{}{}:{} {}",
@@ -1880,13 +1895,14 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
-    bool,
     Jbig2Mode,
     bool,
     bool,
     bool,
     bool,
     bool,
+    bool,       // cdot_clustered (--cdot, CCITT4 clustered 4×4)
+    bool,       // halftone (--halftone, JBIG2 halftone segments)
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
 )> {
     if input.is_empty() {
@@ -1900,7 +1916,6 @@ fn parse_format_selection_with_options(
             false, // ocr_enabled
             true,  // original_image (no dithering)
             false, // no_cover_page
-            false, // pdf_compatibility
             false, // no_binarization
             false, // invert_input
             Jbig2Mode::Symbol,
@@ -1909,6 +1924,8 @@ fn parse_format_selection_with_options(
             false, // force_crop
             false, // deskew_enabled
             false, // high_quality_output
+            false, // cdot_clustered
+            false, // halftone
             None,  // djvu_quality (not DjVu)
         ));
     }
@@ -1916,12 +1933,29 @@ fn parse_format_selection_with_options(
     let parts: Vec<&str> = input.split_whitespace().collect();
     let main_part = parts[0];
 
-    // Check for standalone flags in remaining parts
-    let has_high_flag = parts.iter().any(|&p| p == "--high");
+    // Standalone flags (same as non-interactive CLI; filtered out before letter-option parsing)
+    let has_high_flag = parts
+        .iter()
+        .any(|&p| p == "--high" || p == "--high-quality");
     let has_unify_flag = parts.iter().any(|&p| p == "--unify");
+    let has_cdot_flag = parts.iter().any(|&p| p == "--cdot");
+    let has_halftone_flag = parts.iter().any(|&p| p == "--halftone");
 
     // Parse main format option
     let (format_num, c_count, has_s_flag, has_u_flag) = parse_main_format(main_part)?;
+
+    if has_cdot_flag && format_num != 1 {
+        return Err(anyhow!(
+            "--cdot is only valid with format 1 (CCITT4). Choose `1` or `1 --cdot`, not format {}.",
+            format_num
+        ));
+    }
+    if has_halftone_flag && format_num != 2 {
+        return Err(anyhow!(
+            "--halftone is only valid with format 2 (JBIG2). Choose `2` or `2 --halftone`, not format {}.",
+            format_num
+        ));
+    }
 
     // Map the numbered menu to text format
     // 1: CCITT4, 2: JBIG2, 3: DJVU
@@ -1952,8 +1986,9 @@ fn parse_format_selection_with_options(
 
     // Determine dithering:
     // ALL formats default to original images (no dithering)
-    // 'c' flag ENABLES image-region dithering (JBIG2: Stucki; CCITT4: blue-noise) — not body text.
-    let enable_dithering = c_count > 0;
+    // 'c' flag ENABLES image-region dithering (JBIG2: Stucki; CCITT4: Bayer unless --cdot).
+    // `--cdot` (CCITT4 only) enables clustered 4×4 on image regions (implies dithered regions).
+    let enable_dithering = c_count > 0 || has_cdot_flag;
 
     // Parse additional options from the remaining parts
     // Also extract option letters that might be embedded in the first part (e.g., "1a" means format 1 with option 'a')
@@ -1979,7 +2014,16 @@ fn parse_format_selection_with_options(
         .iter()
         .skip(options_start_index)
         .copied()
-        .filter(|&p| p != "--high" && p != "--unify") // Filter out hidden/standalone flags
+        .filter(|&p| {
+            !matches!(
+                p,
+                "--high"
+                    | "--high-quality"
+                    | "--unify"
+                    | "--cdot"
+                    | "--halftone"
+            )
+        })
         .collect();
     options_parts.extend(remaining_parts.iter().map(|s| s.to_string()));
 
@@ -1987,9 +2031,8 @@ fn parse_format_selection_with_options(
     let (
         layout_detection,
         ocr_enabled,
-        original_image,
+        mut original_image,
         no_cover_page,
-        pdf_compatibility,
         no_binarization,
         invert_input,
         deskew_enabled,
@@ -1998,7 +2041,11 @@ fn parse_format_selection_with_options(
         force_crop,
     ) = parse_options(&options_str)?;
 
-    // Disable dithering if 'c' flag is specified (original quality)
+    // Dithered / halftone figure regions require re-encoding (letters may not be in options_str).
+    if enable_dithering || has_halftone_flag {
+        original_image = false;
+    }
+
     let final_enable_dithering = enable_dithering;
 
     let jbig2_mode = if format_num == 2 {
@@ -2035,7 +2082,6 @@ fn parse_format_selection_with_options(
         ocr_enabled,
         original_image,
         no_cover_page,
-        pdf_compatibility,
         no_binarization,
         invert_input,
         jbig2_mode,
@@ -2044,6 +2090,8 @@ fn parse_format_selection_with_options(
         force_crop,
         deskew_enabled,
         has_high_flag,
+        has_cdot_flag,
+        has_halftone_flag,
         djvu_quality,
     ))
 }
@@ -2089,7 +2137,6 @@ fn parse_options(
     bool,
     bool,
     bool,
-    bool,
 )> {
     let options: Vec<&str> = input.split_whitespace().collect();
 
@@ -2099,7 +2146,6 @@ fn parse_options(
     // 'c' now selects DITHERED images (quality-vs-size toggle). Original is default.
     let original_image = !options.contains(&"c");
     let no_cover_page = options.contains(&"d");
-    let pdf_compatibility = options.contains(&"e");
     let no_binarization = options.contains(&"i"); // 'i' for image-only (no binarization)
     let invert_input = options.contains(&"g");
     let deskew_enabled = options.contains(&"h");
@@ -2112,7 +2158,6 @@ fn parse_options(
         ocr_enabled,
         original_image,
         no_cover_page,
-        pdf_compatibility,
         no_binarization,
         invert_input,
         deskew_enabled,

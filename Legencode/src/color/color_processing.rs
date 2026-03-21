@@ -28,10 +28,12 @@ pub enum ImageRegionDitherMode {
     /// Keep color (crop only); region is masked or overlaid without region dithering.
     #[default]
     None,
-    /// `--dither`: JBIG2 → Stucki error diffusion on image regions; CCITT4 → Bayer 8×8 ordered.
+    /// `--dither`: **JBIG2 / DjVu** → Stucki error diffusion on image regions.
+    /// **CCITT4** → Bayer 8×8 ordered dither on image regions (fax path never uses Stucki here).
     Stucki,
-    /// `--halftone`: image regions are extracted as grayscale and encoded with `jbig2halftone.rs`
-    /// (JBIG2 halftone region segments).  The base text layer stays Symbol/Generic.
+    /// `--cdot`, **CCITT4 only** → clustered 4×4 ordered dither on image regions (invalid with JBIG2/DjVu).
+    Ccitt4ClusteredDot4x4,
+    /// `--halftone`, **JBIG2 only** → grayscale crops for `jbig2halftone.rs` (invalid with CCITT4/DjVu).
     Halftone,
 }
 
@@ -118,6 +120,110 @@ fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// Rank order for a clustered-dot screen tile (same construction as ccitt4-dither-tester).
+fn clustered_dot_matrix(size: usize, rect_bias_x: i32, rect_bias_y: i32) -> Vec<u16> {
+    let mut coords: Vec<(usize, usize, i64, i32, i32, i32)> = Vec::with_capacity(size * size);
+    let center = size as i32;
+    for y in 0..size {
+        for x in 0..size {
+            let px = (2 * x + 1) as i32;
+            let py = (2 * y + 1) as i32;
+            let dx = px - center;
+            let dy = py - center;
+            let primary =
+                (dx as i64 * dx as i64) * rect_bias_x as i64 + (dy as i64 * dy as i64) * rect_bias_y as i64;
+            let vertical_bias = dx.abs();
+            let chebyshev = dx.abs().max(dy.abs());
+            let stable = (y * size + x) as i32;
+            coords.push((x, y, primary, vertical_bias, chebyshev, stable));
+        }
+    }
+    coords.sort_by_key(|&(_, _, p, vb, ch, st)| (p, vb, ch, st));
+    let mut tile = vec![0u16; size * size];
+    for (rank, &(x, y, _, _, _, _)) in coords.iter().enumerate() {
+        tile[y * size + x] = rank as u16;
+    }
+    tile
+}
+
+#[inline(always)]
+fn threshold_from_cluster_rank(rank: u16, tile_pixels: usize) -> u8 {
+    if tile_pixels <= 1 {
+        return 127;
+    }
+    ((rank as u32 * 255) / (tile_pixels as u32 - 1)) as u8
+}
+
+fn clustered_4x4_screen() -> &'static [u16] {
+    static SCREEN: OnceLock<Vec<u16>> = OnceLock::new();
+    SCREEN.get_or_init(|| clustered_dot_matrix(4, 1, 1))
+}
+
+/// Clustered 4×4 ordered dither (CCITT4 dev path via `--cdot`).
+fn dither_clustered_4x4(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let expected = w * h;
+    if expected == 0 || grayscale_data.len() < expected {
+        return vec![255; expected];
+    }
+    let screen = clustered_4x4_screen();
+    const TILE: usize = 4;
+    const TILE_PIXELS: usize = TILE * TILE;
+    let mut out = vec![255u8; expected];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let g = grayscale_data[idx];
+            if g >= PAPER_WHITE_FLOOR {
+                continue;
+            }
+            let rank = screen[(y & (TILE - 1)) * TILE + (x & (TILE - 1))];
+            let thr = threshold_from_cluster_rank(rank, TILE_PIXELS);
+            out[idx] = if g > thr { 255 } else { 0 };
+        }
+    }
+    out
+}
+
+/// Clustered 4×4 ordered dither for image regions (CCITT4 `--cdot`).
+#[inline(always)]
+fn process_clustered_dot4_dithering(
+    original_rgb: &[u8],
+    page_width: u32,
+    region_bounds: RegionBounds,
+    region_width: u32,
+    region_height: u32,
+) -> Result<(Vec<u8>, u32, u32)> {
+    let grayscale_region = rgb_to_grayscale_simd_direct(
+        original_rgb,
+        page_width,
+        region_bounds,
+        region_width,
+        region_height,
+    );
+
+    let dithered_1bit_data = dither_clustered_4x4(&grayscale_region, region_width, region_height);
+
+    let pixel_count = dithered_1bit_data.len();
+    let mut output = Vec::with_capacity(pixel_count * 3);
+
+    dithered_1bit_data
+        .par_chunks(512)
+        .map(|chunk: &[u8]| {
+            let mut local_output = Vec::with_capacity(chunk.len() * 3);
+            for &pixel in chunk {
+                local_output.extend_from_slice(&[pixel, pixel, pixel]);
+            }
+            local_output
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .for_each(|chunk| output.extend(chunk));
+
+    Ok((output, region_width, region_height))
+}
+
 /// The primary function to process a detected image region.
 ///
 /// Zero-copy optimized version that processes regions in-place without intermediate allocations.
@@ -126,9 +232,9 @@ fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// * `original_rgb`: A slice containing the RGB pixel data for the *entire page*.
 /// * `page_width`: The width of the entire page in pixels.
 /// * `region_bbox`: The bounding box `[x1, y1, x2, y2]` of the image region to process.
-/// * `mode`: [`ImageRegionDitherMode`] — Stucki vs halftone (JBIG2 encoder) vs none.
-/// * `text_format`: `"jbig2"` uses Stucki error diffusion on regions; `"ccitt4"` uses the
-///   phase-locked blue-noise ditherer; other formats follow the JBIG2 path unless extended.
+/// * `mode` + `text_format` are validated together: JBIG2 halftone and Stucki never apply to CCITT4;
+///   Bayer / clustered-dot never apply to JBIG2; [`ImageRegionDitherMode::Halftone`] requires `jbig2`,
+///   [`ImageRegionDitherMode::Ccitt4ClusteredDot4x4`] requires `ccitt4`.
 /// * `use_heavy_binarization`: If `true`, uses the ONNX-based heavy binarization for better quality.
 ///
 /// # Returns
@@ -191,8 +297,14 @@ pub fn process_image_region(
 
     match mode {
         ImageRegionDitherMode::Halftone => {
-            // Halftone: return grayscale crop as RGB triplets. The caller will feed the
-            // grayscale data to jbig2halftone.rs which does its own internal quantization.
+            if text_format != "jbig2" {
+                return Err(anyhow!(
+                    "halftone image regions require --text-format jbig2 (got {}). \
+                     CCITT4 uses ordered dither (Bayer or --cdot); DjVu uses Stucki with --dither.",
+                    text_format
+                ));
+            }
+            // JBIG2 only: grayscale crop for jbig2halftone.rs (not used on CCITT4 / DjVu).
             #[cfg(feature = "debug-logging")]
             crate::streamline::log_debug_message("  → dispatching to grayscale crop (halftone → jbig2halftone.rs encodes later)");
             let grayscale = rgb_to_grayscale_simd_direct(
@@ -204,8 +316,27 @@ pub fn process_image_region(
             }
             Ok((output, region_width, region_height))
         }
+        ImageRegionDitherMode::Ccitt4ClusteredDot4x4 => {
+            if text_format != "ccitt4" {
+                return Err(anyhow!(
+                    "--cdot (clustered 4×4) requires --text-format ccitt4 (got {}). \
+                     JBIG2/DjVu image regions use Stucki with --dither.",
+                    text_format
+                ));
+            }
+            #[cfg(feature = "debug-logging")]
+            crate::streamline::log_debug_message("  → dispatching to clustered 4×4 ordered dither (CCITT4, --cdot)");
+            process_clustered_dot4_dithering(
+                original_rgb,
+                page_width,
+                region_bounds,
+                region_width,
+                region_height,
+            )
+        }
         ImageRegionDitherMode::Stucki => match text_format {
             "ccitt4" => {
+                // CCITT4: Bayer only (never Stucki on fax image regions).
                 #[cfg(feature = "debug-logging")]
                 crate::streamline::log_debug_message("  → dispatching to Bayer 8×8 ordered dither (CCITT4)");
                 process_bayer_dithering(
@@ -217,8 +348,9 @@ pub fn process_image_region(
                 )
             }
             _ => {
+                // JBIG2 / DjVu / … : Stucki only (never Bayer or clustered dot).
                 #[cfg(feature = "debug-logging")]
-                crate::streamline::log_debug_message("  → dispatching to Stucki error diffusion");
+                crate::streamline::log_debug_message("  → dispatching to Stucki error diffusion (JBIG2/DjVu)");
                 process_stucki_dither_region(
                     original_rgb,
                     page_width,
