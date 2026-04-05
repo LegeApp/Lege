@@ -121,6 +121,11 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
         eprintln!("Warning: Failed to set NMS threshold: {}", e);
     }
 
+    // Text format before dither mode: CCITT4 uses clustered-dot 4×4 when dithering, not Stucki.
+    if let Err(e) = config.set_text_format(&text_format) {
+        eprintln!("Warning: Failed to set text format: {}", e);
+    }
+
     match options.target_device.as_deref() {
         Some(device_name) => {
             if let Some(profile) = target_profiles::find_profile(device_name) {
@@ -158,7 +163,6 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
         }
     }
 
-    // Set other options
     config.set_dither_images(dither_images);
     // Ensure "Original" image processing also sets keep_original_images,
     // matching CLI behavior and layout-detection semantics
@@ -169,12 +173,6 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
     config.set_high_quality_output(options.high_quality_output);
     // Use unified image format alias to keep GUI/CLI consistent
     config.set_image_format(cover_format);
-
-    // Set text format
-    if let Err(e) = config.set_text_format(&text_format) {
-        eprintln!("Warning: Failed to set text format: {}", e);
-        // Fall back to default text format if setting fails
-    }
 
     config.set_enable_layout_detection(enable_layout_detection);
     config.set_enable_deskew(options.deskew_documents);

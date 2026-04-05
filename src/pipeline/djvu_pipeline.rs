@@ -16,10 +16,12 @@ use crate::engine::Detection;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, apply_full_bleed_image_bbox_expansion,
-    build_hocr_from_pdf_text, init_encode_semaphore, maybe_expand_sole_image_to_full_page,
-    merge_overlapping_image_detections,
-    rounded_clamped_bbox, should_force_blank_page_threshold, wait_for_memory_relief,
+    build_hocr_from_pdf_text, init_encode_semaphore, merge_overlapping_image_detections,
+    rounded_clamped_bbox, wait_for_memory_relief,
+};
+use crate::pipeline::page_analysis::{
+    BLANK_PAGE_FALLBACK_THRESHOLD, detections_bbox_area_fraction, is_visually_blank_page,
+    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
 };
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::progress::ProgressTracker;
@@ -847,8 +849,13 @@ fn process_djvu_cpu_intensive_work(
 
     if config.enable_layout_detection() {
         let classifier = &crate::types::LABEL_CLASSIFIER;
-        // Use raw post-NMS YOLO bboxes (no full-page expansion).
-        // We still merge overlaps to prevent double-encodes.
+        maybe_apply_yolo_full_page_detection(
+            &mut adjusted_detections,
+            width as u32,
+            height as u32,
+            &config,
+            classifier,
+        );
         merge_overlapping_image_detections(
             &mut adjusted_detections,
             classifier,
@@ -874,7 +881,7 @@ fn process_djvu_cpu_intensive_work(
             })
             .collect()
     } else {
-        let det_area_frac = crate::pipeline::helper_functions::detections_bbox_area_fraction(
+        let det_area_frac = detections_bbox_area_fraction(
             &adjusted_detections,
             width as u32,
             height as u32,
@@ -882,7 +889,7 @@ fn process_djvu_cpu_intensive_work(
         let force_blank_threshold = should_force_blank_page_threshold(
             &config,
             inference_result.has_no_detections,
-            crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
+            is_visually_blank_page(&adjusted_image),
             det_area_frac,
         );
         binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
@@ -1082,3 +1089,7 @@ fn binarize_djvu_image(
         &options,
     )
 }
+
+
+
+
