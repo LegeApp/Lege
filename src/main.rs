@@ -192,7 +192,6 @@ struct CliOptions {
 
     // --- Processing toggles ---
     dither: bool,                  // --dither
-    cdot: bool,                    // --cdot (CCITT4: clustered 4x4 on image regions instead of Bayer)
     no_layout: bool,               // --no-layout
     ocr: Option<bool>,             // --ocr / --no-ocr
     no_cover: bool,                // --no-cover
@@ -427,10 +426,6 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             // --- boolean flags ---
             "--dither" => {
                 opts.dither = true;
-                i += 1;
-            }
-            "--cdot" => {
-                opts.cdot = true;
                 i += 1;
             }
             "--no-layout" => {
@@ -1104,26 +1099,24 @@ fn handle_simple_processing(
     }
 
     // Boolean toggles — image-region dithering only (requires layout detection; see pipeline).
-    // `--halftone` wins over `--cdot` / `--dither` (jbig2halftone.rs page encode vs symbol/generic JBIG2).
+    // `--halftone` wins over `--dither` (jbig2halftone.rs page encode vs symbol/generic JBIG2).
+    // CCITT4 + `--dither` uses clustered-dot 4×4 only (never Stucki); JBIG2/DjVu use Stucki.
     if cli_opts.halftone {
         pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
-    } else if cli_opts.cdot {
-        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
     } else if cli_opts.dither {
-        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
+        let tf = pipeline_config.text_format();
+        if tf == "ccitt4" {
+            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+        } else {
+            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
+        }
     }
 
-    // Image-region modes are format-specific: no mixing JBIG2 halftone/Stucki with CCITT4 ordered dither.
+    // Image-region modes are format-specific: halftone is JBIG2-only.
     let tf = pipeline_config.text_format();
     if cli_opts.halftone && tf != "jbig2" {
         bail!(
             "--halftone requires --text-format jbig2 (got {}). Halftone segments are JBIG2-only.",
-            tf
-        );
-    }
-    if cli_opts.cdot && tf != "ccitt4" {
-        bail!(
-            "--cdot requires --text-format ccitt4 (got {}). Clustered-dot dither is for CCITT4 image regions only.",
             tf
         );
     }
@@ -1177,7 +1170,7 @@ fn handle_simple_processing(
         pipeline_config.set_high_quality_output(true);
     }
     // Default: keep raster crops as originals (PipelineConfig::new). Opt into re-encoding/dither paths.
-    if cli_opts.halftone || cli_opts.dither || cli_opts.cdot {
+    if cli_opts.halftone || cli_opts.dither {
         pipeline_config.set_keep_original_images(false);
     }
     if cli_opts.original_images || cli_opts.image_only {
@@ -1477,7 +1470,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         force_crop,
         deskew_enabled,
         high_quality_output,
-        cdot_clustered,
         interactive_halftone,
         djvu_quality,
     ) = loop {
@@ -1528,7 +1520,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 force_crop,
                 deskew_enabled,
                 high_quality_output,
-                cdot_clustered,
                 interactive_halftone,
                 djvu_quality,
             )) => {
@@ -1549,7 +1540,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     force_crop,
                     deskew_enabled,
                     high_quality_output,
-                    cdot_clustered,
                     interactive_halftone,
                     djvu_quality,
                 );
@@ -1693,11 +1683,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     if interactive_halftone {
         config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
     } else if effective_enable_dithering {
-        if cdot_clustered {
-            config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
-        } else {
-            config.set_dither_images(true);
-        }
+        config.set_dither_images(true);
     } else {
         config.set_dither_images(false);
     }
@@ -1901,7 +1887,6 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
-    bool,       // cdot_clustered (--cdot, CCITT4 clustered 4×4)
     bool,       // halftone (--halftone, JBIG2 halftone segments)
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
 )> {
@@ -1924,7 +1909,6 @@ fn parse_format_selection_with_options(
             false, // force_crop
             false, // deskew_enabled
             false, // high_quality_output
-            false, // cdot_clustered
             false, // halftone
             None,  // djvu_quality (not DjVu)
         ));
@@ -1938,18 +1922,11 @@ fn parse_format_selection_with_options(
         .iter()
         .any(|&p| p == "--high" || p == "--high-quality");
     let has_unify_flag = parts.iter().any(|&p| p == "--unify");
-    let has_cdot_flag = parts.iter().any(|&p| p == "--cdot");
     let has_halftone_flag = parts.iter().any(|&p| p == "--halftone");
 
     // Parse main format option
     let (format_num, c_count, has_s_flag, has_u_flag) = parse_main_format(main_part)?;
 
-    if has_cdot_flag && format_num != 1 {
-        return Err(anyhow!(
-            "--cdot is only valid with format 1 (CCITT4). Choose `1` or `1 --cdot`, not format {}.",
-            format_num
-        ));
-    }
     if has_halftone_flag && format_num != 2 {
         return Err(anyhow!(
             "--halftone is only valid with format 2 (JBIG2). Choose `2` or `2 --halftone`, not format {}.",
@@ -1986,9 +1963,8 @@ fn parse_format_selection_with_options(
 
     // Determine dithering:
     // ALL formats default to original images (no dithering)
-    // 'c' flag ENABLES image-region dithering (JBIG2: Stucki; CCITT4: Bayer unless --cdot).
-    // `--cdot` (CCITT4 only) enables clustered 4×4 on image regions (implies dithered regions).
-    let enable_dithering = c_count > 0 || has_cdot_flag;
+    // 'c' flag ENABLES image-region dithering (JBIG2/DjVu: Stucki; CCITT4: clustered-dot 4×4 only).
+    let enable_dithering = c_count > 0;
 
     // Parse additional options from the remaining parts
     // Also extract option letters that might be embedded in the first part (e.g., "1a" means format 1 with option 'a')
@@ -2017,11 +1993,7 @@ fn parse_format_selection_with_options(
         .filter(|&p| {
             !matches!(
                 p,
-                "--high"
-                    | "--high-quality"
-                    | "--unify"
-                    | "--cdot"
-                    | "--halftone"
+                "--high" | "--high-quality" | "--unify" | "--halftone"
             )
         })
         .collect();
@@ -2090,7 +2062,6 @@ fn parse_format_selection_with_options(
         force_crop,
         deskew_enabled,
         has_high_flag,
-        has_cdot_flag,
         has_halftone_flag,
         djvu_quality,
     ))

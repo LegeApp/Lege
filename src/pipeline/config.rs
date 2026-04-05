@@ -682,7 +682,11 @@ impl PipelineConfig {
     }
     pub fn set_dither_images(&mut self, dither: bool) {
         self.image_region_dither_mode = if dither {
-            ImageRegionDitherMode::Stucki
+            if self.text_format == "ccitt4" {
+                ImageRegionDitherMode::Ccitt4ClusteredDot4x4
+            } else {
+                ImageRegionDitherMode::Stucki
+            }
         } else {
             ImageRegionDitherMode::None
         };
