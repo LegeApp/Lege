@@ -3,7 +3,7 @@
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
-# Lege - 1.4.0
+# Lege - 1.4.1
 Releases are updated with every new version --> https://github.com/LegeApp/Lege/releases/
 
 **Turn scanned PDFs (or page-image folders) into clean, compact files that read great on e-ink.**
@@ -93,7 +93,8 @@ Lege requires several external files to be placed alongside the executables:
 #### Required for all platforms:
 
 **ONNX Models** (AI inference):
-- `paddle-layout.onnx` - Layout detection (21 element types)
+- `yolo-layout.onnx` - Layout detection (Linux production model)
+- `paddle-layout.onnx` - Layout detection (legacy/non-Linux fallback)
 - `paddle-rotate.onnx` - Page orientation detection
 - `paddle-deskew.onnx` - Page deskew correction
 - `sauvola.onnx` - Adaptive binarization
@@ -222,6 +223,7 @@ Lege is a Rust workspace with multiple crates:
 GPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`. 
 
 ---
+
 
 
 
