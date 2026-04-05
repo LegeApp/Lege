@@ -3,11 +3,14 @@ use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, build_hocr_from_pdf_text, init_encode_semaphore,
-    apply_full_bleed_image_bbox_expansion, maybe_expand_sole_image_to_full_page,
-    merge_overlapping_image_detections,
-    rounded_clamped_bbox, should_force_blank_page_threshold, should_treat_as_cover_page,
-    spawn_pdf_writer_actor, wait_for_memory_relief,
+    build_hocr_from_pdf_text, init_encode_semaphore, merge_overlapping_image_detections,
+    rounded_clamped_bbox, should_treat_as_cover_page, spawn_pdf_writer_actor,
+    wait_for_memory_relief,
+};
+use crate::pipeline::page_analysis::{
+    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin,
+    detections_bbox_area_fraction, is_visually_blank_page,
+    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
@@ -49,6 +52,12 @@ pub struct ProcessedPage {
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
     pub binarized: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+enum CachedDetections {
+    Missing,
+    Present(Vec<crate::engine::Detection>),
 }
 
 //==============================================================================
@@ -187,7 +196,7 @@ async fn inference_stage_parallel(
     progress: ProgressTracker,
     total_pages: usize,
     layout_enabled: bool,
-    detection_cache: Arc<Vec<Vec<crate::engine::Detection>>>,
+    detection_cache: Arc<Vec<CachedDetections>>,
     analysis_width: u32,
 ) -> Result<()> {
     info_log!(
@@ -272,13 +281,13 @@ async fn inference_stage_parallel(
 fn build_inference_future(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     rendered: RenderedPageData,
-    detection_cache: Arc<Vec<Vec<crate::engine::Detection>>>,
+    detection_cache: Arc<Vec<CachedDetections>>,
     analysis_width: u32,
 ) -> BoxFuture<'static, Result<PdfInferenceData>> {
     let page_index = rendered.index;
 
-    if let Some(cached) = detection_cache.get(page_index) {
-        if !cached.is_empty() && analysis_width > 0 {
+    if let Some(CachedDetections::Present(cached)) = detection_cache.get(page_index) {
+        if analysis_width > 0 {
             let high_res_width = rendered.high_res_image.width();
             let scale_factor = high_res_width as f32 / analysis_width as f32;
             let mut scaled = cached.clone();
@@ -726,6 +735,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // We still merge overlaps to prevent double-encodes.
     if config.enable_layout_detection() {
         let classifier = &crate::types::LABEL_CLASSIFIER;
+        maybe_apply_yolo_full_page_detection(
+            &mut adjusted_detections,
+            width as u32,
+            height as u32,
+            &config,
+            classifier,
+        );
         merge_overlapping_image_detections(
             &mut adjusted_detections,
             classifier,
@@ -762,7 +778,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
     }
 
-    let det_area_frac = crate::pipeline::helper_functions::detections_bbox_area_fraction(
+    let det_area_frac = detections_bbox_area_fraction(
         &adjusted_detections,
         width as u32,
         height as u32,
@@ -770,7 +786,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     let force_blank_threshold = should_force_blank_page_threshold(
         &config,
         inference_result.has_no_detections,
-        crate::pipeline::helper_functions::is_visually_blank_page(&adjusted_image),
+        is_visually_blank_page(&adjusted_image),
         det_area_frac,
     );
 
@@ -782,8 +798,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // Detected image areas are later overlaid (original, dithered, or re-encoded),
     // so the bilevel base layer must be blank in those areas.
     let premask_images = config.enable_layout_detection() && config.text_format() != "jpeg";
+    let has_image_regions =
+        premask_images && adjusted_detections.iter().any(|det| classifier.is_image_label(det));
 
-    let binarization_image: std::borrow::Cow<'_, RgbImage> = if premask_images {
+    let binarization_image: std::borrow::Cow<'_, RgbImage> = if has_image_regions {
         let mut masked_rgb = adjusted_image.as_raw().clone();
         let w = width as u32;
         let h = height as u32;
@@ -851,7 +869,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         };
 
     // 5. Process all image regions (consolidate all region work into this single blocking call).
-    // JBIG2: Stucki or halftone (`jbig2halftone.rs`) on image labels. CCITT4: Bayer or `--cdot` clustered 4×4.
+    // JBIG2: Stucki or halftone (`jbig2halftone.rs`) on image labels. CCITT4: clustered-dot 4×4 only.
     // Modes are format-locked in `process_image_region`. Layout must be on — never on full-page text / HOCR.
     let mut region_processing_results = Vec::new();
 
@@ -975,7 +993,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     }
                 }
             } else {
-                // Stucki / Bayer overlay: bilevel data, encode matching the page format
+                // Stucki / clustered-dot overlay: bilevel data, encode matching the page format
                 use Legencode::streamline::{
                     EncodingManager, EncodingResult, EncodingSettings,
                     ImageBuffer as LegeImageBuffer, Jbig2Settings,
@@ -1134,7 +1152,7 @@ fn apply_margin_analysis_to_page(
         let page_bounds = if !dets.is_empty() {
             crate::margin::calculate_content_bounds(&dets, page_w, page_h, true)
         } else {
-            crate::margin::compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
+            compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
         };
 
         // For consistency across pages, always use the document-wide baseline
@@ -1187,7 +1205,7 @@ fn apply_margin_analysis_to_page(
                 )
             })
         } else {
-            crate::margin::compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
+            compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
         }
     };
 
@@ -1799,7 +1817,7 @@ fn prepare_analysis_page(
             original_image
         };
 
-    let pixel_bounds = crate::margin::compute_pixel_bounds_for_margin(&analysis_image, &config);
+    let pixel_bounds = compute_pixel_bounds_for_margin(&analysis_image, &config);
 
     AnalysisPreparedPage {
         page_index: page_idx,
@@ -1854,12 +1872,13 @@ async fn perform_document_analysis(
     total_pages: usize,
     page_range: std::ops::Range<usize>,
     progress_tracker: &ProgressTracker,
-) -> Result<(DocumentMarginAnalysis, Vec<Vec<crate::engine::Detection>>)> {
+) -> Result<(DocumentMarginAnalysis, Vec<CachedDetections>)> {
     info_log!("[Margin-Analysis] Phase 1: Analyzing document margins (Low-Res Pass)...");
     progress_tracker.update(crate::progress::ProcessingStatus::MarginPass1Analyzing);
 
     let mut margin_inputs = Vec::new();
-    let mut detection_cache = vec![Vec::new(); total_pages];
+    let mut detection_cache =
+        vec![CachedDetections::Missing; pdf_renderer.page_count() as usize];
     // ORT + PDFium are intentionally single-worker for stability.
     let analysis_infer_concurrency = 1usize;
     let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
@@ -1868,7 +1887,7 @@ async fn perform_document_analysis(
     let push_completed =
         |result: AnalysisPageResult,
          margin_inputs: &mut Vec<PageMarginInput>,
-         detection_cache: &mut Vec<Vec<crate::engine::Detection>>| {
+         detection_cache: &mut Vec<CachedDetections>| {
             margin_inputs.push(PageMarginInput {
                 page_index: result.page_index,
                 page_width: result.page_width,
@@ -1878,7 +1897,8 @@ async fn perform_document_analysis(
             });
 
             if result.page_index < detection_cache.len() {
-                detection_cache[result.page_index] = result.detections;
+                detection_cache[result.page_index] =
+                    CachedDetections::Present(result.detections);
             }
         };
 
@@ -1907,9 +1927,6 @@ async fn perform_document_analysis(
                     detections: Vec::new(),
                     pixel_bounds: None,
                 });
-                if page_idx < detection_cache.len() {
-                    detection_cache[page_idx] = Vec::new();
-                }
                 continue;
             }
         };
@@ -1954,6 +1971,7 @@ async fn perform_document_analysis(
     );
     let analysis = crate::margin::analyze_document_margins(
         &margin_inputs,
+        &config,
         config.margin_settings(),
         false, // crop_footnotes
     );
@@ -2298,3 +2316,9 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
 // Re-export the original function name for compatibility
 pub use create_and_run_pdf_parallel_pipeline as create_and_run_pdf_tokio_pipeline;
+
+
+
+
+
+

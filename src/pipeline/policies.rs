@@ -15,6 +15,7 @@ use crate::bbox_trace;
 use crate::engine::Detection;
 use crate::margin;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
+use crate::pipeline::page_analysis::compute_pixel_bounds_for_margin;
 use crate::resize::{ResizeMethod, ResizeParams};
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -593,47 +594,6 @@ fn remap_detections_to_page(
     }
 }
 
-fn compute_pixel_bounds_for_margin(
-    image: &image::RgbImage,
-    config: &PipelineConfig,
-) -> Option<margin::ContentBounds> {
-    use Legencode::types::BinarizationOptions;
-    let want_invert_input = config.invert_input();
-    let mut want_invert_output = config.binarization().invert;
-    if want_invert_input && want_invert_output {
-        want_invert_output = false;
-    }
-    let options = BinarizationOptions {
-        invert: want_invert_output,
-        invert_input: want_invert_input,
-        k_factor: config.binarization().k_factor,
-        use_heavy_duty: config.binarization().use_heavy_duty
-            && !config.binarization().use_fixed_threshold,
-        patch_percentage: config.binarization().patch_percentage,
-        no_patch: config.binarization().no_patch,
-        use_fixed_threshold: config.binarization().use_fixed_threshold,
-        fixed_threshold: config.binarization().fixed_threshold,
-    };
-    let mut binarized = Legencode::color::binarization::binarize_image_raw(
-        image.as_raw(),
-        image.width() as usize,
-        image.height() as usize,
-        &options,
-    );
-    if binarized.is_empty() {
-        return None;
-    }
-    if binarized.iter().any(|&b| b > 1) {
-        for v in binarized.iter_mut() {
-            *v = if *v > 128 { 1 } else { 0 };
-        }
-    }
-    for v in binarized.iter_mut() {
-        *v = if *v == 0 { 1 } else { 0 };
-    }
-    margin::calculate_content_bounds_from_binary_mask(&binarized, image.width(), image.height())
-}
-
 // ════════════════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════════════════
@@ -670,3 +630,5 @@ mod tests {
         }
     }
 }
+
+

@@ -29,9 +29,9 @@ pub enum ImageRegionDitherMode {
     #[default]
     None,
     /// `--dither`: **JBIG2 / DjVu** → Stucki error diffusion on image regions.
-    /// **CCITT4** → Bayer 8×8 ordered dither on image regions (fax path never uses Stucki here).
+    /// **CCITT4** never uses Stucki; use [`Ccitt4ClusteredDot4x4`] for CCITT4 image regions.
     Stucki,
-    /// `--cdot`, **CCITT4 only** → clustered 4×4 ordered dither on image regions (invalid with JBIG2/DjVu).
+    /// **CCITT4** → clustered 4×4 ordered dither on image regions (`--dither`; invalid with JBIG2/DjVu).
     Ccitt4ClusteredDot4x4,
     /// `--halftone`, **JBIG2 only** → grayscale crops for `jbig2halftone.rs` (invalid with CCITT4/DjVu).
     Halftone,
@@ -44,80 +44,6 @@ struct RegionBounds {
     y_start: u32,
     x_end: u32,
     y_end: u32,
-}
-
-/// Optimized 8x8 Bayer matrix using integer arithmetic for faster comparison.
-/// Provides 65 tonal levels instead of 17 (4x4) for finer gradients.
-static BAYER_8X8: [[u8; 8]; 8] = [
-    [0, 32, 8, 40, 2, 34, 10, 42],
-    [48, 16, 56, 24, 50, 18, 58, 26],
-    [12, 44, 4, 36, 14, 46, 6, 38],
-    [60, 28, 52, 20, 62, 30, 54, 22],
-    [3, 35, 11, 43, 1, 33, 9, 41],
-    [51, 19, 59, 27, 49, 17, 57, 25],
-    [15, 47, 7, 39, 13, 45, 5, 37],
-    [63, 31, 55, 23, 61, 29, 53, 21],
-];
-
-/// Bayer 8×8 ordered dithering for image regions (CCITT4 default).
-#[inline(always)]
-fn process_bayer_dithering(
-    original_rgb: &[u8],
-    page_width: u32,
-    region_bounds: RegionBounds,
-    region_width: u32,
-    region_height: u32,
-) -> Result<(Vec<u8>, u32, u32)> {
-    let grayscale_region = rgb_to_grayscale_simd_direct(
-        original_rgb,
-        page_width,
-        region_bounds,
-        region_width,
-        region_height,
-    );
-
-    let dithered_1bit_data = dither_bayer8x8(&grayscale_region, region_width, region_height);
-
-    let pixel_count = dithered_1bit_data.len();
-    let mut output = Vec::with_capacity(pixel_count * 3);
-
-    dithered_1bit_data
-        .par_chunks(512)
-        .map(|chunk: &[u8]| {
-            let mut local_output = Vec::with_capacity(chunk.len() * 3);
-            for &pixel in chunk {
-                local_output.extend_from_slice(&[pixel, pixel, pixel]);
-            }
-            local_output
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .for_each(|chunk| output.extend(chunk));
-
-    Ok((output, region_width, region_height))
-}
-
-/// Apply 8×8 Bayer ordered dithering to grayscale data.
-fn dither_bayer8x8(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let w = width as usize;
-    let h = height as usize;
-    let expected = w * h;
-    if expected == 0 || grayscale_data.len() < expected {
-        return vec![255; expected];
-    }
-    let mut out = vec![255u8; expected];
-    for y in 0..h {
-        for x in 0..w {
-            let idx = y * w + x;
-            let g = grayscale_data[idx];
-            if g >= PAPER_WHITE_FLOOR {
-                continue; // already 255 in output
-            }
-            let threshold = BAYER_8X8[y & 7][x & 7] * 4;
-            out[idx] = if g > threshold { 255 } else { 0 };
-        }
-    }
-    out
 }
 
 /// Rank order for a clustered-dot screen tile (same construction as ccitt4-dither-tester).
@@ -159,7 +85,7 @@ fn clustered_4x4_screen() -> &'static [u16] {
     SCREEN.get_or_init(|| clustered_dot_matrix(4, 1, 1))
 }
 
-/// Clustered 4×4 ordered dither (CCITT4 dev path via `--cdot`).
+/// Clustered 4×4 ordered dither (CCITT4 image regions).
 fn dither_clustered_4x4(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
@@ -186,7 +112,7 @@ fn dither_clustered_4x4(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u
     out
 }
 
-/// Clustered 4×4 ordered dither for image regions (CCITT4 `--cdot`).
+/// Clustered 4×4 ordered dither for image regions (CCITT4).
 #[inline(always)]
 fn process_clustered_dot4_dithering(
     original_rgb: &[u8],
@@ -232,9 +158,8 @@ fn process_clustered_dot4_dithering(
 /// * `original_rgb`: A slice containing the RGB pixel data for the *entire page*.
 /// * `page_width`: The width of the entire page in pixels.
 /// * `region_bbox`: The bounding box `[x1, y1, x2, y2]` of the image region to process.
-/// * `mode` + `text_format` are validated together: JBIG2 halftone and Stucki never apply to CCITT4;
-///   Bayer / clustered-dot never apply to JBIG2; [`ImageRegionDitherMode::Halftone`] requires `jbig2`,
-///   [`ImageRegionDitherMode::Ccitt4ClusteredDot4x4`] requires `ccitt4`.
+/// * `mode` + `text_format` are validated together: [`ImageRegionDitherMode::Halftone`] requires `jbig2`;
+///   [`ImageRegionDitherMode::Ccitt4ClusteredDot4x4`] requires `ccitt4`; Stucki applies to JBIG2/DjVu only.
 /// * `use_heavy_binarization`: If `true`, uses the ONNX-based heavy binarization for better quality.
 ///
 /// # Returns
@@ -300,7 +225,7 @@ pub fn process_image_region(
             if text_format != "jbig2" {
                 return Err(anyhow!(
                     "halftone image regions require --text-format jbig2 (got {}). \
-                     CCITT4 uses ordered dither (Bayer or --cdot); DjVu uses Stucki with --dither.",
+                     CCITT4 uses clustered-dot 4×4 with --dither; DjVu uses Stucki with --dither.",
                     text_format
                 ));
             }
@@ -319,13 +244,13 @@ pub fn process_image_region(
         ImageRegionDitherMode::Ccitt4ClusteredDot4x4 => {
             if text_format != "ccitt4" {
                 return Err(anyhow!(
-                    "--cdot (clustered 4×4) requires --text-format ccitt4 (got {}). \
+                    "clustered-dot 4×4 requires --text-format ccitt4 (got {}). \
                      JBIG2/DjVu image regions use Stucki with --dither.",
                     text_format
                 ));
             }
             #[cfg(feature = "debug-logging")]
-            crate::streamline::log_debug_message("  → dispatching to clustered 4×4 ordered dither (CCITT4, --cdot)");
+            crate::streamline::log_debug_message("  → dispatching to clustered 4×4 ordered dither (CCITT4)");
             process_clustered_dot4_dithering(
                 original_rgb,
                 page_width,
@@ -334,79 +259,24 @@ pub fn process_image_region(
                 region_height,
             )
         }
-        ImageRegionDitherMode::Stucki => match text_format {
-            "ccitt4" => {
-                // CCITT4: Bayer only (never Stucki on fax image regions).
-                #[cfg(feature = "debug-logging")]
-                crate::streamline::log_debug_message("  → dispatching to Bayer 8×8 ordered dither (CCITT4)");
-                process_bayer_dithering(
-                    original_rgb,
-                    page_width,
-                    region_bounds,
-                    region_width,
-                    region_height,
-                )
+        ImageRegionDitherMode::Stucki => {
+            if text_format == "ccitt4" {
+                return Err(anyhow!(
+                    "CCITT4 image regions use clustered-dot 4×4 ordered dither only; Stucki does not apply"
+                ));
             }
-            _ => {
-                // JBIG2 / DjVu / … : Stucki only (never Bayer or clustered dot).
-                #[cfg(feature = "debug-logging")]
-                crate::streamline::log_debug_message("  → dispatching to Stucki error diffusion (JBIG2/DjVu)");
-                process_stucki_dither_region(
-                    original_rgb,
-                    page_width,
-                    region_bounds,
-                    region_width,
-                    region_height,
-                )
-            }
-        },
+            #[cfg(feature = "debug-logging")]
+            crate::streamline::log_debug_message("  → dispatching to Stucki error diffusion (JBIG2/DjVu)");
+            process_stucki_dither_region(
+                original_rgb,
+                page_width,
+                region_bounds,
+                region_width,
+                region_height,
+            )
+        }
         ImageRegionDitherMode::None => unreachable!("None mode returns before dither branch"),
     }
-}
-
-/// Traditional dithering using custom phase-locked blue-noise method - used for CCITT4
-/// This custom mode produces better results for CCITT4 encoding with better run-length
-/// characteristics, allowing more efficient compression.
-#[inline(always)]
-fn process_traditional_dithering(
-    original_rgb: &[u8],
-    page_width: u32,
-    region_bounds: RegionBounds,
-    region_width: u32,
-    region_height: u32,
-) -> Result<(Vec<u8>, u32, u32)> {
-    // Convert to grayscale
-    let grayscale_region = rgb_to_grayscale_simd_direct(
-        original_rgb,
-        page_width,
-        region_bounds,
-        region_width,
-        region_height,
-    );
-
-    // Phase-locked blue-noise dithering (CCITT4 image regions).
-    let dithered_1bit_data =
-        dither_phase_locked_blue_noise_rlg(&grayscale_region, region_width, region_height);
-
-    // Convert back to RGB format for compatibility
-    let pixel_count = dithered_1bit_data.len();
-    let mut output = Vec::with_capacity(pixel_count * 3);
-
-    // Process in larger chunks for better memory bandwidth utilization
-    dithered_1bit_data
-        .par_chunks(512) // 512 pixels = 1.5KB chunks
-        .map(|chunk| {
-            let mut local_output = Vec::with_capacity(chunk.len() * 3);
-            for &pixel in chunk {
-                local_output.extend_from_slice(&[pixel, pixel, pixel]);
-            }
-            local_output
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .for_each(|chunk| output.extend(chunk));
-
-    Ok((output, region_width, region_height))
 }
 
 /// Stucki dither for image regions when text format is not CCITT4 (JBIG2, DjVu, etc.).
@@ -842,188 +712,6 @@ impl HeavyBinarizationProcessor {
 
         Ok(result)
     }
-}
-
-/// Deterministic hash-based blue-noise-like threshold sampler (0..255).
-#[inline]
-fn blue_noise_hash_u8(x: i32, y: i32) -> u8 {
-    let mut v =
-        (x as u32).wrapping_mul(0x1f123bb5) ^ (y as u32).wrapping_mul(0x05491333) ^ 0x9e3779b9;
-    v ^= v >> 16;
-    v = v.wrapping_mul(0x7feb352d);
-    v ^= v >> 15;
-    v = v.wrapping_mul(0x846ca68b);
-    v ^= v >> 16;
-    (v & 0xFF) as u8
-}
-
-#[inline]
-fn blue_noise_tile_64() -> &'static [u8; 64 * 64] {
-    static TILE: OnceLock<[u8; 64 * 64]> = OnceLock::new();
-    TILE.get_or_init(|| {
-        let mut t = [0u8; 64 * 64];
-        for y in 0..64usize {
-            for x in 0..64usize {
-                t[y * 64 + x] = blue_noise_hash_u8(x as i32, y as i32);
-            }
-        }
-        t
-    })
-}
-
-#[inline]
-fn run_length_governor(line: &mut [u8], min_run: u32) {
-    if line.len() < 3 || min_run < 2 {
-        return;
-    }
-    let min_run = min_run as usize;
-    let mut i = 0;
-    while i < line.len() {
-        let v = line[i];
-        let mut j = i + 1;
-        while j < line.len() && line[j] == v {
-            j += 1;
-        }
-        let run_len = j - i;
-        if run_len < min_run && i > 0 && j < line.len() {
-            let left = line[i - 1];
-            let right = line[j];
-            if left == right && left != v {
-                line[i..j].fill(left);
-            }
-        }
-        i = j;
-    }
-}
-
-#[inline]
-fn edge_alignment_score(line: &[u8], prev_edges: &[u8], curr_edges: &mut [u8]) -> u32 {
-    if line.len() < 2 {
-        curr_edges.fill(0);
-        return 0;
-    }
-
-    curr_edges.fill(0);
-    let mut score = 0u32;
-    let mut edge_count = 0u32;
-    let mut last = line[0];
-
-    for x in 1..line.len() {
-        let edge = (line[x] != last) as u8;
-        last = line[x];
-        curr_edges[x] = edge;
-        if edge != 0 {
-            edge_count += 1;
-            let lo = x.saturating_sub(3);
-            let hi = (x + 3).min(line.len() - 1);
-            let mut aligned = false;
-            for k in lo..=hi {
-                if prev_edges[k] != 0 {
-                    aligned = true;
-                    break;
-                }
-            }
-            score += if aligned { 1 } else { 8 };
-        }
-    }
-
-    // Base transition penalty to discourage noisy rows.
-    score + edge_count.saturating_mul(4)
-}
-
-#[inline]
-fn cheap_distortion_proxy(candidate_line: &[u8], grayscale_data: &[u8], row_offset: usize) -> u32 {
-    if candidate_line.is_empty() {
-        return 0;
-    }
-
-    let mut sum = 0u32;
-    // Subsample for speed: good enough as a tie-breaker proxy.
-    for x in (0..candidate_line.len()).step_by(2) {
-        let cand = candidate_line[x] as i32;
-        let src = grayscale_data[row_offset + x] as i32;
-        sum = sum.saturating_add((cand - src).unsigned_abs());
-    }
-    sum
-}
-
-/// Dithers an image using phase-locked blue-noise thresholding and run-length governance.
-/// Optimised for CCITT4 output: minimises transitions between lines and enforces minimum
-/// run lengths so the encoder can use long vertical and horizontal runs.
-pub fn dither_phase_locked_blue_noise_rlg(
-    grayscale_data: &[u8],
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let w = width as usize;
-    let h = height as usize;
-    let expected = w * h;
-    if expected == 0 || grayscale_data.len() < expected {
-        return Vec::new();
-    }
-
-    let tile = blue_noise_tile_64();
-    let mut out = vec![255; expected];
-    let mut prev_edges = vec![0u8; w];
-    let mut curr_edges = vec![0u8; w];
-    let mut best_edges = vec![0u8; w];
-    let mut phase_x: i32 = 0;
-    const SEARCH_EVERY_ROWS: usize = 4;
-    const SHIFT_CANDIDATES: [i32; 3] = [-1, 0, 1];
-    const MIN_RUN: u32 = 2;
-    let mut best_line = vec![255u8; w];
-    let mut candidate_line = vec![255u8; w];
-
-    for y in 0..h {
-        #[cfg(feature = "debug-logging")]
-        if (y & 127) == 0 {
-            crate::streamline::log_debug_message(&format!(
-                "Blue-noise dithering: row {} / {}",
-                y + 1,
-                h
-            ));
-        }
-
-        let row_off = y * w;
-        let mut best_cost = u32::MAX;
-        let mut best_shift = 0;
-
-        // Re-evaluate phase only periodically; reuse current phase on intermediate rows.
-        let shifts: &[i32] = if y % SEARCH_EVERY_ROWS == 0 {
-            &SHIFT_CANDIDATES
-        } else {
-            &[0]
-        };
-
-        for &shift in shifts {
-            let px = phase_x + shift;
-            for x in 0..w {
-                let src = grayscale_data[row_off + x];
-                let tx = ((x as i32 + px) & 63) as usize;
-                let thr = tile[(y & 63) * 64 + tx];
-                candidate_line[x] = if src > thr { 255 } else { 0 };
-            }
-
-            run_length_governor(&mut candidate_line, MIN_RUN);
-
-            let edge_score = edge_alignment_score(&candidate_line, &prev_edges, &mut curr_edges);
-            let distortion = cheap_distortion_proxy(&candidate_line, grayscale_data, row_off);
-            let cost = edge_score.saturating_add(distortion / 8);
-
-            if cost < best_cost {
-                best_cost = cost;
-                best_shift = shift;
-                best_line.copy_from_slice(&candidate_line);
-                best_edges.copy_from_slice(&curr_edges);
-            }
-        }
-
-        phase_x += best_shift;
-        out[row_off..row_off + w].copy_from_slice(&best_line);
-        prev_edges.copy_from_slice(&best_edges);
-    }
-
-    out
 }
 
 /// Stucki error diffusion dithering - higher quality than Floyd-Steinberg

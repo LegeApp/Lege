@@ -152,51 +152,7 @@ pub fn compute_pixel_bounds_for_margin(
     image: &image::RgbImage,
     config: &crate::pipeline::config::PipelineConfig,
 ) -> Option<ContentBounds> {
-    use Legencode::types::BinarizationOptions;
-
-    let want_invert_input = config.invert_input();
-    let mut want_invert_output = config.binarization().invert;
-    if want_invert_input && want_invert_output {
-        // Avoid double inversion so black text stays black.
-        want_invert_output = false;
-    }
-
-    let options = BinarizationOptions {
-        invert: want_invert_output,
-        invert_input: want_invert_input,
-        k_factor: config.binarization().k_factor,
-        use_heavy_duty: config.binarization().use_heavy_duty
-            && !config.binarization().use_fixed_threshold,
-        patch_percentage: config.binarization().patch_percentage,
-        no_patch: config.binarization().no_patch,
-        use_fixed_threshold: config.binarization().use_fixed_threshold,
-        fixed_threshold: config.binarization().fixed_threshold,
-    };
-
-    let mut binarized = Legencode::color::binarization::binarize_image_raw(
-        image.as_raw(),
-        image.width() as usize,
-        image.height() as usize,
-        &options,
-    );
-
-    if binarized.is_empty() {
-        return None;
-    }
-
-    // Normalize to 0/1 if the output is still 0/255 format
-    if binarized.iter().any(|&b| b > 1) {
-        for value in binarized.iter_mut() {
-            *value = if *value > 128 { 1 } else { 0 };
-        }
-    }
-
-    // Invert polarity: 0=white (background), 1=black (content) for mask analysis
-    for value in binarized.iter_mut() {
-        *value = if *value == 0 { 1 } else { 0 };
-    }
-
-    calculate_content_bounds_from_binary_mask(&binarized, image.width(), image.height())
+    crate::pipeline::page_analysis::compute_pixel_bounds_for_margin(image, config)
 }
 
 /// Analyzes a set of detections to find the absolute outer bounds of the page content.
@@ -626,6 +582,7 @@ pub fn transform_detections(
 /// and detect edge cases like blank pages, handwriting in margins, etc.
 pub fn analyze_document_margins(
     all_page_data: &[PageMarginInput],
+    config: &crate::pipeline::config::PipelineConfig,
     original_margin_setting: MarginSettings,
     crop_footnotes: bool,
 ) -> DocumentMarginAnalysis {
@@ -634,7 +591,7 @@ pub fn analyze_document_margins(
 
     // First pass: analyze each page individually
     for page_input in all_page_data {
-        let page_margin_data = analyze_single_page_margins(page_input);
+        let page_margin_data = analyze_single_page_margins(page_input, config);
 
         // Collect pages suitable for baseline calculation (after page 5, not blank, not full-page)
         if page_input.page_index >= 5 && should_use_page_for_baseline(&page_margin_data) {
@@ -691,22 +648,29 @@ pub fn analyze_document_margins(
 }
 
 /// Analyzes margins for a single page
-fn analyze_single_page_margins(page: &PageMarginInput) -> PageMarginData {
-    let detection_bounds = if page.detections.is_empty() {
-        None
-    } else {
-        calculate_content_bounds(&page.detections, page.page_width, page.page_height, false)
-    };
-
-    let content_bounds = detection_bounds.or(page.pixel_bounds);
-    let is_blank = page.detections.is_empty() && page.pixel_bounds.is_none();
-
-    let is_full_page_image = is_full_page_image(
-        &page.detections,
+fn analyze_single_page_margins(
+    page: &PageMarginInput,
+    config: &crate::pipeline::config::PipelineConfig,
+) -> PageMarginData {
+    let mut detections = page.detections.clone();
+    crate::pipeline::page_analysis::maybe_apply_yolo_full_page_detection(
+        &mut detections,
         page.page_width,
         page.page_height,
-        content_bounds,
+        config,
+        &crate::types::LABEL_CLASSIFIER,
     );
+
+    let classification = crate::pipeline::page_analysis::classify_page(
+        &detections,
+        page.page_width,
+        page.page_height,
+        page.pixel_bounds,
+    );
+
+    let content_bounds = classification.content_bounds;
+    let is_blank = classification.is_blank;
+    let is_full_page_image = classification.is_full_page_image;
 
     let (margin_left, margin_right, margin_top, margin_bottom) =
         if let Some(bounds) = content_bounds {
@@ -763,35 +727,6 @@ fn analyze_single_page_margins(page: &PageMarginInput) -> PageMarginData {
     data
 }
 
-/// Detects if a page contains a full-page image that should use standard margins
-fn is_full_page_image(
-    detections: &[Detection],
-    page_width: u32,
-    page_height: u32,
-    content_bounds: Option<ContentBounds>,
-) -> bool {
-    if detections.len() == 1 {
-        let det = &detections[0];
-        let region_width = det.bbox[2] - det.bbox[0];
-        let region_height = det.bbox[3] - det.bbox[1];
-
-        // Consider it a full-page image if it covers more than 80% of the page
-        let coverage = (region_width * region_height) as f32 / (page_width * page_height) as f32;
-        coverage > 0.8
-    } else if detections.is_empty() {
-        if let Some(bounds) = content_bounds {
-            let coverage =
-                (bounds.width() * bounds.height()) as f32 / (page_width * page_height) as f32;
-            coverage > 0.8
-        } else {
-            false
-        }
-    } else {
-        false
-    }
-}
-
-/// Determines if a page should be used for baseline margin calculation
 fn should_use_page_for_baseline(page_data: &PageMarginData) -> bool {
     !page_data.is_blank && !page_data.is_full_page_image && page_data.content_bounds.is_some()
 }
@@ -1218,3 +1153,5 @@ fn standardize_and_center_page(
 
     Ok(new_image)
 }
+
+

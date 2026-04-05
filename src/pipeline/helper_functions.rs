@@ -7,7 +7,7 @@ use crate::bbox_trace;
 use crate::engine::Detection;
 use crate::ocr::check_tesseract_availability;
 use crate::pipeline::config::PipelineConfig;
-use crate::types::{CoverFormat, LabelClassifier};
+use crate::types::CoverFormat;
 use crate::{info_log, warn_log};
 use Legencode::streamline::Jbig2Mode;
 
@@ -137,234 +137,7 @@ pub fn rounded_clamped_bbox(
     (x1 as u32, y1 as u32, x2 as u32, y2 as u32)
 }
 
-/// If the page has exactly one image detection and no substantive body text,
-/// expand that image to the full page. This is the most permissive full-page
-/// check: it avoids under-segmentation artefacts where YOLO detects 80-90% of
-/// a plate and leaves a thin strip of thresholded base layer visible.
-pub fn maybe_expand_sole_image_to_full_page(
-    detections: &mut Vec<Detection>,
-    page_w: u32,
-    page_h: u32,
-    classifier: &LabelClassifier,
-) {
-    let pw = page_w as f32;
-    let ph = page_h as f32;
-    if pw <= 1.0 || ph <= 1.0 {
-        return;
-    }
-    let image_count = detections.iter().filter(|d| classifier.is_image_label(d)).count();
-    let substantive_text_count = detections.iter().filter(|d| classifier.is_substantive_text(d)).count();
-
-    if image_count == 1 && substantive_text_count == 0 {
-        if let Some(det) = detections
-            .iter_mut()
-            .find(|d| {
-                classifier.is_image_label(d)
-                    && !matches!(
-                        d.class_name.as_deref(),
-                        Some("header_image" | "footer_image")
-                    )
-            })
-        {
-            bbox_trace!(
-                "[FULL-PAGE] sole image det, expanding [{:.0},{:.0},{:.0},{:.0}] -> [0,0,{pw},{ph}]",
-                det.bbox[0], det.bbox[1], det.bbox[2], det.bbox[3]
-            );
-            det.bbox = [0.0, 0.0, pw, ph];
-        }
-    }
-}
-
-/// Minimum height (fraction of page) for a **figure** bbox to be treated as full-bleed art.
-/// YOLO often under-segments tall images; expanding to the full page matches cover-style handling.
-pub const FULL_BLEED_IMAGE_MIN_HEIGHT_FRAC: f32 = 0.65;
-/// Minimum width (fraction of page); relaxed so near full-bleed plates still expand.
-pub const FULL_BLEED_IMAGE_MIN_WIDTH_FRAC: f32 = 0.78;
-/// When several image dets all expand to full page, keep only the highest-confidence one.
-const FULL_PAGE_BBOX_EPS: f32 = 0.02;
-/// Bbox must be within this fraction of the **raster border** on both sides of an axis before we
-/// snap that axis to `[0..page]`. Without this, a **centered** illustration that merely covers
-/// ~80% width×height was expanded to the full page, pulling margin/paper into the overlay (looks
-/// like “color or dither stretched to the sides” even when YOLO was tight on the art).
-const FULL_BLEED_EDGE_INSET_MAX_FRAC: f32 = 0.045;
-
-#[inline]
-fn touches_both_horizontal_edges(b: &[f32; 4], page_w: f32) -> bool {
-    if page_w <= 1.0 {
-        return false;
-    }
-    let eps = page_w * FULL_BLEED_EDGE_INSET_MAX_FRAC;
-    b[0] <= eps && b[2] >= page_w - eps
-}
-
-#[inline]
-fn touches_both_vertical_edges(b: &[f32; 4], page_h: f32) -> bool {
-    if page_h <= 1.0 {
-        return false;
-    }
-    let eps = page_h * FULL_BLEED_EDGE_INSET_MAX_FRAC;
-    b[1] <= eps && b[3] >= page_h - eps
-}
-
-fn bbox_covers_almost_full_page(bbox: &[f32; 4], page_w: u32, page_h: u32, eps: f32) -> bool {
-    let pw = page_w as f32;
-    let ph = page_h as f32;
-    if pw <= 1.0 || ph <= 1.0 {
-        return false;
-    }
-    let w = (bbox[2] - bbox[0]).max(0.0);
-    let h = (bbox[3] - bbox[1]).max(0.0);
-    w >= pw * (1.0 - eps)
-        && h >= ph * (1.0 - eps)
-        && bbox[0].abs() <= pw * eps
-        && bbox[1].abs() <= ph * eps
-}
-
-fn dedupe_full_page_image_detections(
-    detections: &mut Vec<Detection>,
-    classifier: &LabelClassifier,
-    page_w: u32,
-    page_h: u32,
-) {
-    let mut best_i: Option<usize> = None;
-    let mut best_conf = -1.0f32;
-    for (i, d) in detections.iter().enumerate() {
-        if classifier.is_image_label(d)
-            && bbox_covers_almost_full_page(&d.bbox, page_w, page_h, FULL_PAGE_BBOX_EPS)
-        {
-            if d.confidence > best_conf {
-                best_conf = d.confidence;
-                best_i = Some(i);
-            }
-        }
-    }
-    let Some(keep) = best_i else {
-        return;
-    };
-    let mut idx = 0usize;
-    detections.retain(|d| {
-        let cur = idx;
-        idx += 1;
-        if !classifier.is_image_label(d) {
-            return true;
-        }
-        if !bbox_covers_almost_full_page(&d.bbox, page_w, page_h, FULL_PAGE_BBOX_EPS) {
-            return true;
-        }
-        cur == keep
-    });
-}
-
-/// Expand near full-bleed **image** layout boxes toward page edges (PDF/DJVU pipelines).
-///
-/// Layout models often shrink true edge-to-edge plates slightly. We only **snap an axis** to the
-/// full raster when the box is already large **and** already touches **both** edges on that axis
-/// (within [`FULL_BLEED_EDGE_INSET_MAX_FRAC`]). Large **centered** figures keep YOLO geometry.
-pub fn apply_full_bleed_image_bbox_expansion(
-    detections: &mut Vec<Detection>,
-    page_w: u32,
-    page_h: u32,
-    classifier: &LabelClassifier,
-    enable_yolo_top_fill: bool,
-) {
-    let pw = page_w as f32;
-    let ph = page_h as f32;
-    if pw <= 1.0 || ph <= 1.0 {
-        return;
-    }
-
-    // Asymmetric "top-clipped full page image" rule for YOLO:
-    // YOLO often detects nearly full-width art where the bottom is near
-    // the raster bottom, but it misses a top band. The symmetric rule
-    // requires touching both vertical edges and therefore won't expand.
-    const ONE_SIDED_TOP_FILL_MIN_WIDTH_FRAC: f32 = 0.82;
-    const ONE_SIDED_TOP_FILL_MIN_HEIGHT_FRAC: f32 = 0.60;
-    const ONE_SIDED_TOP_FILL_MAX_TOP_GAP_FRAC: f32 = 0.25; // y1 <= 25% page height
-    const ONE_SIDED_TOP_FILL_BOTTOM_EDGE_FRAC: f32 = 0.06; // y2 >= 94% page height
-    const ONE_SIDED_TOP_FILL_SIDE_EDGE_FRAC: f32 = 0.06; // x1 <= 6% and x2 >= 94%
-
-    #[inline]
-    fn touches_left_right_edges(b: &[f32; 4], page_w: f32) -> bool {
-        let eps = page_w * ONE_SIDED_TOP_FILL_SIDE_EDGE_FRAC;
-        b[0] <= eps && b[2] >= page_w - eps
-    }
-
-    #[inline]
-    fn touches_bottom_edge(b: &[f32; 4], page_h: f32) -> bool {
-        let eps = page_h * ONE_SIDED_TOP_FILL_BOTTOM_EDGE_FRAC;
-        b[3] >= page_h - eps
-    }
-
-    #[inline]
-    fn looks_like_top_clipped_full_page_image(
-        b: &[f32; 4],
-        page_w: f32,
-        page_h: f32,
-    ) -> bool {
-        let w = (b[2] - b[0]).max(0.0);
-        let h = (b[3] - b[1]).max(0.0);
-        let wf = w / page_w;
-        let hf = h / page_h;
-
-        wf >= ONE_SIDED_TOP_FILL_MIN_WIDTH_FRAC
-            && hf >= ONE_SIDED_TOP_FILL_MIN_HEIGHT_FRAC
-            && touches_left_right_edges(b, page_w)
-            && touches_bottom_edge(b, page_h)
-            && b[1] <= page_h * ONE_SIDED_TOP_FILL_MAX_TOP_GAP_FRAC
-    }
-    for det in detections.iter_mut() {
-        if !classifier.is_image_label(det) {
-            continue;
-        }
-        let b = det.bbox;
-        let w = (b[2] - b[0]).max(0.0);
-        let h = (b[3] - b[1]).max(0.0);
-        let wf = w / pw;
-        let hf = h / ph;
-
-        let expand_x =
-            wf >= FULL_BLEED_IMAGE_MIN_WIDTH_FRAC && touches_both_horizontal_edges(&b, pw);
-        let expand_y =
-            hf >= FULL_BLEED_IMAGE_MIN_HEIGHT_FRAC && touches_both_vertical_edges(&b, ph);
-
-        if expand_x || expand_y {
-            det.bbox = [
-                if expand_x { 0.0 } else { b[0] },
-                if expand_y { 0.0 } else { b[1] },
-                if expand_x { pw } else { b[2] },
-                if expand_y { ph } else { b[3] },
-            ];
-        } else if enable_yolo_top_fill && looks_like_top_clipped_full_page_image(&b, pw, ph) {
-            let mut new_b = b;
-
-            // Always fill the missing top band.
-            new_b[1] = 0.0;
-
-            // If left/right are already near edges, complete them too.
-            if touches_left_right_edges(&new_b, pw) {
-                new_b[0] = 0.0;
-                new_b[2] = pw;
-            }
-
-            // If bottom is already near the raster, complete it as well.
-            if touches_bottom_edge(&new_b, ph) {
-                new_b[3] = ph;
-            }
-
-            crate::bbox_trace!(
-                "[FULL-PAGE] yolo top-fill snap {:.0},{:.0},{:.0},{:.0} -> {:.0},{:.0},{:.0},{:.0}",
-                b[0], b[1], b[2], b[3],
-                new_b[0], new_b[1], new_b[2], new_b[3]
-            );
-
-            det.bbox = new_b;
-        }
-    }
-    dedupe_full_page_image_detections(detections, classifier, page_w, page_h);
-}
-
-/// If intersection area exceeds this fraction of the **smaller** box, merge image detections.
-/// Reduces double dither / double overlay when layout emits overlapping figure boxes.
+/// If intersection area exceeds this fraction of the smaller box, merge image detections.
 pub const IMAGE_DET_OVERLAP_MERGE_FRAC: f32 = 0.5;
 
 fn detection_bbox_area(b: &[f32; 4]) -> f32 {
@@ -373,12 +146,10 @@ fn detection_bbox_area(b: &[f32; 4]) -> f32 {
     w * h
 }
 
-/// Skip merging when one box is near–full-page and the other is much smaller — they are usually
-/// separate illustrations (full-bleed plate vs inset/logo), not duplicate tiles of the same photo.
 fn skip_merge_full_page_vs_small(
     existing: &Detection,
     det: &Detection,
-    classifier: &LabelClassifier,
+    classifier: &crate::types::LabelClassifier,
     page_w: u32,
     page_h: u32,
 ) -> bool {
@@ -401,7 +172,7 @@ fn skip_merge_full_page_vs_small(
 fn merge_one_image_detection_into_list(
     out: &mut Vec<Detection>,
     det: Detection,
-    classifier: &LabelClassifier,
+    classifier: &crate::types::LabelClassifier,
     overlap_frac_min: f32,
     page_w: u32,
     page_h: u32,
@@ -448,12 +219,10 @@ fn merge_one_image_detection_into_list(
     false
 }
 
-/// Merge overlapping **image** layout boxes so each physical illustration is processed once.
-///
-/// Call after full-bleed expansion. Repeats until stable so chains of overlaps collapse.
+/// Merge overlapping image layout boxes so each physical illustration is processed once.
 pub fn merge_overlapping_image_detections(
     detections: &mut Vec<Detection>,
-    classifier: &LabelClassifier,
+    classifier: &crate::types::LabelClassifier,
     page_w: u32,
     page_h: u32,
 ) {
@@ -478,97 +247,6 @@ pub fn merge_overlapping_image_detections(
             break;
         }
     }
-}
-
-/// Fixed threshold used for blank-page fallback when adaptive binarization is active.
-pub const BLANK_PAGE_FALLBACK_THRESHOLD: u8 = 96;
-
-/// Fast heuristic: treat a page as visually blank only when almost all sampled pixels are near-white.
-///
-/// This prevents "no detections" failures from forcing blank-page thresholding on real content pages.
-pub fn is_visually_blank_page(image: &RgbImage) -> bool {
-    let raw = image.as_raw();
-    if raw.len() < 3 {
-        return true;
-    }
-
-    let pixel_count = (image.width() as usize).saturating_mul(image.height() as usize);
-    if pixel_count == 0 {
-        return true;
-    }
-
-    // Sample up to ~200k pixels for speed on large pages while keeping stable ratios.
-    let step = (pixel_count / 200_000).max(1);
-    let mut sampled = 0usize;
-    let mut non_white = 0usize;
-
-    for px_index in (0..pixel_count).step_by(step) {
-        let base = px_index * 3;
-        if base + 2 >= raw.len() {
-            break;
-        }
-
-        let r = raw[base] as u16;
-        let g = raw[base + 1] as u16;
-        let b = raw[base + 2] as u16;
-        // Integer luminance approximation.
-        let luma = (299u32 * r as u32 + 587u32 * g as u32 + 114u32 * b as u32) / 1000;
-
-        sampled += 1;
-        if luma < 245 {
-            non_white += 1;
-        }
-    }
-
-    if sampled == 0 {
-        return true;
-    }
-
-    let non_white_ratio = non_white as f32 / sampled as f32;
-    non_white_ratio < 0.003
-}
-
-/// Sum of detection bounding-box areas divided by page area (0.0–1.0). Overlapping boxes may
-/// double-count; this is only used as a coarse “how much of the page is covered?” heuristic.
-pub fn detections_bbox_area_fraction(detections: &[Detection], width: u32, height: u32) -> f32 {
-    let page_area = (width as f64) * (height as f64);
-    if page_area <= 0.0 {
-        return 0.0;
-    }
-    let mut sum: f64 = 0.0;
-    for det in detections {
-        let (x1, y1, x2, y2) = rounded_clamped_bbox(det.bbox, width, height);
-        let w = (x2.saturating_sub(x1)) as f64;
-        let h = (y2.saturating_sub(y1)) as f64;
-        sum += w * h;
-    }
-    (sum / page_area).min(1.0) as f32
-}
-
-/// Decide whether to force simple thresholding for blank pages.
-///
-/// Uses `InferenceResult.has_no_detections` plus a visual blank check. If the page is almost
-/// entirely paper-white but the layout model still returns a few small boxes (common on blank
-/// scans), [`detections_bbox_area_fraction`] can be below the cutoff so adaptive Sauvola noise is
-/// still avoided.
-pub fn should_force_blank_page_threshold(
-    config: &PipelineConfig,
-    has_no_filtered_detections: bool,
-    page_is_visually_blank: bool,
-    detections_area_fraction: f32,
-) -> bool {
-    if !config.enable_layout_detection() {
-        return false;
-    }
-    if config.binarization().use_fixed_threshold || config.binarization().use_heavy_duty {
-        return false;
-    }
-    if !page_is_visually_blank {
-        return false;
-    }
-    // Ignore stray layout boxes up to this fraction of page area when the page is visually blank.
-    const MAX_SPOOF_FRACTION: f32 = 0.02;
-    has_no_filtered_detections || detections_area_fraction <= MAX_SPOOF_FRACTION
 }
 
 // Helper to encode a small image region; used by image overlays in the page pipeline
@@ -1448,3 +1126,7 @@ mod tests {
         completed.expect("send ok");
     }
 }
+
+
+
+
