@@ -142,7 +142,7 @@ fn default_gui_text() -> GuiText {
                 base_format: "Base format:".to_string(),
                 image_output_type: "Image output type:".to_string(),
                 cover_format: "Image format:".to_string(),
-                layout_detection: "Layout Detection".to_string(),
+                layout_detection: "Layout Detection:".to_string(),
                 inverted_colors: "Inverted colors".to_string(),
                 jpeg_compatibility: "JPEG Compatibility".to_string(),
                 ocr_text_layer: "OCR Text Layer".to_string(),

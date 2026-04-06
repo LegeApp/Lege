@@ -601,6 +601,35 @@ pub fn open_folder_in_explorer(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Open a file or URL with the system default handler.
+pub fn open_with_system(target: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .spawn()?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(target).spawn()?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(target).spawn()?;
+    }
+
+    Ok(())
+}
+
+/// Resolve a bundled docs file located next to the installed binary under `docs/`.
+pub fn bundled_docs_path(file_name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    Some(exe_dir.join("docs").join(file_name))
+}
+
 // A helper function to truncate the path from the beginning.
 // This preserves the file/folder name which is often more useful.
 pub fn truncate_path(path: &std::path::Path, max_len: usize) -> String {
