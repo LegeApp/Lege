@@ -1876,11 +1876,13 @@ fn DebugLogViewerPopup(_state: State<AppState>) -> Element {
 }
 
 fn AboutPopup(mut state: State<AppState>) -> Element {
-    if !state.read().show_about {
+    let show_about = state.read().show_about;
+    let email_text = use_state(|| "read@legeapp.com".to_string());
+
+    if !show_about {
         return rect().into();
     }
 
-    let email_text = use_state(|| "read@legeapp.com".to_string());
     let on_close = Rc::new(RefCell::new(move || state.write().show_about = false));
     let on_close_request = on_close.clone();
     let on_close_button = on_close.clone();
