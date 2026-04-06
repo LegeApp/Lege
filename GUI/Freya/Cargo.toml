@@ -1,0 +1,47 @@
+[package]
+name = "freya-gui"
+version = "1.0.0"
+edition = "2024"
+
+[[bin]]
+name = "lege-freya-gui"
+path = "src/main.rs"
+
+[features]
+default = []
+gui = []
+debug-logging = ["lege/debug-logging", "Legencode/debug-logging"]
+
+[dependencies]
+freya = { path = "../../../freya-main/crates/freya", default-features = false, features = ["skia-engine", "markdown"] }
+rfd = "0.15"
+tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "fs", "time", "sync"] }
+anyhow = "1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+dirs = "6.0"
+uuid = { version = "1.0", features = ["v4"] }
+image = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+once_cell = "1.19"
+raw-window-handle = "0.6"
+atty = "0.2.14"
+
+Legencode = { path = "../../Legencode" }
+lege = { path = "../.." }
+
+[build-dependencies]
+winres = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["wincon", "winuser"] }
+windows = { workspace = true, features = [
+  "Foundation",
+  "Win32_Storage_Packaging_Appx",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Com",
+  "Win32_Foundation"
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

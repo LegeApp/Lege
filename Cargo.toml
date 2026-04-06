@@ -17,6 +17,7 @@ members = [
     "Legencode/src/jbig2enc-rust",
     "Legencode/src/TooJpeg-rust",
     "GUI/Dioxus",
+    "GUI/Freya",
 ]
 default-members = [
     ".",
