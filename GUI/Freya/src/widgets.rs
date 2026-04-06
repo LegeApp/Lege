@@ -53,18 +53,18 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
     rect()
         .vertical()
         .width(Size::fill())
-        .spacing(2.)
+        .spacing(1.)
         .child(
             label()
                 .text(label_text.into())
-                .font_size(14.)
+                .font_size(13.)
                 .color(TEXT)
                 .font_weight(500),
         )
         .child(
             rect()
                 .width(Size::fill())
-                .min_height(Size::px(30.))
+                .min_height(Size::px(24.))
                 .child(control),
         )
         .into()
@@ -79,11 +79,50 @@ pub fn lege_toggle_row(
         label_text,
         Button::new()
             .width(Size::px(104.))
-            .height(Size::px(30.))
+            .height(Size::px(24.))
             .on_press(on_press)
             .child(current_text.into())
             .into(),
     )
+}
+
+pub fn lege_inline_toggle_row(
+    label_text: impl Into<String>,
+    current_text: impl Into<String>,
+    on_press: impl FnMut(Event<PressEventData>) + 'static,
+) -> Element {
+    let label_text = label_text.into();
+    let current_text = current_text.into();
+
+    rect()
+        .width(Size::fill())
+        .height(Size::px(28.))
+        .padding((0., 0., 4., 0.))
+        .direction(Direction::Horizontal)
+        .cross_align(Alignment::Center)
+        .spacing(8.)
+        .child(
+            rect()
+                .width(Size::px(150.))
+                .height(Size::fill())
+                .cross_align(Alignment::Start)
+                .main_align(Alignment::Center)
+                .child(
+                    label()
+                        .text(label_text)
+                        .font_size(13.)
+                        .color(TEXT)
+                        .font_weight(500),
+                ),
+        )
+        .child(
+            Button::new()
+                .width(Size::px(104.))
+                .height(Size::px(24.))
+                .on_press(on_press)
+                .child(current_text),
+        )
+        .into()
 }
 
 pub fn lege_checkbox_row(
@@ -91,12 +130,18 @@ pub fn lege_checkbox_row(
     selected: bool,
     mut on_select: impl FnMut(()) + 'static,
 ) -> Element {
-    Tile::new()
-        .on_select(move |_| on_select(()))
-        .leading(
+    // Freya's built-in `Tile` has a fixed padding of 8px, which makes rows feel too tall here.
+    // This custom row keeps the same behavior but with tighter spacing.
+    rect()
+        .direction(Direction::Horizontal)
+        .padding((0., 2., 0., 2.))
+        .spacing(8.)
+        .cross_align(Alignment::Center)
+        .on_press(move |_| on_select(()))
+        .child(
             rect()
-                .width(Size::px(16.))
-                .height(Size::px(16.))
+                .width(Size::px(14.))
+                .height(Size::px(14.))
                 .border(
                     Border::new()
                         .fill(Color::from_rgb(64, 64, 64))
@@ -114,7 +159,7 @@ pub fn lege_checkbox_row(
                     Some(
                         label()
                             .text("X")
-                            .font_size(12.)
+                            .font_size(11.)
                             .font_weight(700)
                             .color(Color::from_rgb(30, 30, 30))
                             .into(),
@@ -123,12 +168,7 @@ pub fn lege_checkbox_row(
                     None::<Element>
                 }),
         )
-        .child(
-            label()
-                .text(text.into())
-                .font_size(14.)
-                .color(TEXT),
-        )
+        .child(label().text(text.into()).font_size(13.).color(TEXT))
         .into()
 }
 
@@ -282,24 +322,26 @@ pub fn lege_main_shell(
                                     rect()
                                         .width(Size::fill())
                                         .height(Size::percent(40.))
-                                        .direction(Direction::Horizontal)
-                                        .cross_align(Alignment::End)
-                                        .main_align(Alignment::Center)
                                         .child(
                                             rect()
-                                                .width(Size::px(320.))
+                                                .width(Size::fill())
                                                 .height(Size::fill())
-                                                .child(popup_rail),
+                                                .child(
+                                                    rect()
+                                                        .width(Size::fill())
+                                                        .height(Size::fill())
+                                                        .cross_align(Alignment::Center)
+                                                        .main_align(Alignment::End)
+                                                        .child(process_bar),
+                                                )
+                                                .child(
+                                                    rect()
+                                                        .width(Size::px(220.))
+                                                        .height(Size::fill())
+                                                        .position(Position::new_absolute().left(0.).top(0.))
+                                                        .child(popup_rail),
+                                                ),
                                         )
-                                        .child(
-                                            rect()
-                                                .expanded()
-                                                .height(Size::fill())
-                                                .cross_align(Alignment::Center)
-                                                .main_align(Alignment::End)
-                                                .child(process_bar),
-                                        )
-                                        .child(rect().width(Size::px(320.))),
                                 )
                                 .child(
                                     rect()

@@ -13,6 +13,7 @@ use crate::models::{
 };
 use crate::version::display_version;
 use crate::widgets;
+use crate::markdown;
 use lege::target_profiles;
 
 #[cfg(feature = "debug-logging")]
@@ -187,9 +188,9 @@ impl Default for AppState {
             show_log_viewer: false,
             processing_log: logging::load_log_entries().unwrap_or_default(),
             show_licenses: false,
-            licenses_content: include_str!("../../../docs/THIRD-PARTY-LICENSES.md").to_string(),
+            licenses_content: String::new(),
             show_documentation: false,
-            documentation_content: include_str!("../../../docs/Documentation.md").to_string(),
+            documentation_content: String::new(),
             show_about: false,
             show_queue_viewer: false,
             #[cfg(feature = "debug-logging")]
@@ -331,6 +332,14 @@ fn two_option_toggle(
     widgets::lege_toggle_row(label_text, current_text, on_press)
 }
 
+fn two_option_toggle_inline(
+    label_text: impl Into<String>,
+    current_text: impl Into<String>,
+    on_press: impl FnMut(Event<PressEventData>) + 'static,
+) -> Element {
+    widgets::lege_inline_toggle_row(label_text, current_text, on_press)
+}
+
 fn compact_checkbox_row(
     text: impl Into<String>,
     selected: bool,
@@ -393,6 +402,7 @@ fn popup_message_cards(state: State<AppState>) -> Vec<Element> {
 }
 
 fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, u8)) -> Element {
+    let text = text.into();
     rect()
         .background(background)
         .border(
@@ -406,12 +416,35 @@ fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, 
         .width(Size::fill())
         .child(
             rect().width(Size::fill()).child(
-                label()
-                    .text(text.into())
-                    .font_size(font_size)
-                    .max_lines(5)
-                    .color(TEXT),
+                paragraph()
+                    .width(Size::fill())
+                    .span(Span::new(text).font_size(font_size).color(TEXT))
+                    .line_height(1.25)
+                    .max_lines(5),
             ),
+        )
+        .into()
+}
+
+fn tooltip_note_card(text: impl Into<String>) -> Element {
+    let text = text.into();
+    rect()
+        .background(CARD_BG)
+        .border(
+            Border::new()
+                .fill(BORDER)
+                .width(1.)
+                .alignment(BorderAlignment::Inner),
+        )
+        .corner_radius(6.)
+        .padding((6., 8., 6., 8.))
+        .width(Size::fill())
+        .child(
+            paragraph()
+                .width(Size::fill())
+                .span(Span::new(text).font_size(11.).color(TEXT))
+                .line_height(1.2)
+                .max_lines(6),
         )
         .into()
 }
@@ -423,7 +456,7 @@ fn PopupRail(state: State<AppState>) -> Element {
     }
 
     rect()
-        .width(Size::px(320.))
+        .width(Size::fill())
         .height(Size::fill())
         .vertical()
         .main_align(Alignment::End)
@@ -448,9 +481,9 @@ fn panel_tooltip_overlay(state: State<AppState>, area: TooltipArea, anchor_right
     };
 
     rect()
-        .width(Size::px(236.))
+        .width(Size::px(220.))
         .position(position)
-        .child(rail_note_card(text, 12., CARD_BG))
+        .child(tooltip_note_card(text))
         .into()
 }
 
@@ -609,8 +642,6 @@ pub fn app() -> impl IntoElement {
             ))
             .child(QueueViewerPopup(state))
             .child(LogViewerPopup(state))
-            .child(DocumentationPopup(state))
-            .child(LicensesPopup(state))
             .child(AboutPopup(state))
             .child(DebugLogViewerPopup(state)),
     )
@@ -752,17 +783,17 @@ fn CombinedSettingsPanel(
                     .spacing(10.)
                     .child(
                     rect()
-                        .width(Size::percent(31.))
+                        .width(Size::percent(64.))
                         .height(Size::fill())
                         .vertical()
                         .main_align(Alignment::Start)
-                        .spacing(5.)
+                        .spacing(6.)
                         .child(tooltip_wrap_at(
                             state,
                             TooltipArea::LeftCard,
                             GUI_TEXT.interactive.tooltips.output_format.clone(),
                             AttachedPosition::Right,
-                            two_option_toggle(
+                            two_option_toggle_inline(
                                 GUI_TEXT.interactive.labels.output_format.clone(),
                                 options.output_format.to_string(),
                                 {
@@ -782,7 +813,7 @@ fn CombinedSettingsPanel(
                             TooltipArea::LeftCard,
                             GUI_TEXT.interactive.tooltips.image_output_type.clone(),
                             AttachedPosition::Right,
-                            two_option_toggle(
+                            two_option_toggle_inline(
                                 GUI_TEXT.interactive.labels.image_output_type.clone(),
                                 options.image_processing_type.to_string(),
                                 {
@@ -806,7 +837,7 @@ fn CombinedSettingsPanel(
                             TooltipArea::LeftCard,
                             GUI_TEXT.interactive.tooltips.layout_detection.clone(),
                             AttachedPosition::Right,
-                            two_option_toggle(
+                            two_option_toggle_inline(
                                 GUI_TEXT.interactive.labels.layout_detection.clone(),
                                 if options.layout_analysis { "On" } else { "Off" },
                                 {
@@ -835,7 +866,7 @@ fn CombinedSettingsPanel(
                                 TooltipArea::LeftCard,
                                 GUI_TEXT.interactive.tooltips.base_format.clone(),
                                 AttachedPosition::Right,
-                                two_option_toggle(
+                                two_option_toggle_inline(
                                     GUI_TEXT.interactive.labels.base_format.clone(),
                                     options.compression_type.to_string(),
                                     {
@@ -853,24 +884,16 @@ fn CombinedSettingsPanel(
                             ))
                         } else {
                             None::<Element>
-                        }),
-                    )
-                    .child(
-                    rect()
-                        .width(Size::percent(31.))
-                        .height(Size::fill())
-                        .vertical()
-                        .main_align(Alignment::Start)
-                        .spacing(5.)
+                        })
                         .child(
                             rect()
-                                .padding((0., 2., 0., 0.))
-                                .spacing(6.)
+                                .padding((0., 6., 0., 0.))
+                                .spacing(3.)
                                 .child(tooltip_wrap_at(
                                     state,
                                     TooltipArea::LeftCard,
                                     GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
-                                    AttachedPosition::Left,
+                                    AttachedPosition::Right,
                                     compact_checkbox_row(
                                         GUI_TEXT.interactive.labels.inverted_colors.clone(),
                                         options.invert_input,
@@ -887,7 +910,7 @@ fn CombinedSettingsPanel(
                                     state,
                                     TooltipArea::LeftCard,
                                     GUI_TEXT.interactive.tooltips.ocr_text_layer.clone(),
-                                    AttachedPosition::Left,
+                                    AttachedPosition::Right,
                                     compact_checkbox_row(
                                         GUI_TEXT.interactive.labels.ocr_text_layer.clone(),
                                         options.use_ocr,
@@ -904,7 +927,7 @@ fn CombinedSettingsPanel(
                                     state,
                                     TooltipArea::LeftCard,
                                     GUI_TEXT.interactive.tooltips.high_quality_output.clone(),
-                                    AttachedPosition::Left,
+                                    AttachedPosition::Right,
                                     compact_checkbox_row(
                                         GUI_TEXT.interactive.labels.high_quality_output.clone(),
                                         options.high_quality_output,
@@ -918,7 +941,7 @@ fn CombinedSettingsPanel(
                                         },
                                     ),
                                 )),
-                        ),
+                        )
                     )
                     .child(
                     rect()
@@ -926,7 +949,7 @@ fn CombinedSettingsPanel(
                         .height(Size::fill())
                         .vertical()
                         .main_align(Alignment::Start)
-                        .spacing(5.)
+                        .spacing(3.)
                         .child(section_label(if layout_on {
                             "Binarization"
                         } else {
@@ -945,12 +968,12 @@ fn CombinedSettingsPanel(
                                 if effective_threshold {
                                     Input::new(threshold_input)
                                         .placeholder("200")
-                                        .expanded()
+                                        .width(Size::px(84.))
                                         .into()
                                 } else {
                                     Input::new(k_factor_input)
                                         .placeholder("0.2")
-                                        .expanded()
+                                        .width(Size::px(84.))
                                         .into()
                                 },
                             ),
@@ -958,7 +981,7 @@ fn CombinedSettingsPanel(
                         .child(
                             rect()
                                 .padding((0., 4., 0., 0.))
-                                .spacing(6.)
+                                .spacing(3.)
                                 .child(tooltip_wrap(
                                     state,
                                     TooltipArea::LeftCard,
@@ -1199,7 +1222,7 @@ fn CenterSettingsPanel(
                         .height(Size::fill())
                         .vertical()
                         .main_align(Alignment::Start)
-                        .spacing(6.)
+                        .spacing(3.)
                         .child(settings_row(
                             GUI_TEXT.interactive.labels.page_range.clone(),
                             Input::new(page_range_input)
@@ -1243,7 +1266,7 @@ fn CenterSettingsPanel(
                         .height(Size::fill())
                         .vertical()
                         .main_align(Alignment::Start)
-                        .spacing(6.)
+                        .spacing(3.)
                         .child(tooltip_wrap_at(
                             state,
                             TooltipArea::RightCard,
@@ -1335,12 +1358,12 @@ fn RightSettingsPanel(
                 if use_threshold {
                     Input::new(threshold_input)
                         .placeholder("200")
-                        .expanded()
+                        .width(Size::px(84.))
                         .into()
                 } else {
                     Input::new(k_factor_input)
                         .placeholder("0.2")
-                        .expanded()
+                        .width(Size::px(84.))
                         .into()
                 },
             ),
@@ -1448,9 +1471,10 @@ fn StatusBar(state: State<AppState>) -> Element {
             .width(Size::fill())
             .height(Size::fill())
             .direction(Direction::Vertical)
-            .spacing(3.)
-            .main_align(Alignment::End)
+            .spacing(4.)
+            .main_align(Alignment::Start)
             .cross_align(Alignment::End)
+            // Top-right anchored buttons (Queue / Log)
             .child(
                 rect()
                     .width(Size::fill())
@@ -1478,13 +1502,47 @@ fn StatusBar(state: State<AppState>) -> Element {
                             .child("Log"),
                     ),
             )
-            .maybe_child({
-                #[cfg(feature = "debug-logging")]
-                {
-                    Some(
+            // Bottom-right anchored buttons (Debug / About)
+            .child(
+                rect()
+                    .expanded()
+                    .width(Size::fill())
+                    .vertical()
+                    .spacing(3.)
+                    .main_align(Alignment::End)
+                    .cross_align(Alignment::End)
+                    .maybe_child({
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            Some(
+                                rect()
+                                    .width(Size::fill())
+                                    .height(Size::px(22.))
+                                    .direction(Direction::Horizontal)
+                                    .spacing(4.)
+                                    .cross_align(Alignment::Center)
+                                    .main_align(Alignment::End)
+                                    .child(
+                                        Button::new()
+                                            .compact()
+                                            .on_press({
+                                                let mut state = state;
+                                                move |_| state.write().show_debug_log = true
+                                            })
+                                            .child("Debug"),
+                                    )
+                                    .into(),
+                            )
+                        }
+                        #[cfg(not(feature = "debug-logging"))]
+                        {
+                            None::<Element>
+                        }
+                    })
+                    .child(
                         rect()
                             .width(Size::fill())
-                            .height(Size::px(22.))
+                            .height(Size::px(24.))
                             .direction(Direction::Horizontal)
                             .spacing(4.)
                             .cross_align(Alignment::Center)
@@ -1494,53 +1552,12 @@ fn StatusBar(state: State<AppState>) -> Element {
                                     .compact()
                                     .on_press({
                                         let mut state = state;
-                                        move |_| state.write().show_debug_log = true
+                                        move |_| state.write().show_about = true
                                     })
-                                    .child("Debug"),
-                            )
-                            .into(),
+                                    .child("About"),
+                            ),
                     )
-                }
-                #[cfg(not(feature = "debug-logging"))]
-                {
-                    None::<Element>
-                }
-            })
-            .child(
-                rect()
-                    .width(Size::fill())
-                    .height(Size::px(24.))
-                    .direction(Direction::Horizontal)
-                    .spacing(4.)
-                    .cross_align(Alignment::Center)
-                    .main_align(Alignment::End)
-                    .child(
-                        Button::new()
-                            .compact()
-                            .on_press({
-                                let mut state = state;
-                                move |_| state.write().show_documentation = true
-                            })
-                            .child("Documentation"),
-                    )
-                    .child(
-                        Button::new()
-                            .compact()
-                            .on_press({
-                                let mut state = state;
-                                move |_| state.write().show_licenses = true
-                            })
-                            .child("Licenses"),
-                    )
-                    .child(
-                        Button::new()
-                            .compact()
-                            .on_press({
-                                let mut state = state;
-                                move |_| state.write().show_about = true
-                            })
-                            .child("About"),
-                    ),
+                    ,
             )
             .into(),
     )
@@ -1557,314 +1574,81 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
                 .corner_radius(4.)
                 .spacing(4.)
                 .child(
-                    label()
-                        .text(format!(
-                            "{} | {} -> {}",
-                            entry.format_timestamp(),
-                            entry.input_filename,
-                            entry.output_filename
-                        ))
-                        .font_size(12.)
-                        .color(TEXT),
+                    paragraph()
+                        .width(Size::fill())
+                        .span(
+                            Span::new(entry.format_timestamp())
+                            .font_size(12.)
+                            .color(TEXT),
+                        )
+                        .line_height(1.25)
+                        .max_lines(1),
                 )
                 .child(
-                    label()
-                        .text(format!(
-                            "{} -> {}",
-                            LogEntry::format_size(entry.original_size),
-                            LogEntry::format_size(entry.compressed_size)
-                        ))
-                        .font_size(11.)
-                        .color(MUTED),
+                    paragraph()
+                        .width(Size::fill())
+                        .span(
+                            Span::new(format!("Input: {}", entry.input_filename))
+                                .font_size(11.)
+                                .color(TEXT),
+                        )
+                        .line_height(1.25)
+                        .max_lines(3),
+                )
+                .child(
+                    paragraph()
+                        .width(Size::fill())
+                        .span(
+                            Span::new(format!("Output: {}", entry.output_filename))
+                                .font_size(11.)
+                                .color(TEXT),
+                        )
+                        .line_height(1.25)
+                        .max_lines(3),
+                )
+                .child(
+                    paragraph()
+                        .width(Size::fill())
+                        .span(
+                            Span::new(format!(
+                                "{} -> {}",
+                                LogEntry::format_size(entry.original_size),
+                                LogEntry::format_size(entry.compressed_size)
+                            ))
+                            .font_size(11.)
+                            .color(MUTED),
+                        )
+                        .line_height(1.25)
+                        .max_lines(2),
                 )
                 .into()
         })
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum MarkdownBlock {
-    Heading { level: u8, text: String },
-    Paragraph(String),
-    UnorderedList(Vec<String>),
-    OrderedList(Vec<(usize, String)>),
-    CodeBlock(String),
-    Spacer,
-}
-
-fn parse_markdown_blocks(markdown: &str) -> Vec<MarkdownBlock> {
-    let mut blocks = Vec::new();
-    let mut in_code_block = false;
-    let mut code_lines = Vec::new();
-    let mut unordered = Vec::new();
-    let mut ordered = Vec::new();
-
-    fn flush_lists(
-        blocks: &mut Vec<MarkdownBlock>,
-        unordered: &mut Vec<String>,
-        ordered: &mut Vec<(usize, String)>,
-    ) {
-        if !unordered.is_empty() {
-            blocks.push(MarkdownBlock::UnorderedList(std::mem::take(unordered)));
-        }
-        if !ordered.is_empty() {
-            blocks.push(MarkdownBlock::OrderedList(std::mem::take(ordered)));
-        }
-    }
-
-    for line in markdown.lines() {
-        let trimmed_line = line.trim_end();
-        let collapsed = trimmed_line.trim();
-
-        if trimmed_line.starts_with("```") {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            if in_code_block {
-                blocks.push(MarkdownBlock::CodeBlock(code_lines.join("\n")));
-                code_lines.clear();
-                in_code_block = false;
-            } else {
-                in_code_block = true;
-            }
-            continue;
-        }
-
-        if in_code_block {
-            code_lines.push(trimmed_line.to_string());
-            continue;
-        }
-
-        if collapsed == "---" || collapsed == "***" {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            blocks.push(MarkdownBlock::Spacer);
-            continue;
-        }
-
-        if collapsed.is_empty() {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            blocks.push(MarkdownBlock::Spacer);
-            continue;
-        }
-
-        if let Some(rest) = collapsed.strip_prefix("# ") {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            blocks.push(MarkdownBlock::Heading {
-                level: 1,
-                text: render_inline_text_plain(rest),
-            });
-        } else if let Some(rest) = collapsed.strip_prefix("## ") {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            blocks.push(MarkdownBlock::Heading {
-                level: 2,
-                text: render_inline_text_plain(rest),
-            });
-        } else if let Some(rest) = collapsed.strip_prefix("### ") {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            blocks.push(MarkdownBlock::Heading {
-                level: 3,
-                text: render_inline_text_plain(rest),
-            });
-        } else if let Some(rest) = collapsed.strip_prefix("- ") {
-            unordered.push(render_inline_text_plain(rest));
-        } else if let Some((number, rest)) = parse_ordered_list_item_plain(collapsed) {
-            ordered.push((number, render_inline_text_plain(rest)));
-        } else {
-            flush_lists(&mut blocks, &mut unordered, &mut ordered);
-            blocks.push(MarkdownBlock::Paragraph(render_inline_text_plain(collapsed)));
-        }
-    }
-
-    if in_code_block && !code_lines.is_empty() {
-        blocks.push(MarkdownBlock::CodeBlock(code_lines.join("\n")));
-    }
-
-    if !unordered.is_empty() {
-        blocks.push(MarkdownBlock::UnorderedList(unordered));
-    }
-    if !ordered.is_empty() {
-        blocks.push(MarkdownBlock::OrderedList(ordered));
-    }
-
-    blocks
-}
-
-fn parse_ordered_list_item_plain(line: &str) -> Option<(usize, &str)> {
-    let mut parts = line.splitn(2, ". ");
-    let number = parts.next()?.parse::<usize>().ok()?;
-    let rest = parts.next()?;
-    Some((number, rest))
-}
-
-fn render_inline_text_plain(text: &str) -> String {
-    let mut output = String::new();
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut i = 0;
-
-    while i < chars.len() {
-        if chars[i] == '[' {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                j += 1;
-            }
-            if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == '(' {
-                let label = chars[i + 1..j].iter().collect::<String>();
-                let mut k = j + 2;
-                while k < chars.len() && chars[k] != ')' {
-                    k += 1;
-                }
-                if k < chars.len() {
-                    let url = chars[j + 2..k].iter().collect::<String>();
-                    if !label.is_empty() && !url.is_empty() {
-                        output.push_str(&label);
-                        output.push_str(" (");
-                        output.push_str(&url);
-                        output.push(')');
-                        i = k + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        let ch = chars[i];
-        if ch != '*' && ch != '_' && ch != '`' {
-            output.push(ch);
-        }
-        i += 1;
-    }
-
-    output
-}
-
 fn markdown_blocks_view(markdown: &str) -> Element {
     ScrollView::new()
         .width(Size::fill())
         .height(Size::fill())
-        .child(markdown_blocks_content(markdown))
+        .child(markdown::markdown_blocks_content(markdown))
         .into()
 }
 
-fn markdown_blocks_content(markdown: &str) -> Element {
-    let children = parse_markdown_blocks(markdown)
-        .into_iter()
-        .map(|block| match block {
-            MarkdownBlock::Heading { level, text } => {
-                let (font_size, spacing_top) = match level {
-                    1 => (18., 4.),
-                    2 => (16., 2.),
-                    _ => (14., 1.),
-                };
-                rect()
-                    .width(Size::fill())
-                    .padding((0., spacing_top, 0., 0.))
-                    .child(
-                        label()
-                            .text(text)
-                            .font_size(font_size)
-                            .max_lines(100)
-                            .font_weight(700)
-                            .color(TEXT),
-                    )
-                    .into()
-            }
-            MarkdownBlock::Paragraph(text) => rect()
-                .width(Size::fill())
-                .child(
-                    label()
-                        .text(text)
-                        .font_size(12.)
-                        .max_lines(100)
-                        .color(TEXT),
-                )
-                .into(),
-            MarkdownBlock::UnorderedList(items) => rect()
-                .width(Size::fill())
-                .spacing(4.)
-                .children(
-                    items.into_iter()
-                        .map(|item| {
-                            rect()
-                                .width(Size::fill())
-                                .direction(Direction::Horizontal)
-                                .cross_align(Alignment::Start)
-                                .spacing(8.)
-                                .child(label().text("•").font_size(12.).color(TEXT))
-                                .child(
-                                    rect()
-                                        .expanded()
-                                        .child(
-                                            label()
-                                                .text(item)
-                                                .font_size(12.)
-                                                .max_lines(100)
-                                                .color(TEXT),
-                                        ),
-                                )
-                                .into()
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .into(),
-            MarkdownBlock::OrderedList(items) => rect()
-                .width(Size::fill())
-                .spacing(4.)
-                .children(
-                    items.into_iter()
-                        .map(|(idx, item)| {
-                            rect()
-                                .width(Size::fill())
-                                .direction(Direction::Horizontal)
-                                .cross_align(Alignment::Start)
-                                .spacing(8.)
-                                .child(
-                                    label()
-                                        .text(format!("{idx}."))
-                                        .font_size(12.)
-                                        .color(TEXT),
-                                )
-                                .child(
-                                    rect()
-                                        .expanded()
-                                        .child(
-                                            label()
-                                                .text(item)
-                                                .font_size(12.)
-                                                .max_lines(100)
-                                                .color(TEXT),
-                                        ),
-                                )
-                                .into()
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .into(),
-            MarkdownBlock::CodeBlock(code) => rect()
-                .width(Size::fill())
-                .background(APP_BG)
-                .border(
-                    Border::new()
-                        .fill(BORDER)
-                        .width(1.)
-                        .alignment(BorderAlignment::Inner),
-                )
-                .corner_radius(4.)
-                .padding(10.)
-                .child(
-                    label()
-                        .text(code)
-                        .font_size(11.)
-                        .max_lines(200)
-                        .color(TEXT),
-                )
-                .into(),
-            MarkdownBlock::Spacer => rect().height(Size::px(8.)).into(),
-        })
-        .collect::<Vec<_>>();
-
-    rect()
+fn plain_text_view(text: &str) -> Element {
+    ScrollView::new()
         .width(Size::fill())
-        .padding(14.)
-        .spacing(8.)
-        .children(children)
+        .height(Size::fill())
+        .child(
+            rect()
+                .width(Size::fill())
+                .padding(12.)
+                .child(
+                    paragraph()
+                        .span(Span::new(text.to_string()).font_size(12.).color(TEXT))
+                        .line_height(1.25)
+                        .max_lines(5000),
+                ),
+        )
         .into()
 }
 
@@ -1922,7 +1706,7 @@ fn popup_shell(
                 Button::new()
                     .filled()
                     .on_press(move |_| (on_close_button.borrow_mut())())
-                    .child("Close"),
+                    .child(label().text("Close").font_size(13.).color(TEXT)),
             ),
         )
         .into()
@@ -2028,12 +1812,17 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
         .cloned()
         .collect::<Vec<_>>();
 
-    popup_shell(
+    document_popup_shell(
         "Processing Log",
-        ScrollView::new()
-            .width(Size::px(720.))
-            .height(Size::px(420.))
-            .child(rect().spacing(8.).children(render_log_rows(&recent_entries)))
+        rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .child(
+                ScrollView::new()
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .child(rect().width(Size::fill()).spacing(8.).children(render_log_rows(&recent_entries))),
+            )
             .into(),
         move || state.write().show_log_viewer = false,
     )
@@ -2086,58 +1875,87 @@ fn DebugLogViewerPopup(_state: State<AppState>) -> Element {
     rect().into()
 }
 
-fn DocumentationPopup(mut state: State<AppState>) -> Element {
-    if !state.read().show_documentation {
-        return rect().into();
-    }
-
-    let content = state.read().documentation_content.clone();
-    document_popup_shell(
-        "Documentation",
-        markdown_blocks_content(&content),
-        move || state.write().show_documentation = false,
-    )
-}
-
-fn LicensesPopup(mut state: State<AppState>) -> Element {
-    if !state.read().show_licenses {
-        return rect().into();
-    }
-
-    let content = state.read().licenses_content.clone();
-    document_popup_shell(
-        "Third-Party Licenses",
-        markdown_blocks_content(&content),
-        move || state.write().show_licenses = false,
-    )
-}
-
 fn AboutPopup(mut state: State<AppState>) -> Element {
     if !state.read().show_about {
         return rect().into();
     }
 
-    document_popup_shell(
-        "About Lege",
-        rect()
-            .width(Size::fill())
-            .padding(14.)
-            .spacing(10.)
-            .child(
-                label()
-                    .text(format!("Version: v{}", display_version()))
-                    .font_size(13.)
-                    .color(TEXT),
-            )
-            .child(
-                label()
-                    .text("Contact: read@legeapp.com")
-                    .font_size(13.)
-                    .color(TEXT),
-            )
-            .into(),
-        move || state.write().show_about = false,
-    )
+    let email_text = use_state(|| "read@legeapp.com".to_string());
+    let on_close = Rc::new(RefCell::new(move || state.write().show_about = false));
+    let on_close_request = on_close.clone();
+    let on_close_button = on_close.clone();
+    let documentation_button = on_close.clone();
+    let licenses_button = on_close.clone();
+
+    Popup::new()
+        .show(true)
+        .on_close_request(move |_| (on_close_request.borrow_mut())())
+        .child(
+            PopupContent::new().child(
+                rect()
+                    .width(Size::px(360.))
+                    .padding(12.)
+                    .spacing(8.)
+                    .child(
+                        label()
+                            .text(format!("Version: v{}", display_version()))
+                            .font_size(13.)
+                            .color(TEXT),
+                    )
+                    .child(
+                        label()
+                            .text("Contact: read@legeapp.com")
+                            .font_size(13.)
+                            .color(TEXT),
+                    )
+                    .child(
+                        Input::new(email_text)
+                            .width(Size::px(220.)),
+                    )
+                    .child(
+                        Button::new()
+                            .on_press(|_| {
+                                let _ = backend::open_with_system("mailto:read@legeapp.com");
+                            })
+                            .child(
+                                label()
+                                    .text("Email: mailto:read@legeapp.com")
+                                    .font_size(12.)
+                                    .color(TEXT),
+                            ),
+                    ),
+            ),
+        )
+        .child(
+            PopupButtons::new()
+                .child(
+                    Button::new()
+                        .on_press(move |_| {
+                            if let Some(path) = backend::bundled_docs_path("documentation.html") {
+                                let _ = backend::open_with_system(&path.to_string_lossy());
+                            }
+                            (documentation_button.borrow_mut())();
+                        })
+                        .child("Documentation"),
+                )
+                .child(
+                    Button::new()
+                        .on_press(move |_| {
+                            if let Some(path) = backend::bundled_docs_path("licenses.html") {
+                                let _ = backend::open_with_system(&path.to_string_lossy());
+                            }
+                            (licenses_button.borrow_mut())();
+                        })
+                        .child("Licenses"),
+                )
+                .child(
+                    Button::new()
+                        .filled()
+                        .on_press(move |_| (on_close_button.borrow_mut())())
+                        .child(label().text("Close").font_size(13.).color(TEXT)),
+                ),
+        )
+        .into()
 }
 
 fn add_pdf_files(mut state: State<AppState>) {

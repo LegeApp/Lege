@@ -60,9 +60,7 @@ fn compile_windows_resource(external_version: &str) {
     let escaped_version = external_version.replace('"', "");
 
     let rc_contents = format!(
-        r#"1 ICON "../../assets/icon.ico"
-
-VS_VERSION_INFO VERSIONINFO
+        r#"VS_VERSION_INFO VERSIONINFO
  FILEVERSION {version_tuple}
  PRODUCTVERSION {version_tuple}
  FILEFLAGSMASK 0x3fL
