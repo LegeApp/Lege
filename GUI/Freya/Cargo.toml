@@ -1,15 +1,14 @@
 [package]
-name = "freya-gui"
+name = "lege-gui"
 version = "1.0.0"
 edition = "2024"
 
 [[bin]]
-name = "lege-freya-gui"
+name = "lege-gui"
 path = "src/main.rs"
 
 [features]
 default = []
-gui = []
 debug-logging = ["lege/debug-logging", "Legencode/debug-logging"]
 
 [dependencies]
@@ -31,7 +30,7 @@ Legencode = { path = "../../Legencode" }
 lege = { path = "../.." }
 
 [build-dependencies]
-winres = "0.1"
+embed-resource = "3.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["wincon", "winuser"] }

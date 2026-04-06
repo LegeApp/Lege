@@ -63,14 +63,14 @@ fn main() {
         .expect("failed to create tokio runtime for Freya GUI");
     let _rt = runtime.enter();
 
-    let (window_width, window_height) = (1240.0, 860.0);
+    let (window_width, window_height) = (990.0, 726.0);
 
     launch(
         LaunchConfig::new().with_window(
             WindowConfig::new(app::app)
                 .with_title("Lege")
                 .with_size(window_width, window_height)
-                .with_min_size(1024.0, 720.0)
+                .with_min_size(841.5, 617.0)
                 .with_decorations(true)
                 .with_resizable(true)
                 .with_icon(LaunchConfig::window_icon(ICON))
@@ -80,9 +80,12 @@ fn main() {
                     if let Some(monitor) = el.primary_monitor().or_else(|| el.available_monitors().next()) {
                         let origin = monitor.position();
                         let size = monitor.size();
+                        let scale = monitor.scale_factor();
+                        let physical_window_width = (window_width * scale).round() as i32;
+                        let physical_window_height = (window_height * scale).round() as i32;
                         attributes.with_position(PhysicalPosition {
-                            x: origin.x + (size.width as i32 / 2) - (window_width as i32 / 2),
-                            y: origin.y + (size.height as i32 / 2) - (window_height as i32 / 2),
+                            x: origin.x + (size.width as i32 / 2) - (physical_window_width / 2),
+                            y: origin.y + (size.height as i32 / 2) - (physical_window_height / 2),
                         })
                     } else {
                         attributes

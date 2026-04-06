@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 
 fn get_external_version_from_main_project() -> Option<String> {
     let current_dir = std::env::current_dir().ok()?;
@@ -40,26 +42,68 @@ fn main() {
 
     #[cfg(target_os = "windows")]
     {
-        // The current Freya debug binary ends up linking the generated resource
-        // library twice, which causes LINK/CVTRES duplicate VERSION failures.
-        // Keep Windows resource embedding for non-debug builds only so normal
-        // debug iteration works.
-        let profile = env::var("PROFILE").unwrap_or_default();
-        if profile != "debug" {
-            let mut res = winres::WindowsResource::new();
-            res.set_icon("../../assets/icon.ico");
-            res.set(
-                "FileDescription",
-                "Lege - Freya GUI for E-ink PDF Preparation",
-            );
-            res.set("ProductName", "Lege Freya GUI");
-            res.set("CompanyName", "Lege Apps");
-            res.set("FileVersion", &external_version);
-            res.set("ProductVersion", &external_version);
-            let _ = res.compile();
-        }
+        compile_windows_resource(&external_version);
     }
 
     #[cfg(target_os = "windows")]
     println!("cargo:rerun-if-changed=../../assets/icon.ico");
+}
+
+#[cfg(target_os = "windows")]
+fn compile_windows_resource(external_version: &str) {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+    let rc_path = out_dir.join("lege-gui.rc");
+    let version_tuple = version_tuple(external_version);
+    let escaped_version = external_version.replace('"', "");
+
+    let rc_contents = format!(
+        r#"1 ICON "../../assets/icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION {version_tuple}
+ PRODUCTVERSION {version_tuple}
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName", "Lege Apps\0"
+            VALUE "FileDescription", "Lege GUI\0"
+            VALUE "FileVersion", "{escaped_version}\0"
+            VALUE "ProductName", "Lege\0"
+            VALUE "ProductVersion", "{escaped_version}\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+"#
+    );
+
+    fs::write(&rc_path, rc_contents).expect("failed to write GUI resource script");
+    let _ = embed_resource::compile(rc_path, embed_resource::NONE);
+}
+
+#[cfg(target_os = "windows")]
+fn version_tuple(version: &str) -> String {
+    let mut parts: Vec<u16> = version
+        .split('.')
+        .filter_map(|part| part.parse::<u16>().ok())
+        .take(4)
+        .collect();
+    while parts.len() < 4 {
+        parts.push(0);
+    }
+    format!("{},{},{},{}", parts[0], parts[1], parts[2], parts[3])
 }

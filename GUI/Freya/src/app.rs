@@ -26,7 +26,6 @@ const MUTED: (u8, u8, u8) = (90, 90, 90);
 const BORDER: (u8, u8, u8) = (128, 128, 128);
 const INFO_BG: (u8, u8, u8) = (255, 255, 225);
 const SUCCESS_BG: (u8, u8, u8) = (232, 245, 232);
-
 fn retro_theme() -> Theme {
     let mut theme = light_theme();
     theme.name = "lege-retro";
@@ -591,28 +590,40 @@ pub fn app() -> impl IntoElement {
         threshold_input,
     );
 
-    rect()
-        .width(Size::fill())
-        .height(Size::fill())
-        .child(widgets::lege_main_shell(
-            ActionBar(state),
-            MainContentArea(
-                state,
-                target_height_input,
-                page_range_input,
-                k_factor_input,
-                threshold_input,
-            ),
-            PopupRail(state),
-            StartBar(state, page_range_input),
-            StatusBar(state),
-        ))
-        .child(QueueViewerPopup(state))
-        .child(LogViewerPopup(state))
-        .child(DocumentationPopup(state))
-        .child(LicensesPopup(state))
-        .child(AboutPopup(state))
-        .child(DebugLogViewerPopup(state))
+    app_root(
+        rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .child(widgets::lege_main_shell(
+                ActionBar(state),
+                MainContentArea(
+                    state,
+                    target_height_input,
+                    page_range_input,
+                    k_factor_input,
+                    threshold_input,
+                ),
+                PopupRail(state),
+                StartBar(state, page_range_input),
+                StatusBar(state),
+            ))
+            .child(QueueViewerPopup(state))
+            .child(LogViewerPopup(state))
+            .child(DocumentationPopup(state))
+            .child(LicensesPopup(state))
+            .child(AboutPopup(state))
+            .child(DebugLogViewerPopup(state)),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn app_root(content: Rect) -> Rect {
+    content.font_family("Segoe UI")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn app_root(content: Rect) -> Rect {
+    content
 }
 
 fn ActionBar(state: State<AppState>) -> Element {
@@ -726,23 +737,26 @@ fn CombinedSettingsPanel(
     };
     let numeric_label = if effective_threshold { "Threshold" } else { "K factor" };
 
-    panel_card(
-        "",
-        true,
-        vec![
-            rect()
-                .width(Size::fill())
-                .height(Size::fill())
-                .direction(Direction::Horizontal)
-                .cross_align(Alignment::Start)
-                .spacing(12.)
-                .child(
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .child(panel_card(
+            "",
+            true,
+            vec![
+                rect()
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .direction(Direction::Horizontal)
+                    .cross_align(Alignment::Start)
+                    .spacing(10.)
+                    .child(
                     rect()
                         .width(Size::percent(31.))
                         .height(Size::fill())
                         .vertical()
-                        .spacing(7.)
-                        .child(section_label("Formats"))
+                        .main_align(Alignment::Start)
+                        .spacing(5.)
                         .child(tooltip_wrap_at(
                             state,
                             TooltipArea::LeftCard,
@@ -840,13 +854,79 @@ fn CombinedSettingsPanel(
                         } else {
                             None::<Element>
                         }),
-                )
-                .child(
+                    )
+                    .child(
                     rect()
                         .width(Size::percent(31.))
                         .height(Size::fill())
                         .vertical()
-                        .spacing(6.)
+                        .main_align(Alignment::Start)
+                        .spacing(5.)
+                        .child(
+                            rect()
+                                .padding((0., 2., 0., 0.))
+                                .spacing(6.)
+                                .child(tooltip_wrap_at(
+                                    state,
+                                    TooltipArea::LeftCard,
+                                    GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
+                                    AttachedPosition::Left,
+                                    compact_checkbox_row(
+                                        GUI_TEXT.interactive.labels.inverted_colors.clone(),
+                                        options.invert_input,
+                                        {
+                                            let mut state = state;
+                                            move |_| {
+                                                let mut s = state.write();
+                                                s.options.invert_input = !s.options.invert_input;
+                                            }
+                                        },
+                                    ),
+                                ))
+                                .child(tooltip_wrap_at(
+                                    state,
+                                    TooltipArea::LeftCard,
+                                    GUI_TEXT.interactive.tooltips.ocr_text_layer.clone(),
+                                    AttachedPosition::Left,
+                                    compact_checkbox_row(
+                                        GUI_TEXT.interactive.labels.ocr_text_layer.clone(),
+                                        options.use_ocr,
+                                        {
+                                            let mut state = state;
+                                            move |_| {
+                                                let mut s = state.write();
+                                                s.options.use_ocr = !s.options.use_ocr;
+                                            }
+                                        },
+                                    ),
+                                ))
+                                .child(tooltip_wrap_at(
+                                    state,
+                                    TooltipArea::LeftCard,
+                                    GUI_TEXT.interactive.tooltips.high_quality_output.clone(),
+                                    AttachedPosition::Left,
+                                    compact_checkbox_row(
+                                        GUI_TEXT.interactive.labels.high_quality_output.clone(),
+                                        options.high_quality_output,
+                                        {
+                                            let mut state = state;
+                                            move |_| {
+                                                let mut s = state.write();
+                                                s.options.high_quality_output =
+                                                    !s.options.high_quality_output;
+                                            }
+                                        },
+                                    ),
+                                )),
+                        ),
+                    )
+                    .child(
+                    rect()
+                        .width(Size::percent(31.))
+                        .height(Size::fill())
+                        .vertical()
+                        .main_align(Alignment::Start)
+                        .spacing(5.)
                         .child(section_label(if layout_on {
                             "Binarization"
                         } else {
@@ -878,7 +958,7 @@ fn CombinedSettingsPanel(
                         .child(
                             rect()
                                 .padding((0., 4., 0., 0.))
-                                .spacing(8.)
+                                .spacing(6.)
                                 .child(tooltip_wrap(
                                     state,
                                     TooltipArea::LeftCard,
@@ -936,76 +1016,12 @@ fn CombinedSettingsPanel(
                                     )
                                 }),
                         ),
-                )
-                .child(
-                    rect()
-                        .width(Size::percent(31.))
-                        .height(Size::fill())
-                        .vertical()
-                        .spacing(6.)
-                        .child(section_label("Options"))
-                        .child(
-                            rect()
-                                .padding((0., 4., 0., 0.))
-                                .spacing(8.)
-                                .child(tooltip_wrap_at(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
-                                    AttachedPosition::Left,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.inverted_colors.clone(),
-                                        options.invert_input,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                s.options.invert_input = !s.options.invert_input;
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .child(tooltip_wrap_at(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.ocr_text_layer.clone(),
-                                    AttachedPosition::Left,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.ocr_text_layer.clone(),
-                                        options.use_ocr,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                s.options.use_ocr = !s.options.use_ocr;
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .child(tooltip_wrap_at(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.high_quality_output.clone(),
-                                    AttachedPosition::Left,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.high_quality_output.clone(),
-                                        options.high_quality_output,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                s.options.high_quality_output =
-                                                    !s.options.high_quality_output;
-                                            }
-                                        },
-                                    ),
-                                )),
-                        ),
-                )
-                .into(),
-            panel_tooltip_overlay(state, TooltipArea::LeftCard, true),
-        ],
-    )
+                    )
+                    .into(),
+            ],
+        ))
+        .child(panel_tooltip_overlay(state, TooltipArea::LeftCard, true))
+        .into()
 }
 
 fn LeftSettingsPanel(state: State<AppState>) -> Element {
@@ -1015,7 +1031,7 @@ fn LeftSettingsPanel(state: State<AppState>) -> Element {
 
     panel_card(
         "",
-        false,
+        true,
         vec![
             two_option_toggle(
                 GUI_TEXT.interactive.labels.output_format.clone(),
@@ -1164,22 +1180,26 @@ fn CenterSettingsPanel(
         );
     }
 
-    panel_card(
-        "",
-        true,
-        vec![
-            rect()
-                .width(Size::fill())
-                .height(Size::fill())
-                .direction(Direction::Horizontal)
-                .cross_align(Alignment::Start)
-                .spacing(16.)
-                .child(
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .child(panel_card(
+            "",
+            true,
+            vec![
+                rect()
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .direction(Direction::Horizontal)
+                    .cross_align(Alignment::Start)
+                    .spacing(12.)
+                    .child(
                     rect()
                         .width(Size::percent(54.))
                         .height(Size::fill())
                         .vertical()
-                        .spacing(8.)
+                        .main_align(Alignment::Start)
+                        .spacing(6.)
                         .child(settings_row(
                             GUI_TEXT.interactive.labels.page_range.clone(),
                             Input::new(page_range_input)
@@ -1216,14 +1236,14 @@ fn CenterSettingsPanel(
                                     .into(),
                             ),
                         )),
-                )
-                .child(
+                    )
+                    .child(
                     rect()
                         .width(Size::percent(42.))
                         .height(Size::fill())
                         .vertical()
-                        .spacing(8.)
-                        .child(section_label("Page treatment"))
+                        .main_align(Alignment::Start)
+                        .spacing(6.)
                         .child(tooltip_wrap_at(
                             state,
                             TooltipArea::RightCard,
@@ -1283,11 +1303,12 @@ fn CenterSettingsPanel(
                                 },
                             ),
                         ))
-                )
-                .into(),
-            panel_tooltip_overlay(state, TooltipArea::RightCard, false),
-        ],
-    )
+                    )
+                    .into(),
+            ],
+        ))
+        .child(panel_tooltip_overlay(state, TooltipArea::RightCard, false))
+        .into()
 }
 
 fn RightSettingsPanel(
@@ -1427,13 +1448,13 @@ fn StatusBar(state: State<AppState>) -> Element {
             .width(Size::fill())
             .height(Size::fill())
             .direction(Direction::Vertical)
-            .spacing(4.)
-            .main_align(Alignment::SpaceBetween)
+            .spacing(3.)
+            .main_align(Alignment::End)
             .cross_align(Alignment::End)
             .child(
                 rect()
                     .width(Size::fill())
-                    .height(Size::px(26.))
+                    .height(Size::px(24.))
                     .direction(Direction::Horizontal)
                     .spacing(4.)
                     .cross_align(Alignment::Center)
@@ -1463,7 +1484,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                     Some(
                         rect()
                             .width(Size::fill())
-                            .height(Size::px(24.))
+                            .height(Size::px(22.))
                             .direction(Direction::Horizontal)
                             .spacing(4.)
                             .cross_align(Alignment::Center)
@@ -1488,7 +1509,7 @@ fn StatusBar(state: State<AppState>) -> Element {
             .child(
                 rect()
                     .width(Size::fill())
-                    .height(Size::px(26.))
+                    .height(Size::px(24.))
                     .direction(Direction::Horizontal)
                     .spacing(4.)
                     .cross_align(Alignment::Center)
@@ -2113,12 +2134,6 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                     .text("Contact: read@legeapp.com")
                     .font_size(13.)
                     .color(TEXT),
-            )
-            .child(
-                label()
-                    .text("Experimental Freya desktop frontend for the Lege processing core.")
-                    .font_size(12.)
-                    .color(MUTED),
             )
             .into(),
         move || state.write().show_about = false,

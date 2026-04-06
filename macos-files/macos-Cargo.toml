@@ -21,13 +21,13 @@ members = [
     "Legencode/src/jbig2enc-rust",
     "Legencode/src/TooJpeg-rust",
     "Legencode/src/openjp2",
-    "GUI/Dioxus",
+    "GUI/Freya",
     "ort",           # Local ort fork with WebGPU cleanup fix
     "ort/ort-sys",   # ONNX Runtime FFI bindings
 ]
 default-members = [
     ".",
-    "GUI/Dioxus",
+    "GUI/Freya",
 ]
 
 [workspace.lints.rust]
@@ -205,7 +205,6 @@ static = ["pdfium-render/static"]
 debug-logging = ["Legencode/debug-logging", "dep:fontdue"]
 # Feature for profiling with debug symbols - enables both debug logging and debug symbols
 profiling = ["debug-logging"]
-gui = []
 debug-layers = []
 no-include-shaders = []
 djvu_debug = []
@@ -222,8 +221,9 @@ codegen-units = 1
 panic = "abort"
 opt-level = 3
 debug = false
-strip = "debuginfo"
+strip = "symbols"
 incremental = false
+overflow-checks = false
 
 # Optimize incremental compilation
 [profile.dev]

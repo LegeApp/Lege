@@ -1,105 +1,126 @@
-# Third-Party Licenses
+# Lege License and Third-Party Notices
 
-This project includes third-party software components, each with their own licensing terms.
+This file summarizes the current license position of Lege and the main third-party
+components that are distributed with, linked by, or required by the program.
 
-## Table of Contents
-- [MIT License](#mit-license)
-- [Apache-2.0 License](#apache-20-license)
-- [BSD-2-Clause License](#bsd-2-clause-license)
-- [Dual Licensed Dependencies](#dual-licensed-dependencies)
-- [Model Licenses](#model-licenses)
+It is intentionally concise. Lege itself is released under a strong copyleft
+license, but third-party components still retain their own licenses and notices.
 
-## MIT License
-- **TooJpeg-rust** - Rust port of https://github.com/stbrumme/toojpeg
-- **dioxus** - [GitHub](https://github.com/dioxuslabs/dioxus)
-- **fast_image_resize** - [crates.io](https://crates.io/crates/fast_image_resize)
-- **lopdf** - [GitHub](https://github.com/J-F-Liu/lopdf)
-- **rayon** - [GitHub](https://github.com/rayon-rs/rayon)
-- **rusty-tesseract** - [GitHub](https://github.com/aghaynes/rusty-tesseract)
+## Lege license
 
-## Apache-2.0 License
+The Lege project itself is licensed under the GNU Affero General Public License,
+version 3. See the top-level [LICENSE](../LICENSE) file for the full text.
 
-Apache License 2.0 applies to:
-- **JBIG2Enc-Rust** - https://github.com/LegeApp/jbig2enc-rust 
-- **pdfium-render** - [GitHub](https://github.com/ajrcarey/pdfium-render)
-- **ort (ONNX Runtime)** - [GitHub](https://github.com/microsoft/onnxruntime-rs)
+This means:
 
-## Model Licenses
+- Lege is not an MIT- or Apache-licensed application.
+- More permissive licenses used by dependencies do not change Lege's own license.
+- Third-party notices still matter and are preserved below.
 
-### PaddleX Layout Detection Model
-[Apache License 2.0](https://github.com/PaddlePaddle/PaddleX/blob/release/3.0-beta2/LICENSE)
+## Main third-party components
 
-### sauvola.onnx
-@INPROCEEDINGS{9506664,  
-  author={Li, Deng and Wu, Yue and Zhou, Yicong},  
-  booktitle={The 16th International Conference on Document Analysis and Recognition (ICDAR)},   
-  title={SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization},   
-  year={2021},  
-  volume={},  
-  number={},  
-  pages={538–553},  
-  doi={https://doi.org/10.1007/978-3-030-86337-1_36}}
+The entries below reflect the current codebase and packaging layout.
 
-## Full License Texts
+| Component | Role in Lege | Current license | Notes |
+| --- | --- | --- | --- |
+| Freya | Desktop GUI framework | MIT | Current GUI frontend used by `lege-gui`. |
+| Legencode | Local encoding crate | MIT | Local crate used for JPEG, JBIG2, CCITT4, and related image processing helpers. |
+| toojpeg | Local JPEG encoder crate | MIT | Local Rust port of TooJpeg. |
+| jbig2enc-rust | Local JBIG2 encoder crate | MIT OR Apache-2.0 | Current local JBIG2 encoder. |
+| ort | ONNX Runtime Rust binding | MIT OR Apache-2.0 | Local fork/configured copy used for inference runtime integration. |
+| pdfium-render | PDF rendering wrapper | MIT OR Apache-2.0 | Rust wrapper around PDFium. |
+| fast_image_resize | Image resize library | MIT OR Apache-2.0 | Used in image processing paths. |
+| lopdf | PDF parsing and writing support | MIT | Used in PDF processing/output code. |
+| rayon | Parallel CPU work helper | MIT OR Apache-2.0 | Used in CPU-heavy processing paths. |
+| rfd | Native file dialogs | MIT | Used by the GUI. |
 
-### MIT License
+## OCR components
 
-```
-MIT License
+Current OCR usage:
 
-Copyright (c) [year] [fullname]
+- Linux and macOS:
+  - Rust crate: `tesseract`
+  - Runtime engine: system Tesseract installation
+- Windows:
+  - Windows OCR / WinRT APIs
+  - No Tesseract runtime is required on Windows
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Notes:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+- The Rust `tesseract` crate is MIT-licensed.
+- The Linux package configuration currently depends on `tesseract-ocr`.
+- `eng.traineddata` may be distributed with packaged builds for convenience.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+## Bundled runtime libraries and assets
 
-### Apache-2.0 License
+Depending on platform and packaging target, Lege may distribute or expect these
+runtime assets alongside the binaries:
 
-```
-Apache License
-Version 2.0, January 2004
-http://www.apache.org/licenses/
+- PDFium shared library
+- ONNX Runtime shared libraries
+- ONNX model files used for layout detection, deskew/orientation, and heavy binarization
+- Tesseract language data such as `eng.traineddata`
+
+These assets should be treated separately from ordinary Rust crate dependencies.
+They may have their own upstream licenses, notices, attribution requirements, or
+redistribution conditions.
+
+## Models and data
+
+Current packaged model/data assets referenced by the build configuration include:
+
+- `yolo-layout.onnx`
+- `paddle-rotate.onnx`
+- `paddle-deskew.onnx`
+- `sauvola.onnx`
+- `eng.traineddata`
+
+This document intentionally does not claim a single uniform license for all
+models or data files. Their provenance and license terms can differ from one
+another and should be tracked based on the exact upstream source used for the
+distributed asset.
+
+For release packaging, verify and preserve the relevant notices for:
+
+- model source repository or paper release
+- converted ONNX artifact provenance
+- Tesseract traineddata source
+- any bundled native shared libraries
+
+## Research citations and good-faith attribution
+
+The items below are kept as acknowledgements and citations in good faith.
+They are not included here because Lege is legally required to paste them in
+full, but because the project intentionally wants to credit the work that
+influenced or powers parts of the binarization pipeline.
+
+### Heavy Sauvola model
+
+The `sauvola.onnx` heavy binarization model is attributed to:
+
+Li, Deng and Wu, Yue and Zhou, Yicong.
+"SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization."
+In: The 16th International Conference on Document Analysis and Recognition
+(ICDAR), 2021, pp. 538-553.
+DOI: <https://doi.org/10.1007/978-3-030-86337-1_36>
+
+### Adaptive binarization inspiration
+
+Lege's lighter adaptive binarization path also keeps a good-faith citation to
+the project that influenced the earlier binarization approach:
+
+- <https://github.com/rahimnathwani/binarize-pdf>
+
+This is an acknowledgement of inspiration and prior work, not a statement that
+Lege is currently shipping that project as a direct dependency.
 
 
-### BSD-2-Clause License
+## Additional verification items
 
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
+The following areas should be kept under review as the release process evolves:
 
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
-
-## Inspirations 
-https://github.com/jamjamjon/usls - inspiration for inference engine.
-https://github.com/laugh12321/TensorRT-YOLO - inspiration for resize kernels.
-https://github.com/rahimnathwani/binarize-pdf - inspiration for improved binarization technique.
+- the exact license/provenance of each bundled ONNX model
+- the exact redistribution basis for bundled PDFium binaries
+- the exact redistribution basis for bundled ONNX Runtime binaries
+- whether `eng.traineddata` is bundled or required from the host system
+- the local `djvu_encoder` crate metadata, which should declare its own license explicitly
