@@ -336,10 +336,17 @@ pub fn lege_main_shell(
                                                 )
                                                 .child(
                                                     rect()
-                                                        .width(Size::px(220.))
+                                                        .width(Size::fill())
                                                         .height(Size::fill())
                                                         .position(Position::new_absolute().left(0.).top(0.))
-                                                        .child(popup_rail),
+                                                        .cross_align(Alignment::Center)
+                                                        .main_align(Alignment::End)
+                                                        .child(
+                                                            rect()
+                                                                .width(Size::px(220.))
+                                                                .height(Size::fill())
+                                                                .child(popup_rail),
+                                                        ),
                                                 ),
                                         )
                                 )
