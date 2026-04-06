@@ -18,10 +18,10 @@ pub fn lege_panel_card(title: impl Into<String>, fill_height: bool, children: Ve
                 .alignment(BorderAlignment::Inner),
         )
         .corner_radius(3.)
-        .padding(9.)
+        .padding(7.)
         .width(Size::fill())
         .content(Content::Flex)
-        .spacing(5.);
+        .spacing(4.);
 
     if fill_height {
         card = card.height(Size::fill());
@@ -53,7 +53,7 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
     rect()
         .vertical()
         .width(Size::fill())
-        .spacing(3.)
+        .spacing(2.)
         .child(
             label()
                 .text(label_text.into())
@@ -64,7 +64,7 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
         .child(
             rect()
                 .width(Size::fill())
-                .min_height(Size::px(32.))
+                .min_height(Size::px(30.))
                 .child(control),
         )
         .into()
@@ -79,7 +79,7 @@ pub fn lege_toggle_row(
         label_text,
         Button::new()
             .width(Size::px(104.))
-            .height(Size::px(32.))
+            .height(Size::px(30.))
             .on_press(on_press)
             .child(current_text.into())
             .into(),
@@ -147,34 +147,34 @@ pub fn lege_toolbar(
                 .alignment(BorderAlignment::Inner),
         )
         .corner_radius(6.)
-        .padding(6.)
+        .padding(5.)
         .width(Size::fill())
-        .height(Size::px(64.))
+        .height(Size::px(56.))
         .direction(Direction::Horizontal)
         .cross_align(Alignment::Center)
         .spacing(6.)
         .child(
             rect()
                 .width(Size::percent(29.))
-                .height(Size::px(42.))
+                .height(Size::px(38.))
                 .child(add_pdf),
         )
         .child(
             rect()
                 .width(Size::percent(29.))
-                .height(Size::px(42.))
+                .height(Size::px(38.))
                 .child(add_folder),
         )
         .child(
             rect()
                 .width(Size::percent(29.))
-                .height(Size::px(42.))
+                .height(Size::px(38.))
                 .child(output_directory),
         )
         .child(
             rect()
                 .width(Size::px(90.))
-                .height(Size::px(42.))
+                .height(Size::px(38.))
                 .child(utility_column),
         )
         .into()
@@ -185,6 +185,7 @@ pub fn lege_settings_grid(left_panel: Element, right_panel: Element) -> Element 
         .width(Size::fill())
         .height(Size::fill())
         .direction(Direction::Horizontal)
+        .cross_align(Alignment::Start)
         .spacing(8.)
         .child(
             rect()
@@ -211,7 +212,7 @@ pub fn lege_status_panel(status_content: Element, action_content: Element) -> El
                 .alignment(BorderAlignment::Inner),
         )
         .corner_radius(6.)
-        .padding(8.)
+        .padding(5.)
         .width(Size::fill())
         .height(Size::fill())
         .direction(Direction::Horizontal)
@@ -268,7 +269,7 @@ pub fn lege_main_shell(
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(408.))
+                                .height(Size::px(336.))
                                 .child(settings),
                         )
                         .child(
@@ -280,7 +281,7 @@ pub fn lege_main_shell(
                                 .child(
                                     rect()
                                         .width(Size::fill())
-                                        .height(Size::percent(70.))
+                                        .height(Size::percent(40.))
                                         .direction(Direction::Horizontal)
                                         .cross_align(Alignment::End)
                                         .main_align(Alignment::Center)
@@ -303,8 +304,8 @@ pub fn lege_main_shell(
                                 .child(
                                     rect()
                                         .width(Size::fill())
-                                        .height(Size::percent(30.))
-                                        .min_height(Size::px(96.))
+                                        .height(Size::percent(60.))
+                                        .min_height(Size::px(156.))
                                         .child(status_bar),
                                 ),
                         ),
