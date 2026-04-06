@@ -42,7 +42,10 @@ fn main() {
 
     #[cfg(target_os = "windows")]
     {
-        compile_windows_resource(&external_version);
+        let profile = env::var("PROFILE").unwrap_or_default();
+        if profile != "debug" {
+            compile_windows_resource(&external_version);
+        }
     }
 
     #[cfg(target_os = "windows")]
