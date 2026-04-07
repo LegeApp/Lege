@@ -322,32 +322,32 @@ pub fn lege_main_shell(
                                     rect()
                                         .width(Size::fill())
                                         .height(Size::percent(40.))
+                                        .direction(Direction::Horizontal)
+                                        .cross_align(Alignment::Center)
                                         .child(
                                             rect()
                                                 .width(Size::fill())
                                                 .height(Size::fill())
+                                                .vertical()
+                                                .main_align(Alignment::Center)
+                                                .cross_align(Alignment::End)
                                                 .child(
                                                     rect()
-                                                        .width(Size::fill())
-                                                        .height(Size::fill())
-                                                        .cross_align(Alignment::Center)
-                                                        .main_align(Alignment::End)
-                                                        .child(process_bar),
+                                                        .width(Size::px(220.))
+                                                        .height(Size::px(96.))
+                                                        .child(popup_rail),
                                                 )
-                                                .child(
-                                                    rect()
-                                                        .width(Size::fill())
-                                                        .height(Size::fill())
-                                                        .position(Position::new_absolute().left(0.).top(0.))
-                                                        .cross_align(Alignment::Center)
-                                                        .main_align(Alignment::End)
-                                                        .child(
-                                                            rect()
-                                                                .width(Size::px(220.))
-                                                                .height(Size::fill())
-                                                                .child(popup_rail),
-                                                        ),
-                                                ),
+                                        )
+                                        .child(
+                                            rect()
+                                                .width(Size::px(146.))
+                                                .height(Size::fill())
+                                                .child(process_bar),
+                                        )
+                                        .child(
+                                            rect()
+                                                .width(Size::fill())
+                                                .height(Size::fill()),
                                         )
                                 )
                                 .child(
