@@ -3,7 +3,7 @@
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
-# Lege - 1.4.1
+# Lege - 1.4.2
 Releases are updated with every new version --> https://github.com/LegeApp/Lege/releases/
 
 **Turn scanned PDFs (or page-image folders) into clean, compact files that read great on e-ink.**
