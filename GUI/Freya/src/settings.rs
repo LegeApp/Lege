@@ -1,3 +1,6 @@
+// Freya-side copy of the Dioxus GUI settings module.
+// Keep in sync manually until GUI support code is consolidated.
+
 use anyhow::Result;
 use lege::app_dirs;
 use std::fs;
