@@ -838,10 +838,14 @@ fn print_usage() {
 }
 
 fn print_licenses() {
-    // Attempt to include the licenses file at compile time; if missing (packaging/build variation),
-    // fall back to a short notice to prevent build failure.
-    let licenses = include_str!("../docs/THIRD-PARTY-LICENSES.md");
-    println!("{}", licenses);
+    let licenses_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("licenses.html");
+
+    match std::fs::read_to_string(&licenses_path) {
+        Ok(licenses) => println!("{}", licenses),
+        Err(_) => println!("License information is bundled in docs/licenses.html."),
+    }
 }
 
 fn print_debug_help() {

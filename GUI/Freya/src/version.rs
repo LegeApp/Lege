@@ -1,3 +1,6 @@
+// Freya-side copy of the Dioxus GUI version module.
+// Keep in sync manually until GUI support code is consolidated.
+
 //! Version management for Lege GUI
 //!
 //! Handles the separation between internal development version and external user-facing version.

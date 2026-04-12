@@ -1,4 +1,5 @@
-// File: src/models.rs
+// Freya-side copy of the Dioxus GUI models module.
+// Keep in sync manually until GUI support code is consolidated.
 
 use std::path::PathBuf;
 
