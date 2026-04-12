@@ -1,4 +1,5 @@
-// File: src/backend.rs
+// Freya-side copy of the Dioxus GUI backend support module.
+// Keep in sync manually until GUI support code is consolidated.
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -248,6 +249,42 @@ pub async fn check_pdf_has_ocr(pdf_path: &PathBuf) -> Result<Option<bool>> {
     let has_ocr = renderer.has_any_text_layer().await?;
 
     Ok(Some(has_ocr))
+}
+
+pub async fn estimate_original_size_for_page_range(
+    input_path: &PathBuf,
+    page_range: &Option<String>,
+    fallback_size: u64,
+) -> u64 {
+    let Some(range) = parse_page_range(page_range) else {
+        return fallback_size;
+    };
+
+    if !is_pdf_file(input_path) {
+        return fallback_size;
+    }
+
+    let pdf_bytes = match tokio::fs::read(input_path).await {
+        Ok(bytes) => std::sync::Arc::from(bytes.into_boxed_slice()),
+        Err(_) => return fallback_size,
+    };
+
+    let renderer = match lege::pagerender::PdfiumRenderer::new_from_bytes(
+        pdf_bytes,
+        lege::pagerender::RasterConfig::default(),
+    ) {
+        Ok(renderer) => renderer,
+        Err(_) => return fallback_size,
+    };
+
+    let total_pages = renderer.page_count() as usize;
+    if total_pages == 0 {
+        return fallback_size;
+    }
+
+    let selected_pages = (range.end.saturating_sub(range.start) + 1).min(total_pages);
+    let estimated = ((fallback_size as f64 / total_pages as f64) * selected_pages as f64).round();
+    estimated.max(1.0) as u64
 }
 
 /// Simple processing wrapper that uses the new async progress system from progress.rs
@@ -562,6 +599,35 @@ pub fn open_folder_in_explorer(path: &PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Open a file or URL with the system default handler.
+pub fn open_with_system(target: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .spawn()?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(target).spawn()?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(target).spawn()?;
+    }
+
+    Ok(())
+}
+
+/// Resolve a bundled docs file located next to the installed binary under `docs/`.
+pub fn bundled_docs_path(file_name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    Some(exe_dir.join("docs").join(file_name))
 }
 
 // A helper function to truncate the path from the beginning.

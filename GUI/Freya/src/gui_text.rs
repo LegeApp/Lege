@@ -1,3 +1,6 @@
+// Freya-side copy of the Dioxus GUI text module.
+// Keep in sync manually until GUI support code is consolidated.
+
 use once_cell::sync::Lazy;
 
 #[derive(Debug, Clone)]
@@ -71,6 +74,7 @@ pub struct GuiTooltipsText {
     pub base_format: String,
     pub image_output_type: String,
     pub layout_detection: String,
+    pub heavy_model: String,
     pub inverted_colors: String,
     pub jpeg_compatibility: String,
     pub ocr_text_layer: String,
@@ -138,7 +142,7 @@ fn default_gui_text() -> GuiText {
                 base_format: "Base format:".to_string(),
                 image_output_type: "Image output type:".to_string(),
                 cover_format: "Image format:".to_string(),
-                layout_detection: "Layout Detection".to_string(),
+                layout_detection: "Layout Detection:".to_string(),
                 inverted_colors: "Inverted colors".to_string(),
                 jpeg_compatibility: "JPEG Compatibility".to_string(),
                 ocr_text_layer: "OCR Text Layer".to_string(),
@@ -151,14 +155,15 @@ fn default_gui_text() -> GuiText {
                 deskew_documents: "Deskew".to_string(),
             },
             tooltips: GuiTooltipsText {
-                output_format: "Choose PDF, or DJVU via DJVUlibre".to_string(),
+                output_format: "Choose PDF, or DJVU via native Rust encoding".to_string(),
                 base_format: "1bit encoding - JBIG2 has better compression and dithering while CCITT4 has wider compatibility".to_string(),
                 image_output_type: "Original color with CCITT4 encoding, or dithered with JBIG2 encoding".to_string(),
                 layout_detection: "Enable when your document has complex image areas, GPU accelerated layout detection will preserve them from binarization.".to_string(),
+                heavy_model: "Heavy Sauvola AI model (ONNX) for degraded pages".to_string(),
                 inverted_colors: "for digitally created documents with dark background and light text. Will convert to white blackground, black text".to_string(),
                 jpeg_compatibility: "use JPEG instead of JPEG2000".to_string(),
                 ocr_text_layer: "this adds an optical character recognition layer (HOCR) to each page".to_string(),
-                high_quality_output: "Use higher-quality image encoding. PDF uses JPEG quality 95; DJVU uses the highest IW44 setting and keeps dithered image areas inside JB2 when enabled. Keep unchecked for outputs intended for e-ink readers.".to_string(),
+                high_quality_output: "Use higher-quality image encoding. PDF uses JPEG quality 95; DJVU uses the highest IW44 setting when enabled. Keep unchecked for outputs intended for e-ink readers.".to_string(),
                 cover_format_no_cover: "treat first page same as others; image format affects all non-binarized images".to_string(),
                 cover_format_dithered: "CCITT4 text with blue-noise dithered image regions where enabled (global)".to_string(),
                 cover_format_original: "keep original color images (global)".to_string(),
