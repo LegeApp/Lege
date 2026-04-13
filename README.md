@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Screenshot.png" alt="Lege Interface" width="45%">
+  <img src="Screenshot2.png" alt="Lege Interface" width="45%">
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
