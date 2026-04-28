@@ -13,7 +13,6 @@ use crate::models::{
 };
 use crate::version::display_version;
 use crate::widgets;
-use crate::markdown;
 use lege::target_profiles;
 
 #[cfg(feature = "debug-logging")]
@@ -105,6 +104,7 @@ pub struct AppState {
     pub status_lines: (String, String, String, String),
     pub status_log: VecDeque<String>,
     pub active_eta: Option<String>,
+    pub progress_metrics: Option<lege::progress::ProgressMetrics>,
     pub active_task_ids: Vec<u64>,
     pub should_cancel: bool,
 
@@ -131,10 +131,6 @@ pub struct AppState {
     pub show_completion_popup: bool,
     pub show_log_viewer: bool,
     pub processing_log: Vec<LogEntry>,
-    pub show_licenses: bool,
-    pub licenses_content: String,
-    pub show_documentation: bool,
-    pub documentation_content: String,
     pub show_about: bool,
     pub show_queue_viewer: bool,
 
@@ -163,6 +159,7 @@ impl Default for AppState {
             ),
             status_log: VecDeque::new(),
             active_eta: None,
+            progress_metrics: None,
             active_task_ids: Vec::new(),
             should_cancel: false,
             target_height_input: options.target_height.unwrap_or(1200).to_string(),
@@ -187,10 +184,6 @@ impl Default for AppState {
             show_completion_popup: false,
             show_log_viewer: false,
             processing_log: logging::load_log_entries().unwrap_or_default(),
-            show_licenses: false,
-            licenses_content: String::new(),
-            show_documentation: false,
-            documentation_content: String::new(),
             show_about: false,
             show_queue_viewer: false,
             #[cfg(feature = "debug-logging")]
@@ -212,6 +205,7 @@ impl AppState {
         let m = msg.into();
         self.status_message = m.clone();
         self.status_lines = (m, String::new(), String::new(), String::new());
+        self.progress_metrics = None;
     }
 
     fn set_status_lines(
@@ -940,6 +934,23 @@ fn CombinedSettingsPanel(
                                             }
                                         },
                                     ),
+                                ))
+                                .child(tooltip_wrap_at(
+                                    state,
+                                    TooltipArea::LeftCard,
+                                    GUI_TEXT.interactive.tooltips.jpeg_compatibility.clone(),
+                                    AttachedPosition::Right,
+                                    compact_checkbox_row(
+                                        GUI_TEXT.interactive.labels.jpeg_compatibility.clone(),
+                                        options.jpeg_compat,
+                                        {
+                                            let mut state = state;
+                                            move |_| {
+                                                let mut s = state.write();
+                                                s.options.jpeg_compat = !s.options.jpeg_compat;
+                                            }
+                                        },
+                                    ),
                                 )),
                         )
                     )
@@ -1423,27 +1434,197 @@ fn bool_tile(text: String, selected: bool, mut on_select: impl FnMut(()) + 'stat
     compact_checkbox_row(text, selected, move |_| on_select(()))
 }
 
-fn StatusBar(state: State<AppState>) -> Element {
-    let eta_text = state.read().active_eta.clone();
-    let queue_len = state.read().queue.len();
-    let status = state.read().status_lines.clone();
-    let mut detail_parts = Vec::new();
-    if !status.1.is_empty() {
-        detail_parts.push(status.1.clone());
+fn progress_stage_card(
+    title: impl Into<String>,
+    current: u32,
+    total: u32,
+    accent: (u8, u8, u8),
+) -> Element {
+    let title = title.into();
+    let safe_total = total.max(1);
+    let clamped = current.min(total);
+    let percent = ((clamped as f32 / safe_total as f32) * 100.0).clamp(0.0, 100.0);
+
+    rect()
+        .width(Size::fill())
+        .height(Size::px(48.))
+        .background(CARD_BG)
+        .border(
+            Border::new()
+                .fill(BORDER)
+                .width(1.)
+                .alignment(BorderAlignment::Inner),
+        )
+        .corner_radius(4.)
+        .padding((6., 8., 6., 8.))
+        .vertical()
+        .spacing(4.)
+        .child(
+            rect()
+                .width(Size::fill())
+                .direction(Direction::Horizontal)
+                .main_align(Alignment::SpaceBetween)
+                .cross_align(Alignment::Center)
+                .child(label().text(title).font_size(11.).font_weight(700).color(TEXT))
+                .child(
+                    label()
+                        .text(format!("{clamped}/{total}"))
+                        .font_size(10.)
+                        .color(MUTED),
+                ),
+        )
+        .child(
+            rect()
+                .width(Size::fill())
+                .height(Size::px(10.))
+                .background(Color::from_rgb(236, 236, 236))
+                .border(
+                    Border::new()
+                        .fill(BORDER)
+                        .width(1.)
+                        .alignment(BorderAlignment::Inner),
+                )
+                .corner_radius(3.)
+                .child(
+                    rect()
+                        .width(Size::percent(percent))
+                        .height(Size::fill())
+                        .background(Color::from_rgb(accent.0, accent.1, accent.2))
+                        .corner_radius(2.),
+                ),
+        )
+        .into()
+}
+
+fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
+    if metrics.pages_total == 0 {
+        return None;
     }
-    if !status.2.is_empty() {
-        detail_parts.push(status.2.clone());
+
+    let mut cards = Vec::new();
+    match metrics.mode {
+        lege::progress::ProgressMode::Layout => {
+            cards.push(progress_stage_card("Render", metrics.rendered, metrics.pages_total, (180, 217, 232)));
+            cards.push(progress_stage_card("Infer", metrics.detected, metrics.pages_total, (232, 218, 166)));
+            cards.push(progress_stage_card("Encode", metrics.encoded, metrics.pages_total, (220, 192, 214)));
+            if metrics.enable_deskew {
+                cards.push(progress_stage_card("Deskew", metrics.deskewed, metrics.pages_total, (180, 201, 232)));
+            }
+        }
+        lege::progress::ProgressMode::Margin => {
+            cards.push(progress_stage_card("Render", metrics.rendered, metrics.pages_total, (180, 217, 232)));
+            if metrics.enable_layout_detection {
+                cards.push(progress_stage_card("Infer", metrics.detected, metrics.pages_total, (232, 218, 166)));
+                cards.push(progress_stage_card("Margin", metrics.encoded, metrics.pages_total, (214, 196, 234)));
+            } else {
+                cards.push(progress_stage_card("Margin", metrics.encoded, metrics.pages_total, (214, 196, 234)));
+            }
+            if metrics.enable_deskew {
+                cards.push(progress_stage_card("Deskew", metrics.deskewed, metrics.pages_total, (180, 201, 232)));
+            }
+        }
+        lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
+            cards.push(progress_stage_card("Render", metrics.rendered, metrics.pages_total, (180, 217, 232)));
+            cards.push(progress_stage_card("Encode", metrics.encoded, metrics.pages_total, (220, 192, 214)));
+            if metrics.enable_deskew {
+                cards.push(progress_stage_card("Deskew", metrics.deskewed, metrics.pages_total, (180, 201, 232)));
+            }
+        }
+        lege::progress::ProgressMode::Unknown => {}
     }
-    if !status.3.is_empty() {
-        detail_parts.push(status.3.clone());
+
+    if cards.is_empty() {
+        return None;
     }
-    if let Some(eta) = eta_text {
-        detail_parts.push(format!("ETA {eta}"));
-    }
-    let detail_text = if detail_parts.is_empty() {
-        None
+
+    let top_row: Element = if cards.len() == 1 {
+        rect().width(Size::fill()).height(Size::px(48.)).child(cards.remove(0)).into()
     } else {
-        Some(detail_parts.join("  |  "))
+        let first = cards.remove(0);
+        let second = cards.remove(0);
+        rect()
+            .width(Size::fill())
+            .height(Size::px(48.))
+            .direction(Direction::Horizontal)
+            .spacing(6.)
+            .child(rect().width(Size::fill()).height(Size::fill()).child(first))
+            .child(rect().width(Size::fill()).height(Size::fill()).child(second))
+            .into()
+    };
+
+    let bottom_row: Option<Element> = match cards.len() {
+        0 => None,
+        1 => Some(
+            rect()
+                .width(Size::fill())
+                .height(Size::px(48.))
+                .child(cards.remove(0))
+                .into(),
+        ),
+        _ => Some(
+            rect()
+                .width(Size::fill())
+                .height(Size::px(48.))
+                .direction(Direction::Horizontal)
+                .spacing(6.)
+                .child(rect().width(Size::fill()).height(Size::fill()).child(cards.remove(0)))
+                .child(rect().width(Size::fill()).height(Size::fill()).child(cards.remove(0)))
+                .into(),
+        ),
+    };
+
+    Some(
+        rect()
+            .width(Size::fill())
+            .vertical()
+            .spacing(6.)
+            .child(top_row)
+            .maybe_child(bottom_row)
+            .into(),
+    )
+}
+
+fn StatusBar(state: State<AppState>) -> Element {
+    let read = state.read();
+    let eta_text = read.active_eta.clone();
+    let queue_len = read.queue.len();
+    let status = read.status_lines.clone();
+    let progress_metrics = read.progress_metrics;
+    let progress_section = progress_metrics.and_then(progress_grid);
+
+    // When the metrics grid is shown, skip legacy text progress lines (they duplicate the tiles).
+    let secondary_text = if progress_section.is_some() {
+        let mut parts = Vec::new();
+        if !status.3.is_empty() {
+            parts.push(status.3.clone());
+        }
+        if let Some(eta) = eta_text {
+            parts.push(format!("ETA {eta}"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("  ·  "))
+        }
+    } else {
+        let mut parts = Vec::new();
+        if !status.1.is_empty() {
+            parts.push(status.1.clone());
+        }
+        if !status.2.is_empty() {
+            parts.push(status.2.clone());
+        }
+        if !status.3.is_empty() {
+            parts.push(status.3.clone());
+        }
+        if let Some(eta) = eta_text {
+            parts.push(format!("ETA {eta}"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("  |  "))
+        }
     };
 
     widgets::lege_status_panel(
@@ -1451,21 +1632,21 @@ fn StatusBar(state: State<AppState>) -> Element {
             .width(Size::fill())
             .height(Size::fill())
             .vertical()
-            .spacing(3.)
-            .main_align(Alignment::Center)
+            .spacing(6.)
             .child(
                 label()
                     .text(status.0)
                     .font_size(12.)
                     .color(TEXT),
             )
-            .maybe_child(detail_text.map(|detail| -> Element {
+            .maybe_child(secondary_text.map(|detail| -> Element {
                 label()
                     .text(detail)
                     .font_size(11.)
                     .color(MUTED)
                     .into()
             }))
+            .maybe_child(progress_section)
             .into(),
         rect()
             .width(Size::fill())
@@ -1624,32 +1805,6 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
                 .into()
         })
         .collect()
-}
-
-fn markdown_blocks_view(markdown: &str) -> Element {
-    ScrollView::new()
-        .width(Size::fill())
-        .height(Size::fill())
-        .child(markdown::markdown_blocks_content(markdown))
-        .into()
-}
-
-fn plain_text_view(text: &str) -> Element {
-    ScrollView::new()
-        .width(Size::fill())
-        .height(Size::fill())
-        .child(
-            rect()
-                .width(Size::fill())
-                .padding(12.)
-                .child(
-                    paragraph()
-                        .span(Span::new(text.to_string()).font_size(12.).color(TEXT))
-                        .line_height(1.25)
-                        .max_lines(5000),
-                ),
-        )
-        .into()
 }
 
 fn completion_message(result: &ProcessingResult, estimated_original_size: u64) -> String {
@@ -1906,25 +2061,13 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                     )
                     .child(
                         label()
-                            .text("Contact: read@legeapp.com")
+                            .text("Email")
                             .font_size(13.)
                             .color(TEXT),
                     )
                     .child(
                         Input::new(email_text)
                             .width(Size::px(220.)),
-                    )
-                    .child(
-                        Button::new()
-                            .on_press(|_| {
-                                let _ = backend::open_with_system("mailto:read@legeapp.com");
-                            })
-                            .child(
-                                label()
-                                    .text("Email: mailto:read@legeapp.com")
-                                    .font_size(12.)
-                                    .color(TEXT),
-                            ),
                     ),
             ),
         )
@@ -2155,6 +2298,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
         s.is_processing = true;
         s.should_cancel = false;
         s.active_eta = None;
+        s.progress_metrics = None;
         s.show_completion_popup = false;
         s.completion_popup = None;
         s.set_status_lines(
@@ -2198,6 +2342,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                         s.should_cancel = false;
                         s.active_task_ids.clear();
                         s.active_eta = None;
+                        s.progress_metrics = None;
                         s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
                         break;
                     }
@@ -2214,6 +2359,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 status,
                                 metrics,
                             } => {
+                                state.write().progress_metrics = metrics;
                                 match &status {
                                     lege::progress::ProcessingStatus::AssemblingOutput => {}
                                     lege::progress::ProcessingStatus::NoLayoutProgress { .. }
@@ -2358,6 +2504,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     s.is_processing = false;
                     s.active_task_ids.clear();
                     s.active_eta = None;
+                    s.progress_metrics = None;
                     let queue_remaining = s.queue.len();
                     let line3 = if queue_remaining > 0 {
                         format!("{queue_remaining} file(s) remaining in queue.")
@@ -2376,6 +2523,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 s.is_processing = false;
                 s.active_task_ids.clear();
                 s.active_eta = None;
+                s.progress_metrics = None;
                 s.set_status_message(format!("Failed to start processing: {e}"));
             }
         }

@@ -4,7 +4,6 @@ mod app;
 mod backend;
 mod gui_text;
 mod logging;
-mod markdown;
 mod models;
 mod settings;
 mod version;

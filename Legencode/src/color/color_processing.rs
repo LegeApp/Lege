@@ -35,6 +35,9 @@ pub enum ImageRegionDitherMode {
     Ccitt4ClusteredDot4x4,
     /// `--halftone`, **JBIG2 only** → grayscale crops for `jbig2halftone.rs` (invalid with CCITT4/DjVu).
     Halftone,
+    /// `--gray-jp2` → encode image regions as grayscale JPEG 2000 (jp2lam) instead of dithering.
+    /// Skips bilevel quantization entirely; the overlay stream is a JP2-gray XObject.
+    GrayJp2,
 }
 
 /// Region bounds structure for zero-copy processing
@@ -189,6 +192,19 @@ pub fn process_image_region(
         );
     }
 
+    if mode == ImageRegionDitherMode::GrayJp2 {
+        // Grayscale JP2 overlay: convert to luma and return as RGB triplets so the
+        // pipeline's `grayscale_data = chunks(3).map(|px| px[0])` extracts correct values.
+        let grayscale = rgb_to_grayscale_simd_direct(
+            original_rgb, page_width, region_bounds, region_width, region_height,
+        );
+        let mut output = Vec::with_capacity(grayscale.len() * 3);
+        for &g in &grayscale {
+            output.extend_from_slice(&[g, g, g]);
+        }
+        return Ok((output, region_width, region_height));
+    }
+
     // Use heavy binarization if enabled and available
     if use_heavy_binarization {
         if let Ok(mut processor) = HeavyBinarizationProcessor::new() {
@@ -275,7 +291,9 @@ pub fn process_image_region(
                 region_height,
             )
         }
-        ImageRegionDitherMode::None => unreachable!("None mode returns before dither branch"),
+        ImageRegionDitherMode::None | ImageRegionDitherMode::GrayJp2 => {
+            unreachable!("None/GrayJp2 modes return before reaching the dither match")
+        }
     }
 }
 

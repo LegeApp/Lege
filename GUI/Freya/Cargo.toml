@@ -12,7 +12,7 @@ default = []
 debug-logging = ["lege/debug-logging", "Legencode/debug-logging"]
 
 [dependencies]
-freya = { path = "../../../freya-main/crates/freya", default-features = false, features = ["skia-engine", "markdown"] }
+freya = { git = "https://github.com/LegeApp/freya.git", branch = "main", default-features = false, features = ["skia-engine"] }
 rfd = "0.15"
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "fs", "time", "sync"] }
 anyhow = "1.0"
@@ -25,7 +25,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 once_cell = "1.19"
 raw-window-handle = "0.6"
 atty = "0.2.14"
-pulldown-cmark = "0.10"
 
 Legencode = { path = "../../Legencode" }
 lege = { path = "../.." }

@@ -42,7 +42,8 @@ log = { workspace = true }                 # For logging
 
 # Local path dependencies - these will pull in their own dependencies
 toojpeg = { path = "src/TooJpeg-rust" }  # Local JPEG encoder
-openjp2 = { path = "src/openjp2", optional = true }  # Optional JP2 encoder, disabled by default
+openjp2 = { path = "src/openjp2", optional = true }  # Optional JP2 encoder (legacy), disabled by default
+jp2lam = { git = "https://github.com/LegeApp/jp2lam.git", optional = true }  # Pure-Rust JPEG 2000 encoder
 jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features = ["cc-analysis", "symboldict"] }   # Local JBIG2 encoder
 
 # Configuration management
@@ -53,6 +54,7 @@ default = []
 debug-logging = []  # No longer requires chrono
 cc-analysis = []  # Enable new connected component analysis for JBIG2 (cjb2-based)
 jp2-openjp2 = ["dep:openjp2"]
+jp2-lam = ["dep:jp2lam"]  # Pure-Rust JPEG 2000 via jp2lam
 
 [dev-dependencies]
 # Only keep dev dependencies that are used by the main crate's tests
