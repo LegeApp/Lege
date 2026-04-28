@@ -134,6 +134,7 @@ pub struct ProcessingOptions {
     pub layout_analysis: bool,
     pub use_ocr: bool,
     pub high_quality_output: bool,
+    pub jpeg_compat: bool,
     pub invert_input: bool,
 
     // Margin processing options
@@ -168,6 +169,7 @@ impl ProcessingOptions {
             layout_analysis: true,
             use_ocr: false,
             high_quality_output: false,
+            jpeg_compat: false,
             invert_input: false,
             center_margins: false,
             crop_margins: false,
@@ -219,6 +221,7 @@ impl ProcessingOptions {
         options.layout_analysis = config.enable_layout_detection();
         options.use_ocr = config.enable_ocr();
         options.high_quality_output = config.high_quality_output();
+        options.jpeg_compat = config.jpeg_compat();
         options.invert_input = config.invert_input();
 
         options.center_margins = matches!(

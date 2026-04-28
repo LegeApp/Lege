@@ -1,3 +1,6 @@
+# Cargo local config (machine-specific paths — see .cargo/config.example.toml)
+.cargo/config.toml
+
 # Rust
 target/
 **/*.rs.bk

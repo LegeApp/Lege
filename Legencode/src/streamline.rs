@@ -309,12 +309,14 @@ use std::time::SystemTime;
 use crate::encoders;
 
 #[cfg(feature = "debug-logging")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "debug-logging")]
 static DEBUG_LOG_BUFFER: std::sync::OnceLock<Arc<Mutex<VecDeque<String>>>> =
     std::sync::OnceLock::new();
 
 #[cfg(feature = "debug-logging")]
 const MAX_DEBUG_LOG_ENTRIES: usize = 1000;
-
 #[cfg(feature = "debug-logging")]
 pub fn log_debug_message(message: &str) {
     let buffer = DEBUG_LOG_BUFFER.get_or_init(|| Arc::new(Mutex::new(VecDeque::new())));
@@ -519,6 +521,12 @@ pub enum EncodingSettings {
     Jbig2(Jbig2Settings),
     /// CCITT4 encoding (no configurable settings).
     Ccitt4,
+    /// JPEG 2000 via jp2lam (pure Rust). Channels inferred from `ImageBuffer.channels`:
+    /// 1 → grayscale JP2, 3 → RGB JP2.
+    Jp2Lam {
+        /// Quality 0–100; 100 = lossless.
+        quality: u8,
+    },
     // /// Indexed 8-bit paletted image encoding.
     // Indexed8(Indexed8Settings),  // Removed - indexed8 encoder deleted
 }
@@ -576,10 +584,37 @@ impl EncodingManager {
                 .map_err(|e| Box::new(e) as Box<dyn Error>)?;
                 Ok::<EncodingResult, Box<dyn Error>>(EncodingResult::Standard(data))
             }
+            EncodingSettings::Jp2Lam { quality } => {
+                #[cfg(feature = "jp2-lam")]
+                {
+                    let data = if buffer.channels == 1 {
+                        encoders::jp2lam::encode_gray(
+                            buffer.data,
+                            buffer.width,
+                            buffer.height,
+                            *quality,
+                        )
+                    } else {
+                        encoders::jp2lam::encode_rgb(
+                            buffer.data,
+                            buffer.width,
+                            buffer.height,
+                            *quality,
+                        )
+                    }
+                    .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+                    Ok::<EncodingResult, Box<dyn Error>>(EncodingResult::Standard(data))
+                }
+                #[cfg(not(feature = "jp2-lam"))]
+                Err(Box::new(crate::EncodingError::EncoderError(
+                    "jp2-lam feature not enabled; rebuild with --features jp2-lam".to_string(),
+                )) as Box<dyn Error>)
+            }
         }?;
 
         Ok(result)
     }
+
 }
 
 #[cfg(test)]
