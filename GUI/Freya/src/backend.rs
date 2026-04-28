@@ -172,6 +172,7 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
     config.set_binarization(binarization_config);
     config.set_enable_ocr(options.use_ocr);
     config.set_high_quality_output(options.high_quality_output);
+    config.set_jpeg_compat(options.jpeg_compat);
     // Use unified image format alias to keep GUI/CLI consistent
     config.set_image_format(cover_format);
 

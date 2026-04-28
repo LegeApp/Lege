@@ -257,12 +257,12 @@ pub fn lege_status_panel(status_content: Element, action_content: Element) -> El
         .height(Size::fill())
         .direction(Direction::Horizontal)
         .main_align(Alignment::SpaceBetween)
-        .cross_align(Alignment::Center)
+        .cross_align(Alignment::Start)
         .child(
             rect()
                 .expanded()
                 .height(Size::fill())
-                .main_align(Alignment::Center)
+                .main_align(Alignment::Start)
                 .child(status_content),
         )
         .child(
@@ -321,20 +321,22 @@ pub fn lege_main_shell(
                                 .child(
                                     rect()
                                         .width(Size::fill())
-                                        .height(Size::percent(40.))
+                                        .height(Size::px(112.))
+                                        .content(Content::Flex)
                                         .direction(Direction::Horizontal)
                                         .cross_align(Alignment::Center)
                                         .child(
                                             rect()
-                                                .width(Size::fill())
+                                                .width(Size::flex(1.))
                                                 .height(Size::fill())
                                                 .vertical()
                                                 .main_align(Alignment::Center)
-                                                .cross_align(Alignment::End)
+                                                .cross_align(Alignment::Start)
                                                 .child(
                                                     rect()
                                                         .width(Size::px(220.))
                                                         .height(Size::px(96.))
+                                                        .margin((0., 24., 0., 0.))
                                                         .child(popup_rail),
                                                 )
                                         )
@@ -346,7 +348,7 @@ pub fn lege_main_shell(
                                         )
                                         .child(
                                             rect()
-                                                .width(Size::fill())
+                                                .width(Size::flex(1.))
                                                 .height(Size::fill()),
                                         )
                                 )

@@ -1,0 +1,10 @@
+[alias]
+build-debug-logging = "build --profile debug-fast --features debug-logging"
+run-debug-logging = "run --profile debug-fast --features debug-logging --"
+
+# If you have local checkouts of these crates, copy this file to config.toml and fill in your paths:
+# [patch."https://github.com/LegeApp/jp2lam.git"]
+# jp2lam = { path = "/your/path/to/jp2lam" }
+#
+# [patch."https://github.com/LegeApp/freya.git"]
+# freya = { path = "/your/path/to/freya/crates/freya" }
