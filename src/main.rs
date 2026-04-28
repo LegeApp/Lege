@@ -73,7 +73,7 @@ use lege::processing_log::{
 
 mod windows_dirs;
 use std::io;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime};
 use sysinfo::{Disks, System};
 
 /// Cleanup function specifically for CLI to ensure clean process exit
@@ -175,7 +175,7 @@ fn hardware_acceleration_status() -> (bool, String) {
 #[derive(Default)]
 struct CliOptions {
     // --- Output format ---
-    text_format: Option<String>,  // --text-format ccitt4|jbig2|djvu
+    text_format: Option<String>,  // --text-format ccitt4|jbig2|jpeg|djvu
     cover_format: Option<String>, // --cover-format jpeg|jp2|ccitt4|jbig2|none
 
     // --- Binarization ---
@@ -199,6 +199,7 @@ struct CliOptions {
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
     halftone: bool,                // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
     deskew: bool,                  // --deskew
+    jpeg_compat: bool,             // --jpeg-compat
     center_margins: bool,          // --center-margins
     crop_margins: bool,            // --crop-margins
     force_crop: bool,              // --force-crop
@@ -218,6 +219,8 @@ struct CliOptions {
     images_to_images: bool,       // --images-to-images
     png_quantize: bool,           // --png-quantize
     png_colors: u16,              // --png-colors N
+    jp2_debug: Option<u32>,       // --jp2-debug HEIGHT  (render pages → JP2 + size log)
+    gray_jp2: bool,               // --gray-jp2  (image regions → grayscale JP2 overlay)
 }
 
 /// Extract all `--flag` and `--key value` processing options from the arg list,
@@ -245,9 +248,9 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     .ok_or_else(|| anyhow!("Missing value after --text-format"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
-                    "ccitt4" | "jbig2" | "djvu" => {}
+                    "ccitt4" | "jbig2" | "jpeg" | "djvu" => {}
                     _ => bail!(
-                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, or djvu",
+                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, or djvu",
                         val
                     ),
                 }
@@ -369,6 +372,19 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.pdf_to_png = Some(height);
                 i += 2;
             }
+            "--jp2-debug" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing height after --jp2-debug"))?;
+                let height: u32 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid height: {}", val))?;
+                if height < 100 || height > 10000 {
+                    bail!("--jp2-debug height must be between 100 and 10000 pixels");
+                }
+                opts.jp2_debug = Some(height);
+                i += 2;
+            }
             "--crop-areas" => {
                 let val = args
                     .get(i + 1)
@@ -464,8 +480,16 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.halftone = true;
                 i += 1;
             }
+            "--gray-jp2" => {
+                opts.gray_jp2 = true;
+                i += 1;
+            }
             "--deskew" => {
                 opts.deskew = true;
+                i += 1;
+            }
+            "--jpeg-compat" => {
+                opts.jpeg_compat = true;
                 i += 1;
             }
             "--high-quality" => {
@@ -608,6 +632,7 @@ fn main() -> Result<()> {
     // No extra positional args and no debug modes -> interactive CLI wizard
     if args.len() == 1
         && cli_opts.pdf_to_png.is_none()
+        && cli_opts.jp2_debug.is_none()
         && !cli_opts.png_folder
         && cli_opts.crop_areas.is_none()
         && !cli_opts.pdf_to_images
@@ -647,6 +672,32 @@ fn main() -> Result<()> {
             AppConfig::default(),
             cli_opts.png_quantize,
             cli_opts.png_colors,
+        );
+    }
+
+    // JP2 debug: lege <file.pdf> [page-range] --jp2-debug HEIGHT
+    if let Some(jp2_height) = cli_opts.jp2_debug {
+        let pdf_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing PDF path for --jp2-debug"))?;
+        let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
+        validate_pdf_file(
+            pdf_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
+        )?;
+        let page_range = args.get(2).and_then(|c| {
+            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                Some(c.clone())
+            } else {
+                None
+            }
+        });
+        return lege::pdf_to_png::run_pdf_to_jp2_debug_mode(
+            pdf_path,
+            page_range,
+            jp2_height,
+            AppConfig::default(),
         );
     }
 
@@ -1107,6 +1158,9 @@ fn handle_simple_processing(
     // CCITT4 + `--dither` uses clustered-dot 4×4 only (never Stucki); JBIG2/DjVu use Stucki.
     if cli_opts.halftone {
         pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
+    } else if cli_opts.gray_jp2 {
+        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::GrayJp2);
+        pipeline_config.set_keep_original_images(false);
     } else if cli_opts.dither {
         let tf = pipeline_config.text_format();
         if tf == "ccitt4" {
@@ -1169,6 +1223,9 @@ fn handle_simple_processing(
     }
     if cli_opts.deskew {
         pipeline_config.set_enable_deskew(true);
+    }
+    if cli_opts.jpeg_compat {
+        pipeline_config.set_jpeg_compat(true);
     }
     if cli_opts.high_quality {
         pipeline_config.set_high_quality_output(true);
@@ -2898,6 +2955,32 @@ fn determine_output_directory(
     Ok(PathBuf::from("."))
 }
 
+fn unix_to_ymdhm(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let s = (secs % 60) as u32;
+    let mins = secs / 60;
+    let mi = (mins % 60) as u32;
+    let hours = mins / 60;
+    let h = (hours % 24) as u32;
+    let mut days = (hours / 24) as u32;
+    let mut y = 1970u32;
+    loop {
+        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        let dy = if leap { 366 } else { 365 };
+        if days < dy { break; }
+        days -= dy;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31u32, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 1u32;
+    for &md in &month_days {
+        if days < md { break; }
+        days -= md;
+        mo += 1;
+    }
+    (y, mo, days + 1, h, mi, s)
+}
+
 fn generate_output_path(
     input_path: &PathBuf,
     output_dir: &PathBuf,
@@ -2908,7 +2991,13 @@ fn generate_output_path(
         .ok_or_else(|| anyhow!("Invalid input filename"))?
         .to_string_lossy();
 
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let now = SystemTime::now();
+    let timestamp = {
+        use std::time::UNIX_EPOCH;
+        let secs = now.duration_since(UNIX_EPOCH)?.as_secs();
+        let (y, mo, d, h, mi, s) = unix_to_ymdhm(secs);
+        format!("{:04}-{:02}-{:02}_{:02}{:02}{:02}", y, mo, d, h, mi, s)
+    };
 
     // If DJVU is selected, output a .djvu file directly
     if config.text_format() == "djvu" {

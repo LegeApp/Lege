@@ -224,3 +224,146 @@ fn parse_page_range(range_str: &str, total_pages: usize) -> Result<Vec<usize>> {
 
     Ok(pages)
 }
+
+/// Render PDF pages and encode each as JP2 (RGB and grayscale), logging file sizes.
+///
+/// Usage: `lege <file.pdf> [page-range] --jp2-debug HEIGHT`
+///
+/// Outputs per page:
+/// - `page_NNNN_q80.jp2`      — RGB JP2 at quality 80
+/// - `page_NNNN_q62.jp2`      — RGB JP2 at quality 62 (WebHigh equivalent)
+/// - `page_NNNN_q42.jp2`      — RGB JP2 at quality 42 (WebLow equivalent)
+/// - `page_NNNN_gray_q80.jp2` — Grayscale JP2 at quality 80
+pub fn run_pdf_to_jp2_debug_mode(
+    pdf_path: std::path::PathBuf,
+    page_range: Option<String>,
+    target_height: u32,
+    _config: crate::types::AppConfig,
+) -> Result<()> {
+    use Legencode::streamline::{
+        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
+    };
+    use std::fs;
+
+    let output_dir = pdf_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!(
+            "{}_jp2_debug",
+            pdf_path.file_stem().unwrap().to_string_lossy()
+        ));
+    fs::create_dir_all(&output_dir)?;
+
+    info_println!("JP2 Debug Mode");
+    info_println!("Input PDF: {}", pdf_path.display());
+    info_println!("Output folder: {}", output_dir.display());
+    info_println!("Target height: {}px", target_height);
+
+    let pdf_bytes_vec = fs::read(&pdf_path)
+        .with_context(|| format!("Failed to read PDF: {}", pdf_path.display()))?;
+    let pdf_bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(pdf_bytes_vec.into_boxed_slice());
+    let mut raster_cfg =
+        crate::pagerender::prelude::RasterConfig::default();
+    raster_cfg.render_forms = false;
+    let renderer =
+        crate::pagerender::prelude::PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
+    let total_pages = renderer.page_count() as usize;
+
+    let pages_to_render = if let Some(range_str) = page_range {
+        parse_page_range(&range_str, total_pages)?
+    } else {
+        (1..=(total_pages)).collect()
+    };
+
+    println!(
+        "Encoding {} pages as JP2 (RGB + gray, 3 quality levels each)…",
+        pages_to_render.len()
+    );
+    println!(
+        "{:<28} {:>10} {:>10} {:>10} {:>10}",
+        "page", "rgb_q80", "rgb_q62", "rgb_q42", "gray_q80"
+    );
+    println!("{}", "-".repeat(62));
+
+    let overall_start = std::time::Instant::now();
+    for &page_num in &pages_to_render {
+        let page_start = std::time::Instant::now();
+
+        let rgb = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(
+                    renderer.render_page_rgb((page_num - 1) as u32, target_height, None),
+                )
+            })?
+        } else {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(renderer.render_page_rgb((page_num - 1) as u32, target_height, None))?
+        };
+
+        let w = rgb.width;
+        let h = rgb.height;
+        let rgb_data = rgb.data;
+
+        // Build grayscale
+        let gray_data: Vec<u8> = rgb_data
+            .chunks_exact(3)
+            .map(|px| {
+                let r = px[0] as f32;
+                let g = px[1] as f32;
+                let b = px[2] as f32;
+                (0.299 * r + 0.587 * g + 0.114 * b).round() as u8
+            })
+            .collect();
+
+        let encode_jp2 = |data: &[u8], channels: u8, q: u8| -> anyhow::Result<Vec<u8>> {
+            let buf = LegeImageBuffer { data, width: w, height: h, channels };
+            let result = EncodingManager::encode(&buf, &EncodingSettings::Jp2Lam { quality: q })
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            match result {
+                EncodingResult::Standard(d) => Ok(d),
+                _ => Err(anyhow::anyhow!("unexpected encoding result type")),
+            }
+        };
+
+        let rgb80 = encode_jp2(&rgb_data, 3, 80)?;
+        let rgb62 = encode_jp2(&rgb_data, 3, 62)?;
+        let rgb42 = encode_jp2(&rgb_data, 3, 42)?;
+        let gray80 = encode_jp2(&gray_data, 1, 80)?;
+
+        let stem = format!("page_{:04}", page_num);
+        fs::write(output_dir.join(format!("{stem}_q80.jp2")), &rgb80)?;
+        fs::write(output_dir.join(format!("{stem}_q62.jp2")), &rgb62)?;
+        fs::write(output_dir.join(format!("{stem}_q42.jp2")), &rgb42)?;
+        fs::write(output_dir.join(format!("{stem}_gray_q80.jp2")), &gray80)?;
+
+        let elapsed_ms = page_start.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "{:<28} {:>10} {:>10} {:>10} {:>10}   ({:.0}ms)",
+            format!("page {}", page_num),
+            fmt_bytes(rgb80.len()),
+            fmt_bytes(rgb62.len()),
+            fmt_bytes(rgb42.len()),
+            fmt_bytes(gray80.len()),
+            elapsed_ms,
+        );
+    }
+
+    let total_s = overall_start.elapsed().as_secs_f64();
+    println!(
+        "\nDone — {} pages in {:.2}s → {}",
+        pages_to_render.len(),
+        total_s,
+        output_dir.display()
+    );
+    Ok(())
+}
+
+fn fmt_bytes(n: usize) -> String {
+    if n >= 1024 * 1024 {
+        format!("{:.1}M", n as f64 / (1024.0 * 1024.0))
+    } else if n >= 1024 {
+        format!("{:.0}K", n as f64 / 1024.0)
+    } else {
+        format!("{}B", n)
+    }
+}

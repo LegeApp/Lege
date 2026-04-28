@@ -398,6 +398,9 @@ impl ProcessingStatus {
     }
 
     /// Converts the status into three concise display lines for GUI (NO ANSI color codes).
+    ///
+    /// For layout / no-layout / margin page progress, only line 1 (mode label) is returned;
+    /// the Freya GUI shows counts via `ProgressMetrics` tiles instead of text mini-bars.
     pub fn to_gui_display_lines(&self) -> (String, String, String) {
         match self {
             Self::Initializing => (
@@ -457,152 +460,45 @@ impl ProcessingStatus {
                 (String::new(), String::new(), String::new())
             }
             Self::LayoutProgress {
-                rendered,
-                detected,
-                encoded,
-                deskewed,
-                total,
+                rendered: _,
+                detected: _,
+                encoded: _,
+                deskewed: _,
+                total: _,
                 enable_layout_detection: _,
-                enable_deskew,
+                enable_deskew: _,
                 eta: _,
-            } => {
-                let total = *total;
-                let r = (*rendered).min(total);
-                let d = (*detected).min(total);
-                let e = (*encoded).min(total);
-                let ds = (*deskewed).min(total);
-
-                let line1 = format!(
-                    "Render {} {}/{} | Infer {} {}/{}",
-                    mini_bar(r, total),
-                    r,
-                    total,
-                    mini_bar(d, total),
-                    d,
-                    total
-                );
-
-                let line2 = if *enable_deskew {
-                    format!(
-                        "Encode {} {}/{} | Deskew {} {}/{}",
-                        mini_bar(e, total),
-                        e,
-                        total,
-                        mini_bar(ds, total),
-                        ds,
-                        total
-                    )
-                } else {
-                    format!("Encode {} {}/{}", mini_bar(e, total), e, total)
-                };
-                ("[Layout Mode]".to_string(), line1, line2)
-            }
+            } => (
+                "[Layout Mode]".to_string(),
+                String::new(),
+                String::new(),
+            ),
             Self::NoLayoutProgress {
-                rendered,
-                encoded,
-                deskewed,
-                total,
-                enable_deskew,
+                rendered: _,
+                encoded: _,
+                deskewed: _,
+                total: _,
+                enable_deskew: _,
                 eta: _,
-            } => {
-                let total = *total;
-                let r = (*rendered).min(total);
-                let e = (*encoded).min(total);
-                let ds = (*deskewed).min(total);
-
-                let line1 = format!(
-                    "Render {} {}/{} | Encode {} {}/{}",
-                    mini_bar(r, total),
-                    r,
-                    total,
-                    mini_bar(e, total),
-                    e,
-                    total
-                );
-
-                let line2 = if *enable_deskew && ds > 0 {
-                    format!("Deskew {} {}/{}", mini_bar(ds, total), ds, total)
-                } else {
-                    String::new() // Only show deskew line if deskew is enabled AND progress is happening
-                };
-
-                ("[No-Layout Mode]".to_string(), line1, line2)
-            }
+            } => (
+                "[No-Layout Mode]".to_string(),
+                String::new(),
+                String::new(),
+            ),
             Self::MarginProgress {
-                pass1_rendered,
-                pass1_detected,
-                pass2_processed,
-                deskewed,
-                total,
-                enable_layout_detection,
-                enable_deskew,
+                pass1_rendered: _,
+                pass1_detected: _,
+                pass2_processed: _,
+                deskewed: _,
+                total: _,
+                enable_layout_detection: _,
+                enable_deskew: _,
                 eta: _,
-            } => {
-                let total = *total;
-                let r = (*pass1_rendered).min(total);
-                let d = (*pass1_detected).min(total);
-                let p2 = (*pass2_processed).min(total);
-                let ds = (*deskewed).min(total);
-
-                if !enable_layout_detection {
-                    // Margin no-layout mode: render + margin calculation (combined)
-                    // For no-layout margin mode, margin calculation is integrated into rendering
-                    let render_progress = r.min(total);
-                    let line1 = format!(
-                        "Render {} {}/{}",
-                        mini_bar(render_progress, total),
-                        render_progress,
-                        total
-                    );
-
-                    let line2 = if *enable_deskew && ds > 0 {
-                        format!("Deskew {} {}/{}", mini_bar(ds, total), ds, total)
-                    } else {
-                        String::new() // Only show deskew line if deskew is enabled AND progress is happening
-                    };
-                    ("[Margin Mode]".to_string(), line1, line2)
-                } else {
-                    // Margin layout mode: render, inference, and separate margin calculation
-                    let line1 = format!(
-                        "Render {} {}/{} | Inference {} {}/{}",
-                        mini_bar(r, total),
-                        r,
-                        total,
-                        mini_bar(d, total),
-                        d,
-                        total
-                    );
-
-                    // Show either margin calculation or deskew progress on line 2
-                    let line2 = if *enable_deskew && ds > 0 && ds > p2 {
-                        // If deskew is enabled and progress is ahead of pass2, show deskew
-                        format!("Deskew {} {}/{}", mini_bar(ds, total), ds, total)
-                    } else if p2 > 0 {
-                        // Otherwise show pass2/margin calculation
-                        let stage_label = "Pass 2";
-                        let stage_progress = p2.min(total);
-                        format!(
-                            "{} {} {}/{}",
-                            stage_label,
-                            mini_bar(stage_progress, total),
-                            stage_progress,
-                            total
-                        )
-                    } else {
-                        // Show margin calc as before
-                        let stage1 = r.min(d);
-                        let stage_progress = stage1.min(total);
-                        format!(
-                            "Margin Calc {} {}/{}",
-                            mini_bar(stage_progress, total),
-                            stage_progress,
-                            total
-                        )
-                    };
-
-                    ("[Margin Mode]".to_string(), line1, line2)
-                }
-            }
+            } => (
+                "[Margin Mode]".to_string(),
+                String::new(),
+                String::new(),
+            ),
         }
     }
 }
@@ -1090,6 +986,9 @@ impl ProgressTracker {
     ) {
         let mut state = self.state.lock().unwrap();
 
+        let old_encoded = state.metrics.encoded;
+        let old_deskewed = state.metrics.deskewed;
+
         // Update the main total
         state.metrics.pages_total = total as u32;
 
@@ -1122,8 +1021,6 @@ impl ProgressTracker {
         self.compute_eta_nolock(&mut state);
 
         // Check if this is a meaningful progress update
-        let old_encoded = state.metrics.encoded;
-        let old_deskewed = state.metrics.deskewed;
         let is_meaningful_change = state.metrics.encoded != old_encoded
             || state.metrics.deskewed != old_deskewed
             || state.last_update.is_none(); // Always send first update
