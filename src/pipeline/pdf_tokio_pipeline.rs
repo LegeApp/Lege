@@ -859,6 +859,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 *config.cover_format(),
                 true,
                 config.high_quality_output(),
+                config.jpeg_compat(),
             )
             .map_err(|e| anyhow!("Failed to encode cover image: {}", e))?;
 
@@ -944,7 +945,26 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
             let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
 
-            if image_region_mode == ImageRegionDitherMode::Halftone
+            if image_region_mode == ImageRegionDitherMode::GrayJp2 {
+                // Grayscale JP2 overlay: skip bilevel dithering, encode directly as jp2-gray.
+                use Legencode::streamline::{
+                    EncodingManager, EncodingResult, EncodingSettings,
+                    ImageBuffer as LegeImageBuffer,
+                };
+                let buffer = LegeImageBuffer {
+                    data: &grayscale_data,
+                    width: region_w,
+                    height: region_h,
+                    channels: 1,
+                };
+                let q: u8 = if config.high_quality_output() { 80 } else { 68 };
+                match EncodingManager::encode(&buffer, &EncodingSettings::Jp2Lam { quality: q }) {
+                    Ok(EncodingResult::Standard(data)) => {
+                        encoded_data = Some((data, "jp2-gray".to_string()));
+                    }
+                    _ => {}
+                }
+            } else if image_region_mode == ImageRegionDitherMode::Halftone
                 && config.text_format() == "jbig2"
             {
                 // Halftone overlay: grayscale → jbig2halftone.rs (halftone region segments)
@@ -1060,6 +1080,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                         *config.cover_format(),
                         is_cover_page,
                         config.high_quality_output(),
+                        config.jpeg_compat(),
                     )
                     .map_err(|e| anyhow!("Could not encode image region: {}", e))?,
                 );
@@ -1355,6 +1376,7 @@ fn encode_region_image_sync(
     format: crate::types::CoverFormat,
     is_cover: bool,
     high_quality: bool,
+    jpeg_compat: bool,
 ) -> Result<(Vec<u8>, String)> {
     // Guardrails: sanity-check dimensions and buffer length
     const MAX_OVERLAY_SIDE: u32 = 8192;
@@ -1383,63 +1405,35 @@ fn encode_region_image_sync(
         Jbig2Settings, JpegSettings,
     };
 
-    let channels = CHANNELS as u32; // regions are RGB buffers
-    if image_data.len() < expected_len {
-        return Err(anyhow!(
-            "Region buffer shorter than expected ({} < {})",
-            image_data.len(),
-            expected_len
-        ));
-    }
-
     let (settings, fmt_str) = match format {
         crate::types::CoverFormat::Jpeg => {
-            let q = if high_quality {
-                95
-            } else if is_cover {
-                50
+            if !is_cover && !jpeg_compat {
+                let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
+                (EncodingSettings::Jp2Lam { quality: q }, "jp2")
             } else {
-                40
-            };
-            (
-                EncodingSettings::Jpeg(JpegSettings {
+                let q = if high_quality { 95 } else if is_cover { 50 } else { 45 };
+                (EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
                     baseline: true,
                     optimized: true,
                     downsample: true,
-                }),
-                "jpeg".to_string(),
-            )
+                }), "jpeg")
+            }
         }
-        crate::types::CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4".to_string()),
+        crate::types::CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4"),
         crate::types::CoverFormat::Jbig2 => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
                 mode: Jbig2Mode::Generic,
                 use_jbig2_halftone_segments: false,
             }),
-            "jbig2".to_string(),
+            "jbig2",
         ),
-        crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
-        _ => {
-            // Treat any other formats as JPEG fallback
-            let q = if high_quality {
-                95
-            } else if is_cover {
-                50
-            } else {
-                40
-            };
-            (
-                EncodingSettings::Jpeg(JpegSettings {
-                    quality: q,
-                    baseline: true,
-                    optimized: true,
-                    downsample: true,
-                }),
-                "jpeg".to_string(),
-            )
+        crate::types::CoverFormat::Jp2 => {
+            let q: u8 = if high_quality { 88 } else if is_cover { 80 } else { 72 };
+            (EncodingSettings::Jp2Lam { quality: q }, "jp2")
         }
+        crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
     };
 
     let image_data_owned = image_data[..expected_len].to_vec();
@@ -1449,8 +1443,13 @@ fn encode_region_image_sync(
         height,
         channels: CHANNELS as u8,
     };
-    let encoding_result = EncodingManager::encode(&buffer, &settings)
-        .map_err(|e| anyhow!("Region encoding failed: {}", e))?;
+    let (encoding_result, fmt_str) = {
+        (
+            EncodingManager::encode(&buffer, &settings)
+                .map_err(|e| anyhow!("Region encoding failed: {}", e))?,
+            fmt_str.to_string(),
+        )
+    };
 
     match encoding_result {
         EncodingResult::Standard(data) => Ok((data, fmt_str)),
@@ -1673,7 +1672,7 @@ async fn encode_base_layer(
     }
 }
 
-/// Encode base layer as full-color JPEG for JPEG-only mode
+/// Encode base layer as full-color image for full-page mode (JP2 by default, JPEG in compat mode)
 async fn encode_base_layer_for_jpeg_mode(
     image: &RgbImage,
     config: &PipelineConfig,
@@ -1681,27 +1680,17 @@ async fn encode_base_layer_for_jpeg_mode(
 ) -> Result<crate::accumulator::ContentType> {
     use crate::accumulator::ContentType;
     use Legencode::streamline::{
-        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
-        JpegSettings,
+        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer, JpegSettings,
     };
 
     #[cfg(feature = "debug-logging")]
     let encoding_start = std::time::Instant::now();
 
-    // For JPEG-only mode, use higher quality setting since we're preserving original image
-    let jpeg_settings = JpegSettings {
-        quality: if config.high_quality_output() { 95 } else { 60 },
-        baseline: true,
-        optimized: true,
-        downsample: false, // Don't downsample to preserve quality
-    };
-
-    let encoding_settings = EncodingSettings::Jpeg(jpeg_settings);
-
-    // Clone the image data for the blocking task
     let width = image.width();
     let height = image.height();
     let image_data = image.as_raw().to_vec();
+    let jpeg_compat = config.jpeg_compat();
+    let high_quality = config.high_quality_output();
 
     let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
     let permit = match encode_sem {
@@ -1709,50 +1698,57 @@ async fn encode_base_layer_for_jpeg_mode(
         None => None,
     };
 
-    let encoding_result = tokio::task::spawn_blocking(move || {
+    let (data, format) = tokio::task::spawn_blocking(move || {
         let buffer = LegeImageBuffer {
             data: &image_data,
             width,
             height,
-            channels: 3u8, // RGB data
+            channels: 3u8,
         };
-        EncodingManager::encode(&buffer, &encoding_settings)
-            .map_err(|e| anyhow!("JPEG encoding failed: {}", e))
+        let (settings, fmt) = if jpeg_compat {
+            (EncodingSettings::Jpeg(JpegSettings {
+                quality: if high_quality { 95 } else { 60 },
+                baseline: true,
+                optimized: true,
+                downsample: false,
+            }), "jpeg")
+        } else {
+            let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
+            (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+        };
+        let result = EncodingManager::encode(&buffer, &settings)
+            .map_err(|e| anyhow!("Full-page encoding failed: {}", e))?;
+        match result {
+            EncodingResult::Standard(data) => Ok((data, fmt.to_string())),
+            _ => Err(anyhow!("Unexpected encoding result type for full-page")),
+        }
     })
     .await
-    .map_err(|e| anyhow!("JPEG encoding task panicked: {}", e))??;
+    .map_err(|e| anyhow!("Full-page encoding task panicked: {}", e))??;
 
     drop(permit);
 
-    match encoding_result {
-        EncodingResult::Standard(data) => {
-            if data.is_empty() {
-                return Err(anyhow!(
-                    "JPEG encoder returned empty data for {}x{} image",
-                    width,
-                    height
-                ));
-            }
-
-            #[cfg(feature = "debug-logging")]
-            crate::perf_log!(
-                encoding_start,
-                "[PROFILING] Page {} JPEG encoding completed",
-                page_index + 1
-            );
-
-            Ok(ContentType::EncodedImage {
-                data: std::sync::Arc::from(data),
-                pixel_width: width,
-                pixel_height: height,
-                format: "jpeg-rgb".to_string(),
-            })
-        }
-        _ => {
-            // JPEG encoding should only return Standard result
-            Err(anyhow!("Unexpected JPEG encoding result type"))
-        }
+    if data.is_empty() {
+        return Err(anyhow!(
+            "Full-page encoder returned empty data for {}x{} image",
+            width,
+            height
+        ));
     }
+
+    #[cfg(feature = "debug-logging")]
+    crate::perf_log!(
+        encoding_start,
+        "[PROFILING] Page {} full-page encoding completed",
+        page_index + 1
+    );
+
+    Ok(ContentType::EncodedImage {
+        data: std::sync::Arc::from(data),
+        pixel_width: width,
+        pixel_height: height,
+        format,
+    })
 }
 
 //==============================================================================
@@ -2316,9 +2312,3 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
 // Re-export the original function name for compatibility
 pub use create_and_run_pdf_parallel_pipeline as create_and_run_pdf_tokio_pipeline;
-
-
-
-
-
-
