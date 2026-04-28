@@ -32,6 +32,10 @@ pub fn get_encode_semaphore() -> Option<std::sync::Arc<Semaphore>> {
         .and_then(|semaphore| semaphore.lock().ok().map(|guard| guard.clone()))
 }
 
+pub(crate) fn jp2_quality(high_quality: bool) -> u8 {
+    if high_quality { 55 } else { 45 }
+}
+
 /// Enum to differentiate between user cancellation and worker abort signals
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownReason {
@@ -294,24 +298,9 @@ pub async fn encode_region_image(
         Jbig2Settings, JpegSettings,
     };
 
-    let channels = CHANNELS as u32; // regions are RGB buffers
-    if image_data.len() < expected_len {
-        return Err(anyhow!(
-            "Region buffer shorter than expected ({} < {})",
-            image_data.len(),
-            expected_len
-        ));
-    }
-
     let (settings, fmt_str) = match format {
         CoverFormat::Jpeg => {
-            let q = if high_quality {
-                95
-            } else if is_cover {
-                50
-            } else {
-                40
-            };
+            let q = if high_quality { 95 } else if is_cover { 50 } else { 45 };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -319,28 +308,21 @@ pub async fn encode_region_image(
                     optimized: true,
                     downsample: true,
                 }),
-                "jpeg".to_string(),
+                if is_cover { "jpeg" } else { "jpeg" },
             )
         }
-        CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4".to_string()),
+        CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4"),
         CoverFormat::Jbig2 => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
                 mode: Jbig2Mode::Generic,
                 use_jbig2_halftone_segments: false,
             }),
-            "jbig2".to_string(),
+            "jbig2",
         ),
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),
         _ => {
-            // Treat any other formats as JPEG fallback
-            let q = if high_quality {
-                95
-            } else if is_cover {
-                50
-            } else {
-                40
-            };
+            let q = if high_quality { 95 } else if is_cover { 50 } else { 45 };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -348,7 +330,7 @@ pub async fn encode_region_image(
                     optimized: true,
                     downsample: true,
                 }),
-                "jpeg".to_string(),
+                "jpeg",
             )
         }
     };
@@ -358,15 +340,16 @@ pub async fn encode_region_image(
         Some(sem) => Some(sem.acquire_owned().await.ok()),
         None => None,
     };
-    let encoding_result = tokio::task::spawn_blocking(move || {
+    let (encoding_result, fmt_str) = tokio::task::spawn_blocking(move || {
         let buffer = LegeImageBuffer {
             data: &image_data_owned,
             width,
             height,
             channels: CHANNELS as u8,
         };
-        EncodingManager::encode(&buffer, &settings)
-            .map_err(|e| anyhow!("Region encoding failed: {}", e))
+        let result = EncodingManager::encode(&buffer, &settings)
+            .map_err(|e| anyhow!("Region encoding failed: {}", e))?;
+        Ok::<(EncodingResult, String), anyhow::Error>((result, fmt_str.to_string()))
     })
     .await
     .map_err(|e| anyhow!("Region encoding task panicked: {}", e))??;

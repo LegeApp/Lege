@@ -1,0 +1,7 @@
+[alias]
+build-debug-logging = "build --profile debug-fast --features debug-logging"
+run-debug-logging = "run --profile debug-fast --features debug-logging --"
+
+# If you have a local checkout of jp2lam, copy this file to config.toml and add:
+# [patch."https://github.com/LegeApp/jp2lam.git"]
+# jp2lam = { path = "/your/path/to/jp2lam" }
