@@ -644,6 +644,12 @@ impl ProgressTracker {
         state.metrics.is_djvu = is_djvu;
     }
 
+    pub fn set_feature_flags(&self, enable_layout_detection: bool, enable_deskew: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.metrics.enable_layout_detection = enable_layout_detection;
+        state.metrics.enable_deskew = enable_deskew;
+    }
+
     pub fn set_heavy_sequential_mode(&self) {
         let mut state = self.state.lock().unwrap();
         state.metrics.mode = ProgressMode::HeavySequential;
@@ -1375,20 +1381,7 @@ async fn process_file_with_tracker(
     tracker.set_mode_enum(mode);
     tracker.set_output_is_djvu(config.text_format() == "djvu");
 
-    // Set layout detection flag for proper progress display
-    {
-        let state = tracker.state.lock().unwrap();
-        let mut metrics = state.metrics;
-        metrics.enable_layout_detection = config.enable_layout_detection();
-        // We need a helper method to update the metrics directly
-    }
-
-    // Update the metrics with the layout detection and deskew settings
-    {
-        let mut state = tracker.state.lock().unwrap();
-        state.metrics.enable_layout_detection = config.enable_layout_detection();
-        state.metrics.enable_deskew = config.enable_deskew();
-    } // Drop the mutex guard immediately to avoid holding it across await
+    tracker.set_feature_flags(config.enable_layout_detection(), config.enable_deskew());
 
     let pdf_bytes = std::fs::read(&input_path)
         .with_context(|| format!("Failed to read input PDF: {}", input_path.display()))?;
