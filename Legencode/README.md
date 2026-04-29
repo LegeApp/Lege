@@ -5,7 +5,7 @@ A unified Rust crate that provides in-memory image encoding for multiple formats
 ## Features
 
 - **JPEG**: High-quality JPEG encoding using the local `TooJpeg-rust` implementation
-- **JPEG 2000 (JP2)**: Advanced JP2 encoding using the local `openjp2` implementation  
+- **JPEG 2000 (JP2)**: JP2 encoding through `jp2lam`
 - **JBIG2**: Binary image compression using the local `jbig2enc-rust` implementation
 - **CCITT Group 4**: Fax compression using the external `fax` crate
 
@@ -13,7 +13,7 @@ A unified Rust crate that provides in-memory image encoding for multiple formats
 
 The crate uses a unified API through the `EncodingManager` struct that provides:
 - **In-memory encoding**: All encoders work with `Vec<u8>` input and output
-- **Local implementations**: All encoder code is included locally except for CCITT4 which uses the `fax` crate
+- **Local implementations**: JPEG and JBIG2 code are included locally; CCITT4 uses `fax`, and JP2 uses `jp2lam`
 - **Streamlined interface**: Single API for all formats with format-specific settings
 
 ## Usage
@@ -55,8 +55,8 @@ println!("Encoded {} bytes", encoded_data.len());
 ### JPEG 2000 (JP2)
 - **Channels**: 1 (grayscale) or 3 (RGB)
 - **Input Data**: Raw pixel bytes (1 byte per channel per pixel)
-- **Settings**: Resolution levels, progression order, compression rate, wavelet type
-- **Implementation**: Local `openjp2` crate
+- **Settings**: Quality 0-100; 100 selects lossless mode in jp2lam
+- **Implementation**: `jp2lam`
 
 ### JBIG2
 - **Channels**: 0 (binary format)
@@ -118,7 +118,6 @@ src/
 ├── lib.rs                    # Main library entry point
 ├── streamline.rs             # Unified encoding manager
 ├── TooJpeg-rust/            # Local JPEG encoder
-├── openjp2/                 # Local JP2 encoder
 └── jbig2enc-rust/           # Local JBIG2 encoder
 ```
 
@@ -153,7 +152,7 @@ All encoders are working correctly!
 
 ## Notes
 
-- JP2 encoding uses temporary files internally due to openjp2 stream limitations
+- JP2 encoding is handled by jp2lam and runs in memory
 - JBIG2 and CCITT4 require binary (PBM) input data with channels=0
 - JPEG and JP2 support both grayscale (channels=1) and RGB (channels=3) input
 

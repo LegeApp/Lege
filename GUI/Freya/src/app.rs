@@ -782,25 +782,19 @@ fn CombinedSettingsPanel(
                         .vertical()
                         .main_align(Alignment::Start)
                         .spacing(6.)
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::LeftCard,
-                            GUI_TEXT.interactive.tooltips.output_format.clone(),
-                            AttachedPosition::Right,
-                            two_option_toggle_inline(
-                                GUI_TEXT.interactive.labels.output_format.clone(),
-                                options.output_format.to_string(),
-                                {
-                                    let mut state = state;
-                                    move |_| {
-                                        let next = match state.read().options.output_format {
-                                            OutputFormat::Pdf => OutputFormat::Djvu,
-                                            OutputFormat::Djvu => OutputFormat::Pdf,
-                                        };
-                                        state.write().options.output_format = next;
-                                    }
-                                },
-                            ),
+                        .child(two_option_toggle_inline(
+                            GUI_TEXT.interactive.labels.output_format.clone(),
+                            options.output_format.to_string(),
+                            {
+                                let mut state = state;
+                                move |_| {
+                                    let next = match state.read().options.output_format {
+                                        OutputFormat::Pdf => OutputFormat::Djvu,
+                                        OutputFormat::Djvu => OutputFormat::Pdf,
+                                    };
+                                    state.write().options.output_format = next;
+                                }
+                            },
                         ))
                         .child(tooltip_wrap_at(
                             state,
@@ -1627,6 +1621,61 @@ fn StatusBar(state: State<AppState>) -> Element {
         }
     };
 
+    let top_right: Element = rect()
+        .direction(Direction::Horizontal)
+        .spacing(4.)
+        .cross_align(Alignment::Center)
+        .child(
+            Button::new()
+                .compact()
+                .on_press({
+                    let mut state = state;
+                    move |_| state.write().show_queue_viewer = true
+                })
+                .child(format!("Queue: {queue_len} file(s)")),
+        )
+        .child(
+            Button::new()
+                .compact()
+                .on_press({
+                    let mut state = state;
+                    move |_| state.write().show_log_viewer = true
+                })
+                .child("Log"),
+        )
+        .into();
+
+    let bottom_right: Element = {
+        let mut col = rect()
+            .vertical()
+            .spacing(3.)
+            .cross_align(Alignment::End);
+
+        #[cfg(feature = "debug-logging")]
+        {
+            col = col.child(
+                Button::new()
+                    .compact()
+                    .on_press({
+                        let mut state = state;
+                        move |_| state.write().show_debug_log = true
+                    })
+                    .child("Debug"),
+            );
+        }
+
+        col.child(
+            Button::new()
+                .compact()
+                .on_press({
+                    let mut state = state;
+                    move |_| state.write().show_about = true
+                })
+                .child("About"),
+        )
+        .into()
+    };
+
     widgets::lege_status_panel(
         rect()
             .width(Size::fill())
@@ -1648,99 +1697,8 @@ fn StatusBar(state: State<AppState>) -> Element {
             }))
             .maybe_child(progress_section)
             .into(),
-        rect()
-            .width(Size::fill())
-            .height(Size::fill())
-            .direction(Direction::Vertical)
-            .spacing(4.)
-            .main_align(Alignment::Start)
-            .cross_align(Alignment::End)
-            // Top-right anchored buttons (Queue / Log)
-            .child(
-                rect()
-                    .width(Size::fill())
-                    .height(Size::px(24.))
-                    .direction(Direction::Horizontal)
-                    .spacing(4.)
-                    .cross_align(Alignment::Center)
-                    .main_align(Alignment::End)
-                    .child(
-                        Button::new()
-                            .compact()
-                            .on_press({
-                                let mut state = state;
-                                move |_| state.write().show_queue_viewer = true
-                            })
-                            .child(format!("Queue: {queue_len} file(s)")),
-                    )
-                    .child(
-                        Button::new()
-                            .compact()
-                            .on_press({
-                                let mut state = state;
-                                move |_| state.write().show_log_viewer = true
-                            })
-                            .child("Log"),
-                    ),
-            )
-            // Bottom-right anchored buttons (Debug / About)
-            .child(
-                rect()
-                    .expanded()
-                    .width(Size::fill())
-                    .vertical()
-                    .spacing(3.)
-                    .main_align(Alignment::End)
-                    .cross_align(Alignment::End)
-                    .maybe_child({
-                        #[cfg(feature = "debug-logging")]
-                        {
-                            Some(
-                                rect()
-                                    .width(Size::fill())
-                                    .height(Size::px(22.))
-                                    .direction(Direction::Horizontal)
-                                    .spacing(4.)
-                                    .cross_align(Alignment::Center)
-                                    .main_align(Alignment::End)
-                                    .child(
-                                        Button::new()
-                                            .compact()
-                                            .on_press({
-                                                let mut state = state;
-                                                move |_| state.write().show_debug_log = true
-                                            })
-                                            .child("Debug"),
-                                    )
-                                    .into(),
-                            )
-                        }
-                        #[cfg(not(feature = "debug-logging"))]
-                        {
-                            None::<Element>
-                        }
-                    })
-                    .child(
-                        rect()
-                            .width(Size::fill())
-                            .height(Size::px(24.))
-                            .direction(Direction::Horizontal)
-                            .spacing(4.)
-                            .cross_align(Alignment::Center)
-                            .main_align(Alignment::End)
-                            .child(
-                                Button::new()
-                                    .compact()
-                                    .on_press({
-                                        let mut state = state;
-                                        move |_| state.write().show_about = true
-                                    })
-                                    .child("About"),
-                            ),
-                    )
-                    ,
-            )
-            .into(),
+        top_right,
+        bottom_right,
     )
 }
 

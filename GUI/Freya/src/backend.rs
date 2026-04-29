@@ -460,17 +460,17 @@ pub fn process_image_folder(
     folder_path: PathBuf,
     output_path: PathBuf,
     options: &ProcessingOptions,
+    tracker: lege::progress::ProgressTracker,
 ) -> Result<()> {
-    // Use the existing run_png_mode function from the main library
-    let enable_deskew = options.deskew_documents;
+    let mut pipeline_config = gui_options_to_pipeline_config(options);
+    if let Err(e) = pipeline_config.set_max_parallel_pages(Some(12)) {
+        eprintln!("Warning: Failed to set image folder concurrency: {}", e);
+    }
+    if let Err(e) = pipeline_config.set_channel_buffer_size(Some(12)) {
+        eprintln!("Warning: Failed to set image folder buffer size: {}", e);
+    }
 
-    // Call the image processing function from the main library
-    lege::run_png_mode(
-        folder_path,
-        Some(output_path),
-        lege::AppConfig::default(),
-        enable_deskew,
-    )?;
+    lege::run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, Some(tracker))?;
 
     Ok(())
 }
@@ -513,11 +513,13 @@ pub async fn start_async_processing(
                     let options_clone = options.clone();
 
                     spawn(async move {
+                        let tracker_for_worker = tracker.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             process_image_folder(
                                 folder_path,
                                 output_file_path_clone,
                                 &options_clone,
+                                tracker_for_worker,
                             )
                         })
                         .await;
