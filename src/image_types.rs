@@ -501,7 +501,7 @@ impl RgbImage {
 }
 
 /// Dynamic image type that can hold different pixel formats.
-/// Simplified version of image crate's DynamicImage for openjp2 tools.
+/// Simplified version of image crate's DynamicImage for local image tools.
 #[derive(Clone, Debug)]
 pub enum DynamicImage {
     /// 8-bit grayscale image

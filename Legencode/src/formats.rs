@@ -43,7 +43,7 @@ pub struct Jp2Settings {
     /// Number of resolution levels (None for default)
     pub num_resolutions: Option<i32>,
     /// Progression order (None for default)
-    pub prog_order: Option<openjp2::OPJ_PROG_ORDER>,
+    pub prog_order: Option<i32>,
     /// Compression rate (e.g., 10.0 for 10:1)
     pub rate: Option<f32>,
     /// Use irreversible DWT if true

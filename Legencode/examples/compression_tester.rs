@@ -1,44 +1,13 @@
 use Legencode::streamline::EncodingResult as LegeEncodingResult;
-use Legencode::streamline::jp2_config;
 use Legencode::streamline::{
-    EncodingManager, EncodingSettings, ImageBuffer as LegeImageBuffer, Jp2Settings, JpegSettings,
+    EncodingManager, EncodingSettings, ImageBuffer as LegeImageBuffer, JpegSettings,
 };
+use Legencode::jp2_encoder::{encode_to_target_size, jp2_config};
 use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-// Helper: encode JP2 at a given rate
-fn encode_jp2_at_rate(
-    image_data: &[u8],
-    width: u32,
-    height: u32,
-    channels: u8,
-    rate: f32,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let settings = Jp2Settings {
-        num_resolutions: Some(6),
-        prog_order: None,
-        rate: Some(rate),
-        rates: None,
-        psnrs: None,
-        irreversible: Some(true),
-        tile_size: None,
-        codeblock: None,
-    };
-    let buffer = LegeImageBuffer {
-        data: image_data,
-        width,
-        height,
-        channels,
-    };
-    match EncodingManager::encode(&buffer, &EncodingSettings::Jp2(settings))? {
-        LegeEncodingResult::Standard(data) => Ok(data),
-        _ => Err("Unexpected JP2 encoding variant".into()),
-    }
-}
-
-// Solve for a JP2 rate to hit a target size (bytes) using a few fixed-point iterations
 fn solve_rate_for_target_size(
     image_data: &[u8],
     width: u32,
@@ -46,32 +15,8 @@ fn solve_rate_for_target_size(
     channels: u8,
     target_bytes: usize,
 ) -> Result<(f32, Vec<u8>, usize), Box<dyn std::error::Error>> {
-    let orig_bytes = image_data.len() as f64;
-    let mut rate = (orig_bytes / target_bytes as f64).max(1.0) as f32; // initial guess
-    let mut last_size = usize::MAX;
-    for _ in 0..6 {
-        let encoded = encode_jp2_at_rate(image_data, width, height, channels, rate)?;
-        let sz = encoded.len();
-        // If within 10% tolerance, accept
-        if (sz as f64 - target_bytes as f64).abs() <= 0.10 * target_bytes as f64 {
-            return Ok((rate, encoded, sz));
-        }
-        // Avoid oscillations: if size didn't change much, break
-        if last_size == sz {
-            return Ok((rate, encoded, sz));
-        }
-        last_size = sz;
-        // Update rate proportionally: size ~ orig_bytes / rate  => rate_next = rate * (sz / target)
-        let factor = (sz as f64 / target_bytes as f64).clamp(0.25, 4.0);
-        rate = (rate as f64 * factor) as f32;
-        // Clamp to reasonable bounds
-        if !rate.is_finite() {
-            rate = 1.0;
-        }
-        rate = rate.clamp(0.5, 5000.0);
-    }
-    // Final try
-    let encoded = encode_jp2_at_rate(image_data, width, height, channels, rate)?;
+    let (rate, encoded) =
+        encode_to_target_size(image_data, width, height, channels, target_bytes)?;
     let sz = encoded.len();
     Ok((rate, encoded, sz))
 }
@@ -254,13 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             3,
             is_cover,
         );
-        let buffer = LegeImageBuffer {
-            data: &image_data,
-            width,
-            height,
-            channels,
-        };
-        match EncodingManager::encode_jp2_to_target_size(&buffer, target_bytes) {
+        match encode_to_target_size(&image_data, width, height, channels, target_bytes) {
             Ok((rate, data)) => {
                 let output_path = output_dir.join(format!(
                     "{}_jp2_{}_scaled.jp2",

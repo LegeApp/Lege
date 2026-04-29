@@ -1,17 +1,21 @@
 use crate::{
     EncodeOptions, ImageFormat, PipelineConfig,
-    accumulator::{ContentElement, Page, assemble_pdf},
     debug_println, encode_jpeg,
     engine::{Detection, PaddleXConfig, PaddleXEngine},
     error_println, info_println,
     pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig},
     pipeline::encode_page_data,
+    pipeline::helper_functions::{init_encode_semaphore, wait_for_memory_relief},
+    pipeline::runtime_limits::{AdaptiveConcurrency, PipelineRuntimeLimits},
     prepare_shared_deskew_engine,
+    progress::{ProgressMode, ProgressTracker},
 };
 use anyhow::{Context, Result, anyhow};
+use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::types::AppConfig;
 
@@ -25,18 +29,47 @@ pub fn run_png_mode(
     _config: AppConfig,
     enable_deskew: bool,
 ) -> Result<()> {
+    let mut pipeline_config = PipelineConfig::default();
+    pipeline_config.set_enable_layout_detection(true);
+    pipeline_config.set_enable_deskew(enable_deskew);
+    pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
+
+    run_png_mode_with_config(folder, output, pipeline_config, None)
+}
+
+pub fn run_png_mode_with_config(
+    folder: PathBuf,
+    output: Option<PathBuf>,
+    mut pipeline_config: PipelineConfig,
+    progress_tracker: Option<ProgressTracker>,
+) -> Result<()> {
     if !folder.is_dir() {
         return Err(anyhow!("Path is not a directory: {}", folder.display()));
     }
 
-    let output_dir = output.unwrap_or_else(|| folder.join("output"));
-    std::fs::create_dir_all(&output_dir)?;
+    pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
+    let output_path = output.unwrap_or_else(|| {
+        if pipeline_config.text_format() == "djvu" {
+            folder.join("output.djvu")
+        } else {
+            folder.join("output.pdf")
+        }
+    });
+    let parent = output_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
 
     info_println!(
-        "Image Folder Mode\n  Input: {}\n  Output: {}\n  Deskew: {}",
+        "Image Folder Mode\n  Input: {}\n  Output: {}\n  Layout: {}\n  Deskew: {}",
         folder.display(),
-        output_dir.display(),
-        if enable_deskew { "ENABLED" } else { "disabled" }
+        output_path.display(),
+        if pipeline_config.enable_layout_detection() {
+            "ENABLED"
+        } else {
+            "disabled"
+        },
+        if pipeline_config.enable_deskew() { "ENABLED" } else { "disabled" }
     );
 
     let image_files = collect_supported_images(&folder)?;
@@ -49,44 +82,374 @@ pub fn run_png_mode(
 
     info_println!("Found {} image files", image_files.len());
 
-    let mut pipeline_config = PipelineConfig::default();
-    pipeline_config.set_enable_layout_detection(true);
-    pipeline_config.set_enable_deskew(enable_deskew);
-    pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
+    if let Some(tracker) = progress_tracker.as_ref() {
+        tracker.set_total_pages(image_files.len());
+        tracker.set_mode_enum(if pipeline_config.enable_layout_detection() {
+            ProgressMode::Layout
+        } else {
+            ProgressMode::NoLayout
+        });
+        tracker.set_output_is_djvu(pipeline_config.text_format() == "djvu");
+        tracker.set_feature_flags(
+            pipeline_config.enable_layout_detection(),
+            pipeline_config.enable_deskew(),
+        );
+        if pipeline_config.enable_layout_detection() {
+            tracker.publish_layout_progress(0, 0, 0, 0, image_files.len());
+        } else {
+            tracker.publish_no_layout_progress(0, 0, image_files.len());
+        }
+    }
 
+    let _limits = PipelineRuntimeLimits::from_config(&pipeline_config);
+    // Pick concurrency caps from detected CPU cores and total RAM so the
+    // pipeline adapts to the host (a 4-core / 8 GB laptop and a 24-core /
+    // 64 GB workstation should both run well, with neither swapping nor
+    // leaving cores idle). See AdaptiveConcurrency::from_specs for the rules.
+    let adaptive = AdaptiveConcurrency::detect();
+    let io_workers = adaptive.io_workers;
+    let cpu_workers = adaptive.cpu_workers;
+    let workers = io_workers;
+    info_println!(
+        "Image folder pipeline tuned for this host: io_workers={}, cpu_workers={}",
+        io_workers,
+        cpu_workers
+    );
+    init_encode_semaphore(cpu_workers);
     let deskew_engine = prepare_shared_deskew_engine(&pipeline_config)?;
+    let owned_runtime;
     let runtime = match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle,
         Err(_) => {
             // We are not inside a runtime; create a new one.
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.handle().clone()
+            owned_runtime = tokio::runtime::Runtime::new()?;
+            owned_runtime.handle().clone()
         }
     };
 
-    for (idx, image_path) in image_files.iter().enumerate() {
-        println!(
-            "Processing {} of {}: {}",
-            idx + 1,
-            image_files.len(),
-            image_path.display()
-        );
+    if pipeline_config.text_format() == "djvu" {
+        let tracker = progress_tracker
+            .clone()
+            .unwrap_or_else(|| crate::progress::get_progress_manager().create_tracker());
+        runtime.block_on(process_image_folder_to_djvu(
+            image_files,
+            output_path,
+            pipeline_config,
+            deskew_engine,
+            tracker,
+            workers,
+            cpu_workers,
+        ))?;
+        info_println!("Image processing complete");
+        return Ok(());
+    }
 
-        if let Err(err) = process_single_image(
-            image_path,
-            &output_dir,
-            &pipeline_config,
-            deskew_engine.clone(),
-            &runtime,
-        ) {
-            error_println!("Failed to process {}: {}", image_path.display(), err);
+    let tracker = progress_tracker
+        .clone()
+        .unwrap_or_else(|| crate::progress::get_progress_manager().create_tracker());
+    runtime.block_on(process_image_folder_to_pdf(
+        image_files,
+        output_path,
+        pipeline_config,
+        deskew_engine,
+        tracker,
+        workers,
+        cpu_workers,
+    ))?;
+    info_println!("Image processing complete");
+    Ok(())
+}
+
+async fn process_image_folder_to_pdf(
+    image_files: Vec<PathBuf>,
+    output_path: PathBuf,
+    pipeline_config: PipelineConfig,
+    deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
+    progress_tracker: ProgressTracker,
+    workers: usize,
+    cpu_workers: usize,
+) -> Result<()> {
+    if output_path.is_dir() {
+        return Err(anyhow!(
+            "PDF output path is an existing directory, not a file: {}",
+            output_path.display()
+        ));
+    }
+
+    let total = image_files.len();
+    let config = Arc::new(pipeline_config);
+    let cpu_semaphore = Arc::new(tokio::sync::Semaphore::new(cpu_workers.max(1)));
+    let (writer, writer_task) = crate::pipeline::helper_functions::spawn_pdf_writer_actor(
+        output_path,
+        total,
+        progress_tracker.clone(),
+        false,
+        workers,
+    );
+
+    let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<Result<(usize, crate::accumulator::Page)>>> =
+        FuturesUnordered::new();
+    let mut next_input = 0usize;
+    let mut processed = 0usize;
+    let mut deskewed = 0usize;
+
+    while next_input < total || !in_flight.is_empty() {
+        while next_input < total && in_flight.len() < workers {
+            let image_path = image_files[next_input].clone();
+            let config = config.clone();
+            let deskew_engine = deskew_engine.clone();
+            let cpu_sem = cpu_semaphore.clone();
+            let index = next_input;
+            next_input += 1;
+
+            in_flight.push(tokio::spawn(async move {
+                wait_for_memory_relief().await;
+                process_single_image_to_pdf_page(index, image_path, config, deskew_engine, cpu_sem)
+                    .await
+                    .map(|page| (index, page))
+            }));
+        }
+
+        let Some(result) = in_flight.next().await else {
+            break;
+        };
+        let (index, page) = result.map_err(|e| anyhow!("PDF image worker panicked: {}", e))??;
+        writer.send_page(page, index).await?;
+
+        processed += 1;
+        if config.enable_deskew() {
+            deskewed += 1;
+        }
+        if config.enable_layout_detection() {
+            progress_tracker.publish_layout_progress(processed, processed, processed, deskewed, total);
         } else {
-            debug_println!("Processed {}", image_path.display());
+            progress_tracker.publish_no_layout_progress(processed, deskewed, total);
         }
     }
 
-    info_println!("Image processing complete");
+    writer.finalize().await?;
+    writer_task
+        .await
+        .map_err(|e| anyhow!("PDF writer task failed: {}", e))??;
     Ok(())
+}
+
+async fn process_single_image_to_pdf_page(
+    index: usize,
+    image_path: PathBuf,
+    pipeline_config: Arc<PipelineConfig>,
+    deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
+    cpu_sem: Arc<tokio::sync::Semaphore>,
+) -> Result<crate::accumulator::Page> {
+    // Stage 1: Decode the PNG. Single-threaded per page, so we let many of
+    // these run in parallel — this is the only stage we want wide.
+    let path_for_decode = image_path.clone();
+    let rgb_image = tokio::task::spawn_blocking(move || {
+        decode_folder_image(&path_for_decode)
+    })
+    .await
+    .map_err(|e| anyhow!("PNG decode panicked: {}", e))??;
+
+    // Stage 2: Deskew + binarize. Both lean heavily on rayon internally, so we
+    // gate this with a CPU semaphore — running too many in parallel just makes
+    // them fight over the same global rayon pool.
+    let permit = cpu_sem
+        .acquire_owned()
+        .await
+        .map_err(|e| anyhow!("CPU semaphore closed: {}", e))?;
+    let config_for_blocking = pipeline_config.clone();
+    let deskew_for_blocking = deskew_engine.clone();
+    let path_for_log = image_path.clone();
+    let (rgb_image, binarized) = tokio::task::spawn_blocking(move || {
+        deskew_and_binarize(
+            rgb_image,
+            &path_for_log,
+            config_for_blocking.as_ref(),
+            deskew_for_blocking,
+        )
+    })
+    .await
+    .map_err(|e| anyhow!("PDF image preparation panicked: {}", e))??;
+    drop(permit);
+
+    let (width, height) = (rgb_image.width() as usize, rgb_image.height() as usize);
+    let base_layer = encode_page_data(&binarized, width, height, index, pipeline_config.as_ref()).await?;
+
+    Ok(crate::accumulator::Page {
+        width: width as f32,
+        height: height as f32,
+        elements: vec![crate::accumulator::ContentElement {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: height as f32,
+            content: base_layer,
+        }],
+        hocr_text: None,
+        index,
+        binarized: Some(binarized),
+    })
+}
+
+async fn process_image_folder_to_djvu(
+    image_files: Vec<PathBuf>,
+    output_path: PathBuf,
+    pipeline_config: PipelineConfig,
+    deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
+    progress_tracker: ProgressTracker,
+    workers: usize,
+    cpu_workers: usize,
+) -> Result<()> {
+    if output_path.is_dir() {
+        return Err(anyhow!(
+            "DJVU output path is an existing directory, not a file: {}",
+            output_path.display()
+        ));
+    }
+
+    let total = image_files.len();
+    let config = Arc::new(pipeline_config);
+    let cpu_semaphore = Arc::new(tokio::sync::Semaphore::new(cpu_workers.max(1)));
+    let djvu_config = crate::pipeline::djvu_pipeline::create_djvu_pipeline_config(
+        &output_path,
+        config.as_ref(),
+    )?;
+    let orchestrator = Arc::new(crate::djvu::DjvuOrchestrator::new(djvu_config.clone())?);
+    let (writer, writer_task) = crate::djvu::spawn_djvu_writer_actor(
+        output_path,
+        total,
+        djvu_config.dpi,
+        djvu_config.iw44_quality,
+        progress_tracker.clone(),
+        workers,
+    );
+
+    let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<Result<(usize, djvu_encoder::doc::Page)>>> =
+        FuturesUnordered::new();
+    let mut next_input = 0usize;
+    let mut processed = 0usize;
+    let mut deskewed = 0usize;
+
+    while next_input < total || !in_flight.is_empty() {
+        while next_input < total && in_flight.len() < workers {
+            let image_path = image_files[next_input].clone();
+            let config = config.clone();
+            let orchestrator = orchestrator.clone();
+            let deskew_engine = deskew_engine.clone();
+            let cpu_sem = cpu_semaphore.clone();
+            let index = next_input;
+            next_input += 1;
+
+            in_flight.push(tokio::spawn(async move {
+                // Stage 1: parallel PNG decode (single-threaded, run wide).
+                let path_for_decode = image_path.clone();
+                let rgb_image = tokio::task::spawn_blocking(move || {
+                    decode_folder_image(&path_for_decode)
+                })
+                .await
+                .map_err(|e| anyhow!("PNG decode panicked: {}", e))??;
+
+                // Stage 2: rayon-heavy deskew + binarize + DJVU encode, gated.
+                let _permit = cpu_sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| anyhow!("CPU semaphore closed: {}", e))?;
+                let config_for_blocking = config.clone();
+                let deskew_for_blocking = deskew_engine.clone();
+                let orchestrator_for_blocking = orchestrator.clone();
+                let path_for_log = image_path.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let (rgb_image, binarized) = deskew_and_binarize(
+                        rgb_image,
+                        &path_for_log,
+                        config_for_blocking.as_ref(),
+                        deskew_for_blocking,
+                    )?;
+                    orchestrator_for_blocking.process_page(crate::djvu::PageData {
+                        index,
+                        rgb_image,
+                        binarized,
+                        detections: Vec::new(),
+                        hocr: None,
+                    })
+                })
+                .await
+                .map_err(|e| anyhow!("DJVU image worker panicked: {}", e))??;
+                Ok((index, result))
+            }));
+        }
+
+        let Some(result) = in_flight.next().await else {
+            break;
+        };
+        let (index, page) = result.map_err(|e| anyhow!("DJVU image worker panicked: {}", e))??;
+        writer.append_page(page, index).await?;
+
+        processed += 1;
+        if config.enable_deskew() {
+            deskewed += 1;
+        }
+        if config.enable_layout_detection() {
+            progress_tracker.publish_layout_progress(processed, processed, processed, deskewed, total);
+        } else {
+            progress_tracker.publish_no_layout_progress(processed, deskewed, total);
+        }
+    }
+
+    writer.finalize().await?;
+    writer_task
+        .await
+        .map_err(|e| anyhow!("DJVU writer task failed: {}", e))??;
+    Ok(())
+}
+
+fn decode_folder_image(image_path: &Path) -> Result<RgbImage> {
+    let dynamic = image::open(image_path)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
+    Ok(dynamic.to_rgb8())
+}
+
+fn deskew_and_binarize(
+    mut rgb_image: RgbImage,
+    image_path: &Path,
+    pipeline_config: &PipelineConfig,
+    deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
+) -> Result<(RgbImage, Vec<u8>)> {
+    if let Some(engine) = deskew_engine.as_ref() {
+        match engine.process_image(&rgb_image) {
+            Ok(corrected) => {
+                rgb_image = corrected;
+            }
+            Err(err) => {
+                error_println!(
+                    "Deskew failed for {} (continuing without correction): {}",
+                    image_path.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    let (width, height) = (rgb_image.width() as usize, rgb_image.height() as usize);
+    let binarized = Legencode::color::binarization::binarize_image_raw(
+        rgb_image.as_raw(),
+        width,
+        height,
+        &Legencode::types::BinarizationOptions {
+            invert: pipeline_config.binarization().invert,
+            invert_input: pipeline_config.invert_input(),
+            k_factor: pipeline_config.binarization().k_factor,
+            use_heavy_duty: pipeline_config.binarization().use_heavy_duty
+                && !pipeline_config.binarization().use_fixed_threshold,
+            patch_percentage: pipeline_config.binarization().patch_percentage,
+            no_patch: pipeline_config.binarization().no_patch,
+            use_fixed_threshold: pipeline_config.binarization().use_fixed_threshold,
+            fixed_threshold: pipeline_config.binarization().fixed_threshold,
+        },
+    );
+
+    Ok((rgb_image, binarized))
 }
 
 fn collect_supported_images(folder: &Path) -> Result<Vec<PathBuf>> {
@@ -107,84 +470,6 @@ fn is_supported_image(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|ext| SUPPORTED_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
         .unwrap_or(false)
-}
-
-fn process_single_image(
-    image_path: &Path,
-    output_dir: &Path,
-    pipeline_config: &PipelineConfig,
-    deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
-    runtime: &tokio::runtime::Handle,
-) -> Result<()> {
-    let dynamic = image::open(image_path)
-        .map_err(anyhow::Error::msg)
-        .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
-    let mut rgb_image: RgbImage = dynamic.to_rgb8();
-
-    if let Some(engine) = deskew_engine.as_ref() {
-        match engine.process_image(&rgb_image) {
-            Ok(corrected) => {
-                rgb_image = corrected;
-            }
-            Err(err) => {
-                error_println!(
-                    "Deskew failed for {} (continuing without correction): {}",
-                    image_path.display(),
-                    err
-                );
-            }
-        }
-    }
-
-    let (width, height) = (rgb_image.width() as usize, rgb_image.height() as usize);
-
-    let binarized = Legencode::color::binarization::binarize_image_raw(
-        rgb_image.as_raw(),
-        width,
-        height,
-        &Legencode::types::BinarizationOptions {
-            invert: pipeline_config.binarization().invert,
-            invert_input: pipeline_config.invert_input(),
-            k_factor: pipeline_config.binarization().k_factor,
-            use_heavy_duty: pipeline_config.binarization().use_heavy_duty
-                && !pipeline_config.binarization().use_fixed_threshold,
-            patch_percentage: pipeline_config.binarization().patch_percentage,
-            no_patch: pipeline_config.binarization().no_patch,
-            use_fixed_threshold: pipeline_config.binarization().use_fixed_threshold,
-            fixed_threshold: pipeline_config.binarization().fixed_threshold,
-        },
-    );
-
-    let base_layer = runtime.block_on(async {
-        encode_page_data(&binarized, width, height, 0, pipeline_config).await
-    })?;
-
-    let page = Page {
-        width: width as f32,
-        height: height as f32,
-        elements: vec![ContentElement {
-            x: 0.0,
-            y: 0.0,
-            width: width as f32,
-            height: height as f32,
-            content: base_layer,
-        }],
-        hocr_text: None,
-        index: 0,
-        binarized: Some(binarized.clone()),
-    };
-
-    let output_pdf = output_dir.join(
-        image_path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-            + ".pdf",
-    );
-
-    assemble_pdf(&[page], output_pdf.to_str().unwrap(), 25)?;
-    Ok(())
 }
 
 pub enum DebugCropKind {

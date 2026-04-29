@@ -71,6 +71,8 @@ fn main() {
                 .with_title("Lege")
                 .with_size(window_width, window_height)
                 .with_min_size(841.5, 617.0)
+                .with_max_size(1980.0, 1452.0)
+                .with_aspect_ratio_range(1.30, 1.45)
                 .with_decorations(true)
                 .with_resizable(true)
                 .with_icon(LaunchConfig::window_icon(ICON))
