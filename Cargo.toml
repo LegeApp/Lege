@@ -87,6 +87,21 @@ windows-version = { path = "windows-rs-71/crates/libs/version", default-features
 
 resolver = "2"
 
+# Local development override of LegeApp/freya fork.
+# Aspect-ratio constraint and Position::corner helper live in this checkout.
+[patch."https://github.com/LegeApp/freya.git"]
+freya = { path = "../freya-main/crates/freya" }
+freya-core = { path = "../freya-main/crates/freya-core" }
+freya-components = { path = "../freya-main/crates/freya-components" }
+freya-engine = { path = "../freya-main/crates/freya-engine" }
+freya-winit = { path = "../freya-main/crates/freya-winit" }
+freya-edit = { path = "../freya-main/crates/freya-edit" }
+freya-clipboard = { path = "../freya-main/crates/freya-clipboard" }
+freya-animation = { path = "../freya-main/crates/freya-animation" }
+freya-performance-plugin = { path = "../freya-main/crates/freya-performance-plugin" }
+freya-android = { path = "../freya-main/crates/freya-android" }
+torin = { path = "../freya-main/crates/torin" }
+
 [[bin]]
 name = "lege"
 path = "src/main.rs"
@@ -209,7 +224,6 @@ ndarray = "0.17.2"
 default = []
 static = ["pdfium-render/static"]
 debug-logging = ["Legencode/debug-logging", "dep:fontdue"]
-jp2-openjp2 = ["Legencode/jp2-openjp2"]
 jp2-lam = ["Legencode/jp2-lam"]
 # Feature for profiling with debug symbols - enables both debug logging and debug symbols
 profiling = ["debug-logging"]

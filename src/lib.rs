@@ -34,7 +34,7 @@ pub mod windows_dirs;
 pub use pdf_to_png::{run_pdf_to_jp2_debug_mode, run_pdf_to_png_mode};
 pub use pnginference::{
     DebugCropKind, run_images_to_images_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
-    run_png_mode,
+    run_png_mode, run_png_mode_with_config,
 }; // Re-export for CLI debug cropping and new image modes
 
 // Re-export TooJPEG functionality for image encoding

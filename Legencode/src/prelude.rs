@@ -7,8 +7,9 @@ pub use crate::streamline::{
     ImageBuffer,
     Jbig2Mode,
     Jbig2Settings,
-    Jp2Settings,
     JpegSettings,
     // Indexed8Settings,  // Removed - indexed8 encoder deleted
 };
+#[cfg(feature = "jp2-lam")]
+pub use crate::streamline::Jp2Settings;
 pub use crate::{EncodingError, Result};

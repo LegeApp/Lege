@@ -36,15 +36,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("JPEG encoding failed: {}", e),
     }
 
-    // Test JP2 encoding with dynamic sizing
-    let jp2_settings = EncodingSettings::Jp2(EncodingManager::create_optimal_jp2_settings(
-        &rgb_data,
-        width as u32,
-        height as u32,
-        false, // This is not a cover image
-    ));
-
-    match EncodingManager::encode(&jpeg_buffer, &jp2_settings) {
+    // Test JP2 encoding with jp2lam
+    match EncodingManager::encode(&jpeg_buffer, &EncodingSettings::Jp2Lam { quality: 80 }) {
         Ok(jp2_result) => println!(
             "JP2 encoding successful! Output size: {} bytes",
             jp2_result.as_slice().len()

@@ -22,6 +22,9 @@ pub mod streamline;
 // Encoder modules
 pub mod encoders;
 
+#[cfg(feature = "jp2-lam")]
+pub mod jp2_encoder;
+
 // Color processing and binarization modules
 pub mod color;
 
