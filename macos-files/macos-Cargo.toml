@@ -20,7 +20,6 @@ members = [
     "Legencode",
     "Legencode/src/jbig2enc-rust",
     "Legencode/src/TooJpeg-rust",
-    "Legencode/src/openjp2",
     "GUI/Freya",
     "ort",           # Local ort fork with WebGPU cleanup fix
     "ort/ort-sys",   # ONNX Runtime FFI bindings

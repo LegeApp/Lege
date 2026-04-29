@@ -140,7 +140,7 @@ DjVu-specific behavior from `src/djvu.rs`:
 - Region operations and dithering helpers used by page processing.
 
 ### About JP2/JPEG2000 in this codebase
-- The repository contains substantial JPEG2000/openjp2 code under `Legencode/src/openjp2` and JP2 configuration logic in `streamline.rs`.
+- JPEG2000 encoding is routed through jp2lam, with JP2 settings and target-size helpers centralized in `Legencode/src/jp2_encoder.rs`.
 - In current main pipeline code paths, active region/cover encoding branches primarily use JPEG, CCITT4, or JBIG2 with fallback behavior.
 - Inference from current entry-path matches: JP2 appears partially legacy/experimental in top-level processing UX and not the primary active path for main PDF/DjVu production.
 
@@ -206,7 +206,7 @@ Main CLI application and processing engine.
 ### `/Legencode`
 Workspace image-encoding and preprocessing library.
 - Unified encoding API, binarization/color tooling, and local codec subprojects (`jbig2enc-rust`, `TooJpeg-rust`).
-- Contains vendored/ported `openjp2` sources and JP2-related modules.
+- Contains JP2 facade code for jp2lam and the other image encoders used by the main pipeline.
 
 ### `/DJVULibRust`
 Native Rust DjVu encoder crate (`djvu_encoder`).
