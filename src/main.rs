@@ -6,7 +6,7 @@ use lege::{
     AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PipelineConfig,
     error_println, info_println, is_ocr_available, run_images_to_images_mode,
     run_pdf_layout_crop_debug, run_pdf_to_images_mode, run_pdf_to_png_mode, run_png_mode,
-    target_profiles,
+    run_png_mode_with_config, target_profiles,
 };
 
 mod version;
@@ -707,12 +707,10 @@ fn main() -> Result<()> {
             .get(1)
             .ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
-        return run_png_mode(
-            folder_path,
-            cli_opts.output_dir,
-            AppConfig::default(),
-            cli_opts.deskew,
-        );
+        let pipeline_config = build_png_folder_pipeline_config(&cli_opts)?;
+        let output_path =
+            resolve_png_folder_output_path(cli_opts.output_dir.clone(), &folder_path, &pipeline_config)?;
+        return run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, None);
     }
 
     // Crop-areas debug: lege <file.pdf> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg] [--deskew]
@@ -3013,6 +3011,144 @@ fn generate_output_path(
         timestamp
     );
     Ok(output_dir.join(output_filename))
+}
+
+fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineConfig> {
+    let mut pipeline_config = PipelineConfig::simple_cli_defaults()
+        .map_err(|e| anyhow!("Failed to construct CLI defaults: {}", e))?;
+
+    if let Some(ref fmt) = cli_opts.text_format {
+        pipeline_config.set_text_format(fmt)?;
+    }
+
+    if let Some(ref method) = cli_opts.binarization {
+        let mut method_str = match method.as_str() {
+            "adaptive" => "1".to_string(),
+            "fixed" => "2".to_string(),
+            "heavy" => "3".to_string(),
+            _ => method.clone(),
+        };
+        if let Some(k) = cli_opts.sauvola_k {
+            method_str.push_str(&format!(" k={}", k));
+        }
+        if let Some(thr) = cli_opts.threshold {
+            method_str.push_str(&format!(" thr={}", thr));
+        }
+        let bin_config = lege::CliConfigBuilder::parse_binarization_method(&method_str);
+        pipeline_config.set_binarization(bin_config);
+    } else if cli_opts.threshold.is_some() || cli_opts.sauvola_k.is_some() {
+        let mut method_str = "2".to_string();
+        if let Some(k) = cli_opts.sauvola_k {
+            method_str = "1".to_string();
+            method_str.push_str(&format!(" k={}", k));
+        }
+        if let Some(thr) = cli_opts.threshold {
+            method_str.push_str(&format!(" thr={}", thr));
+        }
+        let bin_config = lege::CliConfigBuilder::parse_binarization_method(&method_str);
+        pipeline_config.set_binarization(bin_config);
+    }
+
+    if let Some(q) = cli_opts.djvu_quality {
+        pipeline_config.set_djvu_iw44_quality(q)?;
+    }
+    if cli_opts.high_quality {
+        pipeline_config.set_high_quality_output(true);
+    }
+
+    if cli_opts.halftone {
+        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Halftone);
+    } else if cli_opts.gray_jp2 {
+        pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::GrayJp2);
+        pipeline_config.set_keep_original_images(false);
+    } else if cli_opts.dither {
+        let tf = pipeline_config.text_format();
+        if tf == "ccitt4" {
+            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+        } else {
+            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
+        }
+    }
+
+    let tf = pipeline_config.text_format();
+    if cli_opts.halftone && tf != "jbig2" {
+        bail!(
+            "--halftone requires --text-format jbig2 (got {}). Halftone segments are JBIG2-only.",
+            tf
+        );
+    }
+
+    if cli_opts.no_layout {
+        pipeline_config.set_enable_layout_detection(false);
+    }
+    if let Some(ocr_val) = cli_opts.ocr {
+        pipeline_config.set_enable_ocr(ocr_val);
+    }
+    if cli_opts.invert {
+        pipeline_config.set_invert_input(true);
+        if pipeline_config.enable_layout_detection() {
+            pipeline_config.set_enable_layout_detection(false);
+        }
+    }
+
+    if !pipeline_config.enable_layout_detection() {
+        let (is_adaptive, current_thr) = {
+            let bin = pipeline_config.binarization();
+            (!bin.use_fixed_threshold, bin.fixed_threshold)
+        };
+        if is_adaptive {
+            info_println!("{}", CLI_TEXT.main.binarization_forced_fixed_note);
+            let thr_str = format!("2 thr={}", current_thr);
+            let fixed_config = lege::CliConfigBuilder::parse_binarization_method(&thr_str);
+            pipeline_config.set_binarization(fixed_config);
+        }
+    }
+
+    if pipeline_config.text_format() == "jbig2" {
+        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or_else(|| {
+            if pipeline_config.enable_layout_detection() {
+                Jbig2Mode::Symbol
+            } else {
+                Jbig2Mode::Generic
+            }
+        });
+        pipeline_config.set_jbig2_mode(selected_mode);
+    }
+    if cli_opts.deskew {
+        pipeline_config.set_enable_deskew(true);
+    }
+    if cli_opts.jpeg_compat {
+        pipeline_config.set_jpeg_compat(true);
+    }
+    if cli_opts.halftone || cli_opts.dither {
+        pipeline_config.set_keep_original_images(false);
+    }
+    if cli_opts.original_images || cli_opts.image_only {
+        pipeline_config.set_keep_original_images(true);
+    }
+
+    pipeline_config.set_max_parallel_pages(Some(12))?;
+    pipeline_config.set_channel_buffer_size(Some(12))?;
+    Ok(pipeline_config)
+}
+
+fn resolve_png_folder_output_path(
+    provided: Option<PathBuf>,
+    folder_path: &PathBuf,
+    config: &PipelineConfig,
+) -> Result<PathBuf> {
+    if let Some(output) = provided {
+        if output.extension().is_some() && !output.is_dir() {
+            return Ok(output);
+        }
+        return generate_output_path(folder_path, &output, config);
+    }
+
+    let output_dir = folder_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    generate_output_path(folder_path, &output_dir, config)
 }
 
 /// Check if a PDF file has OCR/text layers by sampling pages

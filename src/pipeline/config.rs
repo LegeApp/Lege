@@ -725,6 +725,20 @@ impl PipelineConfig {
         self.heavy_sauvola_concurrency = concurrency;
         Ok(())
     }
+    pub fn set_channel_buffer_size(&mut self, size: Option<usize>) -> Result<()> {
+        if matches!(size, Some(0)) {
+            return Err(anyhow!("channel_buffer_size must be greater than 0"));
+        }
+        self.channel_buffer_size = size;
+        Ok(())
+    }
+    pub fn set_max_parallel_pages(&mut self, pages: Option<usize>) -> Result<()> {
+        if matches!(pages, Some(0)) {
+            return Err(anyhow!("max_parallel_pages must be greater than 0"));
+        }
+        self.max_parallel_pages = pages;
+        Ok(())
+    }
     pub fn set_page_range(&mut self, range: Option<PageRange>) {
         self.page_range = range;
     }

@@ -193,21 +193,22 @@ pub fn lege_toolbar(
         .direction(Direction::Horizontal)
         .cross_align(Alignment::Center)
         .spacing(6.)
+        .content(Content::Flex)
         .child(
             rect()
-                .width(Size::percent(29.))
+                .width(Size::flex(1.))
                 .height(Size::px(38.))
                 .child(add_pdf),
         )
         .child(
             rect()
-                .width(Size::percent(29.))
+                .width(Size::flex(1.))
                 .height(Size::px(38.))
                 .child(add_folder),
         )
         .child(
             rect()
-                .width(Size::percent(29.))
+                .width(Size::flex(1.))
                 .height(Size::px(38.))
                 .child(output_directory),
         )
@@ -242,7 +243,11 @@ pub fn lege_settings_grid(left_panel: Element, right_panel: Element) -> Element 
         .into()
 }
 
-pub fn lege_status_panel(status_content: Element, action_content: Element) -> Element {
+pub fn lege_status_panel(
+    status_content: Element,
+    top_right: Element,
+    bottom_right: Element,
+) -> Element {
     rect()
         .background(CARD_BG)
         .border(
@@ -255,21 +260,23 @@ pub fn lege_status_panel(status_content: Element, action_content: Element) -> El
         .padding(5.)
         .width(Size::fill())
         .height(Size::fill())
-        .direction(Direction::Horizontal)
-        .main_align(Alignment::SpaceBetween)
-        .cross_align(Alignment::Start)
         .child(
             rect()
-                .expanded()
+                .width(Size::fill())
                 .height(Size::fill())
+                .padding((0., 224., 0., 0.))
                 .main_align(Alignment::Start)
                 .child(status_content),
         )
         .child(
             rect()
-                .width(Size::px(372.))
-                .height(Size::fill())
-                .child(action_content),
+                .position(Position::new_absolute().right(5.).top(5.))
+                .child(top_right),
+        )
+        .child(
+            rect()
+                .position(Position::new_absolute().right(5.).bottom(5.))
+                .child(bottom_right),
         )
         .into()
 }
@@ -305,60 +312,40 @@ pub fn lege_main_shell(
                         .width(Size::fill())
                         .height(Size::fill())
                         .vertical()
+                        .content(Content::Flex)
                         .child(toolbar)
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(336.))
+                                .height(Size::flex(1.))
+                                .min_height(Size::px(280.))
                                 .child(settings),
                         )
                         .child(
                             rect()
-                                .expanded()
                                 .width(Size::fill())
-                                .vertical()
-                                .spacing(4.)
+                                .height(Size::px(64.))
+                                .main_align(Alignment::Center)
+                                .cross_align(Alignment::Center)
+                                .child(process_bar)
                                 .child(
                                     rect()
-                                        .width(Size::fill())
-                                        .height(Size::px(112.))
-                                        .content(Content::Flex)
-                                        .direction(Direction::Horizontal)
-                                        .cross_align(Alignment::Center)
-                                        .child(
-                                            rect()
-                                                .width(Size::flex(1.))
-                                                .height(Size::fill())
-                                                .vertical()
-                                                .main_align(Alignment::Center)
-                                                .cross_align(Alignment::Start)
-                                                .child(
-                                                    rect()
-                                                        .width(Size::px(220.))
-                                                        .height(Size::px(96.))
-                                                        .margin((0., 24., 0., 0.))
-                                                        .child(popup_rail),
-                                                )
+                                        .position(
+                                            Position::new_absolute()
+                                                .left(8.)
+                                                .top(4.),
                                         )
-                                        .child(
-                                            rect()
-                                                .width(Size::px(146.))
-                                                .height(Size::fill())
-                                                .child(process_bar),
-                                        )
-                                        .child(
-                                            rect()
-                                                .width(Size::flex(1.))
-                                                .height(Size::fill()),
-                                        )
-                                )
-                                .child(
-                                    rect()
-                                        .width(Size::fill())
-                                        .height(Size::percent(60.))
-                                        .min_height(Size::px(156.))
-                                        .child(status_bar),
+                                        .width(Size::px(220.))
+                                        .height(Size::px(56.))
+                                        .child(popup_rail),
                                 ),
+                        )
+                        .child(
+                            rect()
+                                .width(Size::fill())
+                                .height(Size::flex(1.))
+                                .min_height(Size::px(156.))
+                                .child(status_bar),
                         ),
                 ),
         )
