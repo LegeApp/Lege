@@ -7,7 +7,11 @@ const TEXT: (u8, u8, u8) = (20, 20, 20);
 const MUTED: (u8, u8, u8) = (90, 90, 90);
 const BORDER: (u8, u8, u8) = (128, 128, 128);
 
-pub fn lege_panel_card(title: impl Into<String>, fill_height: bool, children: Vec<Element>) -> Element {
+pub fn lege_panel_card(
+    title: impl Into<String>,
+    fill_height: bool,
+    children: Vec<Element>,
+) -> Element {
     let title = title.into();
     let mut card = rect()
         .background(CARD_BG)
@@ -173,7 +177,7 @@ pub fn lege_checkbox_row(
 }
 
 pub fn lege_toolbar(
-    add_pdf: Element,
+    add_file: Element,
     add_folder: Element,
     output_directory: Element,
     utility_column: Element,
@@ -198,7 +202,7 @@ pub fn lege_toolbar(
             rect()
                 .width(Size::flex(1.))
                 .height(Size::px(38.))
-                .child(add_pdf),
+                .child(add_file),
         )
         .child(
             rect()
@@ -330,11 +334,7 @@ pub fn lege_main_shell(
                                 .child(process_bar)
                                 .child(
                                     rect()
-                                        .position(
-                                            Position::new_absolute()
-                                                .left(8.)
-                                                .top(4.),
-                                        )
+                                        .position(Position::new_absolute().left(8.).top(4.))
                                         .width(Size::px(220.))
                                         .height(Size::px(56.))
                                         .child(popup_rail),

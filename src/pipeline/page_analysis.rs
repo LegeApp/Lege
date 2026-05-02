@@ -60,7 +60,11 @@ pub fn compute_pixel_bounds_for_margin(
         *value = if *value == 0 { 1 } else { 0 };
     }
 
-    crate::margin::calculate_content_bounds_from_binary_mask(&binarized, image.width(), image.height())
+    crate::margin::calculate_content_bounds_from_binary_mask(
+        &binarized,
+        image.width(),
+        image.height(),
+    )
 }
 
 pub fn maybe_expand_sole_image_to_full_page(
@@ -87,11 +91,17 @@ pub fn maybe_expand_sole_image_to_full_page(
     if image_count == 1 && substantive_text_count == 0 {
         if let Some(det) = detections.iter_mut().find(|d| {
             classifier.is_image_label(d)
-                && !matches!(d.class_name.as_deref(), Some("header_image" | "footer_image"))
+                && !matches!(
+                    d.class_name.as_deref(),
+                    Some("header_image" | "footer_image")
+                )
         }) {
             crate::bbox_trace!(
                 "[FULL-PAGE] sole image det, expanding [{:.0},{:.0},{:.0},{:.0}] -> [0,0,{pw},{ph}]",
-                det.bbox[0], det.bbox[1], det.bbox[2], det.bbox[3]
+                det.bbox[0],
+                det.bbox[1],
+                det.bbox[2],
+                det.bbox[3]
             );
             det.bbox = [0.0, 0.0, pw, ph];
         }
@@ -254,8 +264,14 @@ pub fn apply_full_bleed_image_bbox_expansion(
 
             crate::bbox_trace!(
                 "[FULL-PAGE] yolo top-fill snap {:.0},{:.0},{:.0},{:.0} -> {:.0},{:.0},{:.0},{:.0}",
-                b[0], b[1], b[2], b[3],
-                new_b[0], new_b[1], new_b[2], new_b[3]
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                new_b[0],
+                new_b[1],
+                new_b[2],
+                new_b[3]
             );
 
             det.bbox = new_b;
@@ -402,7 +418,8 @@ pub fn classify_page(
 
     let content_bounds = detection_bounds.or(pixel_bounds);
     let is_blank = detections.is_empty() && pixel_bounds.is_none();
-    let is_full_page_image = is_full_page_image(detections, page_width, page_height, content_bounds);
+    let is_full_page_image =
+        is_full_page_image(detections, page_width, page_height, content_bounds);
 
     PageClassification {
         content_bounds,

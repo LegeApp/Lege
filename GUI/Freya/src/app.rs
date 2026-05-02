@@ -86,6 +86,7 @@ enum PopupKind {
     Ocr,
     Queue,
     Complete,
+    AddFileHelp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,6 +130,8 @@ pub struct AppState {
     pub show_queue_operation_popup: bool,
     pub completion_popup: Option<String>,
     pub show_completion_popup: bool,
+    pub add_file_help_popup: Option<String>,
+    pub show_add_file_help_popup: bool,
     pub show_log_viewer: bool,
     pub processing_log: Vec<LogEntry>,
     pub show_about: bool,
@@ -182,6 +185,8 @@ impl Default for AppState {
             show_queue_operation_popup: false,
             completion_popup: None,
             show_completion_popup: false,
+            add_file_help_popup: None,
+            show_add_file_help_popup: false,
             show_log_viewer: false,
             processing_log: logging::load_log_entries().unwrap_or_default(),
             show_about: false,
@@ -291,11 +296,7 @@ fn tooltip_wrap(
         })
         .on_pointer_out(move |_| {
             let mut s = leave_state.write();
-            if s
-                .active_tooltip
-                .as_ref()
-                .map(|(_, text)| text.as_str())
-                == Some(clear_text.as_str())
+            if s.active_tooltip.as_ref().map(|(_, text)| text.as_str()) == Some(clear_text.as_str())
             {
                 s.active_tooltip = None;
             }
@@ -381,6 +382,11 @@ fn popup_message_cards(state: State<AppState>) -> Vec<Element> {
             read.show_completion_popup,
             read.completion_popup.clone(),
             PopupKind::Complete,
+        ),
+        (
+            read.show_add_file_help_popup,
+            read.add_file_help_popup.clone(),
+            PopupKind::AddFileHelp,
         ),
     ];
 
@@ -491,6 +497,7 @@ fn hide_popup(mut state: State<AppState>, kind: PopupKind) {
         PopupKind::Ocr => s.show_ocr_detection_popup = false,
         PopupKind::Queue => s.show_queue_operation_popup = false,
         PopupKind::Complete => s.show_completion_popup = false,
+        PopupKind::AddFileHelp => s.show_add_file_help_popup = false,
     }
 }
 
@@ -527,6 +534,10 @@ fn schedule_popup(mut state: State<AppState>, kind: PopupKind, message: String, 
                 PopupKind::Complete => {
                     s.completion_popup = Some(message);
                     s.show_completion_popup = true;
+                }
+                PopupKind::AddFileHelp => {
+                    s.add_file_help_popup = Some(message);
+                    s.show_add_file_help_popup = true;
                 }
             }
         }
@@ -661,18 +672,30 @@ fn ActionBar(state: State<AppState>) -> Element {
         .unwrap_or_else(|| GUI_TEXT.interactive.buttons.output_directory.clone());
 
     widgets::lege_toolbar(
-        Button::new()
-            .width(Size::fill())
-            .height(Size::px(40.))
-            .on_press(move |_| add_pdf_files(state))
-            .child(GUI_TEXT.interactive.buttons.add_files.clone())
-            .into(),
-        Button::new()
-            .width(Size::fill())
-            .height(Size::px(40.))
-            .on_press(move |_| add_folder(state))
-            .child(GUI_TEXT.interactive.buttons.add_folder.clone())
-            .into(),
+        tooltip_wrap_at(
+            state,
+            TooltipArea::LeftCard,
+            GUI_TEXT.interactive.tooltips.add_file_or_folder.clone(),
+            AttachedPosition::Right,
+            Button::new()
+                .width(Size::fill())
+                .height(Size::px(40.))
+                .on_press(move |_| add_files(state))
+                .child(GUI_TEXT.interactive.buttons.add_file.clone())
+                .into(),
+        ),
+        tooltip_wrap_at(
+            state,
+            TooltipArea::LeftCard,
+            GUI_TEXT.interactive.tooltips.add_file_or_folder.clone(),
+            AttachedPosition::Right,
+            Button::new()
+                .width(Size::fill())
+                .height(Size::px(40.))
+                .on_press(move |_| add_folder(state))
+                .child(GUI_TEXT.interactive.buttons.add_folder.clone())
+                .into(),
+        ),
         Button::new()
             .width(Size::fill())
             .height(Size::px(40.))
@@ -760,7 +783,11 @@ fn CombinedSettingsPanel(
     } else {
         true
     };
-    let numeric_label = if effective_threshold { "Threshold" } else { "K factor" };
+    let numeric_label = if effective_threshold {
+        "Threshold"
+    } else {
+        "K factor"
+    };
 
     rect()
         .width(Size::fill())
@@ -1222,65 +1249,64 @@ fn CenterSettingsPanel(
                     .cross_align(Alignment::Start)
                     .spacing(12.)
                     .child(
-                    rect()
-                        .width(Size::percent(54.))
-                        .height(Size::fill())
-                        .vertical()
-                        .main_align(Alignment::Start)
-                        .spacing(3.)
-                        .child(settings_row(
-                            GUI_TEXT.interactive.labels.page_range.clone(),
-                            Input::new(page_range_input)
-                                .placeholder(
-                                    GUI_TEXT.interactive.labels.page_range_placeholder.clone(),
-                                )
-                                .expanded()
-                                .into(),
-                        ))
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::RightCard,
-                            GUI_TEXT.interactive.tooltips.target_height.clone(),
-                            AttachedPosition::Bottom,
-                            settings_row(
-                                "Target device".to_string(),
-                                Select::new()
-                                    .selected_item(state.read().target_resolution_selection.clone())
-                                    .children(device_items)
-                                    .into(),
-                            ),
-                        ))
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::RightCard,
-                            GUI_TEXT.interactive.tooltips.target_height.clone(),
-                            AttachedPosition::Bottom,
-                            settings_row(
-                                GUI_TEXT.interactive.labels.target_height.clone(),
-                                Input::new(target_height_input)
-                                    .placeholder("1200")
+                        rect()
+                            .width(Size::percent(54.))
+                            .height(Size::fill())
+                            .vertical()
+                            .main_align(Alignment::Start)
+                            .spacing(3.)
+                            .child(settings_row(
+                                GUI_TEXT.interactive.labels.page_range.clone(),
+                                Input::new(page_range_input)
+                                    .placeholder(
+                                        GUI_TEXT.interactive.labels.page_range_placeholder.clone(),
+                                    )
                                     .expanded()
-                                    .enabled(options.target_device.is_none())
                                     .into(),
-                            ),
-                        )),
+                            ))
+                            .child(tooltip_wrap_at(
+                                state,
+                                TooltipArea::RightCard,
+                                GUI_TEXT.interactive.tooltips.target_height.clone(),
+                                AttachedPosition::Bottom,
+                                settings_row(
+                                    "Target device".to_string(),
+                                    Select::new()
+                                        .selected_item(
+                                            state.read().target_resolution_selection.clone(),
+                                        )
+                                        .children(device_items)
+                                        .into(),
+                                ),
+                            ))
+                            .child(tooltip_wrap_at(
+                                state,
+                                TooltipArea::RightCard,
+                                GUI_TEXT.interactive.tooltips.target_height.clone(),
+                                AttachedPosition::Bottom,
+                                settings_row(
+                                    GUI_TEXT.interactive.labels.target_height.clone(),
+                                    Input::new(target_height_input)
+                                        .placeholder("1200")
+                                        .expanded()
+                                        .enabled(options.target_device.is_none())
+                                        .into(),
+                                ),
+                            )),
                     )
                     .child(
-                    rect()
-                        .width(Size::percent(42.))
-                        .height(Size::fill())
-                        .vertical()
-                        .main_align(Alignment::Start)
-                        .spacing(3.)
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::RightCard,
-                            GUI_TEXT.interactive.tooltips.margin_centering.clone(),
-                            AttachedPosition::Left,
-                            bool_tile(
-                                "Center margins".to_string(),
-                                options.center_margins,
-                                {
+                        rect()
+                            .width(Size::percent(42.))
+                            .height(Size::fill())
+                            .vertical()
+                            .main_align(Alignment::Start)
+                            .spacing(3.)
+                            .child(tooltip_wrap_at(
+                                state,
+                                TooltipArea::RightCard,
+                                GUI_TEXT.interactive.tooltips.margin_centering.clone(),
+                                AttachedPosition::Left,
+                                bool_tile("Center margins".to_string(), options.center_margins, {
                                     let mut state = state;
                                     move |_| {
                                         let mut s = state.write();
@@ -1290,18 +1316,14 @@ fn CenterSettingsPanel(
                                             s.options.crop_margins = false;
                                         }
                                     }
-                                },
-                            ),
-                        ))
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::RightCard,
-                            GUI_TEXT.interactive.tooltips.margin_crop_resize.clone(),
-                            AttachedPosition::Left,
-                            bool_tile(
-                                "Crop margins".to_string(),
-                                options.crop_margins,
-                                {
+                                }),
+                            ))
+                            .child(tooltip_wrap_at(
+                                state,
+                                TooltipArea::RightCard,
+                                GUI_TEXT.interactive.tooltips.margin_crop_resize.clone(),
+                                AttachedPosition::Left,
+                                bool_tile("Crop margins".to_string(), options.crop_margins, {
                                     let mut state = state;
                                     move |_| {
                                         let mut s = state.write();
@@ -1311,26 +1333,25 @@ fn CenterSettingsPanel(
                                             s.options.center_margins = false;
                                         }
                                     }
-                                },
-                            ),
-                        ))
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::RightCard,
-                            GUI_TEXT.interactive.tooltips.deskew_documents.clone(),
-                            AttachedPosition::Left,
-                            bool_tile(
-                                GUI_TEXT.interactive.labels.deskew_documents.clone(),
-                                options.deskew_documents,
-                                {
-                                    let mut state = state;
-                                    move |_| {
-                                        state.write().options.deskew_documents =
-                                            !state.read().options.deskew_documents
-                                    }
-                                },
-                            ),
-                        ))
+                                }),
+                            ))
+                            .child(tooltip_wrap_at(
+                                state,
+                                TooltipArea::RightCard,
+                                GUI_TEXT.interactive.tooltips.deskew_documents.clone(),
+                                AttachedPosition::Left,
+                                bool_tile(
+                                    GUI_TEXT.interactive.labels.deskew_documents.clone(),
+                                    options.deskew_documents,
+                                    {
+                                        let mut state = state;
+                                        move |_| {
+                                            state.write().options.deskew_documents =
+                                                !state.read().options.deskew_documents
+                                        }
+                                    },
+                                ),
+                            )),
                     )
                     .into(),
             ],
@@ -1347,7 +1368,11 @@ fn RightSettingsPanel(
     let options = state.read().options.clone();
     let layout_on = options.layout_analysis;
     let use_threshold = !layout_on || options.use_fixed_threshold;
-    let numeric_label = if use_threshold { "Threshold" } else { "K factor" };
+    let numeric_label = if use_threshold {
+        "Threshold"
+    } else {
+        "K factor"
+    };
 
     panel_card(
         "",
@@ -1375,21 +1400,17 @@ fn RightSettingsPanel(
             rect()
                 .direction(Direction::Horizontal)
                 .spacing(12.)
-                .child(compact_checkbox_row(
-                    "Fixed threshold",
-                    use_threshold,
-                    {
-                        let mut state = state;
-                        move |_| {
-                            let mut s = state.write();
-                            let enable = !s.options.use_fixed_threshold;
-                            s.options.use_fixed_threshold = enable;
-                            if enable {
-                                s.options.use_heavy_binarization = false;
-                            }
+                .child(compact_checkbox_row("Fixed threshold", use_threshold, {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !s.options.use_fixed_threshold;
+                        s.options.use_fixed_threshold = enable;
+                        if enable {
+                            s.options.use_heavy_binarization = false;
                         }
-                    },
-                ))
+                    }
+                }))
                 .maybe_child(if layout_on {
                     Some(
                         compact_checkbox_row("Heavy model", options.use_heavy_binarization, {
@@ -1412,9 +1433,7 @@ fn RightSettingsPanel(
                 rect().height(Size::px(0.)).into()
             } else {
                 label()
-                    .text(
-                        "Adaptive and heavy binarization are disabled without layout detection.",
-                    )
+                    .text("Adaptive and heavy binarization are disabled without layout detection.")
                     .font_size(11.)
                     .color(MUTED)
                     .expanded()
@@ -1459,7 +1478,13 @@ fn progress_stage_card(
                 .direction(Direction::Horizontal)
                 .main_align(Alignment::SpaceBetween)
                 .cross_align(Alignment::Center)
-                .child(label().text(title).font_size(11.).font_weight(700).color(TEXT))
+                .child(
+                    label()
+                        .text(title)
+                        .font_size(11.)
+                        .font_weight(700)
+                        .color(TEXT),
+                )
                 .child(
                     label()
                         .text(format!("{clamped}/{total}"))
@@ -1498,30 +1523,89 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
     let mut cards = Vec::new();
     match metrics.mode {
         lege::progress::ProgressMode::Layout => {
-            cards.push(progress_stage_card("Render", metrics.rendered, metrics.pages_total, (180, 217, 232)));
-            cards.push(progress_stage_card("Infer", metrics.detected, metrics.pages_total, (232, 218, 166)));
-            cards.push(progress_stage_card("Encode", metrics.encoded, metrics.pages_total, (220, 192, 214)));
+            cards.push(progress_stage_card(
+                "Render",
+                metrics.rendered,
+                metrics.pages_total,
+                (180, 217, 232),
+            ));
+            cards.push(progress_stage_card(
+                "Infer",
+                metrics.detected,
+                metrics.pages_total,
+                (232, 218, 166),
+            ));
+            cards.push(progress_stage_card(
+                "Encode",
+                metrics.encoded,
+                metrics.pages_total,
+                (220, 192, 214),
+            ));
             if metrics.enable_deskew {
-                cards.push(progress_stage_card("Deskew", metrics.deskewed, metrics.pages_total, (180, 201, 232)));
+                cards.push(progress_stage_card(
+                    "Deskew",
+                    metrics.deskewed,
+                    metrics.pages_total,
+                    (180, 201, 232),
+                ));
             }
         }
         lege::progress::ProgressMode::Margin => {
-            cards.push(progress_stage_card("Render", metrics.rendered, metrics.pages_total, (180, 217, 232)));
+            cards.push(progress_stage_card(
+                "Render",
+                metrics.rendered,
+                metrics.pages_total,
+                (180, 217, 232),
+            ));
             if metrics.enable_layout_detection {
-                cards.push(progress_stage_card("Infer", metrics.detected, metrics.pages_total, (232, 218, 166)));
-                cards.push(progress_stage_card("Margin", metrics.encoded, metrics.pages_total, (214, 196, 234)));
+                cards.push(progress_stage_card(
+                    "Infer",
+                    metrics.detected,
+                    metrics.pages_total,
+                    (232, 218, 166),
+                ));
+                cards.push(progress_stage_card(
+                    "Margin",
+                    metrics.encoded,
+                    metrics.pages_total,
+                    (214, 196, 234),
+                ));
             } else {
-                cards.push(progress_stage_card("Margin", metrics.encoded, metrics.pages_total, (214, 196, 234)));
+                cards.push(progress_stage_card(
+                    "Margin",
+                    metrics.encoded,
+                    metrics.pages_total,
+                    (214, 196, 234),
+                ));
             }
             if metrics.enable_deskew {
-                cards.push(progress_stage_card("Deskew", metrics.deskewed, metrics.pages_total, (180, 201, 232)));
+                cards.push(progress_stage_card(
+                    "Deskew",
+                    metrics.deskewed,
+                    metrics.pages_total,
+                    (180, 201, 232),
+                ));
             }
         }
         lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
-            cards.push(progress_stage_card("Render", metrics.rendered, metrics.pages_total, (180, 217, 232)));
-            cards.push(progress_stage_card("Encode", metrics.encoded, metrics.pages_total, (220, 192, 214)));
+            let completed = if metrics.encoded > 0 {
+                metrics.encoded
+            } else {
+                metrics.rendered
+            };
+            cards.push(progress_stage_card(
+                "Pages",
+                completed,
+                metrics.pages_total,
+                (180, 217, 232),
+            ));
             if metrics.enable_deskew {
-                cards.push(progress_stage_card("Deskew", metrics.deskewed, metrics.pages_total, (180, 201, 232)));
+                cards.push(progress_stage_card(
+                    "Deskew",
+                    metrics.deskewed,
+                    metrics.pages_total,
+                    (180, 201, 232),
+                ));
             }
         }
         lege::progress::ProgressMode::Unknown => {}
@@ -1532,7 +1616,11 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
     }
 
     let top_row: Element = if cards.len() == 1 {
-        rect().width(Size::fill()).height(Size::px(48.)).child(cards.remove(0)).into()
+        rect()
+            .width(Size::fill())
+            .height(Size::px(48.))
+            .child(cards.remove(0))
+            .into()
     } else {
         let first = cards.remove(0);
         let second = cards.remove(0);
@@ -1541,8 +1629,18 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
             .height(Size::px(48.))
             .direction(Direction::Horizontal)
             .spacing(6.)
-            .child(rect().width(Size::fill()).height(Size::fill()).child(first))
-            .child(rect().width(Size::fill()).height(Size::fill()).child(second))
+            .child(
+                rect()
+                    .width(Size::percent(50.))
+                    .height(Size::fill())
+                    .child(first),
+            )
+            .child(
+                rect()
+                    .width(Size::percent(50.))
+                    .height(Size::fill())
+                    .child(second),
+            )
             .into()
     };
 
@@ -1561,8 +1659,18 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
                 .height(Size::px(48.))
                 .direction(Direction::Horizontal)
                 .spacing(6.)
-                .child(rect().width(Size::fill()).height(Size::fill()).child(cards.remove(0)))
-                .child(rect().width(Size::fill()).height(Size::fill()).child(cards.remove(0)))
+                .child(
+                    rect()
+                        .width(Size::percent(50.))
+                        .height(Size::fill())
+                        .child(cards.remove(0)),
+                )
+                .child(
+                    rect()
+                        .width(Size::percent(50.))
+                        .height(Size::fill())
+                        .child(cards.remove(0)),
+                )
                 .into(),
         ),
     };
@@ -1580,47 +1688,15 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
 
 fn StatusBar(state: State<AppState>) -> Element {
     let read = state.read();
+    let is_processing = read.is_processing;
     let eta_text = read.active_eta.clone();
-    let queue_len = read.queue.len();
+    let queue_items = read.queue.iter().cloned().collect::<Vec<_>>();
+    let queue_len = queue_items.len();
     let status = read.status_lines.clone();
     let progress_metrics = read.progress_metrics;
-    let progress_section = progress_metrics.and_then(progress_grid);
+    drop(read);
 
-    // When the metrics grid is shown, skip legacy text progress lines (they duplicate the tiles).
-    let secondary_text = if progress_section.is_some() {
-        let mut parts = Vec::new();
-        if !status.3.is_empty() {
-            parts.push(status.3.clone());
-        }
-        if let Some(eta) = eta_text {
-            parts.push(format!("ETA {eta}"));
-        }
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("  ·  "))
-        }
-    } else {
-        let mut parts = Vec::new();
-        if !status.1.is_empty() {
-            parts.push(status.1.clone());
-        }
-        if !status.2.is_empty() {
-            parts.push(status.2.clone());
-        }
-        if !status.3.is_empty() {
-            parts.push(status.3.clone());
-        }
-        if let Some(eta) = eta_text {
-            parts.push(format!("ETA {eta}"));
-        }
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("  |  "))
-        }
-    };
-
+    // ── Top-right control strip (always shown) ───────────────────────────────
     let top_right: Element = rect()
         .direction(Direction::Horizontal)
         .spacing(4.)
@@ -1632,7 +1708,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                     let mut state = state;
                     move |_| state.write().show_queue_viewer = true
                 })
-                .child(format!("Queue: {queue_len} file(s)")),
+                .child(format!("Queue: {queue_len}")),
         )
         .child(
             Button::new()
@@ -1645,11 +1721,9 @@ fn StatusBar(state: State<AppState>) -> Element {
         )
         .into();
 
+    // ── Bottom-right (about / debug) ─────────────────────────────────────────
     let bottom_right: Element = {
-        let mut col = rect()
-            .vertical()
-            .spacing(3.)
-            .cross_align(Alignment::End);
+        let mut col = rect().vertical().spacing(3.).cross_align(Alignment::End);
 
         #[cfg(feature = "debug-logging")]
         {
@@ -1676,30 +1750,128 @@ fn StatusBar(state: State<AppState>) -> Element {
         .into()
     };
 
-    widgets::lege_status_panel(
+    // ── Main content: dual-mode ───────────────────────────────────────────────
+    let main_content: Element = if is_processing {
+        // PROCESSING MODE — existing progress display.
+        let progress_section = progress_metrics.and_then(progress_grid);
+        let secondary_text = if progress_section.is_some() {
+            let mut parts = Vec::new();
+            if !status.3.is_empty() {
+                parts.push(status.3.clone());
+            }
+            if let Some(eta) = &eta_text {
+                parts.push(format!("ETA {eta}"));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("  ·  "))
+            }
+        } else {
+            let mut parts = Vec::new();
+            if !status.1.is_empty() {
+                parts.push(status.1.clone());
+            }
+            if !status.2.is_empty() {
+                parts.push(status.2.clone());
+            }
+            if !status.3.is_empty() {
+                parts.push(status.3.clone());
+            }
+            if let Some(eta) = &eta_text {
+                parts.push(format!("ETA {eta}"));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("  |  "))
+            }
+        };
+
         rect()
             .width(Size::fill())
             .height(Size::fill())
             .vertical()
             .spacing(6.)
-            .child(
-                label()
-                    .text(status.0)
-                    .font_size(12.)
-                    .color(TEXT),
-            )
+            .child(label().text(status.0).font_size(12.).color(TEXT))
             .maybe_child(secondary_text.map(|detail| -> Element {
-                label()
-                    .text(detail)
-                    .font_size(11.)
-                    .color(MUTED)
-                    .into()
+                label().text(detail).font_size(11.).color(MUTED).into()
             }))
             .maybe_child(progress_section)
-            .into(),
-        top_right,
-        bottom_right,
-    )
+            .into()
+    } else if queue_items.is_empty() {
+        // IDLE, EMPTY — prompt to add files.
+        rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .main_align(Alignment::Center)
+            .cross_align(Alignment::Center)
+            .child(
+                label()
+                    .text("No files queued — click \"Add file or folder\" to begin.")
+                    .font_size(12.)
+                    .color(MUTED),
+            )
+            .into()
+    } else {
+        // IDLE, QUEUE ITEMS — show per-item list + total summary.
+        let total_pages: Option<u32> = {
+            let all_known = queue_items.iter().all(|i| i.page_count.is_some());
+            if all_known {
+                Some(queue_items.iter().filter_map(|i| i.page_count).sum())
+            } else {
+                None
+            }
+        };
+
+        let item_rows: Vec<Element> = queue_items
+            .iter()
+            .map(|item| {
+                let badge = item.input_kind.badge();
+                let count_str = match item.page_count {
+                    Some(n) => format!("{n} {}", item.count_label()),
+                    None => "scanning\u{2026}".to_string(),
+                };
+                rect()
+                    .width(Size::fill())
+                    .direction(Direction::Horizontal)
+                    .spacing(8.)
+                    .cross_align(Alignment::Center)
+                    .child(
+                        label()
+                            .text(format!("[{badge}]"))
+                            .font_size(10.)
+                            .color(MUTED),
+                    )
+                    .child(
+                        rect().width(Size::fill()).child(
+                            label()
+                                .text(item.file_name.clone())
+                                .font_size(12.)
+                                .color(TEXT),
+                        ),
+                    )
+                    .child(label().text(count_str).font_size(11.).color(MUTED))
+                    .into()
+            })
+            .collect();
+
+        let summary_line = match total_pages {
+            Some(n) => format!("{queue_len} item(s) ready  ·  {n} pages total"),
+            None => format!("{queue_len} item(s) queued"),
+        };
+
+        rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .vertical()
+            .spacing(4.)
+            .children(item_rows)
+            .child(label().text(summary_line).font_size(11.).color(MUTED))
+            .into()
+    };
+
+    widgets::lege_status_panel(main_content, top_right, bottom_right)
 }
 
 fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
@@ -1717,8 +1889,8 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
                         .width(Size::fill())
                         .span(
                             Span::new(entry.format_timestamp())
-                            .font_size(12.)
-                            .color(TEXT),
+                                .font_size(12.)
+                                .color(TEXT),
                         )
                         .line_height(1.25)
                         .max_lines(1),
@@ -1772,8 +1944,11 @@ fn completion_message(result: &ProcessingResult, estimated_original_size: u64) -
         result.original_size
     };
 
-    let reduction_percent =
-        if basis_size > 0 { (1.0 - (result.compressed_size as f64 / basis_size as f64)) * 100.0 } else { 0.0 };
+    let reduction_percent = if basis_size > 0 {
+        (1.0 - (result.compressed_size as f64 / basis_size as f64)) * 100.0
+    } else {
+        0.0
+    };
 
     let compression_line = if reduction_percent >= 0.0 {
         format!(
@@ -1797,7 +1972,10 @@ fn completion_message(result: &ProcessingResult, estimated_original_size: u64) -
             result.output_filename, compression_line
         )
     } else {
-        format!("Completed: {}\n{}", result.output_filename, compression_line)
+        format!(
+            "Completed: {}\n{}",
+            result.output_filename, compression_line
+        )
     }
 }
 
@@ -1868,44 +2046,40 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
         ScrollView::new()
             .width(Size::px(520.))
             .height(Size::px(360.))
-            .child(
-                rect()
-                    .spacing(8.)
-                    .children(if queue_items.is_empty() {
-                        vec![
-                            label()
-                                .text("Queue is empty.")
-                                .font_size(12.)
-                                .color(MUTED)
-                                .into(),
-                        ]
-                    } else {
-                        queue_items
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, item)| {
-                                rect()
-                                    .background(PANEL_BG)
-                                    .corner_radius(4.)
-                                    .padding(8.)
-                                    .spacing(4.)
-                                    .child(
-                                        label()
-                                            .text(format!("{}. {}", idx + 1, item.file_name))
-                                            .font_size(13.)
-                                            .color(TEXT),
-                                    )
-                                    .child(
-                                        label()
-                                            .text(item.file_path.display().to_string())
-                                            .font_size(11.)
-                                            .color(MUTED),
-                                    )
-                                    .into()
-                            })
-                            .collect()
-                    }),
-            )
+            .child(rect().spacing(8.).children(if queue_items.is_empty() {
+                vec![
+                    label()
+                        .text("Queue is empty.")
+                        .font_size(12.)
+                        .color(MUTED)
+                        .into(),
+                ]
+            } else {
+                queue_items
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        rect()
+                            .background(PANEL_BG)
+                            .corner_radius(4.)
+                            .padding(8.)
+                            .spacing(4.)
+                            .child(
+                                label()
+                                    .text(format!("{}. {}", idx + 1, item.file_name))
+                                    .font_size(13.)
+                                    .color(TEXT),
+                            )
+                            .child(
+                                label()
+                                    .text(item.file_path.display().to_string())
+                                    .font_size(11.)
+                                    .color(MUTED),
+                            )
+                            .into()
+                    })
+                    .collect()
+            }))
             .into(),
         move || state.write().show_queue_viewer = false,
     )
@@ -1934,7 +2108,12 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
                 ScrollView::new()
                     .width(Size::fill())
                     .height(Size::fill())
-                    .child(rect().width(Size::fill()).spacing(8.).children(render_log_rows(&recent_entries))),
+                    .child(
+                        rect()
+                            .width(Size::fill())
+                            .spacing(8.)
+                            .children(render_log_rows(&recent_entries)),
+                    ),
             )
             .into(),
         move || state.write().show_log_viewer = false,
@@ -1962,21 +2141,19 @@ fn DebugLogViewerPopup(mut state: State<AppState>) -> Element {
             .width(Size::px(760.))
             .height(Size::px(420.))
             .child(
-                rect()
-                    .spacing(6.)
-                    .children(
-                        messages
-                            .iter()
-                            .map(|msg| {
-                                rect()
-                                    .background(PANEL_BG)
-                                    .corner_radius(4.)
-                                    .padding(6.)
-                                    .child(label().text(msg.clone()).font_size(11.).color(TEXT))
-                                    .into()
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
+                rect().spacing(6.).children(
+                    messages
+                        .iter()
+                        .map(|msg| {
+                            rect()
+                                .background(PANEL_BG)
+                                .corner_radius(4.)
+                                .padding(6.)
+                                .child(label().text(msg.clone()).font_size(11.).color(TEXT))
+                                .into()
+                        })
+                        .collect::<Vec<_>>(),
+                ),
             )
             .into(),
         move || state.write().show_debug_log = false,
@@ -2017,16 +2194,8 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             .font_size(13.)
                             .color(TEXT),
                     )
-                    .child(
-                        label()
-                            .text("Email")
-                            .font_size(13.)
-                            .color(TEXT),
-                    )
-                    .child(
-                        Input::new(email_text)
-                            .width(Size::px(220.)),
-                    ),
+                    .child(label().text("Email").font_size(13.).color(TEXT))
+                    .child(Input::new(email_text).width(Size::px(220.))),
             ),
         )
         .child(
@@ -2061,31 +2230,69 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
         .into()
 }
 
-fn add_pdf_files(mut state: State<AppState>) {
+fn add_files(mut state: State<AppState>) {
     spawn(async move {
-        if let Some(files) = rfd::AsyncFileDialog::new()
-            .add_filter("PDF", &["pdf"])
+        // Pick files only (PDF or ZIP only - no "All files" option).
+        let files = rfd::AsyncFileDialog::new()
+            .add_filter("Supported inputs", &["pdf", "zip"])
             .pick_files()
-            .await
-        {
-            let first_pdf_path = files.first().map(|f| f.path().to_owned());
+            .await;
+
+        if let Some(files) = files {
+            let first_pdf_path = files
+                .iter()
+                .find(|f| backend::is_pdf_file(&f.path().to_owned()))
+                .map(|f| f.path().to_owned());
             let mut should_show_output_popup = false;
+            let mut new_ids: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+            // Validate files before holding the write-lock.
+            let mut valid_paths: Vec<std::path::PathBuf> = Vec::new();
+            for file in &files {
+                let path = file.path().to_owned();
+                if backend::is_zip_file(&path) && !backend::zip_has_valid_images(&path) {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    schedule_popup(
+                        state,
+                        PopupKind::Queue,
+                        format!("{name}: ZIP contains no JP2 or JPEG images"),
+                        6,
+                    );
+                    continue;
+                }
+                valid_paths.push(path);
+            }
 
             {
                 let mut s = state.write();
-                for file in files {
-                    s.queue.push_back(DocumentItem::new(file.path().to_owned()));
+                for path in valid_paths {
+                    let item = DocumentItem::new(path);
+                    new_ids.push((item.id.clone(), item.file_path.clone()));
+                    s.queue.push_back(item);
                 }
                 if s.options.output_path.is_none() {
-                    if let Some(first) = s.queue.front() {
-                        if let Some(parent) = first.file_path.parent() {
+                    if let Some(first) = files.first() {
+                        if let Some(parent) = first.path().parent() {
                             s.options.output_path = Some(parent.to_path_buf());
                             should_show_output_popup = true;
                         }
                     }
                 }
-                let queued = s.queue.len();
-                s.set_status_message(format!("{queued} item(s) queued"));
+            }
+
+            // Spawn pre-checks for each new item.
+            for (id, path) in new_ids {
+                let mut s = state;
+                spawn(async move {
+                    if let Some(count) = backend::precheck_page_count(path).await {
+                        if let Some(item) = s.write().queue.iter_mut().find(|i| i.id == id) {
+                            item.page_count = Some(count);
+                        }
+                    }
+                });
             }
 
             if should_show_output_popup {
@@ -2116,49 +2323,25 @@ fn add_folder(mut state: State<AppState>) {
         if let Some(folder) = rfd::AsyncFileDialog::new().pick_folder().await {
             let path = folder.path().to_owned();
 
-            if let Ok(image_files) = backend::get_image_files_in_directory(&path) {
-                if !image_files.is_empty() {
-                    let mut s = state.write();
-                    s.queue.push_back(DocumentItem {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        file_path: path.clone(),
-                        file_name: path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
-                        status: DocumentStatus::Queued,
-                        output_path: None,
-                        progress: 0.0,
-                        error_message: None,
-                    });
-                    if s.options.output_path.is_none() {
-                        s.options.output_path = Some(path.clone());
+            match backend::get_image_files_in_directory(&path) {
+                Ok(image_files) if !image_files.is_empty() => {
+                    let item = DocumentItem::new(path.clone());
+                    let id = item.id.clone();
+                    {
+                        let mut s = state.write();
+                        s.queue.push_back(item);
+                        if s.options.output_path.is_none() {
+                            s.options.output_path = Some(path.clone());
+                        }
                     }
-                    let queued = s.queue.len();
-                    s.set_status_message(format!(
-                        "Added image folder with {} images ({} queued item(s))",
-                        image_files.len(),
-                        queued
-                    ));
-                    schedule_popup(
-                        state,
-                        PopupKind::Output,
-                        GUI_TEXT.interactive.messages.defaulted_output_dir.clone(),
-                        5,
-                    );
-                    return;
-                }
-            }
-
-            if let Ok(pdf_files) = backend::get_pdf_files_in_directory(&path) {
-                let added_count = pdf_files.len();
-                let mut s = state.write();
-                for file_path in pdf_files {
-                    s.queue.push_back(DocumentItem::new(file_path));
-                }
-                if s.options.output_path.is_none() {
-                    s.options.output_path = Some(path.clone());
+                    let mut s = state;
+                    spawn(async move {
+                        if let Some(count) = backend::precheck_page_count(path).await {
+                            if let Some(item) = s.write().queue.iter_mut().find(|i| i.id == id) {
+                                item.page_count = Some(count);
+                            }
+                        }
+                    });
                     schedule_popup(
                         state,
                         PopupKind::Output,
@@ -2166,11 +2349,20 @@ fn add_folder(mut state: State<AppState>) {
                         5,
                     );
                 }
-                let queued = s.queue.len();
-                s.set_status_message(format!(
-                    "Added {added_count} PDF file(s) from folder ({} queued item(s))",
-                    queued
-                ));
+                _ => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    schedule_popup(
+                        state,
+                        PopupKind::Queue,
+                        format!(
+                            "{name}: folder contains no supported images (JP2, JPEG, PNG, ...)"
+                        ),
+                        6,
+                    );
+                }
             }
         }
     });
@@ -2201,7 +2393,13 @@ fn reset_settings_action(mut state: State<AppState>) {
     if let Err(e) = backend::remove_saved_settings() {
         s.set_status_message(format!("Failed to clear saved settings: {e}"));
     } else {
-        s.set_status_message(GUI_TEXT.interactive.messages.settings_and_queue_reset.clone());
+        s.set_status_message(
+            GUI_TEXT
+                .interactive
+                .messages
+                .settings_and_queue_reset
+                .clone(),
+        );
     }
 }
 
@@ -2247,7 +2445,9 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
     }
 
     if options.output_path.is_none() {
-        state.write().set_status_message("Choose an output directory");
+        state
+            .write()
+            .set_status_message("Choose an output directory");
         return;
     }
 
@@ -2320,14 +2520,18 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 state.write().progress_metrics = metrics;
                                 match &status {
                                     lege::progress::ProcessingStatus::AssemblingOutput => {}
-                                    lege::progress::ProcessingStatus::NoLayoutProgress { .. }
+                                    lege::progress::ProcessingStatus::NoLayoutProgress {
+                                        ..
+                                    }
                                     | lege::progress::ProcessingStatus::LayoutProgress { .. }
                                     | lege::progress::ProcessingStatus::MarginProgress { .. } => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().set_status_lines(l1, l2, l3);
                                     }
                                     lege::progress::ProcessingStatus::PdfAppend { .. }
-                                    | lege::progress::ProcessingStatus::PdfAppendMargin { .. } => {}
+                                    | lege::progress::ProcessingStatus::PdfAppendMargin {
+                                        ..
+                                    } => {}
                                     _ => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().push_status_log(l1);
@@ -2409,7 +2613,8 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                             .retain(|item| item.file_path != info.input_path);
                                     }
 
-                                    let files_remaining = files_total.saturating_sub(files_completed);
+                                    let files_remaining =
+                                        files_total.saturating_sub(files_completed);
                                     state.write().push_status_log(format!(
                                         "{} file(s) completed, {} remaining",
                                         files_completed, files_remaining
@@ -2426,17 +2631,21 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     if let Some(info) =
                                         tracker_infos.iter().find(|info| info.id == task_id)
                                     {
-                                        state.write().queue.retain(|item| item.file_path != info.input_path);
+                                        state
+                                            .write()
+                                            .queue
+                                            .retain(|item| item.file_path != info.input_path);
                                     }
 
                                     let dep_prefix = "Missing required component(s): ";
                                     if let Some(idx) = error.find(dep_prefix) {
                                         let after = &error[idx + dep_prefix.len()..];
-                                        let list_part = if let Some(paren_idx) = after.find(" (ensure") {
-                                            &after[..paren_idx]
-                                        } else {
-                                            after
-                                        };
+                                        let list_part =
+                                            if let Some(paren_idx) = after.find(" (ensure") {
+                                                &after[..paren_idx]
+                                            } else {
+                                                after
+                                            };
                                         let formatted = GUI_TEXT
                                             .interactive
                                             .status

@@ -197,15 +197,15 @@ struct CliOptions {
     no_cover: bool,                // --no-cover
     invert: bool,                  // --invert
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
-    halftone: bool,                // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
-    deskew: bool,                  // --deskew
-    jpeg_compat: bool,             // --jpeg-compat
-    center_margins: bool,          // --center-margins
-    crop_margins: bool,            // --crop-margins
-    force_crop: bool,              // --force-crop
-    image_only: bool,              // --image-only
-    original_images: bool,         // --original-images (default is already original; explicit opt-in)
-    fast_resize: bool,             // --fast-resize (force CPU fast_image_resize backend)
+    halftone: bool, // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
+    deskew: bool,   // --deskew
+    jpeg_compat: bool, // --jpeg-compat
+    center_margins: bool, // --center-margins
+    crop_margins: bool, // --crop-margins
+    force_crop: bool, // --force-crop
+    image_only: bool, // --image-only
+    original_images: bool, // --original-images (default is already original; explicit opt-in)
+    fast_resize: bool, // --fast-resize (force CPU fast_image_resize backend)
 
     // --- Language ---
     language: Option<String>, // --language <code>
@@ -708,8 +708,11 @@ fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
         let pipeline_config = build_png_folder_pipeline_config(&cli_opts)?;
-        let output_path =
-            resolve_png_folder_output_path(cli_opts.output_dir.clone(), &folder_path, &pipeline_config)?;
+        let output_path = resolve_png_folder_output_path(
+            cli_opts.output_dir.clone(),
+            &folder_path,
+            &pipeline_config,
+        )?;
         return run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, None);
     }
 
@@ -1162,7 +1165,8 @@ fn handle_simple_processing(
     } else if cli_opts.dither {
         let tf = pipeline_config.text_format();
         if tf == "ccitt4" {
-            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+            pipeline_config
+                .set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
         } else {
             pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
         }
@@ -2049,12 +2053,7 @@ fn parse_format_selection_with_options(
         .iter()
         .skip(options_start_index)
         .copied()
-        .filter(|&p| {
-            !matches!(
-                p,
-                "--high" | "--high-quality" | "--unify" | "--halftone"
-            )
-        })
+        .filter(|&p| !matches!(p, "--high" | "--high-quality" | "--unify" | "--halftone"))
         .collect();
     options_parts.extend(remaining_parts.iter().map(|s| s.to_string()));
 
@@ -2156,18 +2155,7 @@ fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool)> {
 
 fn parse_options(
     input: &str,
-) -> Result<(
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-)> {
+) -> Result<(bool, bool, bool, bool, bool, bool, bool, bool, bool, bool)> {
     let options: Vec<&str> = input.split_whitespace().collect();
 
     // 'a' now DISABLES layout detection (it's enabled by default)
@@ -2623,7 +2611,14 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     }
 
     // Call the PDF-to-PNG processing function
-    run_pdf_to_png_mode(pdf_path, page_range, height, AppConfig::default(), false, 256)?;
+    run_pdf_to_png_mode(
+        pdf_path,
+        page_range,
+        height,
+        AppConfig::default(),
+        false,
+        256,
+    )?;
 
     // Return None to indicate PDF-to-PNG mode was handled
     Ok(None)
@@ -2964,15 +2959,32 @@ fn unix_to_ymdhm(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     loop {
         let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
         let dy = if leap { 366 } else { 365 };
-        if days < dy { break; }
+        if days < dy {
+            break;
+        }
         days -= dy;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [31u32, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days = [
+        31u32,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 1u32;
     for &md in &month_days {
-        if days < md { break; }
+        if days < md {
+            break;
+        }
         days -= md;
         mo += 1;
     }
@@ -3064,7 +3076,8 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     } else if cli_opts.dither {
         let tf = pipeline_config.text_format();
         if tf == "ccitt4" {
-            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+            pipeline_config
+                .set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
         } else {
             pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
         }

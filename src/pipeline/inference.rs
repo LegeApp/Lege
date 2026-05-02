@@ -125,9 +125,9 @@ impl InferenceActor {
                 let batch_result = {
                     let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
                     match _guard {
-                        Ok(_guard) => {
-                            self.engine.detect_batch_with_indices_blocking(&images, &indices)
-                        }
+                        Ok(_guard) => self
+                            .engine
+                            .detect_batch_with_indices_blocking(&images, &indices),
                         Err(e) => Err(e),
                     }
                 };

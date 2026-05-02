@@ -39,7 +39,7 @@ pub struct GuiAppText {
 #[derive(Debug, Clone)]
 pub struct GuiButtonsText {
     pub debug: String,
-    pub add_files: String,
+    pub add_file: String,
     pub add_folder: String,
     pub output_directory: String,
     pub save: String,
@@ -70,6 +70,7 @@ pub struct GuiLabelsText {
 
 #[derive(Debug, Clone)]
 pub struct GuiTooltipsText {
+    pub add_file_or_folder: String,
     pub output_format: String,
     pub base_format: String,
     pub image_output_type: String,
@@ -128,8 +129,8 @@ fn default_gui_text() -> GuiText {
             },
             buttons: GuiButtonsText {
                 debug: "Debug".to_string(),
-                add_files: "Add PDF".to_string(),
-                add_folder: "Add Page Folder".to_string(),
+                add_file: "Add File".to_string(),
+                add_folder: "Add Folder".to_string(),
                 output_directory: "Output Directory".to_string(),
                 save: "Save".to_string(),
                 reset: "Reset".to_string(),
@@ -155,6 +156,7 @@ fn default_gui_text() -> GuiText {
                 deskew_documents: "Deskew".to_string(),
             },
             tooltips: GuiTooltipsText {
+                add_file_or_folder: "Accepts PDF files, image folders, or image ZIPs.".to_string(),
                 output_format: "Choose PDF, or DJVU via native Rust encoding".to_string(),
                 base_format: "1bit encoding - JBIG2 has better compression and dithering while CCITT4 has wider compatibility".to_string(),
                 image_output_type: "Original color with CCITT4 encoding, or dithered with JBIG2 encoding".to_string(),

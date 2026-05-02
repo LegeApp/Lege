@@ -1,8 +1,8 @@
+use Legencode::jp2_encoder::{encode_to_target_size, jp2_config};
 use Legencode::streamline::EncodingResult as LegeEncodingResult;
 use Legencode::streamline::{
     EncodingManager, EncodingSettings, ImageBuffer as LegeImageBuffer, JpegSettings,
 };
-use Legencode::jp2_encoder::{encode_to_target_size, jp2_config};
 use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
 use std::fs::File;
 use std::io::Write;
@@ -15,8 +15,7 @@ fn solve_rate_for_target_size(
     channels: u8,
     target_bytes: usize,
 ) -> Result<(f32, Vec<u8>, usize), Box<dyn std::error::Error>> {
-    let (rate, encoded) =
-        encode_to_target_size(image_data, width, height, channels, target_bytes)?;
+    let (rate, encoded) = encode_to_target_size(image_data, width, height, channels, target_bytes)?;
     let sz = encoded.len();
     Ok((rate, encoded, sz))
 }
