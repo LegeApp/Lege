@@ -1,24 +1,26 @@
 // pdf_tokio_pipeline.rs
 use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::pipeline::config::{ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData};
+use crate::pagerender::prelude::PdfiumRenderer;
+use crate::pipeline::config::{
+    ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData,
+};
 use crate::pipeline::helper_functions::{
     build_hocr_from_pdf_text, init_encode_semaphore, merge_overlapping_image_detections,
     rounded_clamped_bbox, should_treat_as_cover_page, spawn_pdf_writer_actor,
-    wait_for_memory_relief,
 };
 use crate::pipeline::page_analysis::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin,
-    detections_bbox_area_fraction, is_visually_blank_page,
-    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
+    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, detections_bbox_area_fraction,
+    is_visually_blank_page, maybe_apply_yolo_full_page_detection,
+    should_force_blank_page_threshold,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
+    build_inference_image,
 };
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
+use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
 use crate::progress::ProgressTracker;
-use crate::pipeline::policies::build_inference_image;
 use crate::{info_log, success_log, warn_log};
 
 use Legencode::streamline::Jbig2Mode;
@@ -58,123 +60,6 @@ pub struct ProcessedPage {
 enum CachedDetections {
     Missing,
     Present(Vec<crate::engine::Detection>),
-}
-
-//==============================================================================
-// Stage 1: Rendering (mostly unchanged - PDFium is single-threaded)
-//==============================================================================
-
-async fn render_stage(
-    pdf_renderer: Arc<PdfiumRenderer>,
-    config: Arc<PipelineConfig>,
-    deskew_engine: Option<Arc<crate::deskew::DeskewEngine>>,
-    page_range: std::ops::Range<usize>,
-    tx: mpsc::Sender<RenderedPageData>,
-    render_count: Arc<AtomicUsize>,
-    detect_count: Arc<AtomicUsize>,
-    encode_count: Arc<AtomicUsize>,
-    progress: ProgressTracker,
-    total_pages: usize,
-    layout_enabled: bool,
-) -> Result<()> {
-    info_log!(
-        "[PDF-Parallel-Render] Starting render stage for {} pages",
-        total_pages
-    );
-
-    for page_index in page_range {
-        // Memory check - but don't over-check
-        if page_index % 10 == 0 {
-            wait_for_memory_relief().await;
-        }
-
-        // Render page at target resolution
-        let rgb_page = pdf_renderer
-            .render_page_rgb(
-                page_index as u32,
-                config.target_height(),
-                config.target_width(),
-            )
-            .await
-            .map_err(|e| anyhow!("Failed to render page {}: {}", page_index, e))?;
-
-        // Convert to ImageBuffer
-        let mut rendered_image = RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data)
-            .ok_or_else(|| {
-                anyhow!(
-                    "Failed to create ImageBuffer for page {} ({}x{})",
-                    page_index,
-                    rgb_page.width,
-                    rgb_page.height
-                )
-            })?;
-
-        // Apply deskew if enabled
-        if let Some(engine) = &deskew_engine {
-            let engine = engine.clone();
-            let image_for_deskew = rendered_image.clone();
-            if let Ok(Ok(corrected)) =
-                tokio::task::spawn_blocking(move || engine.process_image(&image_for_deskew)).await
-            {
-                rendered_image = corrected;
-            }
-        }
-
-        // Set standard dimensions from first page for margin processing
-        crate::pipeline::set_standard_dimensions_once(
-            rendered_image.width(),
-            rendered_image.height(),
-        );
-
-        let high_res_arc = Arc::new(rendered_image);
-
-        // Build inference-sized image
-        let inference_img = if config.enable_layout_detection() {
-            let spec = config.inference_resize_spec();
-            build_inference_image(high_res_arc.as_ref(), &spec)
-                .unwrap_or_else(|_| (*high_res_arc).clone())
-        } else {
-            (*high_res_arc).clone()
-        };
-
-        let rendered = RenderedPageData {
-            index: page_index,
-            high_res_image: high_res_arc,
-            inference_image: Arc::new(inference_img),
-            original_width_pts: rgb_page.original_width_pts,
-            original_height_pts: rgb_page.original_height_pts,
-        };
-
-        // Send to next stage - this will backpressure if buffer is full
-        if tx.send(rendered).await.is_err() {
-            break; // Downstream closed
-        }
-
-        // Update progress tracking
-        let rendered_val = render_count.fetch_add(1, Ordering::Relaxed) + 1;
-        // Deskew happens inline during rendering, so deskew count == render count when deskew is enabled
-        let deskewed_val = if deskew_engine.is_some() {
-            rendered_val
-        } else {
-            0
-        };
-        if layout_enabled {
-            let detected_val = detect_count.load(Ordering::Relaxed);
-            let encoded_val = encode_count.load(Ordering::Relaxed);
-            progress.publish_layout_progress(
-                rendered_val,
-                detected_val,
-                encoded_val,
-                deskewed_val,
-                total_pages,
-            );
-        } else {
-            progress.publish_no_layout_progress(rendered_val, deskewed_val, total_pages);
-        }
-    }
-
-    info_log!("[PDF-Parallel-Render] Render stage complete");
-    Ok(())
 }
 
 //==============================================================================
@@ -367,12 +252,12 @@ fn build_inference_future(
 }
 
 //==============================================================================
-// Stage 3: Processing 
+// Stage 3: Processing
 //==============================================================================
 
 async fn processing_stage_parallel(
     config: Arc<PipelineConfig>,
-    pdf_renderer: Arc<PdfiumRenderer>,
+    pdf_renderer: Option<Arc<PdfiumRenderer>>,
     mut rx: mpsc::Receiver<PdfInferenceData>,
     tx: mpsc::Sender<ProcessedPage>,
     encode_count: Arc<AtomicUsize>,
@@ -467,7 +352,7 @@ async fn processing_stage_parallel(
 /// Process a single page (runs in its own task)
 async fn process_single_page(
     config: Arc<PipelineConfig>,
-    pdf_renderer: Arc<PdfiumRenderer>,
+    pdf_renderer: Option<Arc<PdfiumRenderer>>,
     inference_data: PdfInferenceData,
     page_index_offset: usize,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
@@ -575,7 +460,7 @@ async fn process_single_page(
         )
         .await?
     } else {
-        extract_pdf_text(&pdf_renderer, page_index, &adjusted_image).await?
+        extract_pdf_text(pdf_renderer.as_ref(), page_index, &adjusted_image).await?
     };
 
     // If any region on this page is Abandon and we're using JBIG2 Symbol mode,
@@ -589,8 +474,15 @@ async fn process_single_page(
     let base_layer = if config.text_format() == "jpeg" {
         encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?
     } else {
-        encode_base_layer(&binarized, width, height, &config, page_index, force_jbig2_generic)
-            .await?
+        encode_base_layer(
+            &binarized,
+            width,
+            height,
+            &config,
+            page_index,
+            force_jbig2_generic,
+        )
+        .await?
     };
 
     elements.insert(
@@ -758,7 +650,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             config.enable_layout_detection()
                 && config.text_format() != "jpeg"
                 && (config.dither_images() || config.keep_original_images()),
-            adjusted_detections.iter().filter(|d| classifier.is_image_label(d)).count()
+            adjusted_detections
+                .iter()
+                .filter(|d| classifier.is_image_label(d))
+                .count()
         );
         if crate::bbox_trace::enabled() {
             for (i, det) in adjusted_detections.iter().enumerate() {
@@ -778,11 +673,8 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
     }
 
-    let det_area_frac = detections_bbox_area_fraction(
-        &adjusted_detections,
-        width as u32,
-        height as u32,
-    );
+    let det_area_frac =
+        detections_bbox_area_fraction(&adjusted_detections, width as u32, height as u32);
     let force_blank_threshold = should_force_blank_page_threshold(
         &config,
         inference_result.has_no_detections,
@@ -798,8 +690,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // Detected image areas are later overlaid (original, dithered, or re-encoded),
     // so the bilevel base layer must be blank in those areas.
     let premask_images = config.enable_layout_detection() && config.text_format() != "jpeg";
-    let has_image_regions =
-        premask_images && adjusted_detections.iter().any(|det| classifier.is_image_label(det));
+    let has_image_regions = premask_images
+        && adjusted_detections
+            .iter()
+            .any(|det| classifier.is_image_label(det));
 
     let binarization_image: std::borrow::Cow<'_, RgbImage> = if has_image_regions {
         let mut masked_rgb = adjusted_image.as_raw().clone();
@@ -974,12 +868,15 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 // halftone polarity whose white background blends with the base layer.
                 // Also clamp near-white to pure white before inverting to avoid sparse
                 // dots from paper texture / scan noise.
-                let inverted_gray: Vec<u8> = grayscale_data.iter().map(|&g| {
-                    if g >= 245 { 0u8 } else { 255u8 - g }
-                }).collect();
+                let inverted_gray: Vec<u8> = grayscale_data
+                    .iter()
+                    .map(|&g| if g >= 245 { 0u8 } else { 255u8 - g })
+                    .collect();
 
                 match Legencode::streamline::encode_halftone_region_grayscale(
-                    &inverted_gray, region_w, region_h,
+                    &inverted_gray,
+                    region_w,
+                    region_h,
                 ) {
                     Ok((global_data, page_data)) => {
                         encoded_global_data = Some(global_data);
@@ -992,7 +889,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                             ImageBuffer as LegeImageBuffer, Jbig2Settings,
                         };
                         let buffer = LegeImageBuffer {
-                            data: &grayscale_data, width: region_w, height: region_h, channels: 1,
+                            data: &grayscale_data,
+                            width: region_w,
+                            height: region_h,
+                            channels: 1,
                         };
                         let settings = EncodingSettings::Jbig2(Jbig2Settings {
                             pdf_fragment_mode: true,
@@ -1038,7 +938,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     Ok(EncodingResult::Standard(data)) => {
                         encoded_data = Some((data, overlay_fmt));
                     }
-                    Ok(EncodingResult::Jbig2WithGlobals { page_data, global_data: _ }) => {
+                    Ok(EncodingResult::Jbig2WithGlobals {
+                        page_data,
+                        global_data: _,
+                    }) => {
                         encoded_data = Some((page_data, overlay_fmt));
                     }
                     Err(_e) => {}
@@ -1207,9 +1110,7 @@ fn apply_margin_analysis_to_page(
 
                 Some(final_bounds)
             }
-            None => {
-                Some(scaled_baseline)
-            }
+            None => Some(scaled_baseline),
         }
     } else {
         // For StandardizeAndCenter and None, use the original per-page logic
@@ -1411,13 +1312,22 @@ fn encode_region_image_sync(
                 let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
                 (EncodingSettings::Jp2Lam { quality: q }, "jp2")
             } else {
-                let q = if high_quality { 95 } else if is_cover { 50 } else { 45 };
-                (EncodingSettings::Jpeg(JpegSettings {
-                    quality: q,
-                    baseline: true,
-                    optimized: true,
-                    downsample: true,
-                }), "jpeg")
+                let q = if high_quality {
+                    95
+                } else if is_cover {
+                    50
+                } else {
+                    45
+                };
+                (
+                    EncodingSettings::Jpeg(JpegSettings {
+                        quality: q,
+                        baseline: true,
+                        optimized: true,
+                        downsample: true,
+                    }),
+                    "jpeg",
+                )
             }
         }
         crate::types::CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4"),
@@ -1430,7 +1340,13 @@ fn encode_region_image_sync(
             "jbig2",
         ),
         crate::types::CoverFormat::Jp2 => {
-            let q: u8 = if high_quality { 88 } else if is_cover { 80 } else { 72 };
+            let q: u8 = if high_quality {
+                88
+            } else if is_cover {
+                80
+            } else {
+                72
+            };
             (EncodingSettings::Jp2Lam { quality: q }, "jp2")
         }
         crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
@@ -1505,10 +1421,14 @@ async fn perform_ocr(
 
 /// Extract PDF text layer
 async fn extract_pdf_text(
-    pdf_renderer: &Arc<PdfiumRenderer>,
+    pdf_renderer: Option<&Arc<PdfiumRenderer>>,
     page_index: usize,
     image: &RgbImage,
 ) -> Result<Option<String>> {
+    let Some(pdf_renderer) = pdf_renderer else {
+        return Ok(None);
+    };
+
     match pdf_renderer.has_text_layer(page_index as u32).await {
         Ok(true) => match pdf_renderer.extract_page_text(page_index as u32).await {
             Ok(raw_text) => Ok(Some(build_hocr_from_pdf_text(
@@ -1680,7 +1600,8 @@ async fn encode_base_layer_for_jpeg_mode(
 ) -> Result<crate::accumulator::ContentType> {
     use crate::accumulator::ContentType;
     use Legencode::streamline::{
-        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer, JpegSettings,
+        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
+        JpegSettings,
     };
 
     #[cfg(feature = "debug-logging")]
@@ -1706,12 +1627,15 @@ async fn encode_base_layer_for_jpeg_mode(
             channels: 3u8,
         };
         let (settings, fmt) = if jpeg_compat {
-            (EncodingSettings::Jpeg(JpegSettings {
-                quality: if high_quality { 95 } else { 60 },
-                baseline: true,
-                optimized: true,
-                downsample: false,
-            }), "jpeg")
+            (
+                EncodingSettings::Jpeg(JpegSettings {
+                    quality: if high_quality { 95 } else { 60 },
+                    baseline: true,
+                    optimized: true,
+                    downsample: false,
+                }),
+                "jpeg",
+            )
         } else {
             let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
             (EncodingSettings::Jp2Lam { quality: q }, "jp2")
@@ -1862,7 +1786,7 @@ fn build_margin_analysis_future(
 /// Performs document-wide margin analysis using low-resolution rendering
 /// Returns the analysis and cached detections for reuse in Phase 2
 async fn perform_document_analysis(
-    pdf_renderer: Arc<PdfiumRenderer>,
+    source: Arc<dyn PageSource>,
     config: Arc<PipelineConfig>,
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     total_pages: usize,
@@ -1873,45 +1797,38 @@ async fn perform_document_analysis(
     progress_tracker.update(crate::progress::ProcessingStatus::MarginPass1Analyzing);
 
     let mut margin_inputs = Vec::new();
-    let mut detection_cache =
-        vec![CachedDetections::Missing; pdf_renderer.page_count() as usize];
-    // ORT + PDFium are intentionally single-worker for stability.
+    let mut detection_cache = vec![CachedDetections::Missing; source.page_count()];
+    // Keep margin pass inference serialized; ORT is still protected by the inference actor,
+    // while PageSource handles whether loading is Pdfium-backed or image-backed.
     let analysis_infer_concurrency = 1usize;
     let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
         FuturesUnordered::new();
 
-    let push_completed =
-        |result: AnalysisPageResult,
-         margin_inputs: &mut Vec<PageMarginInput>,
-         detection_cache: &mut Vec<CachedDetections>| {
-            margin_inputs.push(PageMarginInput {
-                page_index: result.page_index,
-                page_width: result.page_width,
-                page_height: result.page_height,
-                detections: result.detections.clone(),
-                pixel_bounds: result.pixel_bounds,
-            });
+    let push_completed = |result: AnalysisPageResult,
+                          margin_inputs: &mut Vec<PageMarginInput>,
+                          detection_cache: &mut Vec<CachedDetections>| {
+        margin_inputs.push(PageMarginInput {
+            page_index: result.page_index,
+            page_width: result.page_width,
+            page_height: result.page_height,
+            detections: result.detections.clone(),
+            pixel_bounds: result.pixel_bounds,
+        });
 
-            if result.page_index < detection_cache.len() {
-                detection_cache[result.page_index] =
-                    CachedDetections::Present(result.detections);
-            }
-        };
+        if result.page_index < detection_cache.len() {
+            detection_cache[result.page_index] = CachedDetections::Present(result.detections);
+        }
+    };
 
-    // Render pages at original target resolution first, then resize in memory for analysis
+    // Load pages at source resolution first, then resize in memory for analysis.
+    // For Pdfium sources this is the same render operation as before; for image-folder
+    // sources the already-rendered image is decoded and fed through the same analysis path.
     for (idx, page_idx) in page_range.enumerate() {
-        // Render at target resolution (this is what pdfium is most stable with)
-        let target_height = config.target_height();
-        let target_width = config.target_width();
-
-        let rgb_page = match pdf_renderer
-            .render_page_rgb(page_idx as u32, target_height, target_width)
-            .await
-        {
-            Ok(rgb_page) => rgb_page,
+        let source_page = match source.load_page(page_idx).await {
+            Ok(source_page) => source_page,
             Err(e) => {
                 warn_log!(
-                    "Page {}: Failed to render during margin analysis: {}. Skipping page for margin analysis.",
+                    "Page {}: Failed to load during margin analysis: {}. Skipping page for margin analysis.",
                     page_idx,
                     e
                 );
@@ -1927,11 +1844,9 @@ async fn perform_document_analysis(
             }
         };
 
-        let original_image = RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data)
-            .ok_or_else(|| anyhow!("Failed to convert image for page {}", page_idx))?;
         let config_clone = config.clone();
         let prepared = tokio::task::spawn_blocking(move || {
-            prepare_analysis_page(page_idx, original_image, config_clone)
+            prepare_analysis_page(page_idx, source_page.image, config_clone)
         })
         .await
         .map_err(|e| anyhow!("Margin-analysis prep task panicked: {}", e))?;
@@ -1993,8 +1908,8 @@ async fn perform_document_analysis(
 // Main Pipeline Entry Point
 //==============================================================================
 
-pub async fn create_and_run_pdf_parallel_pipeline(
-    pdf_bytes: Arc<[u8]>,
+pub async fn create_and_run_pdf_source_pipeline(
+    source: Arc<dyn PageSource>,
     config: Arc<PipelineConfig>,
     output_path: &Path,
     page_range: Option<std::ops::Range<usize>>,
@@ -2010,20 +1925,12 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     let pipeline_config = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(pipeline_config.page_workers);
 
-    // Initialize PDF renderer
-    let mut raster_cfg = PdfRasterConfig::default();
-    raster_cfg.render_forms = false;
-    raster_cfg.target_width = config.target_width();
-    let pdf_renderer = Arc::new(PdfiumRenderer::new_from_bytes(
-        pdf_bytes.clone(),
-        raster_cfg,
-    )?);
-
     // Calculate pages to process
-    let document_pages = pdf_renderer.page_count() as usize;
+    let document_pages = source.page_count();
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
     let page_end = page_range.as_ref().map(|r| r.end).unwrap_or(document_pages);
     let total_pages = page_end - page_start;
+    let pdf_renderer = source.pdf_renderer();
 
     let infer_concurrency = 1usize;
     let process_concurrency = pipeline_config.page_workers.max(1);
@@ -2069,7 +1976,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     let (margin_analysis, detection_cache) = if needs_two_pass {
         info_log!("[PDF-Parallel] Margin mode enabled - running 2-pass document analysis");
         let (analysis, cache) = perform_document_analysis(
-            pdf_renderer.clone(),
+            source.clone(),
             config.clone(),
             inference_handle.clone(),
             total_pages,
@@ -2147,8 +2054,8 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     };
 
     // Spawn pipeline stages (mut for tokio::select!)
-    let mut render_task = tokio::spawn(render_stage(
-        pdf_renderer.clone(),
+    let mut render_task = tokio::spawn(source_stage(
+        source.clone(),
         config.clone(),
         deskew_engine,
         page_start..page_end,
@@ -2308,6 +2215,28 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
     success_log!("PDF pipeline complete: {}", output_path.display());
     Ok(())
+}
+
+pub async fn create_and_run_pdf_parallel_pipeline(
+    pdf_bytes: Arc<[u8]>,
+    config: Arc<PipelineConfig>,
+    output_path: &Path,
+    page_range: Option<std::ops::Range<usize>>,
+    progress_tracker: &ProgressTracker,
+    shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
+) -> Result<()> {
+    let source: Arc<dyn PageSource> = Arc::new(PdfiumPageSource::new(pdf_bytes, config.clone())?);
+    create_and_run_pdf_source_pipeline(
+        source,
+        config,
+        output_path,
+        page_range,
+        progress_tracker,
+        shutdown_rx,
+        progress_callback,
+    )
+    .await
 }
 
 // Re-export the original function name for compatibility

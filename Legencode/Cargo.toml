@@ -49,7 +49,7 @@ jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features
 config = { workspace = true }
 
 [features]
-default = []
+default = ["jp2-lam"]
 debug-logging = []  # No longer requires chrono
 cc-analysis = []  # Enable new connected component analysis for JBIG2 (cjb2-based)
 jp2-lam = ["dep:jp2lam"]  # Pure-Rust JPEG 2000 via jp2lam

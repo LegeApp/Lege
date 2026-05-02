@@ -262,8 +262,7 @@ pub fn run_pdf_to_jp2_debug_mode(
     let pdf_bytes_vec = fs::read(&pdf_path)
         .with_context(|| format!("Failed to read PDF: {}", pdf_path.display()))?;
     let pdf_bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(pdf_bytes_vec.into_boxed_slice());
-    let mut raster_cfg =
-        crate::pagerender::prelude::RasterConfig::default();
+    let mut raster_cfg = crate::pagerender::prelude::RasterConfig::default();
     raster_cfg.render_forms = false;
     let renderer =
         crate::pagerender::prelude::PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
@@ -291,9 +290,11 @@ pub fn run_pdf_to_jp2_debug_mode(
 
         let rgb = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
-                handle.block_on(
-                    renderer.render_page_rgb((page_num - 1) as u32, target_height, None),
-                )
+                handle.block_on(renderer.render_page_rgb(
+                    (page_num - 1) as u32,
+                    target_height,
+                    None,
+                ))
             })?
         } else {
             let rt = tokio::runtime::Runtime::new()?;
@@ -316,7 +317,12 @@ pub fn run_pdf_to_jp2_debug_mode(
             .collect();
 
         let encode_jp2 = |data: &[u8], channels: u8, q: u8| -> anyhow::Result<Vec<u8>> {
-            let buf = LegeImageBuffer { data, width: w, height: h, channels };
+            let buf = LegeImageBuffer {
+                data,
+                width: w,
+                height: h,
+                channels,
+            };
             let result = EncodingManager::encode(&buf, &EncodingSettings::Jp2Lam { quality: q })
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             match result {

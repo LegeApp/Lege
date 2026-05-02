@@ -1,41 +1,21 @@
 <div align="center">
-  <img src="Screenshot.png" alt="Lege Interface" width="45%">
+  <img src="Screenshot2.png" alt="Lege Interface" width="45%">
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
-# Lege - 1.4.1
+# Lege - 1.4.3
 Releases are updated with every new version --> https://github.com/LegeApp/Lege/releases/
 
-**Turn scanned PDFs (or page-image folders) into clean, compact files that read great on e-ink.**
+Lege is a document-processing program (CLI + desktop GUI) that converts scanned documents into reader-optimized **PDF** or **DjVu**, focusing on **better readability**, **smaller output size**, and **fast page turns** on e-ink devices. It uses optional layout-aware processing to detect image areas so that they can be excluded from the text binarization process, which makes the original scanned documents readable on e-ink readers with small file size.
 
-Lege is a document-processing app (CLI + desktop GUI) that converts scanned documents into reader-optimized **PDF** or **DjVu**, focusing on **better readability**, **smaller output size**, and **fast page turns** on e-ink devices. It uses layout-aware processing to treat *text-like* areas differently from *image-like* areas, so you can keep diagrams/photos while compressing text aggressively. 
-
----
-
-## What you can do with it
-
-* **Convert scanned PDFs → optimized PDF**
-
-  * Mixed-content output (compressed text base + image overlays where needed).
-* **Convert scanned PDFs → DjVu**
-
-  * Very strong compression for compatible readers (especially e-ink + KOReader).
-* **Optional searchable text (OCR)**
-
-  * Linux/macOS: Tesseract backend
-  * Windows: WinRT OCR backend 
-* **Smart page cleanup**
-
-  * Margin workflows (none / standardize-and-center / crop-and-resize)
-  * Optional deskew / orientation correction
-  * Device/target-size presets for common e-ink screens 
+There are 2 generally intended usages for the program; outputs of commercial book scanning utilities such as image folders of JPEG or PNG, and outputs of the Internet Archive in either PDF or JP2 zip or image folder, since the Internet Archive is the largest digital repository of scanned digital books and documents. If there is something old you want to read on e-ink, it is probably on Archive.org but it has yellowed aged page scans and the size of the book is 500MB. Lege is for those files. Further information is in the in-program documentation file.
 
 ---
 
 ## Interfaces
 
 * **CLI**: guided interactive mode (no args) + direct command modes
-* **GUI**: Dioxus desktop app using the same processing core; queue-based workflow with progress + cancel
+* **GUI**: Freya desktop app using the same processing core; queue-based workflow with progress + cancel
 
 ---
 
@@ -52,7 +32,7 @@ cargo build --release
 You’ll get:
 
 * CLI: `target/release/lege`
-* GUI (Dioxus): `target/release/lege-gui` (name may vary by workspace config) 
+* GUI: `target/release/lege-gui`
 
 ### Run
 
@@ -94,10 +74,10 @@ Lege requires several external files to be placed alongside the executables:
 
 **ONNX Models** (AI inference):
 - `yolo-layout.onnx` - Layout detection (Linux production model)
-- `paddle-layout.onnx` - Layout detection (legacy/non-Linux fallback)
+- `paddle-layout.onnx` - Layout detection (Windows and MacOS model)
 - `paddle-rotate.onnx` - Page orientation detection
 - `paddle-deskew.onnx` - Page deskew correction
-- `sauvola.onnx` - Adaptive binarization
+- `sauvola.onnx` - Heavy neural binarization model
 
 **Platform-specific GPU libraries:**
 
@@ -193,7 +173,7 @@ Lege uses a dedicated encoding crate (`Legencode`) for in-memory processing and 
 
 ### Continuous-tone codecs
 
-* **JPEG** (used for cover/photo regions in common paths) 
+* **JPEG2000** (used for cover/photo regions in common paths) 
 * **DjVu IW44** (continuous-tone layer inside DjVu)  
 
 ## Performance and operability features
@@ -211,16 +191,13 @@ Lege is a Rust workspace with multiple crates:
 * `src/` — main app + pipeline orchestration (CLI core)
 * `Legencode/` — encoding + binarization + region utilities
 * `DJVULibRust/` — native DjVu encoder crate
-* `GUI/Dioxus/` — desktop GUI frontend 
+* `GUI/Freya/` — desktop GUI frontend 
 
 ---
 
-## Related Projects
-
-
 ## License
 
-GPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`. 
+AGPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`. 
 
 ---
 

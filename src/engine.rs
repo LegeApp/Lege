@@ -1453,7 +1453,8 @@ impl PaddleXEngine {
         let batch_size = batch_metadata.len();
 
         if self.count_index.is_none() {
-            return self.run_inference_sequential_fallback_blocking(batch_image_data, batch_metadata);
+            return self
+                .run_inference_sequential_fallback_blocking(batch_image_data, batch_metadata);
         }
         let count_idx = self.count_index.unwrap();
 
@@ -1832,7 +1833,7 @@ pub fn paddlex_class_to_category(class_id: i32) -> crate::types::ContentCategory
     use crate::types::ContentCategory;
     match class_id {
         1 | 20 | 21 => ContentCategory::Image, // image, header_image, footer_image
-        8           => ContentCategory::Table,  // table
-        _           => ContentCategory::Text,   // everything else
+        8 => ContentCategory::Table,           // table
+        _ => ContentCategory::Text,            // everything else
     }
 }

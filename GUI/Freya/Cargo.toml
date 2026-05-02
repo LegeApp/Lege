@@ -13,7 +13,7 @@ debug-logging = ["lege/debug-logging", "Legencode/debug-logging"]
 
 [dependencies]
 freya = { git = "https://github.com/LegeApp/freya.git", branch = "main", default-features = false, features = ["skia-engine"] }
-rfd = "0.15"
+rfd = { path = "../../../clones/rfd" }
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "fs", "time", "sync"] }
 anyhow = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -26,6 +26,10 @@ once_cell = "1.19"
 raw-window-handle = "0.6"
 atty = "0.2.14"
 
+zip = { workspace = true }
+miniz_oxide = { workspace = true }
+tempfile = { workspace = true }
+lopdf = { workspace = true }
 Legencode = { path = "../../Legencode" }
 lege = { path = "../.." }
 

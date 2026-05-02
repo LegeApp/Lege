@@ -26,7 +26,9 @@ pub fn webgpu_execution_provider_dispatch()
 
 #[cfg(target_os = "linux")]
 fn build_webgpu_execution_provider() -> ort::execution_providers::ExecutionProviderDispatch {
-    use ort::execution_providers::webgpu::{WebGPU, BufferCacheMode, DawnBackendType, ValidationMode};
+    use ort::execution_providers::webgpu::{
+        BufferCacheMode, DawnBackendType, ValidationMode, WebGPU,
+    };
 
     info!("Initializing WebGPU with Vulkan backend");
 
