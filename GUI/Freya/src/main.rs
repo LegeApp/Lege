@@ -79,7 +79,10 @@ fn main() {
                 .with_window_attributes(move |attributes, el| {
                     use freya::winit::dpi::PhysicalPosition;
 
-                    if let Some(monitor) = el.primary_monitor().or_else(|| el.available_monitors().next()) {
+                    if let Some(monitor) = el
+                        .primary_monitor()
+                        .or_else(|| el.available_monitors().next())
+                    {
                         let origin = monitor.position();
                         let size = monitor.size();
                         let scale = monitor.scale_factor();

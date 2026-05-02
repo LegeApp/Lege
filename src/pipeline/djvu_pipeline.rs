@@ -13,30 +13,29 @@
 //! The pipeline is kept separate to avoid conflicts between PDF and DJVU requirements.
 use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData, spawn_djvu_writer_actor}; // Use native encoder + writer actor
 use crate::engine::Detection;
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::pagerender::prelude::PdfiumRenderer;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
     build_hocr_from_pdf_text, init_encode_semaphore, merge_overlapping_image_detections,
-    rounded_clamped_bbox, wait_for_memory_relief,
+    rounded_clamped_bbox,
 };
 use crate::pipeline::page_analysis::{
     BLANK_PAGE_FALLBACK_THRESHOLD, detections_bbox_area_fraction, is_visually_blank_page,
     maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
 };
+use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
+use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
 use crate::progress::ProgressTracker;
-use crate::pipeline::policies::build_inference_image;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
 use futures;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
-use log::warn;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 /// Result from inference stage (after layout detection)
 #[derive(Debug, Clone)]
@@ -95,8 +94,8 @@ pub fn create_djvu_pipeline_config(
 }
 /// Parallel tokio-based DJVU pipeline with TRUE concurrency
 /// Uses tokio channels for pipelined async processing with enhanced parallel processing stages
-pub async fn create_and_run_djvu_pipeline(
-    pdf_bytes: Arc<[u8]>,
+pub async fn create_and_run_djvu_source_pipeline(
+    source: Arc<dyn PageSource>,
     config: Arc<PipelineConfig>,
     output_path: &Path,
     page_range: Option<std::ops::Range<usize>>,
@@ -131,16 +130,8 @@ pub async fn create_and_run_djvu_pipeline(
 
     // Reset standard dimensions at the start of each new document
     crate::pipeline::reset_standard_dimensions();
-    // Initialize Pdfium renderer
-    let mut raster_cfg = PdfRasterConfig::default();
-    raster_cfg.render_forms = false;
-    raster_cfg.target_width = config.target_width();
-    let pdf_renderer = Arc::new(PdfiumRenderer::new_from_bytes(
-        pdf_bytes.clone(),
-        raster_cfg,
-    )?);
     // Calculate total pages
-    let document_pages = pdf_renderer.page_count() as usize;
+    let document_pages = source.page_count();
     let total_pages = match &page_range {
         Some(range) => {
             if range.end > document_pages {
@@ -155,6 +146,7 @@ pub async fn create_and_run_djvu_pipeline(
         None => document_pages,
     };
     let page_index_offset: usize = page_range.as_ref().map(|r| r.start).unwrap_or(0);
+    let pdf_renderer = source.pdf_renderer();
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Total pages to process: {}", total_pages);
     // Create DJVU orchestrator
@@ -182,6 +174,7 @@ pub async fn create_and_run_djvu_pipeline(
     // Pipeline concurrency settings (similar to PDF pipeline)
     let pipeline_config = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(pipeline_config.page_workers);
+    let deskew_engine = prepare_shared_deskew_engine(&config)?;
     #[cfg(feature = "debug-logging")]
     info_log!(
         "[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, page_workers={}, djvu_encode_workers={}",
@@ -212,104 +205,30 @@ pub async fn create_and_run_djvu_pipeline(
             Arc::new(AtomicUsize::new(0)),
         )
     };
-    // Spawn rendering task (mostly unchanged - PDFium is single-threaded) (mut for tokio::select!)
+    // Spawn source task. PDF input is serialized behind Pdfium; image-folder input
+    // can fan out through the same downstream pipeline.
     let mut render_task: JoinHandle<Result<()>> = {
         let config = config.clone();
-        let pdf_renderer = pdf_renderer.clone();
+        let source = source.clone();
         let tracker = progress_tracker.clone();
         let page_start = page_index_offset;
         let page_end = page_start + total_pages;
         let rc = render_count.clone();
         let dc = detect_count.clone();
         let ec = encode_count.clone();
-        tokio::spawn(async move {
-            #[cfg(feature = "debug-logging")]
-            info_log!(
-                "[DJVU-Parallel-Render] Starting render stage for {} pages",
-                total_pages
-            );
-            for page_index in page_start..page_end {
-                // Memory check - but don't over-check
-                if page_index % 10 == 0 {
-                    wait_for_memory_relief().await;
-                }
-                // Render the page
-                let rgb_page = pdf_renderer
-                    .render_page_rgb(
-                        page_index as u32,
-                        config.target_height(),
-                        config.target_width(),
-                    )
-                    .await?;
-                // Convert RgbPage to ImageBuffer
-                let rendered_image =
-                    match RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data) {
-                        Some(img) => img,
-                        None => {
-                            return Err(anyhow!(
-                                "Failed to create ImageBuffer from RgbPage for page {} ({}x{})",
-                                page_index,
-                                rgb_page.width,
-                                rgb_page.height
-                            ));
-                        }
-                    };
-
-                // Set standard dimensions from first page for margin processing
-                crate::pipeline::set_standard_dimensions_once(
-                    rendered_image.width(),
-                    rendered_image.height(),
-                );
-
-                let high_res_arc = Arc::new(rendered_image);
-                // Create inference-sized image
-                let inference_img = if config.enable_layout_detection() {
-                    let spec = config.inference_resize_spec();
-                    match build_inference_image(high_res_arc.as_ref(), &spec) {
-                        Ok(img) => img,
-                        Err(e) => {
-                            warn!(
-                                "Page {}: inference resize failed -> fallback to high_res: {:?}",
-                                page_index, e
-                            );
-                            (*high_res_arc).clone()
-                        }
-                    }
-                } else {
-                    (*high_res_arc).clone()
-                };
-                let rendered = RenderedPageData {
-                    index: page_index,
-                    high_res_image: high_res_arc,
-                    inference_image: Arc::new(inference_img),
-                    original_width_pts: rgb_page.original_width_pts,
-                    original_height_pts: rgb_page.original_height_pts,
-                };
-                render_tx
-                    .send(rendered)
-                    .await
-                    .map_err(|e| anyhow!("Render send failed: {}", e))?;
-                if layout_enabled {
-                    let rendered_val = rc.fetch_add(1, Ordering::Relaxed) + 1;
-                    let detected_val = dc.load(Ordering::Relaxed);
-                    let encoded_val = ec.load(Ordering::Relaxed);
-                    tracker.publish_layout_progress(
-                        rendered_val,
-                        detected_val,
-                        encoded_val,
-                        0,
-                        total_pages,
-                    );
-                } else {
-                    let rendered_val = rc.fetch_add(1, Ordering::Relaxed) + 1;
-                    tracker.publish_no_layout_progress(rendered_val, 0, total_pages);
-                }
-            }
-            drop(render_tx); // Close channel to signal completion
-            #[cfg(feature = "debug-logging")]
-            info_log!("[DJVU-Parallel-Render] Render stage complete");
-            Ok(())
-        })
+        tokio::spawn(source_stage(
+            source,
+            config,
+            deskew_engine,
+            page_start..page_end,
+            render_tx,
+            rc,
+            dc,
+            ec,
+            tracker,
+            total_pages,
+            layout_enabled,
+        ))
     };
     // Spawn inference stage with TRUE concurrency (similar to PDF pipeline) (mut for tokio::select!)
     let mut infer_task: JoinHandle<Result<()>> = {
@@ -658,6 +577,29 @@ pub async fn create_and_run_djvu_pipeline(
     info_log!("[DJVU-Parallel] Pipeline complete");
     Ok(())
 }
+
+pub async fn create_and_run_djvu_pipeline(
+    pdf_bytes: Arc<[u8]>,
+    config: Arc<PipelineConfig>,
+    output_path: &Path,
+    page_range: Option<std::ops::Range<usize>>,
+    progress_tracker: &ProgressTracker,
+    shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
+) -> Result<()> {
+    let source: Arc<dyn PageSource> = Arc::new(PdfiumPageSource::new(pdf_bytes, config.clone())?);
+    create_and_run_djvu_source_pipeline(
+        source,
+        config,
+        output_path,
+        page_range,
+        progress_tracker,
+        shutdown_rx,
+        progress_callback,
+    )
+    .await
+}
+
 fn build_djvu_inference_future(
     shared_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     rendered: RenderedPageData,
@@ -714,7 +656,7 @@ fn build_djvu_inference_future(
 /// Process a single DJVU page with OCR/text extraction in the async part
 async fn process_single_djvu_page(
     config: Arc<PipelineConfig>,
-    pdf_renderer: Arc<PdfiumRenderer>,
+    pdf_renderer: Option<Arc<PdfiumRenderer>>,
     inference_data: DjvuInferenceData,
     page_index_offset: usize,
 ) -> Result<Option<DjvuBinarizedData>> {
@@ -742,7 +684,7 @@ async fn process_single_djvu_page(
     // OCR and text extraction in async part (not CPU-intensive, involves I/O and API calls)
     let hocr_text = extract_djvu_text_layer(
         &config,
-        &pdf_renderer,
+        pdf_renderer.as_ref(),
         &binarized,
         width,
         height,
@@ -881,11 +823,8 @@ fn process_djvu_cpu_intensive_work(
             })
             .collect()
     } else {
-        let det_area_frac = detections_bbox_area_fraction(
-            &adjusted_detections,
-            width as u32,
-            height as u32,
-        );
+        let det_area_frac =
+            detections_bbox_area_fraction(&adjusted_detections, width as u32, height as u32);
         let force_blank_threshold = should_force_blank_page_threshold(
             &config,
             inference_result.has_no_detections,
@@ -948,7 +887,7 @@ fn process_djvu_cpu_intensive_work(
 /// Extract text layer via OCR or PDF text extraction (runs in async context)
 async fn extract_djvu_text_layer(
     config: &PipelineConfig,
-    pdf_renderer: &Arc<PdfiumRenderer>,
+    pdf_renderer: Option<&Arc<PdfiumRenderer>>,
     binarized: &[u8],
     width: usize,
     height: usize,
@@ -999,6 +938,9 @@ async fn extract_djvu_text_layer(
             }
         }
     } else {
+        let Some(pdf_renderer) = pdf_renderer else {
+            return None;
+        };
         match pdf_renderer.has_text_layer(page_index as u32).await {
             Ok(true) => match pdf_renderer.extract_page_text(page_index as u32).await {
                 Ok(raw_text) => {
@@ -1089,7 +1031,3 @@ fn binarize_djvu_image(
         &options,
     )
 }
-
-
-
-

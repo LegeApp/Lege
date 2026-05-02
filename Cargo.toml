@@ -45,7 +45,9 @@ lopdf = "0.39.0"
 flume = "0.11" 
 pdfium-render = { version = "0.8.37", features = ["thread_safe", "sync"] }  
 tempfile = "3.24.0"  
-flate2 = "1.1.8"  
+flate2 = "1.1.8"
+zip = { version = "4", default-features = false }
+miniz_oxide = "0.8"
 lazy_static = "1.5.0"  
 ndarray = { version = "0.17.2", features = ["rayon"] }
 palette = { version = "0.7.6", features = ["libm"] }  
@@ -221,7 +223,7 @@ jbig2 = { package = "jbig2enc-rust", path = "Legencode/src/jbig2enc-rust" }
 ndarray = "0.17.2"
 
 [features]
-default = []
+default = ["jp2-lam"]
 static = ["pdfium-render/static"]
 debug-logging = ["Legencode/debug-logging", "dep:fontdue"]
 jp2-lam = ["Legencode/jp2-lam"]

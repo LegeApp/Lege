@@ -188,7 +188,13 @@ impl NeuQuant {
         n.a -= alpha_scale * (n.a - quad_pix.a);
     }
 
-    fn alter_neighbour(&mut self, alpha_scale: f32, rad: i32, center_idx: i32, quad_pix: Quad<f32>) {
+    fn alter_neighbour(
+        &mut self,
+        alpha_scale: f32,
+        rad: i32,
+        center_idx: i32,
+        quad_pix: Quad<f32>,
+    ) {
         let lo = (center_idx - rad).max(0);
         let hi = (center_idx + rad).min(self.netsize as i32 - 1);
         let mut j = center_idx + 1;

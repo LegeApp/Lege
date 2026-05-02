@@ -2,6 +2,7 @@
 // Keep in sync manually until GUI support code is consolidated.
 
 use anyhow::Result;
+use std::io::{Cursor, Read, Seek};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task::spawn;
@@ -298,6 +299,185 @@ pub fn process_pdf_async(
     lege::progress::spawn_file_processing_task(input_path, output_path, pipeline_config)
 }
 
+/// Validate that a path is a ZIP file
+pub fn is_zip_file(path: &PathBuf) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase() == "zip")
+        .unwrap_or(false)
+}
+
+/// Decompress raw DEFLATE bytes (ZIP's compression method 8 — no zlib header).
+fn decompress_deflate(compressed: &[u8]) -> Result<Vec<u8>> {
+    miniz_oxide::inflate::decompress_to_vec(compressed)
+        .map_err(|status| anyhow::anyhow!("DEFLATE decompression failed: {:?}", status))
+}
+
+/// Read and decompress (if necessary) the raw bytes of a single ZIP entry.
+/// Uses the DEFLATE and STORED constants which are always defined regardless of zip features.
+fn read_zip_entry_data<R: Read>(entry: &mut zip::read::ZipFile<'_, R>) -> Result<Vec<u8>> {
+    let compression = entry.compression();
+    let mut raw = Vec::with_capacity(entry.compressed_size() as usize);
+    entry.read_to_end(&mut raw)?;
+    if compression == zip::CompressionMethod::Stored {
+        Ok(raw)
+    } else if compression == zip::CompressionMethod::DEFLATE {
+        decompress_deflate(&raw)
+    } else {
+        Err(anyhow::anyhow!(
+            "unsupported ZIP compression: {:?}",
+            compression
+        ))
+    }
+}
+
+/// Quick scan: returns `true` if the top-level ZIP directory contains at least one
+/// JP2, JPEG, or nested ZIP entry (recursion deferred to extraction time).
+/// Does NOT decompress anything — just inspects the central directory.
+pub fn zip_has_valid_images(path: &PathBuf) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    let preferred = ["jp2", "jpg", "jpeg"];
+    archive.file_names().any(|name| {
+        let lower = name.to_ascii_lowercase();
+        let ext = std::path::Path::new(&lower)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        preferred.contains(&ext) || ext == "zip"
+    })
+}
+
+/// Extract all supported images from a ZIP into a temporary directory.
+/// Recursively handles nested ZIPs (archive.org book-zip-in-zip structure).
+/// Uses miniz_oxide directly for DEFLATE decompression.
+/// Returns the TempDir (caller must keep it alive during processing).
+pub fn extract_zip_images_to_temp(zip_path: &PathBuf) -> Result<tempfile::TempDir> {
+    let temp_dir = tempfile::tempdir()?;
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    extract_from_zip_archive(&mut archive, temp_dir.path(), 0)?;
+    if get_image_files_in_directory(&temp_dir.path().to_path_buf())
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
+    {
+        anyhow::bail!("ZIP contains no supported images");
+    }
+    Ok(temp_dir)
+}
+
+fn extract_from_zip_archive<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    dir: &std::path::Path,
+    depth: u32,
+) -> Result<()> {
+    const MAX_DEPTH: u32 = 4;
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
+
+    let mut nested_zips: Vec<Vec<u8>> = Vec::new();
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index_raw(i)?;
+        if entry.is_dir() {
+            continue;
+        }
+
+        let raw_name = entry.name().to_string();
+        let lower = raw_name.to_ascii_lowercase();
+        let ext = std::path::Path::new(&lower)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        let is_image = SUPPORTED_IMAGE_EXTENSIONS.contains(&ext);
+        let is_nested_zip = ext == "zip" && depth < MAX_DEPTH;
+
+        if !is_image && !is_nested_zip {
+            continue;
+        }
+
+        let data = match read_zip_entry_data(&mut entry) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        drop(entry);
+
+        if is_image {
+            let file_name = std::path::Path::new(&raw_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !file_name.is_empty() {
+                let _ = std::fs::write(dir.join(&file_name), &data);
+            }
+        } else {
+            nested_zips.push(data);
+        }
+    }
+
+    for nested_data in nested_zips {
+        let cursor = Cursor::new(nested_data);
+        if let Ok(mut nested) = zip::ZipArchive::new(cursor) {
+            let _ = extract_from_zip_archive(&mut nested, dir, depth + 1);
+        }
+    }
+
+    Ok(())
+}
+
+/// Count supported images in a ZIP archive, recursing into nested ZIPs.
+fn count_images_in_zip_archive<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    depth: u32,
+) -> usize {
+    const MAX_DEPTH: u32 = 4;
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+
+    let mut count = 0usize;
+    let mut nested_zips: Vec<Vec<u8>> = Vec::new();
+
+    for i in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index_raw(i) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+
+        let name = entry.name().to_ascii_lowercase();
+        let ext = std::path::Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        if SUPPORTED_IMAGE_EXTENSIONS.contains(&ext) {
+            count += 1;
+        } else if ext == "zip" && depth < MAX_DEPTH {
+            if let Ok(data) = read_zip_entry_data(&mut entry) {
+                nested_zips.push(data);
+            }
+        }
+    }
+
+    for nested_data in nested_zips {
+        let cursor = Cursor::new(nested_data);
+        if let Ok(mut nested) = zip::ZipArchive::new(cursor) {
+            count += count_images_in_zip_archive(&mut nested, depth + 1);
+        }
+    }
+
+    count
+}
+
 /// Validate that a path is a PDF file
 pub fn is_pdf_file(path: &PathBuf) -> bool {
     path.extension()
@@ -329,7 +509,7 @@ pub fn get_pdf_files_in_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
 
 /// Supported image extensions for image folder processing
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp",
+    "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp", "jp2",
 ];
 
 /// Check if a file is a supported image file
@@ -359,6 +539,42 @@ pub fn get_image_files_in_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
 
     image_files.sort();
     Ok(image_files)
+}
+
+/// Quickly count the number of pages/images for a queue item without full decode.
+/// Runs blocking I/O on a threadpool thread. Returns None on any error.
+pub async fn precheck_page_count(path: PathBuf) -> Option<u32> {
+    tokio::task::spawn_blocking(move || precheck_page_count_sync(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn precheck_page_count_sync(path: &PathBuf) -> Option<u32> {
+    if path.is_dir() {
+        // Count all supported image files — the actual sequential-run filter
+        // runs at processing time; the count here is a fast visual estimate.
+        let n = get_image_files_in_directory(path).ok()?.len();
+        return Some(n as u32);
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    match ext.as_deref() {
+        Some("pdf") => {
+            let doc = lopdf::Document::load(path).ok()?;
+            Some(doc.get_pages().len() as u32)
+        }
+        Some("zip") => {
+            let file = std::fs::File::open(path).ok()?;
+            let mut archive = zip::ZipArchive::new(file).ok()?;
+            Some(count_images_in_zip_archive(&mut archive, 0) as u32)
+        }
+        _ => None,
+    }
 }
 
 /// Calculate total size of a path - handles both files and directories
@@ -470,7 +686,12 @@ pub fn process_image_folder(
         eprintln!("Warning: Failed to set image folder buffer size: {}", e);
     }
 
-    lege::run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, Some(tracker))?;
+    lege::run_png_mode_with_config(
+        folder_path,
+        Some(output_path),
+        pipeline_config,
+        Some(tracker),
+    )?;
 
     Ok(())
 }
@@ -493,21 +714,73 @@ pub async fn start_async_processing(
     let mut tracker_infos = Vec::new();
 
     for document in queue.iter() {
-        // Check if this is an image folder (directory with supported images)
-        if document.file_path.is_dir() {
-            // Check if it contains supported images
-            if let Ok(image_files) = get_image_files_in_directory(&document.file_path) {
-                if !image_files.is_empty() {
-                    // Process as image folder
+        // ZIP archive: extract images to temp dir, then process as image folder
+        if is_zip_file(&document.file_path) {
+            match extract_zip_images_to_temp(&document.file_path) {
+                Ok(temp_dir) => {
+                    let folder_path = temp_dir.path().to_owned();
                     let output_file_path =
                         generate_output_filename(&document.file_path, output_path, options);
 
-                    // Create a tracker via the unified progress manager
                     let manager = lege::progress::get_progress_manager();
                     let tracker = manager.create_tracker();
                     let tracker_id = tracker.task_id();
 
-                    // Process image folder synchronously in a blocking task
+                    let output_file_path_clone = output_file_path.clone();
+                    let options_clone = options.clone();
+
+                    spawn(async move {
+                        let _temp_dir = temp_dir; // keep temp dir alive for the duration
+                        let tracker_for_worker = tracker.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            process_image_folder(
+                                folder_path,
+                                output_file_path_clone,
+                                &options_clone,
+                                tracker_for_worker,
+                            )
+                        })
+                        .await;
+
+                        match result {
+                            Ok(Ok(())) => tracker.finish("ZIP processing completed"),
+                            Ok(Err(e)) => tracker.finish_with_error(e),
+                            Err(e) => tracker.finish_with_error(anyhow::anyhow!(
+                                "ZIP processing task panicked: {:?}",
+                                e
+                            )),
+                        }
+                    });
+
+                    tracker_infos.push(TrackerInfo {
+                        id: tracker_id,
+                        input_path: document.file_path.clone(),
+                        output_path: output_file_path,
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Failed to extract ZIP {}: {}",
+                        document.file_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        // Image folder (directory with supported images)
+        if document.file_path.is_dir() {
+            // Check if it contains supported images
+            if let Ok(image_files) = get_image_files_in_directory(&document.file_path) {
+                if !image_files.is_empty() {
+                    let output_file_path =
+                        generate_output_filename(&document.file_path, output_path, options);
+
+                    let manager = lege::progress::get_progress_manager();
+                    let tracker = manager.create_tracker();
+                    let tracker_id = tracker.task_id();
+
                     let folder_path = document.file_path.clone();
                     let output_file_path_clone = output_file_path.clone();
                     let options_clone = options.clone();
@@ -525,16 +798,12 @@ pub async fn start_async_processing(
                         .await;
 
                         match result {
-                            Ok(Ok(())) => {
-                                tracker.finish("Image folder processing completed");
-                            }
-                            Ok(Err(e)) => {
-                                tracker.finish_with_error(e);
-                            }
-                            Err(e) => {
-                                let err = anyhow::anyhow!("Processing task panicked: {:?}", e);
-                                tracker.finish_with_error(err);
-                            }
+                            Ok(Ok(())) => tracker.finish("Image folder processing completed"),
+                            Ok(Err(e)) => tracker.finish_with_error(e),
+                            Err(e) => tracker.finish_with_error(anyhow::anyhow!(
+                                "Processing task panicked: {:?}",
+                                e
+                            )),
                         }
                     });
 
@@ -548,7 +817,7 @@ pub async fn start_async_processing(
             }
         }
 
-        // Process as regular PDF file
+        // Regular PDF file
         let output_file_path = generate_output_filename(&document.file_path, output_path, options);
 
         // Use the proper async processing function from progress.rs

@@ -581,23 +581,22 @@ impl StreamingPdfBuilder {
         let encoded_content = content.encode()?;
 
         // Add Flate compression for content streams when they contain HOCR text data
-        let content_stream = if page.hocr_text.is_some()
-            && !page.hocr_text.as_ref().unwrap().trim().is_empty()
-        {
-            // HOCR present — compress stream content
-            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(&encoded_content)?;
-            let compressed_content = encoder.finish()?;
-            let mut stream_dict = Dictionary::new();
-            stream_dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
-            stream_dict.set("Length", Object::Integer(compressed_content.len() as i64));
-            self.doc
-                .add_object(Stream::new(stream_dict, compressed_content))
-        } else {
-            // No HOCR — uncompressed stream
-            self.doc
-                .add_object(Stream::new(Dictionary::new(), encoded_content))
-        };
+        let content_stream =
+            if page.hocr_text.is_some() && !page.hocr_text.as_ref().unwrap().trim().is_empty() {
+                // HOCR present — compress stream content
+                let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&encoded_content)?;
+                let compressed_content = encoder.finish()?;
+                let mut stream_dict = Dictionary::new();
+                stream_dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+                stream_dict.set("Length", Object::Integer(compressed_content.len() as i64));
+                self.doc
+                    .add_object(Stream::new(stream_dict, compressed_content))
+            } else {
+                // No HOCR — uncompressed stream
+                self.doc
+                    .add_object(Stream::new(Dictionary::new(), encoded_content))
+            };
 
         page_dict.set("Contents", Object::Reference(content_stream));
 
@@ -767,7 +766,8 @@ impl StreamingPdfBuilder {
                     let global_id = match self.global_resources.entry(global_bytes.clone()) {
                         Entry::Occupied(existing) => *existing.get(),
                         Entry::Vacant(vacant) => {
-                            let global_stream = Stream::new(Dictionary::new(), global_bytes.clone());
+                            let global_stream =
+                                Stream::new(Dictionary::new(), global_bytes.clone());
                             let id = self.doc.add_object(global_stream);
                             vacant.insert(id);
                             id
@@ -1046,11 +1046,7 @@ pub struct HocrLine {
 /// * `pages`: A vector of `Page` objects, sorted in the correct order.
 /// * `output_path`: The path to save the final PDF file.
 /// * `streaming_threshold`: The number of pages above which streaming mode will be used.
-pub fn assemble_pdf(
-    pages: &[Page],
-    output_path: &str,
-    streaming_threshold: usize,
-) -> Result<()> {
+pub fn assemble_pdf(pages: &[Page], output_path: &str, streaming_threshold: usize) -> Result<()> {
     if pages.is_empty() {
         return Err(anyhow!(
             "assemble_pdf called with zero pages; aborting PDF creation (output_path={})",
@@ -1104,11 +1100,7 @@ pub fn assemble_pdf(
 /// Creates a PDF document entirely in memory. Best for smaller documents.
 /// This function mirrors the logic from `pageintake.txt` but is adapted
 /// to use the helper methods from `StreamingPdfBuilder` for consistency.
-fn create_pdf_in_memory(
-    pages: &[Page],
-    output_path: &str,
-    has_ocr_content: bool,
-) -> Result<()> {
+fn create_pdf_in_memory(pages: &[Page], output_path: &str, has_ocr_content: bool) -> Result<()> {
     let mut builder = StreamingPdfBuilder::new();
     for page in pages {
         builder.add_page(page)?;

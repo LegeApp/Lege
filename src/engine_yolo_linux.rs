@@ -104,7 +104,11 @@ impl PaddleXEngine {
         let _ = page_indices;
         match &mut self.backend {
             EngineBackend::Yolo(engine) => engine.detect_batch_sync(images),
-            EngineBackend::Paddle(engine) => engine.detect_batch_with_indices_async(images, page_indices).await,
+            EngineBackend::Paddle(engine) => {
+                engine
+                    .detect_batch_with_indices_async(images, page_indices)
+                    .await
+            }
         }
     }
 
@@ -198,28 +202,26 @@ impl YoloLinuxEngine {
 
         for (providers, name) in attempts {
             match new_builder() {
-                Ok(mut builder) => {
-                    match builder.with_execution_providers(providers) {
-                        Ok(mut builder_with_providers) => {
-                            match builder_with_providers.commit_from_file(model_path) {
-                                Ok(session) => {
-                                    if name == "CPU" {
-                                        info_println!("Using CPU execution for ONNX Runtime");
-                                    } else {
-                                        info_println!("Using {} execution for ONNX Runtime", name);
-                                    }
-                                    return Ok((session, name.to_string()));
+                Ok(mut builder) => match builder.with_execution_providers(providers) {
+                    Ok(mut builder_with_providers) => {
+                        match builder_with_providers.commit_from_file(model_path) {
+                            Ok(session) => {
+                                if name == "CPU" {
+                                    info_println!("Using CPU execution for ONNX Runtime");
+                                } else {
+                                    info_println!("Using {} execution for ONNX Runtime", name);
                                 }
-                                Err(e) => {
-                                    debug_println!("Failed to commit session with {}: {:?}", name, e);
-                                }
+                                return Ok((session, name.to_string()));
+                            }
+                            Err(e) => {
+                                debug_println!("Failed to commit session with {}: {:?}", name, e);
                             }
                         }
-                        Err(e) => {
-                            debug_println!("Failed to add {} providers: {:?}", name, e);
-                        }
                     }
-                }
+                    Err(e) => {
+                        debug_println!("Failed to add {} providers: {:?}", name, e);
+                    }
+                },
                 Err(e) => {
                     debug_println!("Failed to create builder: {:?}", e);
                 }
@@ -252,7 +254,9 @@ impl YoloLinuxEngine {
                 .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
         )];
         let run_options = RunOptions::new()?;
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
         let outputs = rt.block_on(self.session.run_async(input_values, &run_options)?)?;
         parse_yolo_rows(&outputs[self.output_index])
     }
@@ -348,14 +352,9 @@ fn preprocess_yolo(img: &RgbImage) -> Result<YoloPreprocessed> {
     let resized = if orig_width == YOLO_IMG_SIZE && orig_height == YOLO_IMG_SIZE {
         img.clone()
     } else {
-        let bytes = crate::resize::resize_bytes(
-            img.as_raw(),
-            orig_width,
-            orig_height,
-            &resize_params,
-            3,
-        )
-        .map_err(|e| anyhow!("YOLO resize failed: {e}"))?;
+        let bytes =
+            crate::resize::resize_bytes(img.as_raw(), orig_width, orig_height, &resize_params, 3)
+                .map_err(|e| anyhow!("YOLO resize failed: {e}"))?;
         RgbImage::from_raw(YOLO_IMG_SIZE, YOLO_IMG_SIZE, bytes)
             .ok_or_else(|| anyhow!("Failed to construct YOLO inference image"))?
     };
@@ -483,17 +482,17 @@ fn parse_yolo_rows(output_value: &DynValue) -> Result<Vec<DetectionRow>> {
 fn yolo_class_to_category(class_id: i32) -> crate::types::ContentCategory {
     use crate::types::ContentCategory;
     match class_id {
-        0 => ContentCategory::Text,     // title
-        1 => ContentCategory::Text,     // plain_text
-        2 => ContentCategory::Abandon,  // abandon
-        3 => ContentCategory::Image,    // figure
-        4 => ContentCategory::Text,     // figure_caption
-        5 => ContentCategory::Table,    // table
-        6 => ContentCategory::Text,     // table_caption
-        7 => ContentCategory::Text,     // table_footnote
-        8 => ContentCategory::Text,     // isolate_formula
-        9 => ContentCategory::Text,     // formula_caption
-        _ => ContentCategory::Text,     // unknown
+        0 => ContentCategory::Text,    // title
+        1 => ContentCategory::Text,    // plain_text
+        2 => ContentCategory::Abandon, // abandon
+        3 => ContentCategory::Image,   // figure
+        4 => ContentCategory::Text,    // figure_caption
+        5 => ContentCategory::Table,   // table
+        6 => ContentCategory::Text,    // table_caption
+        7 => ContentCategory::Text,    // table_footnote
+        8 => ContentCategory::Text,    // isolate_formula
+        9 => ContentCategory::Text,    // formula_caption
+        _ => ContentCategory::Text,    // unknown
     }
 }
 

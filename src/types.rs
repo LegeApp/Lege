@@ -246,9 +246,20 @@ impl LabelClassifier {
         !matches!(
             detection.class_name.as_deref(),
             Some(
-                "title" | "page_number" | "doc_title" | "header" | "footer"
-                    | "footnote" | "figure_caption" | "table_caption" | "formula_caption"
-                    | "chart_title" | "formula_number" | "seal" | "aside_text" | "abandon"
+                "title"
+                    | "page_number"
+                    | "doc_title"
+                    | "header"
+                    | "footer"
+                    | "footnote"
+                    | "figure_caption"
+                    | "table_caption"
+                    | "formula_caption"
+                    | "chart_title"
+                    | "formula_number"
+                    | "seal"
+                    | "aside_text"
+                    | "abandon"
             )
         )
     }

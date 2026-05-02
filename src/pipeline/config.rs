@@ -374,11 +374,7 @@ impl PipelineConfig {
             deskew_unwarp_model: None,
             deskew_config: crate::deskew::DeskewConfig::default(),
             high_res_render_height: 1200,
-            inference_size: if use_yolo_model {
-                1024
-            } else {
-                640
-            },
+            inference_size: if use_yolo_model { 1024 } else { 640 },
             keep_original_images: true,
             expand_full_bleed_figure_bboxes: true,
             djvu_iw44_quality: 75, // Default to good quality
@@ -620,9 +616,16 @@ impl PipelineConfig {
     }
     pub fn inference_resize_spec(&self) -> InferenceResizeSpec {
         if is_yolo_doclayout_model_path(&self.model_path) {
-            YoloResizeConfig { target: self.inference_size, ..Default::default() }.into()
+            YoloResizeConfig {
+                target: self.inference_size,
+                ..Default::default()
+            }
+            .into()
         } else {
-            PaddleXResizeConfig { target: self.inference_size }.into()
+            PaddleXResizeConfig {
+                target: self.inference_size,
+            }
+            .into()
         }
     }
     pub fn keep_original_images(&self) -> bool {

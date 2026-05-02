@@ -98,7 +98,10 @@ impl AdaptiveConcurrency {
         let io_by_ram = (ram_gb * 2).max(2); // ~0.5 GB budget per buffered page
         let io_workers = io_target.min(cores).min(io_by_ram).min(16).max(cpu_workers);
 
-        Self { io_workers, cpu_workers }
+        Self {
+            io_workers,
+            cpu_workers,
+        }
     }
 }
 
