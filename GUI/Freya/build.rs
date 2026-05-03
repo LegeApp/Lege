@@ -35,8 +35,9 @@ fn get_external_version_from_main_project() -> Option<String> {
 }
 
 fn main() {
-    let external_version = get_external_version_from_main_project()
-        .unwrap_or_else(|| env::var("LEGE_EXTERNAL_VERSION").unwrap_or_else(|_| "1.4.1".to_string()));
+    let external_version = get_external_version_from_main_project().unwrap_or_else(|| {
+        env::var("LEGE_EXTERNAL_VERSION").unwrap_or_else(|_| "1.4.1".to_string())
+    });
 
     println!("cargo:rustc-env=LEGE_EXTERNAL_VERSION={external_version}");
 

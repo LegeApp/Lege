@@ -59,8 +59,8 @@ fn clustered_dot_matrix(size: usize, rect_bias_x: i32, rect_bias_y: i32) -> Vec<
             let py = (2 * y + 1) as i32;
             let dx = px - center;
             let dy = py - center;
-            let primary =
-                (dx as i64 * dx as i64) * rect_bias_x as i64 + (dy as i64 * dy as i64) * rect_bias_y as i64;
+            let primary = (dx as i64 * dx as i64) * rect_bias_x as i64
+                + (dy as i64 * dy as i64) * rect_bias_y as i64;
             let vertical_bias = dx.abs();
             let chebyshev = dx.abs().max(dy.abs());
             let stable = (y * size + x) as i32;
@@ -196,7 +196,11 @@ pub fn process_image_region(
         // Grayscale JP2 overlay: convert to luma and return as RGB triplets so the
         // pipeline's `grayscale_data = chunks(3).map(|px| px[0])` extracts correct values.
         let grayscale = rgb_to_grayscale_simd_direct(
-            original_rgb, page_width, region_bounds, region_width, region_height,
+            original_rgb,
+            page_width,
+            region_bounds,
+            region_width,
+            region_height,
         );
         let mut output = Vec::with_capacity(grayscale.len() * 3);
         for &g in &grayscale {
@@ -231,9 +235,14 @@ pub fn process_image_region(
     #[cfg(feature = "debug-logging")]
     crate::streamline::log_debug_message(&format!(
         "process_image_region: mode={:?} fmt={} region={}x{} bounds=({},{})→({},{})",
-        mode, text_format, region_width, region_height,
-        region_bounds.x_start, region_bounds.y_start,
-        region_bounds.x_end, region_bounds.y_end,
+        mode,
+        text_format,
+        region_width,
+        region_height,
+        region_bounds.x_start,
+        region_bounds.y_start,
+        region_bounds.x_end,
+        region_bounds.y_end,
     ));
 
     match mode {
@@ -247,9 +256,15 @@ pub fn process_image_region(
             }
             // JBIG2 only: grayscale crop for jbig2halftone.rs (not used on CCITT4 / DjVu).
             #[cfg(feature = "debug-logging")]
-            crate::streamline::log_debug_message("  → dispatching to grayscale crop (halftone → jbig2halftone.rs encodes later)");
+            crate::streamline::log_debug_message(
+                "  → dispatching to grayscale crop (halftone → jbig2halftone.rs encodes later)",
+            );
             let grayscale = rgb_to_grayscale_simd_direct(
-                original_rgb, page_width, region_bounds, region_width, region_height,
+                original_rgb,
+                page_width,
+                region_bounds,
+                region_width,
+                region_height,
             );
             let mut output = Vec::with_capacity(grayscale.len() * 3);
             for &g in &grayscale {
@@ -266,7 +281,9 @@ pub fn process_image_region(
                 ));
             }
             #[cfg(feature = "debug-logging")]
-            crate::streamline::log_debug_message("  → dispatching to clustered 4×4 ordered dither (CCITT4)");
+            crate::streamline::log_debug_message(
+                "  → dispatching to clustered 4×4 ordered dither (CCITT4)",
+            );
             process_clustered_dot4_dithering(
                 original_rgb,
                 page_width,
@@ -282,7 +299,9 @@ pub fn process_image_region(
                 ));
             }
             #[cfg(feature = "debug-logging")]
-            crate::streamline::log_debug_message("  → dispatching to Stucki error diffusion (JBIG2/DjVu)");
+            crate::streamline::log_debug_message(
+                "  → dispatching to Stucki error diffusion (JBIG2/DjVu)",
+            );
             process_stucki_dither_region(
                 original_rgb,
                 page_width,
@@ -748,7 +767,11 @@ pub fn dither_stucki_error_diffusion(grayscale_data: &[u8], width: u32, height: 
     // Clamp near-white pixels to pure white so paper/scan noise doesn't produce sparse dots.
     let mut working_image: Vec<f32> = vec![255.0; expected];
     for (i, &v) in grayscale_data.iter().take(expected).enumerate() {
-        working_image[i] = if v >= PAPER_WHITE_FLOOR { 255.0 } else { v as f32 };
+        working_image[i] = if v >= PAPER_WHITE_FLOOR {
+            255.0
+        } else {
+            v as f32
+        };
     }
     let mut output = Vec::with_capacity(expected);
 

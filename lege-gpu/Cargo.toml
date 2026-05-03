@@ -1,0 +1,44 @@
+[package]
+name = "lege-gpu"
+version = "0.1.0"
+edition = "2024"
+description = "Internal GPU compute backends for Lege"
+
+[lib]
+name = "lege_gpu"
+path = "src/lib.rs"
+
+[[bin]]
+name = "compare-binarize"
+path = "src/bin/compare_binarize.rs"
+required-features = ["compare-bin"]
+
+[dependencies]
+bytemuck = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+
+[features]
+default = []
+debug-layers = []
+no-include-shaders = []
+compare-bin = ["dep:image", "dep:rayon"]
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+wgpu = "28"
+pollster = "0.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

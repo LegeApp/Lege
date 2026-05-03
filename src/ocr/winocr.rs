@@ -11,8 +11,6 @@ pub fn run_winocr(data: &[u8], width: usize, height: usize, is_binary: bool) -> 
     let _com_guard = match initialize_com() {
         Ok(guard) => guard,
         Err(_e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] COM initialization failed: {:?}", _e);
             return None;
         }
     };
@@ -21,9 +19,6 @@ pub fn run_winocr(data: &[u8], width: usize, height: usize, is_binary: bool) -> 
     match run_winocr_impl(data, width, height, is_binary) {
         Some(result) => Some(result),
         None => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] OCR attempt failed immediately");
-
             // Return empty OCR result instead of None to avoid failing the pipeline
             Some(create_empty_ocr_result(width, height))
         }
@@ -33,19 +28,8 @@ pub fn run_winocr(data: &[u8], width: usize, height: usize, is_binary: bool) -> 
 fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) -> Option<OcrResult> {
     use windows::Media::Ocr::OcrResult as WinOcrResult;
 
-    #[cfg(feature = "debug-logging")]
-    println!(
-        "[DEBUG OCR] Windows OCR starting: {}x{}, binary: {}, data_len: {}",
-        width,
-        height,
-        is_binary,
-        data.len()
-    );
-
     // Validate input with bounds checking
     if width == 0 || height == 0 || width > 65535 || height > 65535 {
-        #[cfg(feature = "debug-logging")]
-        println!("[DEBUG OCR] Invalid dimensions: {}x{}", width, height);
         return None;
     }
 
@@ -61,12 +45,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         let new_width = ((width as f64) * scale_factor) as u32;
         let new_height = ((height as f64) * scale_factor) as u32;
 
-        #[cfg(feature = "debug-logging")]
-        println!(
-            "[DEBUG OCR] Downscaling image from {}x{} to {}x{} (scale: {:.3})",
-            width, height, new_width, new_height, scale_factor
-        );
-
         match downscale_image_lanczos3(
             data,
             width as usize,
@@ -77,8 +55,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         ) {
             Some(downscaled_data) => (downscaled_data, new_width as u32, new_height as u32),
             None => {
-                #[cfg(feature = "debug-logging")]
-                println!("[DEBUG OCR] Failed to downscale image");
                 return None;
             }
         }
@@ -116,14 +92,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         }
     };
 
-    #[cfg(feature = "debug-logging")]
-    println!(
-        "[DEBUG OCR] Created BGRA data: {} bytes for {}x{} image",
-        bgra_bytes.len(),
-        final_width,
-        final_height
-    );
-
     // Create SoftwareBitmap directly
     let bitmap = match SoftwareBitmap::Create(
         BitmapPixelFormat::Bgra8,
@@ -150,78 +118,42 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
                                         ptr,
                                         bgra_bytes.len(),
                                     );
-                                    #[cfg(feature = "debug-logging")]
-                                    println!(
-                                        "[DEBUG OCR] Successfully copied {} bytes to bitmap buffer",
-                                        bgra_bytes.len()
-                                    );
                                 } else {
-                                    #[cfg(feature = "debug-logging")]
-                                    println!(
-                                        "[DEBUG OCR] Invalid buffer pointer or insufficient capacity"
-                                    );
                                     return None;
                                 }
                             } else {
-                                #[cfg(feature = "debug-logging")]
-                                println!("[DEBUG OCR] Failed to get buffer from byte access");
                                 return None;
                             }
                         } else {
-                            #[cfg(feature = "debug-logging")]
-                            println!("[DEBUG OCR] Failed to cast to IMemoryBufferByteAccess");
                             return None;
                         }
                     }
                 } else {
-                    #[cfg(feature = "debug-logging")]
-                    println!("[DEBUG OCR] Failed to create buffer reference");
                     return None;
                 }
             } else {
-                #[cfg(feature = "debug-logging")]
-                println!("[DEBUG OCR] Failed to lock bitmap buffer");
                 return None;
             }
 
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Created SoftwareBitmap successfully");
             bitmap
         }
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!(
-                "[DEBUG OCR] Failed to create SoftwareBitmap from buffer: {:?}",
-                e
-            );
             return None;
         }
     };
 
     // Create OCR engine with fallback options
     let engine = match create_ocr_engine() {
-        Some(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Created OCR engine successfully");
-            e
-        }
+        Some(e) => e,
         None => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to create any OCR engine");
             return None;
         }
     };
 
     // Run OCR with immediate success/failure
     let ocr_result: WinOcrResult = match run_ocr_immediate(&engine, &bitmap) {
-        Some(result) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] OCR recognition completed successfully");
-            result
-        }
+        Some(result) => result,
         None => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] OCR recognition failed or timed out");
             return None;
         }
     };
@@ -230,15 +162,11 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
     let lines = match ocr_result.Lines() {
         Ok(l) => l,
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to extract lines: {:?}", e);
             return None;
         }
     };
 
     let line_count = lines.Size().unwrap_or(0);
-    #[cfg(feature = "debug-logging")]
-    println!("[DEBUG OCR] Found {} lines", line_count);
 
     // Build HOCR and plain text
     let mut plain_text = String::new();
@@ -263,11 +191,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         let words = match line.Words() {
             Ok(w) => w,
             Err(e) => {
-                #[cfg(feature = "debug-logging")]
-                println!(
-                    "[DEBUG OCR] Failed to get words for line {}: {:?}",
-                    line_idx, e
-                );
                 continue;
             }
         };
@@ -276,12 +199,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         if word_count_in_line == 0 {
             continue;
         }
-
-        #[cfg(feature = "debug-logging")]
-        println!(
-            "[DEBUG OCR] Line {}: {} words",
-            line_idx, word_count_in_line
-        );
 
         // Start paragraph for this line
         hocr.push_str(r#"<p class="ocr_par">"#);
@@ -302,15 +219,11 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
                         .chars()
                         .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
                     {
-                        #[cfg(feature = "debug-logging")]
-                        println!("[DEBUG OCR] Skipping word with control characters");
                         continue;
                     }
                     text_str
                 }
                 Err(e) => {
-                    #[cfg(feature = "debug-logging")]
-                    println!("[DEBUG OCR] Failed to extract word text: {:?}", e);
                     continue;
                 }
             };
@@ -325,15 +238,11 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
                         || r.X + r.Width > final_width as f32
                         || r.Y + r.Height > final_height as f32
                     {
-                        #[cfg(feature = "debug-logging")]
-                        println!("[DEBUG OCR] Invalid bounding box: {:?}", r);
                         continue;
                     }
                     r
                 }
                 Err(e) => {
-                    #[cfg(feature = "debug-logging")]
-                    println!("[DEBUG OCR] Failed to get bounding rect: {:?}", e);
                     continue;
                 }
             };
@@ -396,9 +305,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
 
     hocr.push_str("</div></div></body></html>");
 
-    #[cfg(feature = "debug-logging")]
-    println!("[DEBUG OCR] Extracted {} words total", word_count);
-
     let result = OcrResult {
         hocr,
         plain_text: plain_text.trim().to_string(),
@@ -406,9 +312,6 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
 
     // Explicit cleanup to help with memory management
     // bgra_bytes was already moved/consumed in bitmap creation
-
-    #[cfg(feature = "debug-logging")]
-    println!("[DEBUG OCR] Windows OCR completed successfully");
 
     Some(result)
 }
@@ -444,16 +347,12 @@ fn create_ocr_engine() -> Option<windows::Media::Ocr::OcrEngine> {
 
     // Try 1: Create from user profile languages
     if let Ok(engine) = OcrEngine::TryCreateFromUserProfileLanguages() {
-        #[cfg(feature = "debug-logging")]
-        println!("[DEBUG OCR] Created OCR engine from user profile languages");
         return Some(engine);
     }
 
     // Try 2: Create for English specifically
     if let Ok(lang) = Language::CreateLanguage(&::windows::core::HSTRING::from("en")) {
         if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&lang) {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Created OCR engine for English");
             return Some(engine);
         }
     }
@@ -463,16 +362,12 @@ fn create_ocr_engine() -> Option<windows::Media::Ocr::OcrEngine> {
         if available_languages.Size().unwrap_or(0) > 0 {
             if let Ok(first_lang) = available_languages.GetAt(0) {
                 if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&first_lang) {
-                    #[cfg(feature = "debug-logging")]
-                    println!("[DEBUG OCR] Created OCR engine from first available language");
                     return Some(engine);
                 }
             }
         }
     }
 
-    #[cfg(feature = "debug-logging")]
-    println!("[DEBUG OCR] Failed to create OCR engine with any method");
     None
 }
 
@@ -485,22 +380,14 @@ fn run_ocr_immediate(
     let async_op = match engine.RecognizeAsync(bitmap) {
         Ok(op) => op,
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to start OCR recognition: {:?}", e);
             return None;
         }
     };
 
     // Try to complete immediately - if it doesn't work right away, it likely won't work at all
     match async_op.join() {
-        Ok(result) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] OCR completed immediately");
-            Some(result)
-        }
+        Ok(result) => Some(result),
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] OCR failed immediately: {:?}", e);
             let _ = async_op.Cancel();
             None
         }
@@ -511,9 +398,6 @@ fn run_ocr_immediate(
 
 // Create empty OCR result as fallback
 fn create_empty_ocr_result(width: usize, height: usize) -> OcrResult {
-    #[cfg(feature = "debug-logging")]
-    println!("[DEBUG OCR] Creating empty OCR result as fallback");
-
     let hocr = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">

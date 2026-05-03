@@ -42,14 +42,14 @@ pub use Legencode::toojpeg::{EncodeOptions, ImageFormat, encode_jpeg};
 
 // Re-export key types from pipeline submodules for convenience
 pub use pipeline::{
+    // Config types
+    ImageRegionDitherMode,
     InferenceActor,
     // Inference types
     InferenceHandle,
     InferenceJob,
     PageRange,
     PageTask,
-    // Config types
-    ImageRegionDitherMode,
     PipelineConfig,
     ProcessingPipeline,
     RenderedPageData,

@@ -1,8 +1,4 @@
 pub mod cpu;
-#[cfg(windows)]
-pub mod hlsl;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub mod wgpu;
 
 use bytemuck::Pod;
 use fast_image_resize::{
@@ -10,7 +6,13 @@ use fast_image_resize::{
     images::Image as FirImage,
 };
 #[cfg(windows)]
-use hlsl::{FilterType as HlslFilterType, HlslResizer, ResizeParameters as HlslResizeParameters};
+use lege_gpu::resize::hlsl::{
+    FilterType as HlslFilterType, HlslResizer, ResizeParameters as HlslResizeParameters,
+};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use lege_gpu::resize::wgpu::{
+    FilterType as WgpuFilterType, ResizeParameters as WgpuResizeParameters, WgpuResizer,
+};
 use log::warn;
 #[cfg(windows)]
 use once_cell::sync::OnceCell;
@@ -25,8 +27,6 @@ use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use wgpu::{FilterType as WgpuFilterType, ResizeParameters as WgpuResizeParameters, WgpuResizer};
 #[cfg(windows)]
 static HLSL_RESIZER: OnceCell<Mutex<HlslResizer>> = OnceCell::new();
 #[cfg(windows)]
@@ -36,6 +36,17 @@ static WGPU_RESIZER: OnceCell<Mutex<WgpuResizer>> = OnceCell::new();
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 static WGPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RESIZE_BACKEND_PREFERENCE: AtomicU8 = AtomicU8::new(0); // 0=auto, 1=fast_cpu
+
+/// Per-job gate for the GPU resize backend. Default: enabled.
+static GPU_RESIZE_GATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_gpu_resize_enabled(enabled: bool) {
+    GPU_RESIZE_GATE.store(enabled, AtomicOrdering::Relaxed);
+}
+
+pub fn gpu_resize_enabled() -> bool {
+    GPU_RESIZE_GATE.load(AtomicOrdering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeBackendPreference {
@@ -52,6 +63,18 @@ pub fn set_resize_backend_preference(preference: ResizeBackendPreference) {
 }
 
 pub fn resize_backend_preference() -> ResizeBackendPreference {
+    if std::env::var("LEGE_FORCE_CPU_RESIZE")
+        .map(|value| value != "0")
+        .unwrap_or(false)
+        || std::env::var("LEGE_RESIZE_BACKEND")
+            .map(|value| {
+                value.eq_ignore_ascii_case("cpu") || value.eq_ignore_ascii_case("fast_cpu")
+            })
+            .unwrap_or(false)
+    {
+        return ResizeBackendPreference::FastCpu;
+    }
+
     match RESIZE_BACKEND_PREFERENCE.load(AtomicOrdering::Relaxed) {
         1 => ResizeBackendPreference::FastCpu,
         _ => ResizeBackendPreference::Auto,
@@ -316,7 +339,8 @@ pub fn resize_bytes(
     if matches!(
         resize_backend_preference(),
         ResizeBackendPreference::FastCpu
-    ) {
+    ) || !gpu_resize_enabled()
+    {
         return cpu_resize_bytes(src_data, src_width, src_height, params, channel_count).map_err(
             |e| {
                 log::error!(
@@ -334,7 +358,7 @@ pub fn resize_bytes(
 
     #[cfg(windows)]
     {
-        // Windows: Try HLSL GPU acceleration first, fall back to CPU if needed
+        // Windows: Try HLSL GPU acceleration first, fall back to CPU only if needed.
         let gpu_memory_required = (src_width as u64 * src_height as u64 * channel_count as u64)
             + (params.target_width as u64 * params.target_height as u64 * channel_count as u64);
 
@@ -378,24 +402,51 @@ pub fn resize_bytes(
             }
             Err(ResizeError::BackendError(ref msg)) if msg.contains("memory pressure") => {
                 warn!(
-                    "HLSL GPU resize failed due to memory pressure ({}x{} -> {}x{}, ~{} MB required); falling back to CPU",
+                    "HLSL GPU resize emergency fallback due to memory pressure ({}x{} -> {}x{}, ~{} MB input/output); falling back to CPU",
                     src_width,
                     src_height,
                     params.target_width,
                     params.target_height,
                     gpu_memory_required / (1024 * 1024)
                 );
+                #[cfg(feature = "debug-logging")]
+                crate::info_log!(
+                    "[resize] HLSL GPU fallback to CPU (memory pressure, ~{} MB): {}x{} -> {}x{}",
+                    gpu_memory_required / (1024 * 1024),
+                    src_width,
+                    src_height,
+                    params.target_width,
+                    params.target_height
+                );
             }
             Err(ResizeError::BackendError(ref msg)) if msg.contains("ResourceAllocationFailed") => {
                 warn!(
-                    "HLSL GPU resize failed due to resource allocation ({}x{} -> {}x{}); falling back to CPU: {}",
+                    "HLSL GPU resize emergency fallback due to resource allocation ({}x{} -> {}x{}); falling back to CPU: {}",
                     src_width, src_height, params.target_width, params.target_height, msg
+                );
+                #[cfg(feature = "debug-logging")]
+                crate::info_log!(
+                    "[resize] HLSL GPU emergency fallback to CPU (resource allocation): {}x{} -> {}x{}: {}",
+                    src_width,
+                    src_height,
+                    params.target_width,
+                    params.target_height,
+                    msg
                 );
             }
             Err(err) => {
                 warn!(
-                    "HLSL GPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
+                    "HLSL GPU resize emergency fallback ({}x{} -> {}x{}): {}; falling back to CPU",
                     src_width, src_height, params.target_width, params.target_height, err
+                );
+                #[cfg(feature = "debug-logging")]
+                crate::info_log!(
+                    "[resize] HLSL GPU emergency fallback to CPU ({}x{} -> {}x{}): {}",
+                    src_width,
+                    src_height,
+                    params.target_width,
+                    params.target_height,
+                    err
                 );
             }
         }
@@ -445,6 +496,15 @@ pub fn resize_bytes(
                 warn!(
                     "WGPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
                     src_width, src_height, params.target_width, params.target_height, err
+                );
+                #[cfg(feature = "debug-logging")]
+                crate::info_log!(
+                    "[resize] WGPU fallback to CPU ({}x{} -> {}x{}): {}",
+                    src_width,
+                    src_height,
+                    params.target_width,
+                    params.target_height,
+                    err
                 );
             }
         }
@@ -503,5 +563,28 @@ impl PixelComponent for f32 {
     }
     fn from_f32(val: f32) -> Self {
         val
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_bytes_cpu_fallback_preserves_channel_shape() {
+        set_resize_backend_preference(ResizeBackendPreference::FastCpu);
+        let src = vec![255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        let params = ResizeParams {
+            target_width: 4,
+            target_height: 3,
+            method: ResizeMethod::Bilinear,
+            letterbox: false,
+            border_value: 0.0,
+            swap_rb: false,
+        };
+
+        let out = resize_bytes(&src, 2, 2, &params, 3).expect("resize should succeed");
+        assert_eq!(out.len(), 4 * 3 * 3);
+        set_resize_backend_preference(ResizeBackendPreference::Auto);
     }
 }

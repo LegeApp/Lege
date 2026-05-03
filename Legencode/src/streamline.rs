@@ -300,7 +300,6 @@ impl EncodingManager {
 
         Ok(result)
     }
-
 }
 
 #[cfg(test)]

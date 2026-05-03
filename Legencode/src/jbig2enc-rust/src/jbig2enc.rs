@@ -4000,8 +4000,12 @@ impl<'a> Jbig2Encoder<'a> {
         if self.state.pdf_mode {
             for (gs_idx, &dict_pos) in global_sym_to_dict_pos.iter().enumerate() {
                 if dict_pos != u32::MAX && dict_pos >= num_global_dict_symbols {
-                    log::warn!("BUG: global_sym_to_dict_pos[{}] = {} but num_global_dict_symbols = {}",
-                              gs_idx, dict_pos, num_global_dict_symbols);
+                    log::warn!(
+                        "BUG: global_sym_to_dict_pos[{}] = {} but num_global_dict_symbols = {}",
+                        gs_idx,
+                        dict_pos,
+                        num_global_dict_symbols
+                    );
                 }
             }
         }
@@ -4255,7 +4259,7 @@ impl<'a> Jbig2Encoder<'a> {
             // The text region segment must reference it as segment 1 in its referred_to field.
             // The PDF /DecodeParms points to the actual global dict PDF object.
             let mut referred_to_for_text_region = if self.state.pdf_mode {
-                vec![1u32]  // Reference global dictionary as segment 1
+                vec![1u32] // Reference global dictionary as segment 1
             } else {
                 self.global_dict_segment_numbers.clone()
             };

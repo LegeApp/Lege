@@ -172,8 +172,7 @@ pub mod jp2_config {
     }
 
     pub fn calculate_jp2_rate(original_bytes: usize, target_bytes: usize) -> f32 {
-        (original_bytes as f64 / target_bytes as f64)
-            .clamp(2.0, 100.0) as f32
+        (original_bytes as f64 / target_bytes as f64).clamp(2.0, 100.0) as f32
     }
 
     pub fn get_jp2_settings_for_target(
@@ -290,9 +289,7 @@ pub fn encode_to_target_size(
         let size = data.len();
         if best
             .as_ref()
-            .map(|(_, best_size, _)| {
-                size.abs_diff(target_bytes) < best_size.abs_diff(target_bytes)
-            })
+            .map(|(_, best_size, _)| size.abs_diff(target_bytes) < best_size.abs_diff(target_bytes))
             .unwrap_or(true)
         {
             best = Some((quality, size, data));
@@ -313,7 +310,9 @@ fn encode_image(image: &jp2lam::Image, quality: u8) -> Result<Vec<u8>> {
         quality: quality.min(100),
         format: jp2lam::OutputFormat::Jp2,
     };
-    jp2lam::encode(image, &options).map_err(|e| EncodingError::EncoderError(e.to_string()))
+    jp2lam::BatchEncoder::new(options)
+        .encode_one(image)
+        .map_err(|e| EncodingError::EncoderError(e.to_string()))
 }
 
 fn validate_input(input: &[u8], width: u32, height: u32, channels: u8) -> Result<()> {
@@ -344,11 +343,7 @@ fn quality_from_settings(settings: &Jp2Settings) -> u8 {
         return rate_to_quality(rate);
     }
     if let Some(rates) = &settings.rates {
-        return rates
-            .last()
-            .copied()
-            .map(rate_to_quality)
-            .unwrap_or(80);
+        return rates.last().copied().map(rate_to_quality).unwrap_or(80);
     }
     100
 }
@@ -364,4 +359,134 @@ fn rate_to_quality(rate: f32) -> u8 {
 fn quality_to_rate(quality: u8) -> f32 {
     let q = quality.max(1) as f32;
     (100.0 / q).powi(2)
+}
+
+/// Convert a decoded `jp2lam::Image` to an interleaved RGB byte buffer.
+/// Grayscale is expanded to RGB. High-precision samples are scaled to 8-bit.
+fn jp2_image_to_rgb(img: jp2lam::Image) -> crate::Result<(u32, u32, Vec<u8>)> {
+    let width = img.width;
+    let height = img.height;
+    let pixel_count = (width as usize) * (height as usize);
+
+    match img.colorspace {
+        jp2lam::ColorSpace::Gray => {
+            let comp = img.components.into_iter().next().ok_or_else(|| {
+                crate::EncodingError::EncoderError("JP2 gray image has no component".into())
+            })?;
+            let max_val = ((1u64 << comp.precision) - 1).max(1) as f64;
+            let mut rgb = Vec::with_capacity(pixel_count * 3);
+            for sample in comp.data.iter().take(pixel_count) {
+                let v = (((*sample as f64) / max_val) * 255.0).clamp(0.0, 255.0) as u8;
+                rgb.push(v);
+                rgb.push(v);
+                rgb.push(v);
+            }
+            Ok((width, height, rgb))
+        }
+        jp2lam::ColorSpace::Srgb | jp2lam::ColorSpace::Rgb => {
+            let mut comps = img.components.into_iter();
+            let r_comp = comps.next().ok_or_else(|| {
+                crate::EncodingError::EncoderError("JP2 RGB image missing R component".into())
+            })?;
+            let g_comp = comps.next().ok_or_else(|| {
+                crate::EncodingError::EncoderError("JP2 RGB image missing G component".into())
+            })?;
+            let b_comp = comps.next().ok_or_else(|| {
+                crate::EncodingError::EncoderError("JP2 RGB image missing B component".into())
+            })?;
+            let max_val = ((1u64 << r_comp.precision) - 1).max(1) as f64;
+            let mut rgb = Vec::with_capacity(pixel_count * 3);
+            for i in 0..pixel_count {
+                let r = ((r_comp.data[i] as f64 / max_val) * 255.0).clamp(0.0, 255.0) as u8;
+                let g = ((g_comp.data[i] as f64 / max_val) * 255.0).clamp(0.0, 255.0) as u8;
+                let b = ((b_comp.data[i] as f64 / max_val) * 255.0).clamp(0.0, 255.0) as u8;
+                rgb.push(r);
+                rgb.push(g);
+                rgb.push(b);
+            }
+            Ok((width, height, rgb))
+        }
+        other => Err(crate::EncodingError::EncoderError(format!(
+            "JP2 colorspace {other:?} is not supported for decoding"
+        ))),
+    }
+}
+
+/// Decode a JP2 file from in-memory bytes to an interleaved RGB byte buffer.
+///
+/// Returns `(width, height, rgb_bytes)` where `rgb_bytes` has length `width * height * 3`.
+/// Grayscale JP2 images are expanded to RGB by repeating the luma channel.
+/// High-precision (>8-bit) samples are scaled down to 8-bit range.
+///
+/// Uses the jp2lam batch API internally. For processing many images from the same
+/// source use [`Jp2BatchDecoder`] to benefit from profile consistency validation.
+pub fn decode_jp2_bytes(bytes: &[u8]) -> crate::Result<(u32, u32, Vec<u8>)> {
+    let img = jp2lam::BatchDecoder::new()
+        .decode_one(bytes)
+        .map_err(|e| crate::EncodingError::EncoderError(format!("JP2 decode: {e}")))?;
+    jp2_image_to_rgb(img)
+}
+
+/// Stateful encoder that validates all images share the same profile.
+/// Create one instance per processing job and call [`encode_one`](Jp2BatchEncoder::encode_one)
+/// for each image from that source. Enforces consistent dimensions and colour space.
+pub struct Jp2BatchEncoder {
+    inner: jp2lam::BatchEncoder,
+}
+
+impl Jp2BatchEncoder {
+    pub fn new(quality: u8) -> Self {
+        Self {
+            inner: jp2lam::BatchEncoder::new(jp2lam::EncodeOptions {
+                quality: quality.min(100),
+                format: jp2lam::OutputFormat::Jp2,
+            }),
+        }
+    }
+
+    /// Encode one image and validate it matches the profile of previously encoded images.
+    pub fn encode_one(
+        &mut self,
+        input: &[u8],
+        width: u32,
+        height: u32,
+        channels: u8,
+    ) -> Result<Vec<u8>> {
+        validate_input(input, width, height, channels)?;
+        let image = match channels {
+            1 => jp2lam::Image::from_gray_bytes(width, height, input)
+                .map_err(|e| EncodingError::InvalidInput(e.to_string()))?,
+            3 => jp2lam::Image::from_rgb_bytes(width, height, input)
+                .map_err(|e| EncodingError::InvalidInput(e.to_string()))?,
+            _ => unreachable!(),
+        };
+        self.inner
+            .encode_one(&image)
+            .map_err(|e| EncodingError::EncoderError(e.to_string()))
+    }
+}
+
+/// Stateful decoder that validates all images share the same profile.
+/// Create one instance per processing job and call [`decode_one`](Jp2BatchDecoder::decode_one)
+/// for each image from that source. Enforces consistent dimensions and colour space.
+pub struct Jp2BatchDecoder {
+    inner: jp2lam::BatchDecoder,
+}
+
+impl Jp2BatchDecoder {
+    pub fn new() -> Self {
+        Self {
+            inner: jp2lam::BatchDecoder::new(),
+        }
+    }
+
+    /// Decode one JP2 image and validate it matches the profile of previously decoded images.
+    /// Returns `(width, height, rgb_bytes)`.
+    pub fn decode_one(&mut self, bytes: &[u8]) -> crate::Result<(u32, u32, Vec<u8>)> {
+        let img = self
+            .inner
+            .decode_one(bytes)
+            .map_err(|e| crate::EncodingError::EncoderError(format!("JP2 batch decode: {e}")))?;
+        jp2_image_to_rgb(img)
+    }
 }

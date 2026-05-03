@@ -66,23 +66,12 @@ pub async fn perform_ocr_on_binarized(
         Some(result) => {
             // Return HOCR format for PDF text layer, not plain text
             if !result.hocr.is_empty() {
-                #[cfg(feature = "debug-logging")]
-                println!(
-                    "DEBUG OCR: OCR succeeded, HOCR data has {} characters",
-                    result.hocr.len()
-                );
                 Ok(result.hocr)
             } else {
-                #[cfg(feature = "debug-logging")]
-                println!("DEBUG OCR: OCR succeeded but no HOCR data generated");
                 Ok(String::new())
             }
         }
-        None => {
-            #[cfg(feature = "debug-logging")]
-            println!("DEBUG OCR: OCR failed completely");
-            Ok(String::new()) // Return empty string if OCR fails
-        }
+        None => Ok(String::new()),
     }
 }
 
