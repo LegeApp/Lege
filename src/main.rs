@@ -12,7 +12,7 @@ use lege::{
 mod version;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use version::display_version;
 
 // ============================================================================
@@ -197,15 +197,15 @@ struct CliOptions {
     no_cover: bool,                // --no-cover
     invert: bool,                  // --invert
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
-    halftone: bool,                // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
-    deskew: bool,                  // --deskew
-    jpeg_compat: bool,             // --jpeg-compat
-    center_margins: bool,          // --center-margins
-    crop_margins: bool,            // --crop-margins
-    force_crop: bool,              // --force-crop
-    image_only: bool,              // --image-only
-    original_images: bool,         // --original-images (default is already original; explicit opt-in)
-    fast_resize: bool,             // --fast-resize (force CPU fast_image_resize backend)
+    halftone: bool, // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
+    deskew: bool,   // --deskew
+    jpeg_compat: bool, // --jpeg-compat
+    center_margins: bool, // --center-margins
+    crop_margins: bool, // --crop-margins
+    force_crop: bool, // --force-crop
+    image_only: bool, // --image-only
+    original_images: bool, // --original-images (default is already original; explicit opt-in)
+    fast_resize: bool, // --fast-resize (force CPU fast_image_resize backend)
 
     // --- Language ---
     language: Option<String>, // --language <code>
@@ -708,8 +708,11 @@ fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
         let pipeline_config = build_png_folder_pipeline_config(&cli_opts)?;
-        let output_path =
-            resolve_png_folder_output_path(cli_opts.output_dir.clone(), &folder_path, &pipeline_config)?;
+        let output_path = resolve_png_folder_output_path(
+            cli_opts.output_dir.clone(),
+            &folder_path,
+            &pipeline_config,
+        )?;
         return run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, None);
     }
 
@@ -833,7 +836,7 @@ fn main() -> Result<()> {
 
         // Trailing target (height/profile) takes precedence over page range so numeric targets aren't misread.
         if let Some(last) = positional.last() {
-            if !last.to_lowercase().ends_with(".pdf") {
+            if !looks_like_input_arg(last) {
                 if parse_target_argument(last).is_ok() {
                     target_arg = positional.pop();
                 } else if looks_like_page_range(last) {
@@ -851,7 +854,7 @@ fn main() -> Result<()> {
 
         // After removing target, check for a remaining page range hint.
         if let Some(last) = positional.last() {
-            if !last.to_lowercase().ends_with(".pdf") {
+            if !looks_like_input_arg(last) {
                 if looks_like_page_range(last) {
                     let candidate = positional.pop().unwrap();
                     let interpreted = interpret_page_range_arg(candidate.clone());
@@ -932,6 +935,16 @@ fn looks_like_page_range(input: &str) -> bool {
     lower
         .chars()
         .all(|ch| ch.is_ascii_digit() || ch == ',' || ch == '-' || ch.is_ascii_whitespace())
+}
+
+fn looks_like_input_arg(input: &str) -> bool {
+    let path = PathBuf::from(input);
+    if path.exists() {
+        return true;
+    }
+
+    let lower = input.to_ascii_lowercase();
+    lower.ends_with(".pdf") || lower.ends_with(".zip")
 }
 
 fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
@@ -1060,24 +1073,29 @@ fn print_target_profiles() {
 }
 
 fn handle_simple_processing(
-    pdf_paths: Vec<String>,
+    input_paths: Vec<String>,
     page_range: Option<String>,
     target_spec: Option<String>,
     cli_opts: CliOptions,
     config: AppConfig,
 ) -> Result<()> {
-    if pdf_paths.is_empty() {
-        bail!("No PDF files to process");
+    if input_paths.is_empty() {
+        bail!("No input files to process");
     }
 
     // Normalize and validate inputs
-    let mut normalized_inputs = Vec::with_capacity(pdf_paths.len());
-    for raw in pdf_paths {
+    let mut input_jobs = Vec::with_capacity(input_paths.len());
+    let mut display_inputs = Vec::with_capacity(input_paths.len());
+    let mut zip_tempdirs = Vec::new();
+    for raw in input_paths {
         let cleaned = sanitize_path_arg(&raw);
-        validate_pdf_file(&cleaned)?;
-        normalized_inputs.push(cleaned);
+        let (job, tempdir) = prepare_simple_input(&cleaned)?;
+        display_inputs.push(cleaned);
+        if let Some(tempdir) = tempdir {
+            zip_tempdirs.push(tempdir);
+        }
+        input_jobs.push(job);
     }
-    let mut file_paths: Vec<PathBuf> = normalized_inputs.iter().map(|p| PathBuf::from(p)).collect();
 
     // Create baseline pipeline config for simple CLI mode
     let mut pipeline_config = PipelineConfig::simple_cli_defaults()
@@ -1162,7 +1180,8 @@ fn handle_simple_processing(
     } else if cli_opts.dither {
         let tf = pipeline_config.text_format();
         if tf == "ccitt4" {
-            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+            pipeline_config
+                .set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
         } else {
             pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
         }
@@ -1295,18 +1314,21 @@ fn handle_simple_processing(
     }
 
     // Determine output directory
-    let output_dir = determine_output_directory(cli_opts.output_dir, &normalized_inputs, &config)?;
+    let output_dir = determine_output_directory(cli_opts.output_dir, &display_inputs, &config)?;
 
     // Show batch summary
     info_println!("\n{}", CLI_TEXT.main.simple_mode_header);
     info_println!(
         "{}",
-        fmt1(&CLI_TEXT.main.simple_mode_files_queued, file_paths.len())
+        fmt1(&CLI_TEXT.main.simple_mode_files_queued, input_jobs.len())
     );
-    for path in &file_paths {
+    for path in &input_jobs {
         info_println!(
             "{}",
-            fmt1(&CLI_TEXT.main.simple_mode_file_item, path.display())
+            fmt1(
+                &CLI_TEXT.main.simple_mode_file_item,
+                path.display_path().display()
+            )
         );
     }
     if let Some(ref range) = page_range {
@@ -1325,11 +1347,12 @@ fn handle_simple_processing(
     );
     info_println!("{}\n", CLI_TEXT.main.simple_mode_footer);
 
-    let total_files = file_paths.len();
+    let total_files = input_jobs.len();
     let mut overall_ok = true;
 
-    for (index, file_path) in file_paths.drain(..).enumerate() {
+    for (index, input_job) in input_jobs.drain(..).enumerate() {
         let per_file_config = pipeline_config.clone();
+        let file_path = input_job.display_path().to_path_buf();
         let output_path = generate_output_path(&file_path, &output_dir, &per_file_config)?;
 
         if total_files > 1 {
@@ -1360,7 +1383,7 @@ fn handle_simple_processing(
             );
         }
 
-        match process_single_file(file_path.clone(), output_path.clone(), per_file_config) {
+        match process_input_job(input_job, output_path.clone(), per_file_config) {
             Ok(()) => {
                 if total_files > 1 {
                     let remaining = total_files - index - 1;
@@ -1390,6 +1413,7 @@ fn handle_simple_processing(
     }
 
     cleanup_cli_resources();
+    drop(zip_tempdirs);
     if overall_ok {
         fast_exit(0);
     } else {
@@ -1410,13 +1434,21 @@ fn handle_cli_mode(config: AppConfig) -> Result<()> {
                 &config,
             )?;
             let output_path = generate_output_path(&file_path, &output_dir, &pipeline_config)?;
-            let result = process_single_file(file_path, output_path, pipeline_config);
+            let (input_job, tempdir) = prepare_simple_input(
+                file_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid input path"))?,
+            )?;
+            let result = process_input_job(input_job, output_path, pipeline_config);
+            drop(tempdir);
 
             cleanup_cli_resources();
-            if result.is_ok() {
-                fast_exit(0);
-            } else {
-                fast_exit(1);
+            match result {
+                Ok(()) => fast_exit(0),
+                Err(error) => {
+                    error_println!("Processing failed: {:#}", error);
+                    fast_exit(1);
+                }
             }
         }
         None => Ok(()),
@@ -1472,7 +1504,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     }
 
     let file_path = &files[0];
-    validate_pdf_file(file_path)?;
+    validate_cli_input_path(file_path)?;
 
     // Check for OCR layer in the PDF right after validation
     if PathBuf::from(file_path)
@@ -1928,6 +1960,125 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     Ok(Some((PathBuf::from(file_path), config)))
 }
 
+enum SimpleInput {
+    Pdf(PathBuf),
+    ImageFolder { source: PathBuf, display: PathBuf },
+}
+
+impl SimpleInput {
+    fn display_path(&self) -> &Path {
+        match self {
+            SimpleInput::Pdf(path) => path,
+            SimpleInput::ImageFolder { display, .. } => display,
+        }
+    }
+}
+
+fn process_input_job(
+    input: SimpleInput,
+    output_path: PathBuf,
+    pipeline_config: PipelineConfig,
+) -> Result<()> {
+    match input {
+        SimpleInput::Pdf(path) => process_single_file(path, output_path, pipeline_config),
+        SimpleInput::ImageFolder { source, .. } => {
+            run_png_mode_with_config(source, Some(output_path), pipeline_config, None)
+        }
+    }
+}
+
+fn prepare_simple_input(path: &str) -> Result<(SimpleInput, Option<tempfile::TempDir>)> {
+    let path_buf = PathBuf::from(path);
+    if !path_buf.exists() {
+        bail!("Input not found: {}", path);
+    }
+
+    if path_buf.is_dir() {
+        return Ok((
+            SimpleInput::ImageFolder {
+                source: path_buf.clone(),
+                display: path_buf,
+            },
+            None,
+        ));
+    }
+
+    if !path_buf.is_file() {
+        bail!("Path is neither a file nor a directory: {}", path);
+    }
+
+    let ext = path_buf
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match ext.as_str() {
+        "pdf" => {
+            validate_pdf_file(path)?;
+            Ok((SimpleInput::Pdf(path_buf), None))
+        }
+        "zip" => {
+            let tempdir = extract_zip_to_tempdir(&path_buf)?;
+            Ok((
+                SimpleInput::ImageFolder {
+                    source: tempdir.path().to_path_buf(),
+                    display: path_buf,
+                },
+                Some(tempdir),
+            ))
+        }
+        _ => bail!("Input must be a PDF, ZIP, or image folder: {}", path),
+    }
+}
+
+fn validate_cli_input_path(path: &str) -> Result<()> {
+    let path_buf = PathBuf::from(path);
+    if !path_buf.exists() {
+        bail!("Input not found: {}", path);
+    }
+    if path_buf.is_dir() {
+        return Ok(());
+    }
+    let ext = path_buf
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => validate_pdf_file(path),
+        "zip" => Ok(()),
+        _ => bail!("Input must be a PDF, ZIP, or image folder: {}", path),
+    }
+}
+
+fn extract_zip_to_tempdir(zip_path: &Path) -> Result<tempfile::TempDir> {
+    let file = fs::File::open(zip_path)
+        .map_err(|e| anyhow!("Failed to open ZIP {}: {}", zip_path.display(), e))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| anyhow!("Failed to read ZIP {}: {}", zip_path.display(), e))?;
+    let tempdir = tempfile::tempdir()?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let Some(enclosed_name) = entry.enclosed_name() else {
+            continue;
+        };
+        let out_path = tempdir.path().join(enclosed_name);
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path)?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out_file = fs::File::create(&out_path)?;
+        std::io::copy(&mut entry, &mut out_file)?;
+    }
+
+    Ok(tempdir)
+}
+
 fn parse_format_selection_with_options(
     input: &str,
 ) -> Result<(
@@ -2049,12 +2200,7 @@ fn parse_format_selection_with_options(
         .iter()
         .skip(options_start_index)
         .copied()
-        .filter(|&p| {
-            !matches!(
-                p,
-                "--high" | "--high-quality" | "--unify" | "--halftone"
-            )
-        })
+        .filter(|&p| !matches!(p, "--high" | "--high-quality" | "--unify" | "--halftone"))
         .collect();
     options_parts.extend(remaining_parts.iter().map(|s| s.to_string()));
 
@@ -2156,18 +2302,7 @@ fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool)> {
 
 fn parse_options(
     input: &str,
-) -> Result<(
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-)> {
+) -> Result<(bool, bool, bool, bool, bool, bool, bool, bool, bool, bool)> {
     let options: Vec<&str> = input.split_whitespace().collect();
 
     // 'a' now DISABLES layout detection (it's enabled by default)
@@ -2623,7 +2758,14 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
     }
 
     // Call the PDF-to-PNG processing function
-    run_pdf_to_png_mode(pdf_path, page_range, height, AppConfig::default(), false, 256)?;
+    run_pdf_to_png_mode(
+        pdf_path,
+        page_range,
+        height,
+        AppConfig::default(),
+        false,
+        256,
+    )?;
 
     // Return None to indicate PDF-to-PNG mode was handled
     Ok(None)
@@ -2964,15 +3106,32 @@ fn unix_to_ymdhm(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     loop {
         let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
         let dy = if leap { 366 } else { 365 };
-        if days < dy { break; }
+        if days < dy {
+            break;
+        }
         days -= dy;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [31u32, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days = [
+        31u32,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 1u32;
     for &md in &month_days {
-        if days < md { break; }
+        if days < md {
+            break;
+        }
         days -= md;
         mo += 1;
     }
@@ -3064,7 +3223,8 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     } else if cli_opts.dither {
         let tf = pipeline_config.text_format();
         if tf == "ccitt4" {
-            pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
+            pipeline_config
+                .set_image_region_dither_mode(ImageRegionDitherMode::Ccitt4ClusteredDot4x4);
         } else {
             pipeline_config.set_image_region_dither_mode(ImageRegionDitherMode::Stucki);
         }

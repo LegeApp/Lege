@@ -17,9 +17,12 @@ pub use crate::types::{BinarizationConfig, BinarizationOptions};
 pub use error::{ColorOpsError, Result};
 
 // Export essential binarization utilities
-pub use binarization::{HeavySauvolaProcessor, binarize_image, binarize_image_raw};
+pub use binarization::{
+    HeavySauvolaProcessor, binarize_image, binarize_image_raw,
+    compute_adaptive_gpu_constants, sauvola_window_for, odd_background_window,
+};
 
 // Export color processing utilities
-pub use color_processing::{process_image_region, ImageRegionDitherMode};
+pub use color_processing::{ImageRegionDitherMode, process_image_region};
 
 // GPU-related convenience functions removed - using direct binarization and dithering functions instead

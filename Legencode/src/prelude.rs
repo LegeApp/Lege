@@ -1,5 +1,7 @@
 //! The legencode prelude for easy importing of common types.
 
+#[cfg(feature = "jp2-lam")]
+pub use crate::streamline::Jp2Settings;
 pub use crate::streamline::{
     EncodingManager,
     EncodingResult,
@@ -10,6 +12,4 @@ pub use crate::streamline::{
     JpegSettings,
     // Indexed8Settings,  // Removed - indexed8 encoder deleted
 };
-#[cfg(feature = "jp2-lam")]
-pub use crate::streamline::Jp2Settings;
 pub use crate::{EncodingError, Result};

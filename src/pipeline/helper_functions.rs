@@ -300,7 +300,13 @@ pub async fn encode_region_image(
 
     let (settings, fmt_str) = match format {
         CoverFormat::Jpeg => {
-            let q = if high_quality { 95 } else if is_cover { 50 } else { 45 };
+            let q = if high_quality {
+                95
+            } else if is_cover {
+                50
+            } else {
+                45
+            };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -322,7 +328,13 @@ pub async fn encode_region_image(
         ),
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),
         _ => {
-            let q = if high_quality { 95 } else if is_cover { 50 } else { 45 };
+            let q = if high_quality {
+                95
+            } else if is_cover {
+                50
+            } else {
+                45
+            };
             (
                 EncodingSettings::Jpeg(JpegSettings {
                     quality: q,
@@ -1021,10 +1033,9 @@ pub fn spawn_pdf_writer_actor(
                     // This is acceptable since finalize() will check during assembly
 
                     // Finalize the PDF
-                    if let Err(e) = builder.finalize(
-                        output_path.to_str().unwrap_or("output.pdf"),
-                        has_ocr,
-                    ) {
+                    if let Err(e) =
+                        builder.finalize(output_path.to_str().unwrap_or("output.pdf"), has_ocr)
+                    {
                         crate::warn_log!("[PdfWriterActor] Finalize failed: {}", e);
                         return Err(anyhow::anyhow!("Finalize failed: {}", e));
                     }
@@ -1109,7 +1120,3 @@ mod tests {
         completed.expect("send ok");
     }
 }
-
-
-
-
