@@ -83,8 +83,16 @@ pub fn run_png_mode_with_config(
 
     info_println!("Found {} image files", image_files.len());
 
+    let page_range = pipeline_config
+        .page_range()
+        .map(|range| (range.start.saturating_sub(1))..range.end.min(image_files.len()));
+    let total_pages = page_range
+        .as_ref()
+        .map(|range| range.len())
+        .unwrap_or(image_files.len());
+
     if let Some(tracker) = progress_tracker.as_ref() {
-        tracker.set_total_pages(image_files.len());
+        tracker.set_total_pages(total_pages);
         tracker.set_mode_enum(if pipeline_config.enable_layout_detection() {
             ProgressMode::Layout
         } else {
@@ -96,9 +104,9 @@ pub fn run_png_mode_with_config(
             pipeline_config.enable_deskew(),
         );
         if pipeline_config.enable_layout_detection() {
-            tracker.publish_layout_progress(0, 0, 0, 0, image_files.len());
+            tracker.publish_layout_progress(0, 0, 0, 0, total_pages);
         } else {
-            tracker.publish_no_layout_progress(0, 0, image_files.len());
+            tracker.publish_no_layout_progress(0, 0, total_pages);
         }
     }
 
@@ -111,6 +119,8 @@ pub fn run_png_mode_with_config(
     let io_workers = adaptive.io_workers;
     let cpu_workers = adaptive.cpu_workers;
     let workers = io_workers;
+    pipeline_config.set_max_parallel_pages(Some(cpu_workers))?;
+    pipeline_config.set_channel_buffer_size(Some(io_workers.max(cpu_workers)))?;
     info_println!(
         "Image folder pipeline tuned for this host: io_workers={}, cpu_workers={}",
         io_workers,
@@ -134,6 +144,8 @@ pub fn run_png_mode_with_config(
         let source = Arc::new(crate::pipeline::source::ImageFolderPageSource::new(
             image_files,
             workers,
+            pipeline_config.target_height(),
+            pipeline_config.target_width(),
         ));
         let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
         runtime.block_on(
@@ -141,7 +153,7 @@ pub fn run_png_mode_with_config(
                 source,
                 Arc::new(pipeline_config),
                 &output_path,
-                None,
+                page_range,
                 &tracker,
                 shutdown_rx,
                 |_current, _total| {},
@@ -157,6 +169,8 @@ pub fn run_png_mode_with_config(
     let source = Arc::new(crate::pipeline::source::ImageFolderPageSource::new(
         image_files,
         workers,
+        pipeline_config.target_height(),
+        pipeline_config.target_width(),
     ));
     let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     runtime.block_on(
@@ -164,7 +178,7 @@ pub fn run_png_mode_with_config(
             source,
             Arc::new(pipeline_config),
             &output_path,
-            None,
+            page_range,
             &tracker,
             shutdown_rx,
             |_current, _total| {},
