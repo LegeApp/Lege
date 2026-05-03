@@ -147,8 +147,20 @@ pub async fn create_and_run_djvu_source_pipeline(
     };
     let page_index_offset: usize = page_range.as_ref().map(|r| r.start).unwrap_or(0);
     let pdf_renderer = source.pdf_renderer();
+    // Gate the GPU resize backend by document size: cold-start cost only pays
+    // back once we have enough pages to amortize device init.
+    const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
+    crate::resize::set_gpu_resize_enabled(total_pages >= MIN_PAGES_FOR_GPU_RESIZE);
     #[cfg(feature = "debug-logging")]
-    info_log!("[DJVU-Parallel] Total pages to process: {}", total_pages);
+    info_log!(
+        "[DJVU-Parallel] Total pages to process: {} (GPU resize: {})",
+        total_pages,
+        if total_pages >= MIN_PAGES_FOR_GPU_RESIZE {
+            "enabled"
+        } else {
+            "disabled (<10 pages)"
+        },
+    );
     // Create DJVU orchestrator
     let djvu_config = create_djvu_pipeline_config(output_path, &config)?;
     let dpi = djvu_config.dpi; // Extract DPI before config is moved
@@ -266,6 +278,8 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 infer_tx.send(data).await.map_err(|e| anyhow!("Infer send failed: {}", e))?;
                             }
                             Err(e) => {
+                                #[cfg(feature = "debug-logging")]
+                                crate::error_println!("[DJVU-Parallel-Infer] Inference task failed (page dropped): {:#}", e);
                                 warn_log!("[DJVU-Parallel-Infer] Inference task failed: {}", e);
                             }
                         }
@@ -341,9 +355,13 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 // This means the page processing was skipped, continue
                             }
                             Ok(Err(e)) => {
+                                #[cfg(feature = "debug-logging")]
+                                crate::error_println!("[DJVU-Parallel-Process] Processing failed (page dropped): {:#}", e);
                                 warn_log!("[DJVU-Parallel-Process] Processing failed: {}", e);
                             }
                             Err(e) => {
+                                #[cfg(feature = "debug-logging")]
+                                crate::error_println!("[DJVU-Parallel-Process] Task join error (page dropped): {:#}", e);
                                 warn_log!("[DJVU-Parallel-Process] Task join error: {}", e);
                             }
                         }
@@ -731,8 +749,11 @@ fn process_djvu_cpu_intensive_work(
     // 1. Apply region policy (CPU-heavy: image resizing/cropping)
     let (mut adjusted_image, mut adjusted_detections) =
         apply_djvu_region_policy(&rendered, &inference_result, &config)?;
-    // 2. Resize to target height if needed (CPU-heavy: Lanczos3 filtering)
-    if config.enable_layout_detection() && adjusted_image.height() != config.target_height() {
+    // 2. Resize to target height if needed (CPU-heavy: Lanczos3 filtering).
+    // Always normalize page dimensions regardless of layout mode — PDF source already
+    // renders at target_height so this is a no-op there, but folder source supplies
+    // images at native resolution and viewers reject DjVus built at those sizes.
+    if adjusted_image.height() != config.target_height() {
         let current_w = adjusted_image.width();
         let current_h = adjusted_image.height();
         let target_h = config.target_height();

@@ -11,8 +11,6 @@ pub fn run_tesseract(
 ) -> Option<OcrResult> {
     // Input validation with bounds checking (similar to Windows OCR)
     if width == 0 || height == 0 || width > 65535 || height > 65535 {
-        #[cfg(feature = "debug-logging")]
-        println!("[DEBUG OCR] Invalid dimensions: {}x{}", width, height);
         return None;
     }
 
@@ -23,15 +21,6 @@ pub fn run_tesseract(
     };
 
     if data.len() != expected_len {
-        #[cfg(feature = "debug-logging")]
-        println!(
-            "[DEBUG OCR] Data length mismatch: got {}, expected {} for {}x{} (is_binary: {})",
-            data.len(),
-            expected_len,
-            width,
-            height,
-            is_binary
-        );
         return None;
     }
 
@@ -43,17 +32,9 @@ pub fn run_tesseract(
         let new_width = ((width as f64) * scale).round().max(1.0) as usize;
         let new_height = ((height as f64) * scale).round().max(1.0) as usize;
 
-        #[cfg(feature = "debug-logging")]
-        println!(
-            "[DEBUG OCR] Downscaling {}x{} to {}x{} (scale: {:.3})",
-            width, height, new_width, new_height, scale
-        );
-
         match downscale_image_lanczos3(data, width, height, new_width, new_height, is_binary) {
             Some(downscaled) => (new_width, new_height, downscaled),
             None => {
-                #[cfg(feature = "debug-logging")]
-                println!("[DEBUG OCR] Image downscaling failed, skipping OCR");
                 return None;
             }
         }
@@ -64,11 +45,6 @@ pub fn run_tesseract(
     // Skip OCR for uniform images (all white/all black). This prevents noisy
     // Tesseract "Empty page" output and avoids wasted OCR work.
     if scaled_data.iter().all(|&b| b == scaled_data[0]) {
-        #[cfg(feature = "debug-logging")]
-        println!(
-            "[DEBUG OCR] Uniform image data (value: {}), skipping OCR",
-            scaled_data[0]
-        );
         return Some(OcrResult {
             hocr: String::new(),
             plain_text: String::new(),
@@ -82,8 +58,6 @@ pub fn run_tesseract(
 
     let normalized_language = language.trim().to_ascii_lowercase();
     if normalized_language.is_empty() {
-        #[cfg(feature = "debug-logging")]
-        println!("[DEBUG OCR] Empty OCR language code");
         return None;
     }
 
@@ -97,11 +71,6 @@ pub fn run_tesseract(
         ) {
             Ok(t) => t,
             Err(path_err) => {
-                #[cfg(feature = "debug-logging")]
-                println!(
-                    "[DEBUG OCR] Failed to initialize Tesseract with tessdata path '{}' and language '{}': {:?}. Falling back to default search path.",
-                    tessdata_path, normalized_language, path_err
-                );
                 match Tesseract::new_with_oem(
                     None,
                     Some(&normalized_language),
@@ -109,8 +78,6 @@ pub fn run_tesseract(
                 ) {
                     Ok(t) => t,
                     Err(e) => {
-                        #[cfg(feature = "debug-logging")]
-                        println!("[DEBUG OCR] Failed to initialize Tesseract: {:?}", e);
                         return None;
                     }
                 }
@@ -120,8 +87,6 @@ pub fn run_tesseract(
         match Tesseract::new_with_oem(None, Some(&normalized_language), OcrEngineMode::LstmOnly) {
             Ok(t) => t,
             Err(e) => {
-                #[cfg(feature = "debug-logging")]
-                println!("[DEBUG OCR] Failed to initialize Tesseract: {:?}", e);
                 return None;
             }
         }
@@ -137,8 +102,6 @@ pub fn run_tesseract(
     ) {
         Ok(t) => t,
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to set image frame: {:?}", e);
             return None;
         }
     };
@@ -155,8 +118,6 @@ pub fn run_tesseract(
     tess = match tess.set_variable("debug_file", null_device) {
         Ok(t) => t,
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Failed to set tesseract debug_file: {:?}", e);
             return None;
         }
     };
@@ -168,41 +129,22 @@ pub fn run_tesseract(
     tess = match tess.recognize() {
         Ok(t) => t,
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Tesseract recognition failed: {:?}", e);
             return None;
         }
     };
 
     // Get HOCR output (page number is typically 0 for single-page images)
     let hocr = match tess.get_hocr_text(0) {
-        Ok(h) => {
-            #[cfg(feature = "debug-logging")]
-            println!(
-                "[DEBUG OCR] Tesseract HOCR completed successfully, {} characters",
-                h.len()
-            );
-            h
-        }
+        Ok(h) => h,
         Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Tesseract HOCR failed: {:?}", e);
             return None;
         }
     };
 
     // Get plain text output
     let plain_text = match tess.get_text() {
-        Ok(t) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Tesseract plain text completed successfully");
-            t
-        }
-        Err(e) => {
-            #[cfg(feature = "debug-logging")]
-            println!("[DEBUG OCR] Tesseract plain text failed: {:?}", e);
-            String::new()
-        }
+        Ok(t) => t,
+        Err(e) => String::new(),
     };
 
     // Scale HOCR coordinates back to original dimensions if we downscaled

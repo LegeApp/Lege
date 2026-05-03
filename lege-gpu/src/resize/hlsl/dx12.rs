@@ -122,7 +122,7 @@ impl D3D12Context {
             // Create descriptor heap for UAV/SRV
             let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: 8, // Enough for source, destination, and constant buffers
+                NumDescriptors: 16,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             };
@@ -219,7 +219,7 @@ impl D3D12Context {
             // Create descriptor heap for UAV/SRV
             let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: 8,
+                NumDescriptors: 16,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             };
@@ -257,30 +257,9 @@ impl D3D12Context {
     /// Create a buffer resource
     pub fn create_buffer(&self, size: usize, heap_type: D3D12_HEAP_TYPE) -> Result<ID3D12Resource> {
         unsafe {
-            // Check for memory pressure before allocation
             let current_allocated = self
                 .allocated_memory
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let new_total = current_allocated + size as u64;
-
-            // Use 80% of dedicated video memory as threshold to prevent exhaustion
-            let memory_threshold = (self.dedicated_video_memory * 80) / 100;
-
-            if new_total > memory_threshold {
-                if self.verbose {
-                    eprintln!(
-                        "[DX12] Memory pressure detected: current={} MB, requested={} MB, threshold={} MB",
-                        current_allocated / (1024 * 1024),
-                        size / (1024 * 1024),
-                        memory_threshold / (1024 * 1024)
-                    );
-                }
-                return Err(ResizerError::ResourceAllocationFailed(format!(
-                    "GPU memory pressure: would exceed {}% of available memory ({} MB)",
-                    80,
-                    memory_threshold / (1024 * 1024)
-                )));
-            }
 
             if self.verbose {
                 eprintln!(
