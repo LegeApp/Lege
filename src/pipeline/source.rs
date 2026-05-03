@@ -94,13 +94,22 @@ impl PageSource for PdfiumPageSource {
 pub struct ImageFolderPageSource {
     files: Arc<Vec<PathBuf>>,
     concurrency: usize,
+    target_height: u32,
+    target_width: Option<u32>,
 }
 
 impl ImageFolderPageSource {
-    pub fn new(files: Vec<PathBuf>, concurrency: usize) -> Self {
+    pub fn new(
+        files: Vec<PathBuf>,
+        concurrency: usize,
+        target_height: u32,
+        target_width: Option<u32>,
+    ) -> Self {
         Self {
             files: Arc::new(files),
             concurrency: concurrency.max(1),
+            target_height,
+            target_width,
         }
     }
 }
@@ -122,10 +131,19 @@ impl PageSource for ImageFolderPageSource {
             .cloned()
             .ok_or_else(|| anyhow!("Image page index {} out of bounds", page_index))?;
 
-        let image = tokio::task::spawn_blocking(move || decode_folder_image(&path))
+        let decode_path = path.clone();
+        let mut image = tokio::task::spawn_blocking(move || decode_folder_image(&decode_path))
             .await
             .map_err(|e| anyhow!("Image decode task panicked: {}", e))??;
         let (width, height) = image.dimensions();
+        maybe_dump_folder_source_image("decoded", page_index, &image)?;
+        image = normalize_folder_image_to_target(
+            image,
+            self.target_height,
+            self.target_width,
+            page_index,
+        )?;
+        maybe_dump_folder_source_image("normalized", page_index, &image)?;
 
         Ok(SourcePage {
             image,
@@ -173,7 +191,13 @@ pub async fn source_stage(
                     wait_for_memory_relief().await;
                 }
 
-                let mut source_page = source.load_page(page_index).await?;
+                #[cfg(feature = "debug-logging")]
+                crate::info_log!("[SourceStage] Loading page {}", page_index);
+                let mut source_page = source.load_page(page_index).await.map_err(|e| {
+                    #[cfg(feature = "debug-logging")]
+                    crate::error_println!("[SourceStage] Page {} load failed: {:#}", page_index, e);
+                    e
+                })?;
 
                 if let Some(engine) = deskew_engine {
                     let image_for_deskew = source_page.image.clone();
@@ -251,13 +275,7 @@ pub async fn source_stage(
 
 pub fn collect_largest_sequential_image_run(folder: &Path) -> Result<Vec<PathBuf>> {
     let mut all_files: Vec<PathBuf> = Vec::new();
-    for entry in std::fs::read_dir(folder)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && is_supported_image(&path) {
-            all_files.push(path);
-        }
-    }
+    collect_supported_images_recursive(folder, &mut all_files)?;
 
     if all_files.is_empty() {
         return Ok(all_files);
@@ -302,7 +320,126 @@ pub fn collect_largest_sequential_image_run(folder: &Path) -> Result<Vec<PathBuf
         }
     }
 
+    if folder_source_debug_enabled() {
+        crate::info_log!(
+            "[ImageFolderPageSource] Selected {} files from {}",
+            best_run.len(),
+            folder.display()
+        );
+        for (idx, path) in best_run.iter().take(5).enumerate() {
+            crate::info_log!(
+                "[ImageFolderPageSource] selected[{}]={}",
+                idx,
+                path.display()
+            );
+        }
+        if best_run.len() > 5 {
+            for (idx, path) in best_run
+                .iter()
+                .enumerate()
+                .skip(best_run.len().saturating_sub(5))
+            {
+                crate::info_log!(
+                    "[ImageFolderPageSource] selected[{}]={}",
+                    idx,
+                    path.display()
+                );
+            }
+        }
+    }
+
     Ok(best_run)
+}
+
+fn folder_source_debug_enabled() -> bool {
+    std::env::var("LEGE_FOLDER_SOURCE_DEBUG")
+        .map(|value| value != "0")
+        .unwrap_or(false)
+}
+
+fn maybe_dump_folder_source_image(stage: &str, page_index: usize, image: &RgbImage) -> Result<()> {
+    if !folder_source_debug_enabled() {
+        return Ok(());
+    }
+
+    let out_dir = crate::app_dirs::data_dir().join("folder_source_debug");
+    std::fs::create_dir_all(&out_dir).with_context(|| {
+        format!(
+            "Failed to create folder source debug directory: {:?}",
+            out_dir
+        )
+    })?;
+    let out_path = out_dir.join(format!("page_{:04}_{}.png", page_index + 1, stage));
+    image
+        .save(&out_path)
+        .with_context(|| format!("Failed to write folder source debug image: {:?}", out_path))?;
+    Ok(())
+}
+
+fn normalize_folder_image_to_target(
+    image: RgbImage,
+    target_height: u32,
+    target_width: Option<u32>,
+    page_index: usize,
+) -> Result<RgbImage> {
+    if target_height == 0 || image.height() == target_height {
+        return Ok(image);
+    }
+
+    let current_w = image.width();
+    let current_h = image.height();
+    let aspect_ratio = current_w as f32 / current_h as f32;
+    let target_w =
+        target_width.unwrap_or_else(|| (target_height as f32 * aspect_ratio).round() as u32);
+    if target_w == 0 {
+        return Ok(image);
+    }
+
+    let params = crate::resize::ResizeParams {
+        target_width: target_w,
+        target_height,
+        method: crate::resize::ResizeMethod::Lanczos3,
+        letterbox: false,
+        border_value: 0.0,
+        swap_rb: false,
+    };
+
+    match crate::resize::resize_bytes(image.as_raw(), current_w, current_h, &params, 3) {
+        Ok(bytes) => RgbImage::from_raw(target_w, target_height, bytes).ok_or_else(|| {
+            anyhow!(
+                "Failed to create normalized image buffer for page {} ({}x{})",
+                page_index,
+                target_w,
+                target_height
+            )
+        }),
+        Err(e) => {
+            crate::warn_log!(
+                "Page {}: folder source resize failed: {}; using CPU image fallback",
+                page_index,
+                e
+            );
+            Ok(image::imageops::resize(
+                &image,
+                target_w,
+                target_height,
+                image::imageops::FilterType::Lanczos3,
+            ))
+        }
+    }
+}
+
+fn collect_supported_images_recursive(folder: &Path, all_files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_supported_images_recursive(&path, all_files)?;
+        } else if path.is_file() && is_supported_image(&path) {
+            all_files.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn decode_folder_image(image_path: &Path) -> Result<RgbImage> {

@@ -239,6 +239,17 @@ impl DjvuOrchestrator {
         width: u32,
         height: u32,
     ) -> Result<djvu_encoder::doc::Page> {
+        self.maybe_dump_preencode_pbm(page_num, &page_data.binarized, width, height)?;
+
+        if self.is_binarized_blank(&page_data.binarized, width, height) && image_regions.is_empty()
+        {
+            let white_bg = Pixmap::from_pixel(width, height, Pixel::white());
+            let page_builder = PageBuilder::new(page_num, width, height)
+                .with_background(white_bg)
+                .context("Failed to set blank page background")?;
+            return page_builder.build().context("Failed to build blank page");
+        }
+
         // 1. Prepare binary bitmap (with whiteout if needed)
         let mut bitmap = self.create_bitmap_from_binarized(
             &page_data.binarized,
@@ -281,6 +292,60 @@ impl DjvuOrchestrator {
 
         // 6. Build the final page
         page_builder.build().context("Failed to build page")
+    }
+
+    fn is_binarized_blank(&self, binarized: &[u8], width: u32, height: u32) -> bool {
+        let len = (width as usize).saturating_mul(height as usize);
+        binarized.iter().take(len).all(|&val| {
+            let is_black = if val <= 1 { val == 0 } else { val < 128 };
+            !is_black
+        })
+    }
+
+    fn maybe_dump_preencode_pbm(
+        &self,
+        page_num: usize,
+        binarized: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let enabled = std::env::var("LEGE_DJVU_DEBUG_PBM")
+            .map(|value| value != "0")
+            .unwrap_or(false);
+        if !enabled {
+            return Ok(());
+        }
+
+        let out_dir = self.config.work_dir.join("preencode-pbm");
+        fs::create_dir_all(&out_dir)
+            .with_context(|| format!("Failed to create DjVu PBM debug directory: {:?}", out_dir))?;
+        let out_path = out_dir.join(format!("page_{:04}.pbm", page_num + 1));
+
+        let row_bytes = ((width as usize) + 7) / 8;
+        let mut bytes = Vec::with_capacity(("P4\n".len() + 32) + row_bytes * height as usize);
+        bytes.extend_from_slice(format!("P4\n{} {}\n", width, height).as_bytes());
+
+        for y in 0..height as usize {
+            for byte_x in 0..row_bytes {
+                let mut packed = 0u8;
+                for bit in 0..8 {
+                    let x = byte_x * 8 + bit;
+                    if x >= width as usize {
+                        continue;
+                    }
+                    let val = binarized[y * width as usize + x];
+                    let is_black = if val <= 1 { val == 0 } else { val < 128 };
+                    if is_black {
+                        packed |= 0x80 >> bit;
+                    }
+                }
+                bytes.push(packed);
+            }
+        }
+
+        fs::write(&out_path, bytes)
+            .with_context(|| format!("Failed to write DjVu PBM debug file: {:?}", out_path))?;
+        Ok(())
     }
 
     /// White out image regions in the binary bitmap
@@ -408,16 +473,6 @@ impl DjvuOrchestrator {
     ) -> Result<Vec<(String, u16, u16, u16, u16)>> {
         use regex::Regex;
 
-        // Debug: log HOCR length and first 500 chars
-        #[cfg(feature = "debug-logging")]
-        {
-            crate::info_log!("[parse_hocr_to_words] HOCR length: {} chars", hocr.len());
-            if !hocr.is_empty() {
-                let preview: String = hocr.chars().take(500).collect();
-                crate::info_log!("[parse_hocr_to_words] HOCR preview: {}", preview);
-            }
-        }
-
         // Matches ocrx_word spans across newlines, with arbitrary attribute order and
         // extended title payloads (e.g. "bbox ...; x_wconf 95").
         let word_re = Regex::new(
@@ -498,12 +553,6 @@ impl DjvuOrchestrator {
 
             words.push((text, x1, y1, width, height));
         }
-
-        #[cfg(feature = "debug-logging")]
-        crate::info_log!(
-            "[parse_hocr_to_words] Found {} words from HOCR",
-            words.len()
-        );
 
         Ok(words)
     }

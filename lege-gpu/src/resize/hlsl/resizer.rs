@@ -328,19 +328,12 @@ impl HlslResizer {
         self.ensure_buffers(gpu_src_size, gpu_dst_size)?;
         let src_rgba = expand_to_rgba(src_data, params.channel_count, pixel_count_src);
 
-        // Check if we need chunked processing due to dynamic buffer sizing
         let buffers = self.buffers.as_ref().unwrap();
         if buffers.src_capacity < gpu_src_size || buffers.dst_capacity < gpu_dst_size {
-            if self.verbose {
-                eprintln!(
-                    "[Resizer] Using chunked processing: buffer_src={} KB, required_src={} KB, buffer_dst={} KB, required_dst={} KB",
-                    buffers.src_capacity / 1024,
-                    gpu_src_size / 1024,
-                    buffers.dst_capacity / 1024,
-                    gpu_dst_size / 1024
-                );
-            }
-            return self.resize_chunked(params, &src_rgba, gpu_src_size, gpu_dst_size);
+            return Err(ResizerError::ResourceAllocationFailed(format!(
+                "GPU buffer capacity smaller than required: src {} < {}, dst {} < {}",
+                buffers.src_capacity, gpu_src_size, buffers.dst_capacity, gpu_dst_size
+            )));
         }
 
         let result = self
@@ -429,35 +422,27 @@ impl HlslResizer {
             return Ok(());
         }
 
-        // Dynamic buffer sizing strategy to prevent memory pool exhaustion
-        let (final_src_size, final_dst_size) =
-            self.calculate_dynamic_buffer_sizes(src_aligned, dst_aligned)?;
-
         if self.verbose {
             eprintln!(
                 "[Resizer] Allocating GPU buffers: src_capacity={} dst_capacity={} cb_size={}",
-                final_src_size, final_dst_size, cb_size_aligned
+                src_aligned, dst_aligned, cb_size_aligned
             );
-            if final_src_size != src_aligned || final_dst_size != dst_aligned {
-                eprintln!(
-                    "[Resizer] Dynamic sizing applied: src {} -> {}, dst {} -> {}",
-                    src_aligned, final_src_size, dst_aligned, final_dst_size
-                );
-            }
         }
+
+        self.buffers = None;
 
         let upload_src = self
             .ctx
-            .create_buffer(final_src_size, D3D12_HEAP_TYPE_UPLOAD)?;
+            .create_buffer(src_aligned, D3D12_HEAP_TYPE_UPLOAD)?;
         let gpu_src = self
             .ctx
-            .create_buffer(final_src_size, D3D12_HEAP_TYPE_DEFAULT)?;
+            .create_buffer(src_aligned, D3D12_HEAP_TYPE_DEFAULT)?;
         let gpu_dst = self
             .ctx
-            .create_buffer(final_dst_size, D3D12_HEAP_TYPE_DEFAULT)?;
+            .create_buffer(dst_aligned, D3D12_HEAP_TYPE_DEFAULT)?;
         let readback = self
             .ctx
-            .create_buffer(final_dst_size, D3D12_HEAP_TYPE_READBACK)?;
+            .create_buffer(dst_aligned, D3D12_HEAP_TYPE_READBACK)?;
         let cb_upload = self
             .ctx
             .create_buffer(cb_size_aligned, D3D12_HEAP_TYPE_UPLOAD)?;
@@ -468,114 +453,12 @@ impl HlslResizer {
             gpu_dst,
             readback,
             cb_upload,
-            src_capacity: final_src_size,
-            dst_capacity: final_dst_size,
+            src_capacity: src_aligned,
+            dst_capacity: dst_aligned,
             ctx: Some(&self.ctx as *const D3D12Context),
         });
 
         Ok(())
-    }
-
-    /// Calculate dynamic buffer sizes to prevent memory pool exhaustion
-    fn calculate_dynamic_buffer_sizes(
-        &self,
-        src_bytes: usize,
-        dst_bytes: usize,
-    ) -> Result<(usize, usize)> {
-        let current_allocated = self
-            .ctx
-            .allocated_memory
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let available_memory = self.ctx.dedicated_video_memory;
-        let memory_threshold = (available_memory * 80) / 100; // 80% threshold
-
-        // Calculate total memory needed for all buffers (upload + gpu + readback for each)
-        let total_src_memory = src_bytes * 2; // upload_src + gpu_src
-        let total_dst_memory = dst_bytes * 2; // gpu_dst + readback
-        let total_needed = total_src_memory + total_dst_memory;
-
-        // Check if we can allocate at full size
-        if current_allocated + total_needed as u64 <= memory_threshold {
-            return Ok((src_bytes, dst_bytes));
-        }
-
-        if self.verbose {
-            eprintln!(
-                "[Resizer] Memory pressure detected: current={} MB, needed={} MB, threshold={} MB",
-                current_allocated / (1024 * 1024),
-                total_needed / (1024 * 1024),
-                memory_threshold / (1024 * 1024)
-            );
-        }
-
-        // Progressive sizing strategy
-        let available_for_buffers = memory_threshold.saturating_sub(current_allocated) as usize;
-
-        if available_for_buffers < total_needed / 4 {
-            // Very low memory - use minimal viable sizes
-            let min_src = align_up(src_bytes / 4, 256).max(1024); // At least 1KB
-            let min_dst = align_up(dst_bytes / 4, 256).max(1024);
-
-            if self.verbose {
-                eprintln!(
-                    "[Resizer] Using minimal buffer sizes: src={} KB, dst={} KB",
-                    min_src / 1024,
-                    min_dst / 1024
-                );
-            }
-
-            return Ok((min_src, min_dst));
-        } else if available_for_buffers < total_needed / 2 {
-            // Medium memory pressure - use half sizes
-            let half_src = align_up(src_bytes / 2, 256);
-            let half_dst = align_up(dst_bytes / 2, 256);
-
-            if self.verbose {
-                eprintln!(
-                    "[Resizer] Using half buffer sizes: src={} KB, dst={} KB",
-                    half_src / 1024,
-                    half_dst / 1024
-                );
-            }
-
-            return Ok((half_src, half_dst));
-        } else {
-            // Moderate memory pressure - use 75% sizes
-            let reduced_src = align_up((src_bytes * 3) / 4, 256);
-            let reduced_dst = align_up((dst_bytes * 3) / 4, 256);
-
-            if self.verbose {
-                eprintln!(
-                    "[Resizer] Using reduced buffer sizes: src={} KB, dst={} KB",
-                    reduced_src / 1024,
-                    reduced_dst / 1024
-                );
-            }
-
-            return Ok((reduced_src, reduced_dst));
-        }
-    }
-
-    /// Handle resize operations when buffers are smaller than required data
-    fn resize_chunked(
-        &mut self,
-        params: &ResizeParameters,
-        src_rgba: &[u8],
-        gpu_src_size: usize,
-        gpu_dst_size: usize,
-    ) -> Result<Vec<u8>> {
-        // For now, fall back to CPU resize when chunked processing would be needed
-        // This is a safety mechanism to prevent crashes while maintaining functionality
-        if self.verbose {
-            eprintln!(
-                "[Resizer] Falling back to CPU resize due to insufficient GPU buffer capacity"
-            );
-        }
-
-        // Return an error that will trigger CPU fallback in the calling code
-        Err(ResizerError::ResourceAllocationFailed(
-            "Insufficient GPU buffer capacity - falling back to CPU resize".to_string(),
-        ))
     }
 
     fn dispatch_resize(

@@ -1932,9 +1932,23 @@ pub async fn create_and_run_pdf_source_pipeline(
     let total_pages = page_end - page_start;
     let pdf_renderer = source.pdf_renderer();
 
+    // Gate the GPU resize backend by document size: cold-start cost only pays
+    // back once we have enough pages to amortize device init.
+    const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
+    crate::resize::set_gpu_resize_enabled(total_pages >= MIN_PAGES_FOR_GPU_RESIZE);
+
     let infer_concurrency = 1usize;
     let process_concurrency = pipeline_config.page_workers.max(1);
 
+    info_log!(
+        "[PDF-Parallel] Processing {} pages (GPU resize: {})",
+        total_pages,
+        if total_pages >= MIN_PAGES_FOR_GPU_RESIZE {
+            "enabled"
+        } else {
+            "disabled (<10 pages)"
+        },
+    );
     info_log!("[PDF-Parallel] Processing {} pages with:", total_pages);
     info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
     info_log!("  - Inference concurrency: {}", infer_concurrency);

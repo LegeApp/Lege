@@ -13,6 +13,7 @@ categories = ["multimedia::images", "text-processing"]
 [workspace]
 members = [
     ".",  # The root crate
+    "lege-gpu",
     "Legencode",
     "Legencode/src/jbig2enc-rust",
     "Legencode/src/TooJpeg-rust",
@@ -20,7 +21,6 @@ members = [
 ]
 default-members = [
     ".",
-    "GUI/Freya",
 ]
 
 [workspace.lints.rust]
@@ -46,14 +46,13 @@ flume = "0.11"
 pdfium-render = { version = "0.8.37", features = ["thread_safe", "sync"] }  
 tempfile = "3.24.0"  
 flate2 = "1.1.8"
-zip = { version = "4", default-features = false }
+zip = { version = "8.6.0", default-features = false }
 miniz_oxide = "0.8"
 lazy_static = "1.5.0"  
 ndarray = { version = "0.17.2", features = ["rayon"] }
 palette = { version = "0.7.6", features = ["libm"] }  
 bytemuck = { version = "1.25.0", features = ["derive", "extern_crate_alloc"] }  
 cfg-if = "1.0.4"
-epub-builder = "0.7.4" 
 html-escape = "0.2.13"
 itertools = "0.12.1"
 console = "0.15.11"
@@ -143,13 +142,13 @@ palette = { workspace = true }
 lazy_static = { workspace = true }
 ndarray = { workspace = true }
 Legencode = { path = "Legencode" }
+lege-gpu = { path = "lege-gpu" }
 quick-xml = "0.38.4"
 # mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
 sysinfo = "0.31.4"
 shlex = "1.3.0"
 cfg-if = { workspace = true }
 html-escape = { workspace = true }
-epub-builder = { workspace = true }
 chrono = { version = "0.4.43", features = ["serde"] }  # Updated
 memmap2 = "0.9.9"
 winres = "0.1.12"
@@ -171,6 +170,7 @@ indicatif = { version = "0.17", features = ["tokio"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 flume = { workspace = true }
+zip = { workspace = true, features = ["deflate"] }
 # Native DJVU encoder (pure Rust, no external dependencies)
 djvu_encoder = { path = "DJVULibRust" }
 

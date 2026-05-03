@@ -33,6 +33,7 @@ thiserror = { workspace = true }        # Used by ColorOpsError derive
 png = "0.17"                # For PNG encoding/decoding
 ort = { path = "../ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }
 once_cell = { workspace = true }          # For global static initialization
+lege-gpu = { path = "../lege-gpu" }
 
 # Additional dependencies for jbig2enc-rust
 bitvec = { workspace = true }              # For bit manipulation
