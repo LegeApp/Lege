@@ -33,6 +33,7 @@ thiserror = { workspace = true }        # Used by ColorOpsError derive
 png = "0.17"                # For PNG encoding/decoding
 ort = { path = "../ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }
 once_cell = { workspace = true }          # For global static initialization
+lege-gpu = { path = "../lege-gpu" }
 
 # Additional dependencies for jbig2enc-rust
 bitvec = { workspace = true }              # For bit manipulation
@@ -49,7 +50,7 @@ jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features
 config = { workspace = true }
 
 [features]
-default = []
+default = ["jp2-lam"]
 debug-logging = []  # No longer requires chrono
 cc-analysis = []  # Enable new connected component analysis for JBIG2 (cjb2-based)
 jp2-lam = ["dep:jp2lam"]  # Pure-Rust JPEG 2000 via jp2lam

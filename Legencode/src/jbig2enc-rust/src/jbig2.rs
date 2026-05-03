@@ -262,9 +262,8 @@ fn validate_and_build_bitimage(
         return Err(Jbig2Error::PackedDataDetected);
     }
 
-    crate::jbig2sym::binary_pixels_to_bitimage(input, width as usize, height as usize).map_err(|message| {
-        Jbig2Error::EncodingFailed { message }
-    })
+    crate::jbig2sym::binary_pixels_to_bitimage(input, width as usize, height as usize)
+        .map_err(|message| Jbig2Error::EncodingFailed { message })
 }
 
 fn encode_single_bitimage(

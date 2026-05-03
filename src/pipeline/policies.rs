@@ -111,10 +111,7 @@ fn letterbox_padding(page_w: u32, page_h: u32, target: u32) -> (f32, f32) {
     let scale = letterbox_scale(page_w, page_h, target);
     let rw = page_w as f32 * scale;
     let rh = page_h as f32 * scale;
-    (
-        (target as f32 - rw) * 0.5,
-        (target as f32 - rh) * 0.5,
-    )
+    ((target as f32 - rw) * 0.5, (target as f32 - rh) * 0.5)
 }
 
 // ── Public coordinate helpers ────────────────────────────────────────────────
@@ -259,7 +256,7 @@ pub fn build_inference_image(high_res: &RgbImage, spec: &InferenceResizeSpec) ->
 
 /// Placeholder for future deskew transform.
 #[derive(Debug, Clone, Default)]
-pub struct DeskewTransform { /* rotation matrix, etc. */ }
+pub struct DeskewTransform {/* rotation matrix, etc. */}
 
 /// Margin correction: offset + scale for mapping original page space
 /// to the margin-corrected page space.
@@ -273,7 +270,12 @@ pub struct MarginCorrection {
 
 impl MarginCorrection {
     pub fn new(offset_x: f32, offset_y: f32, scale_x: f32, scale_y: f32) -> Self {
-        Self { offset_x, offset_y, scale_x, scale_y }
+        Self {
+            offset_x,
+            offset_y,
+            scale_x,
+            scale_y,
+        }
     }
 }
 
@@ -626,9 +628,10 @@ mod tests {
         let mapped = map_bbox_infer_to_page([0.0, 128.0, 1024.0, 896.0], 1000, 750, &spec);
         let expected = [0.0f32, 0.0, 1000.0, 750.0];
         for (a, b) in mapped.iter().zip(expected.iter()) {
-            assert!((a - b).abs() < 0.01, "mapped={mapped:?} expected={expected:?}");
+            assert!(
+                (a - b).abs() < 0.01,
+                "mapped={mapped:?} expected={expected:?}"
+            );
         }
     }
 }
-
-

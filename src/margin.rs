@@ -1153,5 +1153,3 @@ fn standardize_and_center_page(
 
     Ok(new_image)
 }
-
-

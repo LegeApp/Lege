@@ -5,7 +5,7 @@
 //! and margin calculation workflows on Windows.
 
 mod converter;
-mod dx12;
+pub(crate) mod dx12;
 mod error;
 mod filters;
 mod resizer;
@@ -32,7 +32,7 @@ pub mod prelude {
 #[allow(dead_code)]
 mod shaders_include {
     #[cfg(not(any(doc, test, feature = "no-include-shaders")))]
-    include!(env!("SHADER_INCLUDE_PATH"));
+    include!(env!("LEGE_GPU_SHADER_INCLUDE_PATH"));
 
     #[cfg(any(doc, test, feature = "no-include-shaders"))]
     pub const BILINEAR_SHADER: &[u8] = &[];

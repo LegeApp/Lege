@@ -5,12 +5,14 @@ use crate::types::BinarizationOptions;
 use anyhow::{Result, anyhow};
 use image::{GrayImage, Luma};
 use ndarray::Array4;
+use once_cell::sync::OnceCell;
 // GPU execution providers intentionally excluded for HeavySauvola – CPU only.
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Value;
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
 use std::cmp::{max, min};
+use std::sync::Mutex;
 
 /// Format bytes into human-readable memory sizes
 fn format_memory_size(bytes: usize) -> String {
@@ -359,6 +361,10 @@ pub fn binarize_image_raw(
         gray.par_iter_mut().for_each(|p| *p = 255 - *p);
     }
 
+    if let Some(result) = try_gpu_binarize_gray_raw(&gray, width, height, options) {
+        return result;
+    }
+
     if options.use_fixed_threshold {
         let mut result = vec![0u8; width * height];
         apply_threshold(&gray, options.fixed_threshold, &mut result, width, height);
@@ -377,6 +383,164 @@ pub fn binarize_image_raw(
     }
 
     result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinarizationBackendPreference {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+fn binarization_backend_preference() -> BinarizationBackendPreference {
+    if std::env::var("LEGE_FORCE_CPU_BINARIZATION")
+        .map(|value| value != "0")
+        .unwrap_or(false)
+    {
+        return BinarizationBackendPreference::Cpu;
+    }
+
+    match std::env::var("LEGE_BINARIZATION_BACKEND") {
+        Ok(value) if value.eq_ignore_ascii_case("cpu") => BinarizationBackendPreference::Cpu,
+        Ok(value) if value.eq_ignore_ascii_case("gpu") => BinarizationBackendPreference::Gpu,
+        _ => BinarizationBackendPreference::Auto,
+    }
+}
+
+#[cfg(windows)]
+type PlatformGpuBinarizer = lege_gpu::binarization::hlsl::HlslBinarizer;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+type PlatformGpuBinarizer = lege_gpu::binarization::wgpu::WgpuBinarizer;
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+static GPU_BINARIZER: OnceCell<Mutex<PlatformGpuBinarizer>> = OnceCell::new();
+
+fn try_gpu_binarize_gray_raw(
+    gray: &[u8],
+    width: usize,
+    height: usize,
+    options: &BinarizationOptions,
+) -> Option<Vec<u8>> {
+    if matches!(
+        binarization_backend_preference(),
+        BinarizationBackendPreference::Cpu
+    ) {
+        return None;
+    }
+
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        return None;
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    {
+        let mode = if options.use_fixed_threshold {
+            lege_gpu::binarization::BinarizationMode::FixedThreshold
+        } else {
+            lege_gpu::binarization::BinarizationMode::Adaptive
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if matches!(mode, lege_gpu::binarization::BinarizationMode::Adaptive) {
+            return None;
+        }
+
+        let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
+            PlatformGpuBinarizer::new()
+                .map(Mutex::new)
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(lock) => lock,
+            Err(err) => {
+                #[cfg(feature = "debug-logging")]
+                crate::streamline::log_debug_message(&format!(
+                    "[BinarizationRaw] GPU binarizer initialization failed: {}",
+                    err
+                ));
+                return None;
+            }
+        };
+
+        let mut binarizer = match binarizer_lock.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                #[cfg(feature = "debug-logging")]
+                crate::streamline::log_debug_message(
+                    "[BinarizationRaw] GPU binarizer mutex poisoned; falling back to CPU",
+                );
+                return None;
+            }
+        };
+
+        let adaptive = if options.use_fixed_threshold {
+            lege_gpu::binarization::AdaptiveBinarizeGpuConstants {
+                sauvola_window: sauvola_window_for(height, width) as u32,
+                bg_window: odd_background_window(height) as u32,
+                percentile_c: 0,
+                otsu_threshold: 0,
+            }
+        } else {
+            compute_adaptive_gpu_constants(gray, width, height)
+        };
+        let params = lege_gpu::binarization::BinarizationParams {
+            width: width as u32,
+            height: height as u32,
+            mode,
+            invert_output: options.invert,
+            k_factor: options.k_factor,
+            fixed_threshold: options.fixed_threshold,
+            adaptive,
+        };
+
+        match binarizer.binarize_gray_raw(gray, &params) {
+            Ok(result) => {
+                #[cfg(feature = "debug-logging")]
+                crate::streamline::log_debug_message(&format!(
+                    "[BinarizationRaw] GPU binarization completed: {}x{} -> {} bytes ({:?})",
+                    width,
+                    height,
+                    result.len(),
+                    mode
+                ));
+                Some(result)
+            }
+            Err(err) => {
+                #[cfg(feature = "debug-logging")]
+                crate::streamline::log_debug_message(&format!(
+                    "[BinarizationRaw] GPU binarization fallback to CPU: {}",
+                    err
+                ));
+                None
+            }
+        }
+    }
+}
+
+pub fn compute_adaptive_gpu_constants(
+    gray: &[u8],
+    width: usize,
+    height: usize,
+) -> lege_gpu::binarization::AdaptiveBinarizeGpuConstants {
+    let n = width * height;
+    assert_eq!(gray.len(), n);
+
+    let bg_window = odd_background_window(height);
+    let mut bg = vec![0u8; n];
+    dilate_square_reflect(gray, width, height, bg_window, &mut bg);
+
+    let hist = hist256(gray);
+    let percentile_c = percentile_from_hist(&hist, 0.30, n);
+
+    let mut normalized = vec![0u8; n];
+    normalize_by_bg(gray, &bg, percentile_c, &mut normalized);
+    let otsu_threshold = otsu_threshold_u8(&normalized);
+
+    lege_gpu::binarization::AdaptiveBinarizeGpuConstants {
+        sauvola_window: sauvola_window_for(height, width) as u32,
+        bg_window: bg_window as u32,
+        percentile_c,
+        otsu_threshold,
+    }
 }
 
 /// Improved binarization matching the Python script: adaptive Sauvola + background-normalized Otsu + AND fusion
@@ -404,10 +568,7 @@ fn improved_binarize(
     );
 
     // Background estimate
-    let mut s = max(3, min(height / 200, 15)); // Clamp to reasonable max for speed
-    if s % 2 == 0 {
-        s += 1; // Ensure odd
-    }
+    let s = odd_background_window(height);
     let mut bg = vec![0u8; n];
     dilate_square_reflect(gray, width, height, s, &mut bg);
 
@@ -431,22 +592,26 @@ fn improved_binarize(
     let mut fused = vec![0u8; n];
     bitand_binaries(&sauvola_bin, &otsu_bin, &mut fused);
 
-    // Handle output inversion
-    if opt.invert {
-        fused.par_iter_mut().for_each(|p| *p = 255 - *p);
-    }
-
     fused
 }
 
 /// Adaptive window size for Sauvola
 #[inline]
-fn sauvola_window_for(h: usize, w: usize) -> usize {
+pub fn sauvola_window_for(h: usize, w: usize) -> usize {
     let mut win = (h.min(w) / 40).max(31).min(101);
     if win % 2 == 0 {
         win += 1;
     }
     win
+}
+
+#[inline]
+pub fn odd_background_window(height: usize) -> usize {
+    let mut s = max(3, min(height / 200, 15));
+    if s % 2 == 0 {
+        s += 1;
+    }
+    s
 }
 
 /// Sauvola via integral images
@@ -940,7 +1105,8 @@ pub mod pbm {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_threshold;
+    use super::{apply_threshold, improved_binarize, invert_binary};
+    use crate::types::BinarizationOptions;
 
     #[test]
     fn apply_threshold_sets_expected_binary_values() {
@@ -950,5 +1116,50 @@ mod tests {
         apply_threshold(&gray, 150, &mut bin, 4, 2);
 
         assert_eq!(bin, vec![0, 0, 255, 255, 0, 0, 255, 0,]);
+    }
+
+    #[test]
+    fn invert_binary_flips_all_pixels_by_row() {
+        let mut bin = vec![0u8, 255, 128, 1, 254, 42];
+        invert_binary(&mut bin, 2, 3);
+        assert_eq!(bin, vec![255, 0, 127, 254, 1, 213]);
+    }
+
+    #[test]
+    fn pbm_pack_handles_odd_width_msb_first() {
+        let bin = vec![0u8, 255, 0, 255, 0, 255, 0, 255, 0, 255];
+        let packed = super::pbm::pack_1bit_data(&bin, 5, 2);
+        assert_eq!(packed, vec![0b1010_1000, 0b0101_0000]);
+    }
+
+    #[test]
+    fn improved_binarize_preserves_dimensions_for_odd_width() {
+        let width = 37usize;
+        let height = 29usize;
+        let gray: Vec<u8> = (0..width * height)
+            .map(|i| ((i * 17 + i / 3) % 256) as u8)
+            .collect();
+        let out = improved_binarize(&gray, width, height, &BinarizationOptions::default());
+        assert_eq!(out.len(), width * height);
+        assert!(out.iter().all(|&v| v == 0 || v == 255));
+    }
+
+    #[test]
+    fn improved_binarize_does_not_apply_output_inversion() {
+        let width = 37usize;
+        let height = 31usize;
+        let gray: Vec<u8> = (0..width * height)
+            .map(|i| ((i * 23 + i / 5) % 256) as u8)
+            .collect();
+        let normal = BinarizationOptions::default();
+        let inverted = BinarizationOptions {
+            invert: true,
+            ..BinarizationOptions::default()
+        };
+
+        assert_eq!(
+            improved_binarize(&gray, width, height, &normal),
+            improved_binarize(&gray, width, height, &inverted)
+        );
     }
 }

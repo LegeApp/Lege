@@ -468,11 +468,7 @@ impl ProcessingStatus {
                 enable_layout_detection: _,
                 enable_deskew: _,
                 eta: _,
-            } => (
-                "[Layout Mode]".to_string(),
-                String::new(),
-                String::new(),
-            ),
+            } => ("[Layout Mode]".to_string(), String::new(), String::new()),
             Self::NoLayoutProgress {
                 rendered: _,
                 encoded: _,
@@ -480,11 +476,7 @@ impl ProcessingStatus {
                 total: _,
                 enable_deskew: _,
                 eta: _,
-            } => (
-                "[No-Layout Mode]".to_string(),
-                String::new(),
-                String::new(),
-            ),
+            } => ("[No-Layout Mode]".to_string(), String::new(), String::new()),
             Self::MarginProgress {
                 pass1_rendered: _,
                 pass1_detected: _,
@@ -494,11 +486,7 @@ impl ProcessingStatus {
                 enable_layout_detection: _,
                 enable_deskew: _,
                 eta: _,
-            } => (
-                "[Margin Mode]".to_string(),
-                String::new(),
-                String::new(),
-            ),
+            } => ("[Margin Mode]".to_string(), String::new(), String::new()),
         }
     }
 }

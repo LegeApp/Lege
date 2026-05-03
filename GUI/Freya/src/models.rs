@@ -9,10 +9,48 @@ pub use lege::processing_log::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub enum InputKind {
+    Pdf,
+    ImageFolder,
+    ZipArchive,
+    #[default]
+    Unknown,
+}
+
+impl InputKind {
+    pub fn detect(path: &PathBuf) -> Self {
+        if path.is_dir() {
+            return InputKind::ImageFolder;
+        }
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("pdf") => InputKind::Pdf,
+            Some("zip") => InputKind::ZipArchive,
+            _ => InputKind::Unknown,
+        }
+    }
+
+    pub fn badge(&self) -> &'static str {
+        match self {
+            InputKind::Pdf => "PDF",
+            InputKind::ImageFolder => "DIR",
+            InputKind::ZipArchive => "ZIP",
+            InputKind::Unknown => "???",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DocumentItem {
     pub id: String,
     pub file_path: PathBuf,
     pub file_name: String,
+    pub input_kind: InputKind,
+    pub page_count: Option<u32>,
     pub status: DocumentStatus,
     pub output_path: Option<PathBuf>,
     pub progress: f32,
@@ -26,15 +64,26 @@ impl DocumentItem {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+        let input_kind = InputKind::detect(&file_path);
 
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             file_path,
             file_name,
+            input_kind,
+            page_count: None,
             status: DocumentStatus::Queued,
             output_path: None,
             progress: 0.0,
             error_message: None,
+        }
+    }
+
+    pub fn count_label(&self) -> &'static str {
+        match self.input_kind {
+            InputKind::Pdf => "pages",
+            InputKind::ImageFolder | InputKind::ZipArchive => "images",
+            InputKind::Unknown => "pages",
         }
     }
 }

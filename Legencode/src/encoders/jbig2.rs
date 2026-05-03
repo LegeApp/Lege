@@ -2,10 +2,8 @@ use crate::streamline::{Jbig2Mode, Jbig2Settings};
 use crate::{EncodingError, Result};
 use jbig2enc_rust::{
     Jbig2Config, Jbig2Context, Jbig2EncodeResult, encode_single_image_lossless,
-    encode_single_image_with_config,
-    jbig2halftone::encode_halftone_pdf_split_auto,
-    jbig2structs::GenericRegionParams,
-    jbig2sym::binary_pixels_to_bitimage,
+    encode_single_image_with_config, jbig2halftone::encode_halftone_pdf_split_auto,
+    jbig2structs::GenericRegionParams, jbig2sym::binary_pixels_to_bitimage,
 };
 
 /// Normalize to one byte per pixel for `jbig2enc_rust::binary_pixels_to_bitimage`:
@@ -14,12 +12,7 @@ use jbig2enc_rust::{
 /// Accepts:
 /// - channels=0: packed logical buffer (same rules as grayscale below)
 /// - channels=1: grayscale 0–255 or already 0/1
-fn normalize_binary_data(
-    input: &[u8],
-    width: u32,
-    height: u32,
-    channels: u8,
-) -> Result<Vec<u8>> {
+fn normalize_binary_data(input: &[u8], width: u32, height: u32, channels: u8) -> Result<Vec<u8>> {
     let expected_len = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| EncodingError::InvalidInput("Dimensions too large".to_string()))?;
@@ -47,10 +40,7 @@ fn normalize_binary_data(
             return slice.to_vec();
         }
         // Match CCITT: paper (high) -> 0 jbig2 white, ink (low) -> 1 jbig2 black
-        slice
-            .iter()
-            .map(|&b| if b > 128 { 0 } else { 1 })
-            .collect()
+        slice.iter().map(|&b| if b > 128 { 0 } else { 1 }).collect()
     }
 
     match channels {
@@ -66,11 +56,7 @@ fn jbig2_debug_log_line(msg: &str) {
     if std::env::var("LEGE_JBIG2_DEBUG").ok().as_deref() != Some("1") {
         return;
     }
-    let line = format!(
-        "[{}] {}\n",
-        chrono_simple_now(),
-        msg
-    );
+    let line = format!("[{}] {}\n", chrono_simple_now(), msg);
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -152,20 +138,16 @@ pub fn encode(
                 "JBIG2 halftone segments require pdf_fragment_mode (PDF embedding)".to_string(),
             ));
         }
-        let bitimage = binary_pixels_to_bitimage(normalized.as_slice(), width as usize, height as usize)
-            .map_err(|m| EncodingError::EncoderError(m))?;
+        let bitimage =
+            binary_pixels_to_bitimage(normalized.as_slice(), width as usize, height as usize)
+                .map_err(|m| EncodingError::EncoderError(m))?;
         let mut jcfg = Jbig2Config::default();
         jcfg.want_full_headers = false;
         let dpi = jcfg.dpi;
         let region = GenericRegionParams::new(width, height, dpi);
-        let (global_data, page_data) = encode_halftone_pdf_split_auto(
-            &bitimage,
-            &jcfg,
-            &region,
-            1,
-            Some(1),
-        )
-        .map_err(|e| EncodingError::EncoderError(e.to_string()))?;
+        let (global_data, page_data) =
+            encode_halftone_pdf_split_auto(&bitimage, &jcfg, &region, 1, Some(1))
+                .map_err(|e| EncodingError::EncoderError(e.to_string()))?;
         jbig2_debug_log_line(&format!(
             "encode (jbig2halftone): page_len={} global_len={}",
             page_data.len(),
