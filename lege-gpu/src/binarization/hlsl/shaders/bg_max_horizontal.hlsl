@@ -31,7 +31,8 @@ void main(uint3 id : SV_DispatchThreadID) {
 
     for (int dx = -(int)params.bg_radius; dx <= (int)params.bg_radius; dx++) {
         int sx = reflect_101((int)x + dx, (int)params.width);
-        uint v = grayBuffer[y * params.width + (uint)sx] & 255u;
+        uint src_idx = y * params.width + (uint)sx;
+        uint v = grayBuffer[src_idx] & 255u;
         m = max(m, v);
     }
 
