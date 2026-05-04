@@ -88,7 +88,7 @@ pub struct PageData {
     pub index: usize,
     /// High-resolution RGB image
     pub rgb_image: RgbImage,
-    /// Binarized image data (0 or 255)
+    /// Binarized image data (0 or 255) - always present for DJVU JB2 encoding
     pub binarized: Vec<u8>,
     /// Detected regions from layout detection
     pub detections: Vec<Detection>,
