@@ -35,7 +35,8 @@ void main(uint3 id : SV_DispatchThreadID) {
     int sx = reflect_101((int)px - (int)params.radius, (int)params.width);
     int sy = reflect_101((int)py - (int)params.radius, (int)params.height);
 
-    uint g = grayBuffer[(uint)sy * params.width + (uint)sx] & 255u;
+    uint src_idx = (uint)sy * params.width + (uint)sx;
+    uint g = grayBuffer[src_idx] & 255u;
     uint out_idx = py * params.padded_width + px;
 
     paddedGray[out_idx] = g;

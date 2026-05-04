@@ -21,6 +21,7 @@ members = [
 ]
 default-members = [
     ".",
+    "GUI/Freya",
 ]
 
 [workspace.lints.rust]
@@ -100,7 +101,6 @@ freya-edit = { path = "../freya-main/crates/freya-edit" }
 freya-clipboard = { path = "../freya-main/crates/freya-clipboard" }
 freya-animation = { path = "../freya-main/crates/freya-animation" }
 freya-performance-plugin = { path = "../freya-main/crates/freya-performance-plugin" }
-freya-android = { path = "../freya-main/crates/freya-android" }
 torin = { path = "../freya-main/crates/torin" }
 
 [[bin]]
