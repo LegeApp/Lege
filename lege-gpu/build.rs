@@ -77,6 +77,11 @@ fn compile_hlsl_shaders() {
             "sauvola_otsu_binarize.cso",
             "BINARIZE_SHADER",
         ),
+        (
+            "src/binarization/hlsl/shaders/adaptive_linearize.hlsl",
+            "adaptive_linearize.cso",
+            "BINARIZE_LINEARIZE_SHADER",
+        ),
     ];
 
     for (src, _, _) in SHADERS {

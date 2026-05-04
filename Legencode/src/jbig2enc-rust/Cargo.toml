@@ -67,12 +67,6 @@ name = "halftone_tester"
 path = "src/bin/halftone_tester.rs"
 required-features = ["halftone_bin"]
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-
 [dev-dependencies]
 tracing = { version = "0.1", features = ["std"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "registry", "std"] }

@@ -100,11 +100,6 @@ fn fast_exit(code: i32) -> ! {
 
 // Binarization parsing moved to CliConfigBuilder in types.rs
 
-// Text constants for CLI output
-static DOC: &str = "[DOC]";
-static CHECK: &str = "[OK]";
-static FLOPPY: &str = "[SAVE]";
-
 // IMPORTANT: CLI user-facing copy in this file must come from `src/cli_text.json`
 // via `CLI_TEXT` (through `text_loader.rs`). Do not introduce hardcoded
 // user-visible strings in `main.rs`; update `cli_text.json` instead.
@@ -547,6 +542,13 @@ fn parse_jbig2_mode_flag(raw: &str) -> Result<Jbig2Mode> {
 fn main() -> Result<()> {
     // Configure dynamic runtime library paths early (before ORT/PDF pipelines initialize).
     lege::configure_runtime_env();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Err(e) = lege::windows_dirs::ensure_directories() {
+            eprintln!("Warning: failed to create user directories: {e}");
+        }
+    }
 
     let args: Vec<String> = std::env::args().collect();
 

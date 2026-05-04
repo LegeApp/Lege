@@ -53,7 +53,7 @@ pub struct ProcessedPage {
     pub height: u32,
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
-    pub binarized: Vec<u8>,
+    pub binarized: Option<Vec<u8>>,  // None when OCR is disabled to free memory
 }
 
 #[derive(Clone, Debug)]
@@ -378,9 +378,10 @@ async fn process_single_page(
         adjusted_image,
         adjusted_detections,
         binarized,
+        deferred_binarize,
         width,
         height,
-        is_cover_page,
+        is_cover_page: _is_cover_page,
         cover_encoded_data,
         region_processing_results,
     } = cpu_result;
@@ -470,19 +471,41 @@ async fn process_single_page(
             .iter()
             .any(|d| d.category.force_generic_jbig2());
 
-    // Encode base layer - in "jpeg" mode, encode the full RGB image instead of grayscale
-    let base_layer = if config.text_format() == "jpeg" {
-        encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?
-    } else {
-        encode_base_layer(
-            &binarized,
+    // Encode base layer.
+    // - "jpeg" mode: encode the full RGB image (binarized holds luma for OCR storage only).
+    // - Deferred path: binarize+encode are fused inside one spawn_blocking so GPU mapped
+    //   bytes flow directly to the encoder via callback (no intermediate Vec<u8>).
+    // - Default path: binarized is moved into the encoder; cloned only if OCR storage needs it.
+    let (base_layer, binarized_for_page) = if config.text_format() == "jpeg" {
+        let layer = encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?;
+        let stored = if config.enable_ocr() { Some(binarized) } else { None };
+        (layer, stored)
+    } else if let Some(bin_options) = deferred_binarize {
+        // adjusted_image is not used after this point in process_single_page;
+        // move it into the encoder task without cloning.
+        let layer = encode_base_layer_fused(
+            Arc::new(adjusted_image),
+            bin_options,
             width,
             height,
             &config,
             page_index,
             force_jbig2_generic,
         )
-        .await?
+        .await?;
+        (layer, None)
+    } else {
+        let stored = if config.enable_ocr() { Some(binarized.clone()) } else { None };
+        let layer = encode_base_layer(
+            binarized,
+            width,
+            height,
+            &config,
+            page_index,
+            force_jbig2_generic,
+        )
+        .await?;
+        (layer, stored)
     };
 
     elements.insert(
@@ -502,7 +525,7 @@ async fn process_single_page(
         height: height as u32,
         elements,
         hocr_text,
-        binarized,
+        binarized: binarized_for_page,
     })
 }
 
@@ -539,6 +562,11 @@ struct PageProcessingOutput {
     adjusted_image: RgbImage,
     adjusted_detections: Vec<crate::engine::Detection>,
     binarized: Vec<u8>,
+    /// When `Some`, binarization was deferred — `binarized` is empty and the encoder
+    /// must binarize from `adjusted_image` using these options. Set only when the
+    /// binarized buffer is guaranteed not to require post-binarization mutation
+    /// (no cover, no image regions, OCR off, non-jpeg base format).
+    deferred_binarize: Option<BinarizationOptions>,
     width: usize,
     height: usize,
     is_cover_page: bool,
@@ -722,10 +750,24 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         std::borrow::Cow::Borrowed(&adjusted_image)
     };
 
+    let is_cover_page = should_treat_as_cover_page(page_index, &config);
+
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
-    // In "jpeg" text format mode, skip binarization and use the RGB image directly for base encoding
-    let mut binarized = if config.text_format() == "jpeg" {
-        binarization_image
+    // Defer binarization when no downstream consumer will mutate the result and
+    // the encoder can binarize directly from the RGB image with zero intermediate
+    // copy. Conditions: not a cover page (no fill mutation), no image regions
+    // (no mask/merge mutation), OCR off (no consumer for binarized bytes), and
+    // not jpeg base mode (jpeg path uses different luma handling).
+    let can_defer_binarize = !is_cover_page
+        && !has_image_regions
+        && !config.enable_ocr()
+        && config.text_format() != "jpeg";
+
+    let (mut binarized, deferred_binarize) = if can_defer_binarize {
+        (Vec::new(), Some(binarize_options_for(&config, force_blank_threshold)))
+    } else if config.text_format() == "jpeg" {
+        // Luma-from-RGB pass for jpeg base mode (full-page color encoded later).
+        let luma: Vec<u8> = binarization_image
             .as_raw()
             .chunks_exact(3)
             .map(|rgb| {
@@ -734,13 +776,12 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 let b = rgb[2] as f32;
                 ((0.299 * r + 0.587 * g + 0.114 * b) as u8).max(1)
             })
-            .collect()
+            .collect();
+        (luma, None)
     } else {
-        binarize_image(&binarization_image, &config, force_blank_threshold)
+        (binarize_image(&binarization_image, &config, force_blank_threshold), None)
     };
     drop(binarization_image);
-
-    let is_cover_page = should_treat_as_cover_page(page_index, &config);
 
     // 4. Handle cover page encoding (before processing regions since it modifies binarized)
     let cover_encoded_data =
@@ -1023,6 +1064,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         adjusted_image,
         adjusted_detections,
         binarized,
+        deferred_binarize,
         width,
         height,
         is_cover_page,
@@ -1226,20 +1268,13 @@ fn apply_region_policy(
     Ok(policy.transform(rendered, inference_result, config))
 }
 
-/// Binarize image with special handling for blank pages in adaptive mode.
-fn binarize_image(
-    image: &RgbImage,
-    config: &PipelineConfig,
-    force_blank_threshold: bool,
-) -> Vec<u8> {
+/// Build BinarizationOptions from the pipeline config + blank-page threshold override.
+fn binarize_options_for(config: &PipelineConfig, force_blank_threshold: bool) -> BinarizationOptions {
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
         want_invert_output = false;
     }
-
-    // Special handling for blank pages in adaptive + layout mode:
-    // use fixed threshold to avoid static/noise artifacts.
     let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
         (true, BLANK_PAGE_FALLBACK_THRESHOLD)
     } else {
@@ -1248,8 +1283,7 @@ fn binarize_image(
             config.binarization().fixed_threshold,
         )
     };
-
-    let options = BinarizationOptions {
+    BinarizationOptions {
         invert: want_invert_output,
         invert_input: want_invert_input,
         k_factor: config.binarization().k_factor,
@@ -1258,9 +1292,16 @@ fn binarize_image(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
-    };
+    }
+}
 
-    // binarize_image_raw handles heavy-duty mode internally
+/// Binarize image with special handling for blank pages in adaptive mode.
+fn binarize_image(
+    image: &RgbImage,
+    config: &PipelineConfig,
+    force_blank_threshold: bool,
+) -> Vec<u8> {
+    let options = binarize_options_for(config, force_blank_threshold);
     Legencode::color::binarization::binarize_image_raw(
         image.as_raw(),
         image.width() as usize,
@@ -1352,9 +1393,8 @@ fn encode_region_image_sync(
         crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
     };
 
-    let image_data_owned = image_data[..expected_len].to_vec();
     let buffer = LegeImageBuffer {
-        data: &image_data_owned,
+        data: &image_data[..expected_len],
         width,
         height,
         channels: CHANNELS as u8,
@@ -1453,7 +1493,7 @@ async fn extract_pdf_text(
 /// Supports JBIG2, CCITT4, and JPEG formats with proper settings.
 /// `force_jbig2_generic` overrides Symbol/SymUnify → Generic when abandon regions are present.
 async fn encode_base_layer(
-    binarized: &[u8],
+    binarized: Vec<u8>,
     width: usize,
     height: usize,
     config: &PipelineConfig,
@@ -1503,7 +1543,6 @@ async fn encode_base_layer(
     };
 
     // Spawn blocking task for encoding with semaphore backpressure
-    let binarized_owned = binarized.to_vec();
     let text_format = config.text_format().to_string();
     let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
     let permit = match encode_sem {
@@ -1513,7 +1552,7 @@ async fn encode_base_layer(
 
     let encoding_result = tokio::task::spawn_blocking(move || {
         let buffer = LegeImageBuffer {
-            data: &binarized_owned,
+            data: &binarized,
             width: width as u32,
             height: height as u32,
             channels: 1u8, // Grayscale/binary data
@@ -1582,6 +1621,135 @@ async fn encode_base_layer(
                 page_index + 1
             );
 
+            Ok(ContentType::Jbig2ImageWithGlobals {
+                page_data: Arc::from(page_data),
+                global_data: Arc::from(global_data),
+                pixel_width: width as u32,
+                pixel_height: height as u32,
+            })
+        }
+    }
+}
+
+/// Fused binarize + base-layer encode in a single spawn_blocking task.
+///
+/// Used when the binarized buffer needs no post-binarization mutation (no cover, no image
+/// regions, OCR off). The GPU binarizer's mapped readback bytes flow directly into the
+/// encoder via callback — no intermediate `Vec<u8>` allocation between binarize and encode.
+async fn encode_base_layer_fused(
+    rgb_image: Arc<RgbImage>,
+    bin_options: BinarizationOptions,
+    width: usize,
+    height: usize,
+    config: &PipelineConfig,
+    page_index: usize,
+    force_jbig2_generic: bool,
+) -> Result<crate::accumulator::ContentType> {
+    use crate::accumulator::ContentType;
+    use Legencode::streamline::{
+        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
+        Jbig2Settings,
+    };
+
+    #[cfg(feature = "debug-logging")]
+    let encoding_start = std::time::Instant::now();
+
+    let jbig2_mode = if force_jbig2_generic {
+        Legencode::streamline::Jbig2Mode::Generic
+    } else {
+        config.jbig2_mode()
+    };
+    let (encoding_settings, base_format) = match config.text_format() {
+        "jbig2" => (
+            EncodingSettings::Jbig2(Jbig2Settings {
+                pdf_fragment_mode: true,
+                mode: jbig2_mode,
+                use_jbig2_halftone_segments: false,
+            }),
+            "jbig2",
+        ),
+        "ccitt4" => (EncodingSettings::Ccitt4, "ccitt"),
+        other => {
+            return Err(anyhow!(
+                "fused encode path does not support text format '{}'",
+                other
+            ));
+        }
+    };
+
+    let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
+    let permit = match encode_sem {
+        Some(sem) => Some(sem.acquire_owned().await.ok()),
+        None => None,
+    };
+
+    let text_format = config.text_format().to_string();
+
+    let encoding_result = tokio::task::spawn_blocking(move || {
+        Legencode::color::binarization::binarize_image_raw_with(
+            rgb_image.as_raw(),
+            width,
+            height,
+            &bin_options,
+            |binarized| {
+                let buffer = LegeImageBuffer {
+                    data: binarized,
+                    width: width as u32,
+                    height: height as u32,
+                    channels: 1u8,
+                };
+                EncodingManager::encode(&buffer, &encoding_settings).map_err(|e| {
+                    anyhow!("Encoding failed for format {}: {}", text_format, e)
+                })
+            },
+        )
+    })
+    .await
+    .map_err(|e| anyhow!("Fused encoding task panicked: {}", e))??;
+
+    drop(permit);
+
+    match encoding_result {
+        EncodingResult::Standard(data) => {
+            if data.is_empty() {
+                return Err(anyhow!(
+                    "Encoder returned empty data for {}x{} image",
+                    width,
+                    height
+                ));
+            }
+
+            #[cfg(feature = "debug-logging")]
+            crate::perf_log!(
+                encoding_start,
+                "[PROFILING] Page {} {} fused binarize+encode completed",
+                page_index + 1,
+                base_format
+            );
+
+            Ok(ContentType::EncodedImage {
+                data: Arc::from(data),
+                pixel_width: width as u32,
+                pixel_height: height as u32,
+                format: base_format.to_string(),
+            })
+        }
+        EncodingResult::Jbig2WithGlobals {
+            page_data,
+            global_data,
+        } => {
+            if base_format != "jbig2" {
+                return Err(anyhow!(
+                    "Non-JBIG2 text mode returned JBIG2 payload (Jbig2WithGlobals variant)"
+                ));
+            }
+            if page_data.is_empty() {
+                return Err(anyhow!(
+                    "Encoder returned empty data for {}x{} image",
+                    width,
+                    height
+                ));
+            }
             Ok(ContentType::Jbig2ImageWithGlobals {
                 page_data: Arc::from(page_data),
                 global_data: Arc::from(global_data),
@@ -2051,7 +2219,7 @@ pub async fn create_and_run_pdf_source_pipeline(
                     elements: processed_page.elements,
                     hocr_text: processed_page.hocr_text,
                     index: processed_page.index,
-                    binarized: Some(processed_page.binarized),
+                    binarized: processed_page.binarized, // Already Option<Vec<u8>>
                 };
 
                 pdf_writer_handle

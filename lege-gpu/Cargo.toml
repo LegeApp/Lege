@@ -13,9 +13,15 @@ name = "compare-binarize"
 path = "src/bin/compare_binarize.rs"
 required-features = ["compare-bin"]
 
+[[bin]]
+name = "bench-binarize"
+path = "src/bin/bench_binarize.rs"
+required-features = ["compare-bin"]
+
 [dependencies]
 bytemuck = { workspace = true }
 log = { workspace = true }
+once_cell = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
