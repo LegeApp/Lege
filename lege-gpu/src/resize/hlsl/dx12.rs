@@ -122,7 +122,7 @@ impl D3D12Context {
             // Create descriptor heap for UAV/SRV
             let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: 16,
+                NumDescriptors: 24,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             };
@@ -219,7 +219,7 @@ impl D3D12Context {
             // Create descriptor heap for UAV/SRV
             let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: 16,
+                NumDescriptors: 24,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             };
