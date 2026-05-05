@@ -82,6 +82,11 @@ fn compile_hlsl_shaders() {
             "adaptive_linearize.cso",
             "BINARIZE_LINEARIZE_SHADER",
         ),
+        (
+            "src/binarization/hlsl/shaders/pack_output.hlsl",
+            "pack_output.cso",
+            "BINARIZE_PACK_SHADER",
+        ),
     ];
 
     for (src, _, _) in SHADERS {
