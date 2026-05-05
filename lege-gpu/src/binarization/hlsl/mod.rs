@@ -10,6 +10,30 @@ use crate::binarization::{
 };
 use crate::resize::hlsl::dx12::{ComputePipelineState, D3D12Context};
 
+/// Map the readback buffer (which holds `pixel_count` u32 words, 1 byte of binary
+/// data per word in the LSB) and produce a `Vec<u8>` of `pixel_count` bytes in a
+/// single pass — no intermediate `Vec<u32>` allocation. Saves ~3*pixel_count
+/// transient bytes plus one full pass over the buffer compared to the previous
+/// "memcpy to Vec<u32>, then .into_iter().map(|v| v as u8).collect()" path.
+unsafe fn readback_u32_lsb_to_u8(
+    readback: &ID3D12Resource,
+    pixel_count: usize,
+) -> Result<Vec<u8>> {
+    let mut rb_ptr: *mut c_void = std::ptr::null_mut();
+    unsafe {
+        readback
+            .Map(0, None, Some(&mut rb_ptr))
+            .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
+    }
+    let mut out = vec![0u8; pixel_count];
+    let src = unsafe { std::slice::from_raw_parts(rb_ptr.cast::<u32>(), pixel_count) };
+    out.iter_mut().zip(src.iter()).for_each(|(dst, &v)| *dst = v as u8);
+    unsafe {
+        readback.Unmap(0, None);
+    }
+    Ok(out)
+}
+
 #[allow(dead_code)]
 mod shaders_include {
     #[cfg(not(any(doc, feature = "no-include-shaders")))]
@@ -435,14 +459,7 @@ impl HlslBinarizer {
                     .execute_command_list()
                     .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
 
-                let mut gpu_words = vec![0u32; pixel_count];
-                let mut rb_ptr: *mut c_void = std::ptr::null_mut();
-                buffers
-                    .readback
-                    .Map(0, None, Some(&mut rb_ptr))
-                    .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
-                copy_nonoverlapping(rb_ptr.cast::<u32>(), gpu_words.as_mut_ptr(), pixel_count);
-                buffers.readback.Unmap(0, None);
+                let out = readback_u32_lsb_to_u8(&buffers.readback, pixel_count)?;
 
                 if self.verbose {
                     log::debug!(
@@ -452,7 +469,7 @@ impl HlslBinarizer {
                     );
                 }
 
-                return Ok(gpu_words.into_iter().map(|v| v as u8).collect());
+                return Ok(out);
             }
 
             // ---------------------------------------------------------------
@@ -667,14 +684,7 @@ impl HlslBinarizer {
                 .execute_command_list()
                 .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
 
-            let mut gpu_words = vec![0u32; pixel_count];
-            let mut rb_ptr: *mut c_void = std::ptr::null_mut();
-            buffers
-                .readback
-                .Map(0, None, Some(&mut rb_ptr))
-                .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
-            copy_nonoverlapping(rb_ptr.cast::<u32>(), gpu_words.as_mut_ptr(), pixel_count);
-            buffers.readback.Unmap(0, None);
+            let out = readback_u32_lsb_to_u8(&buffers.readback, pixel_count)?;
 
             if self.verbose {
                 log::debug!(
@@ -684,7 +694,7 @@ impl HlslBinarizer {
                 );
             }
 
-            Ok(gpu_words.into_iter().map(|v| v as u8).collect())
+            Ok(out)
         }
     }
 
