@@ -268,7 +268,7 @@ pub async fn source_stage(
                 total_pages,
             );
         } else {
-            progress.publish_no_layout_progress(rendered_val, deskewed_val, total_pages);
+            progress.publish_no_layout_render_progress(rendered_val, deskewed_val, total_pages);
         }
     }
 

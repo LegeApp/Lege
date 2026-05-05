@@ -795,12 +795,13 @@ impl ProgressTracker {
         let old_encoded = state.metrics.encoded;
         let old_deskewed = state.metrics.deskewed;
 
-        // Update metrics
+        // Update metrics. Pipeline stages run concurrently, so a later callback can
+        // carry an older snapshot of another stage. Keep each counter monotonic.
         state.metrics.pages_total = total as u32;
-        state.metrics.rendered = rendered as u32;
-        state.metrics.detected = detected as u32;
-        state.metrics.encoded = encoded as u32;
-        state.metrics.deskewed = deskewed as u32;
+        state.metrics.rendered = state.metrics.rendered.max(rendered as u32);
+        state.metrics.detected = state.metrics.detected.max(detected as u32);
+        state.metrics.encoded = state.metrics.encoded.max(encoded as u32);
+        state.metrics.deskewed = state.metrics.deskewed.max(deskewed as u32);
 
         if state.metrics.is_djvu {
             state.metrics.rendered = state.metrics.rendered.min(state.metrics.detected);
@@ -845,13 +846,14 @@ impl ProgressTracker {
         let old_encoded = state.metrics.encoded;
         let old_deskewed = state.metrics.deskewed;
 
-        // Update metrics
+        // Update metrics. No-layout processing uses separate render and encode
+        // callbacks; this method represents completed encoding.
         state.metrics.pages_total = total as u32;
-        // In NoLayout, all stages are effectively the same
-        state.metrics.rendered = processed as u32;
-        state.metrics.detected = processed as u32;
-        state.metrics.encoded = processed as u32;
-        state.metrics.deskewed = deskewed as u32;
+        let processed = processed as u32;
+        state.metrics.rendered = state.metrics.rendered.max(processed);
+        state.metrics.detected = state.metrics.detected.max(processed);
+        state.metrics.encoded = state.metrics.encoded.max(processed);
+        state.metrics.deskewed = state.metrics.deskewed.max(deskewed as u32);
 
         self.ensure_started_nolock(&mut state, processed > 0 || deskewed > 0);
         self.compute_eta_nolock(&mut state);
@@ -879,6 +881,44 @@ impl ProgressTracker {
         self.send_update(status, metrics);
     }
 
+    pub fn publish_no_layout_render_progress(
+        &self,
+        rendered: usize,
+        deskewed: usize,
+        total: usize,
+    ) {
+        let mut state = self.state.lock().unwrap();
+
+        let old_rendered = state.metrics.rendered;
+        let old_deskewed = state.metrics.deskewed;
+
+        state.metrics.pages_total = total as u32;
+        state.metrics.rendered = state.metrics.rendered.max(rendered as u32);
+        state.metrics.deskewed = state.metrics.deskewed.max(deskewed as u32);
+
+        self.ensure_started_nolock(&mut state, rendered > 0 || deskewed > 0);
+        self.compute_eta_nolock(&mut state);
+
+        let is_meaningful_change = state.metrics.rendered != old_rendered
+            || state.metrics.deskewed != old_deskewed
+            || state.last_update.is_none();
+
+        if !is_meaningful_change {
+            return;
+        }
+
+        if !self.should_send_update(&state) {
+            return;
+        }
+
+        state.last_update = Some(Instant::now());
+
+        let status = self.get_current_progress_status_nolock(&state);
+        let metrics = state.metrics;
+        drop(state);
+        self.send_update(status, metrics);
+    }
+
     pub fn publish_margin_progress(
         &self,
         pass1_rendered: usize,
@@ -895,12 +935,13 @@ impl ProgressTracker {
         let old_encoded = state.metrics.encoded;
         let old_deskewed = state.metrics.deskewed;
 
-        // Update metrics
+        // Update metrics. Margin stages may publish with stale counts from other
+        // concurrent stages, so preserve the highest visible value per counter.
         state.metrics.pages_total = total as u32;
-        state.metrics.rendered = pass1_rendered as u32;
-        state.metrics.detected = pass1_detected as u32;
-        state.metrics.encoded = pass2_processed as u32; // 'encoded' maps to pass2
-        state.metrics.deskewed = deskewed as u32;
+        state.metrics.rendered = state.metrics.rendered.max(pass1_rendered as u32);
+        state.metrics.detected = state.metrics.detected.max(pass1_detected as u32);
+        state.metrics.encoded = state.metrics.encoded.max(pass2_processed as u32); // 'encoded' maps to pass2
+        state.metrics.deskewed = state.metrics.deskewed.max(deskewed as u32);
 
         // Start timing as soon as we make visible progress in any pass
         self.ensure_started_nolock(
@@ -942,7 +983,7 @@ impl ProgressTracker {
 
         // Update metrics
         state.metrics.pages_total = total as u32;
-        state.metrics.deskewed = deskewed as u32;
+        state.metrics.deskewed = state.metrics.deskewed.max(deskewed as u32);
 
         self.ensure_started_nolock(&mut state, deskewed > 0);
         self.compute_eta_nolock(&mut state);
@@ -989,14 +1030,14 @@ impl ProgressTracker {
         // For heavy processing modes, we'll update the 'encoded' metric
         // (which represents completed work) and potentially all stages for full progress
         let completed = current as u32;
-        state.metrics.rendered = completed;
-        state.metrics.detected = completed;
-        state.metrics.encoded = completed;
+        state.metrics.rendered = state.metrics.rendered.max(completed);
+        state.metrics.detected = state.metrics.detected.max(completed);
+        state.metrics.encoded = state.metrics.encoded.max(completed);
 
         // If specific page progress is provided, use that instead
         if let Some(pages_completed) = processed_pages {
             let page_count = pages_completed as u32;
-            state.metrics.encoded = page_count;
+            state.metrics.encoded = state.metrics.encoded.max(page_count);
             // Also update other metrics accordingly for a more accurate display
             if state.metrics.encoded > state.metrics.rendered {
                 state.metrics.rendered = state.metrics.encoded;
@@ -1008,7 +1049,7 @@ impl ProgressTracker {
 
         // Update deskewed counter if provided
         if let Some(deskew_completed) = deskewed {
-            state.metrics.deskewed = deskew_completed as u32;
+            state.metrics.deskewed = state.metrics.deskewed.max(deskew_completed as u32);
         }
 
         self.ensure_started_nolock(&mut state, completed > 0 || deskewed.is_some_and(|d| d > 0));
@@ -1412,6 +1453,48 @@ fn human_duration(d: Duration) -> String {
         format!("{:02}m{:02}s", m, s)
     } else {
         format!("{:02}s", s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracker() -> ProgressTracker {
+        let (sender, _receiver) = flume::unbounded();
+        ProgressTracker::new(1, sender)
+    }
+
+    #[test]
+    fn no_layout_render_progress_does_not_advance_encode_counter() {
+        let tracker = tracker();
+        tracker.set_mode_enum(ProgressMode::NoLayout);
+
+        tracker.publish_no_layout_render_progress(12, 0, 20);
+        let metrics = tracker.current_metrics();
+
+        assert_eq!(metrics.rendered, 12);
+        assert_eq!(metrics.encoded, 0);
+
+        tracker.publish_no_layout_progress(3, 0, 20);
+        let metrics = tracker.current_metrics();
+
+        assert_eq!(metrics.rendered, 12);
+        assert_eq!(metrics.encoded, 3);
+    }
+
+    #[test]
+    fn stage_counters_do_not_decrement_from_stale_updates() {
+        let tracker = tracker();
+        tracker.set_mode_enum(ProgressMode::Layout);
+
+        tracker.publish_layout_progress(10, 8, 6, 0, 20);
+        tracker.publish_layout_progress(7, 9, 4, 0, 20);
+        let metrics = tracker.current_metrics();
+
+        assert_eq!(metrics.rendered, 10);
+        assert_eq!(metrics.detected, 9);
+        assert_eq!(metrics.encoded, 6);
     }
 }
 
