@@ -222,18 +222,21 @@ pub async fn source_stage(
                 );
 
                 let high_res_arc = Arc::new(source_page.image);
-                let inference_img = if config.enable_layout_detection() {
+                // In no-layout mode the inference image is never used; share the
+                // high-res Arc instead of deep-cloning a full RGB page per file.
+                let inference_image = if config.enable_layout_detection() {
                     let spec = config.inference_resize_spec();
-                    build_inference_image(high_res_arc.as_ref(), &spec)
-                        .unwrap_or_else(|_| (*high_res_arc).clone())
+                    let img = build_inference_image(high_res_arc.as_ref(), &spec)
+                        .unwrap_or_else(|_| (*high_res_arc).clone());
+                    Arc::new(img)
                 } else {
-                    (*high_res_arc).clone()
+                    high_res_arc.clone()
                 };
 
                 Ok::<_, anyhow::Error>(RenderedPageData {
                     index: page_index,
                     high_res_image: high_res_arc,
-                    inference_image: Arc::new(inference_img),
+                    inference_image,
                     original_width_pts: source_page.original_width_pts,
                     original_height_pts: source_page.original_height_pts,
                 })

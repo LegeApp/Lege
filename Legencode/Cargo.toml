@@ -27,7 +27,6 @@ flate2 = { workspace = true }                # For Flate/Zlib compression
 rayon = { workspace = true }              # For parallel processing
 serde = { workspace = true }  # For serialization
 image = { workspace = true }            # Used by color linearization helpers
-palette = { workspace = true }  # Used by linear RGB -> luma conversion
 lazy_static = { workspace = true }       # Used by LUT initialization in linearize.rs
 thiserror = { workspace = true }        # Used by ColorOpsError derive
 png = "0.17"                # For PNG encoding/decoding
