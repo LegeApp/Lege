@@ -102,13 +102,13 @@ struct BgParamsStd140 {
 // ---------------------------------------------------------------------------
 
 struct MultiPassBuffers {
-    upload_src: ID3D12Resource,    // UPLOAD: RGBA-packed input, pixel_count×4 bytes
-    upload_bg: ID3D12Resource,     // UPLOAD: CPU bg_max result staging
-    gpu_src: ID3D12Resource,       // DEFAULT: RGBA input (pixel_count×4 bytes), SRV for linearize
-    gray_buf: ID3D12Resource,      // DEFAULT: linearize output, 1 u32/pixel
-    gpu_dst: ID3D12Resource,       // DEFAULT: binarize output, 1 u32/pixel
-    packed_dst: ID3D12Resource,    // DEFAULT: pack-pass output, 4 pixels per u32 (1 byte/pixel)
-    readback: ID3D12Resource,      // READBACK: sized to packed bytes (≈ pixel_count, not 4×)
+    upload_src: ID3D12Resource, // UPLOAD: RGBA-packed input, pixel_count×4 bytes
+    upload_bg: ID3D12Resource,  // UPLOAD: CPU bg_max result staging
+    gpu_src: ID3D12Resource,    // DEFAULT: RGBA input (pixel_count×4 bytes), SRV for linearize
+    gray_buf: ID3D12Resource,   // DEFAULT: linearize output, 1 u32/pixel
+    gpu_dst: ID3D12Resource,    // DEFAULT: binarize output, 1 u32/pixel
+    packed_dst: ID3D12Resource, // DEFAULT: pack-pass output, 4 pixels per u32 (1 byte/pixel)
+    readback: ID3D12Resource,   // READBACK: sized to packed bytes (≈ pixel_count, not 4×)
     padded_gray: ID3D12Resource,
     padded_gray_sq: ID3D12Resource,
     row_integral: ID3D12Resource,
@@ -121,7 +121,7 @@ struct MultiPassBuffers {
     cb_integral: ID3D12Resource,
     cb_bg: ID3D12Resource,
     cb_final: ID3D12Resource,
-    pixel_count: usize,           // actual pixel count (width × height)
+    pixel_count: usize, // actual pixel count (width × height)
     padded_pixel_count: usize,
     integral_pixel_count: usize,
 }
@@ -195,7 +195,10 @@ impl HlslBinarizer {
         &mut self,
         pages: &[(&[u8], &BinarizationParams)],
     ) -> Result<Vec<Vec<u8>>> {
-        pages.iter().map(|&(gray, params)| self.binarize_gray_raw(gray, params)).collect()
+        pages
+            .iter()
+            .map(|&(gray, params)| self.binarize_gray_raw(gray, params))
+            .collect()
     }
 
     /// Zero-copy callback variant: `f` runs while the GPU readback buffer is
@@ -279,14 +282,26 @@ impl HlslBinarizer {
             let staging = &mut self.upload_staging[..rgba_bytes];
             match fmt {
                 SourceFormat::Gray => {
-                    staging.chunks_exact_mut(4).zip(pixels.iter()).for_each(|(o, &g)| {
-                        o[0] = g; o[1] = g; o[2] = g; o[3] = 0;
-                    });
+                    staging
+                        .chunks_exact_mut(4)
+                        .zip(pixels.iter())
+                        .for_each(|(o, &g)| {
+                            o[0] = g;
+                            o[1] = g;
+                            o[2] = g;
+                            o[3] = 0;
+                        });
                 }
                 SourceFormat::Rgb => {
-                    staging.chunks_exact_mut(4).zip(pixels.chunks_exact(3)).for_each(|(o, p)| {
-                        o[0] = p[0]; o[1] = p[1]; o[2] = p[2]; o[3] = 0;
-                    });
+                    staging
+                        .chunks_exact_mut(4)
+                        .zip(pixels.chunks_exact(3))
+                        .for_each(|(o, p)| {
+                            o[0] = p[0];
+                            o[1] = p[1];
+                            o[2] = p[2];
+                            o[3] = 0;
+                        });
                 }
             }
         }
@@ -299,12 +314,14 @@ impl HlslBinarizer {
                 SourceFormat::Gray => None,
                 SourceFormat::Rgb => {
                     let mut g = vec![0u8; pixel_count];
-                    g.iter_mut().zip(pixels.chunks_exact(3)).for_each(|(out, p)| {
-                        let r = p[0] as u32;
-                        let gv = p[1] as u32;
-                        let b = p[2] as u32;
-                        *out = ((r * 77 + gv * 150 + b * 29) >> 8) as u8;
-                    });
+                    g.iter_mut()
+                        .zip(pixels.chunks_exact(3))
+                        .for_each(|(out, p)| {
+                            let r = p[0] as u32;
+                            let gv = p[1] as u32;
+                            let b = p[2] as u32;
+                            *out = ((r * 77 + gv * 150 + b * 29) >> 8) as u8;
+                        });
                     Some(g)
                 }
             }
@@ -396,8 +413,12 @@ impl HlslBinarizer {
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
 
-            self.ctx.command_list.SetPipelineState(&pipelines.linearize_pass.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.linearize_pass.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.linearize_pass.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.linearize_pass.root_signature);
             self.set_roots_linearize(buffers, 16, 18, 17);
             self.ctx.command_list.Dispatch(
                 params.width.div_ceil(16),
@@ -426,13 +447,21 @@ impl HlslBinarizer {
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 );
 
-                self.ctx.command_list.SetPipelineState(&pipelines.fixed_pass.pipeline_state);
-                self.ctx.command_list.SetComputeRootSignature(&pipelines.fixed_pass.root_signature);
+                self.ctx
+                    .command_list
+                    .SetPipelineState(&pipelines.fixed_pass.pipeline_state);
+                self.ctx
+                    .command_list
+                    .SetComputeRootSignature(&pipelines.fixed_pass.root_signature);
 
                 let gpu_heap_start = self.ctx.get_gpu_descriptor_handle(0);
-                self.ctx.command_list.SetComputeRootDescriptorTable(0, gpu_heap_start);
-                let mut gpu_uav = self.ctx.get_gpu_descriptor_handle(15);
-                self.ctx.command_list.SetComputeRootDescriptorTable(1, gpu_uav);
+                self.ctx
+                    .command_list
+                    .SetComputeRootDescriptorTable(0, gpu_heap_start);
+                let gpu_uav = self.ctx.get_gpu_descriptor_handle(15);
+                self.ctx
+                    .command_list
+                    .SetComputeRootDescriptorTable(1, gpu_uav);
                 self.ctx
                     .command_list
                     .SetComputeRootConstantBufferView(2, buffers.cb_final.GetGPUVirtualAddress());
@@ -481,7 +510,11 @@ impl HlslBinarizer {
             // Slot 0=SRV gray_buf, 1=UAV padded_gray, 2=UAV padded_gray_sq.
             self.create_srv(&buffers.gray_buf, 0, pixel_count as u32);
             self.create_uav(&buffers.padded_gray, 1, buffers.padded_pixel_count as u32);
-            self.create_uav(&buffers.padded_gray_sq, 2, buffers.padded_pixel_count as u32);
+            self.create_uav(
+                &buffers.padded_gray_sq,
+                2,
+                buffers.padded_pixel_count as u32,
+            );
 
             self.transition(
                 &buffers.padded_gray,
@@ -493,8 +526,12 @@ impl HlslBinarizer {
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
-            self.ctx.command_list.SetPipelineState(&pipelines.pad.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.pad.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.pad.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.pad.root_signature);
             self.set_roots_pad(buffers, 0, 1, 2);
             self.ctx.command_list.Dispatch(
                 padded_width.div_ceil(16),
@@ -516,28 +553,48 @@ impl HlslBinarizer {
             // --- Integral row pass ---
             // Slot 3=SRV padded_gray, 4=UAV row_integral.
             self.create_srv(&buffers.padded_gray, 3, buffers.padded_pixel_count as u32);
-            self.create_uav(&buffers.row_integral, 4, buffers.integral_pixel_count as u32);
+            self.create_uav(
+                &buffers.row_integral,
+                4,
+                buffers.integral_pixel_count as u32,
+            );
             self.transition(
                 &buffers.row_integral,
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
-            self.ctx.command_list.SetPipelineState(&pipelines.integral_h.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.integral_h.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.integral_h.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.integral_h.root_signature);
             self.set_roots_integral(buffers, 3, 4);
             self.ctx.command_list.Dispatch(1, padded_height, 1);
 
             // --- Integral row pass (f32) ---
             // Slot 5=SRV padded_gray_sq, 6=UAV row_integral_sq.
-            self.create_srv(&buffers.padded_gray_sq, 5, buffers.padded_pixel_count as u32);
-            self.create_uav(&buffers.row_integral_sq, 6, buffers.integral_pixel_count as u32);
+            self.create_srv(
+                &buffers.padded_gray_sq,
+                5,
+                buffers.padded_pixel_count as u32,
+            );
+            self.create_uav(
+                &buffers.row_integral_sq,
+                6,
+                buffers.integral_pixel_count as u32,
+            );
             self.transition(
                 &buffers.row_integral_sq,
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
-            self.ctx.command_list.SetPipelineState(&pipelines.integral_h_f32.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.integral_h_f32.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.integral_h_f32.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.integral_h_f32.root_signature);
             self.set_roots_integral(buffers, 5, 6);
             self.ctx.command_list.Dispatch(1, padded_height, 1);
 
@@ -554,29 +611,49 @@ impl HlslBinarizer {
 
             // --- Integral column pass ---
             // Slot 7=SRV row_integral, 8=UAV integral.
-            self.create_srv(&buffers.row_integral, 7, buffers.integral_pixel_count as u32);
+            self.create_srv(
+                &buffers.row_integral,
+                7,
+                buffers.integral_pixel_count as u32,
+            );
             self.create_uav(&buffers.integral, 8, buffers.integral_pixel_count as u32);
             self.transition(
                 &buffers.integral,
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
-            self.ctx.command_list.SetPipelineState(&pipelines.integral_v.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.integral_v.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.integral_v.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.integral_v.root_signature);
             self.set_roots_integral(buffers, 7, 8);
             self.ctx.command_list.Dispatch(integral_width, 1, 1);
 
             // --- Integral column pass (f32) ---
             // Slot 9=SRV row_integral_sq, 10=UAV integral_sq.
-            self.create_srv(&buffers.row_integral_sq, 9, buffers.integral_pixel_count as u32);
-            self.create_uav(&buffers.integral_sq, 10, buffers.integral_pixel_count as u32);
+            self.create_srv(
+                &buffers.row_integral_sq,
+                9,
+                buffers.integral_pixel_count as u32,
+            );
+            self.create_uav(
+                &buffers.integral_sq,
+                10,
+                buffers.integral_pixel_count as u32,
+            );
             self.transition(
                 &buffers.integral_sq,
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
-            self.ctx.command_list.SetPipelineState(&pipelines.integral_v_f32.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.integral_v_f32.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.integral_v_f32.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.integral_v_f32.root_signature);
             self.set_roots_integral(buffers, 9, 10);
             self.ctx.command_list.Dispatch(integral_width, 1, 1);
 
@@ -605,7 +682,11 @@ impl HlslBinarizer {
             //        14=SRV bg_buffer, 15=UAV gpu_dst.
             self.create_srv(&buffers.gray_buf, 11, pixel_count as u32);
             self.create_srv(&buffers.integral, 12, buffers.integral_pixel_count as u32);
-            self.create_srv(&buffers.integral_sq, 13, buffers.integral_pixel_count as u32);
+            self.create_srv(
+                &buffers.integral_sq,
+                13,
+                buffers.integral_pixel_count as u32,
+            );
             self.create_srv(&buffers.bg_buffer, 14, pixel_count as u32);
             self.create_uav(&buffers.gpu_dst, 15, pixel_count as u32);
 
@@ -615,8 +696,12 @@ impl HlslBinarizer {
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             );
 
-            self.ctx.command_list.SetPipelineState(&pipelines.final_pass.pipeline_state);
-            self.ctx.command_list.SetComputeRootSignature(&pipelines.final_pass.root_signature);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.final_pass.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.final_pass.root_signature);
             self.set_roots_final_pass(buffers, 11, 12, 13, 14, 15);
 
             self.ctx.command_list.Dispatch(
@@ -642,6 +727,16 @@ impl HlslBinarizer {
             );
             self.transition(
                 &buffers.padded_gray_sq,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+            self.transition(
+                &buffers.row_integral,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+            self.transition(
+                &buffers.row_integral_sq,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COMMON,
             );
@@ -1222,26 +1317,26 @@ impl HlslBinarizer {
         let packed_words = pixel_count.div_ceil(4);
         let packed_al = align_up(packed_words * 4, 256);
 
-        let upload_src    = mk(img_al,     D3D12_HEAP_TYPE_UPLOAD)?;
-        let upload_bg     = mk(img_al,     D3D12_HEAP_TYPE_UPLOAD)?;
-        let gpu_src       = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
-        let gray_buf      = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
-        let gpu_dst       = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
-        let packed_dst    = mk(packed_al,  D3D12_HEAP_TYPE_DEFAULT)?;
+        let upload_src = mk(img_al, D3D12_HEAP_TYPE_UPLOAD)?;
+        let upload_bg = mk(img_al, D3D12_HEAP_TYPE_UPLOAD)?;
+        let gpu_src = mk(img_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let gray_buf = mk(img_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let gpu_dst = mk(img_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let packed_dst = mk(packed_al, D3D12_HEAP_TYPE_DEFAULT)?;
         // readback now mirrors the packed output (≈1 byte/pixel) instead of 4×.
-        let readback      = mk(packed_al,  D3D12_HEAP_TYPE_READBACK)?;
-        let padded_gray   = mk(padded_al,  D3D12_HEAP_TYPE_DEFAULT)?;
-        let padded_gray_sq= mk(padded_al,  D3D12_HEAP_TYPE_DEFAULT)?;
-        let row_integral  = mk(integral_al,D3D12_HEAP_TYPE_DEFAULT)?;
-        let row_integral_sq=mk(integral_al,D3D12_HEAP_TYPE_DEFAULT)?;
-        let integral      = mk(integral_al,D3D12_HEAP_TYPE_DEFAULT)?;
-        let integral_sq   = mk(integral_al,D3D12_HEAP_TYPE_DEFAULT)?;
-        let bg_tmp        = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
-        let bg_buffer     = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
-        let cb_pad        = mk(cb_al,      D3D12_HEAP_TYPE_UPLOAD)?;
-        let cb_integral   = mk(cb_al,      D3D12_HEAP_TYPE_UPLOAD)?;
-        let cb_bg         = mk(cb_al,      D3D12_HEAP_TYPE_UPLOAD)?;
-        let cb_final      = mk(cb_al,      D3D12_HEAP_TYPE_UPLOAD)?;
+        let readback = mk(packed_al, D3D12_HEAP_TYPE_READBACK)?;
+        let padded_gray = mk(padded_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let padded_gray_sq = mk(padded_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let row_integral = mk(integral_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let row_integral_sq = mk(integral_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let integral = mk(integral_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let integral_sq = mk(integral_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let bg_tmp = mk(img_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let bg_buffer = mk(img_al, D3D12_HEAP_TYPE_DEFAULT)?;
+        let cb_pad = mk(cb_al, D3D12_HEAP_TYPE_UPLOAD)?;
+        let cb_integral = mk(cb_al, D3D12_HEAP_TYPE_UPLOAD)?;
+        let cb_bg = mk(cb_al, D3D12_HEAP_TYPE_UPLOAD)?;
+        let cb_final = mk(cb_al, D3D12_HEAP_TYPE_UPLOAD)?;
 
         self.buffers = Some(MultiPassBuffers {
             upload_src,
@@ -1276,7 +1371,8 @@ impl HlslBinarizer {
 
     unsafe fn upload_cbuf<T: Copy>(&self, cbuf: &ID3D12Resource, data: &T) {
         let mut mapped: *mut c_void = std::ptr::null_mut();
-        cbuf.Map(0, None, Some(&mut mapped)).expect("cbuf map failed");
+        cbuf.Map(0, None, Some(&mut mapped))
+            .expect("cbuf map failed");
         copy_nonoverlapping(data, mapped.cast::<T>(), 1);
         cbuf.Unmap(0, None);
     }
@@ -1423,14 +1519,20 @@ impl HlslBinarizer {
             self.create_srv(&buffers.gpu_dst, 19, pixel_count as u32);
             self.create_uav(&buffers.packed_dst, 20, packed_words);
 
-            self.ctx.command_list.SetPipelineState(&pipelines.pack_output.pipeline_state);
+            self.ctx
+                .command_list
+                .SetPipelineState(&pipelines.pack_output.pipeline_state);
             self.ctx
                 .command_list
                 .SetComputeRootSignature(&pipelines.pack_output.root_signature);
             let srv_handle = self.ctx.get_gpu_descriptor_handle(19);
-            self.ctx.command_list.SetComputeRootDescriptorTable(0, srv_handle);
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(0, srv_handle);
             let uav_handle = self.ctx.get_gpu_descriptor_handle(20);
-            self.ctx.command_list.SetComputeRootDescriptorTable(1, uav_handle);
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(1, uav_handle);
             self.ctx
                 .command_list
                 .SetComputeRootConstantBufferView(2, buffers.cb_final.GetGPUVirtualAddress());
@@ -1628,23 +1730,20 @@ impl HlslBinarizer {
     fn set_roots_linearize(
         &self,
         buffers: &MultiPassBuffers,
-        rgba_slot: u32,  // t0: rgba_src SRV
-        lut_slot: u32,   // t1: srgb_lut SRV
-        gray_slot: u32,  // u0: gray_dst UAV
+        rgba_slot: u32, // t0: rgba_src SRV
+        lut_slot: u32,  // t1: srgb_lut SRV
+        gray_slot: u32, // u0: gray_dst UAV
     ) {
         unsafe {
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                0,
-                self.ctx.get_gpu_descriptor_handle(rgba_slot),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                1,
-                self.ctx.get_gpu_descriptor_handle(lut_slot),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                2,
-                self.ctx.get_gpu_descriptor_handle(gray_slot),
-            );
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(0, self.ctx.get_gpu_descriptor_handle(rgba_slot));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(1, self.ctx.get_gpu_descriptor_handle(lut_slot));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(2, self.ctx.get_gpu_descriptor_handle(gray_slot));
             self.ctx
                 .command_list
                 .SetComputeRootConstantBufferView(3, buffers.cb_final.GetGPUVirtualAddress());
@@ -1659,18 +1758,15 @@ impl HlslBinarizer {
         uav_slot_1: u32,
     ) {
         unsafe {
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                0,
-                self.ctx.get_gpu_descriptor_handle(srv_slot),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                1,
-                self.ctx.get_gpu_descriptor_handle(uav_slot_0),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                2,
-                self.ctx.get_gpu_descriptor_handle(uav_slot_1),
-            );
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(0, self.ctx.get_gpu_descriptor_handle(srv_slot));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(1, self.ctx.get_gpu_descriptor_handle(uav_slot_0));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(2, self.ctx.get_gpu_descriptor_handle(uav_slot_1));
             self.ctx
                 .command_list
                 .SetComputeRootConstantBufferView(3, buffers.cb_pad.GetGPUVirtualAddress());
@@ -1679,14 +1775,12 @@ impl HlslBinarizer {
 
     fn set_roots_integral(&self, buffers: &MultiPassBuffers, srv_slot: u32, uav_slot: u32) {
         unsafe {
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                0,
-                self.ctx.get_gpu_descriptor_handle(srv_slot),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                1,
-                self.ctx.get_gpu_descriptor_handle(uav_slot),
-            );
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(0, self.ctx.get_gpu_descriptor_handle(srv_slot));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(1, self.ctx.get_gpu_descriptor_handle(uav_slot));
             self.ctx
                 .command_list
                 .SetComputeRootConstantBufferView(2, buffers.cb_integral.GetGPUVirtualAddress());
@@ -1703,26 +1797,21 @@ impl HlslBinarizer {
         uav_slot: u32,
     ) {
         unsafe {
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                0,
-                self.ctx.get_gpu_descriptor_handle(srv_0),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                1,
-                self.ctx.get_gpu_descriptor_handle(srv_1),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                2,
-                self.ctx.get_gpu_descriptor_handle(srv_2),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                3,
-                self.ctx.get_gpu_descriptor_handle(srv_3),
-            );
-            self.ctx.command_list.SetComputeRootDescriptorTable(
-                4,
-                self.ctx.get_gpu_descriptor_handle(uav_slot),
-            );
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(0, self.ctx.get_gpu_descriptor_handle(srv_0));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(1, self.ctx.get_gpu_descriptor_handle(srv_1));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(2, self.ctx.get_gpu_descriptor_handle(srv_2));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(3, self.ctx.get_gpu_descriptor_handle(srv_3));
+            self.ctx
+                .command_list
+                .SetComputeRootDescriptorTable(4, self.ctx.get_gpu_descriptor_handle(uav_slot));
             self.ctx
                 .command_list
                 .SetComputeRootConstantBufferView(5, buffers.cb_final.GetGPUVirtualAddress());
