@@ -52,7 +52,7 @@ pub struct ProcessedPage {
     pub height: u32,
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
-    pub binarized: Option<Vec<u8>>,  // None when OCR is disabled to free memory
+    pub binarized: Option<Vec<u8>>, // None when OCR is disabled to free memory
 }
 
 #[derive(Clone, Debug)]
@@ -477,7 +477,11 @@ async fn process_single_page(
     // - Default path: binarized is moved into the encoder; cloned only if OCR storage needs it.
     let (base_layer, binarized_for_page) = if config.text_format() == "jpeg" {
         let layer = encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?;
-        let stored = if config.enable_ocr() { Some(binarized) } else { None };
+        let stored = if config.enable_ocr() {
+            Some(binarized)
+        } else {
+            None
+        };
         (layer, stored)
     } else if let Some(bin_options) = deferred_binarize {
         // adjusted_image is not used after this point in process_single_page;
@@ -494,7 +498,11 @@ async fn process_single_page(
         .await?;
         (layer, None)
     } else {
-        let stored = if config.enable_ocr() { Some(binarized.clone()) } else { None };
+        let stored = if config.enable_ocr() {
+            Some(binarized.clone())
+        } else {
+            None
+        };
         let layer = encode_base_layer(
             binarized,
             width,
@@ -764,7 +772,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         && config.text_format() != "jpeg";
 
     let (mut binarized, deferred_binarize) = if can_defer_binarize {
-        (Vec::new(), Some(binarize_options_for(&config, force_blank_threshold)))
+        (
+            Vec::new(),
+            Some(binarize_options_for(&config, force_blank_threshold)),
+        )
     } else if config.text_format() == "jpeg" {
         // DEBUG: should not reach here for non-jpeg pages with images
         // Luma-from-RGB pass for jpeg base mode (full-page color encoded later).
@@ -1271,7 +1282,10 @@ fn apply_region_policy(
 }
 
 /// Build BinarizationOptions from the pipeline config + blank-page threshold override.
-fn binarize_options_for(config: &PipelineConfig, force_blank_threshold: bool) -> BinarizationOptions {
+fn binarize_options_for(
+    config: &PipelineConfig,
+    force_blank_threshold: bool,
+) -> BinarizationOptions {
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
@@ -1705,9 +1719,8 @@ async fn encode_base_layer_fused(
                     height: height as u32,
                     channels: 1u8,
                 };
-                EncodingManager::encode(&buffer, &encoding_settings).map_err(|e| {
-                    anyhow!("Encoding failed for format {}: {}", text_format, e)
-                })
+                EncodingManager::encode(&buffer, &encoding_settings)
+                    .map_err(|e| anyhow!("Encoding failed for format {}: {}", text_format, e))
             },
         )
     })

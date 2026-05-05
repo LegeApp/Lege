@@ -1546,16 +1546,17 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
             }
         }
         lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
-            let completed = if metrics.encoded > 0 {
-                metrics.encoded
-            } else {
-                metrics.rendered
-            };
             cards.push(progress_stage_card(
-                "Pages",
-                completed,
+                "Render",
+                metrics.rendered,
                 metrics.pages_total,
                 (180, 217, 232),
+            ));
+            cards.push(progress_stage_card(
+                "Encode",
+                metrics.encoded,
+                metrics.pages_total,
+                (220, 192, 214),
             ));
             if metrics.enable_deskew {
                 cards.push(progress_stage_card(
@@ -1766,7 +1767,7 @@ fn StatusBar(state: State<AppState>) -> Element {
             .cross_align(Alignment::Center)
             .child(
                 label()
-                    .text("No files queued — click \"Add file or folder\" to begin.")
+                    .text("No files queued — Add a file or folder to begin.")
                     .font_size(12.)
                     .color(MUTED),
             )
