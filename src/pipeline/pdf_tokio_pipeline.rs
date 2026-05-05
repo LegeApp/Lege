@@ -766,6 +766,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     let (mut binarized, deferred_binarize) = if can_defer_binarize {
         (Vec::new(), Some(binarize_options_for(&config, force_blank_threshold)))
     } else if config.text_format() == "jpeg" {
+        // DEBUG: should not reach here for non-jpeg pages with images
         // Luma-from-RGB pass for jpeg base mode (full-page color encoded later).
         let luma: Vec<u8> = binarization_image
             .as_raw()
@@ -779,7 +780,8 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             .collect();
         (luma, None)
     } else {
-        (binarize_image(&binarization_image, &config, force_blank_threshold), None)
+        let bin = binarize_image(&binarization_image, &config, force_blank_threshold);
+        (bin, None)
     };
     drop(binarization_image);
 
@@ -1292,6 +1294,11 @@ fn binarize_options_for(config: &PipelineConfig, force_blank_threshold: bool) ->
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
+        // Layout mode runs binarization concurrently with rendering+inference, which
+        // dominates wall time per page anyway — the GPU binarizer offers no speedup
+        // there and has produced intermittent inverted base layers (black-background
+        // pages) on long runs. Force CPU when layout detection is on.
+        disable_gpu: config.enable_layout_detection(),
     }
 }
 

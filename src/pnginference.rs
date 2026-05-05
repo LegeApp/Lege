@@ -593,6 +593,7 @@ pub fn run_pdf_to_images_mode(
                     no_patch: pipeline_config.binarization().no_patch,
                     use_fixed_threshold: pipeline_config.binarization().use_fixed_threshold,
                     fixed_threshold: pipeline_config.binarization().fixed_threshold,
+                    disable_gpu: pipeline_config.enable_layout_detection(),
                 },
             );
 
@@ -793,6 +794,7 @@ fn process_single_image_to_image(
                 no_patch: pipeline_config.binarization().no_patch,
                 use_fixed_threshold: pipeline_config.binarization().use_fixed_threshold,
                 fixed_threshold: pipeline_config.binarization().fixed_threshold,
+                disable_gpu: pipeline_config.enable_layout_detection(),
             },
         );
 
