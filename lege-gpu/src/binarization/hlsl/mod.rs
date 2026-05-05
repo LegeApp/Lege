@@ -10,28 +10,34 @@ use crate::binarization::{
 };
 use crate::resize::hlsl::dx12::{ComputePipelineState, D3D12Context};
 
-/// Map the readback buffer (which holds `pixel_count` u32 words, 1 byte of binary
-/// data per word in the LSB) and produce a `Vec<u8>` of `pixel_count` bytes in a
-/// single pass — no intermediate `Vec<u32>` allocation. Saves ~3*pixel_count
-/// transient bytes plus one full pass over the buffer compared to the previous
-/// "memcpy to Vec<u32>, then .into_iter().map(|v| v as u8).collect()" path.
-unsafe fn readback_u32_lsb_to_u8(
+/// Map the readback buffer (which already holds packed bytes — 1 byte per pixel
+/// after the pack pass) and run a callback against the borrowed slice while it
+/// is still mapped. The callback observes exactly `pixel_count` bytes; any tail
+/// bytes from the u32 alignment of the packed buffer are not exposed.
+///
+/// True zero-copy: no Vec is materialized inside this helper. The mutex around
+/// the binarizer keeps any other GPU work from clobbering the buffer for the
+/// duration of `f`. Encoders can read straight from GPU-mapped memory.
+unsafe fn readback_packed_with<F, R>(
     readback: &ID3D12Resource,
     pixel_count: usize,
-) -> Result<Vec<u8>> {
+    f: F,
+) -> Result<R>
+where
+    F: FnOnce(&[u8]) -> R,
+{
     let mut rb_ptr: *mut c_void = std::ptr::null_mut();
     unsafe {
         readback
             .Map(0, None, Some(&mut rb_ptr))
             .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
     }
-    let mut out = vec![0u8; pixel_count];
-    let src = unsafe { std::slice::from_raw_parts(rb_ptr.cast::<u32>(), pixel_count) };
-    out.iter_mut().zip(src.iter()).for_each(|(dst, &v)| *dst = v as u8);
+    let slice = unsafe { std::slice::from_raw_parts(rb_ptr.cast::<u8>(), pixel_count) };
+    let result = f(slice);
     unsafe {
         readback.Unmap(0, None);
     }
-    Ok(out)
+    Ok(result)
 }
 
 #[allow(dead_code)]
@@ -101,7 +107,8 @@ struct MultiPassBuffers {
     gpu_src: ID3D12Resource,       // DEFAULT: RGBA input (pixel_count×4 bytes), SRV for linearize
     gray_buf: ID3D12Resource,      // DEFAULT: linearize output, 1 u32/pixel
     gpu_dst: ID3D12Resource,       // DEFAULT: binarize output, 1 u32/pixel
-    readback: ID3D12Resource,      // READBACK
+    packed_dst: ID3D12Resource,    // DEFAULT: pack-pass output, 4 pixels per u32 (1 byte/pixel)
+    readback: ID3D12Resource,      // READBACK: sized to packed bytes (≈ pixel_count, not 4×)
     padded_gray: ID3D12Resource,
     padded_gray_sq: ID3D12Resource,
     row_integral: ID3D12Resource,
@@ -130,6 +137,7 @@ struct PipelineSet {
     bg_max_h: ComputePipelineState,
     bg_max_v: ComputePipelineState,
     final_pass: ComputePipelineState,
+    pack_output: ComputePipelineState,
 }
 
 pub struct HlslBinarizer {
@@ -180,7 +188,7 @@ impl HlslBinarizer {
         params: &BinarizationParams,
     ) -> Result<Vec<u8>> {
         params.validate_gray(gray)?;
-        self.binarize_inner(gray, params, SourceFormat::Gray)
+        self.binarize_inner_with(gray, params, SourceFormat::Gray, |data| data.to_vec())
     }
 
     pub fn binarize_batch(
@@ -190,6 +198,9 @@ impl HlslBinarizer {
         pages.iter().map(|&(gray, params)| self.binarize_gray_raw(gray, params)).collect()
     }
 
+    /// Zero-copy callback variant: `f` runs while the GPU readback buffer is
+    /// still mapped. No intermediate `Vec<u8>` is materialized here — the
+    /// callback can stream the bytes straight into an encoder.
     pub fn binarize_gray_raw_with<F, R>(
         &mut self,
         gray: &[u8],
@@ -199,12 +210,13 @@ impl HlslBinarizer {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let result = self.binarize_gray_raw(gray, params)?;
-        Ok(f(&result))
+        params.validate_gray(gray)?;
+        self.binarize_inner_with(gray, params, SourceFormat::Gray, f)
     }
 
     /// Binarize from RGB bytes (3 bytes/pixel). The GPU linearize pre-pass converts
     /// RGB→gray via sRGB→linear LUT + BT.709 luma + sRGB re-encode on the GPU.
+    /// `f` receives the binarized bytes while the GPU readback buffer is mapped.
     pub fn binarize_rgb_raw_with<F, R>(
         &mut self,
         rgb: &[u8],
@@ -221,20 +233,23 @@ impl HlslBinarizer {
                 actual: rgb.len(),
             });
         }
-        let result = self.binarize_inner(rgb, params, SourceFormat::Rgb)?;
-        Ok(f(&result))
+        self.binarize_inner_with(rgb, params, SourceFormat::Rgb, f)
     }
 
     // -----------------------------------------------------------------------
     // Core binarize path — accepts gray or RGB input.
     // -----------------------------------------------------------------------
 
-    fn binarize_inner(
+    fn binarize_inner_with<F, R>(
         &mut self,
         pixels: &[u8],
         params: &BinarizationParams,
         fmt: SourceFormat,
-    ) -> Result<Vec<u8>> {
+        consume: F,
+    ) -> Result<R>
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
         self.ensure_pipelines()?;
         self.ensure_srgb_lut()?;
 
@@ -428,27 +443,9 @@ impl HlslBinarizer {
                     1,
                 );
 
-                self.transition(
-                    &buffers.gpu_dst,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE,
-                );
-
-                let dst_bytes = pixel_count * 4;
-                self.ctx.command_list.CopyBufferRegion(
-                    &buffers.readback,
-                    0,
-                    &buffers.gpu_dst,
-                    0,
-                    dst_bytes as u64,
-                );
-
-                // Reset states for next page.
-                self.transition(
-                    &buffers.gpu_dst,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    D3D12_RESOURCE_STATE_COMMON,
-                );
+                // Pack u32-per-pixel gpu_dst → byte-per-pixel packed_dst, then
+                // copy packed_dst → readback. Both buffers end in COMMON state.
+                self.encode_pack_and_copy_to_readback(buffers, pipelines, pixel_count);
                 self.transition(
                     &buffers.gray_buf,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -459,7 +456,7 @@ impl HlslBinarizer {
                     .execute_command_list()
                     .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
 
-                let out = readback_u32_lsb_to_u8(&buffers.readback, pixel_count)?;
+                let out = readback_packed_with(&buffers.readback, pixel_count, consume)?;
 
                 if self.verbose {
                     log::debug!(
@@ -628,22 +625,11 @@ impl HlslBinarizer {
                 1,
             );
 
-            self.transition(
-                &buffers.gpu_dst,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE,
-            );
+            // Pack u32-per-pixel gpu_dst → byte-per-pixel packed_dst, then
+            // copy packed_dst → readback. Both buffers end in COMMON state.
+            self.encode_pack_and_copy_to_readback(buffers, pipelines, pixel_count);
 
-            let dst_bytes = pixel_count * 4;
-            self.ctx.command_list.CopyBufferRegion(
-                &buffers.readback,
-                0,
-                &buffers.gpu_dst,
-                0,
-                dst_bytes as u64,
-            );
-
-            // Reset all modified states for next page.
+            // Reset all other modified states for the next page.
             self.transition(
                 &buffers.gray_buf,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -674,17 +660,12 @@ impl HlslBinarizer {
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COMMON,
             );
-            self.transition(
-                &buffers.gpu_dst,
-                D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_COMMON,
-            );
 
             self.ctx
                 .execute_command_list()
                 .map_err(|e| GpuBinarizationError::Execution(e.to_string()))?;
 
-            let out = readback_u32_lsb_to_u8(&buffers.readback, pixel_count)?;
+            let out = readback_packed_with(&buffers.readback, pixel_count, consume)?;
 
             if self.verbose {
                 log::debug!(
@@ -1050,6 +1031,37 @@ impl HlslBinarizer {
         }
         .map_err(|e| GpuBinarizationError::Shader(format!("final_pass: {}", e)))?;
 
+        // Pack-output pass: same shape as fixed_pass (1 SRV + 1 UAV + 1 CBV).
+        let pack_ranges = [
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                NumDescriptors: 1,
+                BaseShaderRegister: 0,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            },
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+                NumDescriptors: 1,
+                BaseShaderRegister: 0,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            },
+        ];
+        let pack_output = unsafe {
+            Self::make_pipeline(
+                &self.ctx.device,
+                shaders_include::BINARIZE_PACK_SHADER,
+                &[
+                    Self::root_srv_table(0, 1),
+                    Self::root_uav_table(0, 1),
+                    Self::root_cbv(0),
+                ],
+                &[&pack_ranges[0..1], &pack_ranges[1..2]],
+            )
+        }
+        .map_err(|e| GpuBinarizationError::Shader(format!("pack_output: {}", e)))?;
+
         self.pipelines = Some(PipelineSet {
             linearize_pass,
             fixed_pass,
@@ -1061,6 +1073,7 @@ impl HlslBinarizer {
             bg_max_h,
             bg_max_v,
             final_pass,
+            pack_output,
         });
         Ok(())
     }
@@ -1205,12 +1218,18 @@ impl HlslBinarizer {
                 .map_err(|e| GpuBinarizationError::Initialization(e.to_string()))
         };
 
+        // Packed output: 4 pixels packed into one u32 → ceil(pixel_count/4) words.
+        let packed_words = pixel_count.div_ceil(4);
+        let packed_al = align_up(packed_words * 4, 256);
+
         let upload_src    = mk(img_al,     D3D12_HEAP_TYPE_UPLOAD)?;
         let upload_bg     = mk(img_al,     D3D12_HEAP_TYPE_UPLOAD)?;
         let gpu_src       = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
         let gray_buf      = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
         let gpu_dst       = mk(img_al,     D3D12_HEAP_TYPE_DEFAULT)?;
-        let readback      = mk(img_al,     D3D12_HEAP_TYPE_READBACK)?;
+        let packed_dst    = mk(packed_al,  D3D12_HEAP_TYPE_DEFAULT)?;
+        // readback now mirrors the packed output (≈1 byte/pixel) instead of 4×.
+        let readback      = mk(packed_al,  D3D12_HEAP_TYPE_READBACK)?;
         let padded_gray   = mk(padded_al,  D3D12_HEAP_TYPE_DEFAULT)?;
         let padded_gray_sq= mk(padded_al,  D3D12_HEAP_TYPE_DEFAULT)?;
         let row_integral  = mk(integral_al,D3D12_HEAP_TYPE_DEFAULT)?;
@@ -1230,6 +1249,7 @@ impl HlslBinarizer {
             gpu_src,
             gray_buf,
             gpu_dst,
+            packed_dst,
             readback,
             padded_gray,
             padded_gray_sq,
@@ -1371,6 +1391,79 @@ impl HlslBinarizer {
             },
         };
         self.ctx.command_list.ResourceBarrier(&[barrier]);
+    }
+
+    /// Encode the pack pass (gpu_dst u32-per-pixel → packed_dst byte-per-pixel)
+    /// followed by a CopyBufferRegion(packed_dst → readback). Caller must have
+    /// gpu_dst in UNORDERED_ACCESS state on entry; both gpu_dst and packed_dst
+    /// are returned to COMMON before this call returns.
+    unsafe fn encode_pack_and_copy_to_readback(
+        &self,
+        buffers: &MultiPassBuffers,
+        pipelines: &PipelineSet,
+        pixel_count: usize,
+    ) {
+        let packed_words = pixel_count.div_ceil(4) as u32;
+        let packed_bytes = packed_words as usize * 4;
+
+        // gpu_dst: UAV (write) → SRV (read by pack pass).
+        unsafe {
+            self.transition(
+                &buffers.gpu_dst,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            );
+            self.transition(
+                &buffers.packed_dst,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            );
+
+            // Pack-pass descriptors: SRV gpu_dst at slot 19, UAV packed_dst at slot 20.
+            self.create_srv(&buffers.gpu_dst, 19, pixel_count as u32);
+            self.create_uav(&buffers.packed_dst, 20, packed_words);
+
+            self.ctx.command_list.SetPipelineState(&pipelines.pack_output.pipeline_state);
+            self.ctx
+                .command_list
+                .SetComputeRootSignature(&pipelines.pack_output.root_signature);
+            let srv_handle = self.ctx.get_gpu_descriptor_handle(19);
+            self.ctx.command_list.SetComputeRootDescriptorTable(0, srv_handle);
+            let uav_handle = self.ctx.get_gpu_descriptor_handle(20);
+            self.ctx.command_list.SetComputeRootDescriptorTable(1, uav_handle);
+            self.ctx
+                .command_list
+                .SetComputeRootConstantBufferView(2, buffers.cb_final.GetGPUVirtualAddress());
+
+            self.ctx
+                .command_list
+                .Dispatch(packed_words.div_ceil(256), 1, 1);
+
+            self.transition(
+                &buffers.packed_dst,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+            self.ctx.command_list.CopyBufferRegion(
+                &buffers.readback,
+                0,
+                &buffers.packed_dst,
+                0,
+                packed_bytes as u64,
+            );
+
+            // Reset to COMMON for the next page.
+            self.transition(
+                &buffers.packed_dst,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+            self.transition(
+                &buffers.gpu_dst,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+        }
     }
 
     unsafe fn uav_barrier(&self, resource: &ID3D12Resource) {
