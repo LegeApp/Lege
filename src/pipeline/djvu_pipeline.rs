@@ -1043,6 +1043,7 @@ fn binarize_djvu_image(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
+        disable_gpu: config.enable_layout_detection(),
     };
     // binarize_image_raw handles heavy-duty mode internally
     Legencode::color::binarization::binarize_image_raw(

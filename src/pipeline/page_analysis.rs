@@ -37,6 +37,7 @@ pub fn compute_pixel_bounds_for_margin(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold: config.binarization().use_fixed_threshold,
         fixed_threshold: config.binarization().fixed_threshold,
+        disable_gpu: config.enable_layout_detection(),
     };
 
     let mut binarized = Legencode::color::binarization::binarize_image_raw(
