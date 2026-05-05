@@ -775,14 +775,9 @@ fn CombinedSettingsPanel(
     let options = state.read().options.clone();
     let show_base_format =
         matches!(options.output_format, OutputFormat::Pdf) && !options.layout_analysis;
-    let layout_on = options.layout_analysis;
     let fixed_threshold_enabled = options.use_fixed_threshold;
-    let effective_threshold = !layout_on || fixed_threshold_enabled;
-    let threshold_checkbox_selected = if layout_on {
-        fixed_threshold_enabled
-    } else {
-        true
-    };
+    let effective_threshold = fixed_threshold_enabled;
+    let threshold_checkbox_selected = fixed_threshold_enabled;
     let numeric_label = if effective_threshold {
         "Threshold"
     } else {
@@ -982,11 +977,7 @@ fn CombinedSettingsPanel(
                         .vertical()
                         .main_align(Alignment::Start)
                         .spacing(3.)
-                        .child(section_label(if layout_on {
-                            "Binarization"
-                        } else {
-                            "Fixed threshold"
-                        }))
+                        .child(section_label("Binarization"))
                         .child(tooltip_wrap(
                             state,
                             TooltipArea::LeftCard,
@@ -1025,10 +1016,6 @@ fn CombinedSettingsPanel(
                                             let mut state = state;
                                             move |_| {
                                                 let mut s = state.write();
-                                                if !s.options.layout_analysis {
-                                                    s.options.use_fixed_threshold = true;
-                                                    return;
-                                                }
                                                 let enable = !s.options.use_fixed_threshold;
                                                 s.options.use_fixed_threshold = enable;
                                                 if enable {
@@ -1038,38 +1025,26 @@ fn CombinedSettingsPanel(
                                         },
                                     ),
                                 ))
-                                .maybe_child(if layout_on {
-                                    Some::<Element>(tooltip_wrap(
-                                        state,
-                                        TooltipArea::LeftCard,
-                                        GUI_TEXT.interactive.tooltips.heavy_model.clone(),
-                                        compact_checkbox_row(
-                                            "Heavy model",
-                                            options.use_heavy_binarization,
-                                            {
-                                                let mut state = state;
-                                                move |_| {
-                                                    let mut s = state.write();
-                                                    if !s.options.use_fixed_threshold {
-                                                        s.options.use_heavy_binarization =
-                                                            !s.options.use_heavy_binarization;
-                                                    }
+                                .child(tooltip_wrap(
+                                    state,
+                                    TooltipArea::LeftCard,
+                                    GUI_TEXT.interactive.tooltips.heavy_model.clone(),
+                                    compact_checkbox_row(
+                                        "Heavy model",
+                                        options.use_heavy_binarization,
+                                        {
+                                            let mut state = state;
+                                            move |_| {
+                                                let mut s = state.write();
+                                                if !s.options.use_fixed_threshold {
+                                                    s.options.use_heavy_binarization =
+                                                        !s.options.use_heavy_binarization;
                                                 }
-                                            },
-                                        )
-                                        .into(),
-                                    ))
-                                } else {
-                                    Some::<Element>(
-                                        label()
-                                            .text(
-                                                "Adaptive mode is unavailable without layout detection.",
-                                            )
-                                            .font_size(10.5)
-                                            .color(MUTED)
-                                            .into(),
+                                            }
+                                        },
                                     )
-                                }),
+                                    .into(),
+                                )),
                         ),
                     )
                     .into(),
@@ -1366,8 +1341,7 @@ fn RightSettingsPanel(
     threshold_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
-    let layout_on = options.layout_analysis;
-    let use_threshold = !layout_on || options.use_fixed_threshold;
+    let use_threshold = options.use_fixed_threshold;
     let numeric_label = if use_threshold {
         "Threshold"
     } else {
@@ -1378,11 +1352,7 @@ fn RightSettingsPanel(
         "",
         false,
         vec![
-            section_label(if layout_on {
-                "Adaptive binarization"
-            } else {
-                "Fixed threshold binarization"
-            }),
+            section_label("Binarization"),
             settings_row(
                 numeric_label.to_string(),
                 if use_threshold {
@@ -1411,34 +1381,22 @@ fn RightSettingsPanel(
                         }
                     }
                 }))
-                .maybe_child(if layout_on {
-                    Some(
-                        compact_checkbox_row("Heavy model", options.use_heavy_binarization, {
-                            let mut state = state;
-                            move |_| {
-                                let mut s = state.write();
-                                if !s.options.use_fixed_threshold {
-                                    s.options.use_heavy_binarization =
-                                        !s.options.use_heavy_binarization;
-                                }
+                .child(compact_checkbox_row(
+                    "Heavy model",
+                    options.use_heavy_binarization,
+                    {
+                        let mut state = state;
+                        move |_| {
+                            let mut s = state.write();
+                            if !s.options.use_fixed_threshold {
+                                s.options.use_heavy_binarization =
+                                    !s.options.use_heavy_binarization;
                             }
-                        })
-                        .into(),
-                    )
-                } else {
-                    None::<Element>
-                })
+                        }
+                    },
+                ))
                 .into(),
-            if layout_on {
-                rect().height(Size::px(0.)).into()
-            } else {
-                label()
-                    .text("Adaptive and heavy binarization are disabled without layout detection.")
-                    .font_size(11.)
-                    .color(MUTED)
-                    .expanded()
-                    .into()
-            },
+            rect().height(Size::px(0.)).into(),
         ],
     )
 }

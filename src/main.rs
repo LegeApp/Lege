@@ -1215,21 +1215,6 @@ fn handle_simple_processing(
         }
     }
 
-    // When layout detection is disabled, only fixed threshold binarization is valid.
-    // Adaptive (Sauvola/Otsu) and heavy Sauvola are influenced by image areas on the
-    // full page, leading to incorrect thresholds when image regions are not cropped out.
-    if !pipeline_config.enable_layout_detection() {
-        let (is_adaptive, current_thr) = {
-            let bin = pipeline_config.binarization();
-            (!bin.use_fixed_threshold, bin.fixed_threshold)
-        };
-        if is_adaptive {
-            info_println!("{}", CLI_TEXT.main.binarization_forced_fixed_note);
-            let thr_str = format!("2 thr={}", current_thr);
-            let fixed_config = lege::CliConfigBuilder::parse_binarization_method(&thr_str);
-            pipeline_config.set_binarization(fixed_config);
-        }
-    }
     if pipeline_config.text_format() == "jbig2" {
         let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or_else(|| {
             if pipeline_config.enable_layout_detection() {
@@ -1645,8 +1630,8 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     };
 
     // Step 3: Binarization method
-    // When layout detection is disabled, only fixed threshold is valid — adaptive Sauvola
-    // and heavy Sauvola are affected by image regions on the full uncroped page.
+    // When layout detection is disabled, adaptive and heavy binarization remain
+    // selectable; the prompt notes that both benefit from layout detection.
     let binarization_method = if layout_detection_enabled {
         println!(
             "\n{}{}{}",
@@ -1686,42 +1671,38 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
             COLORS.highlight, CLI_TEXT.interactive.binarization_no_layout_note, COLORS.reset
         );
         println!(
-            "{}[2] {}{}",
-            COLORS.info, CLI_TEXT.interactive.binarization_methods[1], COLORS.reset
+            "{}{}{}",
+            COLORS.info,
+            fmt3(
+                &CLI_TEXT.main.binarization_choices_template,
+                &CLI_TEXT.interactive.binarization_methods[0],
+                &CLI_TEXT.interactive.binarization_methods[1],
+                &CLI_TEXT.interactive.binarization_methods[2]
+            ),
+            COLORS.reset
         );
         println!(
             "{}{}{}",
-            COLORS.highlight, "Advanced: Specify value as '2 200' or '2 thr=200'", COLORS.reset
+            COLORS.highlight, CLI_TEXT.interactive.binarization_advanced, COLORS.reset
         );
         print!(
             "{}{} {} ",
-            COLORS.prompt, "Fixed threshold value (0-255, default: 200):", COLORS.reset
+            COLORS.prompt, CLI_TEXT.interactive.binarization_prompt, COLORS.reset
         );
         io::stdout().flush()?;
 
         let mut binarization_input = String::new();
         io::stdin().read_line(&mut binarization_input)?;
         let raw = binarization_input.trim();
-        // Accept bare numbers like "180" as threshold, or full forms like "2 thr=180"
         if raw.is_empty() {
-            "2".to_string()
+            "1".to_string()
         } else if raw.chars().all(|c| c.is_ascii_digit()) {
-            format!("2 thr={}", raw)
-        } else {
-            // Validate it's a fixed-threshold form; reject adaptive/heavy
-            match raw
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_lowercase()
-                .as_str()
-            {
-                "1" | "adaptive" | "sauvola" | "otsu" | "3" | "heavy" | "sauvola_ai" | "onnx" => {
-                    println!("{}", CLI_TEXT.interactive.binarization_no_layout_note);
-                    "2".to_string()
-                }
-                _ => parse_binarization_method(raw).unwrap_or_else(|_| "2".to_string()),
+            match raw {
+                "1" | "2" | "3" => raw.to_string(),
+                _ => format!("2 thr={}", raw),
             }
+        } else {
+            parse_binarization_method(raw).unwrap_or_else(|_| "2".to_string())
         }
     };
 
@@ -3250,19 +3231,6 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
         pipeline_config.set_invert_input(true);
         if pipeline_config.enable_layout_detection() {
             pipeline_config.set_enable_layout_detection(false);
-        }
-    }
-
-    if !pipeline_config.enable_layout_detection() {
-        let (is_adaptive, current_thr) = {
-            let bin = pipeline_config.binarization();
-            (!bin.use_fixed_threshold, bin.fixed_threshold)
-        };
-        if is_adaptive {
-            info_println!("{}", CLI_TEXT.main.binarization_forced_fixed_note);
-            let thr_str = format!("2 thr={}", current_thr);
-            let fixed_config = lege::CliConfigBuilder::parse_binarization_method(&thr_str);
-            pipeline_config.set_binarization(fixed_config);
         }
     }
 
