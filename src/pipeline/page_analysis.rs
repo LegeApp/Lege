@@ -317,6 +317,10 @@ pub fn is_visually_blank_page(image: &RgbImage) -> bool {
     let step = (pixel_count / 200_000).max(1);
     let mut sampled = 0usize;
     let mut non_white = 0usize;
+    let mut dark = 0usize;
+    let mut very_dark = 0usize;
+    let mut sum = 0f64;
+    let mut sum_sq = 0f64;
 
     for px_index in (0..pixel_count).step_by(step) {
         let base = px_index * 3;
@@ -330,8 +334,16 @@ pub fn is_visually_blank_page(image: &RgbImage) -> bool {
         let luma = (299u32 * r as u32 + 587u32 * g as u32 + 114u32 * b as u32) / 1000;
 
         sampled += 1;
+        sum += luma as f64;
+        sum_sq += (luma as f64) * (luma as f64);
         if luma < 245 {
             non_white += 1;
+        }
+        if luma < 180 {
+            dark += 1;
+        }
+        if luma < 120 {
+            very_dark += 1;
         }
     }
 
@@ -340,7 +352,17 @@ pub fn is_visually_blank_page(image: &RgbImage) -> bool {
     }
 
     let non_white_ratio = non_white as f32 / sampled as f32;
-    non_white_ratio < 0.003
+    if non_white_ratio < 0.003 {
+        return true;
+    }
+
+    let dark_ratio = dark as f32 / sampled as f32;
+    let very_dark_ratio = very_dark as f32 / sampled as f32;
+    let mean = sum / sampled as f64;
+    let variance = (sum_sq / sampled as f64) - mean * mean;
+    let stddev = variance.max(0.0).sqrt();
+
+    mean >= 178.0 && stddev <= 18.0 && dark_ratio < 0.0015 && very_dark_ratio < 0.0002
 }
 
 pub fn detections_bbox_area_fraction(detections: &[Detection], width: u32, height: u32) -> f32 {
@@ -360,11 +382,64 @@ pub fn detections_bbox_area_fraction(detections: &[Detection], width: u32, heigh
     (sum / page_area).min(1.0) as f32
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct LayoutBlankEvidence {
+    total_area_fraction: f32,
+    text_area_fraction: f32,
+    image_area_fraction: f32,
+    max_area_fraction: f32,
+}
+
+fn layout_blank_evidence(
+    detections: &[Detection],
+    width: u32,
+    height: u32,
+    classifier: &LabelClassifier,
+) -> LayoutBlankEvidence {
+    let page_area = (width as f64) * (height as f64);
+    if page_area <= 0.0 {
+        return LayoutBlankEvidence::default();
+    }
+
+    let mut total = 0.0f64;
+    let mut text = 0.0f64;
+    let mut image = 0.0f64;
+    let mut max_area = 0.0f64;
+
+    for det in detections {
+        let (x1, y1, x2, y2) = rounded_clamped_bbox(det.bbox, width, height);
+        let area = (x2.saturating_sub(x1) as f64) * (y2.saturating_sub(y1) as f64);
+        if area <= 0.0 {
+            continue;
+        }
+
+        total += area;
+        max_area = max_area.max(area);
+        if classifier.is_image_label(det) {
+            image += area;
+        } else if classifier.is_text_label(det)
+            && !matches!(det.category, crate::types::ContentCategory::Abandon)
+        {
+            text += area;
+        }
+    }
+
+    LayoutBlankEvidence {
+        total_area_fraction: (total / page_area).min(1.0) as f32,
+        text_area_fraction: (text / page_area).min(1.0) as f32,
+        image_area_fraction: (image / page_area).min(1.0) as f32,
+        max_area_fraction: (max_area / page_area).min(1.0) as f32,
+    }
+}
+
 pub fn should_force_blank_page_threshold(
     config: &PipelineConfig,
     has_no_filtered_detections: bool,
     page_is_visually_blank: bool,
-    detections_area_fraction: f32,
+    post_nms_detections: &[Detection],
+    width: u32,
+    height: u32,
+    classifier: &LabelClassifier,
 ) -> bool {
     if !config.enable_layout_detection() {
         return false;
@@ -372,12 +447,26 @@ pub fn should_force_blank_page_threshold(
     if config.binarization().use_fixed_threshold || config.binarization().use_heavy_duty {
         return false;
     }
-    if !page_is_visually_blank {
-        return false;
-    }
 
-    const MAX_SPOOF_FRACTION: f32 = 0.02;
-    has_no_filtered_detections || detections_area_fraction <= MAX_SPOOF_FRACTION
+    let evidence = layout_blank_evidence(post_nms_detections, width, height, classifier);
+
+    const MAX_VISUAL_BLANK_SPOOF_FRACTION: f32 = 0.02;
+    const MAX_LAYOUT_BLANK_TOTAL_FRACTION: f32 = 0.006;
+    const MAX_LAYOUT_BLANK_TEXT_FRACTION: f32 = 0.002;
+    const MAX_LAYOUT_BLANK_IMAGE_FRACTION: f32 = 0.001;
+    const MAX_LAYOUT_BLANK_SINGLE_BOX_FRACTION: f32 = 0.004;
+
+    let visual_blank_with_no_real_layout = page_is_visually_blank
+        && (has_no_filtered_detections
+            || evidence.total_area_fraction <= MAX_VISUAL_BLANK_SPOOF_FRACTION);
+
+    let tiny_post_nms_noise = !post_nms_detections.is_empty()
+        && evidence.total_area_fraction <= MAX_LAYOUT_BLANK_TOTAL_FRACTION
+        && evidence.text_area_fraction <= MAX_LAYOUT_BLANK_TEXT_FRACTION
+        && evidence.image_area_fraction <= MAX_LAYOUT_BLANK_IMAGE_FRACTION
+        && evidence.max_area_fraction <= MAX_LAYOUT_BLANK_SINGLE_BOX_FRACTION;
+
+    visual_blank_with_no_real_layout || tiny_post_nms_noise
 }
 
 pub fn is_full_page_image(
@@ -426,5 +515,94 @@ pub fn classify_page(
         content_bounds,
         is_blank,
         is_full_page_image,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ContentCategory, LABEL_CLASSIFIER};
+
+    fn test_detection(category: ContentCategory, bbox: [f32; 4]) -> Detection {
+        Detection {
+            class_id: match category {
+                ContentCategory::Text => 2,
+                ContentCategory::Image => 1,
+                ContentCategory::Table => 8,
+                ContentCategory::Abandon => 0,
+            },
+            class_name: Some(
+                match category {
+                    ContentCategory::Text => "text",
+                    ContentCategory::Image => "image",
+                    ContentCategory::Table => "table",
+                    ContentCategory::Abandon => "abandon",
+                }
+                .to_string(),
+            ),
+            confidence: 0.8,
+            bbox,
+            category,
+            context: None,
+        }
+    }
+
+    #[test]
+    fn aged_low_contrast_page_counts_as_visually_blank() {
+        let image = RgbImage::from_pixel(100, 100, image::Rgb([210, 207, 198]));
+        assert!(is_visually_blank_page(&image));
+    }
+
+    #[test]
+    fn post_nms_tiny_noise_boxes_force_blank_fallback() {
+        let config = PipelineConfig::default();
+        let detections = vec![test_detection(
+            ContentCategory::Abandon,
+            [10.0, 10.0, 14.0, 16.0],
+        )];
+
+        assert!(should_force_blank_page_threshold(
+            &config,
+            false,
+            false,
+            &detections,
+            1000,
+            1000,
+            &LABEL_CLASSIFIER,
+        ));
+    }
+
+    #[test]
+    fn substantial_image_box_blocks_blank_fallback() {
+        let config = PipelineConfig::default();
+        let detections = vec![test_detection(
+            ContentCategory::Image,
+            [100.0, 100.0, 600.0, 600.0],
+        )];
+
+        assert!(!should_force_blank_page_threshold(
+            &config,
+            false,
+            true,
+            &detections,
+            1000,
+            1000,
+            &LABEL_CLASSIFIER,
+        ));
+    }
+
+    #[test]
+    fn no_layout_boxes_alone_does_not_force_nonvisual_blank_page() {
+        let config = PipelineConfig::default();
+
+        assert!(!should_force_blank_page_threshold(
+            &config,
+            true,
+            false,
+            &[],
+            1000,
+            1000,
+            &LABEL_CLASSIFIER,
+        ));
     }
 }

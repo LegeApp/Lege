@@ -478,8 +478,8 @@ fn binarize_image_raw_into(
     // CPU fallback. Avoids the ~12 byte/pixel transient + slow palette conversion of
     // the f32 sRGB-linearize path. For adaptive Sauvola the linearized luma below
     // is preferred (slight quality edge), so we materialize int luma lazily.
-    let want_int_luma = !options.use_heavy_duty
-        && (options.use_fixed_threshold || !options.disable_gpu);
+    let want_int_luma =
+        !options.use_heavy_duty && (options.use_fixed_threshold || !options.disable_gpu);
     let int_luma: Option<Vec<u8>> = if want_int_luma {
         let mut g = vec![0u8; width * height];
         g.par_iter_mut()
@@ -922,9 +922,13 @@ fn otsu_from_hist(h: &[u32; 256], n: usize) -> u8 {
     let mut thresh = 0u8;
     for t in 0..256 {
         w_b += h[t] as f64;
-        if w_b == 0.0 { continue; }
+        if w_b == 0.0 {
+            continue;
+        }
         let w_f = total - w_b;
-        if w_f == 0.0 { break; }
+        if w_f == 0.0 {
+            break;
+        }
         sum_b += (t as f64) * (h[t] as f64);
         let m_b = sum_b / w_b;
         let m_f = (sum_all - sum_b) / w_f;
@@ -1252,7 +1256,7 @@ mod tests {
             return;
         }
         use lege_gpu::binarization::{
-            wgpu::WgpuBinarizer, AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams,
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
         };
 
         let w = 128usize;
@@ -1292,7 +1296,8 @@ mod tests {
             .filter(|(c, g)| c != g)
             .count();
         assert_eq!(
-            mismatches, 0,
+            mismatches,
+            0,
             "bg parity: {} of {} pixels differ (CPU bg vs GPU debug_mode=3)",
             mismatches,
             w * h
@@ -1306,7 +1311,7 @@ mod tests {
             return;
         }
         use lege_gpu::binarization::{
-            wgpu::WgpuBinarizer, AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams,
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
         };
 
         let w = 128usize;
@@ -1386,7 +1391,7 @@ mod tests {
             return;
         }
         use lege_gpu::binarization::{
-            wgpu::WgpuBinarizer, AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams,
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
         };
 
         let w = 128usize;

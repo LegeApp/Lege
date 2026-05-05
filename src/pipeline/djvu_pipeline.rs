@@ -20,8 +20,8 @@ use crate::pipeline::helper_functions::{
     rounded_clamped_bbox,
 };
 use crate::pipeline::page_analysis::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, detections_bbox_area_fraction, is_visually_blank_page,
-    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
+    BLANK_PAGE_FALLBACK_THRESHOLD, is_visually_blank_page, maybe_apply_yolo_full_page_detection,
+    should_force_blank_page_threshold,
 };
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
@@ -809,9 +809,9 @@ fn process_djvu_cpu_intensive_work(
     }
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
+    let classifier = &crate::types::LABEL_CLASSIFIER;
 
     if config.enable_layout_detection() {
-        let classifier = &crate::types::LABEL_CLASSIFIER;
         maybe_apply_yolo_full_page_detection(
             &mut adjusted_detections,
             width as u32,
@@ -844,13 +844,14 @@ fn process_djvu_cpu_intensive_work(
             })
             .collect()
     } else {
-        let det_area_frac =
-            detections_bbox_area_fraction(&adjusted_detections, width as u32, height as u32);
         let force_blank_threshold = should_force_blank_page_threshold(
             &config,
             inference_result.has_no_detections,
             is_visually_blank_page(&adjusted_image),
-            det_area_frac,
+            &adjusted_detections,
+            width as u32,
+            height as u32,
+            classifier,
         );
         binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
     };
@@ -861,8 +862,6 @@ fn process_djvu_cpu_intensive_work(
         && config.text_format() != "jpeg";
 
     if should_dither_regions {
-        let classifier = &crate::types::LABEL_CLASSIFIER;
-
         for det in &adjusted_detections {
             if !classifier.is_image_label(det) {
                 continue;

@@ -9,9 +9,8 @@ use crate::pipeline::helper_functions::{
     rounded_clamped_bbox, should_treat_as_cover_page, spawn_pdf_writer_actor,
 };
 use crate::pipeline::page_analysis::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, detections_bbox_area_fraction,
-    is_visually_blank_page, maybe_apply_yolo_full_page_detection,
-    should_force_blank_page_threshold,
+    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, is_visually_blank_page,
+    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
@@ -701,19 +700,20 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
     }
 
-    let det_area_frac =
-        detections_bbox_area_fraction(&adjusted_detections, width as u32, height as u32);
+    let classifier = &crate::types::LABEL_CLASSIFIER;
     let force_blank_threshold = should_force_blank_page_threshold(
         &config,
         inference_result.has_no_detections,
         is_visually_blank_page(&adjusted_image),
-        det_area_frac,
+        &adjusted_detections,
+        width as u32,
+        height as u32,
+        classifier,
     );
 
     // 2b. Pre-mask image regions before binarization so Sauvola only sees text.
     // Image content would skew the adaptive threshold calculations.
     // We keep the original `adjusted_image` intact for dithering later.
-    let classifier = &crate::types::LABEL_CLASSIFIER;
     // White out figure regions before binarization so Sauvola only sees text content.
     // Detected image areas are later overlaid (original, dithered, or re-encoded),
     // so the bilevel base layer must be blank in those areas.

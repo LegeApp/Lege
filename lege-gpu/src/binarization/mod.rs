@@ -388,6 +388,47 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(windows)]
+    fn hlsl_repeated_adaptive_dispatch_resets_resource_states() {
+        if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+
+        let width = 64u32;
+        let height = 64u32;
+        let pixel_count = (width * height) as usize;
+        let params = BinarizationParams {
+            width,
+            height,
+            mode: BinarizationMode::Adaptive,
+            invert_output: false,
+            k_factor: 0.2,
+            fixed_threshold: 128,
+            adaptive: AdaptiveBinarizeGpuConstants {
+                sauvola_window: 31,
+                bg_window: 3,
+                percentile_c: 255,
+                otsu_threshold: 128,
+            },
+            debug_mode: 0,
+        };
+
+        let black = vec![0u8; pixel_count];
+        let white = vec![255u8; pixel_count];
+        let mut binarizer = hlsl::HlslBinarizer::new().expect("HLSL binarizer");
+
+        let out_black = binarizer
+            .binarize_gray_raw(&black, &params)
+            .expect("first adaptive dispatch");
+        assert!(out_black.iter().all(|&v| v == 0));
+
+        let out_white = binarizer
+            .binarize_gray_raw(&white, &params)
+            .expect("second adaptive dispatch");
+        assert!(out_white.iter().all(|&v| v == 255));
+    }
+
     /// Checks that binarize_batch matches binarize_gray_raw on two same-size pages
     /// and two variable-size pages.
     #[test]
@@ -417,15 +458,21 @@ mod tests {
         let (w0, h0) = (64u32, 48u32);
         let (w1, h1) = (80u32, 32u32);
         let gray0: Vec<u8> = (0..(w0 * h0) as usize).map(|i| (i % 256) as u8).collect();
-        let gray1: Vec<u8> = (0..(w1 * h1) as usize).map(|i| (255 - i % 256) as u8).collect();
+        let gray1: Vec<u8> = (0..(w1 * h1) as usize)
+            .map(|i| (255 - i % 256) as u8)
+            .collect();
         let p0 = make_params(w0, h0);
         let p1 = make_params(w1, h1);
 
         let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
 
         // Ground truth: run each page individually.
-        let single0 = binarizer.binarize_gray_raw(&gray0, &p0).expect("single page 0");
-        let single1 = binarizer.binarize_gray_raw(&gray1, &p1).expect("single page 1");
+        let single0 = binarizer
+            .binarize_gray_raw(&gray0, &p0)
+            .expect("single page 0");
+        let single1 = binarizer
+            .binarize_gray_raw(&gray1, &p1)
+            .expect("single page 1");
 
         // Batch: should produce identical results.
         let batch = binarizer
@@ -463,9 +510,14 @@ mod tests {
             debug_mode: 9, // all-white
         };
         let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
-        let out = binarizer.binarize_gray_raw(&gray, &params).expect("adaptive all-white");
+        let out = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("adaptive all-white");
         assert_eq!(out.len(), w * h, "output size mismatch");
-        assert!(out.iter().all(|&v| v == 255), "expected all 255 for debug_mode=9 (all-white)");
+        assert!(
+            out.iter().all(|&v| v == 255),
+            "expected all 255 for debug_mode=9 (all-white)"
+        );
     }
 
     /// Checks that x-ramp debug mode returns x & 0xFF for each pixel (stride sanity).
@@ -494,7 +546,9 @@ mod tests {
             debug_mode: 7, // x ramp
         };
         let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
-        let out = binarizer.binarize_gray_raw(&gray, &params).expect("x-ramp debug");
+        let out = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("x-ramp debug");
         assert_eq!(out.len(), w * h);
         for y in 0..h {
             for x in 0..w {
