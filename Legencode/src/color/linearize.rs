@@ -1,7 +1,6 @@
 // linearize.rs
 use image::open;
 use ndarray::Array3;
-use palette::{IntoColor, LinSrgb, SrgbLuma};
 use rayon::prelude::*;
 // use std::cmp::{max, min}; // Unused imports
 use std::error::Error;
@@ -129,27 +128,27 @@ impl<'a> From<&'a [u8]> for LinearizeInput<'a> {
     }
 }
 
-/// Convert linearized RGB (0.0-1.0 range) to grayscale (8-bit) using parallel processing
+/// Convert linearized RGB (0.0-1.0 range) to grayscale (8-bit) using parallel processing.
+///
+/// Computes BT.709 luma in linear space then re-encodes to sRGB via the precomputed
+/// LINEAR_TO_SRGB LUT. Matches the previous palette-crate path to within ±1 LSB
+/// (LUT quantization at 1024 steps) and avoids a per-pixel `powf`.
 pub fn linearized_rgb_to_grayscale(linear_rgb: &[f32], gray: &mut [u8]) {
     assert!(
         linear_rgb.len() == gray.len() * 3,
         "Input length must be 3x output length"
     );
 
-    gray.par_iter_mut().enumerate().for_each(|(i, chunk)| {
-        // Create linear RGB color (D65 white point is implicit in Srgb<Linear>)
-        let rgb = LinSrgb::new(
-            linear_rgb[3 * i].clamp(0.0, 1.0),
-            linear_rgb[3 * i + 1].clamp(0.0, 1.0),
-            linear_rgb[3 * i + 2].clamp(0.0, 1.0),
-        );
-
-        // Convert to Luma (grayscale) using BT.709 luminance (D65-based)
-        let luma: SrgbLuma = rgb.into_color();
-
-        // Extract luminance and scale to [0, 255]
-        *chunk = (luma.luma * 255.0).clamp(0.0, 255.0) as u8;
-    });
+    gray.par_iter_mut()
+        .zip(linear_rgb.par_chunks_exact(3))
+        .for_each(|(out, rgb)| {
+            let r = rgb[0].clamp(0.0, 1.0);
+            let g = rgb[1].clamp(0.0, 1.0);
+            let b = rgb[2].clamp(0.0, 1.0);
+            // BT.709 (D65) luma in linear space.
+            let y_lin = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            *out = linear_to_srgb(y_lin);
+        });
 }
 
 /// Convert RGB bytes to linearized f32 values using optimized parallel processing

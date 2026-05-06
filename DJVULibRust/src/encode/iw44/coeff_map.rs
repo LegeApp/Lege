@@ -4,17 +4,18 @@ use super::zigzag::ZIGZAG_LOC;
 use crate::image::image_formats::Bitmap;
 
 /// Replaces `IW44Image::Block`, storing coefficients for a 32x32 image block.
-/// Uses fixed arrays instead of HashMap for maximum performance.
+/// Uses flat arrays for maximum cache efficiency: 32 bytes per bucket, 2 buckets per cache line.
 #[derive(Debug, Clone)]
 pub struct Block {
-    // 64 optional buckets (1024 coeffs / 16 per bucket); None == bucket all-zero
-    buckets: [Option<[i16; 16]>; 64],
+    buckets: [[i16; 16]; 64],
+    present: u64, // bit i set iff bucket i has been written with nonzero data
 }
 
 impl Default for Block {
     fn default() -> Self {
         Self {
-            buckets: [None; 64],
+            buckets: [[0i16; 16]; 64],
+            present: 0,
         }
     }
 }
@@ -26,90 +27,81 @@ impl Block {
             if coeff != 0 {
                 let bucket_idx = (i / 16) as u8;
                 let coeff_idx_in_bucket = i % 16;
-
-                // Ensure bucket exists
-                if self.buckets[bucket_idx as usize].is_none() {
-                    self.buckets[bucket_idx as usize] = Some([0; 16]);
-                }
-
-                self.buckets[bucket_idx as usize].as_mut().unwrap()[coeff_idx_in_bucket] = coeff;
+                self.present |= 1u64 << bucket_idx;
+                self.buckets[bucket_idx as usize][coeff_idx_in_bucket] = coeff;
             }
         }
     }
 
-    /// Write coefficients from buckets back to a liftblock in zigzag order
-    /// This is the inverse of read_liftblock and is needed for proper spatial reconstruction
+    /// Write coefficients from buckets back to a liftblock in zigzag order.
     pub fn write_liftblock(&self, liftblock: &mut [i16; 1024]) {
-        // Clear the output buffer
         liftblock.fill(0);
-
-        // Reconstruct coefficients in zigzag order
         for (i, &loc) in ZIGZAG_LOC.iter().enumerate() {
             let bucket_idx = (i / 16) as u8;
-            let coeff_idx_in_bucket = i % 16;
-
-            if let Some(bucket) = self.buckets[bucket_idx as usize].as_ref() {
-                liftblock[loc] = bucket[coeff_idx_in_bucket];
+            if self.present & (1u64 << bucket_idx) != 0 {
+                liftblock[loc] = self.buckets[bucket_idx as usize][i % 16];
             }
-            // If bucket is None, coefficient remains 0 (already set by fill)
         }
     }
 
+    /// Returns `Some(&bucket)` if the bucket was ever written, `None` if it was never written.
     #[inline]
     pub fn get_bucket(&self, bucket_idx: u8) -> Option<&[i16; 16]> {
-        self.buckets[bucket_idx as usize].as_ref()
+        if self.present & (1u64 << bucket_idx) != 0 {
+            Some(&self.buckets[bucket_idx as usize])
+        } else {
+            None
+        }
+    }
+
+    /// Returns a reference to the bucket data. Returns the (zeroed) backing array even if the
+    /// bucket was never written — callers that treat absent-bucket as all-zeros can skip the
+    /// Option branch entirely.
+    #[inline]
+    pub fn get_bucket_raw(&self, bucket_idx: u8) -> &[i16; 16] {
+        &self.buckets[bucket_idx as usize]
     }
 
     #[inline]
     pub fn get_bucket_mut(&mut self, bucket_idx: u8) -> &mut [i16; 16] {
-        if self.buckets[bucket_idx as usize].is_none() {
-            self.buckets[bucket_idx as usize] = Some([0; 16]);
-        }
-        self.buckets[bucket_idx as usize].as_mut().unwrap()
+        self.present |= 1u64 << bucket_idx;
+        &mut self.buckets[bucket_idx as usize]
     }
 
     pub fn zero_bucket(&mut self, bucket_idx: u8) {
-        self.buckets[bucket_idx as usize] = None;
+        self.present &= !(1u64 << bucket_idx);
+        self.buckets[bucket_idx as usize] = [0; 16];
     }
 
-    /// Set a bucket directly (used for encoded map)
+    /// Set a bucket directly (used for encoded map).
     #[inline]
     pub fn set_bucket(&mut self, bucket_idx: u8, val: [i16; 16]) {
-        self.buckets[bucket_idx as usize] = Some(val);
+        self.present |= 1u64 << bucket_idx;
+        self.buckets[bucket_idx as usize] = val;
     }
 
-    /// Get a coefficient at a specific zigzag index
     pub fn get_coeff_at_zigzag_index(&self, zigzag_idx: usize) -> i16 {
         let bucket_idx = (zigzag_idx / 16) as u8;
-        let coeff_idx_in_bucket = zigzag_idx % 16;
-
-        if let Some(bucket) = self.buckets[bucket_idx as usize].as_ref() {
-            bucket[coeff_idx_in_bucket]
+        if self.present & (1u64 << bucket_idx) != 0 {
+            self.buckets[bucket_idx as usize][zigzag_idx % 16]
         } else {
             0
         }
     }
 
-    /// Set a coefficient at a specific zigzag index
     pub fn set_coeff_at_zigzag_index(&mut self, zigzag_idx: usize, value: i16) {
         let bucket_idx = (zigzag_idx / 16) as u8;
-        let coeff_idx_in_bucket = zigzag_idx % 16;
-
+        let coeff_idx = zigzag_idx % 16;
         if value == 0 {
-            // If setting to zero, we might be able to clear the bucket
-            if let Some(bucket) = self.buckets[bucket_idx as usize].as_mut() {
-                bucket[coeff_idx_in_bucket] = 0;
-                // Check if entire bucket is now zero
-                if bucket.iter().all(|&x| x == 0) {
-                    self.buckets[bucket_idx as usize] = None;
+            if self.present & (1u64 << bucket_idx) != 0 {
+                self.buckets[bucket_idx as usize][coeff_idx] = 0;
+                if self.buckets[bucket_idx as usize].iter().all(|&x| x == 0) {
+                    self.present &= !(1u64 << bucket_idx);
                 }
             }
         } else {
-            // Ensure bucket exists
-            if self.buckets[bucket_idx as usize].is_none() {
-                self.buckets[bucket_idx as usize] = Some([0; 16]);
-            }
-            self.buckets[bucket_idx as usize].as_mut().unwrap()[coeff_idx_in_bucket] = value;
+            self.present |= 1u64 << bucket_idx;
+            self.buckets[bucket_idx as usize][coeff_idx] = value;
         }
     }
 }
@@ -164,7 +156,6 @@ impl CoeffMap {
             let src_offset = src_y * bw + data_start_x;
             let dst_offset = i * 32;
 
-            // Copy i16 values directly (no conversion needed, data16 is already i16)
             for j in 0..32 {
                 liftblock[dst_offset + j] = data16[src_offset + j];
             }
@@ -179,47 +170,29 @@ impl CoeffMap {
         transform_fn: F,
     ) -> Self
     where
-        F: FnOnce(&mut [i16], usize, usize, usize), // Added stride parameter
+        F: FnOnce(&mut [i16], usize, usize, usize),
     {
         let mut map = Self::new(width, height);
 
-        // Allocate decomposition buffer (padded) - now using i16 to match C++
         let mut data16 = vec![0i16; map.bw * map.bh];
 
-        // Apply transform function to populate data16
-        // Pass actual image size (iw, ih) and stride (bw) to handle padding correctly
         transform_fn(&mut data16, map.iw, map.ih, map.bw);
 
-        // Apply the actual wavelet transform to convert pixels to coefficients
-        // DjVuLibre runs the transform on the active image region (iw x ih)
-        // while using the padded rowsize (bw) for addressing.
-        // See IW44Image::Map::Encode::create():
-        //   IW44Image::Transform::Encode::forward(data16, iw, ih, bw, 1, 32);
         let levels = ((map.iw.min(map.ih) as f32).log2() as usize).min(5);
         Encode::forward(&mut data16, map.iw, map.ih, map.bw, levels);
 
-        // Apply masking logic if mask is provided
         if let Some(mask_img) = mask {
-            // Now masking functions work directly with i32 data
             let mask8 = masking::image_to_mask8(mask_img, map.bw, map.ih);
-
-            // Apply interpolate_mask to fill masked pixels with neighbor averages
             masking::interpolate_mask(&mut data16, map.iw, map.ih, map.bw, &mask8, map.bw);
-
-            // Apply forward_mask for multiscale masked wavelet decomposition
             masking::forward_mask(&mut data16, map.iw, map.ih, map.bw, 1, 32, &mask8, map.bw);
         }
 
-        // Copy transformed coefficients into blocks
         let blocks_w = map.bw / 32;
-        // Standard iteration order (top-to-bottom, left-to-right)
         for block_y in 0..(map.bh / 32) {
             for block_x in 0..blocks_w {
                 let block_idx = block_y * blocks_w + block_x;
                 let mut liftblock = [0i16; 1024];
-
                 Self::copy_block_data(&mut liftblock, &data16, map.bw, block_x, block_y);
-
                 map.blocks[block_idx].read_liftblock(&liftblock);
             }
         }
@@ -253,13 +226,12 @@ impl CoeffMap {
     }
 
     /// Create a CoeffMap from signed i8 channel data (Y, Cb, or Cr)
-    /// The input data should be centered around 0 (range approximately -128 to +127)
     pub fn create_from_signed_channel(
         channel_buf: &[i8],
         width: u32,
         height: u32,
         mask: Option<&Bitmap>,
-        _channel_name: &str, // Keep for API compatibility but don't use for debug
+        _channel_name: &str,
     ) -> Self {
         Self::create_from_transform(
             width as usize,
@@ -272,13 +244,10 @@ impl CoeffMap {
     }
 
     pub fn slash_res(&mut self, res: usize) {
-        // Halve the image dimensions
         self.iw = (self.iw + res - 1) / res;
         self.ih = (self.ih + res - 1) / res;
-        // Update padded dimensions
         self.bw = (self.iw + 31) & !31;
         self.bh = (self.ih + 31) & !31;
-        // Update number of blocks
         self.num_blocks = (self.bw * self.bh) / (32 * 32);
 
         let min_bucket = match res {
@@ -287,7 +256,6 @@ impl CoeffMap {
             4..=7 => 4,
             _ => 1,
         };
-        // Adjust blocks vector size
         self.blocks.resize(self.num_blocks, Block::default());
 
         for block in self.blocks.iter_mut() {

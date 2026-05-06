@@ -51,7 +51,6 @@ zip = { version = "8.6.0", default-features = false }
 miniz_oxide = "0.8"
 lazy_static = "1.5.0"  
 ndarray = { version = "0.17.2", features = ["rayon"] }
-palette = { version = "0.7.6", features = ["libm"] }  
 bytemuck = { version = "1.25.0", features = ["derive", "extern_crate_alloc"] }  
 cfg-if = "1.0.4"
 html-escape = "0.2.13"
@@ -138,7 +137,6 @@ serde_json = { workspace = true }
 flate2 = { workspace = true }
 fast_image_resize = { version = "6.0.0" }
 bytemuck = { workspace = true }
-palette = { workspace = true }
 lazy_static = { workspace = true }
 ndarray = { workspace = true }
 Legencode = { path = "Legencode" }

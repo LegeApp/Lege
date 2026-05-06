@@ -9,9 +9,8 @@ use crate::pipeline::helper_functions::{
     rounded_clamped_bbox, should_treat_as_cover_page, spawn_pdf_writer_actor,
 };
 use crate::pipeline::page_analysis::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, detections_bbox_area_fraction,
-    is_visually_blank_page, maybe_apply_yolo_full_page_detection,
-    should_force_blank_page_threshold,
+    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, is_visually_blank_page,
+    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
@@ -53,7 +52,7 @@ pub struct ProcessedPage {
     pub height: u32,
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
-    pub binarized: Option<Vec<u8>>,  // None when OCR is disabled to free memory
+    pub binarized: Option<Vec<u8>>, // None when OCR is disabled to free memory
 }
 
 #[derive(Clone, Debug)]
@@ -478,7 +477,11 @@ async fn process_single_page(
     // - Default path: binarized is moved into the encoder; cloned only if OCR storage needs it.
     let (base_layer, binarized_for_page) = if config.text_format() == "jpeg" {
         let layer = encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?;
-        let stored = if config.enable_ocr() { Some(binarized) } else { None };
+        let stored = if config.enable_ocr() {
+            Some(binarized)
+        } else {
+            None
+        };
         (layer, stored)
     } else if let Some(bin_options) = deferred_binarize {
         // adjusted_image is not used after this point in process_single_page;
@@ -495,7 +498,11 @@ async fn process_single_page(
         .await?;
         (layer, None)
     } else {
-        let stored = if config.enable_ocr() { Some(binarized.clone()) } else { None };
+        let stored = if config.enable_ocr() {
+            Some(binarized.clone())
+        } else {
+            None
+        };
         let layer = encode_base_layer(
             binarized,
             width,
@@ -701,19 +708,20 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
     }
 
-    let det_area_frac =
-        detections_bbox_area_fraction(&adjusted_detections, width as u32, height as u32);
+    let classifier = &crate::types::LABEL_CLASSIFIER;
     let force_blank_threshold = should_force_blank_page_threshold(
         &config,
         inference_result.has_no_detections,
         is_visually_blank_page(&adjusted_image),
-        det_area_frac,
+        &adjusted_detections,
+        width as u32,
+        height as u32,
+        classifier,
     );
 
     // 2b. Pre-mask image regions before binarization so Sauvola only sees text.
     // Image content would skew the adaptive threshold calculations.
     // We keep the original `adjusted_image` intact for dithering later.
-    let classifier = &crate::types::LABEL_CLASSIFIER;
     // White out figure regions before binarization so Sauvola only sees text content.
     // Detected image areas are later overlaid (original, dithered, or re-encoded),
     // so the bilevel base layer must be blank in those areas.
@@ -764,8 +772,12 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         && config.text_format() != "jpeg";
 
     let (mut binarized, deferred_binarize) = if can_defer_binarize {
-        (Vec::new(), Some(binarize_options_for(&config, force_blank_threshold)))
+        (
+            Vec::new(),
+            Some(binarize_options_for(&config, force_blank_threshold)),
+        )
     } else if config.text_format() == "jpeg" {
+        // DEBUG: should not reach here for non-jpeg pages with images
         // Luma-from-RGB pass for jpeg base mode (full-page color encoded later).
         let luma: Vec<u8> = binarization_image
             .as_raw()
@@ -779,7 +791,8 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             .collect();
         (luma, None)
     } else {
-        (binarize_image(&binarization_image, &config, force_blank_threshold), None)
+        let bin = binarize_image(&binarization_image, &config, force_blank_threshold);
+        (bin, None)
     };
     drop(binarization_image);
 
@@ -1269,7 +1282,10 @@ fn apply_region_policy(
 }
 
 /// Build BinarizationOptions from the pipeline config + blank-page threshold override.
-fn binarize_options_for(config: &PipelineConfig, force_blank_threshold: bool) -> BinarizationOptions {
+fn binarize_options_for(
+    config: &PipelineConfig,
+    force_blank_threshold: bool,
+) -> BinarizationOptions {
     let want_invert_input = config.invert_input();
     let mut want_invert_output = config.binarization().invert;
     if want_invert_input && want_invert_output {
@@ -1292,6 +1308,11 @@ fn binarize_options_for(config: &PipelineConfig, force_blank_threshold: bool) ->
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
+        // Layout mode runs binarization concurrently with rendering+inference, which
+        // dominates wall time per page anyway — the GPU binarizer offers no speedup
+        // there and has produced intermittent inverted base layers (black-background
+        // pages) on long runs. Force CPU when layout detection is on.
+        disable_gpu: config.enable_layout_detection(),
     }
 }
 
@@ -1698,9 +1719,8 @@ async fn encode_base_layer_fused(
                     height: height as u32,
                     channels: 1u8,
                 };
-                EncodingManager::encode(&buffer, &encoding_settings).map_err(|e| {
-                    anyhow!("Encoding failed for format {}: {}", text_format, e)
-                })
+                EncodingManager::encode(&buffer, &encoding_settings)
+                    .map_err(|e| anyhow!("Encoding failed for format {}: {}", text_format, e))
             },
         )
     })

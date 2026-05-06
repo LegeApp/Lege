@@ -18,8 +18,8 @@ pub use error::{ColorOpsError, Result};
 
 // Export essential binarization utilities
 pub use binarization::{
-    HeavySauvolaProcessor, binarize_image, binarize_image_raw,
-    compute_adaptive_gpu_constants, sauvola_window_for, odd_background_window,
+    HeavySauvolaProcessor, binarize_image, binarize_image_raw, compute_adaptive_gpu_constants,
+    odd_background_window, sauvola_window_for,
 };
 
 // Export color processing utilities
