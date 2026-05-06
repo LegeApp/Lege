@@ -60,7 +60,7 @@ pub struct DjvuBinarizedData {
 
 struct EncodedDjvuPage {
     index: usize,
-    page: djvu_encoder::doc::Page,
+    encoded: djvu_encoder::doc::EncodedPage,
 }
 /// Helper function to create DJVU pipeline configuration
 pub fn create_djvu_pipeline_config(
@@ -400,8 +400,10 @@ pub async fn create_and_run_djvu_source_pipeline(
             Ok(())
         })
     };
-    // Spawn DjVu writer actor for concurrent document assembly
-    let (djvu_writer, mut writer_task) = spawn_djvu_writer_actor(
+    // Spawn DjVu writer actor for concurrent document assembly. The writer
+    // owns the assembly side; the shared `Arc<DjvuDocument>` lets the parallel
+    // encode stage do the heavy IW44/JB2 encode off-thread.
+    let (djvu_writer, djvu_doc, mut writer_task) = spawn_djvu_writer_actor(
         output_path.to_path_buf(),
         total_pages,
         dpi,
@@ -414,6 +416,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     let mut encode_task: JoinHandle<Result<()>> = {
         let orchestrator = orchestrator.clone();
         let djvu_writer = djvu_writer.clone();
+        let djvu_doc = djvu_doc.clone();
         let mut binarize_rx = binarize_rx;
         let concurrency = pipeline_config.djvu_encode_workers;
         tokio::spawn(async move {
@@ -431,10 +434,13 @@ pub async fn create_and_run_djvu_source_pipeline(
                     biased;
                     Some(result) = in_flight.next(), if !in_flight.is_empty() => {
                         let encoded_page = result?;
-                        djvu_writer.append_page(encoded_page.page, encoded_page.index).await?;
+                        djvu_writer
+                            .append_encoded(encoded_page.encoded, encoded_page.index)
+                            .await?;
                     }
                     Some(binarized_data) = binarize_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
                         let orchestrator = orchestrator.clone();
+                        let djvu_doc = djvu_doc.clone();
                         in_flight.push(Box::pin(async move {
                             let page_index = binarized_data.index;
                             let page_data = PageData {
@@ -445,13 +451,23 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 hocr: binarized_data.hocr_text,
                             };
 
-                            let page = tokio::task::spawn_blocking(move || orchestrator.process_page(page_data))
-                                .await
-                                .map_err(|e| anyhow!("DjVu encode task panicked: {}", e))??;
+                            // Run the full per-page work — page assembly + IW44/JB2
+                            // encode — inside one spawn_blocking so the heavy CPU
+                            // cost runs concurrently with other pages instead of
+                            // serialising in the writer actor.
+                            let encoded = tokio::task::spawn_blocking(move || -> Result<_> {
+                                let page = orchestrator.process_page(page_data)?;
+                                let encoded = djvu_doc
+                                    .encode_page(page)
+                                    .map_err(|e| anyhow!("DjVu encode failed: {}", e))?;
+                                Ok(encoded)
+                            })
+                            .await
+                            .map_err(|e| anyhow!("DjVu encode task panicked: {}", e))??;
 
                             Ok(EncodedDjvuPage {
                                 index: page_index,
-                                page,
+                                encoded,
                             })
                         }));
                     }
