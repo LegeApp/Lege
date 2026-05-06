@@ -17,9 +17,12 @@ struct BinarizeParams {
 @group(0) @binding(2) var<storage, read_write> bg_output: array<u32>;
 
 fn reflect_101(idx: i32, len: i32) -> i32 {
-    if idx < 0 { return -idx - 1; }
-    if idx >= len { return 2 * len - idx - 1; }
-    return idx;
+    if len <= 1 { return 0; }
+    let period = 2 * len;
+    var n = idx % period;
+    if n < 0 { n = n + period; }
+    if n >= len { return period - n - 1; }
+    return n;
 }
 
 // Both inputs are 1 u32 per pixel (gray, 0..255) — gray_buf for main_h, bg_tmp for main_v.

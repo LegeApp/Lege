@@ -6,11 +6,12 @@ use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use unicode_normalization::UnicodeNormalization;
 
 // Import DJVU encoder types
-use djvu_encoder::doc::{DjvuBuilder, Page, PageBuilder, PageEncodeParams};
+use djvu_encoder::doc::{DjvuBuilder, DjvuDocument, EncodedPage, PageBuilder, PageEncodeParams};
 use djvu_encoder::image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 
 use crate::app_dirs;
@@ -613,8 +614,11 @@ impl DjvuOrchestrator {
 
 /// Message types for DjVu writer actor
 pub enum DjvuWriterMessage {
-    /// Add a page to the document
-    AppendPage { page: Page, page_index: usize },
+    /// Insert an already-encoded page into the document
+    AppendEncoded {
+        encoded: EncodedPage,
+        page_index: usize,
+    },
     /// Finalize the document
     Finalize,
 }
@@ -626,10 +630,21 @@ pub struct DjvuWriterHandle {
 }
 
 impl DjvuWriterHandle {
-    /// Send a page to be added to the document
-    pub async fn append_page(&self, page: Page, page_index: usize) -> Result<(), anyhow::Error> {
+    /// Send an already-encoded page to be inserted into the document.
+    ///
+    /// The expensive IW44/JB2 encode runs on the caller's thread (typically
+    /// inside `spawn_blocking` in the parallel encode stage). The writer
+    /// actor only does the cheap thread-safe insert into the page collection.
+    pub async fn append_encoded(
+        &self,
+        encoded: EncodedPage,
+        page_index: usize,
+    ) -> Result<(), anyhow::Error> {
         self.sender
-            .send(DjvuWriterMessage::AppendPage { page, page_index })
+            .send(DjvuWriterMessage::AppendEncoded {
+                encoded,
+                page_index,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("DjVu writer actor has stopped"))?;
         Ok(())
@@ -657,8 +672,12 @@ fn drain_ready_pages<T>(
     ready
 }
 
-/// Spawn a dedicated DjVu writer actor that owns the DjvuDocument
-/// Returns a handle for sending pages and a JoinHandle for the actor task
+/// Spawn a dedicated DjVu writer actor that owns the DjvuDocument.
+///
+/// Returns a handle for sending already-encoded pages, a shared `Arc<DjvuDocument>`
+/// (so the parallel encode stage can call `doc.encode_page(...)` off-thread), and
+/// a JoinHandle for the actor task. The writer only performs the cheap
+/// thread-safe insert; all IW44/JB2 work belongs in the encode stage.
 pub fn spawn_djvu_writer_actor(
     output_path: PathBuf,
     total_pages: usize,
@@ -668,6 +687,7 @@ pub fn spawn_djvu_writer_actor(
     channel_capacity: usize,
 ) -> (
     DjvuWriterHandle,
+    Arc<DjvuDocument>,
     tokio::task::JoinHandle<Result<(), anyhow::Error>>,
 ) {
     let (tx, mut rx) = mpsc::channel::<DjvuWriterMessage>(channel_capacity.max(1));
@@ -684,17 +704,22 @@ pub fn spawn_djvu_writer_actor(
         q => 50 + (q as usize * 24 / 50),                   // 50-74 range
     };
 
-    let task = tokio::spawn(async move {
-        // Build the DjVu document with explicit IW44 slice configuration.
-        let mut params = PageEncodeParams::default();
-        params.slices = Some(slices);
-        let doc = DjvuBuilder::new(total_pages)
+    // Build the DjVu document up front so it can be shared with the encode
+    // stage (which calls `doc.encode_page` off-thread) before the writer task
+    // starts draining.
+    let mut params = PageEncodeParams::default();
+    params.slices = Some(slices);
+    let doc = Arc::new(
+        DjvuBuilder::new(total_pages)
             .with_dpi(dpi)
             .with_params(params)
-            .build();
+            .build(),
+    );
 
+    let writer_doc = Arc::clone(&doc);
+    let task = tokio::spawn(async move {
         let mut pages_written = 0usize;
-        let mut page_buffer: std::collections::BTreeMap<usize, Page> =
+        let mut page_buffer: std::collections::BTreeMap<usize, EncodedPage> =
             std::collections::BTreeMap::new();
         let mut next_expected = 0usize;
 
@@ -703,13 +728,16 @@ pub fn spawn_djvu_writer_actor(
         while let Some(msg) = rx.recv().await {
             // NOTE: Do NOT block the writer for memory relief — the writer frees memory by flushing to disk.
             match msg {
-                DjvuWriterMessage::AppendPage { page, page_index } => {
-                    // Buffer the incoming page
-                    page_buffer.insert(page_index, page);
+                DjvuWriterMessage::AppendEncoded {
+                    encoded,
+                    page_index,
+                } => {
+                    // Buffer the incoming encoded page
+                    page_buffer.insert(page_index, encoded);
 
-                    // Add all consecutive pages starting from next_expected
-                    for page in drain_ready_pages(&mut page_buffer, &mut next_expected) {
-                        if let Err(e) = doc.add_page(page) {
+                    // Insert all consecutive pages starting from next_expected
+                    for encoded in drain_ready_pages(&mut page_buffer, &mut next_expected) {
+                        if let Err(e) = writer_doc.add_encoded_page(encoded) {
                             let failed_page = next_expected.saturating_sub(1);
                             crate::warn_log!(
                                 "[DjvuWriterActor] Failed to append page {}: {}",
@@ -753,7 +781,7 @@ pub fn spawn_djvu_writer_actor(
                     }
 
                     // Finalize and write to file
-                    DjvuOrchestrator::finalize_document(&doc, &output_path)?;
+                    DjvuOrchestrator::finalize_document(&writer_doc, &output_path)?;
 
                     crate::success_log!("[DjvuWriterActor] Document finalized successfully");
                     break;
@@ -764,7 +792,7 @@ pub fn spawn_djvu_writer_actor(
         Ok(())
     });
 
-    (handle, task)
+    (handle, doc, task)
 }
 
 #[cfg(test)]

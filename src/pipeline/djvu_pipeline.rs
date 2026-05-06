@@ -20,8 +20,8 @@ use crate::pipeline::helper_functions::{
     rounded_clamped_bbox,
 };
 use crate::pipeline::page_analysis::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, detections_bbox_area_fraction, is_visually_blank_page,
-    maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
+    BLANK_PAGE_FALLBACK_THRESHOLD, is_visually_blank_page, maybe_apply_yolo_full_page_detection,
+    should_force_blank_page_threshold,
 };
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
@@ -60,7 +60,7 @@ pub struct DjvuBinarizedData {
 
 struct EncodedDjvuPage {
     index: usize,
-    page: djvu_encoder::doc::Page,
+    encoded: djvu_encoder::doc::EncodedPage,
 }
 /// Helper function to create DJVU pipeline configuration
 pub fn create_djvu_pipeline_config(
@@ -400,8 +400,10 @@ pub async fn create_and_run_djvu_source_pipeline(
             Ok(())
         })
     };
-    // Spawn DjVu writer actor for concurrent document assembly
-    let (djvu_writer, mut writer_task) = spawn_djvu_writer_actor(
+    // Spawn DjVu writer actor for concurrent document assembly. The writer
+    // owns the assembly side; the shared `Arc<DjvuDocument>` lets the parallel
+    // encode stage do the heavy IW44/JB2 encode off-thread.
+    let (djvu_writer, djvu_doc, mut writer_task) = spawn_djvu_writer_actor(
         output_path.to_path_buf(),
         total_pages,
         dpi,
@@ -414,6 +416,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     let mut encode_task: JoinHandle<Result<()>> = {
         let orchestrator = orchestrator.clone();
         let djvu_writer = djvu_writer.clone();
+        let djvu_doc = djvu_doc.clone();
         let mut binarize_rx = binarize_rx;
         let concurrency = pipeline_config.djvu_encode_workers;
         tokio::spawn(async move {
@@ -431,10 +434,13 @@ pub async fn create_and_run_djvu_source_pipeline(
                     biased;
                     Some(result) = in_flight.next(), if !in_flight.is_empty() => {
                         let encoded_page = result?;
-                        djvu_writer.append_page(encoded_page.page, encoded_page.index).await?;
+                        djvu_writer
+                            .append_encoded(encoded_page.encoded, encoded_page.index)
+                            .await?;
                     }
                     Some(binarized_data) = binarize_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
                         let orchestrator = orchestrator.clone();
+                        let djvu_doc = djvu_doc.clone();
                         in_flight.push(Box::pin(async move {
                             let page_index = binarized_data.index;
                             let page_data = PageData {
@@ -445,13 +451,23 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 hocr: binarized_data.hocr_text,
                             };
 
-                            let page = tokio::task::spawn_blocking(move || orchestrator.process_page(page_data))
-                                .await
-                                .map_err(|e| anyhow!("DjVu encode task panicked: {}", e))??;
+                            // Run the full per-page work — page assembly + IW44/JB2
+                            // encode — inside one spawn_blocking so the heavy CPU
+                            // cost runs concurrently with other pages instead of
+                            // serialising in the writer actor.
+                            let encoded = tokio::task::spawn_blocking(move || -> Result<_> {
+                                let page = orchestrator.process_page(page_data)?;
+                                let encoded = djvu_doc
+                                    .encode_page(page)
+                                    .map_err(|e| anyhow!("DjVu encode failed: {}", e))?;
+                                Ok(encoded)
+                            })
+                            .await
+                            .map_err(|e| anyhow!("DjVu encode task panicked: {}", e))??;
 
                             Ok(EncodedDjvuPage {
                                 index: page_index,
-                                page,
+                                encoded,
                             })
                         }));
                     }
@@ -809,9 +825,9 @@ fn process_djvu_cpu_intensive_work(
     }
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
+    let classifier = &crate::types::LABEL_CLASSIFIER;
 
     if config.enable_layout_detection() {
-        let classifier = &crate::types::LABEL_CLASSIFIER;
         maybe_apply_yolo_full_page_detection(
             &mut adjusted_detections,
             width as u32,
@@ -844,13 +860,14 @@ fn process_djvu_cpu_intensive_work(
             })
             .collect()
     } else {
-        let det_area_frac =
-            detections_bbox_area_fraction(&adjusted_detections, width as u32, height as u32);
         let force_blank_threshold = should_force_blank_page_threshold(
             &config,
             inference_result.has_no_detections,
             is_visually_blank_page(&adjusted_image),
-            det_area_frac,
+            &adjusted_detections,
+            width as u32,
+            height as u32,
+            classifier,
         );
         binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
     };
@@ -861,8 +878,6 @@ fn process_djvu_cpu_intensive_work(
         && config.text_format() != "jpeg";
 
     if should_dither_regions {
-        let classifier = &crate::types::LABEL_CLASSIFIER;
-
         for det in &adjusted_detections {
             if !classifier.is_image_label(det) {
                 continue;
@@ -1043,6 +1058,7 @@ fn binarize_djvu_image(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
+        disable_gpu: config.enable_layout_detection(),
     };
     // binarize_image_raw handles heavy-duty mode internally
     Legencode::color::binarization::binarize_image_raw(

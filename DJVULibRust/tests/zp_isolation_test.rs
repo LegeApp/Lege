@@ -38,9 +38,9 @@ fn test_zp_encoder_iwencoder() {
     let mut encoder =
         ZEncoder::new(Cursor::new(buffer), true).expect("Failed to create ZP encoder");
 
-    // Test IWencoder path (used for IW44 coefficient encoding)
+    // Test iwencoder path (used for IW44 coefficient encoding)
     for i in 0..100 {
-        encoder.IWencoder(i % 3 == 0).expect("IWencoder failed");
+        encoder.iwencoder(i % 3 == 0).expect("iwencoder failed");
     }
 
     // Finish and get output

@@ -62,6 +62,11 @@ pub struct BinarizationOptions {
     pub no_patch: bool, // Debug option to disable patching
     pub use_fixed_threshold: bool,
     pub fixed_threshold: u8,
+    /// When true, skip GPU binarization fast paths and use the CPU path.
+    /// Used to dodge a black-background regression seen in layout-mode runs
+    /// where the GPU path occasionally produced an inverted base layer.
+    #[serde(default)]
+    pub disable_gpu: bool,
 }
 
 impl Default for BinarizationOptions {
@@ -75,6 +80,7 @@ impl Default for BinarizationOptions {
             no_patch: false,
             use_fixed_threshold: false,
             fixed_threshold: 200,
+            disable_gpu: false,
         }
     }
 }
