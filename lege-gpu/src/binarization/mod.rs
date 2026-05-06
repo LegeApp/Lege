@@ -345,12 +345,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static GPU_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn gpu_test_guard() -> MutexGuard<'static, ()> {
+        GPU_TEST_LOCK.lock().expect("GPU test lock poisoned")
+    }
 
     #[test]
     fn gpu_fixed_threshold_smoke_when_enabled() {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
         }
+        let _gpu_guard = gpu_test_guard();
 
         let gray = vec![0u8, 255, 128, 32];
         let params = BinarizationParams {
@@ -394,6 +402,7 @@ mod tests {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
         }
+        let _gpu_guard = gpu_test_guard();
 
         let width = 64u32;
         let height = 64u32;
@@ -437,6 +446,7 @@ mod tests {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
         }
+        let _gpu_guard = gpu_test_guard();
 
         let make_params = |w: u32, h: u32| BinarizationParams {
             width: w,
@@ -491,6 +501,8 @@ mod tests {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
         }
+        let _gpu_guard = gpu_test_guard();
+
         let w = 64usize;
         let h = 64usize;
         let gray: Vec<u8> = (0..(w * h)).map(|i| (i % 256) as u8).collect();
@@ -527,6 +539,8 @@ mod tests {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
         }
+        let _gpu_guard = gpu_test_guard();
+
         let w = 64usize;
         let h = 32usize;
         let gray = vec![128u8; w * h];
@@ -557,5 +571,69 @@ mod tests {
                 assert_eq!(actual, expected, "x-ramp mismatch at ({x},{y})");
             }
         }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn wgpu_callback_exposes_exact_pixel_count() {
+        if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _gpu_guard = gpu_test_guard();
+
+        let gray = vec![0u8, 128, 255];
+        let params = BinarizationParams {
+            width: 3,
+            height: 1,
+            mode: BinarizationMode::FixedThreshold,
+            invert_output: false,
+            k_factor: 0.2,
+            fixed_threshold: 100,
+            adaptive: AdaptiveBinarizeGpuConstants {
+                sauvola_window: 31,
+                bg_window: 3,
+                percentile_c: 128,
+                otsu_threshold: 128,
+            },
+            debug_mode: 0,
+        };
+        let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
+        let observed_len = binarizer
+            .binarize_gray_raw_with(&gray, &params, |data| data.len())
+            .expect("callback fixed threshold");
+        assert_eq!(observed_len, gray.len());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn wgpu_adaptive_handles_window_larger_than_dimension() {
+        if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _gpu_guard = gpu_test_guard();
+
+        let w = 3usize;
+        let h = 1usize;
+        let gray = vec![128u8; w * h];
+        let params = BinarizationParams {
+            width: w as u32,
+            height: h as u32,
+            mode: BinarizationMode::Adaptive,
+            invert_output: false,
+            k_factor: 0.2,
+            fixed_threshold: 128,
+            adaptive: AdaptiveBinarizeGpuConstants {
+                sauvola_window: 31,
+                bg_window: 31,
+                percentile_c: 128,
+                otsu_threshold: 128,
+            },
+            debug_mode: 9,
+        };
+        let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
+        let out = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("adaptive small dimension");
+        assert_eq!(out, vec![255u8; w * h]);
     }
 }
