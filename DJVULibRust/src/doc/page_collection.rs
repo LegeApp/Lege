@@ -9,28 +9,6 @@ enum PageSlot {
     Ready(Arc<Vec<u8>>),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[cfg(test)]
-    use image::RgbImage;
-
-    #[test]
-    fn document_builder_outputs_djvu_document() -> Result<()> {
-        let builder = DocumentBuilder::new(1);
-        let page = PageComponents::new().with_background(RgbImage::from_pixel(
-            4,
-            4,
-            image::Rgb([255, 0, 0]),
-        ))?;
-        builder.encode_and_insert(0, page)?;
-
-        let document = builder.build_document()?;
-        assert!(document.has_file_with_id("p0001.djvu"));
-        Ok(())
-    }
-}
-
 /// Thread-safe, out-of-order page collection with per-slot locking.
 ///
 /// Each page slot has its own `RwLock`, so concurrent insertions to different

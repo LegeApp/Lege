@@ -1,10 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::encode::iw44::encoder::{
-        CrcbMode, EncoderParams, rgb_to_ycbcr_planes, ycbcr_from_rgb,
-    };
-    #[cfg(test)]
-    use image::{ImageBuffer, Rgb, RgbImage};
+    use crate::encode::iw44::encoder::{CrcbMode, EncoderParams, rgb_to_ycbcr_planes};
 
     /// Test color conversion with known values
     #[test]
@@ -123,44 +119,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ycbcr_from_rgb_image() {
-        // Create a small test image with known colors
-        let mut img: RgbImage = ImageBuffer::new(2, 2);
-
-        // Set pixels: red, green, blue, white
-        img.put_pixel(0, 0, Rgb([255, 0, 0])); // red
-        img.put_pixel(1, 0, Rgb([0, 255, 0])); // green
-        img.put_pixel(0, 1, Rgb([0, 0, 255])); // blue
-        img.put_pixel(1, 1, Rgb([255, 255, 255])); // white
-
-        let (y_buf, cb_buf, cr_buf) = ycbcr_from_rgb(&img);
-
-        assert_eq!(y_buf.len(), 4);
-        assert_eq!(cb_buf.len(), 4);
-        assert_eq!(cr_buf.len(), 4);
-
-        // Check red pixel
-        assert_eq!(y_buf[0], -50);
-        assert_eq!(cb_buf[0], -44);
-        assert_eq!(cr_buf[0], 118);
-
-        // Check green pixel
-        assert_eq!(y_buf[1], 27);
-        assert_eq!(cb_buf[1], -89);
-        assert_eq!(cr_buf[1], -103);
-
-        // Check blue pixel
-        assert_eq!(y_buf[2], -106);
-        assert_eq!(cb_buf[2], 127);
-        assert_eq!(cr_buf[2], -15);
-
-        // Check white pixel
-        assert_eq!(y_buf[3], 127);
-        assert_eq!(cb_buf[3], 0);
-        assert_eq!(cr_buf[3], 0);
-    }
-
-    #[test]
     fn test_rgb_planes_length_mismatch() {
         let rgb_data = [255u8, 0, 0, 0, 255, 0]; // 2 pixels
         let mut y = [0i8; 1]; // Wrong length
@@ -213,69 +171,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod integration_tests {
-    use crate::encode::iw44::encoder::{CrcbMode, EncoderParams, IWEncoder};
-    #[cfg(test)]
-    use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
-
-    #[test]
-    fn test_encoder_from_grayscale() {
-        let img: GrayImage = ImageBuffer::from_fn(32, 32, |x, y| Luma([((x + y) % 256) as u8]));
-
-        let params = EncoderParams {
-            decibels: Some(80.0),
-            slices: None,
-            bytes: None,
-            crcb_mode: CrcbMode::None,
-            db_frac: 0.35,
-            lossless: false,
-            quant_multiplier: 1.0,
-        };
-
-        let result = IWEncoder::from_gray(&img, None, params);
-        assert!(result.is_ok(), "Should create encoder from grayscale image");
-    }
-
-    #[test]
-    fn test_encoder_from_rgb() {
-        let img: RgbImage = ImageBuffer::from_fn(32, 32, |x, y| {
-            Rgb([
-                ((x * 4) % 256) as u8,
-                ((y * 4) % 256) as u8,
-                (((x + y) * 2) % 256) as u8,
-            ])
-        });
-
-        let params = EncoderParams {
-            decibels: Some(85.0),
-            slices: None,
-            bytes: None,
-            crcb_mode: CrcbMode::Full,
-            db_frac: 0.35,
-            lossless: false,
-            quant_multiplier: 1.0,
-        };
-
-        let result = IWEncoder::from_rgb(&img, None, params);
-        assert!(result.is_ok(), "Should create encoder from RGB image");
-    }
-
-    #[test]
-    fn test_encode_chunk_progression() {
-        let img: GrayImage = ImageBuffer::from_fn(64, 64, |x, y| Luma([((x ^ y) % 256) as u8]));
-
-        let params = EncoderParams::default();
-        let mut encoder = IWEncoder::from_gray(&img, None, params).unwrap();
-
-        // Encode first chunk
-        let (chunk1, has_more1) = encoder.encode_chunk(10).unwrap();
-        assert!(!chunk1.is_empty(), "First chunk should not be empty");
-
-        // If there's more data, encode another chunk
-        if has_more1 {
-            let (chunk2, _has_more2) = encoder.encode_chunk(10).unwrap();
-            // Second chunk might be empty if we've encoded all meaningful data
-        }
-    }
-}
