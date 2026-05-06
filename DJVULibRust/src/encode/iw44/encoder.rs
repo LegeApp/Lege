@@ -152,64 +152,187 @@ pub fn make_ycbcr_codecs(
     mask: Option<&Bitmap>,
     params: &EncoderParams,
 ) -> (Codec, Option<Codec>, Option<Codec>) {
-    let ymap = CoeffMap::create_from_signed_channel(y_buf, width, height, mask, "Y");
-    let y_codec = Codec::new(ymap, params);
+    #[cfg(feature = "rayon")]
+    {
+        match params.crcb_mode {
+            CrcbMode::None => {
+                let ymap = CoeffMap::create_from_signed_channel(y_buf, width, height, mask, "Y");
+                return (Codec::new(ymap, params), None, None);
+            }
+            CrcbMode::Half => {
+                let (y_codec, (cb_codec, cr_codec)) = rayon::join(
+                    || {
+                        let ymap =
+                            CoeffMap::create_from_signed_channel(y_buf, width, height, mask, "Y");
+                        Codec::new(ymap, params)
+                    },
+                    || {
+                        let (half_width, half_height) = ((width + 1) / 2, (height + 1) / 2);
+                        let half_size = (half_width * half_height) as usize;
 
-    let (cb_codec, cr_codec) = match params.crcb_mode {
-        CrcbMode::None => (None, None),
-        CrcbMode::Half => {
-            let (half_width, half_height) = ((width + 1) / 2, (height + 1) / 2);
-            let half_size = (half_width * half_height) as usize;
+                        let mut cb_half = vec![0i8; half_size];
+                        let mut cr_half = vec![0i8; half_size];
 
-            let mut cb_half = vec![0i8; half_size];
-            let mut cr_half = vec![0i8; half_size];
+                        for y in 0..half_height {
+                            for x in 0..half_width {
+                                let dst_idx = (y * half_width + x) as usize;
 
-            for y in 0..half_height {
-                for x in 0..half_width {
-                    let dst_idx = (y * half_width + x) as usize;
+                                let mut cb_sum = 0i32;
+                                let mut cr_sum = 0i32;
+                                let mut count = 0;
 
-                    let mut cb_sum = 0i32;
-                    let mut cr_sum = 0i32;
-                    let mut count = 0;
+                                for dy in 0..2 {
+                                    for dx in 0..2 {
+                                        let src_x = x * 2 + dx;
+                                        let src_y = y * 2 + dy;
+                                        if src_x < width && src_y < height {
+                                            let src_idx = (src_y * width + src_x) as usize;
+                                            cb_sum += cb_buf[src_idx] as i32;
+                                            cr_sum += cr_buf[src_idx] as i32;
+                                            count += 1;
+                                        }
+                                    }
+                                }
 
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let src_x = x * 2 + dx;
-                            let src_y = y * 2 + dy;
-                            if src_x < width && src_y < height {
-                                let src_idx = (src_y * width + src_x) as usize;
-                                cb_sum += cb_buf[src_idx] as i32;
-                                cr_sum += cr_buf[src_idx] as i32;
-                                count += 1;
+                                cb_half[dst_idx] = (cb_sum / count) as i8;
+                                cr_half[dst_idx] = (cr_sum / count) as i8;
                             }
                         }
-                    }
 
-                    cb_half[dst_idx] = (cb_sum / count) as i8;
-                    cr_half[dst_idx] = (cr_sum / count) as i8;
-                }
+                        let (cbmap, crmap) = rayon::join(
+                            || {
+                                CoeffMap::create_from_signed_channel(
+                                    &cb_half,
+                                    half_width,
+                                    half_height,
+                                    None,
+                                    "Cb",
+                                )
+                            },
+                            || {
+                                CoeffMap::create_from_signed_channel(
+                                    &cr_half,
+                                    half_width,
+                                    half_height,
+                                    None,
+                                    "Cr",
+                                )
+                            },
+                        );
+
+                        (
+                            Some(Codec::new(cbmap, params)),
+                            Some(Codec::new(crmap, params)),
+                        )
+                    },
+                );
+
+                return (y_codec, cb_codec, cr_codec);
             }
+            CrcbMode::Normal | CrcbMode::Full => {
+                let (y_codec, (cb_codec, cr_codec)) = rayon::join(
+                    || {
+                        let ymap =
+                            CoeffMap::create_from_signed_channel(y_buf, width, height, mask, "Y");
+                        Codec::new(ymap, params)
+                    },
+                    || {
+                        let (cbmap, crmap) = rayon::join(
+                            || {
+                                CoeffMap::create_from_signed_channel(
+                                    cb_buf, width, height, mask, "Cb",
+                                )
+                            },
+                            || {
+                                CoeffMap::create_from_signed_channel(
+                                    cr_buf, width, height, mask, "Cr",
+                                )
+                            },
+                        );
 
-            let cbmap =
-                CoeffMap::create_from_signed_channel(&cb_half, half_width, half_height, None, "Cb");
-            let crmap =
-                CoeffMap::create_from_signed_channel(&cr_half, half_width, half_height, None, "Cr");
-            (
-                Some(Codec::new(cbmap, params)),
-                Some(Codec::new(crmap, params)),
-            )
-        }
-        CrcbMode::Normal | CrcbMode::Full => {
-            let cbmap = CoeffMap::create_from_signed_channel(cb_buf, width, height, mask, "Cb");
-            let crmap = CoeffMap::create_from_signed_channel(cr_buf, width, height, mask, "Cr");
-            (
-                Some(Codec::new(cbmap, params)),
-                Some(Codec::new(crmap, params)),
-            )
-        }
-    };
+                        (
+                            Some(Codec::new(cbmap, params)),
+                            Some(Codec::new(crmap, params)),
+                        )
+                    },
+                );
 
-    (y_codec, cb_codec, cr_codec)
+                return (y_codec, cb_codec, cr_codec);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "rayon"))]
+    {
+        let ymap = CoeffMap::create_from_signed_channel(y_buf, width, height, mask, "Y");
+        let y_codec = Codec::new(ymap, params);
+
+        let (cb_codec, cr_codec) = match params.crcb_mode {
+            CrcbMode::None => (None, None),
+            CrcbMode::Half => {
+                let (half_width, half_height) = ((width + 1) / 2, (height + 1) / 2);
+                let half_size = (half_width * half_height) as usize;
+
+                let mut cb_half = vec![0i8; half_size];
+                let mut cr_half = vec![0i8; half_size];
+
+                for y in 0..half_height {
+                    for x in 0..half_width {
+                        let dst_idx = (y * half_width + x) as usize;
+
+                        let mut cb_sum = 0i32;
+                        let mut cr_sum = 0i32;
+                        let mut count = 0;
+
+                        for dy in 0..2 {
+                            for dx in 0..2 {
+                                let src_x = x * 2 + dx;
+                                let src_y = y * 2 + dy;
+                                if src_x < width && src_y < height {
+                                    let src_idx = (src_y * width + src_x) as usize;
+                                    cb_sum += cb_buf[src_idx] as i32;
+                                    cr_sum += cr_buf[src_idx] as i32;
+                                    count += 1;
+                                }
+                            }
+                        }
+
+                        cb_half[dst_idx] = (cb_sum / count) as i8;
+                        cr_half[dst_idx] = (cr_sum / count) as i8;
+                    }
+                }
+
+                let cbmap = CoeffMap::create_from_signed_channel(
+                    &cb_half,
+                    half_width,
+                    half_height,
+                    None,
+                    "Cb",
+                );
+                let crmap = CoeffMap::create_from_signed_channel(
+                    &cr_half,
+                    half_width,
+                    half_height,
+                    None,
+                    "Cr",
+                );
+                (
+                    Some(Codec::new(cbmap, params)),
+                    Some(Codec::new(crmap, params)),
+                )
+            }
+            CrcbMode::Normal | CrcbMode::Full => {
+                let cbmap = CoeffMap::create_from_signed_channel(cb_buf, width, height, mask, "Cb");
+                let crmap = CoeffMap::create_from_signed_channel(cr_buf, width, height, mask, "Cr");
+                (
+                    Some(Codec::new(cbmap, params)),
+                    Some(Codec::new(crmap, params)),
+                )
+            }
+        };
+
+        (y_codec, cb_codec, cr_codec)
+    }
 }
 
 pub fn encoder_from_rgb_with_helpers(
@@ -336,32 +459,20 @@ impl IWEncoder {
 
         let _more = self.y_codec.curbit >= 0;
         while slices_encoded < max_slices && self.y_codec.curbit >= 0 {
-            // Track bytes before this slice
-            let bytes_before = zp_impl.tell_bytes();
-
             // Encode one slice using codec-controlled scheduling (mirrors DjVuLibre)
             // Each codec manages its own curbit/curband state independently
-            let zp: &mut dyn ZpEncoderCursor = &mut zp_impl;
-            let should_continue = self.y_codec.code_slice(zp)?;
-
-            // Track bytes after this slice
-            let bytes_after = zp_impl.tell_bytes();
-            let slice_bytes = bytes_after - bytes_before;
-
-            let _ = (slice_bytes, bytes_after, bytes_before);
+            let should_continue = self.y_codec.code_slice(&mut zp_impl)?;
 
             if let Some(ref mut cb) = self.cb_codec {
                 if self.total_slices as i32 >= self.crcb_delay {
                     debug!("Encoding Cb slice {}", self.total_slices);
-                    let zp: &mut dyn ZpEncoderCursor = &mut zp_impl;
-                    cb.code_slice(zp)?;
+                    cb.code_slice(&mut zp_impl)?;
                 }
             }
             if let Some(ref mut cr) = self.cr_codec {
                 if self.total_slices as i32 >= self.crcb_delay {
                     debug!("Encoding Cr slice {}", self.total_slices);
-                    let zp: &mut dyn ZpEncoderCursor = &mut zp_impl;
-                    cr.code_slice(zp)?;
+                    cr.code_slice(&mut zp_impl)?;
                 }
             }
 
@@ -422,7 +533,7 @@ impl IWEncoder {
         crate::encode::iw44::codec::print_bit_counts();
 
         // Debug: Check for suspicious repeating patterns in ZP data
-        if zp_data.len() > 100 {
+        if std::env::var("IW44_ZP_PATTERN_CHECK").is_ok() && zp_data.len() > 100 {
             let mut repeating_detected = false;
             for window_size in 2..=10 {
                 if zp_data.len() >= window_size * 3 {
