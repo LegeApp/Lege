@@ -3,6 +3,7 @@
 use super::coeff_map::CoeffMap;
 use super::constants::BAND_BUCKETS;
 use crate::encode::zc::{BitContext, ZpEncoderCursor};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // State flags for coefficients and buckets
@@ -27,56 +28,51 @@ static MANTISSA_RAW: AtomicUsize = AtomicUsize::new(0);
 static COEFF_NEW_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SLICE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+static BIT_COUNTS_ENABLED: OnceLock<bool> = OnceLock::new();
+static SLICE_STATS_ENABLED: OnceLock<bool> = OnceLock::new();
+static COEFF_DUMP_ENABLED: OnceLock<bool> = OnceLock::new();
+static ZP_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static ZP_TRACE_LIMIT: OnceLock<usize> = OnceLock::new();
+
 #[inline]
-fn bit_counts_enabled() -> bool {
-    match std::env::var("IW44_BIT_COUNTS") {
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
         Ok(v) => {
             let v = v.trim();
             !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
         }
         Err(_) => false,
     }
+}
+
+#[inline]
+fn bit_counts_enabled() -> bool {
+    *BIT_COUNTS_ENABLED.get_or_init(|| env_flag("IW44_BIT_COUNTS"))
 }
 
 #[inline]
 fn slice_stats_enabled() -> bool {
-    match std::env::var("IW44_SLICE_STATS") {
-        Ok(v) => {
-            let v = v.trim();
-            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
-        }
-        Err(_) => false,
-    }
+    *SLICE_STATS_ENABLED.get_or_init(|| env_flag("IW44_SLICE_STATS"))
 }
 
 #[inline]
 fn coeff_dump_enabled() -> bool {
-    match std::env::var("IW44_COEFF_DUMP") {
-        Ok(v) => {
-            let v = v.trim();
-            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
-        }
-        Err(_) => false,
-    }
+    *COEFF_DUMP_ENABLED.get_or_init(|| env_flag("IW44_COEFF_DUMP"))
 }
 
 #[inline]
 fn zp_trace_enabled() -> bool {
-    match std::env::var("IW44_ZPTRACE") {
-        Ok(v) => {
-            let v = v.trim();
-            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
-        }
-        Err(_) => false,
-    }
+    *ZP_TRACE_ENABLED.get_or_init(|| env_flag("IW44_ZPTRACE"))
 }
 
 #[inline]
 fn zp_trace_limit() -> usize {
-    std::env::var("IW44_ZPTRACE_LIMIT")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2000)
+    *ZP_TRACE_LIMIT.get_or_init(|| {
+        std::env::var("IW44_ZPTRACE_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(2000)
+    })
 }
 
 pub fn print_bit_counts() {
@@ -330,9 +326,9 @@ impl Codec {
     }
 
     /// This is the encode_slice implementation - temporarily removing slice activity optimization
-    pub fn encode_slice(
+    pub fn encode_slice<Z: ZpEncoderCursor>(
         &mut self,
-        zp: &mut dyn ZpEncoderCursor,
+        zp: &mut Z,
         bit: i32,
         band: i32,
     ) -> Result<bool, super::EncoderError> {
@@ -616,9 +612,9 @@ impl Codec {
     }
 
     /// Encodes a sequence of buckets in a block using the ZEncoder.
-    fn encode_buckets(
+    fn encode_buckets<Z: ZpEncoderCursor>(
         &mut self,
-        zp: &mut dyn ZpEncoderCursor,
+        zp: &mut Z,
         bit: i32,
         band: i32,
         blockno: usize,
@@ -970,9 +966,9 @@ impl Codec {
     /// Mirrors DjVuLibre's Codec::code_slice: encode current slice and advance bit/band
     /// while decaying quantization thresholds. Returns false when encoding ends.
     /// Each codec owns its own curbit/curband state per djvulibre design.
-    pub fn code_slice(
+    pub fn code_slice<Z: ZpEncoderCursor>(
         &mut self,
-        zp: &mut dyn ZpEncoderCursor,
+        zp: &mut Z,
     ) -> Result<bool, super::EncoderError> {
         if self.curbit < 0 {
             return Ok(false);
