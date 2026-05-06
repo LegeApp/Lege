@@ -529,37 +529,6 @@ impl IWEncoder {
         // Finish on the concrete implementation
         let zp_data = zp_impl.finish()?.into_inner();
 
-        // Print bit count summary if enabled (for size gap investigation)
-        crate::encode::iw44::codec::print_bit_counts();
-
-        // Debug: Check for suspicious repeating patterns in ZP data
-        if std::env::var("IW44_ZP_PATTERN_CHECK").is_ok() && zp_data.len() > 100 {
-            let mut repeating_detected = false;
-            for window_size in 2..=10 {
-                if zp_data.len() >= window_size * 3 {
-                    let pattern = &zp_data[0..window_size];
-                    let mut matches = 0;
-                    for chunk in zp_data.chunks_exact(window_size) {
-                        if chunk == pattern {
-                            matches += 1;
-                        }
-                    }
-                    if matches > zp_data.len() / window_size / 2 {
-                        info!(
-                            "WARNING: Detected repeating pattern of size {} in ZP data ({}% of file)",
-                            window_size,
-                            (matches * 100) / (zp_data.len() / window_size)
-                        );
-                        repeating_detected = true;
-                        break;
-                    }
-                }
-            }
-            if !repeating_detected {
-                info!("ZP data looks normal (no major repeating patterns detected)");
-            }
-        }
-
         if slices_encoded == 0 {
             info!("encode_chunk: No slices encoded (slices_encoded=0). Returning empty chunk.");
             return Ok((Vec::new(), false));

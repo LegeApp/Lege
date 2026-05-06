@@ -3,8 +3,6 @@
 use super::coeff_map::CoeffMap;
 use super::constants::BAND_BUCKETS;
 use crate::encode::zc::{BitContext, ZpEncoderCursor};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // State flags for coefficients and buckets
 const UNK: u8 = 0x01; // Unknown state
@@ -15,133 +13,6 @@ const ZERO: u8 = 0x00; // Zero state (coefficient not significant)
 
 /// 1 bit / coefficient (32 × smaller than `Vec<bool>`)
 const WORD_BITS: usize = 32;
-
-static ZPTRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-// Bit counting instrumentation for size gap investigation
-static ROOT_BITS: AtomicUsize = AtomicUsize::new(0);
-static BUCKET_BITS: AtomicUsize = AtomicUsize::new(0);
-static START_BITS: AtomicUsize = AtomicUsize::new(0);
-static SIGN_BITS: AtomicUsize = AtomicUsize::new(0);
-static MANTISSA_ADAPTIVE: AtomicUsize = AtomicUsize::new(0);
-static MANTISSA_RAW: AtomicUsize = AtomicUsize::new(0);
-static COEFF_NEW_COUNT: AtomicUsize = AtomicUsize::new(0);
-static SLICE_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-static BIT_COUNTS_ENABLED: OnceLock<bool> = OnceLock::new();
-static SLICE_STATS_ENABLED: OnceLock<bool> = OnceLock::new();
-static COEFF_DUMP_ENABLED: OnceLock<bool> = OnceLock::new();
-static ZP_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
-static ZP_TRACE_LIMIT: OnceLock<usize> = OnceLock::new();
-
-#[inline]
-fn env_flag(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => {
-            let v = v.trim();
-            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
-        }
-        Err(_) => false,
-    }
-}
-
-#[inline]
-fn bit_counts_enabled() -> bool {
-    *BIT_COUNTS_ENABLED.get_or_init(|| env_flag("IW44_BIT_COUNTS"))
-}
-
-#[inline]
-fn slice_stats_enabled() -> bool {
-    *SLICE_STATS_ENABLED.get_or_init(|| env_flag("IW44_SLICE_STATS"))
-}
-
-#[inline]
-fn coeff_dump_enabled() -> bool {
-    *COEFF_DUMP_ENABLED.get_or_init(|| env_flag("IW44_COEFF_DUMP"))
-}
-
-#[inline]
-fn zp_trace_enabled() -> bool {
-    *ZP_TRACE_ENABLED.get_or_init(|| env_flag("IW44_ZPTRACE"))
-}
-
-#[inline]
-fn zp_trace_limit() -> usize {
-    *ZP_TRACE_LIMIT.get_or_init(|| {
-        std::env::var("IW44_ZPTRACE_LIMIT")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(2000)
-    })
-}
-
-pub fn print_bit_counts() {
-    if bit_counts_enabled() {
-        eprintln!("=== IW44 Bit Count Summary ===");
-        eprintln!(
-            "Root bits: {}",
-            ROOT_BITS.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        eprintln!(
-            "Bucket bits: {}",
-            BUCKET_BITS.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        eprintln!(
-            "Start bits: {}",
-            START_BITS.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        eprintln!(
-            "Sign bits: {}",
-            SIGN_BITS.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        eprintln!(
-            "Mantissa adaptive: {}",
-            MANTISSA_ADAPTIVE.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        eprintln!(
-            "Mantissa raw: {}",
-            MANTISSA_RAW.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        eprintln!(
-            "NEW coefficients activated: {}",
-            COEFF_NEW_COUNT.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        let total = ROOT_BITS.load(std::sync::atomic::Ordering::Relaxed)
-            + BUCKET_BITS.load(std::sync::atomic::Ordering::Relaxed)
-            + START_BITS.load(std::sync::atomic::Ordering::Relaxed)
-            + SIGN_BITS.load(std::sync::atomic::Ordering::Relaxed)
-            + MANTISSA_ADAPTIVE.load(std::sync::atomic::Ordering::Relaxed)
-            + MANTISSA_RAW.load(std::sync::atomic::Ordering::Relaxed);
-        eprintln!("Total bits: {}", total);
-        eprintln!("==============================");
-    }
-}
-
-#[inline]
-fn zp_trace(
-    kind: &'static str,
-    bit: bool,
-    ctx_name: &'static str,
-    ctx_idx: i32,
-    ctx_val: u8,
-    plane_bit: i32,
-    band: i32,
-    blockno: usize,
-    buckno: i32,
-    coeffi: i32,
-) {
-    if !zp_trace_enabled() {
-        return;
-    }
-    let n = ZPTRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-    if n >= zp_trace_limit() {
-        return;
-    }
-    eprintln!(
-        "ZPTRACE kind={} bit={} ctx_name={} ctx_idx={} ctx_val={} plane_bit={} band={} block={} buck={} coeff={}",
-        kind, bit as u8, ctx_name, ctx_idx, ctx_val, plane_bit, band, blockno, buckno, coeffi
-    );
-}
 
 #[inline]
 fn words_for_coeffs(n: usize) -> usize {
@@ -288,9 +159,7 @@ impl Codec {
     /// This is much faster than the full two-pass approach as it returns immediately
     /// upon finding the first instance of activity.
     pub fn has_data_for_slice(&self, _bit: i32, band: i32) -> bool {
-        // First, quick check if there are any active coefficients in this band
         let band = band as usize;
-        let _th_hi = self.quant_hi[band];
         let bucket_info = BAND_BUCKETS[band];
 
         for blockno in 0..self.map.num_blocks {
@@ -298,31 +167,28 @@ impl Codec {
             for bucket_offset in 0..bucket_info.size {
                 let bucket_idx = bucket_info.start + bucket_offset;
 
-                // Check for ACTIVE coefficients (already significant)
                 for i in 0..16 {
                     let gidx = coeff_base_idx + bucket_idx * 16 + i;
                     if self.is_signif(gidx) {
-                        return true; // Found an active coefficient, slice has data
+                        return true;
                     }
                 }
 
-                // Check for NEW coefficients
-                if let Some(coeffs) = self.map.blocks[blockno].get_bucket(bucket_idx as u8) {
-                    for i in 0..16 {
-                        let step = if band == 0 {
-                            self.quant_lo[i]
-                        } else {
-                            self.quant_hi[band]
-                        };
-                        if (coeffs[i] as i32).abs() >= step {
-                            return true; // Found a new significant coefficient (matches C++ and encode_prepare)
-                        }
+                let coeffs = self.map.blocks[blockno].get_bucket_raw(bucket_idx as u8);
+                for i in 0..16 {
+                    let step = if band == 0 {
+                        self.quant_lo[i]
+                    } else {
+                        self.quant_hi[band]
+                    };
+                    if (coeffs[i] as i32).abs() >= step {
+                        return true;
                     }
                 }
             }
         }
 
-        false // Scanned everything, the slice is truly null
+        false
     }
 
     /// This is the encode_slice implementation - temporarily removing slice activity optimization
@@ -355,7 +221,7 @@ impl Codec {
         fbucket: usize,
         nbucket: usize,
         blockno: usize,
-        bit: i32,
+        _bit: i32,
     ) -> u8 {
         let _th_hi = self.quant_hi[band as usize];
         let coeff_base = blockno * 64 * 16;
@@ -366,148 +232,58 @@ impl Codec {
         for buck in 0..nbucket {
             let bucket_idx = fbucket + buck;
             let coeff_idx0 = coeff_base + bucket_idx * 16;
-            let src = self.map.blocks[blockno].get_bucket(bucket_idx as u8);
-            let ep = self.emap.blocks[blockno].get_bucket(bucket_idx as u8);
+            // get_bucket_raw returns the backing array directly (all-zero if never written),
+            // which is semantically equivalent to the None branch for absent buckets.
+            let src16 = self.map.blocks[blockno].get_bucket_raw(bucket_idx as u8);
+            let ep16 = self.emap.blocks[blockno].get_bucket_raw(bucket_idx as u8);
             let mut bstate = 0;
 
             if band != 0 {
                 // Band other than zero: derive state from pcoeff/epcoeff like DjVuLibre
-                // Use current quant_hi (already decayed by prior slices).
                 let thres = self.quant_hi[band as usize];
-
-                if let Some(src16) = src {
-                    if let Some(ep16) = ep {
-                        for i in 0..16 {
-                            let gidx = coeff_idx0 + i;
-                            let mut cstate = UNK;
-                            if ep16[i] != 0 {
-                                cstate = ACTIVE;
-                            } else if (src16[i] as i32).abs() >= thres {
-                                cstate = NEW | UNK;
-                                // Dump coefficients that meet threshold
-                                if coeff_dump_enabled() && blockno == 0 && buck == 0 {
-                                    eprintln!(
-                                        "COEFF_DUMP band={} bit={} thresh={} coeff[{}]={} (abs={}) -> NEW",
-                                        band,
-                                        bit,
-                                        thres,
-                                        i,
-                                        src16[i],
-                                        (src16[i] as i32).abs()
-                                    );
-                                }
-                            } else if coeff_dump_enabled() && blockno == 0 && buck == 0 && i < 4 {
-                                // Also dump first few that DON'T meet threshold for comparison
-                                eprintln!(
-                                    "COEFF_DUMP band={} bit={} thresh={} coeff[{}]={} (abs={}) -> UNK",
-                                    band,
-                                    bit,
-                                    thres,
-                                    i,
-                                    src16[i],
-                                    (src16[i] as i32).abs()
-                                );
-                            }
-                            self.coeff_state[gidx] = cstate;
-                            bstate |= cstate;
-                        }
+                for i in 0..16 {
+                    let cstate = if ep16[i] != 0 {
+                        ACTIVE
+                    } else if (src16[i] as i32).abs() >= thres {
+                        NEW | UNK
                     } else {
-                        for i in 0..16 {
-                            let gidx = coeff_idx0 + i;
-                            let mut cstate = UNK;
-                            if (src16[i] as i32).abs() >= thres {
-                                cstate = NEW | UNK;
-                                if coeff_dump_enabled() && blockno == 0 && buck == 0 {
-                                    eprintln!(
-                                        "COEFF_DUMP band={} bit={} thresh={} coeff[{}]={} (abs={}) -> NEW (no ep)",
-                                        band,
-                                        bit,
-                                        thres,
-                                        i,
-                                        src16[i],
-                                        (src16[i] as i32).abs()
-                                    );
-                                }
-                            }
-                            self.coeff_state[gidx] = cstate;
-                            bstate |= cstate;
-                        }
-                    }
-                } else {
-                    bstate = UNK;
+                        UNK
+                    };
+                    self.coeff_state[coeff_idx0 + i] = cstate;
+                    bstate |= cstate;
                 }
             } else {
-                // Band zero: use prior coeff_state ZERO/UNK behavior like DjVuLibre
+                // Band zero: preserve prior coeff_state ZERO/UNK behavior like DjVuLibre
                 // CRITICAL: Must read existing cstate[i] value first (C++ does this)
-                if let Some(src16) = src {
-                    for i in 0..16 {
-                        let gidx = coeff_idx0 + i;
-                        let thres = self.quant_lo[i];
-                        // Read existing state (C++: int cstatetmp = cstate[i];)
-                        let mut cstatetmp = self.coeff_state[gidx];
+                for i in 0..16 {
+                    let gidx = coeff_idx0 + i;
+                    let thres = self.quant_lo[i];
+                    let mut cstatetmp = self.coeff_state[gidx];
 
-                        // Safety check: validate coefficient state
-                        #[cfg(debug_assertions)]
-                        {
-                            debug_assert!(
-                                cstatetmp == ZERO
-                                    || cstatetmp == UNK
-                                    || cstatetmp == ACTIVE
-                                    || cstatetmp == (NEW | UNK),
-                                "Invalid coeff state: {} at gidx={}",
-                                cstatetmp,
-                                gidx
-                            );
-                        }
-
-                        // Only modify if not ZERO
-                        if cstatetmp != ZERO {
-                            cstatetmp = UNK;
-                            if let Some(ep16) = ep {
-                                if ep16[i] != 0 {
-                                    cstatetmp = ACTIVE;
-                                } else if (src16[i] as i32).abs() >= thres {
-                                    cstatetmp = NEW | UNK;
-                                    if coeff_dump_enabled() && blockno == 0 {
-                                        eprintln!(
-                                            "COEFF_DUMP band=0 bit={} thresh={} coeff[{}]={} (abs={}) -> NEW",
-                                            bit,
-                                            thres,
-                                            i,
-                                            src16[i],
-                                            (src16[i] as i32).abs()
-                                        );
-                                    }
-                                } else if coeff_dump_enabled() && blockno == 0 && bit == 1 && i < 4
-                                {
-                                    eprintln!(
-                                        "COEFF_DUMP band=0 bit={} thresh={} coeff[{}]={} (abs={}) -> UNK",
-                                        bit,
-                                        thres,
-                                        i,
-                                        src16[i],
-                                        (src16[i] as i32).abs()
-                                    );
-                                }
-                            } else if (src16[i] as i32).abs() >= thres {
-                                cstatetmp = NEW | UNK;
-                                if coeff_dump_enabled() && blockno == 0 {
-                                    eprintln!(
-                                        "COEFF_DUMP band=0 bit={} thresh={} coeff[{}]={} (abs={}) -> NEW (no ep)",
-                                        bit,
-                                        thres,
-                                        i,
-                                        src16[i],
-                                        (src16[i] as i32).abs()
-                                    );
-                                }
-                            }
-                        }
-                        self.coeff_state[gidx] = cstatetmp;
-                        bstate |= cstatetmp;
+                    #[cfg(debug_assertions)]
+                    {
+                        debug_assert!(
+                            cstatetmp == ZERO
+                                || cstatetmp == UNK
+                                || cstatetmp == ACTIVE
+                                || cstatetmp == (NEW | UNK),
+                            "Invalid coeff state: {} at gidx={}",
+                            cstatetmp,
+                            gidx
+                        );
                     }
-                } else {
-                    bstate = UNK;
+
+                    if cstatetmp != ZERO {
+                        cstatetmp = if ep16[i] != 0 {
+                            ACTIVE
+                        } else if (src16[i] as i32).abs() >= thres {
+                            NEW | UNK
+                        } else {
+                            UNK
+                        };
+                    }
+                    self.coeff_state[gidx] = cstatetmp;
+                    bstate |= cstatetmp;
                 }
             }
 
@@ -542,8 +318,7 @@ impl Codec {
         } else {
             // For other bands, just check the threshold (no state update needed)
             let threshold = self.quant_hi[band as usize];
-            let is_null = !(threshold > 0 && threshold < 0x8000);
-            is_null
+            !(threshold > 0 && threshold < 0x8000)
         }
     }
 
@@ -554,28 +329,13 @@ impl Codec {
         // In lossless mode, keep thresholds at minimum of 1 (not 0)
         let min_threshold = if self.lossless { 1 } else { 0 };
 
-        let old_hi = self.quant_hi[cur_band as usize];
         let new_hi = self.quant_hi[cur_band as usize] >> 1;
         self.quant_hi[cur_band as usize] = new_hi.max(min_threshold);
 
-        if slice_stats_enabled() && cur_band == 0 {
-            eprintln!(
-                "THRESHOLD_DECAY band={} old_thresh={} new_thresh={}",
-                cur_band, old_hi, self.quant_hi[cur_band as usize]
-            );
-        }
-
         if cur_band == 0 {
             for i in 0..16 {
-                let old_lo = self.quant_lo[i];
                 let new_lo = self.quant_lo[i] >> 1;
                 self.quant_lo[i] = new_lo.max(min_threshold);
-                if slice_stats_enabled() && i == 0 {
-                    eprintln!(
-                        "THRESHOLD_DECAY band=0 coeff[{}] old_thresh={} new_thresh={}",
-                        i, old_lo, self.quant_lo[i]
-                    );
-                }
             }
         }
 
@@ -624,40 +384,6 @@ impl Codec {
         // Prepare the state for this block
         let bbstate = self.encode_prepare(band, fbucket, nbucket, blockno, bit);
 
-        // Diagnostic logging for coefficient selection
-        if std::env::var("IW44_COEFF_STATS").is_ok() && blockno == 0 {
-            let mut new_count = 0;
-            let mut active_count = 0;
-            let mut unk_count = 0;
-            for buckno in 0..nbucket {
-                let bucket_idx = fbucket + buckno;
-                let bucket_state = self.bucket_state[blockno * 64 + bucket_idx];
-                if (bucket_state & NEW) != 0 {
-                    new_count += 1;
-                }
-                if (bucket_state & ACTIVE) != 0 {
-                    active_count += 1;
-                }
-                if (bucket_state & UNK) != 0 {
-                    unk_count += 1;
-                }
-            }
-            eprintln!(
-                "COEFF_STATS band={} bit={} block={} new={} active={} unk={} thresh={}",
-                band,
-                bit,
-                blockno,
-                new_count,
-                active_count,
-                unk_count,
-                if band == 0 {
-                    self.quant_lo[0]
-                } else {
-                    self.quant_hi[band as usize]
-                }
-            );
-        }
-
         // Decouple NEW from ACTIVE to avoid wasting bits on empty buckets
         // when we only have ACTIVE coefficients to refine
         let has_active = (bbstate & ACTIVE) != 0;
@@ -680,21 +406,6 @@ impl Codec {
         } else if has_unk {
             // Encode root bit based on actual NEW state
             let root_bit = has_new;
-            if bit_counts_enabled() {
-                ROOT_BITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            zp_trace(
-                "E",
-                root_bit,
-                "root",
-                -1,
-                self.ctx_root,
-                bit,
-                band,
-                blockno,
-                -1,
-                -1,
-            );
             zp.encode(root_bit, &mut self.ctx_root)
                 .map_err(super::EncoderError::ZCodec)?;
 
@@ -714,43 +425,18 @@ impl Codec {
                     let mut ctx = 0;
                     if band > 0 {
                         let k = (fbucket + buckno) << 2;
-                        if let Some(b) = self.emap.blocks[blockno].get_bucket((k >> 4) as u8) {
-                            let k = k & 0xf;
-                            if b[k] != 0 {
-                                ctx += 1;
-                            }
-                            if b[k + 1] != 0 {
-                                ctx += 1;
-                            }
-                            if b[k + 2] != 0 {
-                                ctx += 1;
-                            }
-                            if ctx < 3 && b[k + 3] != 0 {
-                                ctx += 1;
-                            }
-                        }
+                        let b = self.emap.blocks[blockno].get_bucket_raw((k >> 4) as u8);
+                        let k = k & 0xf;
+                        if b[k] != 0 { ctx += 1; }
+                        if b[k + 1] != 0 { ctx += 1; }
+                        if b[k + 2] != 0 { ctx += 1; }
+                        if ctx < 3 && b[k + 3] != 0 { ctx += 1; }
                     }
                     if (bbstate & ACTIVE) != 0 {
                         ctx |= 4;
                     }
                     let bucket_bit =
                         (self.bucket_state[bucket_offset + fbucket + buckno] & NEW) != 0;
-                    let ctx_val = self.ctx_bucket[band as usize][ctx];
-                    if bit_counts_enabled() {
-                        BUCKET_BITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    zp_trace(
-                        "E",
-                        bucket_bit,
-                        "bucket",
-                        ctx as i32,
-                        ctx_val,
-                        bit,
-                        band,
-                        blockno,
-                        buckno as i32,
-                        -1,
-                    );
                     zp.encode(bucket_bit, &mut self.ctx_bucket[band as usize][ctx])?;
                 }
             }
@@ -766,8 +452,7 @@ impl Codec {
             for buckno in 0..nbucket {
                 if (self.bucket_state[bucket_offset + fbucket + buckno] & NEW) != 0 {
                     let pcoeff_bucket = self.map.blocks[blockno]
-                        .get_bucket((fbucket + buckno) as u8)
-                        .unwrap();
+                        .get_bucket_raw((fbucket + buckno) as u8);
                     let epcoeff_bucket =
                         self.emap.blocks[blockno].get_bucket_mut((fbucket + buckno) as u8);
 
@@ -797,44 +482,11 @@ impl Codec {
                             };
 
                             let is_new = (self.coeff_state[coeff_idx_base + i] & NEW) != 0;
-                            let ctx_val = self.ctx_start[ctx];
-                            if bit_counts_enabled() {
-                                START_BITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            zp_trace(
-                                "E",
-                                is_new,
-                                "start",
-                                ctx as i32,
-                                ctx_val,
-                                bit,
-                                band,
-                                blockno,
-                                buckno as i32,
-                                i as i32,
-                            );
                             zp.encode(is_new, &mut self.ctx_start[ctx])?;
 
                             if is_new {
                                 // 1. Encode the sign bit (this is a raw, non-adaptive bit)
                                 let sign = pcoeff_bucket[i] < 0;
-                                if bit_counts_enabled() {
-                                    SIGN_BITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    COEFF_NEW_COUNT
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                zp_trace(
-                                    "IW",
-                                    sign,
-                                    "sign",
-                                    -1,
-                                    0,
-                                    bit,
-                                    band,
-                                    blockno,
-                                    buckno as i32,
-                                    i as i32,
-                                );
                                 // Use encode_raw_bit for raw contexts (128, 129) instead of IWencoder
                                 zp.iwencoder(sign).map_err(super::EncoderError::ZCodec)?;
 
@@ -869,8 +521,7 @@ impl Codec {
             for buckno in 0..nbucket {
                 if (self.bucket_state[bucket_offset + fbucket + buckno] & ACTIVE) != 0 {
                     let pcoeff_bucket = self.map.blocks[blockno]
-                        .get_bucket((fbucket + buckno) as u8)
-                        .unwrap();
+                        .get_bucket_raw((fbucket + buckno) as u8);
                     let epcoeff_bucket =
                         self.emap.blocks[blockno].get_bucket_mut((fbucket + buckno) as u8);
                     for i in 0..16 {
@@ -894,39 +545,8 @@ impl Codec {
 
                             // Encode the refinement bit adaptively or raw based on magnitude
                             if ecoeff <= 3 * thresh {
-                                if bit_counts_enabled() {
-                                    MANTISSA_ADAPTIVE
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                zp_trace(
-                                    "E",
-                                    pix,
-                                    "mant",
-                                    -1,
-                                    self.ctx_mant,
-                                    bit,
-                                    band,
-                                    blockno,
-                                    buckno as i32,
-                                    i as i32,
-                                );
                                 zp.encode(pix, &mut self.ctx_mant)?;
                             } else {
-                                if bit_counts_enabled() {
-                                    MANTISSA_RAW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                zp_trace(
-                                    "IW",
-                                    pix,
-                                    "mant_raw",
-                                    -1,
-                                    0,
-                                    bit,
-                                    band,
-                                    blockno,
-                                    buckno as i32,
-                                    i as i32,
-                                );
                                 // Use encode_raw_bit for raw contexts (128, 129) instead of IWencoder
                                 zp.iwencoder(pix).map_err(super::EncoderError::ZCodec)?;
                             }
@@ -974,34 +594,6 @@ impl Codec {
             return Ok(false);
         }
 
-        // Track slice count for diagnostics
-        if slice_stats_enabled() {
-            let slice_num = SLICE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-            // Count NEW and ACTIVE coefficients before encoding
-            let mut new_coeffs = 0;
-            let mut active_coeffs = 0;
-            for i in 0..self.coeff_state.len() {
-                if (self.coeff_state[i] & NEW) != 0 {
-                    new_coeffs += 1;
-                }
-                if (self.coeff_state[i] & ACTIVE) != 0 {
-                    active_coeffs += 1;
-                }
-            }
-
-            let thresh = if self.curband == 0 {
-                self.quant_lo[0]
-            } else {
-                self.quant_hi[self.curband as usize]
-            };
-
-            eprintln!(
-                "SLICE_STATS slice={} bit={} band={} thresh={} new_coeffs={} active_coeffs={}",
-                slice_num, self.curbit, self.curband, thresh, new_coeffs, active_coeffs
-            );
-        }
-
         if !self.is_null_slice(self.curbit, self.curband) {
             let band_info = super::constants::BAND_BUCKETS[self.curband as usize];
             for blockno in 0..self.map.num_blocks {
@@ -1045,15 +637,12 @@ impl Codec {
 
         // Compute MSE for each block
         for blockno in 0..num_blocks {
-            let mut mse = 0.0;
-            let src = self.map.blocks[blockno].get_bucket(0);
-            let ep = self.emap.blocks[blockno].get_bucket(0);
-
-            if let (Some(src16), Some(ep16)) = (src, ep) {
-                for i in 0..16 {
-                    let diff = (src16[i] as i32 - ep16[i] as i32) as f32;
-                    mse += diff * diff;
-                }
+            let src16 = self.map.blocks[blockno].get_bucket_raw(0);
+            let ep16 = self.emap.blocks[blockno].get_bucket_raw(0);
+            let mut mse = 0.0f32;
+            for i in 0..16 {
+                let diff = (src16[i] as i32 - ep16[i] as i32) as f32;
+                mse += diff * diff;
             }
             xmse[blockno] = mse / 1024.0;
         }
