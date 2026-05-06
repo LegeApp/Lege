@@ -519,15 +519,34 @@ impl DjvuDocument {
         self.collection.is_complete()
     }
 
-    /// Add a page (thread-safe, out-of-order)
-    pub fn add_page(&self, page: Page) -> Result<()> {
+    /// Encode a page into its compressed byte representation.
+    ///
+    /// CPU-heavy (runs IW44 / JB2). Touches no shared mutable state, so it is
+    /// safe to call from a worker thread or rayon iterator. Pair with
+    /// [`Self::add_encoded_page`] to insert the result into the document.
+    pub fn encode_page(&self, page: Page) -> Result<EncodedPage> {
         let page_num = page.page_number();
         let components = page.to_components()?;
+        EncodedPage::from_components(page_num, components, &self.params, self.dpi, self.gamma)
+    }
 
-        let encoded =
-            EncodedPage::from_components(page_num, components, &self.params, self.dpi, self.gamma)?;
-
+    /// Insert an already-encoded page into the document (thread-safe, out-of-order).
+    ///
+    /// Cheap. The expensive work belongs in [`Self::encode_page`].
+    pub fn add_encoded_page(&self, encoded: EncodedPage) -> Result<()> {
+        let page_num = encoded.page_num;
         self.collection.insert_page(page_num, encoded)
+    }
+
+    /// Add a page (thread-safe, out-of-order).
+    ///
+    /// Convenience wrapper around [`Self::encode_page`] +
+    /// [`Self::add_encoded_page`]. For parallel encoding pipelines, call those
+    /// two directly so the encode runs off-thread and only the cheap insert
+    /// runs on the assembler.
+    pub fn add_page(&self, page: Page) -> Result<()> {
+        let encoded = self.encode_page(page)?;
+        self.add_encoded_page(encoded)
     }
 
     /// Finalize and return DjVu file bytes

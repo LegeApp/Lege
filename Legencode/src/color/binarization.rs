@@ -321,7 +321,7 @@ where
     // GPU fast-path: feed RGB directly to the GPU. The linearize pre-pass on the GPU
     // applies an sRGB→linear LUT, computes BT.709 luma in linear space, and re-encodes
     // to sRGB gray — preserving perceptual contrast at GPU speed.
-    if !options.use_heavy_duty {
+    if !options.use_heavy_duty && !options.disable_gpu {
         let n = width * height;
         // For invert_input, we'd need to invert RGB before upload (or extend the shader).
         // The pre-existing CPU fallback handles invert_input via the linearized gray path,
@@ -474,32 +474,58 @@ fn binarize_image_raw_into(
         width, height
     ));
 
-    // GPU fast-path: integer Rec.601 luma avoids the ~4× memory spike from f32 linearization.
-    // Only tried before allocating the f32 buffer; falls through to the full CPU path on failure.
-    if !options.use_heavy_duty {
-        let mut gray_fast = vec![0u8; width * height];
-        gray_fast
-            .par_iter_mut()
+    // Integer Rec.601 luma — used both for the GPU fast-path and for fixed-threshold
+    // CPU fallback. Avoids the ~12 byte/pixel transient + slow palette conversion of
+    // the f32 sRGB-linearize path. For adaptive Sauvola the linearized luma below
+    // is preferred (slight quality edge), so we materialize int luma lazily.
+    let want_int_luma =
+        !options.use_heavy_duty && (options.use_fixed_threshold || !options.disable_gpu);
+    let int_luma: Option<Vec<u8>> = if want_int_luma {
+        let mut g = vec![0u8; width * height];
+        g.par_iter_mut()
             .zip(image.par_chunks_exact(3))
-            .for_each(|(g, rgb)| {
+            .for_each(|(out, rgb)| {
                 let r = rgb[0] as u32;
                 let gv = rgb[1] as u32;
                 let b = rgb[2] as u32;
-                *g = ((r * 77 + gv * 150 + b * 29) >> 8) as u8;
+                *out = ((r * 77 + gv * 150 + b * 29) >> 8) as u8;
             });
         if options.invert_input {
-            gray_fast.par_iter_mut().for_each(|p| *p = 255 - *p);
+            g.par_iter_mut().for_each(|p| *p = 255 - *p);
         }
-        if let Some(result) = try_gpu_binarize_gray_raw(&gray_fast, width, height, options) {
-            return result;
+        Some(g)
+    } else {
+        None
+    };
+
+    // GPU fast-path on integer luma.
+    if !options.use_heavy_duty && !options.disable_gpu {
+        if let Some(gray_fast) = int_luma.as_deref() {
+            if let Some(result) = try_gpu_binarize_gray_raw(gray_fast, width, height, options) {
+                return result;
+            }
         }
     }
 
+    // Fixed-threshold CPU fallback uses the integer luma directly — no need to pay
+    // the f32 linearize cost since fixed thresholding is already a coarse operation.
+    if options.use_fixed_threshold {
+        let gray = int_luma.expect("int_luma materialized for fixed-threshold path");
+        let mut result = vec![0u8; width * height];
+        apply_threshold(&gray, options.fixed_threshold, &mut result, width, height);
+        if options.invert {
+            result.par_iter_mut().for_each(|p| *p = 255 - *p);
+        }
+        return result;
+    }
+
+    // Adaptive CPU fallback: materialize linearized luma for slightly better quality
+    // on Sauvola+Otsu fusion. (The transient f32 buffer is the price of accuracy.)
     let linear_rgb = crate::color::linearize::linearize_rgb_bytes_to_f32(image);
     let mut gray = vec![0; width * height];
     crate::color::linearize::linearized_rgb_to_grayscale(&linear_rgb, &mut gray);
+    drop(linear_rgb);
 
-    // Handle input inversion
     if options.invert_input {
         #[cfg(feature = "debug-logging")]
         crate::streamline::log_debug_message(&format!(
@@ -510,23 +536,14 @@ fn binarize_image_raw_into(
     }
 
     // GPU retry with linearized grayscale (reached only if first GPU attempt failed/unavailable).
-    if let Some(result) = try_gpu_binarize_gray_raw(&gray, width, height, options) {
-        return result;
-    }
-
-    if options.use_fixed_threshold {
-        let mut result = vec![0u8; width * height];
-        apply_threshold(&gray, options.fixed_threshold, &mut result, width, height);
-        if options.invert {
-            result.par_iter_mut().for_each(|p| *p = 255 - *p);
+    if !options.disable_gpu {
+        if let Some(result) = try_gpu_binarize_gray_raw(&gray, width, height, options) {
+            return result;
         }
-        return result;
     }
 
-    // Always use adaptive improved binarization
     let mut result = improved_binarize(&gray, width, height, options);
 
-    // Handle output inversion
     if options.invert {
         result.par_iter_mut().for_each(|p| *p = 255 - *p);
     }
@@ -612,7 +629,13 @@ pub fn compute_adaptive_gpu_constants(
     }
 }
 
-/// Improved binarization matching the Python script: adaptive Sauvola + background-normalized Otsu + AND fusion
+/// Improved binarization matching the Python script: adaptive Sauvola + background-normalized Otsu + AND fusion.
+///
+/// Buffer reuse: previously allocated 5 separate W*H byte buffers (`sauvola_bin`,
+/// `bg`, `normalized`, `otsu_bin`, `fused`); now uses 2. `bg` is overwritten with
+/// the normalized image (since `normalize_by_bg` reads `gray`+`bg` and writes
+/// per-pixel), then with the Otsu thresholding result, and finally AND'd into
+/// `sauvola_bin` which is returned as the fused output.
 fn improved_binarize(
     gray: &[u8],
     width: usize,
@@ -622,10 +645,8 @@ fn improved_binarize(
     let n = width * height;
     assert!(gray.len() == n);
 
-    // Adaptive window for Sauvola
     let win = sauvola_window_for(height, width);
 
-    // Compute Sauvola binarization
     let mut sauvola_bin = vec![0u8; n];
     sauvola_via_integral(
         gray,
@@ -636,32 +657,31 @@ fn improved_binarize(
         &mut sauvola_bin,
     );
 
-    // Background estimate
+    // `scratch` rotates: dilated bg → normalized → Otsu binary.
     let s = odd_background_window(height);
-    let mut bg = vec![0u8; n];
-    dilate_square_reflect(gray, width, height, s, &mut bg);
+    let mut scratch = vec![0u8; n];
+    dilate_square_reflect(gray, width, height, s, &mut scratch);
 
-    // Percentile C (30th)
     let hist = hist256(gray);
     let c = percentile_from_hist(&hist, 0.30, n);
 
-    // Normalize
-    let mut normalized = vec![0u8; n];
-    normalize_by_bg(gray, &bg, c, &mut normalized);
+    // In-place: normalize_by_bg reads gray + scratch(bg) and writes back into scratch.
+    normalize_by_bg_inplace(gray, c, &mut scratch);
 
-    // Otsu on normalized
-    let t_otsu = otsu_threshold_u8(&normalized);
-    let mut otsu_bin = vec![0u8; n];
-    otsu_bin
+    let t_otsu = otsu_threshold_u8(&scratch);
+    scratch
         .par_iter_mut()
-        .zip(normalized.par_iter())
-        .for_each(|(o, &v)| *o = if v > t_otsu { 255 } else { 0 });
+        .for_each(|v| *v = if *v > t_otsu { 255 } else { 0 });
 
-    // Fuse with AND
-    let mut fused = vec![0u8; n];
-    bitand_binaries(&sauvola_bin, &otsu_bin, &mut fused);
+    // Fuse AND into sauvola_bin (in place) — sauvola_bin becomes the fused output.
+    sauvola_bin
+        .par_iter_mut()
+        .zip(scratch.par_iter())
+        .for_each(|(s, &o)| {
+            *s = if *s != 0 && o != 0 { 255 } else { 0 };
+        });
 
-    fused
+    sauvola_bin
 }
 
 /// Adaptive window size for Sauvola
@@ -683,7 +703,12 @@ pub fn odd_background_window(height: usize) -> usize {
     s
 }
 
-/// Sauvola via integral images
+/// Sauvola via integral images.
+///
+/// Memory layout: previously materialized a padded gray buffer + two index tables
+/// (reflect_x/reflect_y) before building the two u64 integral images. The padded
+/// buffer (~W*H bytes for typical windows) and reflection Vecs are now eliminated:
+/// the row prefix-sum pass reads reflected source pixels directly from `gray`.
 fn sauvola_via_integral(
     gray: &[u8],
     width: usize,
@@ -696,45 +721,27 @@ fn sauvola_via_integral(
     let pad_w = width + 2 * (r as usize);
     let pad_h = height + 2 * (r as usize);
 
-    // Precompute reflection tables
-    let reflect_x: Vec<usize> = (-r..(width as isize) + r)
-        .map(|i| reflect_101(i, width as isize) as usize)
-        .collect();
-    let reflect_y: Vec<usize> = (-r..(height as isize) + r)
-        .map(|i| reflect_101(i, height as isize) as usize)
-        .collect();
-
-    // Padded image
-    let mut padded = vec![0u8; pad_w * pad_h];
-    padded
-        .par_chunks_mut(pad_w)
-        .enumerate()
-        .for_each(|(py, row)| {
-            let sy = reflect_y[py] * width;
-            for px in 0..pad_w {
-                let sx = reflect_x[px];
-                row[px] = gray[sy + sx];
-            }
-        });
-
-    // Integral images
     let iw = pad_w + 1;
-    let ih = pad_h + 1;
-    let mut integ = vec![0u64; iw * ih];
-    let mut integ_sq = vec![0u64; iw * ih];
+    let mut integ = vec![0u64; iw * (pad_h + 1)];
+    let mut integ_sq = vec![0u64; iw * (pad_h + 1)];
 
-    // Row prefix sums (parallelized per row)
+    // Row prefix sums (parallelized per row). Each row pulls reflected source
+    // pixels directly from `gray`, avoiding a separate padded image allocation.
+    let w_isz = width as isize;
+    let h_isz = height as isize;
     integ
         .par_chunks_mut(iw)
         .zip(integ_sq.par_chunks_mut(iw))
         .enumerate()
         .skip(1) // Skip row 0 (remains zeros)
         .for_each(|(y, (integ_row, integ_sq_row))| {
-            let src = &padded[(y - 1) * pad_w..(y - 1) * pad_w + pad_w];
+            let src_y = reflect_101((y - 1) as isize - r as isize, h_isz) as usize;
+            let row_base = src_y * width;
             let mut sum = 0u64;
             let mut sum_sq = 0u64;
             for x in 1..=pad_w {
-                let v = src[x - 1] as u64;
+                let src_x = reflect_101((x - 1) as isize - r as isize, w_isz) as usize;
+                let v = gray[row_base + src_x] as u64;
                 sum += v;
                 sum_sq += v * v;
                 integ_row[x] = sum;
@@ -887,15 +894,18 @@ fn percentile_from_hist(h: &[u32; 256], p: f32, n: usize) -> u8 {
     255
 }
 
-/// Normalize by background
-fn normalize_by_bg(gray: &[u8], bg: &[u8], c: u8, out: &mut [u8]) {
+/// In-place: `bg_then_out` enters as the dilated background and is overwritten
+/// with the normalized result. Reads `gray[i]` and uses `bg_then_out[i]` as the
+/// divisor before writing the new value.
+fn normalize_by_bg_inplace(gray: &[u8], c: u8, bg_then_out: &mut [u8]) {
     let c = c as f32;
-    out.par_iter_mut()
+    bg_then_out
+        .par_iter_mut()
         .zip(gray.par_iter())
-        .zip(bg.par_iter())
-        .for_each(|((o, &g), &b)| {
-            let val = c / (b as f32 + 1e-6) * (g as f32);
-            *o = val.clamp(0.0, 255.0) as u8;
+        .for_each(|(slot, &g)| {
+            let b = *slot as f32;
+            let val = c / (b + 1e-6) * (g as f32);
+            *slot = val.clamp(0.0, 255.0) as u8;
         });
 }
 
@@ -912,9 +922,13 @@ fn otsu_from_hist(h: &[u32; 256], n: usize) -> u8 {
     let mut thresh = 0u8;
     for t in 0..256 {
         w_b += h[t] as f64;
-        if w_b == 0.0 { continue; }
+        if w_b == 0.0 {
+            continue;
+        }
         let w_f = total - w_b;
-        if w_f == 0.0 { break; }
+        if w_f == 0.0 {
+            break;
+        }
         sum_b += (t as f64) * (h[t] as f64);
         let m_b = sum_b / w_b;
         let m_f = (sum_all - sum_b) / w_f;
@@ -931,16 +945,6 @@ fn otsu_from_hist(h: &[u32; 256], n: usize) -> u8 {
 fn otsu_threshold_u8(data: &[u8]) -> u8 {
     let h = hist256(data);
     otsu_from_hist(&h, data.len())
-}
-
-/// Bitwise AND for binaries (0/255)
-fn bitand_binaries(a: &[u8], b: &[u8], out: &mut [u8]) {
-    out.par_iter_mut()
-        .zip(a.par_iter())
-        .zip(b.par_iter())
-        .for_each(|((o, &x), &y)| {
-            *o = if x != 0 && y != 0 { 255 } else { 0 };
-        });
 }
 
 #[inline(always)]
@@ -1252,7 +1256,7 @@ mod tests {
             return;
         }
         use lege_gpu::binarization::{
-            wgpu::WgpuBinarizer, AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams,
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
         };
 
         let w = 128usize;
@@ -1292,7 +1296,8 @@ mod tests {
             .filter(|(c, g)| c != g)
             .count();
         assert_eq!(
-            mismatches, 0,
+            mismatches,
+            0,
             "bg parity: {} of {} pixels differ (CPU bg vs GPU debug_mode=3)",
             mismatches,
             w * h
@@ -1306,7 +1311,7 @@ mod tests {
             return;
         }
         use lege_gpu::binarization::{
-            wgpu::WgpuBinarizer, AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams,
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
         };
 
         let w = 128usize;
@@ -1386,7 +1391,7 @@ mod tests {
             return;
         }
         use lege_gpu::binarization::{
-            wgpu::WgpuBinarizer, AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams,
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
         };
 
         let w = 128usize;

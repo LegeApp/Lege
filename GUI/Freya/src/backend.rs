@@ -76,15 +76,10 @@ pub fn gui_options_to_pipeline_config(options: &ProcessingOptions) -> PipelineCo
     let dither_images = matches!(options.image_processing_type, ImageProcessingType::Dithered)
         && enable_layout_detection;
 
-    // Map GUI binarization options to BinarizationConfig
-    // Safety layer: invert_input takes precedence over binarization modes
-    // When invert is enabled, we use simple binarize-then-invert (no dithering)
-    // When layout detection is off, adaptive and heavy binarization are invalid because
-    // image regions on the full page skew adaptive algorithms — force fixed threshold.
-    let force_fixed = !options.layout_analysis;
-    let effective_fixed = options.use_fixed_threshold || force_fixed;
-    let heavy_enabled =
-        options.use_heavy_binarization && !effective_fixed && options.layout_analysis;
+    // Map GUI binarization options to BinarizationConfig. Adaptive and heavy
+    // binarization remain user-selectable even without layout detection.
+    let effective_fixed = options.use_fixed_threshold;
+    let heavy_enabled = options.use_heavy_binarization && !effective_fixed;
     let binarization_config = if options.invert_input {
         // When inverted, use a minimal config - the actual processing uses binarize-then-invert
         BinarizationConfig {

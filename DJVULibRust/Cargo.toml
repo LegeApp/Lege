@@ -1,3 +1,5 @@
+#> On our 50-page IW44 s100 benchmark, DJVULibRust is slightly faster than djvu-rs while producing a smaller file and dramatically better reconstruction quality. The PSNR gap is about 14.7 dB, roughly 29x lower MSE, and the visual output is much more faithful on the yellowed page test set.
+
 [package]
 name = "djvu_encoder"
 version = "0.9.0"

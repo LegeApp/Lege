@@ -11,9 +11,12 @@ struct BinarizeParams {
 @group(0) @binding(3) var<storage, read_write> padded_sq: array<f32>;
 
 fn reflect_101(idx: i32, len: i32) -> i32 {
-    if idx < 0 { return -idx - 1; }
-    if idx >= len { return 2 * len - idx - 1; }
-    return idx;
+    if len <= 1 { return 0; }
+    let period = 2 * len;
+    var n = idx % period;
+    if n < 0 { n = n + period; }
+    if n >= len { return period - n - 1; }
+    return n;
 }
 
 @compute @workgroup_size(16, 16, 1)
