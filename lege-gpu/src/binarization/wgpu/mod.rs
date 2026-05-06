@@ -1196,7 +1196,7 @@ impl WgpuBinarizer {
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?
             .map_err(|e| GpuBinarizationError::Execution(format!("map_async failed: {e:?}")))?;
         let data = slice.get_mapped_range();
-        let result = f(&data[..packed_bytes.min(data.len())]);
+        let result = f(&data[..pixel_count.min(data.len())]);
         drop(data);
         rb.unmap();
         Ok(result)
