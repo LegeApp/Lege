@@ -184,15 +184,16 @@ pub async fn create_and_run_djvu_source_pipeline(
             None
         };
     // Pipeline concurrency settings (similar to PDF pipeline)
-    let pipeline_config = PipelineRuntimeLimits::from_config(&config);
-    init_encode_semaphore(pipeline_config.page_workers);
+    let pipeline_config = PipelineRuntimeLimits::djvu_from_config(&config);
+    init_encode_semaphore(pipeline_config.djvu_encode_workers);
     let deskew_engine = prepare_shared_deskew_engine(&config)?;
     #[cfg(feature = "debug-logging")]
     info_log!(
-        "[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, page_workers={}, djvu_encode_workers={}",
+        "[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, page_workers={}, process_workers={}, djvu_encode_workers={}",
         pipeline_config.render_buffer,
         pipeline_config.inference_buffer,
         pipeline_config.page_workers,
+        pipeline_config.process_workers,
         pipeline_config.djvu_encode_workers
     );
     // Create channels with larger buffers for better pipelining

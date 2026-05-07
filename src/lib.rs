@@ -202,6 +202,8 @@ pub fn get_internal_version() -> &'static str {
 /// This enables wrapper-free Linux packaging when ONNX Runtime is installed
 /// under app-private directories such as `/usr/lib/lege`.
 pub fn configure_runtime_env() {
+    configure_rayon_runtime();
+
     if std::env::var_os("ORT_DYLIB_PATH").is_none() {
         #[cfg(target_os = "windows")]
         let ort_name = "onnxruntime.dll";
@@ -217,4 +219,42 @@ pub fn configure_runtime_env() {
             }
         }
     }
+}
+
+fn configure_rayon_runtime() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    INIT.call_once(|| {
+        let threads = rayon_thread_count();
+        let mut builder =
+            rayon::ThreadPoolBuilder::new().thread_name(|idx| format!("lege-rayon-{idx}"));
+        if let Some(threads) = threads {
+            builder = builder.num_threads(threads);
+        }
+
+        let _ = builder.build_global();
+    });
+}
+
+fn rayon_thread_count() -> Option<usize> {
+    if let Some(threads) = parse_positive_env_usize("LEGE_RAYON_THREADS") {
+        return Some(threads);
+    }
+
+    if std::env::var_os("RAYON_NUM_THREADS").is_some() {
+        return None;
+    }
+
+    let cores = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2)
+        .max(1);
+    Some(cores.saturating_sub(1).max(1))
+}
+
+fn parse_positive_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
 }

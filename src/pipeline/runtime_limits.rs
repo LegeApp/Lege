@@ -37,6 +37,27 @@ impl PipelineRuntimeLimits {
             djvu_encode_workers: page_workers,
         }
     }
+
+    pub fn djvu_from_config(config: &PipelineConfig) -> Self {
+        let requested_workers = config.max_parallel_pages().unwrap_or(4).max(1);
+        let adaptive = AdaptiveConcurrency::detect();
+        let cpu_workers = requested_workers.min(adaptive.cpu_workers).max(1);
+        let encode_workers = (cpu_workers / 3).max(1);
+        let process_workers = cpu_workers.saturating_sub(encode_workers).max(1);
+        let channel_capacity = config
+            .channel_buffer_size()
+            .max(cpu_workers)
+            .min(adaptive.io_workers.max(cpu_workers));
+
+        Self {
+            page_workers: cpu_workers,
+            channel_capacity,
+            render_buffer: channel_capacity,
+            inference_buffer: channel_capacity,
+            process_workers,
+            djvu_encode_workers: encode_workers,
+        }
+    }
 }
 
 /// Per-stage concurrency caps for the image-folder (PNG) pipeline. These are
@@ -225,6 +246,21 @@ mod tests {
         assert_eq!(limits.inference_buffer, 3);
         assert_eq!(limits.process_workers, 3);
         assert_eq!(limits.djvu_encode_workers, 3);
+    }
+
+    #[test]
+    fn djvu_runtime_limits_split_rayon_heavy_stages() {
+        let mut config = PipelineConfig::new().expect("config");
+        config.max_parallel_pages = Some(4);
+        config.channel_buffer_size = Some(16);
+
+        let limits = PipelineRuntimeLimits::djvu_from_config(&config);
+
+        assert!(limits.page_workers >= 1);
+        assert!(limits.process_workers >= 1);
+        assert!(limits.djvu_encode_workers >= 1);
+        assert!(limits.process_workers + limits.djvu_encode_workers <= limits.page_workers.max(2));
+        assert!(limits.channel_capacity >= limits.page_workers);
     }
 
     #[test]

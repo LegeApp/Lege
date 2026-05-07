@@ -306,13 +306,18 @@ pub static CLI_TEXT: Lazy<CliText> = Lazy::new(|| {
 });
 
 fn load_cli_text() -> Result<CliText> {
-    let json_content = include_str!("cli_text.json");
+    #[cfg(feature = "german")]
+    let json_content = include_str!("../language_service/de/cli_text.json");
+
+    #[cfg(not(feature = "german"))]
+    let json_content = include_str!("../language_service/en/cli_text.json");
+
     let cli_text: CliText = serde_json::from_str(json_content)?;
     Ok(cli_text)
 }
 
 fn cli_text_asset_error() -> String {
-    "CLI text asset error: the compile-time embedded src/cli_text.json is invalid. Restore or fix that file and rebuild Lege.".to_string()
+    "CLI text asset error: the compile-time embedded language_service/*/cli_text.json is invalid. Restore or fix that file and rebuild Lege.".to_string()
 }
 
 fn default_cli_text() -> CliText {

@@ -100,9 +100,10 @@ fn fast_exit(code: i32) -> ! {
 
 // Binarization parsing moved to CliConfigBuilder in types.rs
 
-// IMPORTANT: CLI user-facing copy in this file must come from `src/cli_text.json`
-// via `CLI_TEXT` (through `text_loader.rs`). Do not introduce hardcoded
-// user-visible strings in `main.rs`; update `cli_text.json` instead.
+// IMPORTANT: CLI user-facing copy in this file must come from
+// `language_service/<locale>/cli_text.json` via `CLI_TEXT` (through
+// `text_loader.rs`). Do not introduce hardcoded user-visible strings in
+// `main.rs`; update the locale JSON files instead.
 fn fmt1(template: &str, a: impl std::fmt::Display) -> String {
     template.replacen("{}", &a.to_string(), 1)
 }

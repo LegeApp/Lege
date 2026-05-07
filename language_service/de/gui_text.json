@@ -1,0 +1,84 @@
+{
+  "interactive": {
+    "app": {
+      "title": "Lege",
+      "window_minimize": "−",
+      "window_close": "×"
+    },
+    "buttons": {
+      "debug": "Debug",
+      "add_file": "Datei hinzufügen",
+      "add_folder": "Ordner hinzufügen",
+      "output_directory": "Ausgabeordner",
+      "save": "Speichern",
+      "reset": "Zurücksetzen",
+      "clear_queue": "Warteschlange leeren",
+      "start_processing": "Verarbeiten",
+      "cancel": "Abbrechen"
+    },
+    "labels": {
+      "output_format": "Ausgabeformat:",
+      "base_format": "Basisformat:",
+      "image_output_type": "Bildausgabetyp:",
+      "cover_format": "Bildformat:",
+      "layout_detection": "Layout-Erkennung:",
+      "inverted_colors": "Farben umkehren",
+      "jpeg_compatibility": "JPEG-Kompatibilität",
+      "ocr_text_layer": "OCR-Textebene",
+      "high_quality_output": "Hohe Qualität",
+      "page_range": "Seitenbereich:",
+      "page_range_placeholder": "z. B. 1-10",
+      "target_height": "Zielauflösung:",
+      "margin_centering": "Inhalt auf Standardseite zentrieren",
+      "margin_crop_resize": "Auf Inhalt zuschneiden und skalieren",
+      "deskew_documents": "Entzerren"
+    },
+    "tooltips": {
+      "add_file_or_folder": "Akzeptiert PDF-Dateien, Bildordner oder ZIP-Dateien mit Bildern.",
+      "output_format": "Wählen Sie PDF oder DJVU mit nativer Rust-Kodierung.",
+      "base_format": "1-Bit-Kodierung – JBIG2 bietet bessere Kompression und Rasterung, während CCITT4 breiter kompatibel ist.",
+      "image_output_type": "Originalfarbe mit CCITT4-Kodierung oder gerastert mit JBIG2-Kodierung.",
+      "layout_detection": "Aktivieren, wenn Ihr Dokument komplexe Bildbereiche enthält. Die GPU-beschleunigte Layout-Erkennung schützt diese Bereiche vor der Binarisierung.",
+      "heavy_model": "Schweres Sauvola-KI-Modell (ONNX) für beschädigte oder schwierige Seiten. Profitiert von Layout-Erkennung.",
+      "inverted_colors": "Für digital erstellte Dokumente mit dunklem Hintergrund und hellem Text. Wandelt sie in weißen Hintergrund und schwarzen Text um.",
+      "jpeg_compatibility": "JPEG statt JPEG2000 verwenden.",
+      "ocr_text_layer": "Fügt jeder Seite eine optische Zeichenerkennungsebene (HOCR) hinzu.",
+      "high_quality_output": "Verwendet eine hochwertigere Bildkodierung. PDF nutzt JPEG-Qualität 95; DJVU nutzt bei aktivierter Option die höchste IW44-Einstellung. Für Ausgaben für E-Ink-Lesegeräte deaktiviert lassen.",
+      "cover_format_no_cover": "Erste Seite wie alle anderen behandeln; das Bildformat gilt für alle nicht binarisierten Bilder.",
+      "cover_format_dithered": "CCITT4-Text mit Blue-Noise-gerasterten Bildbereichen, wenn aktiviert (global).",
+      "cover_format_original": "Originalfarbbilder beibehalten (global).",
+      "page_range": "Seitenbereich angeben, z. B. 1-10 oder 5-20.",
+      "target_height": "Voreinstellung auswählen oder proportionale Skalierung verwenden.",
+      "sauvola_window_size": "Lokale Analysefenstergröße – größer: glatter, kleiner: empfindlicher für Details.",
+      "sauvola_k_factor": "Kontrastempfindlichkeit – niedriger: mehr Text bleibt erhalten, höher: sauberere Hintergründe. Profitiert von Layout-Erkennung.",
+      "sauvola_r": "Varianzskalierung – niedriger: weniger aggressiv, höher: stärkere Anpassung an Rauschen.",
+      "threshold_value": "Fester Schwellenwert (0-255), der nach der Linearisierung angewendet wird.",
+      "margin_centering": "Zentriert den Inhaltsbereich auf den angegebenen Seitenausgabemaßen.",
+      "margin_crop_resize": "Schneidet Ränder auf die Inhaltsgrenzen zu und skaliert auf die angegebenen Ausgabemaße.",
+      "deskew_documents": "Erkennt Drehung und entzerrt jede Seite vor der weiteren Verarbeitung."
+    },
+    "status": {
+      "ready": "Bereit",
+      "cancelling": "Wird abgebrochen...",
+      "processing": "Wird verarbeitet...",
+      "processing_failed": "Verarbeitung fehlgeschlagen – prüfen Sie die Fehlerdetails oben",
+      "missing_dependency": "Erforderliche Komponente fehlt: {item}"
+    },
+    "messages": {
+      "settings_saved": "Einstellungen gespeichert",
+      "settings_reset": "Einstellungen auf Standardwerte zurückgesetzt",
+      "settings_and_queue_reset": "Einstellungen und Warteschlange zurückgesetzt ({} Dateien entfernt)",
+      "queue_cleared_summary": "{} Datei{} aus der Warteschlange entfernt",
+      "defaulted_output_dir": "Ausgabeordner wurde auf den Ordner der Eingabedatei gesetzt"
+    }
+  },
+  "providers": {
+    "cuda_success": "CUDA-Beschleunigung aktiviert",
+    "secondary_success": "Hardwarebeschleunigung aktiviert",
+    "using_cpu": "CPU wird verwendet",
+    "install_help": {
+      "openvino_linux": "Für die beste Leistung unter Linux OpenVINO installieren oder aktivieren.",
+      "directml_windows": "Für die beste Leistung unter Windows DirectML und aktuelle GPU-Treiber installieren."
+    }
+  }
+}
