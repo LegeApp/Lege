@@ -26,7 +26,7 @@ default-members = [
 
 [workspace.lints.rust]
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "trace_arith"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "german", "trace_arith"))'] }
 
 [workspace.dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
@@ -230,6 +230,7 @@ profiling = ["debug-logging"]
 debug-layers = []
 no-include-shaders = []
 djvu_debug = []
+german = []
 # Static linking features for pdfium-render
 libstdcpp = ["pdfium-render/libstdc++"]
 libcpp = ["pdfium-render/libc++"]

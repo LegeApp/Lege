@@ -10,6 +10,7 @@ path = "src/main.rs"
 [features]
 default = []
 debug-logging = ["lege/debug-logging", "Legencode/debug-logging"]
+german = ["lege/german"]
 
 [dependencies]
 # Keep this feature set aligned with the published Windows Skia binary cache.
