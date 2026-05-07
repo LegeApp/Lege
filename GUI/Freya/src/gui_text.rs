@@ -1,16 +1,17 @@
-// Freya-side copy of the Dioxus GUI text module.
-// Keep in sync manually until GUI support code is consolidated.
+// Freya-side GUI localization loader.
+// User-facing copy lives in language_service/<locale>/gui_text.json.
 
 use once_cell::sync::Lazy;
+use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiText {
     pub interactive: GuiInteractiveText,
     // Provider-related texts (ONNX providers, hints)
     pub providers: GuiProvidersText,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiInteractiveText {
     pub app: GuiAppText,
     pub buttons: GuiButtonsText,
@@ -20,7 +21,7 @@ pub struct GuiInteractiveText {
     pub messages: GuiMessagesText,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiMessagesText {
     pub settings_saved: String,
     pub settings_reset: String,
@@ -29,14 +30,14 @@ pub struct GuiMessagesText {
     pub defaulted_output_dir: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiAppText {
     pub title: String,
     pub window_minimize: String,
     pub window_close: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiButtonsText {
     pub debug: String,
     pub add_file: String,
@@ -49,7 +50,7 @@ pub struct GuiButtonsText {
     pub cancel: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiLabelsText {
     pub output_format: String,
     pub base_format: String,
@@ -68,7 +69,7 @@ pub struct GuiLabelsText {
     pub deskew_documents: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiTooltipsText {
     pub add_file_or_folder: String,
     pub output_format: String,
@@ -94,7 +95,7 @@ pub struct GuiTooltipsText {
     pub deskew_documents: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiStatusText {
     pub ready: String,
     pub cancelling: String,
@@ -103,13 +104,13 @@ pub struct GuiStatusText {
     pub missing_dependency: String, // new: dynamic placeholder {item}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiProvidersInstallHelp {
     pub openvino_linux: String,
     pub directml_windows: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GuiProvidersText {
     pub cuda_success: String,
     pub secondary_success: String,
@@ -117,7 +118,24 @@ pub struct GuiProvidersText {
     pub install_help: GuiProvidersInstallHelp,
 }
 
-pub static GUI_TEXT: Lazy<GuiText> = Lazy::new(|| default_gui_text());
+pub static GUI_TEXT: Lazy<GuiText> = Lazy::new(|| {
+    load_gui_text().unwrap_or_else(|e| {
+        eprintln!(
+            "Warning: Failed to load GUI text from JSON: {e}. Using fallback text."
+        );
+        default_gui_text()
+    })
+});
+
+fn load_gui_text() -> anyhow::Result<GuiText> {
+    #[cfg(feature = "german")]
+    let json_content = include_str!("../../../language_service/de/gui_text.json");
+
+    #[cfg(not(feature = "german"))]
+    let json_content = include_str!("../../../language_service/en/gui_text.json");
+
+    Ok(serde_json::from_str(json_content)?)
+}
 
 fn default_gui_text() -> GuiText {
     GuiText {
