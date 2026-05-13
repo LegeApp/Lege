@@ -30,7 +30,7 @@ image = { workspace = true }            # Used by color linearization helpers
 lazy_static = { workspace = true }       # Used by LUT initialization in linearize.rs
 thiserror = { workspace = true }        # Used by ColorOpsError derive
 png = "0.17"                # For PNG encoding/decoding
-ort = { path = "../ort", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }
+ort = { git = "https://github.com/pykeio/ort", rev = "477e929", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic"] }
 once_cell = { workspace = true }          # For global static initialization
 lege-gpu = { path = "../lege-gpu" }
 
