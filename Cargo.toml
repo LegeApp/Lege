@@ -173,8 +173,8 @@ zip = { workspace = true, features = ["deflate"] }
 djvu_encoder = { path = "DJVULibRust" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Local fork of ort with WebGPU cleanup fix - uses WebGPU with Vulkan backend (dynamic loading)
-ort = { path = "ort", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "webgpu", "load-dynamic"] }
+# ort pinned to upstream commit 477e929 (ONNX Runtime 1.24.3) - WebGPU + Vulkan backend (dynamic loading)
+ort = { git = "https://github.com/pykeio/ort", rev = "477e929", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "webgpu", "load-dynamic"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = "0.14"
 wgpu = "28"
@@ -189,8 +189,8 @@ pollster = "0.4"
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
-# Local fork of ort with WebGPU cleanup fix - uses DirectML on Windows (dynamic loading)
-ort = { path = "ort", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "directml", "load-dynamic"] }
+# ort pinned to upstream commit 477e929 (ONNX Runtime 1.24.3) - DirectML (dynamic loading)
+ort = { git = "https://github.com/pykeio/ort", rev = "477e929", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "directml", "load-dynamic"] }
 winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
 windows = { workspace = true, features = [
     "Foundation",
