@@ -77,8 +77,8 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
 
     // Calculate source coordinates
-    float src_x = (dst_x + params.offset_x) * params.scale_x;
-    float src_y = (dst_y + params.offset_y) * params.scale_y;
+    float src_x = ((float)dst_x + 0.5f) * params.scale_x - 0.5f + params.offset_x;
+    float src_y = ((float)dst_y + 0.5f) * params.scale_y - 0.5f + params.offset_y;
 
     // Bilinear interpolation
     int x0 = (int)floor(src_x);
