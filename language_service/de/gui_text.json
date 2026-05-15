@@ -62,7 +62,22 @@
       "cancelling": "Wird abgebrochen...",
       "processing": "Wird verarbeitet...",
       "processing_failed": "Verarbeitung fehlgeschlagen – prüfen Sie die Fehlerdetails oben",
-      "missing_dependency": "Erforderliche Komponente fehlt: {item}"
+      "missing_dependency": "Erforderliche Komponente fehlt: {item}",
+      "starting": "[Start]",
+      "complete": "[Abgeschlossen]",
+      "no_files_in_queue": "Keine Dateien in der Warteschlange",
+      "choose_output_directory": "Ausgabeordner auswählen",
+      "queued_files_for_processing": "{} Datei(en) zur Verarbeitung eingereiht.",
+      "using_hardware_acceleration": "Hardwarebeschleunigung wird verwendet",
+      "processing_file": "Datei {} von {} wird verarbeitet",
+      "file_completed_log": "{} Datei(en) abgeschlossen, {} verbleibend",
+      "files_processed_successfully": "{} Datei(en) erfolgreich verarbeitet.",
+      "files_remaining_in_queue": "{} Datei(en) verbleiben in der Warteschlange.",
+      "queue_empty": "Die Warteschlange ist jetzt leer.",
+      "error": "Fehler: {}",
+      "failed_save_settings": "Einstellungen konnten nicht gespeichert werden: {}",
+      "failed_clear_saved_settings": "Gespeicherte Einstellungen konnten nicht gelöscht werden: {}",
+      "failed_start_processing": "Verarbeitung konnte nicht gestartet werden: {}"
     },
     "messages": {
       "settings_saved": "Einstellungen gespeichert",
@@ -70,6 +85,59 @@
       "settings_and_queue_reset": "Einstellungen und Warteschlange zurückgesetzt ({} Dateien entfernt)",
       "queue_cleared_summary": "{} Datei{} aus der Warteschlange entfernt",
       "defaulted_output_dir": "Ausgabeordner wurde auf den Ordner der Eingabedatei gesetzt"
+    },
+    "controls": {
+      "on": "Ein",
+      "off": "Aus",
+      "binarization": "Binarisierung",
+      "threshold": "Schwellenwert",
+      "k_factor": "K-Faktor",
+      "fixed_threshold": "Fester Schwellenwert",
+      "heavy_model": "Schweres Modell",
+      "target_device": "Zielgerät",
+      "target_device_proportional": "Höhe festlegen, Breite proportional"
+    },
+    "queue": {
+      "queue_button": "Warteschlange: {}",
+      "log_button": "Protokoll",
+      "debug_button": "Debug",
+      "about_button": "Info",
+      "empty_message": "Keine Dateien in der Warteschlange - Datei oder Ordner hinzufügen.",
+      "empty_short": "Die Warteschlange ist leer.",
+      "item_ready_summary": "{} Element(e) bereit  -  {} Seiten gesamt",
+      "item_queued_summary": "{} Element(e) in der Warteschlange",
+      "pages": "Seiten",
+      "images": "Bilder",
+      "input": "Eingabe: {}",
+      "output": "Ausgabe: {}"
+    },
+    "popups": {
+      "close": "Schließen",
+      "supported_inputs_filter": "Unterstützte Eingaben",
+      "queue_items_title": "Warteschlangeneinträge",
+      "processing_log_title": "Verarbeitungsprotokoll",
+      "debug_log_title": "Debug-Protokoll",
+      "email": "E-Mail",
+      "documentation": "Dokumentation",
+      "licenses": "Lizenzen",
+      "ocr_detected": "OCR-Ebene erkannt - OCR deaktiviert lassen, um die vorhandene Textebene beizubehalten.",
+      "no_ocr_detected": "Keine OCR-Ebene gefunden - OCR aktivieren, um Texterkennung hinzuzufügen.",
+      "layout_disabled": "Layout-Erkennung deaktiviert. Text-/Bildtrennung und bildschonende Rasterung sind nicht verfügbar.",
+      "zip_no_supported_images": "{}: ZIP enthält keine JP2- oder JPEG-Bilder",
+      "folder_no_supported_images": "{}: Ordner enthält keine unterstützten Bilder (JP2, JPEG, PNG, ...)"
+    },
+    "progress": {
+      "render": "Rendern",
+      "infer": "Erkennen",
+      "encode": "Kodieren",
+      "margin": "Ränder",
+      "deskew": "Entzerren",
+      "eta": "Restzeit {}",
+      "scanning": "wird geprüft...",
+      "reduced": "Reduziert um {}% ({} -> {})",
+      "increased": "Vergrößert um {}% ({} -> {})",
+      "completed": "Abgeschlossen: {}\n{}",
+      "completed_with_estimate": "Abgeschlossen: {}\n{}\nKompressionsprozentsatz aus ausgewähltem Seitenbereich extrapoliert."
     }
   },
   "providers": {
