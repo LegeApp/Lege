@@ -32,7 +32,7 @@ pub fn run_tesseract(
         let new_width = ((width as f64) * scale).round().max(1.0) as usize;
         let new_height = ((height as f64) * scale).round().max(1.0) as usize;
 
-        match downscale_image_lanczos3(data, width, height, new_width, new_height, is_binary) {
+        match downscale_image_bell(data, width, height, new_width, new_height, is_binary) {
             Some(downscaled) => (new_width, new_height, downscaled),
             None => {
                 return None;
@@ -160,8 +160,8 @@ pub fn run_tesseract(
     })
 }
 
-/// High-quality downscaling using hardware acceleration (HLSL on Windows, CPU fallback)
-fn downscale_image_lanczos3(
+/// Temporary OCR downscaling using hardware acceleration (HLSL/WGPU, CPU fallback).
+fn downscale_image_bell(
     data: &[u8],
     orig_width: usize,
     orig_height: usize,
@@ -178,7 +178,7 @@ fn downscale_image_lanczos3(
     let params = ResizeParams {
         target_width: dst_width,
         target_height: dst_height,
-        method: ResizeMethod::Lanczos3,
+        method: ResizeMethod::Bell,
         letterbox: false,
         border_value: 0.0,
         swap_rb: false,

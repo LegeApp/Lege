@@ -89,19 +89,20 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
 
     // Calculate source coordinates
-    float src_x = (dst_x + params.offset_x) * params.scale_x;
-    float src_y = (dst_y + params.offset_y) * params.scale_y;
+    float src_x = ((float)dst_x + 0.5f) * params.scale_x - 0.5f + params.offset_x;
+    float src_y = ((float)dst_y + 0.5f) * params.scale_y - 0.5f + params.offset_y;
 
-    // Bell filter has support of 1.5, so we need to sample a 3x3 neighborhood
+    // Bell filter has support of 1.5, so a 4x4 candidate neighborhood covers all
+    // contributing samples for fractional source positions.
     int center_x = (int)floor(src_x);
     int center_y = (int)floor(src_y);
 
     float4 result = float4(0, 0, 0, 0);
     float weight_sum = 0.0f;
 
-    // Sample 3x3 neighborhood
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
+    // Sample 4x4 candidate neighborhood
+    for (int dy = -1; dy <= 2; dy++) {
+        for (int dx = -1; dx <= 2; dx++) {
             int sample_x = center_x + dx;
             int sample_y = center_y + dy;
 

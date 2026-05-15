@@ -8,8 +8,8 @@ use crate::backend;
 use crate::gui_text::GUI_TEXT;
 use crate::logging;
 use crate::models::{
-    CompressionType, DocumentItem, DocumentStatus, ImageProcessingType, LogEntry, OutputFormat,
-    ProcessingOptions, ProcessingResult,
+    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat, ProcessingOptions,
+    ProcessingResult,
 };
 use crate::version::display_version;
 use crate::widgets;
@@ -75,6 +75,23 @@ fn format_eta_label(seconds: u32) -> String {
     } else {
         format!("{minutes:02}:{secs:02}")
     }
+}
+
+fn fmt1(template: &str, a: impl std::fmt::Display) -> String {
+    template.replacen("{}", &a.to_string(), 1)
+}
+
+fn fmt2(template: &str, a: impl std::fmt::Display, b: impl std::fmt::Display) -> String {
+    fmt1(&fmt1(template, a), b)
+}
+
+fn fmt3(
+    template: &str,
+    a: impl std::fmt::Display,
+    b: impl std::fmt::Display,
+    c: impl std::fmt::Display,
+) -> String {
+    fmt1(&fmt2(template, a, b), c)
 }
 
 #[derive(Clone, Copy)]
@@ -166,7 +183,11 @@ impl Default for AppState {
             active_task_ids: Vec::new(),
             should_cancel: false,
             target_height_input: options.target_height.unwrap_or(1200).to_string(),
-            target_resolution_selection: target_profiles::PROPORTIONAL_OPTION_LABEL.to_string(),
+            target_resolution_selection: GUI_TEXT
+                .interactive
+                .controls
+                .target_device_proportional
+                .clone(),
             k_factor_input: options.k_factor.to_string(),
             threshold_input: options.threshold_value.to_string(),
             page_range_input: options.page_range.clone().unwrap_or_default(),
@@ -263,7 +284,11 @@ fn sync_state_from_options(state: &mut AppState, options: &ProcessingOptions) {
             state.options.target_height = Some(profile.height);
         }
     } else {
-        state.target_resolution_selection = target_profiles::PROPORTIONAL_OPTION_LABEL.to_string();
+        state.target_resolution_selection = GUI_TEXT
+            .interactive
+            .controls
+            .target_device_proportional
+            .clone();
         state.target_height_input = options.target_height.unwrap_or(1200).to_string();
     }
     state.k_factor_input = options.k_factor.to_string();
@@ -779,9 +804,9 @@ fn CombinedSettingsPanel(
     let effective_threshold = fixed_threshold_enabled;
     let threshold_checkbox_selected = fixed_threshold_enabled;
     let numeric_label = if effective_threshold {
-        "Threshold"
+        GUI_TEXT.interactive.controls.threshold.as_str()
     } else {
-        "K factor"
+        GUI_TEXT.interactive.controls.k_factor.as_str()
     };
 
     rect()
@@ -798,254 +823,272 @@ fn CombinedSettingsPanel(
                     .cross_align(Alignment::Start)
                     .spacing(10.)
                     .child(
-                    rect()
-                        .width(Size::percent(64.))
-                        .height(Size::fill())
-                        .vertical()
-                        .main_align(Alignment::Start)
-                        .spacing(6.)
-                        .child(two_option_toggle_inline(
-                            GUI_TEXT.interactive.labels.output_format.clone(),
-                            options.output_format.to_string(),
-                            {
-                                let mut state = state;
-                                move |_| {
-                                    let next = match state.read().options.output_format {
-                                        OutputFormat::Pdf => OutputFormat::Djvu,
-                                        OutputFormat::Djvu => OutputFormat::Pdf,
-                                    };
-                                    state.write().options.output_format = next;
-                                }
-                            },
-                        ))
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::LeftCard,
-                            GUI_TEXT.interactive.tooltips.image_output_type.clone(),
-                            AttachedPosition::Right,
-                            two_option_toggle_inline(
-                                GUI_TEXT.interactive.labels.image_output_type.clone(),
-                                options.image_processing_type.to_string(),
+                        rect()
+                            .width(Size::percent(64.))
+                            .height(Size::fill())
+                            .vertical()
+                            .main_align(Alignment::Start)
+                            .spacing(6.)
+                            .child(two_option_toggle_inline(
+                                GUI_TEXT.interactive.labels.output_format.clone(),
+                                options.output_format.to_string(),
                                 {
                                     let mut state = state;
                                     move |_| {
-                                        let next = match state.read().options.image_processing_type {
-                                            ImageProcessingType::Original => {
-                                                ImageProcessingType::Dithered
-                                            }
-                                            ImageProcessingType::Dithered => {
-                                                ImageProcessingType::Original
-                                            }
+                                        let next = match state.read().options.output_format {
+                                            OutputFormat::Pdf => OutputFormat::Djvu,
+                                            OutputFormat::Djvu => OutputFormat::Pdf,
                                         };
-                                        state.write().options.image_processing_type = next;
+                                        state.write().options.output_format = next;
                                     }
                                 },
-                            ),
-                        ))
-                        .child(tooltip_wrap_at(
-                            state,
-                            TooltipArea::LeftCard,
-                            GUI_TEXT.interactive.tooltips.layout_detection.clone(),
-                            AttachedPosition::Right,
-                            two_option_toggle_inline(
-                                GUI_TEXT.interactive.labels.layout_detection.clone(),
-                                if options.layout_analysis { "On" } else { "Off" },
-                                {
-                                    let mut state = state;
-                                    move |_| {
-                                        let should_show_popup = {
-                                            let mut s = state.write();
-                                            s.options.layout_analysis = !s.options.layout_analysis;
-                                            !s.options.layout_analysis
-                                        };
-                                        if should_show_popup {
-                                            schedule_popup(
-                                                state,
-                                                PopupKind::NoLayout,
-                                                "Layout detection disabled. Text/image separation and image-preserving dithering are unavailable.".to_string(),
-                                                5,
-                                            );
-                                        }
-                                    }
-                                },
-                            ),
-                        ))
-                        .maybe_child(if show_base_format {
-                            Some::<Element>(tooltip_wrap_at(
+                            ))
+                            .child(tooltip_wrap_at(
                                 state,
                                 TooltipArea::LeftCard,
-                                GUI_TEXT.interactive.tooltips.base_format.clone(),
+                                GUI_TEXT.interactive.tooltips.image_output_type.clone(),
                                 AttachedPosition::Right,
                                 two_option_toggle_inline(
-                                    GUI_TEXT.interactive.labels.base_format.clone(),
-                                    options.compression_type.to_string(),
+                                    GUI_TEXT.interactive.labels.image_output_type.clone(),
+                                    options.image_processing_type.to_string(),
                                     {
                                         let mut state = state;
                                         move |_| {
-                                            let next = match state.read().options.compression_type {
-                                                CompressionType::Ccitt4 => CompressionType::Jbig2,
-                                                CompressionType::Jbig2 => CompressionType::Ccitt4,
-                                            };
-                                            state.write().options.compression_type = next;
+                                            let next =
+                                                match state.read().options.image_processing_type {
+                                                    ImageProcessingType::Original => {
+                                                        ImageProcessingType::Dithered
+                                                    }
+                                                    ImageProcessingType::Dithered => {
+                                                        ImageProcessingType::Original
+                                                    }
+                                                };
+                                            state.write().options.image_processing_type = next;
                                         }
                                     },
-                                )
-                                .into(),
+                                ),
                             ))
-                        } else {
-                            None::<Element>
-                        })
-                        .child(
-                            rect()
-                                .padding((0., 6., 0., 0.))
-                                .spacing(3.)
-                                .child(tooltip_wrap_at(
+                            .child(tooltip_wrap_at(
+                                state,
+                                TooltipArea::LeftCard,
+                                GUI_TEXT.interactive.tooltips.layout_detection.clone(),
+                                AttachedPosition::Right,
+                                two_option_toggle_inline(
+                                    GUI_TEXT.interactive.labels.layout_detection.clone(),
+                                    if options.layout_analysis {
+                                        GUI_TEXT.interactive.controls.on.as_str()
+                                    } else {
+                                        GUI_TEXT.interactive.controls.off.as_str()
+                                    },
+                                    {
+                                        let mut state = state;
+                                        move |_| {
+                                            let should_show_popup = {
+                                                let mut s = state.write();
+                                                s.options.layout_analysis =
+                                                    !s.options.layout_analysis;
+                                                !s.options.layout_analysis
+                                            };
+                                            if should_show_popup {
+                                                schedule_popup(
+                                                    state,
+                                                    PopupKind::NoLayout,
+                                                    GUI_TEXT
+                                                        .interactive
+                                                        .popups
+                                                        .layout_disabled
+                                                        .clone(),
+                                                    5,
+                                                );
+                                            }
+                                        }
+                                    },
+                                ),
+                            ))
+                            .maybe_child(if show_base_format {
+                                Some::<Element>(tooltip_wrap_at(
                                     state,
                                     TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
+                                    GUI_TEXT.interactive.tooltips.base_format.clone(),
                                     AttachedPosition::Right,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.inverted_colors.clone(),
-                                        options.invert_input,
+                                    two_option_toggle_inline(
+                                        GUI_TEXT.interactive.labels.base_format.clone(),
+                                        options.compression_type.to_string(),
                                         {
                                             let mut state = state;
                                             move |_| {
-                                                let mut s = state.write();
-                                                s.options.invert_input = !s.options.invert_input;
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .child(tooltip_wrap_at(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.ocr_text_layer.clone(),
-                                    AttachedPosition::Right,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.ocr_text_layer.clone(),
-                                        options.use_ocr,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                s.options.use_ocr = !s.options.use_ocr;
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .child(tooltip_wrap_at(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.high_quality_output.clone(),
-                                    AttachedPosition::Right,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.high_quality_output.clone(),
-                                        options.high_quality_output,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                s.options.high_quality_output =
-                                                    !s.options.high_quality_output;
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .child(tooltip_wrap_at(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.jpeg_compatibility.clone(),
-                                    AttachedPosition::Right,
-                                    compact_checkbox_row(
-                                        GUI_TEXT.interactive.labels.jpeg_compatibility.clone(),
-                                        options.jpeg_compat,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                s.options.jpeg_compat = !s.options.jpeg_compat;
-                                            }
-                                        },
-                                    ),
-                                )),
-                        )
-                    )
-                    .child(
-                    rect()
-                        .width(Size::percent(31.))
-                        .height(Size::fill())
-                        .vertical()
-                        .main_align(Alignment::Start)
-                        .spacing(3.)
-                        .child(section_label("Binarization"))
-                        .child(tooltip_wrap(
-                            state,
-                            TooltipArea::LeftCard,
-                            if effective_threshold {
-                                GUI_TEXT.interactive.tooltips.threshold_value.clone()
-                            } else {
-                                GUI_TEXT.interactive.tooltips.sauvola_k_factor.clone()
-                            },
-                            settings_row(
-                                numeric_label.to_string(),
-                                if effective_threshold {
-                                    Input::new(threshold_input)
-                                        .placeholder("200")
-                                        .width(Size::px(84.))
-                                        .into()
-                                } else {
-                                    Input::new(k_factor_input)
-                                        .placeholder("0.2")
-                                        .width(Size::px(84.))
-                                        .into()
-                                },
-                            ),
-                        ))
-                        .child(
-                            rect()
-                                .padding((0., 4., 0., 0.))
-                                .spacing(3.)
-                                .child(tooltip_wrap(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.threshold_value.clone(),
-                                    compact_checkbox_row(
-                                        "Fixed threshold",
-                                        threshold_checkbox_selected,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                let enable = !s.options.use_fixed_threshold;
-                                                s.options.use_fixed_threshold = enable;
-                                                if enable {
-                                                    s.options.use_heavy_binarization = false;
-                                                }
-                                            }
-                                        },
-                                    ),
-                                ))
-                                .child(tooltip_wrap(
-                                    state,
-                                    TooltipArea::LeftCard,
-                                    GUI_TEXT.interactive.tooltips.heavy_model.clone(),
-                                    compact_checkbox_row(
-                                        "Heavy model",
-                                        options.use_heavy_binarization,
-                                        {
-                                            let mut state = state;
-                                            move |_| {
-                                                let mut s = state.write();
-                                                if !s.options.use_fixed_threshold {
-                                                    s.options.use_heavy_binarization =
-                                                        !s.options.use_heavy_binarization;
-                                                }
+                                                let next =
+                                                    match state.read().options.compression_type {
+                                                        CompressionType::Ccitt4 => {
+                                                            CompressionType::Jbig2
+                                                        }
+                                                        CompressionType::Jbig2 => {
+                                                            CompressionType::Ccitt4
+                                                        }
+                                                    };
+                                                state.write().options.compression_type = next;
                                             }
                                         },
                                     )
                                     .into(),
-                                )),
-                        ),
+                                ))
+                            } else {
+                                None::<Element>
+                            })
+                            .child(
+                                rect()
+                                    .padding((0., 6., 0., 0.))
+                                    .spacing(3.)
+                                    .child(tooltip_wrap_at(
+                                        state,
+                                        TooltipArea::LeftCard,
+                                        GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
+                                        AttachedPosition::Right,
+                                        compact_checkbox_row(
+                                            GUI_TEXT.interactive.labels.inverted_colors.clone(),
+                                            options.invert_input,
+                                            {
+                                                let mut state = state;
+                                                move |_| {
+                                                    let mut s = state.write();
+                                                    s.options.invert_input =
+                                                        !s.options.invert_input;
+                                                }
+                                            },
+                                        ),
+                                    ))
+                                    .child(tooltip_wrap_at(
+                                        state,
+                                        TooltipArea::LeftCard,
+                                        GUI_TEXT.interactive.tooltips.ocr_text_layer.clone(),
+                                        AttachedPosition::Right,
+                                        compact_checkbox_row(
+                                            GUI_TEXT.interactive.labels.ocr_text_layer.clone(),
+                                            options.use_ocr,
+                                            {
+                                                let mut state = state;
+                                                move |_| {
+                                                    let mut s = state.write();
+                                                    s.options.use_ocr = !s.options.use_ocr;
+                                                }
+                                            },
+                                        ),
+                                    ))
+                                    .child(tooltip_wrap_at(
+                                        state,
+                                        TooltipArea::LeftCard,
+                                        GUI_TEXT.interactive.tooltips.high_quality_output.clone(),
+                                        AttachedPosition::Right,
+                                        compact_checkbox_row(
+                                            GUI_TEXT.interactive.labels.high_quality_output.clone(),
+                                            options.high_quality_output,
+                                            {
+                                                let mut state = state;
+                                                move |_| {
+                                                    let mut s = state.write();
+                                                    s.options.high_quality_output =
+                                                        !s.options.high_quality_output;
+                                                }
+                                            },
+                                        ),
+                                    ))
+                                    .child(tooltip_wrap_at(
+                                        state,
+                                        TooltipArea::LeftCard,
+                                        GUI_TEXT.interactive.tooltips.jpeg_compatibility.clone(),
+                                        AttachedPosition::Right,
+                                        compact_checkbox_row(
+                                            GUI_TEXT.interactive.labels.jpeg_compatibility.clone(),
+                                            options.jpeg_compat,
+                                            {
+                                                let mut state = state;
+                                                move |_| {
+                                                    let mut s = state.write();
+                                                    s.options.jpeg_compat = !s.options.jpeg_compat;
+                                                }
+                                            },
+                                        ),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        rect()
+                            .width(Size::percent(31.))
+                            .height(Size::fill())
+                            .vertical()
+                            .main_align(Alignment::Start)
+                            .spacing(3.)
+                            .child(section_label(
+                                GUI_TEXT.interactive.controls.binarization.as_str(),
+                            ))
+                            .child(tooltip_wrap(
+                                state,
+                                TooltipArea::LeftCard,
+                                if effective_threshold {
+                                    GUI_TEXT.interactive.tooltips.threshold_value.clone()
+                                } else {
+                                    GUI_TEXT.interactive.tooltips.sauvola_k_factor.clone()
+                                },
+                                settings_row(
+                                    numeric_label.to_string(),
+                                    if effective_threshold {
+                                        Input::new(threshold_input)
+                                            .placeholder("200")
+                                            .width(Size::px(84.))
+                                            .into()
+                                    } else {
+                                        Input::new(k_factor_input)
+                                            .placeholder("0.2")
+                                            .width(Size::px(84.))
+                                            .into()
+                                    },
+                                ),
+                            ))
+                            .child(
+                                rect()
+                                    .padding((0., 4., 0., 0.))
+                                    .spacing(3.)
+                                    .child(tooltip_wrap(
+                                        state,
+                                        TooltipArea::LeftCard,
+                                        GUI_TEXT.interactive.tooltips.threshold_value.clone(),
+                                        compact_checkbox_row(
+                                            GUI_TEXT.interactive.controls.fixed_threshold.as_str(),
+                                            threshold_checkbox_selected,
+                                            {
+                                                let mut state = state;
+                                                move |_| {
+                                                    let mut s = state.write();
+                                                    let enable = !s.options.use_fixed_threshold;
+                                                    s.options.use_fixed_threshold = enable;
+                                                    if enable {
+                                                        s.options.use_heavy_binarization = false;
+                                                    }
+                                                }
+                                            },
+                                        ),
+                                    ))
+                                    .child(tooltip_wrap(
+                                        state,
+                                        TooltipArea::LeftCard,
+                                        GUI_TEXT.interactive.tooltips.heavy_model.clone(),
+                                        compact_checkbox_row(
+                                            GUI_TEXT.interactive.controls.heavy_model.as_str(),
+                                            options.use_heavy_binarization,
+                                            {
+                                                let mut state = state;
+                                                move |_| {
+                                                    let mut s = state.write();
+                                                    if !s.options.use_fixed_threshold {
+                                                        s.options.use_heavy_binarization =
+                                                            !s.options.use_heavy_binarization;
+                                                    }
+                                                }
+                                            },
+                                        )
+                                        .into(),
+                                    )),
+                            ),
                     )
                     .into(),
             ],
@@ -1111,7 +1154,11 @@ fn LeftSettingsPanel(state: State<AppState>) -> Element {
             },
             two_option_toggle(
                 GUI_TEXT.interactive.labels.layout_detection.clone(),
-                if options.layout_analysis { "On" } else { "Off" },
+                if options.layout_analysis {
+                    GUI_TEXT.interactive.controls.on.as_str()
+                } else {
+                    GUI_TEXT.interactive.controls.off.as_str()
+                },
                 {
                     let mut state = state;
                     move |_| {
@@ -1121,7 +1168,7 @@ fn LeftSettingsPanel(state: State<AppState>) -> Element {
                             schedule_popup(
                                 state,
                                 PopupKind::NoLayout,
-                                "Layout detection disabled. Text/image separation and image-preserving dithering are unavailable.".to_string(),
+                                GUI_TEXT.interactive.popups.layout_disabled.clone(),
                                 5,
                             );
                         }
@@ -1176,12 +1223,21 @@ fn CenterSettingsPanel(
                 move |_| {
                     let mut s = state.write();
                     s.options.target_device = None;
-                    s.target_resolution_selection =
-                        target_profiles::PROPORTIONAL_OPTION_LABEL.to_string();
+                    s.target_resolution_selection = GUI_TEXT
+                        .interactive
+                        .controls
+                        .target_device_proportional
+                        .clone();
                     target_height_input.set(s.options.target_height.unwrap_or(1200).to_string());
                 }
             })
-            .child(target_profiles::PROPORTIONAL_OPTION_LABEL.to_string())
+            .child(
+                GUI_TEXT
+                    .interactive
+                    .controls
+                    .target_device_proportional
+                    .clone(),
+            )
             .into(),
     );
 
@@ -1245,7 +1301,7 @@ fn CenterSettingsPanel(
                                 GUI_TEXT.interactive.tooltips.target_height.clone(),
                                 AttachedPosition::Bottom,
                                 settings_row(
-                                    "Target device".to_string(),
+                                    GUI_TEXT.interactive.controls.target_device.clone(),
                                     Select::new()
                                         .selected_item(
                                             state.read().target_resolution_selection.clone(),
@@ -1281,34 +1337,42 @@ fn CenterSettingsPanel(
                                 TooltipArea::RightCard,
                                 GUI_TEXT.interactive.tooltips.margin_centering.clone(),
                                 AttachedPosition::Left,
-                                bool_tile("Center margins".to_string(), options.center_margins, {
-                                    let mut state = state;
-                                    move |_| {
-                                        let mut s = state.write();
-                                        let enable = !s.options.center_margins;
-                                        s.options.center_margins = enable;
-                                        if enable {
-                                            s.options.crop_margins = false;
+                                bool_tile(
+                                    GUI_TEXT.interactive.labels.margin_centering.clone(),
+                                    options.center_margins,
+                                    {
+                                        let mut state = state;
+                                        move |_| {
+                                            let mut s = state.write();
+                                            let enable = !s.options.center_margins;
+                                            s.options.center_margins = enable;
+                                            if enable {
+                                                s.options.crop_margins = false;
+                                            }
                                         }
-                                    }
-                                }),
+                                    },
+                                ),
                             ))
                             .child(tooltip_wrap_at(
                                 state,
                                 TooltipArea::RightCard,
                                 GUI_TEXT.interactive.tooltips.margin_crop_resize.clone(),
                                 AttachedPosition::Left,
-                                bool_tile("Crop margins".to_string(), options.crop_margins, {
-                                    let mut state = state;
-                                    move |_| {
-                                        let mut s = state.write();
-                                        let enable = !s.options.crop_margins;
-                                        s.options.crop_margins = enable;
-                                        if enable {
-                                            s.options.center_margins = false;
+                                bool_tile(
+                                    GUI_TEXT.interactive.labels.margin_crop_resize.clone(),
+                                    options.crop_margins,
+                                    {
+                                        let mut state = state;
+                                        move |_| {
+                                            let mut s = state.write();
+                                            let enable = !s.options.crop_margins;
+                                            s.options.crop_margins = enable;
+                                            if enable {
+                                                s.options.center_margins = false;
+                                            }
                                         }
-                                    }
-                                }),
+                                    },
+                                ),
                             ))
                             .child(tooltip_wrap_at(
                                 state,
@@ -1343,16 +1407,16 @@ fn RightSettingsPanel(
     let options = state.read().options.clone();
     let use_threshold = options.use_fixed_threshold;
     let numeric_label = if use_threshold {
-        "Threshold"
+        GUI_TEXT.interactive.controls.threshold.as_str()
     } else {
-        "K factor"
+        GUI_TEXT.interactive.controls.k_factor.as_str()
     };
 
     panel_card(
         "",
         false,
         vec![
-            section_label("Binarization"),
+            section_label(GUI_TEXT.interactive.controls.binarization.as_str()),
             settings_row(
                 numeric_label.to_string(),
                 if use_threshold {
@@ -1370,19 +1434,23 @@ fn RightSettingsPanel(
             rect()
                 .direction(Direction::Horizontal)
                 .spacing(12.)
-                .child(compact_checkbox_row("Fixed threshold", use_threshold, {
-                    let mut state = state;
-                    move |_| {
-                        let mut s = state.write();
-                        let enable = !s.options.use_fixed_threshold;
-                        s.options.use_fixed_threshold = enable;
-                        if enable {
-                            s.options.use_heavy_binarization = false;
-                        }
-                    }
-                }))
                 .child(compact_checkbox_row(
-                    "Heavy model",
+                    GUI_TEXT.interactive.controls.fixed_threshold.as_str(),
+                    use_threshold,
+                    {
+                        let mut state = state;
+                        move |_| {
+                            let mut s = state.write();
+                            let enable = !s.options.use_fixed_threshold;
+                            s.options.use_fixed_threshold = enable;
+                            if enable {
+                                s.options.use_heavy_binarization = false;
+                            }
+                        }
+                    },
+                ))
+                .child(compact_checkbox_row(
+                    GUI_TEXT.interactive.controls.heavy_model.as_str(),
                     options.use_heavy_binarization,
                     {
                         let mut state = state;
@@ -1482,26 +1550,26 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
     match metrics.mode {
         lege::progress::ProgressMode::Layout => {
             cards.push(progress_stage_card(
-                "Render",
+                GUI_TEXT.interactive.progress.render.clone(),
                 metrics.rendered,
                 metrics.pages_total,
                 (180, 217, 232),
             ));
             cards.push(progress_stage_card(
-                "Infer",
+                GUI_TEXT.interactive.progress.infer.clone(),
                 metrics.detected,
                 metrics.pages_total,
                 (232, 218, 166),
             ));
             cards.push(progress_stage_card(
-                "Encode",
+                GUI_TEXT.interactive.progress.encode.clone(),
                 metrics.encoded,
                 metrics.pages_total,
                 (220, 192, 214),
             ));
             if metrics.enable_deskew {
                 cards.push(progress_stage_card(
-                    "Deskew",
+                    GUI_TEXT.interactive.progress.deskew.clone(),
                     metrics.deskewed,
                     metrics.pages_total,
                     (180, 201, 232),
@@ -1510,27 +1578,27 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
         }
         lege::progress::ProgressMode::Margin => {
             cards.push(progress_stage_card(
-                "Render",
+                GUI_TEXT.interactive.progress.render.clone(),
                 metrics.rendered,
                 metrics.pages_total,
                 (180, 217, 232),
             ));
             if metrics.enable_layout_detection {
                 cards.push(progress_stage_card(
-                    "Infer",
+                    GUI_TEXT.interactive.progress.infer.clone(),
                     metrics.detected,
                     metrics.pages_total,
                     (232, 218, 166),
                 ));
                 cards.push(progress_stage_card(
-                    "Margin",
+                    GUI_TEXT.interactive.progress.margin.clone(),
                     metrics.encoded,
                     metrics.pages_total,
                     (214, 196, 234),
                 ));
             } else {
                 cards.push(progress_stage_card(
-                    "Margin",
+                    GUI_TEXT.interactive.progress.margin.clone(),
                     metrics.encoded,
                     metrics.pages_total,
                     (214, 196, 234),
@@ -1538,7 +1606,7 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
             }
             if metrics.enable_deskew {
                 cards.push(progress_stage_card(
-                    "Deskew",
+                    GUI_TEXT.interactive.progress.deskew.clone(),
                     metrics.deskewed,
                     metrics.pages_total,
                     (180, 201, 232),
@@ -1547,20 +1615,20 @@ fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
         }
         lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
             cards.push(progress_stage_card(
-                "Render",
+                GUI_TEXT.interactive.progress.render.clone(),
                 metrics.rendered,
                 metrics.pages_total,
                 (180, 217, 232),
             ));
             cards.push(progress_stage_card(
-                "Encode",
+                GUI_TEXT.interactive.progress.encode.clone(),
                 metrics.encoded,
                 metrics.pages_total,
                 (220, 192, 214),
             ));
             if metrics.enable_deskew {
                 cards.push(progress_stage_card(
-                    "Deskew",
+                    GUI_TEXT.interactive.progress.deskew.clone(),
                     metrics.deskewed,
                     metrics.pages_total,
                     (180, 201, 232),
@@ -1667,7 +1735,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                     let mut state = state;
                     move |_| state.write().show_queue_viewer = true
                 })
-                .child(format!("Queue: {queue_len}")),
+                .child(fmt1(&GUI_TEXT.interactive.queue.queue_button, queue_len)),
         )
         .child(
             Button::new()
@@ -1676,7 +1744,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                     let mut state = state;
                     move |_| state.write().show_log_viewer = true
                 })
-                .child("Log"),
+                .child(GUI_TEXT.interactive.queue.log_button.clone()),
         )
         .into();
 
@@ -1693,7 +1761,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                         let mut state = state;
                         move |_| state.write().show_debug_log = true
                     })
-                    .child("Debug"),
+                    .child(GUI_TEXT.interactive.queue.debug_button.clone()),
             );
         }
 
@@ -1704,7 +1772,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                     let mut state = state;
                     move |_| state.write().show_about = true
                 })
-                .child("About"),
+                .child(GUI_TEXT.interactive.queue.about_button.clone()),
         )
         .into()
     };
@@ -1719,7 +1787,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                 parts.push(status.3.clone());
             }
             if let Some(eta) = &eta_text {
-                parts.push(format!("ETA {eta}"));
+                parts.push(fmt1(&GUI_TEXT.interactive.progress.eta, eta));
             }
             if parts.is_empty() {
                 None
@@ -1738,7 +1806,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                 parts.push(status.3.clone());
             }
             if let Some(eta) = &eta_text {
-                parts.push(format!("ETA {eta}"));
+                parts.push(fmt1(&GUI_TEXT.interactive.progress.eta, eta));
             }
             if parts.is_empty() {
                 None
@@ -1767,7 +1835,7 @@ fn StatusBar(state: State<AppState>) -> Element {
             .cross_align(Alignment::Center)
             .child(
                 label()
-                    .text("No files queued — Add a file or folder to begin.")
+                    .text(GUI_TEXT.interactive.queue.empty_message.clone())
                     .font_size(12.)
                     .color(MUTED),
             )
@@ -1788,8 +1856,19 @@ fn StatusBar(state: State<AppState>) -> Element {
             .map(|item| {
                 let badge = item.input_kind.badge();
                 let count_str = match item.page_count {
-                    Some(n) => format!("{n} {}", item.count_label()),
-                    None => "scanning\u{2026}".to_string(),
+                    Some(n) => {
+                        let label = if matches!(
+                            item.input_kind,
+                            crate::models::InputKind::ImageFolder
+                                | crate::models::InputKind::ZipArchive
+                        ) {
+                            &GUI_TEXT.interactive.queue.images
+                        } else {
+                            &GUI_TEXT.interactive.queue.pages
+                        };
+                        format!("{n} {label}")
+                    }
+                    None => GUI_TEXT.interactive.progress.scanning.clone(),
                 };
                 rect()
                     .width(Size::fill())
@@ -1816,8 +1895,8 @@ fn StatusBar(state: State<AppState>) -> Element {
             .collect();
 
         let summary_line = match total_pages {
-            Some(n) => format!("{queue_len} item(s) ready  ·  {n} pages total"),
-            None => format!("{queue_len} item(s) queued"),
+            Some(n) => fmt2(&GUI_TEXT.interactive.queue.item_ready_summary, queue_len, n),
+            None => fmt1(&GUI_TEXT.interactive.queue.item_queued_summary, queue_len),
         };
 
         rect()
@@ -1858,9 +1937,12 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
                     paragraph()
                         .width(Size::fill())
                         .span(
-                            Span::new(format!("Input: {}", entry.input_filename))
-                                .font_size(11.)
-                                .color(TEXT),
+                            Span::new(fmt1(
+                                &GUI_TEXT.interactive.queue.input,
+                                &entry.input_filename,
+                            ))
+                            .font_size(11.)
+                            .color(TEXT),
                         )
                         .line_height(1.25)
                         .max_lines(3),
@@ -1869,9 +1951,12 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
                     paragraph()
                         .width(Size::fill())
                         .span(
-                            Span::new(format!("Output: {}", entry.output_filename))
-                                .font_size(11.)
-                                .color(TEXT),
+                            Span::new(fmt1(
+                                &GUI_TEXT.interactive.queue.output,
+                                &entry.output_filename,
+                            ))
+                            .font_size(11.)
+                            .color(TEXT),
                         )
                         .line_height(1.25)
                         .max_lines(3),
@@ -1910,30 +1995,32 @@ fn completion_message(result: &ProcessingResult, estimated_original_size: u64) -
     };
 
     let compression_line = if reduction_percent >= 0.0 {
-        format!(
-            "Reduced {:.1}% ({} -> {})",
-            reduction_percent,
+        fmt3(
+            &GUI_TEXT.interactive.progress.reduced,
+            format!("{reduction_percent:.1}"),
             LogEntry::format_size(basis_size),
-            LogEntry::format_size(result.compressed_size)
+            LogEntry::format_size(result.compressed_size),
         )
     } else {
-        format!(
-            "Increased {:.1}% ({} -> {})",
-            reduction_percent.abs(),
+        fmt3(
+            &GUI_TEXT.interactive.progress.increased,
+            format!("{:.1}", reduction_percent.abs()),
             LogEntry::format_size(basis_size),
-            LogEntry::format_size(result.compressed_size)
+            LogEntry::format_size(result.compressed_size),
         )
     };
 
     if result.page_range_used {
-        format!(
-            "Completed: {}\n{}\nExtrapolated compression % from selected page range.",
-            result.output_filename, compression_line
+        fmt2(
+            &GUI_TEXT.interactive.progress.completed_with_estimate,
+            &result.output_filename,
+            compression_line,
         )
     } else {
-        format!(
-            "Completed: {}\n{}",
-            result.output_filename, compression_line
+        fmt2(
+            &GUI_TEXT.interactive.progress.completed,
+            &result.output_filename,
+            compression_line,
         )
     }
 }
@@ -1956,7 +2043,12 @@ fn popup_shell(
                 Button::new()
                     .filled()
                     .on_press(move |_| (on_close_button.borrow_mut())())
-                    .child(label().text("Close").font_size(13.).color(TEXT)),
+                    .child(
+                        label()
+                            .text(GUI_TEXT.interactive.popups.close.clone())
+                            .font_size(13.)
+                            .color(TEXT),
+                    ),
             ),
         )
         .into()
@@ -2001,14 +2093,14 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
 
     let queue_items = state.read().queue.iter().cloned().collect::<Vec<_>>();
     popup_shell(
-        "Queue Items",
+        GUI_TEXT.interactive.popups.queue_items_title.clone(),
         ScrollView::new()
             .width(Size::px(520.))
             .height(Size::px(360.))
             .child(rect().spacing(8.).children(if queue_items.is_empty() {
                 vec![
                     label()
-                        .text("Queue is empty.")
+                        .text(GUI_TEXT.interactive.queue.empty_short.clone())
                         .font_size(12.)
                         .color(MUTED)
                         .into(),
@@ -2059,7 +2151,7 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
         .collect::<Vec<_>>();
 
     document_popup_shell(
-        "Processing Log",
+        GUI_TEXT.interactive.popups.processing_log_title.clone(),
         rect()
             .width(Size::fill())
             .height(Size::fill())
@@ -2095,7 +2187,7 @@ fn DebugLogViewerPopup(mut state: State<AppState>) -> Element {
         .collect::<Vec<_>>();
 
     popup_shell(
-        "Debug Log",
+        GUI_TEXT.interactive.popups.debug_log_title.clone(),
         ScrollView::new()
             .width(Size::px(760.))
             .height(Size::px(420.))
@@ -2153,7 +2245,12 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             .font_size(13.)
                             .color(TEXT),
                     )
-                    .child(label().text("Email").font_size(13.).color(TEXT))
+                    .child(
+                        label()
+                            .text(GUI_TEXT.interactive.popups.email.clone())
+                            .font_size(13.)
+                            .color(TEXT),
+                    )
                     .child(Input::new(email_text).width(Size::px(220.))),
             ),
         )
@@ -2167,7 +2264,7 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             }
                             (documentation_button.borrow_mut())();
                         })
-                        .child("Documentation"),
+                        .child(GUI_TEXT.interactive.popups.documentation.clone()),
                 )
                 .child(
                     Button::new()
@@ -2177,13 +2274,18 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             }
                             (licenses_button.borrow_mut())();
                         })
-                        .child("Licenses"),
+                        .child(GUI_TEXT.interactive.popups.licenses.clone()),
                 )
                 .child(
                     Button::new()
                         .filled()
                         .on_press(move |_| (on_close_button.borrow_mut())())
-                        .child(label().text("Close").font_size(13.).color(TEXT)),
+                        .child(
+                            label()
+                                .text(GUI_TEXT.interactive.popups.close.clone())
+                                .font_size(13.)
+                                .color(TEXT),
+                        ),
                 ),
         )
         .into()
@@ -2193,7 +2295,10 @@ fn add_files(mut state: State<AppState>) {
     spawn(async move {
         // Pick files only (PDF or ZIP only - no "All files" option).
         let files = rfd::AsyncFileDialog::new()
-            .add_filter("Supported inputs", &["pdf", "zip"])
+            .add_filter(
+                &GUI_TEXT.interactive.popups.supported_inputs_filter,
+                &["pdf", "zip"],
+            )
             .pick_files()
             .await;
 
@@ -2217,7 +2322,7 @@ fn add_files(mut state: State<AppState>) {
                     schedule_popup(
                         state,
                         PopupKind::Queue,
-                        format!("{name}: ZIP contains no JP2 or JPEG images"),
+                        fmt1(&GUI_TEXT.interactive.popups.zip_no_supported_images, name),
                         6,
                     );
                     continue;
@@ -2266,9 +2371,9 @@ fn add_files(mut state: State<AppState>) {
             if let Some(pdf_path) = first_pdf_path {
                 if let Ok(Some(has_ocr)) = backend::check_pdf_has_ocr(&pdf_path).await {
                     let message = if has_ocr {
-                        "OCR layer detected - Leave OCR off to preserve the existing text layer."
+                        GUI_TEXT.interactive.popups.ocr_detected.as_str()
                     } else {
-                        "No OCR layer found - Enable OCR to add text recognition."
+                        GUI_TEXT.interactive.popups.no_ocr_detected.as_str()
                     };
                     schedule_popup(state, PopupKind::Ocr, message.to_string(), 5);
                 }
@@ -2316,8 +2421,9 @@ fn add_folder(mut state: State<AppState>) {
                     schedule_popup(
                         state,
                         PopupKind::Queue,
-                        format!(
-                            "{name}: folder contains no supported images (JP2, JPEG, PNG, ...)"
+                        fmt1(
+                            &GUI_TEXT.interactive.popups.folder_no_supported_images,
+                            name,
                         ),
                         6,
                     );
@@ -2340,25 +2446,26 @@ fn save_settings_action(mut state: State<AppState>) {
     let mut s = state.write();
     match backend::persist_settings(&options) {
         Ok(_) => s.set_status_message(GUI_TEXT.interactive.messages.settings_saved.clone()),
-        Err(e) => s.set_status_message(format!("Failed to save settings: {e}")),
+        Err(e) => s.set_status_message(fmt1(&GUI_TEXT.interactive.status.failed_save_settings, e)),
     }
 }
 
 fn reset_settings_action(mut state: State<AppState>) {
     let mut s = state.write();
+    let cleared = s.queue.len();
     s.queue.clear();
     let defaults = ProcessingOptions::new();
     sync_state_from_options(&mut s, &defaults);
     if let Err(e) = backend::remove_saved_settings() {
-        s.set_status_message(format!("Failed to clear saved settings: {e}"));
+        s.set_status_message(fmt1(
+            &GUI_TEXT.interactive.status.failed_clear_saved_settings,
+            e,
+        ));
     } else {
-        s.set_status_message(
-            GUI_TEXT
-                .interactive
-                .messages
-                .settings_and_queue_reset
-                .clone(),
-        );
+        s.set_status_message(fmt1(
+            &GUI_TEXT.interactive.messages.settings_and_queue_reset,
+            cleared,
+        ));
     }
 }
 
@@ -2366,13 +2473,14 @@ fn clear_queue_action(mut state: State<AppState>) {
     let mut s = state.write();
     let cleared = s.queue.len();
     s.queue.clear();
-    s.set_status_message(format!("Cleared {cleared} queued item(s)."));
-    schedule_popup(
-        state,
-        PopupKind::Queue,
-        GUI_TEXT.interactive.messages.queue_cleared_summary.clone(),
-        4,
+    let message = fmt2(
+        &GUI_TEXT.interactive.messages.queue_cleared_summary,
+        cleared,
+        "",
     );
+    s.set_status_message(message.clone());
+    drop(s);
+    schedule_popup(state, PopupKind::Queue, message, 4);
 }
 
 fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: State<String>) {
@@ -2399,14 +2507,16 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
     }
 
     if queue.is_empty() {
-        state.write().set_status_message("No files in queue");
+        state
+            .write()
+            .set_status_message(GUI_TEXT.interactive.status.no_files_in_queue.clone());
         return;
     }
 
     if options.output_path.is_none() {
         state
             .write()
-            .set_status_message("Choose an output directory");
+            .set_status_message(GUI_TEXT.interactive.status.choose_output_directory.clone());
         return;
     }
 
@@ -2419,8 +2529,11 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
         s.show_completion_popup = false;
         s.completion_popup = None;
         s.set_status_lines(
-            "[Starting]",
-            format!("Queued {} file(s) for processing.", queue.len()),
+            GUI_TEXT.interactive.status.starting.clone(),
+            fmt1(
+                &GUI_TEXT.interactive.status.queued_files_for_processing,
+                queue.len(),
+            ),
             String::new(),
         );
     }
@@ -2440,7 +2553,11 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     schedule_popup(
                         state,
                         PopupKind::Hardware,
-                        "Using hardware acceleration".to_string(),
+                        GUI_TEXT
+                            .interactive
+                            .status
+                            .using_hardware_acceleration
+                            .clone(),
                         3,
                     );
                 }
@@ -2508,8 +2625,11 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
 
                                 if files_total > 1 {
                                     let current_file = files_completed + 1;
-                                    state.write().status_lines.3 =
-                                        format!("Processing file {current_file} of {files_total}");
+                                    state.write().status_lines.3 = fmt2(
+                                        &GUI_TEXT.interactive.status.processing_file,
+                                        current_file,
+                                        files_total,
+                                    );
                                 }
 
                                 if let lege::progress::ProcessingStatus::FootnotesDetected {
@@ -2574,9 +2694,10 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
 
                                     let files_remaining =
                                         files_total.saturating_sub(files_completed);
-                                    state.write().push_status_log(format!(
-                                        "{} file(s) completed, {} remaining",
-                                        files_completed, files_remaining
+                                    state.write().push_status_log(fmt2(
+                                        &GUI_TEXT.interactive.status.file_completed_log,
+                                        files_completed,
+                                        files_remaining,
                                     ));
                                 }
                             }
@@ -2612,7 +2733,10 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                             .replace("{item}", list_part.trim());
                                         state.write().set_status_message(formatted);
                                     } else {
-                                        state.write().set_status_message(format!("Error: {error}"));
+                                        state.write().set_status_message(fmt1(
+                                            &GUI_TEXT.interactive.status.error,
+                                            error,
+                                        ));
                                     }
                                 }
                             }
@@ -2633,13 +2757,19 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     s.progress_metrics = None;
                     let queue_remaining = s.queue.len();
                     let line3 = if queue_remaining > 0 {
-                        format!("{queue_remaining} file(s) remaining in queue.")
+                        fmt1(
+                            &GUI_TEXT.interactive.status.files_remaining_in_queue,
+                            queue_remaining,
+                        )
                     } else {
-                        "Queue is now empty.".to_string()
+                        GUI_TEXT.interactive.status.queue_empty.clone()
                     };
                     s.set_status_lines(
-                        "[Complete]",
-                        format!("{files_total} file(s) processed successfully."),
+                        GUI_TEXT.interactive.status.complete.clone(),
+                        fmt1(
+                            &GUI_TEXT.interactive.status.files_processed_successfully,
+                            files_total,
+                        ),
                         line3,
                     );
                 }
@@ -2650,7 +2780,10 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 s.active_task_ids.clear();
                 s.active_eta = None;
                 s.progress_metrics = None;
-                s.set_status_message(format!("Failed to start processing: {e}"));
+                s.set_status_message(fmt1(
+                    &GUI_TEXT.interactive.status.failed_start_processing,
+                    e,
+                ));
             }
         }
     });

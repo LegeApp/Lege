@@ -160,8 +160,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var accum = vec4<f32>(0.0);
     var weight_sum = 0.0;
 
-    for (var j = -1; j <= 1; j = j + 1) {
-        for (var i = -1; i <= 1; i = i + 1) {
+    for (var j = -1; j <= 2; j = j + 1) {
+        for (var i = -1; i <= 2; i = i + 1) {
             let px = f32(base_x + i);
             let py = f32(base_y + j);
             let wx = bell_weight(src_x - px);
