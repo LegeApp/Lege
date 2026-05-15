@@ -2,7 +2,7 @@ pub mod cpu;
 
 use bytemuck::Pod;
 use fast_image_resize::{
-    FilterType as FirFilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
+    Filter, FilterType as FirFilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
     images::Image as FirImage,
 };
 #[cfg(windows)]
@@ -86,6 +86,7 @@ pub enum ResizeMethod {
     Nearest,
     Bilinear,
     Bicubic,
+    Bell,
     Lanczos3,
 }
 
@@ -155,8 +156,25 @@ fn resize_alg_from_method(method: ResizeMethod) -> ResizeAlg {
         ResizeMethod::Nearest => ResizeAlg::Nearest,
         ResizeMethod::Bilinear => ResizeAlg::Convolution(FirFilterType::Bilinear),
         ResizeMethod::Bicubic => ResizeAlg::Convolution(FirFilterType::CatmullRom),
+        ResizeMethod::Bell => ResizeAlg::Convolution(bell_filter_type()),
         ResizeMethod::Lanczos3 => ResizeAlg::Convolution(FirFilterType::Lanczos3),
     }
+}
+
+fn bell_filter(mut x: f64) -> f64 {
+    x = x.abs();
+    if x < 0.5 {
+        0.75 - x * x
+    } else if x < 1.5 {
+        let t = 1.5 - x;
+        0.5 * t * t
+    } else {
+        0.0
+    }
+}
+
+fn bell_filter_type() -> FirFilterType {
+    FirFilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -177,7 +195,7 @@ fn ensure_wgpu_resizer() -> Result<&'static Mutex<WgpuResizer>, ResizeError> {
 fn wgpu_filter_from_method(method: ResizeMethod) -> WgpuFilterType {
     match method {
         ResizeMethod::Nearest | ResizeMethod::Bilinear => WgpuFilterType::Bilinear,
-        ResizeMethod::Bicubic => WgpuFilterType::Bell,
+        ResizeMethod::Bicubic | ResizeMethod::Bell => WgpuFilterType::Bell,
         ResizeMethod::Lanczos3 => WgpuFilterType::Lanczos3,
     }
 }
@@ -200,7 +218,7 @@ fn ensure_hlsl_resizer() -> Result<&'static Mutex<HlslResizer>, ResizeError> {
 fn hlsl_filter_from_method(method: ResizeMethod) -> HlslFilterType {
     match method {
         ResizeMethod::Nearest | ResizeMethod::Bilinear => HlslFilterType::Bilinear,
-        ResizeMethod::Bicubic => HlslFilterType::Bell,
+        ResizeMethod::Bicubic | ResizeMethod::Bell => HlslFilterType::Bell,
         ResizeMethod::Lanczos3 => HlslFilterType::Lanczos3,
     }
 }

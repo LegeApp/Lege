@@ -45,7 +45,7 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         let new_width = ((width as f64) * scale_factor) as u32;
         let new_height = ((height as f64) * scale_factor) as u32;
 
-        match downscale_image_lanczos3(
+        match downscale_image_bell(
             data,
             width as usize,
             height as usize,
@@ -425,8 +425,8 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-// High-quality downscale using hardware acceleration when available (HLSL on Windows)
-fn downscale_image_lanczos3(
+// Temporary OCR downscale using hardware acceleration when available (HLSL/WGPU, CPU fallback).
+fn downscale_image_bell(
     data: &[u8],
     orig_width: usize,
     orig_height: usize,
@@ -440,7 +440,7 @@ fn downscale_image_lanczos3(
     let params = crate::resize::ResizeParams {
         target_width: new_width as u32,
         target_height: new_height as u32,
-        method: crate::resize::ResizeMethod::Lanczos3,
+        method: crate::resize::ResizeMethod::Bell,
         letterbox: false,
         border_value: 0.0,
         swap_rb: false,

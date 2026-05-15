@@ -95,8 +95,8 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
 
     // Calculate source coordinates
-    float src_x = (dst_x + params.offset_x) * params.scale_x;
-    float src_y = (dst_y + params.offset_y) * params.scale_y;
+    float src_x = ((float)dst_x + 0.5f) * params.scale_x - 0.5f + params.offset_x;
+    float src_y = ((float)dst_y + 0.5f) * params.scale_y - 0.5f + params.offset_y;
 
     // Lanczos-3 filter has support of 3, so we need to sample a 6x6 neighborhood
     int center_x = (int)floor(src_x);

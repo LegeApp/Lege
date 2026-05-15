@@ -1893,7 +1893,7 @@ fn prepare_analysis_page(
     let params = crate::resize::ResizeParams {
         target_width: ANALYSIS_WIDTH,
         target_height: analysis_height,
-        method: crate::resize::ResizeMethod::Lanczos3,
+        method: crate::resize::ResizeMethod::Bell,
         letterbox: false,
         border_value: 0.0,
         swap_rb: false,
