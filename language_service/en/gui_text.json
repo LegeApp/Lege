@@ -62,7 +62,22 @@
       "cancelling": "Cancelling...",
       "processing": "Processing...",
       "processing_failed": "Processing failed - check error details above",
-      "missing_dependency": "Missing required component: {item}"
+      "missing_dependency": "Missing required component: {item}",
+      "starting": "[Starting]",
+      "complete": "[Complete]",
+      "no_files_in_queue": "No files in queue",
+      "choose_output_directory": "Choose an output directory",
+      "queued_files_for_processing": "Queued {} file(s) for processing.",
+      "using_hardware_acceleration": "Using hardware acceleration",
+      "processing_file": "Processing file {} of {}",
+      "file_completed_log": "{} file(s) completed, {} remaining",
+      "files_processed_successfully": "{} file(s) processed successfully.",
+      "files_remaining_in_queue": "{} file(s) remaining in queue.",
+      "queue_empty": "Queue is now empty.",
+      "error": "Error: {}",
+      "failed_save_settings": "Failed to save settings: {}",
+      "failed_clear_saved_settings": "Failed to clear saved settings: {}",
+      "failed_start_processing": "Failed to start processing: {}"
     },
     "messages": {
       "settings_saved": "Settings saved",
@@ -70,6 +85,59 @@
       "settings_and_queue_reset": "Settings and queue reset ({} files cleared)",
       "queue_cleared_summary": "Cleared {} file{} from queue",
       "defaulted_output_dir": "output directory defaulted to input file directory"
+    },
+    "controls": {
+      "on": "On",
+      "off": "Off",
+      "binarization": "Binarization",
+      "threshold": "Threshold",
+      "k_factor": "K factor",
+      "fixed_threshold": "Fixed threshold",
+      "heavy_model": "Heavy model",
+      "target_device": "Target device",
+      "target_device_proportional": "Set height, width proportional"
+    },
+    "queue": {
+      "queue_button": "Queue: {}",
+      "log_button": "Log",
+      "debug_button": "Debug",
+      "about_button": "About",
+      "empty_message": "No files queued - Add a file or folder to begin.",
+      "empty_short": "Queue is empty.",
+      "item_ready_summary": "{} item(s) ready  -  {} pages total",
+      "item_queued_summary": "{} item(s) queued",
+      "pages": "pages",
+      "images": "images",
+      "input": "Input: {}",
+      "output": "Output: {}"
+    },
+    "popups": {
+      "close": "Close",
+      "supported_inputs_filter": "Supported inputs",
+      "queue_items_title": "Queue Items",
+      "processing_log_title": "Processing Log",
+      "debug_log_title": "Debug Log",
+      "email": "Email",
+      "documentation": "Documentation",
+      "licenses": "Licenses",
+      "ocr_detected": "OCR layer detected - Leave OCR off to preserve the existing text layer.",
+      "no_ocr_detected": "No OCR layer found - Enable OCR to add text recognition.",
+      "layout_disabled": "Layout detection disabled. Text/image separation and image-preserving dithering are unavailable.",
+      "zip_no_supported_images": "{}: ZIP contains no JP2 or JPEG images",
+      "folder_no_supported_images": "{}: folder contains no supported images (JP2, JPEG, PNG, ...)"
+    },
+    "progress": {
+      "render": "Render",
+      "infer": "Infer",
+      "encode": "Encode",
+      "margin": "Margin",
+      "deskew": "Deskew",
+      "eta": "ETA {}",
+      "scanning": "scanning...",
+      "reduced": "Reduced {}% ({} -> {})",
+      "increased": "Increased {}% ({} -> {})",
+      "completed": "Completed: {}\n{}",
+      "completed_with_estimate": "Completed: {}\n{}\nExtrapolated compression % from selected page range."
     }
   },
   "providers": {

@@ -1,6 +1,6 @@
 use crate::resize::{ResizeError, ResizeMethod, ResizeParams};
 use fast_image_resize::{
-    FilterType, IntoImageView, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image,
+    Filter, FilterType, IntoImageView, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image,
 };
 use image::RgbImage;
 use rayon::prelude::*;
@@ -29,8 +29,25 @@ fn fir_algorithm(m: ResizeMethod) -> ResizeAlg {
         ResizeMethod::Nearest => ResizeAlg::Nearest,
         ResizeMethod::Bilinear => ResizeAlg::Convolution(FilterType::Bilinear),
         ResizeMethod::Bicubic => ResizeAlg::Convolution(FilterType::CatmullRom),
+        ResizeMethod::Bell => ResizeAlg::Convolution(bell_filter_type()),
         ResizeMethod::Lanczos3 => ResizeAlg::Convolution(FilterType::Lanczos3),
     }
+}
+
+fn bell_filter(mut x: f64) -> f64 {
+    x = x.abs();
+    if x < 0.5 {
+        0.75 - x * x
+    } else if x < 1.5 {
+        let t = 1.5 - x;
+        0.5 * t * t
+    } else {
+        0.0
+    }
+}
+
+fn bell_filter_type() -> FilterType {
+    FilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
 // Removed compute_letterbox function - no longer needed for PaddleX direct resize
@@ -121,10 +138,10 @@ pub fn resize_for_ocr(
     let mut dst_img = Image::from_slice_u8(final_width, final_height, &mut dst, PixelType::U8x3)
         .map_err(|e| ResizeError::BackendError(format!("Failed to create dest image: {e:?}")))?;
 
-    // Use Lanczos3 for high-quality text-oriented resizing
+    // Use Bell for temporary OCR working images; final output paths keep Lanczos3.
     let mut resizer = Resizer::new();
     let resize_options =
-        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3));
+        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(bell_filter_type()));
 
     resizer
         .resize(&src_view, &mut dst_img, Some(&resize_options))
