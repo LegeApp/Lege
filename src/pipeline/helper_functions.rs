@@ -254,6 +254,52 @@ pub fn merge_overlapping_image_detections(
 }
 
 // Helper to encode a small image region; used by image overlays in the page pipeline
+/// Build the `(EncodingSettings, format_tag)` pair for a region overlay.
+///
+/// `jpeg_compat`: when true the `Jpeg` format variant always emits JPEG even for
+/// non-cover regions; when false a non-cover Jpeg region is encoded as JP2 instead.
+pub fn region_encoding_settings(
+    format: CoverFormat,
+    is_cover: bool,
+    high_quality: bool,
+    jpeg_compat: bool,
+) -> Result<(Legencode::streamline::EncodingSettings, &'static str)> {
+    use Legencode::streamline::{EncodingSettings, Jbig2Settings, JpegSettings};
+    Ok(match format {
+        CoverFormat::Jpeg => {
+            if !is_cover && !jpeg_compat {
+                let q = jp2_quality(high_quality);
+                (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+            } else {
+                let q: u8 = if high_quality { 95 } else if is_cover { 50 } else { 45 };
+                (
+                    EncodingSettings::Jpeg(JpegSettings {
+                        quality: q,
+                        baseline: true,
+                        optimized: true,
+                        downsample: true,
+                    }),
+                    "jpeg",
+                )
+            }
+        }
+        CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4"),
+        CoverFormat::Jbig2 => (
+            EncodingSettings::Jbig2(Jbig2Settings {
+                pdf_fragment_mode: true,
+                mode: Jbig2Mode::Generic,
+                use_jbig2_halftone_segments: false,
+            }),
+            "jbig2",
+        ),
+        CoverFormat::Jp2 => {
+            let q: u8 = if high_quality { 88 } else if is_cover { 80 } else { 72 };
+            (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+        }
+        CoverFormat::None => return Err(anyhow!("No format for region encoding")),
+    })
+}
+
 pub async fn encode_region_image(
     image_data: &[u8],
     width: u32,
@@ -261,6 +307,7 @@ pub async fn encode_region_image(
     format: CoverFormat,
     is_cover: bool,
     high_quality: bool,
+    jpeg_compat: bool,
 ) -> Result<(Vec<u8>, String)> {
     // Guardrails: sanity-check dimensions and buffer length
     const MAX_OVERLAY_SIDE: u32 = 8192;
@@ -293,59 +340,9 @@ pub async fn encode_region_image(
             expected_len
         );
     }
-    use Legencode::streamline::{
-        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
-        Jbig2Settings, JpegSettings,
-    };
+    use Legencode::streamline::{EncodingManager, EncodingResult, ImageBuffer as LegeImageBuffer};
 
-    let (settings, fmt_str) = match format {
-        CoverFormat::Jpeg => {
-            let q = if high_quality {
-                95
-            } else if is_cover {
-                50
-            } else {
-                45
-            };
-            (
-                EncodingSettings::Jpeg(JpegSettings {
-                    quality: q,
-                    baseline: true,
-                    optimized: true,
-                    downsample: true,
-                }),
-                if is_cover { "jpeg" } else { "jpeg" },
-            )
-        }
-        CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4"),
-        CoverFormat::Jbig2 => (
-            EncodingSettings::Jbig2(Jbig2Settings {
-                pdf_fragment_mode: true,
-                mode: Jbig2Mode::Generic,
-                use_jbig2_halftone_segments: false,
-            }),
-            "jbig2",
-        ),
-        CoverFormat::None => return Err(anyhow!("No format for region encoding")),
-        _ => {
-            let q = if high_quality {
-                95
-            } else if is_cover {
-                50
-            } else {
-                45
-            };
-            (
-                EncodingSettings::Jpeg(JpegSettings {
-                    quality: q,
-                    baseline: true,
-                    optimized: true,
-                    downsample: true,
-                }),
-                "jpeg",
-            )
-        }
-    };
+    let (settings, fmt_str) = region_encoding_settings(format, is_cover, high_quality, jpeg_compat)?;
 
     let image_data_owned = image_data[..expected_len].to_vec();
     let permit = match get_encode_semaphore() {
@@ -703,6 +700,38 @@ pub async fn wait_for_memory_relief() {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 }
+/// Await a pipeline stage task, aborting remaining tasks on shutdown signal.
+///
+/// Each stage call conveys the tasks that are still alive and should be cancelled
+/// together — pass them as `AbortHandle`s so the caller retains ownership of the
+/// `JoinHandle`s for the subsequent `await` calls.
+pub async fn await_stage_or_cancel(
+    task: &mut tokio::task::JoinHandle<anyhow::Result<()>>,
+    shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    stage_name: &str,
+    abort_remaining: &[tokio::task::AbortHandle],
+) -> anyhow::Result<()> {
+    loop {
+        tokio::select! {
+            result = &mut *task => {
+                return result.map_err(|e| anyhow!("Stage '{}' panicked: {}", stage_name, e))?;
+            }
+            signal = shutdown_rx.recv() => {
+                if let Ok(sig) = signal {
+                    for handle in abort_remaining {
+                        handle.abort();
+                    }
+                    return Err(anyhow::anyhow!(
+                        "Processing cancelled during {}: {}",
+                        stage_name,
+                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Encode page data using the appropriate encoding format
 /// - JBIG2: Accepts 0/255 (channels=1) or 0/1 (channels=0)
 /// - CCITT4: Accepts 0/255 (channels=1) or bit-packed (channels=0)
