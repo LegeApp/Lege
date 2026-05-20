@@ -11,6 +11,7 @@ use ort::value::Value;
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
 use std::cmp::{max, min};
+use std::sync::Mutex;
 
 /// Format bytes into human-readable memory sizes
 fn format_memory_size(bytes: usize) -> String {
@@ -168,7 +169,10 @@ impl HeavySauvolaProcessor {
         let outputs = self.session.run(inputs)?;
 
         // Extract output
-        let output = outputs.values().next().unwrap();
+        let output = outputs
+            .values()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("ORT session returned no output"))?;
         let (shape, data) = output.try_extract_tensor::<f32>()?;
         let output_array = Array4::from_shape_vec(
             (
@@ -204,6 +208,18 @@ impl HeavySauvolaProcessor {
 
         Ok(mask)
     }
+}
+
+/// Cached ORT session for `HeavySauvolaProcessor`. Building the session is expensive
+/// (~hundreds of ms of ORT graph optimization), so we create it once and reuse.
+static HEAVY_PROCESSOR_CACHE: std::sync::OnceLock<Option<Mutex<HeavySauvolaProcessor>>> =
+    std::sync::OnceLock::new();
+
+fn get_or_init_heavy_processor() -> Option<std::sync::MutexGuard<'static, HeavySauvolaProcessor>> {
+    HEAVY_PROCESSOR_CACHE
+        .get_or_init(|| HeavySauvolaProcessor::new().ok().map(Mutex::new))
+        .as_ref()
+        .and_then(|m| m.lock().ok())
 }
 
 /// Binarizes an RGB image based on the provided options.
@@ -309,7 +325,7 @@ where
 
     // Heavy-duty path always materializes (ONNX) — call f on result.
     if !options.use_fixed_threshold && options.use_heavy_duty {
-        if let Ok(mut processor) = HeavySauvolaProcessor::new() {
+        if let Some(mut processor) = get_or_init_heavy_processor() {
             if let Ok(result) =
                 apply_heavy_duty_binarization_raw(&mut processor, image, width, height, options)
             {
@@ -427,42 +443,25 @@ fn binarize_image_raw_into(
     ));
 
     if !options.use_fixed_threshold && options.use_heavy_duty {
-        match HeavySauvolaProcessor::new() {
-            Ok(mut processor) => {
-                match apply_heavy_duty_binarization_raw(
-                    &mut processor,
-                    image,
-                    width,
-                    height,
-                    options,
-                ) {
-                    Ok(result) => {
-                        #[cfg(feature = "debug-logging")]
-                        crate::streamline::log_debug_message(&format!(
-                            "[BinarizationRaw] Heavy-duty completed: {}x{} -> {} binary bytes",
-                            width,
-                            height,
-                            result.len()
-                        ));
-                        return result;
-                    }
-                    Err(_e) => {
-                        #[cfg(feature = "debug-logging")]
-                        crate::streamline::log_debug_message(&format!(
-                            "Heavy-duty binarization failed: {}",
-                            _e
-                        ));
-                        // Fall through to light binarization
-                    }
+        if let Some(mut processor) = get_or_init_heavy_processor() {
+            match apply_heavy_duty_binarization_raw(&mut processor, image, width, height, options) {
+                Ok(result) => {
+                    #[cfg(feature = "debug-logging")]
+                    crate::streamline::log_debug_message(&format!(
+                        "[BinarizationRaw] Heavy-duty completed: {}x{} -> {} binary bytes",
+                        width,
+                        height,
+                        result.len()
+                    ));
+                    return result;
                 }
-            }
-            Err(_e) => {
-                #[cfg(feature = "debug-logging")]
-                crate::streamline::log_debug_message(&format!(
-                    "Failed to initialize heavy-duty processor: {}",
-                    _e
-                ));
-                // Fall through to light binarization
+                Err(_e) => {
+                    #[cfg(feature = "debug-logging")]
+                    crate::streamline::log_debug_message(&format!(
+                        "Heavy-duty binarization failed: {}",
+                        _e
+                    ));
+                }
             }
         }
     }
@@ -1019,7 +1018,8 @@ fn process_in_patches(
         patch_size, patch_size, stride
     ));
 
-    let mut final_image = GrayImage::new(width as u32, height as u32);
+    // Accumulate blended output as (sum, weight) in flat arrays, then normalise once.
+    let mut pixel_sum = vec![0.0f32; width * height];
     let mut weight_map = vec![0.0f32; width * height];
 
     let mut y = 0;
@@ -1030,6 +1030,7 @@ fn process_in_patches(
             let patch_h = (y + patch_size).min(height as u32) - y;
 
             if patch_w == 0 || patch_h == 0 {
+                x += stride;
                 continue;
             }
 
@@ -1044,21 +1045,13 @@ fn process_in_patches(
                 options,
             )?;
 
-            // Blend the patch into the final image
-            for py in 0..patch_h {
-                for px in 0..patch_w {
-                    let final_x = x + px;
-                    let final_y = y + py;
-                    let weight = 1.0; // Simple average for now, can be improved with blending
-
-                    let old_pixel = final_image.get_pixel(final_x, final_y).0[0] as f32;
-                    let new_pixel = patch_result.get_pixel(px, py).0[0] as f32;
-                    let old_weight = weight_map[(final_y as usize * width) + final_x as usize];
-
-                    let blended_pixel =
-                        ((old_pixel * old_weight) + (new_pixel * weight)) / (old_weight + weight);
-                    final_image.put_pixel(final_x, final_y, Luma([blended_pixel as u8]));
-                    weight_map[(final_y as usize * width) + final_x as usize] += weight;
+            let patch_raw = patch_result.as_raw();
+            for py in 0..patch_h as usize {
+                let src_row = &patch_raw[py * patch_w as usize..(py + 1) * patch_w as usize];
+                let dst_off = (y as usize + py) * width + x as usize;
+                for (px, &val) in src_row.iter().enumerate() {
+                    pixel_sum[dst_off + px] += val as f32;
+                    weight_map[dst_off + px] += 1.0;
                 }
             }
 
@@ -1067,6 +1060,16 @@ fn process_in_patches(
         y += stride;
     }
 
+    // Normalise accumulated sums
+    let pixels: Vec<u8> = pixel_sum
+        .iter()
+        .zip(weight_map.iter())
+        .map(|(&s, &w)| if w > 0.0 { (s / w) as u8 } else { 255 })
+        .collect();
+    let final_image =
+        GrayImage::from_raw(width as u32, height as u32, pixels).ok_or_else(|| {
+            anyhow!("process_in_patches: failed to construct output image")
+        })?;
     Ok(final_image)
 }
 
