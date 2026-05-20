@@ -297,10 +297,7 @@ impl DjvuOrchestrator {
 
     fn is_binarized_blank(&self, binarized: &[u8], width: u32, height: u32) -> bool {
         let len = (width as usize).saturating_mul(height as usize);
-        binarized.iter().take(len).all(|&val| {
-            let is_black = if val <= 1 { val == 0 } else { val < 128 };
-            !is_black
-        })
+        binarized.iter().take(len).all(|&v| v == 1 || v >= 128)
     }
 
     fn maybe_dump_preencode_pbm(
@@ -358,16 +355,17 @@ impl DjvuOrchestrator {
         width: u32,
         height: u32,
     ) {
+        let pixels = bitmap.pixels_mut();
         for region in regions {
-            let x1 = region.bbox[0].max(0.0).floor() as u32;
-            let y1 = region.bbox[1].max(0.0).floor() as u32;
-            let x2 = region.bbox[2].min(width as f32).ceil() as u32;
-            let y2 = region.bbox[3].min(height as f32).ceil() as u32;
-
-            // Set all pixels in this region to white
-            for y in y1..y2.min(height) {
-                for x in x1..x2.min(width) {
-                    bitmap.put_pixel(x, y, GrayPixel::white());
+            let x1 = region.bbox[0].max(0.0).floor() as usize;
+            let y1 = region.bbox[1].max(0.0).floor() as usize;
+            let x2 = (region.bbox[2].ceil() as usize).min(width as usize);
+            let y2 = (region.bbox[3].ceil() as usize).min(height as usize);
+            for row in y1..y2 {
+                let start = row * width as usize + x1;
+                let end = row * width as usize + x2;
+                if let Some(slice) = pixels.get_mut(start..end) {
+                    slice.fill(GrayPixel::white());
                 }
             }
         }
@@ -390,25 +388,30 @@ impl DjvuOrchestrator {
         // Create white canvas
         let mut canvas_vec = vec![Pixel::new(255, 255, 255); (width * height) as usize];
 
-        // Paste each image region
-        for region in regions {
-            let x1 = region.bbox[0].max(0.0).floor() as u32;
-            let y1 = region.bbox[1].max(0.0).floor() as u32;
-            let x2 = region.bbox[2].min(width as f32).ceil() as u32;
-            let y2 = region.bbox[3].min(height as f32).ceil() as u32;
+        let src = rgb_image.as_raw();
+        let src_w = rgb_image.width() as usize;
 
-            if x1 >= width || y1 >= height || x2 <= x1 || y2 <= y1 {
+        // Paste each image region row-by-row via raw slices
+        for region in regions {
+            let x1 = region.bbox[0].max(0.0).floor() as usize;
+            let y1 = region.bbox[1].max(0.0).floor() as usize;
+            let x2 = (region.bbox[2].ceil() as usize)
+                .min(width as usize)
+                .min(src_w);
+            let y2 = (region.bbox[3].ceil() as usize)
+                .min(height as usize)
+                .min(rgb_image.height() as usize);
+            if x1 >= x2 || y1 >= y2 {
                 continue;
             }
-
-            // Copy pixels from source to canvas
-            for y in y1..y2.min(height) {
-                for x in x1..x2.min(width) {
-                    if x < rgb_image.width() && y < rgb_image.height() {
-                        let pixel = rgb_image.get_pixel(x, y);
-                        canvas_vec[(y * width + x) as usize] =
-                            Pixel::new(pixel[0], pixel[1], pixel[2]);
-                    }
+            for row in y1..y2 {
+                let src_start = (row * src_w + x1) * 3;
+                let dst_start = row * width as usize + x1;
+                for (dst, chunk) in canvas_vec[dst_start..dst_start + (x2 - x1)]
+                    .iter_mut()
+                    .zip(src[src_start..src_start + (x2 - x1) * 3].chunks_exact(3))
+                {
+                    *dst = Pixel::new(chunk[0], chunk[1], chunk[2]);
                 }
             }
         }
@@ -423,15 +426,11 @@ impl DjvuOrchestrator {
     /// Convert ImageBuffer to Pixmap
     fn image_buffer_to_pixmap(&self, img: &RgbImage) -> Result<Pixmap> {
         let (width, height) = img.dimensions();
-        let mut pixels = Vec::with_capacity((width * height) as usize);
-
-        for y in 0..height {
-            for x in 0..width {
-                let pixel = img.get_pixel(x, y);
-                pixels.push(Pixel::new(pixel[0], pixel[1], pixel[2]));
-            }
-        }
-
+        let pixels: Vec<Pixel> = img
+            .as_raw()
+            .chunks_exact(3)
+            .map(|c| Pixel::new(c[0], c[1], c[2]))
+            .collect();
         Ok(Pixmap::from_vec(width, height, pixels))
     }
 
@@ -472,15 +471,26 @@ impl DjvuOrchestrator {
         page_width: u32,
         page_height: u32,
     ) -> Result<Vec<(String, u16, u16, u16, u16)>> {
+        use once_cell::sync::Lazy;
         use regex::Regex;
 
         // Matches ocrx_word spans across newlines, with arbitrary attribute order and
         // extended title payloads (e.g. "bbox ...; x_wconf 95").
-        let word_re = Regex::new(
-            r#"(?is)<span[^>]*class=['"][^'"]*\bocrx_word\b[^'"]*['"][^>]*title=['"]([^'"]*)['"][^>]*>(.*?)</span>"#,
-        )?;
-        let bbox_re = Regex::new(r#"(?i)\bbbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)"#)?;
-        let tag_re = Regex::new(r#"(?is)<[^>]+>"#)?;
+        static WORD_RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(
+                r#"(?is)<span[^>]*class=['"][^'"]*\bocrx_word\b[^'"]*['"][^>]*title=['"]([^'"]*)['"][^>]*>(.*?)</span>"#,
+            )
+            .expect("valid ocrx_word regex")
+        });
+        static BBOX_RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r#"(?i)\bbbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)"#)
+                .expect("valid bbox regex")
+        });
+        static TAG_RE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r#"(?is)<[^>]+>"#).expect("valid tag regex"));
+        let word_re = &*WORD_RE;
+        let bbox_re = &*BBOX_RE;
+        let tag_re = &*TAG_RE;
 
         let mut words = Vec::new();
 
