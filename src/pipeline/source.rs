@@ -200,7 +200,8 @@ pub async fn source_stage(
                 })?;
 
                 if let Some(engine) = deskew_engine {
-                    let image_for_deskew = source_page.image.clone();
+                    let image_for_deskew =
+                        std::mem::replace(&mut source_page.image, RgbImage::new(0, 0));
                     match tokio::task::spawn_blocking(move || {
                         engine.process_image(&image_for_deskew)
                     })
