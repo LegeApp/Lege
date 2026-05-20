@@ -33,10 +33,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
-//==============================================================================
-// Data Structures
-//==============================================================================
-
 /// Result from inference stage
 #[derive(Clone)]
 pub struct PdfInferenceData {
@@ -60,10 +56,6 @@ enum CachedDetections {
     Missing,
     Present(Vec<crate::engine::Detection>),
 }
-
-//==============================================================================
-// Stage 2: Inference (PARALLEL - key fix!)
-//==============================================================================
 
 /// Inference stage with TRUE concurrency
 ///
@@ -176,21 +168,19 @@ fn build_inference_future(
             let scale_factor = high_res_width as f32 / analysis_width as f32;
             let mut scaled = cached.clone();
             for det in &mut scaled {
-                det.bbox[0] *= scale_factor;
-                det.bbox[1] *= scale_factor;
-                det.bbox[2] *= scale_factor;
-                det.bbox[3] *= scale_factor;
+                det.scale_bbox(scale_factor, scale_factor);
             }
 
+            let has_no_detections = scaled.is_empty();
             let inference_result = InferenceResult {
                 index: page_index,
                 high_res_image: rendered.high_res_image.clone(),
                 inference_image: rendered.inference_image.clone(),
-                detections: scaled.clone(),
+                detections: scaled,
                 text_layer: None,
                 original_width_pts: rendered.original_width_pts,
                 original_height_pts: rendered.original_height_pts,
-                has_no_detections: scaled.is_empty(),
+                has_no_detections,
             };
 
             return Box::pin(async move {
@@ -475,8 +465,11 @@ async fn process_single_page(
     // - Deferred path: binarize+encode are fused inside one spawn_blocking so GPU mapped
     //   bytes flow directly to the encoder via callback (no intermediate Vec<u8>).
     // - Default path: binarized is moved into the encoder; cloned only if OCR storage needs it.
+    let adjusted_image = Arc::new(adjusted_image);
     let (base_layer, binarized_for_page) = if config.text_format() == "jpeg" {
-        let layer = encode_base_layer_for_jpeg_mode(&adjusted_image, &config, page_index).await?;
+        let layer =
+            encode_base_layer_for_jpeg_mode(Arc::clone(&adjusted_image), &config, page_index)
+                .await?;
         let stored = if config.enable_ocr() {
             Some(binarized)
         } else {
@@ -484,10 +477,8 @@ async fn process_single_page(
         };
         (layer, stored)
     } else if let Some(bin_options) = deferred_binarize {
-        // adjusted_image is not used after this point in process_single_page;
-        // move it into the encoder task without cloning.
         let layer = encode_base_layer_fused(
-            Arc::new(adjusted_image),
+            adjusted_image,
             bin_options,
             width,
             height,
@@ -535,10 +526,6 @@ async fn process_single_page(
         binarized: binarized_for_page,
     })
 }
-
-//==============================================================================
-// Helper Functions (copied from original)
-//==============================================================================
 
 /// CPU-intensive work for a single page (to be executed in spawn_blocking)
 struct PageProcessingInput {
@@ -591,16 +578,14 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         margin_analysis,
     } = input;
 
-    // 1. Apply region policy OR document-wide margin analysis
     let (mut adjusted_image, mut adjusted_detections) = if let Some(analysis) = &margin_analysis {
         // Use document-wide margin analysis (2-pass mode)
-        apply_margin_analysis_to_page(&rendered, &inference_result, &config, analysis, page_index)?
+        apply_margin_analysis_to_page(&rendered, inference_result.detections, &config, analysis, page_index)?
     } else {
         // Use per-page policy (1-pass mode)
         apply_region_policy(&rendered, &inference_result, &config)?
     };
 
-    // 2. Resize to target height (CPU-heavy: Lanczos3 filtering)
     if config.enable_layout_detection() && adjusted_image.height() != config.target_height() {
         let current_w = adjusted_image.width();
         let current_h = adjusted_image.height();
@@ -615,10 +600,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             let sx = target_w as f32 / current_w as f32;
             let sy = target_h as f32 / current_h as f32;
             for det in &mut adjusted_detections {
-                det.bbox[0] *= sx;
-                det.bbox[1] *= sy;
-                det.bbox[2] *= sx;
-                det.bbox[3] *= sy;
+                det.scale_bbox(sx, sy);
             }
 
             // Resize image
@@ -630,28 +612,24 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 border_value: 0.0,
                 swap_rb: false,
             };
-            match crate::resize::resize_bytes(
+            let resized = crate::resize::resize_bytes(
                 adjusted_image.as_raw(),
                 current_w,
                 current_h,
                 &params,
                 3,
-            ) {
-                Ok(bytes) => {
-                    if let Some(buf) = RgbImage::from_raw(target_w, target_h, bytes) {
-                        adjusted_image = buf;
-                    }
-                }
-                Err(e) => {
-                    // Fallback resize
-                    adjusted_image = image::imageops::resize(
-                        &adjusted_image,
-                        target_w,
-                        target_h,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                }
-            }
+            )
+            .ok()
+            .and_then(|bytes| RgbImage::from_raw(target_w, target_h, bytes));
+            adjusted_image = match resized {
+                Some(buf) => buf,
+                None => image::imageops::resize(
+                    &adjusted_image,
+                    target_w,
+                    target_h,
+                    image::imageops::FilterType::Lanczos3,
+                ),
+            };
         }
     }
 
@@ -760,7 +738,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let is_cover_page = should_treat_as_cover_page(page_index, &config);
 
-    // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // Defer binarization when no downstream consumer will mutate the result and
     // the encoder can binarize directly from the RGB image with zero intermediate
     // copy. Conditions: not a cover page (no fill mutation), no image regions
@@ -774,7 +751,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     let (mut binarized, deferred_binarize) = if can_defer_binarize {
         (
             Vec::new(),
-            Some(binarize_options_for(&config, force_blank_threshold)),
+            Some(crate::pipeline::policies::binarize_options_for(&config, force_blank_threshold)),
         )
     } else if config.text_format() == "jpeg" {
         // DEBUG: should not reach here for non-jpeg pages with images
@@ -796,7 +773,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     };
     drop(binarization_image);
 
-    // 4. Handle cover page encoding (before processing regions since it modifies binarized)
+    // Cover page encoding must happen before region processing (it fills binarized with white).
     let cover_encoded_data =
         if is_cover_page && *config.cover_format() != crate::types::CoverFormat::None {
             // Use synchronous version for cover page encoding within the blocking task
@@ -817,7 +794,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             None
         };
 
-    // 5. Process all image regions (consolidate all region work into this single blocking call).
     // JBIG2: Stucki or halftone (`jbig2halftone.rs`) on image labels. CCITT4: clustered-dot 4×4 only.
     // Modes are format-locked in `process_image_region`. Layout must be on — never on full-page text / HOCR.
     let mut region_processing_results = Vec::new();
@@ -846,13 +822,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
         // Image-region dithering (format-specific; see `process_image_region`) requires layout; if layout is off,
         // `image_region_mode` is None and we only mask/crop — full-page binarization is unchanged.
-        let image_region_mode = if config.keep_original_images() {
-            ImageRegionDitherMode::None
-        } else if is_cover_page {
-            ImageRegionDitherMode::None
-        } else if config.text_format() == "djvu" || config.text_format() == "jpeg" {
-            ImageRegionDitherMode::None
-        } else if !config.enable_layout_detection() {
+        let suppress_dither = config.keep_original_images()
+            || is_cover_page
+            || matches!(config.text_format(), "djvu" | "jpeg")
+            || !config.enable_layout_detection();
+        let image_region_mode = if suppress_dither {
             ImageRegionDitherMode::None
         } else {
             config.image_region_dither_mode()
@@ -872,25 +846,25 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 false,
             )?;
 
-        let mut processed_for_masking = false;
         let mut encoded_data = None;
         let mut encoded_global_data: Option<Vec<u8>> = None;
 
-        if should_dither && !is_cover_page {
-            // Mask the region in the base layer with padding so the overlay fully
-            // covers any remnant binarized pixels at the edges.
-            let pad: u32 = 3;
-            let mx1 = bbox_x1.saturating_sub(pad);
-            let my1 = bbox_y1.saturating_sub(pad);
-            let mx2 = (bbox_x2 + pad).min(width as u32);
-            let my2 = (bbox_y2 + pad).min(height as u32);
-            Legencode::color::color_processing::mask_region(
-                &mut binarized,
-                width as u32,
-                [mx1 as f32, my1 as f32, mx2 as f32, my2 as f32],
-            );
-            processed_for_masking = true;
+        // Mask the region in the base layer with padding so any overlay fully
+        // covers remnant binarized pixels at the edges. Cover pages skip the
+        // dither/overlay path entirely but still mask via the else branch below.
+        let pad: u32 = 3;
+        let mx1 = bbox_x1.saturating_sub(pad);
+        let my1 = bbox_y1.saturating_sub(pad);
+        let mx2 = (bbox_x2 + pad).min(width as u32);
+        let my2 = (bbox_y2 + pad).min(height as u32);
+        Legencode::color::color_processing::mask_region(
+            &mut binarized,
+            width as u32,
+            [mx1 as f32, my1 as f32, mx2 as f32, my2 as f32],
+        );
+        let processed_for_masking = true;
 
+        if should_dither && !is_cover_page {
             let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
 
             if image_region_mode == ImageRegionDitherMode::GrayJp2 {
@@ -1013,20 +987,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 );
             }
         } else {
-            // Mask the region in the base layer with padding so the overlay fully
-            // covers any remnant binarized pixels at the edges.
-            let pad: u32 = 3;
-            let mx1 = bbox_x1.saturating_sub(pad);
-            let my1 = bbox_y1.saturating_sub(pad);
-            let mx2 = (bbox_x2 + pad).min(width as u32);
-            let my2 = (bbox_y2 + pad).min(height as u32);
-            Legencode::color::color_processing::mask_region(
-                &mut binarized,
-                width as u32,
-                [mx1 as f32, my1 as f32, mx2 as f32, my2 as f32],
-            );
-            processed_for_masking = true;
-
             // For non-dithered regions that need overlay encoding
             if !should_dither {
                 encoded_data = Some(
@@ -1090,15 +1050,15 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 /// Apply document-wide margin analysis to a single page
 fn apply_margin_analysis_to_page(
     page: &RenderedPageData,
-    inf: &InferenceResult,
+    detections: Vec<crate::engine::Detection>,
     cfg: &PipelineConfig,
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
     use crate::pipeline::policies::{is_in_inference_space, map_bbox_infer_to_page};
 
-    // Remap detections to page space
-    let mut dets = inf.detections.clone();
+    // Remap detections from inference space to page space
+    let mut dets = detections;
     let page_w = page.high_res_image.width();
     let page_h = page.high_res_image.height();
     let spec = cfg.inference_resize_spec();
@@ -1220,7 +1180,7 @@ fn apply_margin_analysis_to_page(
             cfg.target_height(),
         ) {
             Ok(img) => {
-                let new_dets = crate::margin::transform_detections(
+                let mut new_dets = crate::margin::transform_detections(
                     &dets,
                     &effective_bounds,
                     effective_setting,
@@ -1230,22 +1190,18 @@ fn apply_margin_analysis_to_page(
                     Some((page_w, page_h)),
                 );
 
-                // Additional validation: ensure transformed detections are within new image bounds
-                let mut validated_detections = Vec::new();
-                for mut det in new_dets {
-                    // Clamp the detection coordinates to the new image dimensions
-                    det.bbox[0] = det.bbox[0].max(0.0).min(img.width() as f32);
-                    det.bbox[1] = det.bbox[1].max(0.0).min(img.height() as f32);
-                    det.bbox[2] = det.bbox[2].max(0.0).min(img.width() as f32);
-                    det.bbox[3] = det.bbox[3].max(0.0).min(img.height() as f32);
+                // Clamp to new image bounds and drop degenerate boxes.
+                let iw = img.width() as f32;
+                let ih = img.height() as f32;
+                new_dets.retain_mut(|det| {
+                    det.bbox[0] = det.bbox[0].clamp(0.0, iw);
+                    det.bbox[1] = det.bbox[1].clamp(0.0, ih);
+                    det.bbox[2] = det.bbox[2].clamp(0.0, iw);
+                    det.bbox[3] = det.bbox[3].clamp(0.0, ih);
+                    det.bbox[0] < det.bbox[2] && det.bbox[1] < det.bbox[3]
+                });
 
-                    // Only keep detections that have valid bounds (not completely outside image)
-                    if det.bbox[0] < det.bbox[2] && det.bbox[1] < det.bbox[3] {
-                        validated_detections.push(det);
-                    }
-                }
-
-                return Ok((img, validated_detections));
+                return Ok((img, new_dets));
             }
             Err(e) => {
                 warn_log!(
@@ -1281,48 +1237,13 @@ fn apply_region_policy(
     Ok(policy.transform(rendered, inference_result, config))
 }
 
-/// Build BinarizationOptions from the pipeline config + blank-page threshold override.
-fn binarize_options_for(
-    config: &PipelineConfig,
-    force_blank_threshold: bool,
-) -> BinarizationOptions {
-    let want_invert_input = config.invert_input();
-    let mut want_invert_output = config.binarization().invert;
-    if want_invert_input && want_invert_output {
-        want_invert_output = false;
-    }
-    let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
-        (true, BLANK_PAGE_FALLBACK_THRESHOLD)
-    } else {
-        (
-            config.binarization().use_fixed_threshold,
-            config.binarization().fixed_threshold,
-        )
-    };
-    BinarizationOptions {
-        invert: want_invert_output,
-        invert_input: want_invert_input,
-        k_factor: config.binarization().k_factor,
-        use_heavy_duty: config.binarization().use_heavy_duty && !use_fixed_threshold,
-        patch_percentage: config.binarization().patch_percentage,
-        no_patch: config.binarization().no_patch,
-        use_fixed_threshold,
-        fixed_threshold,
-        // Layout mode runs binarization concurrently with rendering+inference, which
-        // dominates wall time per page anyway — the GPU binarizer offers no speedup
-        // there and has produced intermittent inverted base layers (black-background
-        // pages) on long runs. Force CPU when layout detection is on.
-        disable_gpu: config.enable_layout_detection(),
-    }
-}
-
 /// Binarize image with special handling for blank pages in adaptive mode.
 fn binarize_image(
     image: &RgbImage,
     config: &PipelineConfig,
     force_blank_threshold: bool,
 ) -> Vec<u8> {
-    let options = binarize_options_for(config, force_blank_threshold);
+    let options = crate::pipeline::policies::binarize_options_for(config, force_blank_threshold);
     Legencode::color::binarization::binarize_image_raw(
         image.as_raw(),
         image.width() as usize,
@@ -1363,56 +1284,11 @@ fn encode_region_image_sync(
             expected_len
         ));
     }
-    use Legencode::streamline::{
-        EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
-        Jbig2Settings, JpegSettings,
-    };
+    use Legencode::streamline::{EncodingManager, EncodingResult, ImageBuffer as LegeImageBuffer};
 
-    let (settings, fmt_str) = match format {
-        crate::types::CoverFormat::Jpeg => {
-            if !is_cover && !jpeg_compat {
-                let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
-                (EncodingSettings::Jp2Lam { quality: q }, "jp2")
-            } else {
-                let q = if high_quality {
-                    95
-                } else if is_cover {
-                    50
-                } else {
-                    45
-                };
-                (
-                    EncodingSettings::Jpeg(JpegSettings {
-                        quality: q,
-                        baseline: true,
-                        optimized: true,
-                        downsample: true,
-                    }),
-                    "jpeg",
-                )
-            }
-        }
-        crate::types::CoverFormat::Ccitt4 => (EncodingSettings::Ccitt4, "ccitt4"),
-        crate::types::CoverFormat::Jbig2 => (
-            EncodingSettings::Jbig2(Jbig2Settings {
-                pdf_fragment_mode: true,
-                mode: Jbig2Mode::Generic,
-                use_jbig2_halftone_segments: false,
-            }),
-            "jbig2",
-        ),
-        crate::types::CoverFormat::Jp2 => {
-            let q: u8 = if high_quality {
-                88
-            } else if is_cover {
-                80
-            } else {
-                72
-            };
-            (EncodingSettings::Jp2Lam { quality: q }, "jp2")
-        }
-        crate::types::CoverFormat::None => return Err(anyhow!("No format for region encoding")),
-    };
+    let (settings, fmt_str) = crate::pipeline::helper_functions::region_encoding_settings(
+        format, is_cover, high_quality, jpeg_compat,
+    )?;
 
     let buffer = LegeImageBuffer {
         data: &image_data[..expected_len],
@@ -1782,7 +1658,7 @@ async fn encode_base_layer_fused(
 
 /// Encode base layer as full-color image for full-page mode (JP2 by default, JPEG in compat mode)
 async fn encode_base_layer_for_jpeg_mode(
-    image: &RgbImage,
+    image: Arc<RgbImage>,
     config: &PipelineConfig,
     page_index: usize,
 ) -> Result<crate::accumulator::ContentType> {
@@ -1797,7 +1673,7 @@ async fn encode_base_layer_for_jpeg_mode(
 
     let width = image.width();
     let height = image.height();
-    let image_data = image.as_raw().to_vec();
+    let image_data = Arc::clone(&image);
     let jpeg_compat = config.jpeg_compat();
     let high_quality = config.high_quality_output();
 
@@ -1809,7 +1685,7 @@ async fn encode_base_layer_for_jpeg_mode(
 
     let (data, format) = tokio::task::spawn_blocking(move || {
         let buffer = LegeImageBuffer {
-            data: &image_data,
+            data: image_data.as_raw(),
             width,
             height,
             channels: 3u8,
@@ -1899,31 +1775,25 @@ fn prepare_analysis_page(
         swap_rb: false,
     };
 
-    let analysis_image_data = match crate::resize::resize_bytes(
+    let analysis_image = match crate::resize::resize_bytes(
         original_image.as_raw(),
         original_image.width(),
         original_image.height(),
         &params,
         3,
-    ) {
-        Ok(bytes) => bytes,
-        Err(e) => {
+    )
+    .ok()
+    .and_then(|bytes| RgbImage::from_raw(ANALYSIS_WIDTH, analysis_height, bytes))
+    {
+        Some(img) => img,
+        None => {
             warn_log!(
-                "Page {}: Failed to resize for margin analysis: {}. Using original image.",
-                page_idx,
-                e
+                "Page {}: resize for margin analysis failed or produced wrong dimensions; using original.",
+                page_idx
             );
-            original_image.as_raw().to_vec()
+            original_image
         }
     };
-
-    let analysis_image =
-        if analysis_image_data.len() == (ANALYSIS_WIDTH * analysis_height * 3) as usize {
-            RgbImage::from_raw(ANALYSIS_WIDTH, analysis_height, analysis_image_data)
-                .unwrap_or(original_image)
-        } else {
-            original_image
-        };
 
     let pixel_bounds = compute_pixel_bounds_for_margin(&analysis_image, &config);
 
@@ -2125,7 +1995,9 @@ pub async fn create_and_run_pdf_source_pipeline(
     const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
     crate::resize::set_gpu_resize_enabled(total_pages >= MIN_PAGES_FOR_GPU_RESIZE);
 
-    let infer_concurrency = 1usize;
+    // InferenceActor serializes ORT calls internally; >1 here lets prep/postproc
+    // overlap with the actor's queue without over-subscribing the ONNX runtime.
+    let infer_concurrency = pipeline_config.page_workers.max(1);
     let process_concurrency = pipeline_config.page_workers.max(1);
 
     info_log!(
@@ -2308,112 +2180,32 @@ pub async fn create_and_run_pdf_source_pipeline(
         margin_analysis_arc,
     ));
 
-    // Wait for all stages to complete with cancellation support
+    // Wait for all stages in pipeline order; abort remaining on cancellation.
     info_log!("[PDF-Parallel] Waiting for pipeline stages to complete...");
+    use crate::pipeline::helper_functions::await_stage_or_cancel;
+    let h_infer = infer_task.abort_handle();
+    let h_process = process_task.abort_handle();
+    let h_forwarder = writer_forwarder.abort_handle();
+    let h_writer = pdf_writer_task.abort_handle();
 
-    // Poll for cancellation while waiting for tasks
-    loop {
-        tokio::select! {
-            result = &mut render_task => {
-                result??;
-                info_log!("[PDF-Parallel] Render stage complete");
-                break;
-            }
-            signal = shutdown_rx.recv() => {
-                if let Ok(sig) = signal {
-                    // Abort all tasks
-                    render_task.abort();
-                    infer_task.abort();
-                    process_task.abort();
-                    writer_forwarder.abort();
-                    pdf_writer_task.abort();
+    await_stage_or_cancel(&mut render_task, &mut shutdown_rx, "render",
+        &[h_infer.clone(), h_process.clone(), h_forwarder.clone(), h_writer.clone()]).await?;
+    info_log!("[PDF-Parallel] Render stage complete");
 
-                    return Err(anyhow::anyhow!("Processing cancelled during render stage: {}",
-                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
-                }
-            }
-        }
-    }
+    await_stage_or_cancel(&mut infer_task, &mut shutdown_rx, "inference",
+        &[h_process.clone(), h_forwarder.clone(), h_writer.clone()]).await?;
+    info_log!("[PDF-Parallel] Inference stage complete");
 
-    // Wait for remaining stages with cancellation
-    loop {
-        tokio::select! {
-            result = &mut infer_task => {
-                result??;
-                info_log!("[PDF-Parallel] Inference stage complete");
-                break;
-            }
-            signal = shutdown_rx.recv() => {
-                if let Ok(sig) = signal {
-                    infer_task.abort();
-                    process_task.abort();
-                    writer_forwarder.abort();
-                    pdf_writer_task.abort();
+    await_stage_or_cancel(&mut process_task, &mut shutdown_rx, "processing",
+        &[h_forwarder.clone(), h_writer.clone()]).await?;
+    info_log!("[PDF-Parallel] Processing stage complete");
 
-                    return Err(anyhow::anyhow!("Processing cancelled during inference stage: {}",
-                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
-                }
-            }
-        }
-    }
+    await_stage_or_cancel(&mut writer_forwarder, &mut shutdown_rx, "writer forwarder",
+        &[h_writer.clone()]).await?;
+    info_log!("[PDF-Parallel] Writer forwarder complete");
 
-    loop {
-        tokio::select! {
-            result = &mut process_task => {
-                result??;
-                info_log!("[PDF-Parallel] Processing stage complete");
-                break;
-            }
-            signal = shutdown_rx.recv() => {
-                if let Ok(sig) = signal {
-                    process_task.abort();
-                    writer_forwarder.abort();
-                    pdf_writer_task.abort();
-
-                    return Err(anyhow::anyhow!("Processing cancelled during processing stage: {}",
-                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
-                }
-            }
-        }
-    }
-
-    loop {
-        tokio::select! {
-            result = &mut writer_forwarder => {
-                result??;
-                info_log!("[PDF-Parallel] Writer forwarder complete");
-                break;
-            }
-            signal = shutdown_rx.recv() => {
-                if let Ok(sig) = signal {
-                    writer_forwarder.abort();
-                    pdf_writer_task.abort();
-
-                    return Err(anyhow::anyhow!("Processing cancelled during writer forwarding: {}",
-                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
-                }
-            }
-        }
-    }
-
-    // Wait for PDF writer to finish
-    loop {
-        tokio::select! {
-            result = &mut pdf_writer_task => {
-                result.map_err(|e| anyhow!("PDF writer task failed: {:?}", e))??;
-                info_log!("[PDF-Parallel] PDF writer complete");
-                break;
-            }
-            signal = shutdown_rx.recv() => {
-                if let Ok(sig) = signal {
-                    pdf_writer_task.abort();
-
-                    return Err(anyhow::anyhow!("Processing cancelled during PDF writing: {}",
-                        sig.message.unwrap_or_else(|| "User requested cancellation".to_string())));
-                }
-            }
-        }
-    }
+    await_stage_or_cancel(&mut pdf_writer_task, &mut shutdown_rx, "PDF writer", &[]).await?;
+    info_log!("[PDF-Parallel] PDF writer complete");
 
     success_log!("PDF pipeline complete: {}", output_path.display());
     Ok(())

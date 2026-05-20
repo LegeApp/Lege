@@ -597,6 +597,48 @@ fn remap_detections_to_page(
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// Binarization
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Build `BinarizationOptions` from the pipeline config.
+///
+/// When `force_blank_threshold` is set, overrides to a fixed high threshold
+/// so blank pages binarize to all-white rather than all-noise.
+pub fn binarize_options_for(
+    config: &PipelineConfig,
+    force_blank_threshold: bool,
+) -> Legencode::types::BinarizationOptions {
+    let want_invert_input = config.invert_input();
+    let mut want_invert_output = config.binarization().invert;
+    if want_invert_input && want_invert_output {
+        want_invert_output = false;
+    }
+    let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
+        (true, crate::pipeline::page_analysis::BLANK_PAGE_FALLBACK_THRESHOLD)
+    } else {
+        (
+            config.binarization().use_fixed_threshold,
+            config.binarization().fixed_threshold,
+        )
+    };
+    Legencode::types::BinarizationOptions {
+        invert: want_invert_output,
+        invert_input: want_invert_input,
+        k_factor: config.binarization().k_factor,
+        use_heavy_duty: config.binarization().use_heavy_duty && !use_fixed_threshold,
+        patch_percentage: config.binarization().patch_percentage,
+        no_patch: config.binarization().no_patch,
+        use_fixed_threshold,
+        fixed_threshold,
+        // Layout mode runs binarization concurrently with rendering+inference, which
+        // dominates wall time per page anyway — the GPU binarizer offers no speedup
+        // there and has produced intermittent inverted base layers (black-background
+        // pages) on long runs. Force CPU when layout detection is on.
+        disable_gpu: config.enable_layout_detection(),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════════════════
 

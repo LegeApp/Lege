@@ -54,6 +54,15 @@ pub struct Detection {
     pub context: Option<DetectionContext>,
 }
 
+impl Detection {
+    pub fn scale_bbox(&mut self, sx: f32, sy: f32) {
+        self.bbox[0] *= sx;
+        self.bbox[1] *= sy;
+        self.bbox[2] *= sx;
+        self.bbox[3] *= sy;
+    }
+}
+
 #[derive(Debug, Clone)]
 /// Configuration for PaddleX engine
 pub struct PaddleXConfig {
