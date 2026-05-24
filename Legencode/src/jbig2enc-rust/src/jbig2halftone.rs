@@ -513,7 +513,9 @@ pub fn encode_halftone_document_auto(
     page_number: Option<u32>,
 ) -> Result<Vec<u8>> {
     let mut document = FileHeader {
-        organisation_type: true,
+        // Sequential organisation — segment headers are immediately followed
+        // by their payloads in this encoder's output.
+        organisation_type: false,
         unknown_n_pages: false,
         n_pages: 1,
     }

@@ -19,26 +19,7 @@ pub fn compute_pixel_bounds_for_margin(
     image: &RgbImage,
     config: &PipelineConfig,
 ) -> Option<ContentBounds> {
-    use Legencode::types::BinarizationOptions;
-
-    let want_invert_input = config.invert_input();
-    let mut want_invert_output = config.binarization().invert;
-    if want_invert_input && want_invert_output {
-        want_invert_output = false;
-    }
-
-    let options = BinarizationOptions {
-        invert: want_invert_output,
-        invert_input: want_invert_input,
-        k_factor: config.binarization().k_factor,
-        use_heavy_duty: config.binarization().use_heavy_duty
-            && !config.binarization().use_fixed_threshold,
-        patch_percentage: config.binarization().patch_percentage,
-        no_patch: config.binarization().no_patch,
-        use_fixed_threshold: config.binarization().use_fixed_threshold,
-        fixed_threshold: config.binarization().fixed_threshold,
-        disable_gpu: config.enable_layout_detection(),
-    };
+    let options = crate::pipeline::policies::binarize_options_for(config, false);
 
     let mut binarized = Legencode::color::binarization::binarize_image_raw(
         image.as_raw(),
@@ -441,11 +422,14 @@ pub fn should_force_blank_page_threshold(
     height: u32,
     classifier: &LabelClassifier,
 ) -> bool {
-    if !config.enable_layout_detection() {
-        return false;
-    }
     if config.binarization().use_fixed_threshold || config.binarization().use_heavy_duty {
         return false;
+    }
+
+    // Without layout detection we have no detection boxes to analyse, but a
+    // visually blank page should still binarize to white rather than noise.
+    if !config.enable_layout_detection() {
+        return page_is_visually_blank;
     }
 
     let evidence = layout_blank_evidence(post_nms_detections, width, height, classifier);
