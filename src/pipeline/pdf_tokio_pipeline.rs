@@ -1160,16 +1160,6 @@ fn apply_margin_analysis_to_page(
         // This means each page will crop to its own content area but with uniform processing
         let effective_bounds = bounds;
 
-        // Compute margin correction parameters for potential use in coordinate mapping
-        let _margin_correction = crate::margin::compute_margin_correction(
-            &effective_bounds,
-            effective_setting,
-            &standard_dims,
-            cfg.target_width(),
-            cfg.target_height(),
-            Some((page_w, page_h)),
-        );
-
         // Process page with document-wide baseline
         match crate::margin::process_page_margins(
             &page.high_res_image,

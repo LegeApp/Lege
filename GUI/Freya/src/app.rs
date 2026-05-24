@@ -368,9 +368,9 @@ fn compact_checkbox_row(
     widgets::lege_checkbox_row(text, selected, move |_| on_select(()))
 }
 
-fn popup_message_cards(state: State<AppState>) -> Vec<Element> {
+fn popup_message_entries(state: State<AppState>) -> Vec<(String, PopupKind)> {
     let read = state.read();
-    let mut cards = Vec::new();
+    let mut entries_out = Vec::new();
 
     let entries = [
         (
@@ -415,15 +415,15 @@ fn popup_message_cards(state: State<AppState>) -> Vec<Element> {
         ),
     ];
 
-    for (show, msg, _kind) in entries {
+    for (show, msg, kind) in entries {
         if show {
             if let Some(msg) = msg {
-                cards.push(rail_note_card(msg, 13., INFO_BG));
+                entries_out.push((msg, kind));
             }
         }
     }
 
-    cards.into_iter().take(2).collect()
+    entries_out.into_iter().take(2).collect()
 }
 
 fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, u8)) -> Element {
@@ -475,16 +475,27 @@ fn tooltip_note_card(text: impl Into<String>) -> Element {
 }
 
 fn PopupRail(state: State<AppState>) -> Element {
-    let cards = popup_message_cards(state);
-    if cards.is_empty() {
+    let entries = popup_message_entries(state);
+    if entries.is_empty() {
         return rect().into();
     }
 
+    let cards: Vec<Element> = entries
+        .into_iter()
+        .map(|(msg, kind)| {
+            rect()
+                .on_pointer_down(move |_: Event<PointerEventData>| {
+                    hide_popup(state, kind);
+                })
+                .child(rail_note_card(msg, 13., INFO_BG))
+                .into()
+        })
+        .collect();
+
     rect()
-        .width(Size::fill())
-        .height(Size::fill())
+        .position(Position::new_absolute().left(14.).bottom(14.))
+        .width(Size::px(220.))
         .vertical()
-        .main_align(Alignment::End)
         .spacing(6.)
         .children(cards)
         .into()
@@ -666,10 +677,10 @@ pub fn app() -> impl IntoElement {
                     k_factor_input,
                     threshold_input,
                 ),
-                PopupRail(state),
                 StartBar(state, page_range_input),
                 StatusBar(state),
             ))
+            .child(PopupRail(state))
             .child(QueueViewerPopup(state))
             .child(LogViewerPopup(state))
             .child(AboutPopup(state))

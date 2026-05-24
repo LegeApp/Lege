@@ -8,8 +8,11 @@ use log::debug;
 #[cfg(not(feature = "trace_encoder"))]
 use crate::debug;
 
-/// JBIG2 file format magic number
-pub const JB2_MAGIC: &[u8; 10] = b"\x97JBIG2\r\n\x1A\n";
+/// JBIG2 file format magic number per T.88 §D.4.1 — exactly 8 bytes.
+/// (An earlier value of `b"\x97JBIG2\r\n\x1A\n"` contained two extra bytes
+/// ("IG") and caused every standalone file produced by this encoder to be
+/// rejected by spec-compliant decoders such as jbig2dec.)
+pub const JB2_MAGIC: &[u8; 8] = b"\x97JB2\r\n\x1A\n";
 
 /// JBIG2 file format version
 pub const JB2_VERSION: u8 = 0x02;
@@ -318,7 +321,7 @@ pub struct FileHeader {
 
 impl FileHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
-        const MAGIC: &[u8] = b"\x97JBIG2\r\n\x1A\n";
+        const MAGIC: &[u8] = b"\x97JB2\r\n\x1A\n"; // T.88 §D.4.1, see JB2_MAGIC.
         let mut buf = Vec::with_capacity(8 + 1 + if self.unknown_n_pages { 0 } else { 4 });
         buf.extend_from_slice(MAGIC);
 
@@ -595,7 +598,8 @@ impl SymbolDictParams {
         );
 
         let mut flags = 0u16;
-        flags |= ((self.sd_template & 0x03) as u16) << 10;
+        // T.88 §7.4.2.1 Table 12: SDTEMPLATE occupies bits 2-3 of the flags word.
+        flags |= ((self.sd_template & 0x03) as u16) << 2;
         if self.refine_aggregate {
             flags |= 1 << 1; // SDREFAGG
         }
@@ -801,19 +805,25 @@ impl Segment {
         w.write_u8(flags1)?;
 
         // Flags2: retain bits + referred-to segment count (compact form).
+        // T.88 §7.2.4: counts 0–4 fit in bits 5–7 of flags2; counts ≥ 5 require the
+        // long form (bits = 0b111 followed by a 4-byte count and an expanded retain-flags
+        // field). The long form is not implemented here, so reject counts > 4.
         let referred_to_count = self.referred_to.len();
-        if referred_to_count > 7 {
+        if referred_to_count > 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "referred_to count > 7 is not supported",
+                "referred_to count > 4 requires the long-form segment header which is not implemented",
             ));
         }
         let flags2 = (self.retain_flags & 0x1F) | ((referred_to_count as u8) << 5);
         w.write_u8(flags2)?;
 
-        let ref_size = if self.number <= 256 {
+        // T.88 §7.2.5: the referred-to segment number width is determined by the
+        // current segment's number — strict less-than comparisons (the spec uses
+        // "less than 256" / "less than 65536").
+        let ref_size = if self.number < 256 {
             1
-        } else if self.number <= 65_536 {
+        } else if self.number < 65_536 {
             2
         } else {
             4
