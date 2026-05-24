@@ -288,7 +288,6 @@ pub fn lege_status_panel(
 pub fn lege_main_shell(
     toolbar: Element,
     settings: Element,
-    popup_rail: Element,
     process_bar: Element,
     status_bar: Element,
 ) -> Element {
@@ -331,14 +330,7 @@ pub fn lege_main_shell(
                                 .height(Size::px(64.))
                                 .main_align(Alignment::Center)
                                 .cross_align(Alignment::Center)
-                                .child(process_bar)
-                                .child(
-                                    rect()
-                                        .position(Position::new_absolute().left(8.).top(4.))
-                                        .width(Size::px(220.))
-                                        .height(Size::px(56.))
-                                        .child(popup_rail),
-                                ),
+                                .child(process_bar),
                         )
                         .child(
                             rect()

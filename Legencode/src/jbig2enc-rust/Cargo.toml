@@ -1,6 +1,6 @@
 [package]
 name = "jbig2enc-rust"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "JBIG2 encoder implementation in Rust with PDF fragment support"
 license = "MIT OR Apache-2.0"

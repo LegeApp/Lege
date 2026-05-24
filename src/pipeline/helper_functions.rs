@@ -392,9 +392,12 @@ pub fn should_treat_as_cover_page(page_index: usize, config: &PipelineConfig) ->
         return false;
     }
 
-    // If a page range is specified, don't use cover page logic since we might not be processing the actual first page
-    if config.page_range.is_some() {
-        return false;
+    // If a page range is specified, only treat as cover if the range includes the
+    // document's first page (page_range is 1-based user input).
+    if let Some(range) = &config.page_range {
+        if range.start > 1 {
+            return false;
+        }
     }
 
     // First page (index 0) is the cover page
@@ -718,6 +721,7 @@ pub async fn await_stage_or_cancel(
             }
             signal = shutdown_rx.recv() => {
                 if let Ok(sig) = signal {
+                    task.abort();
                     for handle in abort_remaining {
                         handle.abort();
                     }
@@ -1062,9 +1066,10 @@ pub fn spawn_pdf_writer_actor(
                     // This is acceptable since finalize() will check during assembly
 
                     // Finalize the PDF
-                    if let Err(e) =
-                        builder.finalize(output_path.to_str().unwrap_or("output.pdf"), has_ocr)
-                    {
+                    let output_path_str = output_path
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("Output path is not valid UTF-8: {}", output_path.display()))?;
+                    if let Err(e) = builder.finalize(output_path_str, has_ocr) {
                         crate::warn_log!("[PdfWriterActor] Finalize failed: {}", e);
                         return Err(anyhow::anyhow!("Finalize failed: {}", e));
                     }
