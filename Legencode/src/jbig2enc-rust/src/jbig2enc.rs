@@ -4203,7 +4203,9 @@ impl<'a> Jbig2Encoder<'a> {
         Ok(PlannedDocument {
             file_header: if include_header {
                 Some(FileHeader {
-                    organisation_type: true,
+                    // Sequential organisation matches the on-disk layout this
+                    // encoder produces (segment header + payload, repeated).
+                    organisation_type: false,
                     unknown_n_pages: false,
                     n_pages: self.pages.len() as u32,
                 })
@@ -5029,7 +5031,8 @@ impl<'a> Jbig2Encoder<'a> {
         }
 
         let header = FileHeader {
-            organisation_type: true,
+            // Sequential organisation — payload follows each segment header.
+            organisation_type: false,
             unknown_n_pages: false,
             n_pages: 1,
         };
@@ -5156,10 +5159,10 @@ pub fn encode_generic_region(img: &BitImage, cfg: &Jbig2Config) -> Result<Vec<u8
     // Otherwise wrap it in a complete one-page JBIG2 file
     let mut out = Vec::with_capacity(generic_region_payload.len() + 64);
 
-    // File header
+    // File header — sequential organisation (matches segment layout below).
     out.extend_from_slice(
         &FileHeader {
-            organisation_type: true,
+            organisation_type: false,
             unknown_n_pages: false,
             n_pages: 1,
         }
@@ -5619,7 +5622,10 @@ pub fn encode_symbol_dict_with_order(
     let mut payload = Vec::new();
     let mut coder = Jbig2ArithCoder::new();
 
-    let num_export_syms = ordered_symbols.len() as u32;
+    let num_new_syms = ordered_symbols.len() as u32;
+    // Per T.88 §7.4.2.1.6, SDNUMEXSYMS is the total count of exported symbols which
+    // includes any imported symbols carried forward from referenced dictionaries.
+    let num_export_syms = num_imported_symbols.saturating_add(num_new_syms);
 
     // Create symbol dictionary parameters
     let params = SymbolDictParams {
@@ -5630,7 +5636,7 @@ pub fn encode_symbol_dict_with_order(
         refine_template: 0,
         refine_at: [(0, 0), (0, 0)],
         exsyms: num_export_syms,
-        newsyms: ordered_symbols.len() as u32,
+        newsyms: num_new_syms,
     };
 
     if cfg!(debug_assertions) {
@@ -5793,6 +5799,9 @@ pub fn encode_symbol_dict_with_order(
     }
 
     // Export flags come after the symbol bitmap data (run-length form).
+    // T.88 §7.4.2.2: the run-length must cover SDNUMINSYMS + SDNUMNEWSYMS slots.
+    // We export every symbol (both imported and new), so the sequence is a single
+    // "all exported" run covering num_export_syms = num_imported + num_new.
     let _ = coder.encode_integer(IntProc::Iaex, 0);
     let _ = coder.encode_integer(IntProc::Iaex, num_export_syms as i32);
 
@@ -5860,104 +5869,11 @@ fn compute_region_bounds(
     (min_x, min_y, region_width, region_height)
 }
 
-pub fn encode_refine(
-    instances: &[TextRegionSymbolInstance],
-    all_known_symbols: &[&BitImage],
-    data: &mut Vec<u8>,
-    coder: &mut Jbig2ArithCoder,
-) -> Result<()> {
-    // 1. Compute region bounds
-    let (min_x, min_y, region_w, region_h) = compute_region_bounds(instances, all_known_symbols);
-    let width = region_w.max(1);
-    let height = region_h.max(1);
-
-    // 2. Write TextRegion header (flags + params)
-    // flags: TRREF=1, others zero (arithmetic coding)
-    let mut flags: u8 = 0;
-    flags |= 0x40; // TRREF bit
-    data.push(flags);
-
-    let params = TextRegionParams {
-        width,
-        height,
-        x: min_x,
-        y: min_y,
-        ds_offset: 0,
-        refine: true,
-        log_strips: 0,
-        ref_corner: 0,
-        transposed: false,
-        comb_op: 0,
-        refine_template: 0,
-    };
-    data.extend(params.to_bytes());
-
-    // 3. Encode number of instances
-    let num_inst = instances.len() as u32;
-    let _ = coder.encode_int_with_ctx(num_inst as i32, 16, IntProc::Iaai);
-
-    // 4. Initialize an empty region buffer to track already emitted pixels
-    let mut region_buf = BitImage::new(width, height).expect("region bitmap too large");
-
-    // 5. Emit each instance
-    for inst in instances {
-        // IAID symbol ID
-        let sym_id = inst.symbol_id;
-        let _ = coder.encode_iaid(sym_id, 16);
-
-        // Refinement deltas
-        let _ = coder.encode_integer(IntProc::Iardx, inst.dx);
-        let _ = coder.encode_integer(IntProc::Iardy, inst.dy);
-
-        // If this is a refinement instance, encode pixel-by-pixel
-        if inst.is_refinement {
-            // locate the symbol bitmap
-            if let Some(&sym) = all_known_symbols.get(sym_id as usize) {
-                // offset of this instance in region coords
-                let ox = inst.x as u32 - min_x;
-                let oy = inst.y as u32 - min_y;
-
-                // for each pixel in the symbol region
-                for y in 0..sym.height as u32 {
-                    for x in 0..sym.width as u32 {
-                        // compute region coord
-                        let rx = ox + x;
-                        let ry = oy + y;
-
-                        // skip out-of-bounds
-                        if rx >= width || ry >= height {
-                            continue;
-                        }
-
-                        // Bounds already verified above (rx < width, ry < height);
-                        // use direct indexing to bypass redundant bounds checks.
-                        let ref_bit = sym.get_pixel_unchecked(x as usize, y as usize) as u8;
-                        let pred_bit =
-                            region_buf.get_pixel_unchecked(rx as usize, ry as usize) as u8;
-
-                        // Context = combine ref_bit, pred_bit, template (here simple sum)
-                        let ctx = ((ref_bit << 1) | pred_bit) as usize;
-
-                        // Encode the actual pixel: 1 if sym has pixel, 0 otherwise
-                        let bit = ref_bit;
-                        coder.encode_bit(ctx, bit != 0);
-
-                        // Update region buffer so subsequent instances see it
-                        if bit != 0 {
-                            region_buf.set(rx, ry, true);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 6. flush and append coder payload
-    coder.flush(true);
-    data.extend(coder.as_bytes());
-
-    Ok(())
-}
+// (The previous `encode_refine` helper was removed: it built only 4 refinement
+// contexts instead of the 8192-state GRREF template required by T.88 §6.3, so
+// any output it produced was not decodable. It had no callers in the crate.
+// Use `Jbig2ArithCoder::encode_refinement_region` (called from
+// `encode_text_region_with_refinement`) for spec-compliant refinement coding.)
 
 /// Encodes a text region segment using pre-computed dictionary position maps.
 ///
@@ -6146,6 +6062,8 @@ pub fn encode_text_region_mapped(
     // §6.4.5 step 1: initial STRIPT value (decoder reads one IADT before the loop)
     let _ = coder.encode_integer(IntProc::Iadt, 0);
 
+    let sbdsoffset = params.ds_offset as i32;
+
     while idx < encoded_instances.len() {
         let current_strip = encoded_instances[idx].strip_base;
         let delta_t = current_strip - strip_t;
@@ -6171,9 +6089,14 @@ pub fn encode_text_region_mapped(
                 current_s = first_s;
                 first_symbol_in_strip = false;
             } else {
-                delta_s = item.x - current_s;
+                // T.88 §6.4.5 step 4d: decoder computes CURS = CURS + IADS + SBDSOFFSET.
+                // Therefore encode IADS = (item.x - current_s) - sbdsoffset so the
+                // decoder lands on item.x. With the default ds_offset = 0 this is a
+                // no-op, but it makes the encoder behave correctly when callers set a
+                // non-zero text_ds_offset.
+                delta_s = item.x - current_s - sbdsoffset;
                 let _ = coder.encode_integer(IntProc::Iads, delta_s);
-                current_s += delta_s;
+                current_s += delta_s + sbdsoffset;
             }
 
             if debug_encoding {
@@ -6254,8 +6177,9 @@ pub fn encode_text_region_mapped(
                     dec_curs = dec_firsts;
                     first_in_strip = false;
                 } else {
-                    // §6.4.5: CURS = CURS + IADS + SBDSOFFSET
-                    let iads = item.x - dec_curs;
+                    // §6.4.5: encoder emits IADS = item.x - dec_curs - SBDSOFFSET so that
+                    // the decoder's CURS = CURS + IADS + SBDSOFFSET lands on item.x.
+                    let iads = item.x - dec_curs - sbdsoffset;
                     dec_curs += iads + sbdsoffset;
                 }
 

@@ -38,13 +38,19 @@ pub fn bytes_to_bitvec(bytes: &[u8], bit_count: usize) -> BitVec<u8, Msb0> {
     bv
 }
 
-/// Convert a `BitVec` to a byte vector, ensuring proper padding.
+/// Convert a `BitVec` to a byte vector. `BitVec<u8, Msb0>::into_vec()` already
+/// returns the underlying byte-aligned storage with trailing bits zero-padded,
+/// so no further padding is required.
 pub fn bitvec_to_bytes(bits: &BitSlice<u8, Msb0>) -> Vec<u8> {
     let mut bytes = bits.to_bitvec().into_vec();
-    if bits.len() % 8 != 0 {
-        let padding = 8 - (bits.len() % 8);
-        bytes.push(0u8);
-        *bytes.last_mut().unwrap() &= !(0xFFu8 >> padding);
+    // Defensively mask any stale bits in the final byte to ensure the trailing
+    // pad bits are zero (matches the contract callers expect for JBIG2 bitmaps).
+    let trailing = bits.len() % 8;
+    if trailing != 0 {
+        if let Some(last) = bytes.last_mut() {
+            let mask = 0xFFu8 << (8 - trailing);
+            *last &= mask;
+        }
     }
     bytes
 }

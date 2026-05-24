@@ -266,9 +266,7 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 infer_tx.send(data).await.map_err(|e| anyhow!("Infer send failed: {}", e))?;
                             }
                             Err(e) => {
-                                #[cfg(feature = "debug-logging")]
-                                crate::error_println!("[DJVU-Parallel-Infer] Inference task failed (page dropped): {:#}", e);
-                                warn_log!("[DJVU-Parallel-Infer] Inference task failed: {}", e);
+                                return Err(anyhow!("[DJVU-Parallel-Infer] Inference task failed: {:#}", e));
                             }
                         }
                     }
@@ -743,6 +741,41 @@ fn process_djvu_cpu_intensive_work(
         );
     }
 
+    // 2b. Pre-mask image regions before binarization so Sauvola only sees text.
+    // Mirrors the PDF pipeline: image content skews adaptive threshold calculations for
+    // adjacent text. The original adjusted_image is kept for dithering/encoding later.
+    let has_image_regions = config.enable_layout_detection()
+        && adjusted_detections
+            .iter()
+            .any(|det| classifier.is_image_label(det));
+
+    let binarization_image: std::borrow::Cow<'_, RgbImage> = if has_image_regions {
+        let mut masked_rgb = adjusted_image.as_raw().clone();
+        let w = width as u32;
+        let h = height as u32;
+        const MASK_PAD: u32 = 3;
+        for det in &adjusted_detections {
+            if !classifier.is_image_label(det) {
+                continue;
+            }
+            let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, w, h);
+            let mx1 = ix1.saturating_sub(MASK_PAD);
+            let my1 = iy1.saturating_sub(MASK_PAD);
+            let mx2 = (ix2 + MASK_PAD).min(w);
+            let my2 = (iy2 + MASK_PAD).min(h);
+            for y in my1..my2 {
+                let row_start = (y as usize * width + mx1 as usize) * 3;
+                let row_end = (y as usize * width + mx2 as usize) * 3;
+                if row_end <= masked_rgb.len() {
+                    masked_rgb[row_start..row_end].fill(255);
+                }
+            }
+        }
+        std::borrow::Cow::Owned(RgbImage::from_raw(w, h, masked_rgb).unwrap())
+    } else {
+        std::borrow::Cow::Borrowed(&adjusted_image)
+    };
+
     // 3. Binarize image (CPU-heavy: Sauvola on millions of pixels)
     // In "jpeg" text format mode, skip binarization and use grayscale version for OCR/text layer
     let mut binarized = if config.text_format() == "jpeg" {
@@ -769,7 +802,7 @@ fn process_djvu_cpu_intensive_work(
             height as u32,
             classifier,
         );
-        binarize_djvu_image(&adjusted_image, &config, force_blank_threshold)
+        binarize_djvu_image(&binarization_image, &config, force_blank_threshold)
     };
 
     let should_dither_regions = config.dither_images()

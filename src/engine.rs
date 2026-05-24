@@ -490,7 +490,7 @@ impl PaddleXEngine {
                 }
             }
 
-            buf.clone() // Clone is needed since we need to return owned data
+            std::mem::take(&mut *buf)
         });
 
         Ok(PaddleXPreprocessed {
@@ -1421,25 +1421,24 @@ impl PaddleXEngine {
         let mut current_offset = 0;
 
         for (i, &count) in count_data.iter().enumerate() {
-            let count = count as usize;
+            // Safety: don't process more results than the batch contained
+            if i >= batch_size {
+                break;
+            }
+
+            // Guard against negative sentinel values from the model wrapping to huge usize
+            let count = count.max(0) as usize;
 
             if count > 0 {
                 // Slice the exact rows belonging to this page
-                // Corresponds to batch_metadata[i]
                 let page_boxes = all_boxes
                     .slice(s![current_offset..current_offset + count, ..])
                     .to_owned();
                 results.push(page_boxes);
                 current_offset += count;
             } else {
-                // Handle blank pages correctly (empty array)
                 let empty = Array::from_shape_vec((0, 6), vec![])?;
                 results.push(empty);
-            }
-
-            // Safety check
-            if i >= batch_size {
-                break;
             }
         }
         debug_until_first_detection!(
@@ -1537,7 +1536,11 @@ impl PaddleXEngine {
         let mut current_offset = 0;
 
         for (i, &count) in count_data.iter().enumerate() {
-            let count = count as usize;
+            if i >= batch_size {
+                break;
+            }
+
+            let count = count.max(0) as usize;
 
             if count > 0 {
                 let page_boxes = all_boxes
@@ -1548,10 +1551,6 @@ impl PaddleXEngine {
             } else {
                 let empty = Array::from_shape_vec((0, 6), vec![])?;
                 results.push(empty);
-            }
-
-            if i >= batch_size {
-                break;
             }
         }
 
