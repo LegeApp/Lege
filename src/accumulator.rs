@@ -386,7 +386,7 @@ impl StreamingPdfBuilder {
 
         let mut font_stream_dict = Dictionary::new();
         font_stream_dict.set("Length1", Object::Integer(font_bytes.len() as i64));
-        font_stream_dict.set("Subtype", Object::Name(b"TrueType".to_vec()));
+        // FontFile2 must not have a Subtype entry (Subtype is only valid for FontFile3)
         let font_file_id = self
             .doc
             .add_object(Stream::new(font_stream_dict, font_bytes.to_vec()));
@@ -875,88 +875,7 @@ impl StreamingPdfBuilder {
         Ok(operations)
     }
 
-    /// Finalizes the PDF document by adding the page tree and trailer, then saves to file.
-    /// Creates a PDF/A-1B compliant document
-    fn create_pdfa_metadata(&mut self) -> Result<()> {
-        // Set PDF version first, before any other operations
-        self.doc.version = "1.4".to_string();
-
-        // Prepare OutputIntent for PDF/A-1B
-        let output_intent = Dictionary::from_iter([
-            ("Type", Object::Name(b"OutputIntent".to_vec())),
-            ("S", Object::Name(b"GTS_PDFA1".to_vec())),
-            (
-                "OutputConditionIdentifier",
-                Object::string_literal("sRGB IEC61966-2.1"),
-            ),
-            ("Info", Object::string_literal("sRGB IEC61966-2.1")),
-            (
-                "OutputCondition",
-                Object::string_literal("sRGB IEC61966-2.1"),
-            ),
-            (
-                "RegistryName",
-                Object::string_literal("http://www.color.org"),
-            ),
-        ]);
-
-        // Add the output intent to the document
-        let output_intent_id = self.doc.add_object(output_intent);
-
-        // Now get the catalog and update it
-        let catalog = self.doc.catalog_mut()?;
-        catalog.set(
-            "OutputIntents",
-            Object::Array(vec![Object::Reference(output_intent_id)]),
-        );
-
-        // Mark document as tagged PDF (required for PDF/UA and some PDF/A levels)
-        catalog.set(
-            "MarkInfo",
-            Object::Dictionary(Dictionary::from_iter([("Marked", Object::Boolean(true))])),
-        );
-
-        // Prepare document information
-        let mut info = Dictionary::new();
-        info.set("Producer", Object::string_literal("Lege PDF Generator"));
-        info.set("Creator", Object::string_literal("Lege"));
-        info.set(
-            "CreationDate",
-            Object::string_literal(chrono::Local::now().to_rfc3339()),
-        );
-        info.set(
-            "ModDate",
-            Object::string_literal(chrono::Local::now().to_rfc3339()),
-        );
-        info.set("Title", Object::string_literal("Document"));
-        info.set("Author", Object::string_literal("Lege"));
-        info.set("Subject", Object::string_literal("PDF/A Document"));
-        info.set("Keywords", Object::string_literal("PDF/A-1b"));
-        info.set("Trapped", Object::Name(b"False".to_vec()));
-
-        // Add info dictionary to document
-        let info_id = self.doc.add_object(info);
-        self.doc.trailer.set("Info", Object::Reference(info_id));
-
-        // Ensure all fonts are embedded
-        if let Some(ref mut _font_cache) = self.unicode_font {
-            self.ensure_unicode_font()?;
-        }
-
-        Ok(())
-    }
-
     pub fn finalize(mut self, output_path: &str, has_ocr_content: bool) -> Result<()> {
-        // Prepare PDF/A if OCR content is present
-        if has_ocr_content {
-            if let Err(e) = self.create_pdfa_metadata() {
-                log::warn!(
-                    "Failed to create PDF/A metadata: {}. Falling back to standard PDF.",
-                    e
-                );
-            }
-        }
-
         let mut doc = self.doc;
 
         // Create Pages dictionary
@@ -985,6 +904,68 @@ impl StreamingPdfBuilder {
         let catalog_dict = doc.get_object_mut(catalog_id)?.as_dict_mut()?;
         catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
         catalog_dict.set("Pages", Object::Reference(pages_id));
+
+        // PDF/A-1B metadata: applied here so the catalog exists before we modify it.
+        // Date format per PDF spec section 7.9.4: D:YYYYMMDDHHmmSSOHH'mm'
+        if has_ocr_content {
+            doc.version = "1.4".to_string();
+
+            let output_intent = Dictionary::from_iter([
+                ("Type", Object::Name(b"OutputIntent".to_vec())),
+                ("S", Object::Name(b"GTS_PDFA1".to_vec())),
+                (
+                    "OutputConditionIdentifier",
+                    Object::string_literal("sRGB IEC61966-2.1"),
+                ),
+                ("Info", Object::string_literal("sRGB IEC61966-2.1")),
+                (
+                    "OutputCondition",
+                    Object::string_literal("sRGB IEC61966-2.1"),
+                ),
+                (
+                    "RegistryName",
+                    Object::string_literal("http://www.color.org"),
+                ),
+            ]);
+            let output_intent_id = doc.add_object(output_intent);
+
+            let catalog_dict = doc.get_object_mut(catalog_id)?.as_dict_mut()?;
+            catalog_dict.set(
+                "OutputIntents",
+                Object::Array(vec![Object::Reference(output_intent_id)]),
+            );
+            catalog_dict.set(
+                "MarkInfo",
+                Object::Dictionary(Dictionary::from_iter([("Marked", Object::Boolean(true))])),
+            );
+
+            let now = chrono::Local::now();
+            let total_secs = now.offset().local_minus_utc();
+            let abs_secs = total_secs.unsigned_abs();
+            let tz_h = abs_secs / 3600;
+            let tz_m = (abs_secs % 3600) / 60;
+            let sign = if total_secs >= 0 { '+' } else { '-' };
+            let pdf_date = format!(
+                "D:{}{}{:02}'{:02}'",
+                now.format("%Y%m%d%H%M%S"),
+                sign,
+                tz_h,
+                tz_m
+            );
+
+            let mut info = Dictionary::new();
+            info.set("Producer", Object::string_literal("Lege PDF Generator"));
+            info.set("Creator", Object::string_literal("Lege"));
+            info.set("CreationDate", Object::string_literal(pdf_date.clone()));
+            info.set("ModDate", Object::string_literal(pdf_date));
+            info.set("Title", Object::string_literal("Document"));
+            info.set("Author", Object::string_literal("Lege"));
+            info.set("Subject", Object::string_literal("PDF/A Document"));
+            info.set("Keywords", Object::string_literal("PDF/A-1b"));
+            info.set("Trapped", Object::Name(b"False".to_vec()));
+            let info_id = doc.add_object(info);
+            doc.trailer.set("Info", Object::Reference(info_id));
+        }
 
         doc.trailer.set("Root", Object::Reference(catalog_id));
 

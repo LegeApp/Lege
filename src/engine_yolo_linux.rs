@@ -6,7 +6,7 @@ use image::RgbImage;
 use ndarray::Array;
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::session::{RunOptions, Session, SessionInputValue};
+use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, TensorElementType, Value, ValueType};
 
 #[path = "engine.rs"]
@@ -232,8 +232,8 @@ impl YoloLinuxEngine {
     }
 
     fn detect_single_sync(&mut self, image: &RgbImage) -> Result<Vec<Detection>> {
-        let pre = preprocess_yolo(image)?;
-        let output = self.run_single(&pre)?;
+        let mut pre = preprocess_yolo(image)?;
+        let output = self.run_single(&mut pre)?;
         self.postprocess(&output, &pre)
     }
 
@@ -244,20 +244,19 @@ impl YoloLinuxEngine {
             .collect()
     }
 
-    fn run_single(&mut self, inputs: &YoloPreprocessed) -> Result<Vec<DetectionRow>> {
+    fn run_single(&mut self, inputs: &mut YoloPreprocessed) -> Result<Vec<DetectionRow>> {
         let image_data = Array::from_shape_vec(
             (1, 3, YOLO_IMG_SIZE as usize, YOLO_IMG_SIZE as usize),
-            inputs.image_data.clone(),
+            std::mem::take(&mut inputs.image_data),
         )?;
         let input_values = [SessionInputValue::from(
             Value::from_array(image_data)
                 .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?,
         )];
-        let run_options = RunOptions::new()?;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let outputs = rt.block_on(self.session.run_async(input_values, &run_options)?)?;
+        let outputs = self
+            .session
+            .run(input_values)
+            .map_err(|e| anyhow!("YOLO inference failed: {e}"))?;
         parse_yolo_rows(&outputs[self.output_index])
     }
 
@@ -341,22 +340,44 @@ fn preprocess_yolo(img: &RgbImage) -> Result<YoloPreprocessed> {
 
     let (orig_width, orig_height) = img.dimensions();
     let transform = compute_letterbox_transform(orig_width, orig_height);
-    let resize_params = ResizeParams {
-        target_width: YOLO_IMG_SIZE,
-        target_height: YOLO_IMG_SIZE,
-        method: ResizeMethod::Bilinear,
-        letterbox: true,
-        border_value: 114.0,
-        swap_rb: false,
-    };
+
+    // Letterbox manually: resize to the aspect-preserving inner dimensions, then
+    // paste onto a filled canvas. The resize backends don't implement letterboxing
+    // themselves, so we do it here — consistent with build_inference_image() for PaddleX.
     let resized = if orig_width == YOLO_IMG_SIZE && orig_height == YOLO_IMG_SIZE {
         img.clone()
     } else {
-        let bytes =
-            crate::resize::resize_bytes(img.as_raw(), orig_width, orig_height, &resize_params, 3)
+        let scale = transform.scale;
+        let rw = ((orig_width as f32 * scale).round() as u32).max(1).min(YOLO_IMG_SIZE);
+        let rh = ((orig_height as f32 * scale).round() as u32).max(1).min(YOLO_IMG_SIZE);
+        let inner_params = ResizeParams {
+            target_width: rw,
+            target_height: rh,
+            method: ResizeMethod::Bilinear,
+            letterbox: false,
+            border_value: 0.0,
+            swap_rb: false,
+        };
+        let inner_bytes =
+            crate::resize::resize_bytes(img.as_raw(), orig_width, orig_height, &inner_params, 3)
                 .map_err(|e| anyhow!("YOLO resize failed: {e}"))?;
-        RgbImage::from_raw(YOLO_IMG_SIZE, YOLO_IMG_SIZE, bytes)
-            .ok_or_else(|| anyhow!("Failed to construct YOLO inference image"))?
+
+        // Fill canvas with border value (114) and paste inner image with padding
+        const BORDER: u8 = 114;
+        let mut canvas = vec![BORDER; (YOLO_IMG_SIZE * YOLO_IMG_SIZE * 3) as usize];
+        let pad_x = transform.pad_x.round() as usize;
+        let pad_y = transform.pad_y.round() as usize;
+        let stride_src = (rw * 3) as usize;
+        let stride_dst = (YOLO_IMG_SIZE * 3) as usize;
+        for row in 0..rh as usize {
+            let s = row * stride_src;
+            let d = (pad_y + row) * stride_dst + pad_x * 3;
+            if d + stride_src <= canvas.len() {
+                canvas[d..d + stride_src].copy_from_slice(&inner_bytes[s..s + stride_src]);
+            }
+        }
+        RgbImage::from_raw(YOLO_IMG_SIZE, YOLO_IMG_SIZE, canvas)
+            .ok_or_else(|| anyhow!("Failed to construct YOLO letterboxed image"))?
     };
 
     let plane = (YOLO_IMG_SIZE * YOLO_IMG_SIZE) as usize;

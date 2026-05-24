@@ -200,19 +200,23 @@ pub async fn source_stage(
                 })?;
 
                 if let Some(engine) = deskew_engine {
-                    let image_for_deskew =
-                        std::mem::replace(&mut source_page.image, RgbImage::new(0, 0));
+                    let original = std::mem::replace(&mut source_page.image, RgbImage::new(0, 0));
                     match tokio::task::spawn_blocking(move || {
-                        engine.process_image(&image_for_deskew)
+                        match engine.process_image(&original) {
+                            Ok(corrected) => Ok(corrected),
+                            Err(e) => Err((e, original)),
+                        }
                     })
                     .await
                     {
                         Ok(Ok(corrected)) => source_page.image = corrected,
-                        Ok(Err(e)) => {
+                        Ok(Err((e, original))) => {
                             crate::warn_log!("Page {}: deskew failed: {}", page_index, e);
+                            source_page.image = original;
                         }
                         Err(e) => {
                             crate::warn_log!("Page {}: deskew task panicked: {}", page_index, e);
+                            // image already replaced with 0×0; page will be skipped downstream
                         }
                     }
                 }
