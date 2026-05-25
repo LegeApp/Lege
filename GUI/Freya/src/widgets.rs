@@ -1,11 +1,7 @@
 use freya::prelude::*;
 
-const APP_BG: (u8, u8, u8) = (226, 232, 235);
-const PANEL_BG: (u8, u8, u8) = (255, 250, 250);
-const CARD_BG: (u8, u8, u8) = (255, 250, 250);
-const TEXT: (u8, u8, u8) = (20, 20, 20);
-const MUTED: (u8, u8, u8) = (90, 90, 90);
-const BORDER: (u8, u8, u8) = (128, 128, 128);
+use crate::colors::{APP_BG, PANEL_BG, CARD_BG, TEXT, MUTED, BORDER};
+
 
 pub fn lege_panel_card(
     title: impl Into<String>,
@@ -268,8 +264,6 @@ pub fn lege_status_panel(
             rect()
                 .width(Size::fill())
                 .height(Size::fill())
-                .padding((0., 224., 0., 0.))
-                .main_align(Alignment::Start)
                 .child(status_content),
         )
         .child(

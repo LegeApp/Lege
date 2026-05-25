@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod colors;
 mod gui_text;
 mod logging;
 mod models;
