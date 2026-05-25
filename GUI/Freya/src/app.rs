@@ -18,13 +18,7 @@ use lege::target_profiles;
 #[cfg(feature = "debug-logging")]
 use lege::dbglog;
 
-const APP_BG: (u8, u8, u8) = (226, 232, 235);
-const PANEL_BG: (u8, u8, u8) = (255, 250, 250);
-const CARD_BG: (u8, u8, u8) = (255, 250, 250);
-const TEXT: (u8, u8, u8) = (20, 20, 20);
-const MUTED: (u8, u8, u8) = (90, 90, 90);
-const BORDER: (u8, u8, u8) = (128, 128, 128);
-const INFO_BG: (u8, u8, u8) = (255, 255, 225);
+use crate::colors::{APP_BG, PANEL_BG, CARD_BG, TEXT, MUTED, BORDER, INFO_BG};
 const SUCCESS_BG: (u8, u8, u8) = (232, 245, 232);
 fn retro_theme() -> Theme {
     let mut theme = light_theme();
@@ -125,6 +119,7 @@ pub struct AppState {
     pub progress_metrics: Option<lege::progress::ProgressMetrics>,
     pub active_task_ids: Vec<u64>,
     pub should_cancel: bool,
+    pub job_color_index: u32,
 
     pub target_height_input: String,
     pub target_resolution_selection: String,
@@ -182,6 +177,7 @@ impl Default for AppState {
             progress_metrics: None,
             active_task_ids: Vec::new(),
             should_cancel: false,
+            job_color_index: u32::MAX,
             target_height_input: options.target_height.unwrap_or(1200).to_string(),
             target_resolution_selection: GUI_TEXT
                 .interactive
@@ -454,21 +450,14 @@ fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, 
 fn tooltip_note_card(text: impl Into<String>) -> Element {
     let text = text.into();
     rect()
-        .background(CARD_BG)
-        .border(
-            Border::new()
-                .fill(BORDER)
-                .width(1.)
-                .alignment(BorderAlignment::Inner),
-        )
-        .corner_radius(6.)
+        .corner_radius(4.)
         .padding((6., 8., 6., 8.))
         .width(Size::fill())
         .child(
             paragraph()
                 .width(Size::fill())
-                .span(Span::new(text).font_size(11.).color(TEXT))
-                .line_height(1.2)
+                .span(Span::new(text).font_size(13.).color(TEXT))
+                .line_height(1.3)
                 .max_lines(6),
         )
         .into()
@@ -517,7 +506,7 @@ fn panel_tooltip_overlay(state: State<AppState>, area: TooltipArea, anchor_right
     };
 
     rect()
-        .width(Size::px(220.))
+        .width(Size::px(250.))
         .position(position)
         .child(tooltip_note_card(text))
         .into()
@@ -1104,7 +1093,7 @@ fn CombinedSettingsPanel(
                     .into(),
             ],
         ))
-        .child(panel_tooltip_overlay(state, TooltipArea::LeftCard, true))
+        .child(panel_tooltip_overlay(state, TooltipArea::LeftCard, false))
         .into()
 }
 
@@ -1552,176 +1541,19 @@ fn progress_stage_card(
         .into()
 }
 
-fn progress_grid(metrics: lege::progress::ProgressMetrics) -> Option<Element> {
+fn progress_single_bar(
+    metrics: lege::progress::ProgressMetrics,
+    color: (u8, u8, u8),
+) -> Option<Element> {
     if metrics.pages_total == 0 {
         return None;
     }
-
-    let mut cards = Vec::new();
-    match metrics.mode {
-        lege::progress::ProgressMode::Layout => {
-            cards.push(progress_stage_card(
-                GUI_TEXT.interactive.progress.render.clone(),
-                metrics.rendered,
-                metrics.pages_total,
-                (180, 217, 232),
-            ));
-            cards.push(progress_stage_card(
-                GUI_TEXT.interactive.progress.infer.clone(),
-                metrics.detected,
-                metrics.pages_total,
-                (232, 218, 166),
-            ));
-            cards.push(progress_stage_card(
-                GUI_TEXT.interactive.progress.encode.clone(),
-                metrics.encoded,
-                metrics.pages_total,
-                (220, 192, 214),
-            ));
-            if metrics.enable_deskew {
-                cards.push(progress_stage_card(
-                    GUI_TEXT.interactive.progress.deskew.clone(),
-                    metrics.deskewed,
-                    metrics.pages_total,
-                    (180, 201, 232),
-                ));
-            }
-        }
-        lege::progress::ProgressMode::Margin => {
-            cards.push(progress_stage_card(
-                GUI_TEXT.interactive.progress.render.clone(),
-                metrics.rendered,
-                metrics.pages_total,
-                (180, 217, 232),
-            ));
-            if metrics.enable_layout_detection {
-                cards.push(progress_stage_card(
-                    GUI_TEXT.interactive.progress.infer.clone(),
-                    metrics.detected,
-                    metrics.pages_total,
-                    (232, 218, 166),
-                ));
-                cards.push(progress_stage_card(
-                    GUI_TEXT.interactive.progress.margin.clone(),
-                    metrics.encoded,
-                    metrics.pages_total,
-                    (214, 196, 234),
-                ));
-            } else {
-                cards.push(progress_stage_card(
-                    GUI_TEXT.interactive.progress.margin.clone(),
-                    metrics.encoded,
-                    metrics.pages_total,
-                    (214, 196, 234),
-                ));
-            }
-            if metrics.enable_deskew {
-                cards.push(progress_stage_card(
-                    GUI_TEXT.interactive.progress.deskew.clone(),
-                    metrics.deskewed,
-                    metrics.pages_total,
-                    (180, 201, 232),
-                ));
-            }
-        }
-        lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
-            cards.push(progress_stage_card(
-                GUI_TEXT.interactive.progress.render.clone(),
-                metrics.rendered,
-                metrics.pages_total,
-                (180, 217, 232),
-            ));
-            cards.push(progress_stage_card(
-                GUI_TEXT.interactive.progress.encode.clone(),
-                metrics.encoded,
-                metrics.pages_total,
-                (220, 192, 214),
-            ));
-            if metrics.enable_deskew {
-                cards.push(progress_stage_card(
-                    GUI_TEXT.interactive.progress.deskew.clone(),
-                    metrics.deskewed,
-                    metrics.pages_total,
-                    (180, 201, 232),
-                ));
-            }
-        }
-        lege::progress::ProgressMode::Unknown => {}
-    }
-
-    if cards.is_empty() {
-        return None;
-    }
-
-    let top_row: Element = if cards.len() == 1 {
-        rect()
-            .width(Size::fill())
-            .height(Size::px(48.))
-            .child(cards.remove(0))
-            .into()
-    } else {
-        let first = cards.remove(0);
-        let second = cards.remove(0);
-        rect()
-            .width(Size::fill())
-            .height(Size::px(48.))
-            .direction(Direction::Horizontal)
-            .spacing(6.)
-            .child(
-                rect()
-                    .width(Size::percent(50.))
-                    .height(Size::fill())
-                    .child(first),
-            )
-            .child(
-                rect()
-                    .width(Size::percent(50.))
-                    .height(Size::fill())
-                    .child(second),
-            )
-            .into()
-    };
-
-    let bottom_row: Option<Element> = match cards.len() {
-        0 => None,
-        1 => Some(
-            rect()
-                .width(Size::fill())
-                .height(Size::px(48.))
-                .child(cards.remove(0))
-                .into(),
-        ),
-        _ => Some(
-            rect()
-                .width(Size::fill())
-                .height(Size::px(48.))
-                .direction(Direction::Horizontal)
-                .spacing(6.)
-                .child(
-                    rect()
-                        .width(Size::percent(50.))
-                        .height(Size::fill())
-                        .child(cards.remove(0)),
-                )
-                .child(
-                    rect()
-                        .width(Size::percent(50.))
-                        .height(Size::fill())
-                        .child(cards.remove(0)),
-                )
-                .into(),
-        ),
-    };
-
-    Some(
-        rect()
-            .width(Size::fill())
-            .vertical()
-            .spacing(6.)
-            .child(top_row)
-            .maybe_child(bottom_row)
-            .into(),
-    )
+    Some(progress_stage_card(
+        GUI_TEXT.interactive.progress.encode.clone(),
+        metrics.encoded,
+        metrics.pages_total,
+        color,
+    ))
 }
 
 fn StatusBar(state: State<AppState>) -> Element {
@@ -1732,6 +1564,7 @@ fn StatusBar(state: State<AppState>) -> Element {
     let queue_len = queue_items.len();
     let status = read.status_lines.clone();
     let progress_metrics = read.progress_metrics;
+    let job_color_index = read.job_color_index;
     drop(read);
 
     // ── Top-right control strip (always shown) ───────────────────────────────
@@ -1791,7 +1624,8 @@ fn StatusBar(state: State<AppState>) -> Element {
     // ── Main content: dual-mode ───────────────────────────────────────────────
     let main_content: Element = if is_processing {
         // PROCESSING MODE — existing progress display.
-        let progress_section = progress_metrics.and_then(progress_grid);
+        let bar_color = crate::colors::job_accent_color(job_color_index);
+        let progress_section = progress_metrics.and_then(|m| progress_single_bar(m, bar_color));
         let secondary_text = if progress_section.is_some() {
             let mut parts = Vec::new();
             if !status.3.is_empty() {
@@ -2535,6 +2369,17 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
         let mut s = state.write();
         s.is_processing = true;
         s.should_cancel = false;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(7);
+        let prev = s.job_color_index;
+        let mut picked = (nanos % 15) as u32;
+        // avoid same color as last job (u32::MAX = no previous job)
+        if prev != u32::MAX && picked == prev {
+            picked = (picked + 1) % 15;
+        }
+        s.job_color_index = picked;
         s.active_eta = None;
         s.progress_metrics = None;
         s.show_completion_popup = false;
