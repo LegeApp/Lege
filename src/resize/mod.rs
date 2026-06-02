@@ -5,35 +5,15 @@ use fast_image_resize::{
     Filter, FilterType as FirFilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
     images::Image as FirImage,
 };
-#[cfg(windows)]
-use lege_gpu::resize::hlsl::{
-    FilterType as HlslFilterType, HlslResizer, ResizeParameters as HlslResizeParameters,
-};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use lege_gpu::resize::wgpu::{
     FilterType as WgpuFilterType, ResizeParameters as WgpuResizeParameters, WgpuResizer,
 };
 use log::warn;
-#[cfg(windows)]
 use once_cell::sync::OnceCell;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use once_cell::sync::OnceCell;
-#[cfg(windows)]
-use std::sync::Mutex;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
-#[cfg(windows)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(windows)]
-static HLSL_RESIZER: OnceCell<Mutex<HlslResizer>> = OnceCell::new();
-#[cfg(windows)]
-static GPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 static WGPU_RESIZER: OnceCell<Mutex<WgpuResizer>> = OnceCell::new();
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 static WGPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RESIZE_BACKEND_PREFERENCE: AtomicU8 = AtomicU8::new(0); // 0=auto, 1=fast_cpu
 
@@ -177,7 +157,6 @@ fn bell_filter_type() -> FirFilterType {
     FirFilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ensure_wgpu_resizer() -> Result<&'static Mutex<WgpuResizer>, ResizeError> {
     WGPU_RESIZER.get_or_try_init(|| {
         let resizer = WgpuResizer::new().map_err(|e| {
@@ -191,35 +170,11 @@ fn ensure_wgpu_resizer() -> Result<&'static Mutex<WgpuResizer>, ResizeError> {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn wgpu_filter_from_method(method: ResizeMethod) -> WgpuFilterType {
     match method {
         ResizeMethod::Nearest | ResizeMethod::Bilinear => WgpuFilterType::Bilinear,
         ResizeMethod::Bicubic | ResizeMethod::Bell => WgpuFilterType::Bell,
         ResizeMethod::Lanczos3 => WgpuFilterType::Lanczos3,
-    }
-}
-
-#[cfg(windows)]
-fn ensure_hlsl_resizer() -> Result<&'static Mutex<HlslResizer>, ResizeError> {
-    HLSL_RESIZER.get_or_try_init(|| {
-        let resizer = HlslResizer::new().map_err(|e| {
-            ResizeError::BackendError(format!("Failed to initialize HLSL resizer: {e:?}"))
-        })?;
-
-        #[cfg(feature = "debug-logging")]
-        println!("✓ HLSL GPU resizer initialized successfully (DirectX 12 compute shaders)");
-
-        Ok(Mutex::new(resizer))
-    })
-}
-
-#[cfg(windows)]
-fn hlsl_filter_from_method(method: ResizeMethod) -> HlslFilterType {
-    match method {
-        ResizeMethod::Nearest | ResizeMethod::Bilinear => HlslFilterType::Bilinear,
-        ResizeMethod::Bicubic | ResizeMethod::Bell => HlslFilterType::Bell,
-        ResizeMethod::Lanczos3 => HlslFilterType::Lanczos3,
     }
 }
 
@@ -270,44 +225,6 @@ fn cpu_resize_bytes(
     Ok(dst)
 }
 
-#[cfg(windows)]
-fn hlsl_resize_bytes(
-    src_data: &[u8],
-    src_width: u32,
-    src_height: u32,
-    params: &ResizeParams,
-    channel_count: u32,
-) -> Result<Vec<u8>, ResizeError> {
-    let resizer_lock = ensure_hlsl_resizer()?;
-    let mut resizer = resizer_lock
-        .lock()
-        .map_err(|_| ResizeError::BackendError("HLSL resizer poisoned".to_string()))?;
-
-    let mut hlsl_params = HlslResizeParameters::new(
-        src_width,
-        src_height,
-        params.target_width,
-        params.target_height,
-    );
-    hlsl_params.filter = hlsl_filter_from_method(params.method);
-    hlsl_params.border_value = params.border_value;
-    hlsl_params.no_srgb = true;
-    hlsl_params.channel_count = channel_count;
-
-    let mut data = resizer
-        .resize(src_data, &hlsl_params)
-        .map_err(|e| ResizeError::BackendError(format!("HLSL resize failed: {e:?}")))?;
-
-    if params.swap_rb && channel_count >= 3 {
-        for px in data.chunks_exact_mut(channel_count as usize) {
-            px.swap(0, 2);
-        }
-    }
-
-    Ok(data)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn wgpu_resize_bytes(
     src_data: &[u8],
     src_width: u32,
@@ -344,9 +261,7 @@ fn wgpu_resize_bytes(
     Ok(data)
 }
 
-/// Resize image bytes using hardware acceleration when available.
-/// On Windows, uses HLSL/DirectX 12 compute shaders for GPU acceleration with CPU fallback.
-/// On Linux/macOS, uses WGPU shaders with CPU (`fast_image_resize`) fallback.
+/// Resize image bytes using WGPU acceleration when available, with CPU fallback.
 pub fn resize_bytes(
     src_data: &[u8],
     src_width: u32,
@@ -374,161 +289,62 @@ pub fn resize_bytes(
         );
     }
 
-    #[cfg(windows)]
-    {
-        // Windows: Try HLSL GPU acceleration first, fall back to CPU only if needed.
-        let gpu_memory_required = (src_width as u64 * src_height as u64 * channel_count as u64)
-            + (params.target_width as u64 * params.target_height as u64 * channel_count as u64);
+    match wgpu_resize_bytes(src_data, src_width, src_height, params, channel_count) {
+        Ok(data) => {
+            let _count = WGPU_RESIZE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
-        match hlsl_resize_bytes(src_data, src_width, src_height, params, channel_count) {
-            Ok(data) => {
-                let count = GPU_RESIZE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-
-                #[cfg(feature = "debug-logging")]
-                {
-                    if count == 1 {
-                        println!(
-                            "HLSL GPU resize #1: {}x{} -> {}x{} ({} channels) - Hardware acceleration active!",
-                            src_width,
-                            src_height,
-                            params.target_width,
-                            params.target_height,
-                            channel_count
-                        );
-                    } else if count % 50 == 0 {
-                        println!(
-                            "HLSL GPU resize #{}: {}x{} -> {}x{} ({} channels)",
-                            count,
-                            src_width,
-                            src_height,
-                            params.target_width,
-                            params.target_height,
-                            channel_count
-                        );
-                    }
+            #[cfg(feature = "debug-logging")]
+            {
+                if count == 1 {
+                    println!(
+                        "WGPU resize #1: {}x{} -> {}x{} ({} channels) - Hardware acceleration active!",
+                        src_width,
+                        src_height,
+                        params.target_width,
+                        params.target_height,
+                        channel_count
+                    );
+                } else if _count % 50 == 0 {
+                    println!(
+                        "WGPU resize #{}: {}x{} -> {}x{} ({} channels)",
+                        _count,
+                        src_width,
+                        src_height,
+                        params.target_width,
+                        params.target_height,
+                        channel_count
+                    );
                 }
+            }
 
-                log::debug!(
-                    "HLSL GPU resize successful: {}x{} -> {}x{} ({} channels)",
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height,
-                    channel_count
-                );
-                return Ok(data);
-            }
-            Err(ResizeError::BackendError(ref msg)) if msg.contains("memory pressure") => {
-                warn!(
-                    "HLSL GPU resize emergency fallback due to memory pressure ({}x{} -> {}x{}, ~{} MB input/output); falling back to CPU",
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height,
-                    gpu_memory_required / (1024 * 1024)
-                );
-                #[cfg(feature = "debug-logging")]
-                crate::info_log!(
-                    "[resize] HLSL GPU fallback to CPU (memory pressure, ~{} MB): {}x{} -> {}x{}",
-                    gpu_memory_required / (1024 * 1024),
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height
-                );
-            }
-            Err(ResizeError::BackendError(ref msg)) if msg.contains("ResourceAllocationFailed") => {
-                warn!(
-                    "HLSL GPU resize emergency fallback due to resource allocation ({}x{} -> {}x{}); falling back to CPU: {}",
-                    src_width, src_height, params.target_width, params.target_height, msg
-                );
-                #[cfg(feature = "debug-logging")]
-                crate::info_log!(
-                    "[resize] HLSL GPU emergency fallback to CPU (resource allocation): {}x{} -> {}x{}: {}",
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height,
-                    msg
-                );
-            }
-            Err(err) => {
-                warn!(
-                    "HLSL GPU resize emergency fallback ({}x{} -> {}x{}): {}; falling back to CPU",
-                    src_width, src_height, params.target_width, params.target_height, err
-                );
-                #[cfg(feature = "debug-logging")]
-                crate::info_log!(
-                    "[resize] HLSL GPU emergency fallback to CPU ({}x{} -> {}x{}): {}",
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height,
-                    err
-                );
-            }
+            log::debug!(
+                "WGPU resize successful: {}x{} -> {}x{} ({} channels)",
+                src_width,
+                src_height,
+                params.target_width,
+                params.target_height,
+                channel_count
+            );
+            return Ok(data);
+        }
+        Err(err) => {
+            warn!(
+                "WGPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
+                src_width, src_height, params.target_width, params.target_height, err
+            );
+            #[cfg(feature = "debug-logging")]
+            crate::info_log!(
+                "[resize] WGPU fallback to CPU ({}x{} -> {}x{}): {}",
+                src_width,
+                src_height,
+                params.target_width,
+                params.target_height,
+                err
+            );
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        match wgpu_resize_bytes(src_data, src_width, src_height, params, channel_count) {
-            Ok(data) => {
-                let count = WGPU_RESIZE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-
-                #[cfg(feature = "debug-logging")]
-                {
-                    if count == 1 {
-                        println!(
-                            "WGPU resize #1: {}x{} -> {}x{} ({} channels) - Hardware acceleration active!",
-                            src_width,
-                            src_height,
-                            params.target_width,
-                            params.target_height,
-                            channel_count
-                        );
-                    } else if count % 50 == 0 {
-                        println!(
-                            "WGPU resize #{}: {}x{} -> {}x{} ({} channels)",
-                            count,
-                            src_width,
-                            src_height,
-                            params.target_width,
-                            params.target_height,
-                            channel_count
-                        );
-                    }
-                }
-
-                log::debug!(
-                    "WGPU resize successful: {}x{} -> {}x{} ({} channels)",
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height,
-                    channel_count
-                );
-                return Ok(data);
-            }
-            Err(err) => {
-                warn!(
-                    "WGPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
-                    src_width, src_height, params.target_width, params.target_height, err
-                );
-                #[cfg(feature = "debug-logging")]
-                crate::info_log!(
-                    "[resize] WGPU fallback to CPU ({}x{} -> {}x{}): {}",
-                    src_width,
-                    src_height,
-                    params.target_width,
-                    params.target_height,
-                    err
-                );
-            }
-        }
-    }
-
-    // CPU fallback (primary on Linux, fallback on Windows)
+    // CPU fallback
     cpu_resize_bytes(src_data, src_width, src_height, params, channel_count).map_err(|e| {
         log::error!(
             "Resize failed for {}x{} -> {}x{}: {}",
