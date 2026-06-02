@@ -12,3 +12,7 @@ pub(crate) mod ops;
 pub(crate) mod preprocess;
 pub(crate) mod reference;
 pub(crate) mod runtime;
+
+mod api;
+
+pub use api::{LayoutConfig, LayoutDetection, LayoutDetector};
