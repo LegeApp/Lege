@@ -20,7 +20,7 @@ impl GpuContext {
         eprintln!("wgpu adapters:");
         let mut selected = None;
         let mut selected_cpu = None;
-        for adapter in instance.enumerate_adapters(backends) {
+        for adapter in instance.enumerate_adapters(backends).await {
             let info = adapter.get_info();
             eprintln!(
                 "  - {} ({:?}, {:?})",
@@ -37,7 +37,9 @@ impl GpuContext {
             }
             if selected.is_none() && info.device_type != crate::vision::wgpu::DeviceType::Cpu {
                 selected = Some(adapter);
-            } else if selected_cpu.is_none() && info.device_type == crate::vision::wgpu::DeviceType::Cpu {
+            } else if selected_cpu.is_none()
+                && info.device_type == crate::vision::wgpu::DeviceType::Cpu
+            {
                 selected_cpu = Some(adapter);
             }
         }
@@ -77,7 +79,8 @@ impl GpuContext {
         }
 
         let adapter_features = adapter.features();
-        let supports_timestamps = adapter_features.contains(crate::vision::wgpu::Features::TIMESTAMP_QUERY);
+        let supports_timestamps =
+            adapter_features.contains(crate::vision::wgpu::Features::TIMESTAMP_QUERY);
         let required_features = if supports_timestamps {
             crate::vision::wgpu::Features::TIMESTAMP_QUERY
         } else {
@@ -85,14 +88,13 @@ impl GpuContext {
         };
 
         let (device, queue) = adapter
-            .request_device(
-                &crate::vision::wgpu::DeviceDescriptor {
-                    label: Some("wgpu-yolo-layout"),
-                    required_features,
-                    required_limits: adapter.limits(),
-                },
-                None,
-            )
+            .request_device(&crate::vision::wgpu::DeviceDescriptor {
+                label: Some("wgpu-yolo-layout"),
+                required_features,
+                required_limits: adapter.limits(),
+                memory_hints: crate::vision::wgpu::MemoryHints::Performance,
+                ..Default::default()
+            })
             .await
             .context("failed to create wgpu device")?;
         Ok(Self {
@@ -106,7 +108,7 @@ impl GpuContext {
 
 fn requested_backends() -> crate::vision::wgpu::Backends {
     let Ok(raw) = std::env::var("WGPU_BACKEND") else {
-        return crate::vision::wgpu::Backends::all();
+        return default_backends();
     };
     let mut backends = crate::vision::wgpu::Backends::empty();
     for part in raw.split(',').map(|part| part.trim().to_ascii_lowercase()) {
@@ -115,16 +117,28 @@ fn requested_backends() -> crate::vision::wgpu::Backends {
             "metal" | "mtl" => backends |= crate::vision::wgpu::Backends::METAL,
             "dx12" | "d3d12" => backends |= crate::vision::wgpu::Backends::DX12,
             "gl" | "opengl" | "gles" => backends |= crate::vision::wgpu::Backends::GL,
-            "browser_webgpu" | "webgpu" => backends |= crate::vision::wgpu::Backends::BROWSER_WEBGPU,
+            "browser_webgpu" | "webgpu" => {
+                backends |= crate::vision::wgpu::Backends::BROWSER_WEBGPU
+            }
             "all" => backends |= crate::vision::wgpu::Backends::all(),
             _ => {}
         }
     }
     if backends.is_empty() {
-        crate::vision::wgpu::Backends::all()
+        default_backends()
     } else {
         backends
     }
+}
+
+#[cfg(target_os = "windows")]
+fn default_backends() -> crate::vision::wgpu::Backends {
+    crate::vision::wgpu::Backends::DX12
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_backends() -> crate::vision::wgpu::Backends {
+    crate::vision::wgpu::Backends::all()
 }
 
 // ── Core GPU dispatch ─────────────────────────────────────────────────────────
@@ -150,33 +164,33 @@ pub(crate) async fn dispatch_compute(
     read_flags.push(false); // output
     read_flags.push(true); // params
 
-    let bgl = ctx
-        .device
-        .create_bind_group_layout(&crate::vision::wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &storage_bgl_entries(&read_flags),
-        });
-    let pipeline = ctx
-        .device
-        .create_compute_pipeline(&crate::vision::wgpu::ComputePipelineDescriptor {
-            label: None,
-            layout: Some(
-                &ctx.device
-                    .create_pipeline_layout(&crate::vision::wgpu::PipelineLayoutDescriptor {
+    let bgl =
+        ctx.device
+            .create_bind_group_layout(&crate::vision::wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &storage_bgl_entries(&read_flags),
+            });
+    let pipeline =
+        ctx.device
+            .create_compute_pipeline(&crate::vision::wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(&ctx.device.create_pipeline_layout(
+                    &crate::vision::wgpu::PipelineLayoutDescriptor {
                         label: None,
-                        bind_group_layouts: &[&bgl],
-                        push_constant_ranges: &[],
-                    }),
-            ),
-            module: &ctx
-                .device
-                .create_shader_module(crate::vision::wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: crate::vision::wgpu::ShaderSource::Wgsl(wgsl.into()),
-                }),
-            entry_point: "main",
-            compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
-        });
+                        bind_group_layouts: &[Some(&bgl)],
+                        immediate_size: 0,
+                    },
+                )),
+                module: &ctx.device.create_shader_module(
+                    crate::vision::wgpu::ShaderModuleDescriptor {
+                        label: None,
+                        source: crate::vision::wgpu::ShaderSource::Wgsl(wgsl.into()),
+                    },
+                ),
+                entry_point: Some("main"),
+                compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
 
     let mut buffers: Vec<crate::vision::wgpu::Buffer> = inputs
         .iter()
@@ -191,25 +205,31 @@ pub(crate) async fn dispatch_compute(
         })
         .collect();
 
-    let out_buf = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-        label: Some("output"),
-        size: output_bytes as u64,
-        usage: crate::vision::wgpu::BufferUsages::STORAGE | crate::vision::wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let readback = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: output_bytes as u64,
-        usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let params_buf = ctx
+    let out_buf = ctx
         .device
-        .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
-            label: Some("params"),
-            contents: params,
-            usage: crate::vision::wgpu::BufferUsages::STORAGE,
+        .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some("output"),
+            size: output_bytes as u64,
+            usage: crate::vision::wgpu::BufferUsages::STORAGE
+                | crate::vision::wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
+    let readback = ctx
+        .device
+        .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: output_bytes as u64,
+            usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                | crate::vision::wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+    let params_buf =
+        ctx.device
+            .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
+                label: Some("params"),
+                contents: params,
+                usage: crate::vision::wgpu::BufferUsages::STORAGE,
+            });
 
     buffers.push(out_buf);
 
@@ -226,11 +246,13 @@ pub(crate) async fn dispatch_compute(
         }))
         .collect();
 
-    let bg = ctx.device.create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &bgl,
-        entries: &bg_entries,
-    });
+    let bg = ctx
+        .device
+        .create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &bg_entries,
+        });
 
     let mut encoder = ctx
         .device
@@ -251,20 +273,24 @@ pub(crate) async fn dispatch_compute(
     map_readback(&ctx.device, &readback, output_bytes).await
 }
 
-pub(crate) fn storage_bgl_entries(read_flags: &[bool]) -> Vec<crate::vision::wgpu::BindGroupLayoutEntry> {
+pub(crate) fn storage_bgl_entries(
+    read_flags: &[bool],
+) -> Vec<crate::vision::wgpu::BindGroupLayoutEntry> {
     read_flags
         .iter()
         .enumerate()
-        .map(|(i, &read_only)| crate::vision::wgpu::BindGroupLayoutEntry {
-            binding: i as u32,
-            visibility: crate::vision::wgpu::ShaderStages::COMPUTE,
-            ty: crate::vision::wgpu::BindingType::Buffer {
-                ty: crate::vision::wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        .map(
+            |(i, &read_only)| crate::vision::wgpu::BindGroupLayoutEntry {
+                binding: i as u32,
+                visibility: crate::vision::wgpu::ShaderStages::COMPUTE,
+                ty: crate::vision::wgpu::BindingType::Buffer {
+                    ty: crate::vision::wgpu::BufferBindingType::Storage { read_only },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        })
+        )
         .collect()
 }
 
@@ -278,7 +304,7 @@ pub(crate) async fn map_readback(
     slice.map_async(crate::vision::wgpu::MapMode::Read, move |r| {
         let _ = sender.send(r);
     });
-    device.poll(crate::vision::wgpu::Maintain::Wait);
+    let _ = device.poll(crate::vision::wgpu::PollType::wait_indefinitely());
     receiver
         .recv()
         .context("readback callback was not called")?

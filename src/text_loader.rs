@@ -15,7 +15,6 @@ pub struct CliText {
     pub processing: ProcessingText,
     pub progress: ProgressText,
     pub system_status: SystemStatusText,
-    pub providers: ProviderText,
     pub errors: ErrorText,
     pub indicators: IndicatorText,
 }
@@ -231,45 +230,6 @@ pub struct SystemStatusText {
     pub cuda_unavailable: String,
     pub memory_info: String,
     pub cpu_info: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ProviderText {
-    pub linux: LinuxProviderText,
-    pub windows: WindowsProviderText,
-    pub install_help: InstallHelpText,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct LinuxProviderText {
-    pub trying_cuda: String,
-    pub cuda_success: String,
-    pub cuda_failed: String,
-    pub trying_openvino: String,
-    pub openvino_success: String,
-    pub openvino_failed: String,
-    pub trying_webgpu: String,
-    pub webgpu_success: String,
-    pub webgpu_failed: String,
-    pub using_cpu: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WindowsProviderText {
-    pub trying_cuda: String,
-    pub cuda_success: String,
-    pub cuda_failed: String,
-    pub trying_directml: String,
-    pub directml_success: String,
-    pub directml_failed: String,
-    pub using_cpu: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct InstallHelpText {
-    pub nvidia_drivers: String,
-    pub openvino_linux: String,
-    pub directml_windows: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -511,34 +471,6 @@ fn default_cli_text() -> CliText {
             memory_info: missing.clone(),
             cpu_info: missing.clone(),
         },
-        providers: ProviderText {
-            linux: LinuxProviderText {
-                trying_cuda: missing.clone(),
-                cuda_success: missing.clone(),
-                cuda_failed: missing.clone(),
-                trying_openvino: missing.clone(),
-                openvino_success: missing.clone(),
-                openvino_failed: missing.clone(),
-                trying_webgpu: missing.clone(),
-                webgpu_success: missing.clone(),
-                webgpu_failed: missing.clone(),
-                using_cpu: missing.clone(),
-            },
-            windows: WindowsProviderText {
-                trying_cuda: missing.clone(),
-                cuda_success: missing.clone(),
-                cuda_failed: missing.clone(),
-                trying_directml: missing.clone(),
-                directml_success: missing.clone(),
-                directml_failed: missing.clone(),
-                using_cpu: missing.clone(),
-            },
-            install_help: InstallHelpText {
-                nvidia_drivers: missing.clone(),
-                openvino_linux: missing.clone(),
-                directml_windows: missing.clone(),
-            },
-        },
         errors: ErrorText {
             file_not_found: missing.clone(),
             invalid_pdf: missing.clone(),
@@ -595,74 +527,4 @@ impl CliText {
         self.progress.percentage.replace("{}", &pct.to_string())
     }
 
-    // Helper to get platform-specific provider messages
-    pub fn get_provider_messages(&self) -> &dyn ProviderMessages {
-        #[cfg(target_os = "linux")]
-        return &self.providers.linux;
-
-        #[cfg(target_os = "windows")]
-        return &self.providers.windows;
-
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        return &self.providers.linux; // fallback to linux messages
-    }
-}
-
-// Trait to abstract platform-specific provider messages
-pub trait ProviderMessages {
-    fn trying_cuda(&self) -> &str;
-    fn cuda_success(&self) -> &str;
-    fn cuda_failed(&self) -> &str;
-    fn trying_secondary(&self) -> &str;
-    fn secondary_success(&self) -> &str;
-    fn secondary_failed(&self) -> &str;
-    fn using_cpu(&self) -> &str;
-}
-
-impl ProviderMessages for LinuxProviderText {
-    fn trying_cuda(&self) -> &str {
-        &self.trying_cuda
-    }
-    fn cuda_success(&self) -> &str {
-        &self.cuda_success
-    }
-    fn cuda_failed(&self) -> &str {
-        &self.cuda_failed
-    }
-    fn trying_secondary(&self) -> &str {
-        &self.trying_openvino
-    }
-    fn secondary_success(&self) -> &str {
-        &self.openvino_success
-    }
-    fn secondary_failed(&self) -> &str {
-        &self.openvino_failed
-    }
-    fn using_cpu(&self) -> &str {
-        &self.using_cpu
-    }
-}
-
-impl ProviderMessages for WindowsProviderText {
-    fn trying_cuda(&self) -> &str {
-        &self.trying_cuda
-    }
-    fn cuda_success(&self) -> &str {
-        &self.cuda_success
-    }
-    fn cuda_failed(&self) -> &str {
-        &self.cuda_failed
-    }
-    fn trying_secondary(&self) -> &str {
-        &self.trying_directml
-    }
-    fn secondary_success(&self) -> &str {
-        &self.directml_success
-    }
-    fn secondary_failed(&self) -> &str {
-        &self.directml_failed
-    }
-    fn using_cpu(&self) -> &str {
-        &self.using_cpu
-    }
 }

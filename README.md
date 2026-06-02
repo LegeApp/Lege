@@ -3,7 +3,7 @@
   <img src="page_0002-original.png" alt="Lege Processing" width="45%">
 </div>
 
-# Lege - 1.4.3
+# Lege - 1.4.41
 Releases are updated with every new version --> https://github.com/LegeApp/Lege/releases/
 
 Lege is a document-processing program (CLI + desktop GUI) that converts scanned documents into reader-optimized **PDF** or **DjVu**, focusing on **better readability**, **smaller output size**, and **fast page turns** on e-ink devices. It uses optional layout-aware processing to detect image areas so that they can be excluded from the text binarization process, which makes the original scanned documents readable on e-ink readers with small file size.
@@ -29,7 +29,7 @@ cd Lege
 cargo build --release
 ```
 
-You’ll get:
+You'll get:
 
 * CLI: `target/release/lege`
 * GUI: `target/release/lege-gui`
@@ -72,32 +72,29 @@ Lege requires several external files to be placed alongside the executables:
 
 #### Required for all platforms:
 
-**ONNX Models** (AI inference):
-- `yolo-layout.onnx` - Layout detection (Linux production model)
-- `paddle-layout.onnx` - Layout detection (Windows and MacOS model)
-- `paddle-rotate.onnx` - Page orientation detection
-- `paddle-deskew.onnx` - Page deskew correction
-- `sauvola.onnx` - Heavy neural binarization model
+**ONNX Models** (AI inference, loaded at runtime):
+- `yolo-layout.onnx` — Layout detection (Linux production model)
+- `paddle-layout.onnx` — Layout detection (Windows and macOS model)
+- `paddle-rotate.onnx` — Page orientation detection
+- `paddle-deskew.onnx` — Page deskew correction
+- `sauvola.onnx` — Heavy neural binarization model (runs on CPU)
 
-**Platform-specific GPU libraries:**
+**Platform libraries:**
 
 **Windows:**
-- `DirectML.dll` - DirectML acceleration provider
-- `onnxruntime.dll` - ONNX Runtime main library
-- `onnxruntime_providers_shared.dll` - Shared provider library
-- `pdfium.dll` - PDF rendering engine
+- `pdfium.dll` — PDF rendering engine
 
 **Linux:**
-- `libonnxruntime.so` - ONNX Runtime
-- `libonnxruntime_providers_shared.so` - Provider library
-- `libwebgpu_dawn.so` - WebGPU/Vulkan backend
-- `libpdfium.so` - PDF rendering engine
-- `eng.traineddata` - Tesseract English language data (for OCR)
+- `libpdfium.so` — PDF rendering engine
+- `eng.traineddata` — Tesseract English language data (for OCR)
 
 **macOS:**
-- `libonnxruntime.dylib` - ONNX Runtime
-- `libpdfium.dylib` - PDF rendering engine
+- `libpdfium.dylib` — PDF rendering engine
 - Tesseract language data (system installation)
+
+> GPU inference (layout detection, deskew, rotation) runs through the native **WebGPU** backend built into Lege — no external GPU runtime libraries are required on any platform.
+
+---
 
 # Technical details
 
@@ -107,12 +104,13 @@ Lege is an end-to-end document transformation system with distinct pipelines for
 
 ### Core stages
 
-1. **Render pages** (PDF → images) using PDFium (with thread-safety guardrails). 
-2. **Layout inference** (optional): run an ONNX layout model on a low-res render; map detections into text-like vs image-like buckets.
+1. **Render pages** (PDF → images) using PDFium (with thread-safety guardrails).
+2. **Layout inference** (optional): run an ONNX layout model at GPU speed via the native wgpu compute runtime; map detections into text-like vs image-like buckets.
 3. **Region processing**
 
-   * Text regions: binarize + encode with bi-level codecs
+   * Text regions: binarize + encode with bi-level codecs (JBIG2 or CCITT4)
    * Image regions: preserve/encode separately; composite as overlays where applicable
+   * Optional heavy neural binarization (Sauvola model on CPU) for degraded pages
    * Optional OCR integration at region or page level
 4. **Assemble output**
 
@@ -126,7 +124,7 @@ Lege is an end-to-end document transformation system with distinct pipelines for
 Implemented as a multi-stage async pipeline with bounded channels and configurable concurrency:
 
 * render → inference → CPU page processing → ordered writer/finalizer
-* supports page ranges and optional two-pass margin normalization 
+* supports page ranges and optional two-pass margin normalization
 
 ### DjVu pipeline (`src/pipeline/djvu_pipeline.rs`)
 
@@ -136,25 +134,32 @@ Separate pipeline to match DjVu constraints:
 * produces DjVu page payloads submitted to a DjVu writer actor
 * supports layered JB2/IW44 output, and optional hidden text
 
+## GPU inference — native wgpu runtime
+
+All AI model inference (layout detection, page rotation, deskew) runs through a **native WebGPU/wgpu compute runtime** compiled into Lege. ONNX models are parsed and lowered to WGSL compute shaders at startup; compiled kernel pipelines are cached per model resolution and reused across pages.
+
+- **Windows**: DX12 backend via wgpu
+- **Linux**: Vulkan backend via wgpu
+- **macOS**: Metal backend via wgpu
+
+No external inference runtime (ONNX Runtime, DirectML, etc.) is required. The GPU runtime lives in the `lege-gpu` crate (`lege-gpu/src/vision/`).
+
 ## Layout detection
 
-Lege can run layout detection to segment a page into regions and apply different encoding strategies. The exact classes depend on the model used (the existing README references a PaddleX-style detector).  
-
-When layout detection is disabled, Lege follows a more uniform “whole-page” processing strategy. 
+Lege can run GPU-accelerated layout detection to segment a page into regions and apply different encoding strategies. When layout detection is disabled, Lege follows a uniform whole-page processing strategy.
 
 ## Binarization and image treatment
 
 * **Text-like regions** are typically converted to **1-bit** (bi-level) using adaptive binarization logic in the encoding layer.
-* **Image-like regions** can be preserved/encoded separately and overlaid onto the output (so photos/diagrams don’t get crushed into 1-bit).
-
-Dithering can be used for halftone/image handling depending on the chosen mode and encoder strategy.  
+* **Image-like regions** can be preserved/encoded separately and overlaid onto the output (so photos/diagrams don't get crushed into 1-bit).
+* **Heavy neural binarization** (optional): the Sauvola ONNX model runs on CPU with global instance-normalization statistics, giving high quality results on degraded or difficult pages without GPU tiling artifacts.
 
 ## OCR and text layers
 
 OCR is optional:
 
-* **Linux/macOS**: Tesseract
-* **Windows**: WinRT OCR 
+* **Linux/macOS**: Tesseract (in-process via the `tesseract` Rust crate)
+* **Windows**: WinRT OCR
 
 Strategy:
 
@@ -162,23 +167,24 @@ Strategy:
 * fall back to tiled or full-page OCR as needed
 * when OCR is disabled, Lege can optionally reuse/extract text from PDFs that already have a text layer to synthesize a text overlay where possible
 
-## Encoding formats and where they’re used
+## Encoding formats and where they're used
 
 Lege uses a dedicated encoding crate (`Legencode`) for in-memory processing and multiple output encoders, and a dedicated native DjVu encoder (`DJVULibRust`) for DjVu generation.
 
-### Bi-level / “text compression” codecs
+### Bi-level / "text compression" codecs
 
 * **JBIG2** (via a Rust port under `Legencode`)
-* **CCITT Group 4** (fax-style bi-level compression)  
+* **CCITT Group 4** (fax-style bi-level compression)
 
 ### Continuous-tone codecs
 
-* **JPEG2000** (used for cover/photo regions in common paths) 
-* **DjVu IW44** (continuous-tone layer inside DjVu)  
+* **JPEG2000** (used for cover/photo regions in common paths)
+* **DjVu IW44** (continuous-tone layer inside DjVu)
 
 ## Performance and operability features
 
-* **Concurrent pipeline** with bounded channels/backpressure
+* **Concurrent pipeline** with bounded channels/backpressure and adaptive per-job concurrency
+* **Resident compiled GPU graphs**: model kernels are compiled once at startup and reused across all pages — no per-page GPU recompilation
 * **Cancellation + progress tracking** shared by CLI and GUI
 * Runtime dependency discovery (models/libs) via executable-adjacent paths, env vars, and platform fallback dirs
 
@@ -189,21 +195,15 @@ Lege uses a dedicated encoding crate (`Legencode`) for in-memory processing and 
 Lege is a Rust workspace with multiple crates:
 
 * `src/` — main app + pipeline orchestration (CLI core)
+* `lege-gpu/` — GPU compute: image resize, adaptive binarization, and the native wgpu ONNX inference runtime (`lege-gpu/src/vision/`)
 * `Legencode/` — encoding + binarization + region utilities
 * `DJVULibRust/` — native DjVu encoder crate
-* `GUI/Freya/` — desktop GUI frontend 
+* `GUI/Freya/` — desktop GUI frontend
 
 ---
 
 ## License
 
-AGPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`. 
+AGPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`.
 
 ---
-
-
-
-
-
-
-

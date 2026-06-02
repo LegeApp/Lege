@@ -1,6 +1,6 @@
 //! Shape inference for the supported YOLO op subset.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result, bail};
 
@@ -10,6 +10,7 @@ use super::attrs::{
     attr_i64, attr_i64s, const_f32, const_i64, input_shape, node_context, normalize_axis,
     normalize_index,
 };
+use super::fold::try_fold;
 use super::types::TensorConst;
 
 #[derive(Debug, Default)]
@@ -19,14 +20,44 @@ pub(crate) struct ShapeReport {
     pub(crate) missing_shapes: Vec<String>,
 }
 
+/// Result of the combined shape-inference + constant-fold pass. `folded` holds
+/// the indices of shape-plumbing nodes that collapsed to constants and must be
+/// dropped from the executable/lowered graph; `folded_values` names the
+/// constants they produced (so float ones consumed by kept ops can be promoted
+/// to GPU initializers).
+pub(crate) struct ShapeInference {
+    pub(crate) report: ShapeReport,
+    pub(crate) folded: BTreeSet<usize>,
+    pub(crate) folded_values: Vec<String>,
+}
+
 pub(crate) fn infer_all_shapes(
     nodes: &[NodeProto],
     annotated_shapes: &BTreeMap<String, Vec<i64>>,
-    tensor_consts: &HashMap<String, TensorConst>,
+    tensor_consts: &mut HashMap<String, TensorConst>,
     known_shapes: &mut BTreeMap<String, Vec<i64>>,
-) -> Result<ShapeReport> {
+) -> Result<ShapeInference> {
     let mut report = ShapeReport::default();
+    let mut folded = BTreeSet::new();
+    let mut folded_values = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
+        // Shape-plumbing nodes fold to constants once their inputs are known,
+        // feeding downstream Resize/Reshape and dropping out of the graph.
+        if let Some(values) = try_fold(node, known_shapes, tensor_consts).with_context(|| {
+            format!(
+                "constant folding failed at node {index} {}",
+                node_context(node)
+            )
+        })? {
+            for value in values {
+                known_shapes.insert(value.name.clone(), value.shape);
+                folded_values.push(value.name.clone());
+                tensor_consts.insert(value.name, value.value);
+            }
+            folded.insert(index);
+            continue;
+        }
+
         let inferred = infer_node_shapes(node, known_shapes, tensor_consts).with_context(|| {
             format!(
                 "shape inference failed at node {index} {}",
@@ -51,7 +82,11 @@ pub(crate) fn infer_all_shapes(
         }
     }
     if report.missing_shapes.is_empty() {
-        Ok(report)
+        Ok(ShapeInference {
+            report,
+            folded,
+            folded_values,
+        })
     } else {
         bail!(
             "missing {} output shape(s); first: {}",

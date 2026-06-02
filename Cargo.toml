@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.3"
+version = "1.4.5"
 edition = "2024"
 description = "Fully automatic PDF processor especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -14,9 +14,9 @@ categories = ["multimedia::images", "text-processing"]
 members = [
     ".",  # The root crate
     "lege-gpu",
-    "Legencode",
-    "Legencode/src/jbig2enc-rust",
-    "Legencode/src/TooJpeg-rust",
+    "legencode",
+    "legencode/src/jbig2enc-rust",
+    "legencode/src/TooJpeg-rust",
     "GUI/Freya",
 ]
 default-members = [
@@ -65,25 +65,9 @@ byteorder = "1.5.0"
 bitvec = "1.0.1"
 chrono = "0.4.43"
 
-# Windows-rs local crates - tag 71 (all workspace dependencies needed)
-windows = { path = "windows-rs-71/crates/libs/windows", default-features = false }
-windows-bindgen = { path = "windows-rs-71/crates/libs/bindgen", default-features = false }
-windows-collections = { path = "windows-rs-71/crates/libs/collections", default-features = false }
-windows-core = { path = "windows-rs-71/crates/libs/core", default-features = false }
-windows-future = { path = "windows-rs-71/crates/libs/future", default-features = false }
-windows-implement = { path = "windows-rs-71/crates/libs/implement", default-features = false }
-windows-interface = { path = "windows-rs-71/crates/libs/interface", default-features = false }
-windows-link = { path = "windows-rs-71/crates/libs/link", default-features = false }
-windows-metadata = { path = "windows-rs-71/crates/libs/metadata", default-features = false }
-windows-numerics = { path = "windows-rs-71/crates/libs/numerics", default-features = false }
-windows-registry = { path = "windows-rs-71/crates/libs/registry", default-features = false }
-windows-result = { path = "windows-rs-71/crates/libs/result", default-features = false }
-windows-services = { path = "windows-rs-71/crates/libs/services", default-features = false }
-windows-strings = { path = "windows-rs-71/crates/libs/strings", default-features = false }
-windows-sys = { path = "windows-rs-71/crates/libs/sys", default-features = false }
-windows-targets = { path = "windows-rs-71/crates/libs/targets", default-features = false }
-windows-threading = { path = "windows-rs-71/crates/libs/threading", default-features = false }
-windows-version = { path = "windows-rs-71/crates/libs/version", default-features = false }
+windows = { version = "0.62.2", default-features = false }
+windows-core = { version = "0.62.2", default-features = false }
+windows-future = { version = "0.3.2", default-features = false }
 
 
 resolver = "2"
@@ -101,6 +85,9 @@ freya-clipboard = { path = "../freya-main/crates/freya-clipboard" }
 freya-animation = { path = "../freya-main/crates/freya-animation" }
 freya-performance-plugin = { path = "../freya-main/crates/freya-performance-plugin" }
 torin = { path = "../freya-main/crates/torin" }
+
+[patch.crates-io]
+gpu-allocator = { path = "gpu-allocator" }
 
 [[bin]]
 name = "lege"
@@ -139,7 +126,7 @@ fast_image_resize = { version = "6.0.0" }
 bytemuck = { workspace = true }
 lazy_static = { workspace = true }
 ndarray = { workspace = true }
-Legencode = { path = "Legencode" }
+Legencode = { path = "legencode" }
 lege-gpu = { path = "lege-gpu" }
 quick-xml = "0.38.4"
 # mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
@@ -170,27 +157,23 @@ parking_lot = "0.12"
 flume = { workspace = true }
 zip = { workspace = true, features = ["deflate"] }
 # Native DJVU encoder (pure Rust, no external dependencies)
-djvu_encoder = { path = "DJVULibRust" }
+djvu_encoder = { path = "djvulibrust" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# ort pinned to upstream commit 477e929 (ONNX Runtime 1.24.3) - WebGPU + Vulkan backend (dynamic loading)
-ort = { git = "https://github.com/pykeio/ort", rev = "477e929", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "webgpu", "load-dynamic"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = "0.14"
-wgpu = "28"
+wgpu = "29.0.3"
 pollster = "0.4"
 libc = "0.2"
 
 # macOS-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
 tesseract = "0.14"
-wgpu = "28"
+wgpu = "29.0.3"
 pollster = "0.4"
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
-# ort pinned to upstream commit 477e929 (ONNX Runtime 1.24.3) - DirectML (dynamic loading)
-ort = { git = "https://github.com/pykeio/ort", rev = "477e929", default-features = false, features = ["std", "ndarray", "tracing", "cuda", "directml", "load-dynamic"] }
 winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
 windows = { workspace = true, features = [
     "Foundation",
@@ -217,7 +200,7 @@ windows-core = { workspace = true }
 windows-future = { workspace = true }
 
 # Debug dependencies for standalone JBIG2 creation
-jbig2 = { package = "jbig2enc-rust", path = "Legencode/src/jbig2enc-rust" }
+jbig2 = { package = "jbig2enc-rust", path = "legencode/src/jbig2enc-rust" }
 ndarray = "0.17.2"
 
 [features]
@@ -289,10 +272,6 @@ assets = [
     ["target/release/lege-gui", "usr/bin/lege-gui", "755"],
     # Required shared libraries
     ["/home/dk/Desktop/lege-run/installer/linux64/libpdfium.so", "usr/lib/lege/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so", "usr/lib/lege/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1", "usr/lib/lege/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime.so.1.25.0", "usr/lib/lege/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/libonnxruntime_providers_shared.so", "usr/lib/lege/", "644"],
     # ONNX models
     ["/home/dk/Desktop/lege-run/installer/linux64/yolo-layout.onnx", "usr/share/lege/models/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/paddle-rotate.onnx", "usr/share/lege/models/", "644"],

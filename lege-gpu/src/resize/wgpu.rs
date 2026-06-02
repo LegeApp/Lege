@@ -635,7 +635,7 @@ impl WgpuResizer {
                 .device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("lege-wgpu-resize-pipeline-layout"),
-                    bind_group_layouts: &[&bind_group_layout],
+                    bind_group_layouts: &[Some(&bind_group_layout)],
                     immediate_size: 0,
                 });
 
@@ -773,7 +773,7 @@ impl WgpuResizer {
                 .device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("lege-wgpu-convert-pipeline-layout"),
-                    bind_group_layouts: &[&bind_group_layout],
+                    bind_group_layouts: &[Some(&bind_group_layout)],
                     immediate_size: 0,
                 });
 
