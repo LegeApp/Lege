@@ -630,11 +630,7 @@ pub fn binarize_options_for(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
-        // Layout mode runs binarization concurrently with rendering+inference, which
-        // dominates wall time per page anyway — the GPU binarizer offers no speedup
-        // there and has produced intermittent inverted base layers (black-background
-        // pages) on long runs. Force CPU when layout detection is on.
-        disable_gpu: config.enable_layout_detection(),
+        disable_gpu: false,
     }
 }
 
