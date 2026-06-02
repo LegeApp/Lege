@@ -19,22 +19,25 @@ path = "src/bin/bench_binarize.rs"
 required-features = ["compare-bin"]
 
 [dependencies]
+anyhow = { workspace = true }
 bytemuck = { workspace = true }
 log = { workspace = true }
 once_cell = { workspace = true }
 thiserror = { workspace = true }
-image = { workspace = true, optional = true }
+image = { workspace = true }
 rayon = { workspace = true, optional = true }
 
 [features]
 default = []
 debug-layers = []
 no-include-shaders = []
-compare-bin = ["dep:image", "dep:rayon"]
+compare-bin = ["dep:rayon"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 wgpu = "28"
 pollster = "0.4"
+protobuf = { version = "2.27.1", features = ["with-bytes"] }
+wgpu20 = { package = "wgpu", version = "0.20" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [

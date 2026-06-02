@@ -1,0 +1,731 @@
+//! Resident compiled GPU executor.
+//!
+//! At build time: allocate all tensor buffers, upload all weights, compile one
+//! pipeline per unique shader, pre-create all bind groups.
+//!
+//! At run time (per page): write_buffer(input) → one submit(all dispatches) →
+//! 3 map+readback for the model output heads.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use crate::vision::wgpu::util::DeviceExt;
+
+use crate::vision::onnx::attrs::shape_i64_to_usize;
+use crate::vision::onnx::graph::PreparedGraph;
+use crate::vision::onnx::types::{ElementwiseKind, PlannedOpKind, UnaryKind};
+use crate::vision::ops::compile::op_steps;
+use crate::vision::ops::sigmoid::{SILU_VEC4_WGSL, SILU_WGSL};
+use crate::vision::reference;
+use crate::vision::runtime::device::{GpuContext, map_readback, storage_bgl_entries};
+use crate::vision::runtime::memory_plan::ResidentMemoryPlan;
+
+const DUMMY_BIAS: &str = "__dummy_zero_bias__";
+
+struct CompiledStep {
+    step_index: usize,
+    op_index: usize,
+    op_name: String,
+    op_kind: String,
+    output_shape: Vec<usize>,
+    pipeline: Arc<crate::vision::wgpu::ComputePipeline>,
+    bind_group: crate::vision::wgpu::BindGroup,
+    dispatch: [u32; 3],
+}
+
+pub(crate) struct StepProfile {
+    pub(crate) step_index: usize,
+    pub(crate) op_index: usize,
+    pub(crate) op_name: String,
+    pub(crate) op_kind: String,
+    pub(crate) output_shape: Vec<usize>,
+    pub(crate) dispatch: [u32; 3],
+    pub(crate) gpu_ms: f64,
+}
+
+pub(crate) struct CompiledGraph {
+    ctx: GpuContext,
+    slot_buffers: Vec<crate::vision::wgpu::Buffer>,
+    tensor_slots: HashMap<String, usize>,
+    _dummy_bias_buffer: crate::vision::wgpu::Buffer,
+    aliases: HashMap<String, String>,
+    input_name: String,
+    steps: Vec<CompiledStep>,
+    output_names: Vec<String>,
+    output_buf_names: Vec<String>, // canonical (alias-resolved) names for output buffers
+    output_readback_bufs: Vec<crate::vision::wgpu::Buffer>,
+    output_shapes: Vec<Vec<usize>>,
+    output_bytes: Vec<usize>,
+    // Keep params buffers alive for their bind groups
+    _params_bufs: Vec<crate::vision::wgpu::Buffer>,
+}
+
+pub(crate) struct SubmittedRun<'a> {
+    graph: &'a CompiledGraph,
+    submit_elapsed: Duration,
+}
+
+impl CompiledGraph {
+    pub(crate) async fn build(graph: &PreparedGraph) -> Result<Self> {
+        let t0 = std::time::Instant::now();
+        let ctx = GpuContext::new().await?;
+        eprintln!(
+            "  compiled.build: gpu_init={:.0}ms",
+            t0.elapsed().as_millis()
+        );
+        Self::build_from_context(graph, ctx, t0)
+    }
+
+    pub(crate) fn build_sibling(&self, graph: &PreparedGraph) -> Result<Self> {
+        Self::build_from_context(graph, self.ctx.clone(), std::time::Instant::now())
+    }
+
+    fn build_from_context(
+        graph: &PreparedGraph,
+        ctx: GpuContext,
+        t0: std::time::Instant,
+    ) -> Result<Self> {
+        // ── Allocate GPU buffers ──────────────────────────────────────────
+        let plan = ResidentMemoryPlan::from_graph(graph)?;
+        let slot_sizes = plan.slot_sizes();
+        let total_slot_bytes = slot_sizes.iter().sum::<u64>();
+        let mut slot_buffers = Vec::with_capacity(slot_sizes.len());
+        for (slot, byte_size) in slot_sizes.iter().enumerate() {
+            let buf = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                label: Some(&format!("resident slot {slot}")),
+                size: *byte_size,
+                usage: crate::vision::wgpu::BufferUsages::STORAGE
+                    | crate::vision::wgpu::BufferUsages::COPY_SRC
+                    | crate::vision::wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            slot_buffers.push(buf);
+        }
+        let mut tensor_slots = HashMap::new();
+        for entry in plan.entries() {
+            let slot = entry.reuse_slot.with_context(|| {
+                format!("compiled: resident entry `{}` has no slot", entry.name)
+            })?;
+            tensor_slots.insert(entry.name.clone(), slot);
+        }
+        let dummy_bias_buffer = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some(DUMMY_BIAS),
+            size: 4,
+            usage: crate::vision::wgpu::BufferUsages::STORAGE | crate::vision::wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        ctx.queue.write_buffer(&dummy_bias_buffer, 0, &[0u8; 4]);
+        eprintln!(
+            "  compiled.build: allocated {} resident slots, {:.1}MB at {:.0}ms",
+            slot_buffers.len(),
+            total_slot_bytes as f64 / (1024.0 * 1024.0),
+            t0.elapsed().as_millis()
+        );
+
+        // ── Upload all weight constants ───────────────────────────────────
+        let mut uploaded_mb = 0.0f64;
+        for (name, tensor) in &graph.constants {
+            if tensor.data.is_empty() {
+                continue;
+            }
+            let slot = *tensor_slots.get(name).with_context(|| {
+                format!("compiled: missing resident slot for constant `{name}`")
+            })?;
+            let buf = slot_buffers
+                .get(slot)
+                .with_context(|| format!("compiled: missing resident slot buffer {slot}"))?;
+            let bytes: &[u8] = bytemuck::cast_slice(&tensor.data);
+            ctx.queue.write_buffer(buf, 0, bytes);
+            uploaded_mb += bytes.len() as f64 / (1024.0 * 1024.0);
+        }
+        eprintln!(
+            "  compiled.build: uploaded {uploaded_mb:.1}MB constants at {:.0}ms",
+            t0.elapsed().as_millis()
+        );
+
+        // ── Build alias map (Identity / Reshape / Unsqueeze / Squeeze → zero
+        // GPU cost). Shared with the resident memory planner so buffer liveness
+        // accounts for every aliased consumer.
+        let aliases = crate::vision::runtime::memory_plan::build_alias_map(&graph.planned_ops);
+
+        // ── Detect SiLU patterns: Sigmoid(x)→sig followed by Mul(x,sig)→out ──
+        // When found: replace Sigmoid with SiLU writing to Mul's output; skip Mul.
+        // Key: sigmoid op index → Mul's output buffer name
+        let mut silu_overrides: HashMap<usize, String> = HashMap::new();
+        // Set of Mul op indices to skip because they're fused into a preceding SiLU
+        let mut fused_mul_ops: HashSet<usize> = HashSet::new();
+        {
+            // Map: sigmoid output name → (sigmoid op idx, sigmoid input name)
+            let mut pending_sigs: HashMap<String, (usize, String)> = HashMap::new();
+            for (idx, op) in graph.planned_ops.iter().enumerate() {
+                match &op.kind {
+                    PlannedOpKind::Unary(UnaryKind::Sigmoid) => {
+                        pending_sigs.insert(op.outputs[0].clone(), (idx, op.inputs[0].clone()));
+                    }
+                    PlannedOpKind::Elementwise(ElementwiseKind::Mul) if op.inputs.len() == 2 => {
+                        let a = &op.inputs[0];
+                        let b = &op.inputs[1];
+                        let fuse = if let Some((sig_idx, x)) = pending_sigs.get(a) {
+                            if x == b {
+                                Some((*sig_idx, op.outputs[0].clone()))
+                            } else {
+                                None
+                            }
+                        } else if let Some((sig_idx, x)) = pending_sigs.get(b) {
+                            if x == a {
+                                Some((*sig_idx, op.outputs[0].clone()))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some((sig_idx, mul_out)) = fuse {
+                            silu_overrides.insert(sig_idx, mul_out);
+                            fused_mul_ops.insert(idx);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        eprintln!(
+            "  compiled.build: SiLU fused {} sigmoid+mul pairs",
+            silu_overrides.len()
+        );
+
+        // ── Pre-compile pipelines (one per unique WGSL source) ────────────
+        let mut pipeline_cache: HashMap<usize, Arc<crate::vision::wgpu::ComputePipeline>> = HashMap::new();
+        let mut bgl_cache: HashMap<usize, Arc<crate::vision::wgpu::BindGroupLayout>> = HashMap::new();
+
+        // ── Build compiled steps ──────────────────────────────────────────
+        let mut steps: Vec<CompiledStep> = Vec::new();
+        let mut params_bufs: Vec<crate::vision::wgpu::Buffer> = Vec::new();
+
+        for (op_idx, op) in graph.planned_ops.iter().enumerate() {
+            // Skip Mul ops that were fused into a preceding SiLU
+            if fused_mul_ops.contains(&op_idx) {
+                continue;
+            }
+            let mut step_specs = op_steps(op, DUMMY_BIAS)?;
+
+            // Apply SiLU override: replace Sigmoid shader + redirect output to Mul's buffer.
+            // Preserve the vec4/scalar variant that compile.rs already chose.
+            if let Some(mul_out) = silu_overrides.get(&op_idx) {
+                use crate::vision::ops::sigmoid::SIGMOID_VEC4_WGSL;
+                for spec in &mut step_specs {
+                    // Compare by value, not pointer: `const &str` addresses are not
+                    // guaranteed stable across reference sites, so an as_ptr() check
+                    // can misclassify a vec4 sigmoid as scalar (and vice versa),
+                    // leaving the SiLU shader reading vec4 params as scalars.
+                    let is_vec4 = spec.wgsl == SIGMOID_VEC4_WGSL;
+                    spec.wgsl = if is_vec4 { SILU_VEC4_WGSL } else { SILU_WGSL };
+                    spec.output_buf_name = mul_out.clone();
+                }
+            }
+
+            for spec in step_specs {
+                let op_kind = step_profile_kind(&op.kind, spec.wgsl);
+                // Get or create pipeline keyed by WGSL pointer (unique per op type)
+                let wgsl_key = spec.wgsl.as_ptr() as usize;
+                let (pipeline, bgl) = if let (Some(p), Some(b)) =
+                    (pipeline_cache.get(&wgsl_key), bgl_cache.get(&wgsl_key))
+                {
+                    (p.clone(), b.clone())
+                } else {
+                    let mut read_flags: Vec<bool> = vec![true; spec.n_read_inputs];
+                    read_flags.push(false); // output (read_write)
+                    read_flags.push(true); // params (read)
+                    let bgl = Arc::new(ctx.device.create_bind_group_layout(
+                        &crate::vision::wgpu::BindGroupLayoutDescriptor {
+                            label: None,
+                            entries: &storage_bgl_entries(&read_flags),
+                        },
+                    ));
+                    let pipeline = Arc::new(ctx.device.create_compute_pipeline(
+                        &crate::vision::wgpu::ComputePipelineDescriptor {
+                            label: None,
+                            layout: Some(&ctx.device.create_pipeline_layout(
+                                &crate::vision::wgpu::PipelineLayoutDescriptor {
+                                    label: None,
+                                    bind_group_layouts: &[&bgl],
+                                    push_constant_ranges: &[],
+                                },
+                            )),
+                            module: &ctx.device.create_shader_module(
+                                crate::vision::wgpu::ShaderModuleDescriptor {
+                                    label: None,
+                                    source: crate::vision::wgpu::ShaderSource::Wgsl(spec.wgsl.into()),
+                                },
+                            ),
+                            entry_point: "main",
+                            compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
+                        },
+                    ));
+                    pipeline_cache.insert(wgsl_key, pipeline.clone());
+                    bgl_cache.insert(wgsl_key, bgl.clone());
+                    (pipeline, bgl)
+                };
+
+                // Create params buffer (kept alive in params_bufs)
+                let params_buf = ctx
+                    .device
+                    .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
+                        label: None,
+                        contents: &spec.params,
+                        usage: crate::vision::wgpu::BufferUsages::STORAGE,
+                    });
+
+                // Build bind group referencing persistent tensor buffers
+                let mut bg_entries: Vec<crate::vision::wgpu::BindGroupEntry> =
+                    Vec::with_capacity(spec.n_read_inputs + 2);
+                for (binding, inp_name) in spec.input_buf_names.iter().enumerate() {
+                    let canonical = resolve_alias(inp_name, &aliases);
+                    let buf = if canonical == DUMMY_BIAS {
+                        &dummy_bias_buffer
+                    } else {
+                        let slot = *tensor_slots.get(&canonical).with_context(|| {
+                            format!(
+                                "compiled: missing resident slot for input `{canonical}` (op {})",
+                                op.name
+                            )
+                        })?;
+                        slot_buffers.get(slot).with_context(|| {
+                            format!("compiled: missing resident slot buffer {slot}")
+                        })?
+                    };
+                    bg_entries.push(crate::vision::wgpu::BindGroupEntry {
+                        binding: binding as u32,
+                        resource: buf.as_entire_binding(),
+                    });
+                }
+                let out_canonical = resolve_alias(&spec.output_buf_name, &aliases);
+                let out_slot = *tensor_slots.get(&out_canonical).with_context(|| {
+                    format!(
+                        "compiled: missing resident slot for output `{out_canonical}` (op {})",
+                        op.name
+                    )
+                })?;
+                for inp_name in &spec.input_buf_names {
+                    let input_canonical = resolve_alias(inp_name, &aliases);
+                    if input_canonical == DUMMY_BIAS {
+                        continue;
+                    }
+                    let input_slot = *tensor_slots.get(&input_canonical).with_context(|| {
+                        format!(
+                            "compiled: missing resident slot for input `{input_canonical}` (op {})",
+                            op.name
+                        )
+                    })?;
+                    if input_slot == out_slot {
+                        bail!(
+                            "compiled: op {} ({}) binds resident slot {out_slot} as both input `{input_canonical}` and output `{out_canonical}`",
+                            op_idx,
+                            op.name
+                        );
+                    }
+                }
+                let out_buf = slot_buffers.get(out_slot).with_context(|| {
+                    format!("compiled: missing resident slot buffer {out_slot}")
+                })?;
+                bg_entries.push(crate::vision::wgpu::BindGroupEntry {
+                    binding: spec.n_read_inputs as u32,
+                    resource: out_buf.as_entire_binding(),
+                });
+                bg_entries.push(crate::vision::wgpu::BindGroupEntry {
+                    binding: (spec.n_read_inputs + 1) as u32,
+                    resource: params_buf.as_entire_binding(),
+                });
+
+                let bind_group = ctx.device.create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &bgl,
+                    entries: &bg_entries,
+                });
+
+                let step_index = steps.len();
+                let output_shape = op
+                    .outputs
+                    .iter()
+                    .position(|name| name == &spec.output_buf_name)
+                    .and_then(|index| op.output_shapes.get(index))
+                    .or_else(|| op.output_shapes.first())
+                    .map(|shape| shape.iter().map(|&dim| dim as usize).collect())
+                    .unwrap_or_default();
+
+                params_bufs.push(params_buf);
+                steps.push(CompiledStep {
+                    step_index,
+                    op_index: op_idx,
+                    op_name: op.name.clone(),
+                    op_kind,
+                    output_shape,
+                    pipeline,
+                    bind_group,
+                    dispatch: spec.dispatch,
+                });
+            }
+        }
+
+        eprintln!(
+            "  compiled.build: {} steps, {} pipelines, build total={:.0}ms",
+            steps.len(),
+            pipeline_cache.len(),
+            t0.elapsed().as_millis()
+        );
+
+        // ── Input info ────────────────────────────────────────────────────
+        let input_name = graph.inputs.first().context("model has no inputs")?.clone();
+
+        // ── Readback buffers for model outputs ────────────────────────────
+        let mut output_names = Vec::new();
+        let mut output_buf_names = Vec::new();
+        let mut output_readback_bufs = Vec::new();
+        let mut output_shapes = Vec::new();
+        let mut output_bytes = Vec::new();
+        for name in &graph.outputs {
+            let shape = graph
+                .known_shapes
+                .get(name)
+                .with_context(|| format!("missing shape for output `{name}`"))?;
+            let shape_u = shape_i64_to_usize(shape)?;
+            let bytes = shape_u.iter().product::<usize>() * 4;
+            let rb = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                label: Some(&format!("readback_{name}")),
+                size: bytes as u64,
+                usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let canonical = resolve_alias(name, &aliases);
+            output_names.push(name.clone());
+            output_buf_names.push(canonical);
+            output_readback_bufs.push(rb);
+            output_shapes.push(shape_u);
+            output_bytes.push(bytes);
+        }
+
+        Ok(Self {
+            ctx,
+            slot_buffers,
+            tensor_slots,
+            _dummy_bias_buffer: dummy_bias_buffer,
+            aliases,
+            input_name,
+            steps,
+            output_names,
+            output_buf_names,
+            output_readback_bufs,
+            output_shapes,
+            output_bytes,
+            _params_bufs: params_bufs,
+        })
+    }
+
+    pub(crate) fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// Upload `input`, submit all dispatches plus output copies, and return
+    /// immediately. The resident buffers and readback buffers must not be reused
+    /// until `await_result` completes, so one `CompiledGraph` remains single-flight.
+    pub(crate) fn submit(&self, input: &reference::Tensor) -> Result<SubmittedRun<'_>> {
+        let t0 = std::time::Instant::now();
+
+        // Write input tensor to its GPU buffer
+        let input_canonical = resolve_alias(&self.input_name, &self.aliases);
+        let input_slot = *self
+            .tensor_slots
+            .get(&input_canonical)
+            .context("compiled: missing resident slot for input buffer")?;
+        let input_buf = self
+            .slot_buffers
+            .get(input_slot)
+            .with_context(|| format!("compiled: missing resident slot buffer {input_slot}"))?;
+        self.ctx
+            .queue
+            .write_buffer(input_buf, 0, bytemuck::cast_slice(&input.data));
+
+        let chunk_size = compiled_chunk_size(self.ctx.is_cpu_adapter, self.steps.len());
+        for chunk in self.steps.chunks(chunk_size) {
+            let mut encoder =
+                self.ctx
+                    .device
+                    .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+                        label: Some("compiled_run_chunk"),
+                    });
+            for step in chunk {
+                let mut pass = encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&step.pipeline);
+                pass.set_bind_group(0, &step.bind_group, &[]);
+                pass.dispatch_workgroups(step.dispatch[0], step.dispatch[1], step.dispatch[2]);
+            }
+            self.ctx.queue.submit(Some(encoder.finish()));
+            if self.ctx.is_cpu_adapter {
+                self.ctx.device.poll(crate::vision::wgpu::Maintain::Wait);
+            }
+        }
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+                label: Some("compiled_readback"),
+            });
+        for (i, canonical) in self.output_buf_names.iter().enumerate() {
+            let out_slot = *self.tensor_slots.get(canonical).with_context(|| {
+                format!("compiled run: missing resident slot for output `{canonical}`")
+            })?;
+            let out_buf = self.slot_buffers.get(out_slot).with_context(|| {
+                format!("compiled run: missing resident slot buffer {out_slot}")
+            })?;
+            encoder.copy_buffer_to_buffer(
+                out_buf,
+                0,
+                &self.output_readback_bufs[i],
+                0,
+                self.output_bytes[i] as u64,
+            );
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        Ok(SubmittedRun {
+            graph: self,
+            submit_elapsed: t0.elapsed(),
+        })
+    }
+
+    /// Await a submitted inference and map/read the model output heads.
+    pub(crate) async fn await_result(
+        &self,
+        submitted: SubmittedRun<'_>,
+    ) -> Result<HashMap<String, reference::Tensor>> {
+        if !std::ptr::eq(self, submitted.graph) {
+            bail!("submitted run belongs to a different CompiledGraph");
+        }
+        let t0 = std::time::Instant::now();
+        let mut result = HashMap::new();
+        let mut receivers = Vec::with_capacity(self.output_readback_bufs.len());
+        for (i, name) in self.output_names.iter().enumerate() {
+            let slice = self.output_readback_bufs[i].slice(..);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            slice.map_async(crate::vision::wgpu::MapMode::Read, move |r| {
+                let _ = sender.send(r);
+            });
+            receivers.push((i, name, receiver));
+        }
+
+        self.ctx.device.poll(crate::vision::wgpu::Maintain::Wait);
+
+        for (i, name, receiver) in receivers {
+            receiver
+                .recv()
+                .context("readback callback was not called")?
+                .context("failed to map readback buffer")?;
+            let slice = self.output_readback_bufs[i].slice(..);
+            let mapped = slice.get_mapped_range();
+            if mapped.len() != self.output_bytes[i] {
+                bail!(
+                    "readback size mismatch for `{name}`: got {} expected {}",
+                    mapped.len(),
+                    self.output_bytes[i]
+                );
+            }
+            let raw = mapped.to_vec();
+            drop(mapped);
+            self.output_readback_bufs[i].unmap();
+            let data: Vec<f32> = bytemuck::cast_slice(&raw).to_vec();
+            result.insert(
+                name.clone(),
+                reference::Tensor::new(self.output_shapes[i].clone(), data)?,
+            );
+        }
+
+        let readback_elapsed = t0.elapsed();
+        eprintln!(
+            "  compiled.run: encode+submit={:.1}ms readback={:.1}ms total={:.1}ms",
+            submitted.submit_elapsed.as_secs_f64() * 1000.0,
+            readback_elapsed.as_secs_f64() * 1000.0,
+            (submitted.submit_elapsed + readback_elapsed).as_secs_f64() * 1000.0,
+        );
+
+        Ok(result)
+    }
+
+    /// Run one inference pass. Uploads `input`, submits all ops in one command
+    /// buffer, reads back the 3 model output heads.
+    pub(crate) async fn run(
+        &self,
+        input: &reference::Tensor,
+    ) -> Result<HashMap<String, reference::Tensor>> {
+        let submitted = self.submit(input)?;
+        self.await_result(submitted).await
+    }
+
+    pub(crate) async fn profile(&self, input: &reference::Tensor) -> Result<Vec<StepProfile>> {
+        if !self.ctx.supports_timestamps {
+            bail!("selected WGPU adapter does not support timestamp queries");
+        }
+        let query_count = (self.steps.len() * 2) as u32;
+        let query_bytes = query_count as usize * std::mem::size_of::<u64>();
+
+        let input_canonical = resolve_alias(&self.input_name, &self.aliases);
+        let input_slot = *self
+            .tensor_slots
+            .get(&input_canonical)
+            .context("compiled profile: missing resident slot for input buffer")?;
+        let input_buf = self.slot_buffers.get(input_slot).with_context(|| {
+            format!("compiled profile: missing resident slot buffer {input_slot}")
+        })?;
+        self.ctx
+            .queue
+            .write_buffer(input_buf, 0, bytemuck::cast_slice(&input.data));
+
+        let query_set = self.ctx.device.create_query_set(&crate::vision::wgpu::QuerySetDescriptor {
+            label: Some("compiled_step_timestamps"),
+            ty: crate::vision::wgpu::QueryType::Timestamp,
+            count: query_count,
+        });
+        let resolve_buffer = self.ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some("compiled_step_timestamp_resolve"),
+            size: query_bytes as u64,
+            usage: crate::vision::wgpu::BufferUsages::QUERY_RESOLVE | crate::vision::wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback_buffer = self.ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some("compiled_step_timestamp_readback"),
+            size: query_bytes as u64,
+            usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+                label: Some("compiled_profile"),
+            });
+        for (index, step) in self.steps.iter().enumerate() {
+            let begin = (index * 2) as u32;
+            let end = begin + 1;
+            let mut pass = encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                label: Some("compiled_profile_step"),
+                timestamp_writes: Some(crate::vision::wgpu::ComputePassTimestampWrites {
+                    query_set: &query_set,
+                    beginning_of_pass_write_index: Some(begin),
+                    end_of_pass_write_index: Some(end),
+                }),
+            });
+            pass.set_pipeline(&step.pipeline);
+            pass.set_bind_group(0, &step.bind_group, &[]);
+            pass.dispatch_workgroups(step.dispatch[0], step.dispatch[1], step.dispatch[2]);
+        }
+        encoder.resolve_query_set(&query_set, 0..query_count, &resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(&resolve_buffer, 0, &readback_buffer, 0, query_bytes as u64);
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let raw = map_readback(&self.ctx.device, &readback_buffer, query_bytes).await?;
+        let ticks: Vec<u64> = bytemuck::cast_slice(&raw).to_vec();
+        let period_ns = self.ctx.queue.get_timestamp_period() as f64;
+        let mut profiles = Vec::with_capacity(self.steps.len());
+        for (index, step) in self.steps.iter().enumerate() {
+            let start = ticks[index * 2];
+            let end = ticks[index * 2 + 1];
+            let gpu_ms = end.saturating_sub(start) as f64 * period_ns / 1_000_000.0;
+            profiles.push(StepProfile {
+                step_index: step.step_index,
+                op_index: step.op_index,
+                op_name: step.op_name.clone(),
+                op_kind: step.op_kind.clone(),
+                output_shape: step.output_shape.clone(),
+                dispatch: step.dispatch,
+                gpu_ms,
+            });
+        }
+        Ok(profiles)
+    }
+}
+
+fn resolve_alias(name: &str, aliases: &HashMap<String, String>) -> String {
+    let mut cur = name;
+    for _ in 0..32 {
+        // limit chain depth
+        match aliases.get(cur) {
+            Some(target) => cur = target,
+            None => break,
+        }
+    }
+    cur.to_owned()
+}
+
+fn step_profile_kind(kind: &PlannedOpKind, wgsl: &'static str) -> String {
+    if wgsl == SILU_WGSL || wgsl == SILU_VEC4_WGSL {
+        "SiLU".to_owned()
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_GEMM_S1_VEC4_WGSL {
+        conv_profile_label("Conv1x1GemmS1Vec4", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_GEMM_S1_WGSL {
+        conv_profile_label("Conv1x1GemmS1", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_BLOCK2X4_S1_WGSL {
+        conv_profile_label("Conv1x1Block2x4S1", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_BLOCK2X4_WGSL {
+        conv_profile_label("Conv1x1Block2x4", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_BLOCK4X2_WGSL {
+        conv_profile_label("Conv1x1Block4x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_BLOCK2X2_WGSL {
+        conv_profile_label("Conv1x1Block2x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV1X1_WGSL {
+        conv_profile_label("Conv1x1Gemm", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_TILED_WGSL {
+        conv_profile_label("Conv3x3Tiled", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP2X2_S1D1_WGSL {
+        conv_profile_label("Conv3x3Co8Sp2x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_COBLOCK8_WGSL {
+        conv_profile_label("Conv3x3Co8", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_COBLOCK4_WGSL {
+        conv_profile_label("Conv3x3Co4", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP1X2_WGSL {
+        conv_profile_label("Conv5x5Co8Sp1x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP2X2_D1_WGSL {
+        conv_profile_label("Conv5x5Co8Sp2x2D1", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV5X5_COBLOCK8_WGSL {
+        conv_profile_label("Conv5x5Co8", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV5X5_COBLOCK4_WGSL {
+        conv_profile_label("Conv5x5Co4", kind)
+    } else if wgsl == crate::vision::ops::conv::DEPTHWISE3X3_WGSL {
+        conv_profile_label("Depthwise3x3", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV2D_WGSL {
+        conv_profile_label("Conv2dFallback", kind)
+    } else {
+        kind.label().to_owned()
+    }
+}
+
+fn conv_profile_label(prefix: &str, kind: &PlannedOpKind) -> String {
+    if let PlannedOpKind::Conv2d(plan) = kind {
+        format!(
+            "{} g{} k{}x{} s{}x{} d{}x{}",
+            prefix,
+            plan.group,
+            plan.kernel_shape[0],
+            plan.kernel_shape[1],
+            plan.strides[0],
+            plan.strides[1],
+            plan.dilations[0],
+            plan.dilations[1]
+        )
+    } else {
+        prefix.to_owned()
+    }
+}
+
+fn compiled_chunk_size(is_cpu_adapter: bool, step_count: usize) -> usize {
+    let env_value = std::env::var("WGPU_COMPILED_CHUNK_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+    env_value.unwrap_or_else(|| if is_cpu_adapter { 1 } else { step_count.max(1) })
+}
