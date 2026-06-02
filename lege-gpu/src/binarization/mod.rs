@@ -115,18 +115,10 @@ impl BinarizationParams {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod wgpu;
 
-#[cfg(windows)]
-pub mod hlsl;
-
-#[cfg(windows)]
-type PlatformGpuBinarizer = hlsl::HlslBinarizer;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 type PlatformGpuBinarizer = wgpu::WgpuBinarizer;
 
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 static GPU_BINARIZER: OnceCell<Mutex<PlatformGpuBinarizer>> = OnceCell::new();
 
 fn backend_is_cpu_forced() -> bool {
@@ -150,44 +142,38 @@ fn backend_is_cpu_forced() -> bool {
 /// Returns `None` if GPU is unavailable, disabled, or any page errors — caller
 /// should fall back to CPU for the whole batch.
 pub fn try_binarize_batch(pages: &[(&[u8], &BinarizationParams)]) -> Option<Vec<Vec<u8>>> {
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    return None;
+    if backend_is_cpu_forced() {
+        return None;
+    }
 
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    {
-        if backend_is_cpu_forced() {
+    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
+        PlatformGpuBinarizer::new()
+            .map(Mutex::new)
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(lock) => lock,
+        Err(err) => {
+            log::debug!("[GPU binarizer] initialization failed: {err}");
             return None;
         }
+    };
 
-        let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-            PlatformGpuBinarizer::new()
-                .map(Mutex::new)
-                .map_err(|e| e.to_string())
-        }) {
-            Ok(lock) => lock,
-            Err(err) => {
-                log::debug!("[GPU binarizer] initialization failed: {err}");
-                return None;
-            }
-        };
+    let mut binarizer = match binarizer_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
+            return None;
+        }
+    };
 
-        let mut binarizer = match binarizer_lock.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-                return None;
-            }
-        };
-
-        match binarizer.binarize_batch(pages) {
-            Ok(results) => {
-                log::debug!("[GPU binarizer] batch completed {} pages", results.len());
-                Some(results)
-            }
-            Err(err) => {
-                log::debug!("[GPU binarizer] batch error, falling back to CPU: {err}");
-                None
-            }
+    match binarizer.binarize_batch(pages) {
+        Ok(results) => {
+            log::debug!("[GPU binarizer] batch completed {} pages", results.len());
+            Some(results)
+        }
+        Err(err) => {
+            log::debug!("[GPU binarizer] batch error, falling back to CPU: {err}");
+            None
         }
     }
 }
@@ -196,49 +182,43 @@ pub fn try_binarize_batch(pages: &[(&[u8], &BinarizationParams)]) -> Option<Vec<
 /// Returns `None` if GPU is unavailable, disabled by env var, or encounters an error
 /// — the caller should fall back to CPU.
 pub fn try_binarize_gray(gray: &[u8], params: &BinarizationParams) -> Option<Vec<u8>> {
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    return None;
+    if backend_is_cpu_forced() {
+        return None;
+    }
 
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    {
-        if backend_is_cpu_forced() {
+    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
+        PlatformGpuBinarizer::new()
+            .map(Mutex::new)
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(lock) => lock,
+        Err(err) => {
+            log::debug!("[GPU binarizer] initialization failed: {err}");
             return None;
         }
+    };
 
-        let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-            PlatformGpuBinarizer::new()
-                .map(Mutex::new)
-                .map_err(|e| e.to_string())
-        }) {
-            Ok(lock) => lock,
-            Err(err) => {
-                log::debug!("[GPU binarizer] initialization failed: {err}");
-                return None;
-            }
-        };
+    let mut binarizer = match binarizer_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
+            return None;
+        }
+    };
 
-        let mut binarizer = match binarizer_lock.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-                return None;
-            }
-        };
-
-        match binarizer.binarize_gray_raw(gray, params) {
-            Ok(result) => {
-                log::debug!(
-                    "[GPU binarizer] completed {}x{} -> {} bytes",
-                    params.width,
-                    params.height,
-                    result.len()
-                );
-                Some(result)
-            }
-            Err(err) => {
-                log::debug!("[GPU binarizer] error, falling back to CPU: {err}");
-                None
-            }
+    match binarizer.binarize_gray_raw(gray, params) {
+        Ok(result) => {
+            log::debug!(
+                "[GPU binarizer] completed {}x{} -> {} bytes",
+                params.width,
+                params.height,
+                result.len()
+            );
+            Some(result)
+        }
+        Err(err) => {
+            log::debug!("[GPU binarizer] error, falling back to CPU: {err}");
+            None
         }
     }
 }
@@ -250,48 +230,42 @@ pub fn try_binarize_gray_with<F, R>(gray: &[u8], params: &BinarizationParams, f:
 where
     F: FnOnce(&[u8]) -> R,
 {
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    return None;
+    if backend_is_cpu_forced() {
+        return None;
+    }
 
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    {
-        if backend_is_cpu_forced() {
+    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
+        PlatformGpuBinarizer::new()
+            .map(Mutex::new)
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(lock) => lock,
+        Err(err) => {
+            log::debug!("[GPU binarizer] initialization failed: {err}");
             return None;
         }
+    };
 
-        let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-            PlatformGpuBinarizer::new()
-                .map(Mutex::new)
-                .map_err(|e| e.to_string())
-        }) {
-            Ok(lock) => lock,
-            Err(err) => {
-                log::debug!("[GPU binarizer] initialization failed: {err}");
-                return None;
-            }
-        };
+    let mut binarizer = match binarizer_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
+            return None;
+        }
+    };
 
-        let mut binarizer = match binarizer_lock.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-                return None;
-            }
-        };
-
-        match binarizer.binarize_gray_raw_with(gray, params, f) {
-            Ok(result) => {
-                log::debug!(
-                    "[GPU binarizer] completed {}x{} (with callback)",
-                    params.width,
-                    params.height,
-                );
-                Some(result)
-            }
-            Err(err) => {
-                log::debug!("[GPU binarizer] error, falling back to CPU: {err}");
-                None
-            }
+    match binarizer.binarize_gray_raw_with(gray, params, f) {
+        Ok(result) => {
+            log::debug!(
+                "[GPU binarizer] completed {}x{} (with callback)",
+                params.width,
+                params.height,
+            );
+            Some(result)
+        }
+        Err(err) => {
+            log::debug!("[GPU binarizer] error, falling back to CPU: {err}");
+            None
         }
     }
 }
@@ -299,7 +273,6 @@ where
 /// Try to binarize from RGB bytes using the platform GPU backend, with a callback.
 /// The GPU's linearize pre-pass applies sRGB→linear LUT + BT.709 luma + sRGB re-encode.
 /// Returns `None` if GPU is unavailable, disabled, or errors.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn try_binarize_rgb_with<F, R>(rgb: &[u8], params: &BinarizationParams, f: F) -> Option<R>
 where
     F: FnOnce(&[u8]) -> R,
@@ -332,14 +305,6 @@ where
             None
         }
     }
-}
-
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-pub fn try_binarize_rgb_with<F, R>(_rgb: &[u8], _params: &BinarizationParams, _f: F) -> Option<R>
-where
-    F: FnOnce(&[u8]) -> R,
-{
-    None
 }
 
 #[cfg(test)]
@@ -377,71 +342,16 @@ mod tests {
             debug_mode: 0,
         };
 
-        #[cfg(windows)]
-        {
-            let mut binarizer = hlsl::HlslBinarizer::new().expect("HLSL binarizer");
-            let out = binarizer
-                .binarize_gray_raw(&gray, &params)
-                .expect("GPU fixed threshold");
-            assert_eq!(out, vec![0, 255, 255, 0]);
-        }
-
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
-            let out = binarizer
-                .binarize_gray_raw(&gray, &params)
-                .expect("GPU fixed threshold");
-            assert_eq!(out, vec![0, 255, 255, 0]);
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn hlsl_repeated_adaptive_dispatch_resets_resource_states() {
-        if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
-            return;
-        }
-        let _gpu_guard = gpu_test_guard();
-
-        let width = 64u32;
-        let height = 64u32;
-        let pixel_count = (width * height) as usize;
-        let params = BinarizationParams {
-            width,
-            height,
-            mode: BinarizationMode::Adaptive,
-            invert_output: false,
-            k_factor: 0.2,
-            fixed_threshold: 128,
-            adaptive: AdaptiveBinarizeGpuConstants {
-                sauvola_window: 31,
-                bg_window: 3,
-                percentile_c: 255,
-                otsu_threshold: 128,
-            },
-            debug_mode: 0,
-        };
-
-        let black = vec![0u8; pixel_count];
-        let white = vec![255u8; pixel_count];
-        let mut binarizer = hlsl::HlslBinarizer::new().expect("HLSL binarizer");
-
-        let out_black = binarizer
-            .binarize_gray_raw(&black, &params)
-            .expect("first adaptive dispatch");
-        assert!(out_black.iter().all(|&v| v == 0));
-
-        let out_white = binarizer
-            .binarize_gray_raw(&white, &params)
-            .expect("second adaptive dispatch");
-        assert!(out_white.iter().all(|&v| v == 255));
+        let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
+        let out = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("GPU fixed threshold");
+        assert_eq!(out, vec![0, 255, 255, 0]);
     }
 
     /// Checks that binarize_batch matches binarize_gray_raw on two same-size pages
     /// and two variable-size pages.
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wgpu_batch_matches_single_page() {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
@@ -496,7 +406,6 @@ mod tests {
     /// Checks that the WGPU adaptive path produces an all-white image when debug_mode=9.
     /// This exercises pipeline creation, buffer allocation, and readback without any math.
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wgpu_adaptive_debug_all_white() {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
@@ -534,7 +443,6 @@ mod tests {
 
     /// Checks that x-ramp debug mode returns x & 0xFF for each pixel (stride sanity).
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wgpu_adaptive_debug_x_ramp() {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
@@ -574,7 +482,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wgpu_callback_exposes_exact_pixel_count() {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
@@ -605,7 +512,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wgpu_adaptive_handles_window_larger_than_dimension() {
         if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
             return;
