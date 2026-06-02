@@ -243,21 +243,17 @@ impl CoeffMap {
         )
     }
 
-    pub fn slash_res(&mut self, res: usize) {
-        self.iw = (self.iw + res - 1) / res;
-        self.ih = (self.ih + res - 1) / res;
-        self.bw = (self.iw + 31) & !31;
-        self.bh = (self.ih + 31) & !31;
-        self.num_blocks = (self.bw * self.bh) / (32 * 32);
-
+    /// Reduce resolution by zeroing high-frequency buckets, matching
+    /// DjVuLibre's `Map::Encode::slashres`. Dimensions and block count
+    /// are intentionally kept unchanged so the codec structure stays
+    /// in sync with the decoder (which always creates full-resolution maps).
+    pub fn slashres(&mut self, res: usize) {
         let min_bucket = match res {
             0..=1 => return,
             2..=3 => 16,
             4..=7 => 4,
             _ => 1,
         };
-        self.blocks.resize(self.num_blocks, Block::default());
-
         for block in self.blocks.iter_mut() {
             for buckno in min_bucket..64 {
                 block.zero_bucket(buckno as u8);

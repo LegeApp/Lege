@@ -8,16 +8,6 @@ description = "Internal GPU compute backends for Lege"
 name = "lege_gpu"
 path = "src/lib.rs"
 
-[[bin]]
-name = "compare-binarize"
-path = "src/bin/compare_binarize.rs"
-required-features = ["compare-bin"]
-
-[[bin]]
-name = "bench-binarize"
-path = "src/bin/bench_binarize.rs"
-required-features = ["compare-bin"]
-
 [dependencies]
 anyhow = { workspace = true }
 bytemuck = { workspace = true }
@@ -25,14 +15,17 @@ log = { workspace = true }
 once_cell = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true }
-rayon = { workspace = true, optional = true }
+rayon = { workspace = true }
 pollster = "0.4"
 protobuf = { version = "2.27.1", features = ["with-bytes"] }
-wgpu = "28"
-wgpu20 = { package = "wgpu", version = "0.20" }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "wgsl", "vulkan", "dx12"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "wgsl", "metal"] }
 
 [features]
 default = []
 debug-layers = []
 no-include-shaders = []
-compare-bin = ["dep:rayon"]

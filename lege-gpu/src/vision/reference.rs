@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 
 use crate::vision::onnx::types::{
     Conv2dPlan, ElementwiseKind, PadMode, PlannedOpKind, Pool2dPlan, UnaryKind,
@@ -39,7 +40,7 @@ impl Tensor {
     }
 }
 
-pub(crate) fn run_op(kind: &PlannedOpKind, inputs: &[Tensor]) -> Result<Vec<Tensor>> {
+pub(crate) fn run_op(kind: &PlannedOpKind, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
     match kind {
         PlannedOpKind::Conv2d(plan) => Ok(vec![conv2d(plan, inputs)?]),
         PlannedOpKind::Elementwise(kind) => Ok(vec![elementwise(kind, inputs)?]),
@@ -51,50 +52,50 @@ pub(crate) fn run_op(kind: &PlannedOpKind, inputs: &[Tensor]) -> Result<Vec<Tens
             starts,
             ends,
             steps,
-        } => Ok(vec![slice(&inputs[0], axes, starts, ends, steps)?]),
-        PlannedOpKind::Reshape { target } => Ok(vec![reshape(&inputs[0], target)?]),
-        PlannedOpKind::Transpose { perm } => Ok(vec![transpose(&inputs[0], perm)?]),
-        PlannedOpKind::MaxPool2d(plan) => Ok(vec![maxpool2d(plan, &inputs[0])?]),
-        PlannedOpKind::ResizeNearest { scales } => Ok(vec![resize_nearest(&inputs[0], scales)?]),
-        PlannedOpKind::MatMul => Ok(vec![matmul(&inputs[0], &inputs[1])?]),
+        } => Ok(vec![slice(inputs[0], axes, starts, ends, steps)?]),
+        PlannedOpKind::Reshape { target } => Ok(vec![reshape(inputs[0], target)?]),
+        PlannedOpKind::Transpose { perm } => Ok(vec![transpose(inputs[0], perm)?]),
+        PlannedOpKind::MaxPool2d(plan) => Ok(vec![maxpool2d(plan, inputs[0])?]),
+        PlannedOpKind::ResizeNearest { scales } => Ok(vec![resize_nearest(inputs[0], scales)?]),
+        PlannedOpKind::MatMul => Ok(vec![matmul(inputs[0], inputs[1])?]),
         PlannedOpKind::Gemm {
             alpha,
             beta,
             trans_a,
             trans_b,
         } => Ok(vec![gemm(inputs, *alpha, *beta, *trans_a, *trans_b)?]),
-        PlannedOpKind::Softmax { axis } => Ok(vec![softmax(&inputs[0], *axis)?]),
-        PlannedOpKind::GlobalAveragePool => Ok(vec![global_avg_pool(&inputs[0])?]),
-        PlannedOpKind::CumSum { axis } => Ok(vec![cumsum(&inputs[0], *axis)?]),
+        PlannedOpKind::Softmax { axis } => Ok(vec![softmax(inputs[0], *axis)?]),
+        PlannedOpKind::GlobalAveragePool => Ok(vec![global_avg_pool(inputs[0])?]),
+        PlannedOpKind::CumSum { axis } => Ok(vec![cumsum(inputs[0], *axis)?]),
         PlannedOpKind::ReduceSum { axis, keepdims } => {
-            Ok(vec![reduce_sum(&inputs[0], *axis, *keepdims)?])
+            Ok(vec![reduce_sum(inputs[0], *axis, *keepdims)?])
         }
         PlannedOpKind::SpaceToDepth { blocksize } => {
-            Ok(vec![space_to_depth(&inputs[0], *blocksize)?])
+            Ok(vec![space_to_depth(inputs[0], *blocksize)?])
         }
         PlannedOpKind::DepthToSpace { blocksize } => {
-            Ok(vec![depth_to_space(&inputs[0], *blocksize)?])
+            Ok(vec![depth_to_space(inputs[0], *blocksize)?])
         }
         PlannedOpKind::PRelu => Ok(vec![prelu(inputs)?]),
-        PlannedOpKind::Unsqueeze { axes } => Ok(vec![unsqueeze(&inputs[0], axes)?]),
-        PlannedOpKind::Squeeze { axes } => Ok(vec![squeeze(&inputs[0], axes)?]),
-        PlannedOpKind::Pad { pads, mode, value } => Ok(vec![pad(&inputs[0], pads, mode, *value)?]),
+        PlannedOpKind::Unsqueeze { axes } => Ok(vec![unsqueeze(inputs[0], axes)?]),
+        PlannedOpKind::Squeeze { axes } => Ok(vec![squeeze(inputs[0], axes)?]),
+        PlannedOpKind::Pad { pads, mode, value } => Ok(vec![pad(inputs[0], pads, mode, *value)?]),
         PlannedOpKind::ResizeLinear {
             sizes,
             align_corners,
-        } => Ok(vec![resize_linear(&inputs[0], sizes, *align_corners)?]),
+        } => Ok(vec![resize_linear(inputs[0], sizes, *align_corners)?]),
         PlannedOpKind::GridSample { align_corners } => {
-            Ok(vec![grid_sample(&inputs[0], &inputs[1], *align_corners)?])
+            Ok(vec![grid_sample(inputs[0], inputs[1], *align_corners)?])
         }
     }
 }
 
-fn prelu(inputs: &[Tensor]) -> Result<Tensor> {
+fn prelu(inputs: &[&Tensor]) -> Result<Tensor> {
     if inputs.len() != 2 {
         bail!("PRelu expects 2 inputs");
     }
-    let input = &inputs[0];
-    let slope = &inputs[1];
+    let input = inputs[0];
+    let slope = inputs[1];
     let shape = broadcast_shape(&input.shape, &slope.shape)?;
     if shape != input.shape {
         bail!("PRelu output shape must match input shape");
@@ -133,12 +134,12 @@ fn squeeze(input: &Tensor, axes: &[usize]) -> Result<Tensor> {
     Tensor::new(shape, input.data.clone())
 }
 
-fn gemm(inputs: &[Tensor], alpha: f32, beta: f32, trans_a: bool, trans_b: bool) -> Result<Tensor> {
+fn gemm(inputs: &[&Tensor], alpha: f32, beta: f32, trans_a: bool, trans_b: bool) -> Result<Tensor> {
     if inputs.len() < 2 || inputs.len() > 3 {
         bail!("Gemm expects 2 or 3 inputs, got {}", inputs.len());
     }
-    let a = &inputs[0];
-    let b = &inputs[1];
+    let a = inputs[0];
+    let b = inputs[1];
     if a.rank() != 2 || b.rank() != 2 {
         bail!("Gemm expects 2D A and B");
     }
@@ -269,8 +270,12 @@ fn space_to_depth(input: &Tensor, b: usize) -> Result<Tensor> {
     let (n, c, h, w) = (s[0], s[1], s[2], s[3]);
     let (oc, oh, ow) = (c * b * b, h / b, w / b);
     let mut data = vec![0.0f32; n * oc * oh * ow];
-    for nn in 0..n {
-        for occ in 0..oc {
+    // One output plane (nn, occ) per rayon task.
+    data.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(p, dst)| {
+            let nn = p / oc;
+            let occ = p % oc;
             let bh = occ / (b * c);
             let rem = occ % (b * c);
             let bw = rem / c;
@@ -280,12 +285,10 @@ fn space_to_depth(input: &Tensor, b: usize) -> Result<Tensor> {
                     let ih = ohh * b + bh;
                     let iw = oww * b + bw;
                     let src = ((nn * c + cc) * h + ih) * w + iw;
-                    let dst = ((nn * oc + occ) * oh + ohh) * ow + oww;
-                    data[dst] = input.data[src];
+                    dst[ohh * ow + oww] = input.data[src];
                 }
             }
-        }
-    }
+        });
     Tensor::new(vec![n, oc, oh, ow], data)
 }
 
@@ -297,8 +300,12 @@ fn depth_to_space(input: &Tensor, b: usize) -> Result<Tensor> {
     let (n, c, h, w) = (s[0], s[1], s[2], s[3]);
     let (oc, oh, ow) = (c / (b * b), h * b, w * b);
     let mut data = vec![0.0f32; n * oc * oh * ow];
-    for nn in 0..n {
-        for occ in 0..oc {
+    // One output plane (nn, occ) per rayon task.
+    data.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(p, dst)| {
+            let nn = p / oc;
+            let occ = p % oc;
             for ohh in 0..oh {
                 let hh = ohh / b;
                 let b0 = ohh % b;
@@ -307,16 +314,14 @@ fn depth_to_space(input: &Tensor, b: usize) -> Result<Tensor> {
                     let b1 = oww % b;
                     let ic = b0 * b * oc + b1 * oc + occ;
                     let src = ((nn * c + ic) * h + hh) * w + ww;
-                    let dst = ((nn * oc + occ) * oh + ohh) * ow + oww;
-                    data[dst] = input.data[src];
+                    dst[ohh * ow + oww] = input.data[src];
                 }
             }
-        }
-    }
+        });
     Tensor::new(vec![n, oc, oh, ow], data)
 }
 
-fn unary(kind: &UnaryKind, inputs: &[Tensor]) -> Result<Tensor> {
+fn unary(kind: &UnaryKind, inputs: &[&Tensor]) -> Result<Tensor> {
     let input = exactly_one(inputs)?;
     let data = match kind {
         UnaryKind::Identity => input.data.clone(),
@@ -342,28 +347,100 @@ fn unary(kind: &UnaryKind, inputs: &[Tensor]) -> Result<Tensor> {
     Tensor::new(input.shape.clone(), data)
 }
 
-fn elementwise(kind: &ElementwiseKind, inputs: &[Tensor]) -> Result<Tensor> {
+fn elementwise(kind: &ElementwiseKind, inputs: &[&Tensor]) -> Result<Tensor> {
     if inputs.len() != 2 {
         bail!("elementwise op expects 2 inputs, got {}", inputs.len());
     }
-    let shape = broadcast_shape(&inputs[0].shape, &inputs[1].shape)?;
-    let mut output = Tensor::zeros(shape.clone());
-    for out_index in 0..output.data.len() {
-        let coords = unravel(out_index, &shape);
-        let lhs = inputs[0].data[broadcast_index(&coords, &shape, &inputs[0].shape)];
-        let rhs = inputs[1].data[broadcast_index(&coords, &shape, &inputs[1].shape)];
-        output.data[out_index] = match kind {
-            ElementwiseKind::Add => lhs + rhs,
-            ElementwiseKind::Mul => lhs * rhs,
-            ElementwiseKind::Sub => lhs - rhs,
-            ElementwiseKind::Div => lhs / rhs,
-            ElementwiseKind::Max => lhs.max(rhs),
-        };
+    let (a, b) = (inputs[0], inputs[1]);
+    let shape = broadcast_shape(&a.shape, &b.shape)?;
+    let len = shape.iter().product::<usize>();
+    let op = |lhs: f32, rhs: f32| match kind {
+        ElementwiseKind::Add => lhs + rhs,
+        ElementwiseKind::Mul => lhs * rhs,
+        ElementwiseKind::Sub => lhs - rhs,
+        ElementwiseKind::Div => lhs / rhs,
+        ElementwiseKind::Max => lhs.max(rhs),
+    };
+
+    // Fast path: both operands already match the output shape (no broadcast).
+    if a.shape == shape && b.shape == shape {
+        let mut data = vec![0.0f32; len];
+        data.par_iter_mut()
+            .zip(&a.data)
+            .zip(&b.data)
+            .for_each(|((out, &lhs), &rhs)| *out = op(lhs, rhs));
+        return Tensor::new(shape, data);
     }
-    Ok(output)
+    // Fast path: one operand is a scalar broadcast over the whole output.
+    if b.data.len() == 1 && a.shape == shape {
+        let rhs = b.data[0];
+        let mut data = vec![0.0f32; len];
+        data.par_iter_mut()
+            .zip(&a.data)
+            .for_each(|(out, &lhs)| *out = op(lhs, rhs));
+        return Tensor::new(shape, data);
+    }
+    if a.data.len() == 1 && b.shape == shape {
+        let lhs = a.data[0];
+        let mut data = vec![0.0f32; len];
+        data.par_iter_mut()
+            .zip(&b.data)
+            .for_each(|(out, &rhs)| *out = op(lhs, rhs));
+        return Tensor::new(shape, data);
+    }
+
+    // General broadcast: process one output row (last axis) per rayon task. The
+    // row's base input offsets come from decomposing the row index over the
+    // leading dims with broadcast-aware strides; the inner loop walks the last
+    // axis. No per-element allocation, parallel across rows.
+    let rank = shape.len();
+    if rank == 0 {
+        // Scalar output (defensive: the equal-shape fast path covers scalars).
+        return Tensor::new(shape, vec![op(a.data[0], b.data[0])]);
+    }
+    let sa = broadcast_strides(&shape, &a.shape);
+    let sb = broadcast_strides(&shape, &b.shape);
+    let row = *shape.last().unwrap_or(&len);
+    let (la, lb) = (sa[rank - 1], sb[rank - 1]);
+    let mut data = vec![0.0f32; len];
+    if row == 0 {
+        return Tensor::new(shape, data);
+    }
+    data.par_chunks_mut(row).enumerate().for_each(|(r, dst)| {
+        let (mut ia, mut ib, mut rem) = (0usize, 0usize, r);
+        for axis in (0..rank - 1).rev() {
+            let c = rem % shape[axis];
+            rem /= shape[axis];
+            ia += c * sa[axis];
+            ib += c * sb[axis];
+        }
+        for (k, out) in dst.iter_mut().enumerate() {
+            *out = op(a.data[ia + k * la], b.data[ib + k * lb]);
+        }
+    });
+    Tensor::new(shape, data)
 }
 
-fn concat(inputs: &[Tensor], axis: usize) -> Result<Tensor> {
+/// Per-output-axis stride into a contiguous `in_shape` tensor, 0 where the input
+/// broadcasts (size-1 or missing leading axes). Lets a broadcast op advance the
+/// input's flat index without recomputing coordinates per element.
+fn broadcast_strides(out_shape: &[usize], in_shape: &[usize]) -> Vec<usize> {
+    let in_strides = strides(in_shape);
+    let offset = out_shape.len() - in_shape.len();
+    (0..out_shape.len())
+        .map(|axis| {
+            if axis < offset {
+                0
+            } else if in_shape[axis - offset] == 1 {
+                0
+            } else {
+                in_strides[axis - offset]
+            }
+        })
+        .collect()
+}
+
+fn concat(inputs: &[&Tensor], axis: usize) -> Result<Tensor> {
     if inputs.is_empty() {
         bail!("Concat needs at least one input");
     }
@@ -386,20 +463,25 @@ fn concat(inputs: &[Tensor], axis: usize) -> Result<Tensor> {
         }
     }
 
-    let mut output = Tensor::zeros(shape.clone());
-    let mut axis_offset = 0;
+    // Copy contiguous `axis_size * inner` blocks per outer index — no per-element
+    // indexing.
+    let (outer, out_axis, inner) = axis_split(&shape, axis);
+    let mut data = vec![0.0f32; outer * out_axis * inner];
+    let mut axis_offset = 0usize;
     for input in inputs {
-        for input_index in 0..input.data.len() {
-            let mut coords = unravel(input_index, &input.shape);
-            coords[axis] += axis_offset;
-            output.data[ravel(&coords, &shape)] = input.data[input_index];
+        let ai = input.shape[axis];
+        let block = ai * inner;
+        for o in 0..outer {
+            let src = o * block;
+            let dst = (o * out_axis + axis_offset) * inner;
+            data[dst..dst + block].copy_from_slice(&input.data[src..src + block]);
         }
-        axis_offset += input.shape[axis];
+        axis_offset += ai;
     }
-    Ok(output)
+    Tensor::new(shape, data)
 }
 
-fn split(inputs: &[Tensor], axis: usize, sizes: &[i64]) -> Result<Vec<Tensor>> {
+fn split(inputs: &[&Tensor], axis: usize, sizes: &[i64]) -> Result<Vec<Tensor>> {
     let input = exactly_one(inputs)?;
     if axis >= input.rank() {
         bail!("Split axis {axis} out of range for rank {}", input.rank());
@@ -412,20 +494,21 @@ fn split(inputs: &[Tensor], axis: usize, sizes: &[i64]) -> Result<Vec<Tensor>> {
         bail!("Split sizes do not sum to axis dimension");
     }
 
+    let (outer, in_axis, inner) = axis_split(&input.shape, axis);
     let mut outputs = Vec::new();
-    let mut axis_offset = 0;
+    let mut axis_offset = 0usize;
     for size in sizes {
         let mut shape = input.shape.clone();
         shape[axis] = size;
-        let mut output = Tensor::zeros(shape.clone());
-        for out_index in 0..output.data.len() {
-            let out_coords = unravel(out_index, &shape);
-            let mut in_coords = out_coords.clone();
-            in_coords[axis] += axis_offset;
-            output.data[out_index] = input.data[ravel(&in_coords, &input.shape)];
+        let block = size * inner;
+        let mut data = vec![0.0f32; outer * block];
+        for o in 0..outer {
+            let src = (o * in_axis + axis_offset) * inner;
+            let dst = o * block;
+            data[dst..dst + block].copy_from_slice(&input.data[src..src + block]);
         }
         axis_offset += size;
-        outputs.push(output);
+        outputs.push(Tensor::new(shape, data)?);
     }
     Ok(outputs)
 }
@@ -461,17 +544,40 @@ fn slice(
         .iter()
         .map(|(start, end, step)| end.saturating_sub(*start).div_ceil(*step))
         .collect::<Vec<_>>();
-    let mut output = Tensor::zeros(shape.clone());
-    for out_index in 0..output.data.len() {
-        let out_coords = unravel(out_index, &shape);
-        let in_coords = out_coords
-            .iter()
-            .enumerate()
-            .map(|(axis, coord)| ranges[axis].0 + coord * ranges[axis].2)
-            .collect::<Vec<_>>();
-        output.data[out_index] = input.data[ravel(&in_coords, &input.shape)];
+    // Walk the output with a coordinate odometer; per output axis the input flat
+    // index advances by `step * in_stride`, with a base offset from the starts.
+    let in_strides = strides(&input.shape);
+    let rank = input.rank();
+    let base = ranges
+        .iter()
+        .enumerate()
+        .map(|(axis, (start, _, _))| start * in_strides[axis])
+        .sum::<usize>();
+    let advance = (0..rank)
+        .map(|axis| ranges[axis].2 * in_strides[axis])
+        .collect::<Vec<_>>();
+    let len = shape.iter().product::<usize>();
+    if rank == 0 {
+        return Tensor::new(shape, vec![input.data[base]]);
     }
-    Ok(output)
+    let row = *shape.last().unwrap_or(&len);
+    let last_adv = advance[rank - 1];
+    let mut data = vec![0.0f32; len];
+    if row == 0 {
+        return Tensor::new(shape, data);
+    }
+    data.par_chunks_mut(row).enumerate().for_each(|(r, dst)| {
+        let (mut src, mut rem) = (base, r);
+        for axis in (0..rank - 1).rev() {
+            let c = rem % shape[axis];
+            rem /= shape[axis];
+            src += c * advance[axis];
+        }
+        for (k, out) in dst.iter_mut().enumerate() {
+            *out = input.data[src + k * last_adv];
+        }
+    });
+    Tensor::new(shape, data)
 }
 
 fn reshape(input: &Tensor, target: &[i64]) -> Result<Tensor> {
@@ -514,25 +620,46 @@ fn transpose(input: &Tensor, perm: &[usize]) -> Result<Tensor> {
         .iter()
         .map(|axis| input.shape[*axis])
         .collect::<Vec<_>>();
-    let mut output = Tensor::zeros(shape.clone());
-    for out_index in 0..output.data.len() {
-        let out_coords = unravel(out_index, &shape);
-        let mut in_coords = vec![0; input.rank()];
-        for (out_axis, in_axis) in perm.iter().enumerate() {
-            in_coords[*in_axis] = out_coords[out_axis];
-        }
-        output.data[out_index] = input.data[ravel(&in_coords, &input.shape)];
+    // Stride into the input for each *output* axis. Process one output row (last
+    // axis) per rayon task: compute the row's input base by decomposing the row
+    // index over the leading output dims, then walk the last axis.
+    let in_strides = strides(&input.shape);
+    let out_in_stride = perm
+        .iter()
+        .map(|axis| in_strides[*axis])
+        .collect::<Vec<_>>();
+    let rank = shape.len();
+    let len = shape.iter().product::<usize>();
+    if rank == 0 {
+        return Tensor::new(shape, vec![input.data[0]]);
     }
-    Ok(output)
+    let row = *shape.last().unwrap_or(&len);
+    let last_stride = out_in_stride[rank - 1];
+    let mut data = vec![0.0f32; len];
+    if row == 0 {
+        return Tensor::new(shape, data);
+    }
+    data.par_chunks_mut(row).enumerate().for_each(|(r, dst)| {
+        let (mut src, mut rem) = (0usize, r);
+        for axis in (0..rank - 1).rev() {
+            let c = rem % shape[axis];
+            rem /= shape[axis];
+            src += c * out_in_stride[axis];
+        }
+        for (k, out) in dst.iter_mut().enumerate() {
+            *out = input.data[src + k * last_stride];
+        }
+    });
+    Tensor::new(shape, data)
 }
 
-fn conv2d(plan: &Conv2dPlan, inputs: &[Tensor]) -> Result<Tensor> {
+fn conv2d(plan: &Conv2dPlan, inputs: &[&Tensor]) -> Result<Tensor> {
     if inputs.len() < 2 || inputs.len() > 3 {
         bail!("Conv2d expects input, weight, and optional bias");
     }
-    let x = &inputs[0];
-    let w = &inputs[1];
-    let bias = inputs.get(2);
+    let x = inputs[0];
+    let w = inputs[1];
+    let bias = inputs.get(2).copied();
     require_rank(x, 4, "Conv input")?;
     require_rank(w, 4, "Conv weight")?;
     let n = x.shape[0];
@@ -568,45 +695,68 @@ fn conv2d(plan: &Conv2dPlan, inputs: &[Tensor]) -> Result<Tensor> {
         kw,
         plan.strides[1],
     )?;
-    let mut y = Tensor::zeros(vec![n, cout, hout, wout]);
     let cout_per_group = cout / group;
+    let (sh, sw) = (plan.strides[0] as isize, plan.strides[1] as isize);
+    let (dh, dw) = (plan.dilations[0] as isize, plan.dilations[1] as isize);
+    let (ph, pw) = (plan.pads[0] as isize, plan.pads[1] as isize);
+    let plane = hout * wout;
+    let x_batch = cin * hin * win;
 
-    for b in 0..n {
-        for co in 0..cout {
-            let g = co / cout_per_group;
-            for oh in 0..hout {
-                for ow in 0..wout {
-                    let mut sum = bias.map(|bias| bias.data[co]).unwrap_or(0.0);
-                    for ci_g in 0..cin_per_group {
-                        let ci = g * cin_per_group + ci_g;
-                        for ky in 0..kh {
-                            let ih = oh as isize * plan.strides[0] as isize
-                                + ky as isize * plan.dilations[0] as isize
-                                - plan.pads[0] as isize;
-                            if ih < 0 || ih >= hin as isize {
-                                continue;
-                            }
-                            for kx in 0..kw {
-                                let iw = ow as isize * plan.strides[1] as isize
-                                    + kx as isize * plan.dilations[1] as isize
-                                    - plan.pads[1] as isize;
-                                if iw < 0 || iw >= win as isize {
-                                    continue;
-                                }
-                                let xv =
-                                    x.data[ravel(&[b, ci, ih as usize, iw as usize], &x.shape)];
-                                let wv = w.data[ravel(&[co, ci_g, ky, kx], &w.shape)];
-                                sum += xv * wv;
-                            }
+    // One output row (b, co, oh) per rayon task for good core utilization even
+    // when cout is small. Each (ci, ky, kx) tap contributes a scaled, shifted
+    // input row to the output row via a contiguous accumulate (`out[ow] += wv *
+    // x[ow*sw + off]`) over the precomputed in-bounds `ow` range — vectorizable,
+    // no per-element bounds checks or allocation.
+    let mut out = vec![0.0f32; n * cout * plane];
+    out.par_chunks_mut(wout).enumerate().for_each(|(row, dst)| {
+        let oh = row % hout;
+        let co = (row / hout) % cout;
+        let b = row / (hout * cout);
+        let g = co / cout_per_group;
+        if let Some(bias) = bias {
+            dst.fill(bias.data[co]);
+        }
+        let w_co = co * cin_per_group * kh * kw;
+        for ci_g in 0..cin_per_group {
+            let ci = g * cin_per_group + ci_g;
+            let x_c = b * x_batch + ci * hin * win;
+            let w_c = w_co + ci_g * kh * kw;
+            for ky in 0..kh {
+                let ih = oh as isize * sh + ky as isize * dh - ph;
+                if ih < 0 || ih >= hin as isize {
+                    continue;
+                }
+                let x_row = &x.data[x_c + ih as usize * win..x_c + (ih as usize + 1) * win];
+                for kx in 0..kw {
+                    let wv = w.data[w_c + ky * kw + kx];
+                    // iw = ow*sw + off, valid when 0 <= iw < win.
+                    let off = kx as isize * dw - pw;
+                    let lo = if off >= 0 {
+                        0
+                    } else {
+                        (((-off) as usize) + sw as usize - 1) / sw as usize
+                    };
+                    let hi = if (win as isize) > off {
+                        (((win as isize - off) as usize) + sw as usize - 1) / sw as usize
+                    } else {
+                        0
+                    }
+                    .min(wout);
+                    if sw == 1 {
+                        let base = off; // iw = ow + off
+                        for ow in lo..hi {
+                            dst[ow] += wv * x_row[(ow as isize + base) as usize];
+                        }
+                    } else {
+                        for ow in lo..hi {
+                            dst[ow] += wv * x_row[(ow as isize * sw + off) as usize];
                         }
                     }
-                    let yi = ravel(&[b, co, oh, ow], &y.shape);
-                    y.data[yi] = sum;
                 }
             }
         }
-    }
-    Ok(y)
+    });
+    Tensor::new(vec![n, cout, hout, wout], out)
 }
 
 fn maxpool2d(plan: &Pool2dPlan, input: &Tensor) -> Result<Tensor> {
@@ -747,31 +897,43 @@ fn pad(input: &Tensor, pads: &[i64], mode: &PadMode, value: f32) -> Result<Tenso
         .map(|axis| usize::try_from(input.shape[axis] as i64 + pads[axis] + pads[axis + rank]))
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("Pad output dim must be non-negative")?;
+    // Constant mode: fill with `value`, then copy the input block in by walking
+    // the input with a coordinate odometer and advancing the output flat index by
+    // the output strides (contiguous along the last axis). No per-element alloc.
+    if matches!(mode, PadMode::Constant) {
+        let out_strides = strides(&out_shape);
+        let len = out_shape.iter().product::<usize>();
+        let mut data = vec![value; len];
+        let base = (0..rank)
+            .map(|axis| pads[axis].max(0) as usize * out_strides[axis])
+            .sum::<usize>();
+        let mut coords = vec![0usize; rank];
+        let mut dst = base;
+        for &src in &input.data {
+            data[dst] = src;
+            for axis in (0..rank).rev() {
+                coords[axis] += 1;
+                dst += out_strides[axis];
+                if coords[axis] < input.shape[axis] {
+                    break;
+                }
+                coords[axis] = 0;
+                dst -= out_strides[axis] * input.shape[axis];
+            }
+        }
+        return Tensor::new(out_shape, data);
+    }
+
+    // Reflect mode (deskew; not on the sauvola CPU path): general per-element map.
     let mut output = Tensor::zeros(out_shape.clone());
     for out_index in 0..output.data.len() {
         let out_coords = unravel(out_index, &out_shape);
         let mut in_coords = vec![0usize; rank];
-        let mut outside = false;
         for axis in 0..rank {
             let raw = out_coords[axis] as i64 - pads[axis];
-            if raw < 0 || raw >= input.shape[axis] as i64 {
-                match mode {
-                    PadMode::Constant => {
-                        outside = true;
-                    }
-                    PadMode::Reflect => {
-                        in_coords[axis] = reflect_index(raw, input.shape[axis])?;
-                    }
-                }
-            } else {
-                in_coords[axis] = raw as usize;
-            }
+            in_coords[axis] = reflect_index(raw, input.shape[axis])?;
         }
-        output.data[out_index] = if outside {
-            value
-        } else {
-            input.data[ravel(&in_coords, &input.shape)]
-        };
+        output.data[out_index] = input.data[ravel(&in_coords, &input.shape)];
     }
     Ok(output)
 }
@@ -930,11 +1092,11 @@ fn softmax(input: &Tensor, axis: usize) -> Result<Tensor> {
     Ok(output)
 }
 
-fn exactly_one(inputs: &[Tensor]) -> Result<&Tensor> {
+fn exactly_one<'a>(inputs: &[&'a Tensor]) -> Result<&'a Tensor> {
     if inputs.len() != 1 {
         bail!("op expects one input, got {}", inputs.len());
     }
-    Ok(&inputs[0])
+    Ok(inputs[0])
 }
 
 fn require_rank(tensor: &Tensor, rank: usize, name: &str) -> Result<()> {
@@ -1050,7 +1212,7 @@ mod tests {
     fn elementwise_broadcasts_channel_bias() {
         let x = t(&[1, 2, 2, 2], &[1., 2., 3., 4., 10., 20., 30., 40.]);
         let bias = t(&[1, 2, 1, 1], &[100., 200.]);
-        let y = elementwise(&ElementwiseKind::Add, &[x, bias]).unwrap();
+        let y = elementwise(&ElementwiseKind::Add, &[&x, &bias]).unwrap();
         assert_eq!(y.shape, vec![1, 2, 2, 2]);
         assert_eq!(y.data, vec![101., 102., 103., 104., 210., 220., 230., 240.]);
     }
@@ -1059,9 +1221,9 @@ mod tests {
     fn concat_split_and_slice_work_on_channel_axis() {
         let a = t(&[1, 1, 2, 2], &[1., 2., 3., 4.]);
         let b = t(&[1, 2, 2, 2], &[5., 6., 7., 8., 9., 10., 11., 12.]);
-        let joined = concat(&[a.clone(), b.clone()], 1).unwrap();
+        let joined = concat(&[&a, &b], 1).unwrap();
         assert_eq!(joined.shape, vec![1, 3, 2, 2]);
-        let parts = split(&[joined.clone()], 1, &[1, 2]).unwrap();
+        let parts = split(&[&joined], 1, &[1, 2]).unwrap();
         assert_eq!(parts, vec![a, b]);
         let sliced = slice(&joined, &[1], &[1], &[3], &[1]).unwrap();
         assert_eq!(sliced, parts[1]);
@@ -1089,7 +1251,7 @@ mod tests {
         let x = t(&[1, 2, 1, 2], &[1., 2., 10., 20.]);
         let w = t(&[2, 1, 1, 1], &[3., 4.]);
         let b = t(&[2], &[1., 2.]);
-        let y = conv2d(&plan, &[x, w, b]).unwrap();
+        let y = conv2d(&plan, &[&x, &w, &b]).unwrap();
         assert_eq!(y.shape, vec![1, 2, 1, 2]);
         assert_eq!(y.data, vec![4., 7., 42., 82.]);
     }

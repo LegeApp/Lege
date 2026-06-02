@@ -614,7 +614,10 @@ pub fn binarize_options_for(
         want_invert_output = false;
     }
     let (use_fixed_threshold, fixed_threshold) = if force_blank_threshold {
-        (true, crate::pipeline::page_analysis::BLANK_PAGE_FALLBACK_THRESHOLD)
+        (
+            true,
+            crate::pipeline::page_analysis::BLANK_PAGE_FALLBACK_THRESHOLD,
+        )
     } else {
         (
             config.binarization().use_fixed_threshold,

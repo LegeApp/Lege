@@ -573,7 +573,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let (mut adjusted_image, mut adjusted_detections) = if let Some(analysis) = &margin_analysis {
         // Use document-wide margin analysis (2-pass mode)
-        apply_margin_analysis_to_page(&rendered, inference_result.detections, &config, analysis, page_index)?
+        apply_margin_analysis_to_page(
+            &rendered,
+            inference_result.detections,
+            &config,
+            analysis,
+            page_index,
+        )?
     } else {
         // Use per-page policy (1-pass mode)
         apply_region_policy(&rendered, &inference_result, &config)?
@@ -744,7 +750,10 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     let (mut binarized, deferred_binarize) = if can_defer_binarize {
         (
             Vec::new(),
-            Some(crate::pipeline::policies::binarize_options_for(&config, force_blank_threshold)),
+            Some(crate::pipeline::policies::binarize_options_for(
+                &config,
+                force_blank_threshold,
+            )),
         )
     } else if config.text_format() == "jpeg" {
         // DEBUG: should not reach here for non-jpeg pages with images
@@ -1270,7 +1279,10 @@ fn encode_region_image_sync(
     use Legencode::streamline::{EncodingManager, EncodingResult, ImageBuffer as LegeImageBuffer};
 
     let (settings, fmt_str) = crate::pipeline::helper_functions::region_encoding_settings(
-        format, is_cover, high_quality, jpeg_compat,
+        format,
+        is_cover,
+        high_quality,
+        jpeg_compat,
     )?;
 
     let buffer = LegeImageBuffer {
@@ -2174,20 +2186,45 @@ pub async fn create_and_run_pdf_source_pipeline(
     let h_forwarder = writer_forwarder.abort_handle();
     let h_writer = pdf_writer_task.abort_handle();
 
-    await_stage_or_cancel(&mut render_task, &mut shutdown_rx, "render",
-        &[h_infer.clone(), h_process.clone(), h_forwarder.clone(), h_writer.clone()]).await?;
+    await_stage_or_cancel(
+        &mut render_task,
+        &mut shutdown_rx,
+        "render",
+        &[
+            h_infer.clone(),
+            h_process.clone(),
+            h_forwarder.clone(),
+            h_writer.clone(),
+        ],
+    )
+    .await?;
     info_log!("[PDF-Parallel] Render stage complete");
 
-    await_stage_or_cancel(&mut infer_task, &mut shutdown_rx, "inference",
-        &[h_process.clone(), h_forwarder.clone(), h_writer.clone()]).await?;
+    await_stage_or_cancel(
+        &mut infer_task,
+        &mut shutdown_rx,
+        "inference",
+        &[h_process.clone(), h_forwarder.clone(), h_writer.clone()],
+    )
+    .await?;
     info_log!("[PDF-Parallel] Inference stage complete");
 
-    await_stage_or_cancel(&mut process_task, &mut shutdown_rx, "processing",
-        &[h_forwarder.clone(), h_writer.clone()]).await?;
+    await_stage_or_cancel(
+        &mut process_task,
+        &mut shutdown_rx,
+        "processing",
+        &[h_forwarder.clone(), h_writer.clone()],
+    )
+    .await?;
     info_log!("[PDF-Parallel] Processing stage complete");
 
-    await_stage_or_cancel(&mut writer_forwarder, &mut shutdown_rx, "writer forwarder",
-        &[h_writer.clone()]).await?;
+    await_stage_or_cancel(
+        &mut writer_forwarder,
+        &mut shutdown_rx,
+        "writer forwarder",
+        &[h_writer.clone()],
+    )
+    .await?;
     info_log!("[PDF-Parallel] Writer forwarder complete");
 
     await_stage_or_cancel(&mut pdf_writer_task, &mut shutdown_rx, "PDF writer", &[]).await?;

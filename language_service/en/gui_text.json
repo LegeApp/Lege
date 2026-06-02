@@ -138,14 +138,5 @@
       "completed": "Completed: {}\n{}",
       "completed_with_estimate": "Completed: {}\n{}\nExtrapolated compression % from selected page range."
     }
-  },
-  "providers": {
-    "cuda_success": "CUDA acceleration enabled",
-    "secondary_success": "Hardware acceleration enabled",
-    "using_cpu": "Using CPU",
-    "install_help": {
-      "openvino_linux": "For best performance on Linux, install or enable OpenVINO",
-      "directml_windows": "For best performance on Windows, install DirectML and recent GPU drivers"
-    }
   }
 }

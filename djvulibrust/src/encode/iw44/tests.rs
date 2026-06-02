@@ -153,7 +153,7 @@ mod tests {
         let params = EncoderParams::default();
         assert_eq!(params.decibels, None);
         assert_eq!(params.slices, Some(74));
-        assert!(matches!(params.crcb_mode, CrcbMode::Full));
+        assert!(matches!(params.crcb_mode, CrcbMode::Half));
         assert_eq!(params.db_frac, 0.35);
     }
 
@@ -170,4 +170,3 @@ mod tests {
         assert!(matches!(default_mode, CrcbMode::None));
     }
 }
-

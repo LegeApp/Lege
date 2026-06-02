@@ -427,10 +427,18 @@ impl Codec {
                         let k = (fbucket + buckno) << 2;
                         let b = self.emap.blocks[blockno].get_bucket_raw((k >> 4) as u8);
                         let k = k & 0xf;
-                        if b[k] != 0 { ctx += 1; }
-                        if b[k + 1] != 0 { ctx += 1; }
-                        if b[k + 2] != 0 { ctx += 1; }
-                        if ctx < 3 && b[k + 3] != 0 { ctx += 1; }
+                        if b[k] != 0 {
+                            ctx += 1;
+                        }
+                        if b[k + 1] != 0 {
+                            ctx += 1;
+                        }
+                        if b[k + 2] != 0 {
+                            ctx += 1;
+                        }
+                        if ctx < 3 && b[k + 3] != 0 {
+                            ctx += 1;
+                        }
                     }
                     if (bbstate & ACTIVE) != 0 {
                         ctx |= 4;
@@ -451,8 +459,8 @@ impl Codec {
             let bucket_offset = blockno * 64;
             for buckno in 0..nbucket {
                 if (self.bucket_state[bucket_offset + fbucket + buckno] & NEW) != 0 {
-                    let pcoeff_bucket = self.map.blocks[blockno]
-                        .get_bucket_raw((fbucket + buckno) as u8);
+                    let pcoeff_bucket =
+                        self.map.blocks[blockno].get_bucket_raw((fbucket + buckno) as u8);
                     let epcoeff_bucket =
                         self.emap.blocks[blockno].get_bucket_mut((fbucket + buckno) as u8);
 
@@ -520,8 +528,8 @@ impl Codec {
             let bucket_offset = blockno * 64;
             for buckno in 0..nbucket {
                 if (self.bucket_state[bucket_offset + fbucket + buckno] & ACTIVE) != 0 {
-                    let pcoeff_bucket = self.map.blocks[blockno]
-                        .get_bucket_raw((fbucket + buckno) as u8);
+                    let pcoeff_bucket =
+                        self.map.blocks[blockno].get_bucket_raw((fbucket + buckno) as u8);
                     let epcoeff_bucket =
                         self.emap.blocks[blockno].get_bucket_mut((fbucket + buckno) as u8);
                     for i in 0..16 {

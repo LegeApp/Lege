@@ -752,8 +752,11 @@ impl PageComponents {
         params: &PageEncodeParams,
     ) -> Result<()> {
         let crcb_mode = if params.color {
-            // C++ c44.exe uses CRCBnormal by default, not CRCBfull
-            crate::encode::iw44::encoder::CrcbMode::Normal
+            if params.bg_quality >= 95 {
+                crate::encode::iw44::encoder::CrcbMode::Full
+            } else {
+                crate::encode::iw44::encoder::CrcbMode::Half
+            }
         } else {
             crate::encode::iw44::encoder::CrcbMode::None
         };

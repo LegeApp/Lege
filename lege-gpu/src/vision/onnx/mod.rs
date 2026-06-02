@@ -1,4 +1,5 @@
 pub(crate) mod attrs;
+pub(crate) mod fold;
 pub(crate) mod graph;
 pub(crate) mod load;
 pub(crate) mod lower;

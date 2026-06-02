@@ -141,30 +141,7 @@ fn fmt4(
 }
 
 fn hardware_acceleration_status() -> (bool, String) {
-    #[cfg(target_os = "linux")]
-    {
-        if lege::gpu::webgpu_execution_provider_dispatch().is_some() {
-            return (true, "WebGPU (Dawn/Vulkan)".to_string());
-        }
-        return (false, "WebGPU unavailable, CPU fallback".to_string());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // DirectML provider is selected in engine setup on Windows when GPU is enabled.
-        return (true, "DirectML".to_string());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // CoreML provider is selected in engine setup on macOS when GPU is enabled.
-        return (true, "CoreML".to_string());
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        return (false, "not supported on this platform".to_string());
-    }
+    (true, "WGPU (Vulkan/Metal/DX12)".to_string())
 }
 
 /// All optional processing flags for non-interactive CLI mode.

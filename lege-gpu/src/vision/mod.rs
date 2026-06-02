@@ -3,7 +3,7 @@
 //! This module vendors the production inference runtime from the WGPU bridge.
 //! CLI/tester-only entry points and oracle helpers are intentionally excluded.
 
-pub(crate) use wgpu20 as wgpu;
+pub(crate) use ::wgpu;
 
 pub(crate) mod decode;
 pub(crate) mod onnx;
@@ -15,4 +15,8 @@ pub(crate) mod runtime;
 
 mod api;
 
-pub use api::{LayoutConfig, LayoutDetection, LayoutDetector};
+pub use api::{
+    DeskewConfig, DocumentDeskewer, LayoutConfig, LayoutDetection, LayoutDetector,
+    RotationClassifier, RotationConfig, RotationPrediction, SauvolaConfig, SauvolaCpuProcessor,
+    SauvolaProcessor,
+};

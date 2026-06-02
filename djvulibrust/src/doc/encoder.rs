@@ -105,11 +105,11 @@ impl DocumentEncoder {
         dirm.encode_explicit(&mut dirm_stream, true, true)?;
         let dirm_data = dirm_stream.into_vec();
 
-        // Check if estimate was accurate enough
+        // Check if estimate matches actual — any mismatch corrupts page offsets
         let actual_dirm_chunk_size = 8 + dirm_data.len() + (dirm_data.len() % 2);
         let final_dirm_data;
 
-        if (actual_dirm_chunk_size as i32 - dirm_chunk_size as i32).abs() > 16 {
+        if actual_dirm_chunk_size != dirm_chunk_size {
             // Re-calculate with correct DIRM size
             let corrected_dirm = DjVmDir::new();
             current_offset = base_offset + actual_dirm_chunk_size as u32 + nav_chunk_size as u32;

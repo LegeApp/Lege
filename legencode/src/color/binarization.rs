@@ -3,11 +3,7 @@
 
 use crate::types::BinarizationOptions;
 use anyhow::{Result, anyhow};
-use image::{GrayImage, Luma};
-use ndarray::Array4;
-// GPU execution providers intentionally excluded for HeavySauvola – CPU only.
-use ort::session::{Session, builder::GraphOptimizationLevel};
-use ort::value::Value;
+use image::{GrayImage, RgbImage};
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
 use std::cmp::{max, min};
@@ -31,21 +27,30 @@ fn format_memory_size(bytes: usize) -> String {
     }
 }
 
-/// Heavy-duty ONNX Sauvola processor for degraded documents
+/// Executes the sauvola model on the CPU through lege-vision. The model uses
+/// global instance normalization, so it must see the whole region at once —
+/// tiling would normalize each tile independently and break consistency across
+/// the page. CPU (whole-image, RAM-bounded, no VRAM ceiling) matches the
+/// original onnxruntime behavior; the model is sequential/memory-bound so it
+/// gains nothing from the GPU. Uses the dynamic-resolution prepared model
+/// (sauvola.prepared.onnx) at the region's native resolution, no resize.
+/// Output convention: 255 = foreground (text), 0 = background (paper).
 pub struct HeavySauvolaProcessor {
-    session: Session,
+    processor: lege_gpu::vision::SauvolaCpuProcessor,
 }
 
 impl HeavySauvolaProcessor {
     pub fn new() -> Result<Self> {
-        let model_path = crate::runtime_asset_path_if_exists("sauvola.onnx").ok_or_else(|| {
-            anyhow!("Heavy-duty Sauvola model not found (expected sauvola.onnx near the executable or under share/lege/models; set LEGE_ASSET_DIR to override).")
-        })?;
+        // Dynamic-resolution prepared model; fall back to the raw sauvola.onnx.
+        let model_path = crate::runtime_asset_path_if_exists("sauvola.prepared.onnx")
+            .or_else(|| crate::runtime_asset_path_if_exists("sauvola.onnx"))
+            .ok_or_else(|| {
+                anyhow!("Heavy-duty Sauvola model not found (expected sauvola.prepared.onnx or sauvola.onnx near the executable or under share/lege/models; set LEGE_ASSET_DIR to override).")
+            })?;
 
-        // Check model file size
-        if let Ok(metadata) = std::fs::metadata(&model_path) {
-            #[cfg(feature = "debug-logging")]
-            {
+        #[cfg(feature = "debug-logging")]
+        {
+            if let Ok(metadata) = std::fs::metadata(&model_path) {
                 crate::streamline::log_debug_message(&format!(
                     "Loading DIBCO Sauvola model: {} ({:.1} KB)",
                     model_path.display(),
@@ -54,172 +59,82 @@ impl HeavySauvolaProcessor {
             }
         }
 
-        let mut builder = Session::builder()
-            .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?;
+        let processor = lege_gpu::vision::SauvolaCpuProcessor::from_model_path(&model_path)
+            .map_err(|e| anyhow!("Failed to load sauvola model via lege-vision: {e}"))?;
 
-        // Always use CPU; GPU execution providers are intentionally disabled for
-        // HeavySauvola to ensure deterministic, stable binarization output.
-        #[cfg(feature = "debug-logging")]
-        crate::streamline::log_debug_message(
-            "Heavy-duty Sauvola: Using CPU execution provider (forced)",
-        );
-        let session = builder.commit_from_file(&model_path)?;
-
-        Ok(Self { session })
+        Ok(Self { processor })
     }
 
-    /// Process an RGB image region directly with zero-copy preprocessing.
-    /// This performs grayscale conversion and normalization on the fly.
+    /// Process an RGB image region through the bridge model at native
+    /// resolution. Extracts the region and runs inference; the mask comes back
+    /// at the region's own size (no resize).
+    /// Output: 255 = foreground (text), 0 = background (paper).
     pub fn process_rgb_region(
-        &mut self,
+        &self,
         rgb_data: &[u8],
-        width: u32,
-        _height: u32,
+        page_width: u32,
+        _page_height: u32,
         region_x: u32,
         region_y: u32,
         region_w: u32,
         region_h: u32,
-        opt: &BinarizationOptions, // New: Pass options for invert_input
-    ) -> Result<GrayImage> {
-        // Directly construct the NHWC tensor from the source RGB slice
-        let img_array = Array4::from_shape_fn(
-            (1, region_h as usize, region_w as usize, 1),
-            |(_, y, x, _)| {
-                let src_x = region_x as usize + x;
-                let src_y = region_y as usize + y;
-                let idx = (src_y * width as usize + src_x) * 3;
-
-                // Standard sRGB -> Grayscale conversion
-                let r = rgb_data[idx] as u32;
-                let g = rgb_data[idx + 1] as u32;
-                let b = rgb_data[idx + 2] as u32;
-                let mut gray = (r * 77 + g * 150 + b * 29) >> 8; // ~= 0.299R + 0.587G + 0.114B
-
-                // Handle input inversion for inverted documents (black background, white text)
-                if opt.invert_input {
-                    gray = 255 - gray;
-                }
-
-                // Normalize to [0.0, 1.0] for the model
-                (gray as f32) / 255.0
-            },
-        );
-
-        let inputs = ort::inputs!["img01_inp" => Value::from_array(img_array)
-            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?];
-        let outputs = self.session.run(inputs)?;
-
-        let output = outputs
-            .values()
-            .next()
-            .ok_or_else(|| anyhow!("Model produced no output"))?;
-        let (shape, data) = output.try_extract_tensor::<f32>()?;
-        let output_array = Array4::from_shape_vec(
-            (
-                shape[0] as usize,
-                shape[1] as usize,
-                shape[2] as usize,
-                shape[3] as usize,
-            ),
-            data.to_vec(),
-        )?;
-
-        Self::postprocess_output_static(output_array)
-    }
-
-    /// Process RGB image data directly (no preprocessing to grayscale)
-    pub fn process_rgb_patch(
-        &mut self,
-        rgb_data: &[u8],
-        width: u32,
-        height: u32,
         opt: &BinarizationOptions,
     ) -> Result<GrayImage> {
-        // Convert RGB to grayscale first since the ONNX model expects grayscale input
-        // Using OpenCV's standard RGB to grayscale conversion: 0.299*R + 0.587*G + 0.114*B
-        let mut gray_data = Vec::with_capacity((width * height) as usize);
-        for chunk in rgb_data.chunks(3) {
-            let r = chunk[0] as f32;
-            let g = chunk[1] as f32;
-            let b = chunk[2] as f32;
-            let mut gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-            // Handle input inversion for inverted documents (black background, white text)
-            if opt.invert_input {
-                gray = 255.0 - gray;
+        // Extract the region as an RgbImage
+        let mut rgb = vec![0u8; (region_w * region_h * 3) as usize];
+        for y in 0..region_h {
+            for x in 0..region_w {
+                let src_x = region_x + x;
+                let src_y = region_y + y;
+                let src_idx = (src_y * page_width + src_x) as usize * 3;
+                let dst_idx = (y * region_w + x) as usize * 3;
+                if src_idx + 2 < rgb_data.len() && dst_idx + 2 < rgb.len() {
+                    rgb[dst_idx] = rgb_data[src_idx];
+                    rgb[dst_idx + 1] = rgb_data[src_idx + 1];
+                    rgb[dst_idx + 2] = rgb_data[src_idx + 2];
+                }
             }
-
-            gray_data.push(gray);
         }
+        let img = RgbImage::from_raw(region_w, region_h, rgb)
+            .ok_or_else(|| anyhow!("failed to create RgbImage from region"))?;
 
-        // Apply the same normalization as the original model: simple /255.0
-        // Convert grayscale to NHWC format (batch, height, width, channels=1) for the model
-        let img_array =
-            Array4::from_shape_fn((1, height as usize, width as usize, 1), |(_, h, w, _)| {
-                let pixel_idx = h * width as usize + w;
-                gray_data[pixel_idx] / 255.0
-            });
+        let mut mask = self.processor.binarize_rgb(&img)?;
 
-        // Run inference
-        let img_value = Value::from_array(img_array)
-            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?;
-        let inputs = ort::inputs!["img01_inp" => img_value];
-        let outputs = self.session.run(inputs)?;
-
-        // Extract output
-        let output = outputs
-            .values()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("ORT session returned no output"))?;
-        let (shape, data) = output.try_extract_tensor::<f32>()?;
-        let output_array = Array4::from_shape_vec(
-            (
-                shape[0] as usize,
-                shape[1] as usize,
-                shape[2] as usize,
-                shape[3] as usize,
-            ),
-            data.to_vec(),
-        )?;
-
-        // Convert output to grayscale image
-        Self::postprocess_output_static(output_array)
-    }
-
-    fn postprocess_output_static(output: Array4<f32>) -> Result<GrayImage> {
-        let (_, out_h, out_w, _) = output.dim();
-        let mut mask = GrayImage::new(out_w as u32, out_h as u32);
-
-        // Simple thresholding of model output
-        // This loop is small (per patch) so parallelization is overkill
-        for y in 0..out_h {
-            for x in 0..out_w {
-                // Model outputs probability/confidence values - threshold at 0.5
-                let pixel_value = if output[[0, y, x, 0]] > 0.5 {
-                    255u8
-                } else {
-                    0u8
-                };
-                mask.put_pixel(x as u32, y as u32, Luma([pixel_value]));
+        // Handle input inversion
+        if opt.invert_input {
+            for pixel in mask.iter_mut() {
+                *pixel = 255 - *pixel;
             }
         }
 
         Ok(mask)
     }
+
+    /// Process the whole RGB image as a single patch.
+    pub fn process_rgb_patch(
+        &self,
+        rgb_data: &[u8],
+        width: u32,
+        height: u32,
+        opt: &BinarizationOptions,
+    ) -> Result<GrayImage> {
+        self.process_rgb_region(rgb_data, width, height, 0, 0, width, height, opt)
+    }
 }
 
-/// Cached ORT session for `HeavySauvolaProcessor`. Building the session is expensive
-/// (~hundreds of ms of ORT graph optimization), so we create it once and reuse.
-static HEAVY_PROCESSOR_CACHE: std::sync::OnceLock<Option<Mutex<HeavySauvolaProcessor>>> =
+/// Cached processor for heavy-duty binarization.
+///
+/// The processor is internally synchronized (its per-size graph cache locks only
+/// briefly to build/clone the prepared graph), so it is shared by `&` rather than
+/// behind a process-wide Mutex — that lets concurrent page workers run the heavy
+/// CPU inference in parallel instead of serializing on one lock.
+static HEAVY_PROCESSOR_CACHE: std::sync::OnceLock<Option<HeavySauvolaProcessor>> =
     std::sync::OnceLock::new();
 
-fn get_or_init_heavy_processor() -> Option<std::sync::MutexGuard<'static, HeavySauvolaProcessor>> {
+fn get_or_init_heavy_processor() -> Option<&'static HeavySauvolaProcessor> {
     HEAVY_PROCESSOR_CACHE
-        .get_or_init(|| HeavySauvolaProcessor::new().ok().map(Mutex::new))
+        .get_or_init(|| HeavySauvolaProcessor::new().ok())
         .as_ref()
-        .and_then(|m| m.lock().ok())
 }
 
 /// Binarizes an RGB image based on the provided options.
@@ -325,9 +240,9 @@ where
 
     // Heavy-duty path always materializes (ONNX) — call f on result.
     if !options.use_fixed_threshold && options.use_heavy_duty {
-        if let Some(mut processor) = get_or_init_heavy_processor() {
+        if let Some(processor) = get_or_init_heavy_processor() {
             if let Ok(result) =
-                apply_heavy_duty_binarization_raw(&mut processor, image, width, height, options)
+                apply_heavy_duty_binarization_raw(processor, image, width, height, options)
             {
                 return (f_slot.take().unwrap())(&result);
             }
@@ -443,8 +358,8 @@ fn binarize_image_raw_into(
     ));
 
     if !options.use_fixed_threshold && options.use_heavy_duty {
-        if let Some(mut processor) = get_or_init_heavy_processor() {
-            match apply_heavy_duty_binarization_raw(&mut processor, image, width, height, options) {
+        if let Some(processor) = get_or_init_heavy_processor() {
+            match apply_heavy_duty_binarization_raw(processor, image, width, height, options) {
                 Ok(result) => {
                     #[cfg(feature = "debug-logging")]
                     crate::streamline::log_debug_message(&format!(
@@ -959,31 +874,25 @@ fn reflect_101(idx: isize, len: isize) -> isize {
 
 /// Heavy-duty ONNX-based binarization returning raw binary data
 pub fn apply_heavy_duty_binarization_raw(
-    processor: &mut HeavySauvolaProcessor,
+    processor: &HeavySauvolaProcessor,
     image: &[u8],
     width: usize,
     height: usize,
     options: &BinarizationOptions,
 ) -> Result<Vec<u8>> {
-    let result_img = if options.no_patch {
-        #[cfg(feature = "debug-logging")]
-        crate::streamline::log_debug_message(&format!(
-            "Processing entire {}x{} image as a single patch.",
-            width, height
-        ));
-        processor.process_rgb_region(
-            image,
-            width as u32,
-            height as u32,
-            0,
-            0,
-            width as u32,
-            height as u32,
-            options,
-        )?
-    } else {
-        process_in_patches(processor, image, width, height, options)?
-    };
+    // Always whole-image: the sauvola model's global instance normalization
+    // makes per-tile statistics inconsistent, so it must see the full region at
+    // once. Running on CPU keeps this RAM-bounded with no VRAM ceiling.
+    let result_img = processor.process_rgb_region(
+        image,
+        width as u32,
+        height as u32,
+        0,
+        0,
+        width as u32,
+        height as u32,
+        options,
+    )?;
 
     // Convert to binary data.
     let mut bin_data = result_img.into_raw();
@@ -1001,77 +910,6 @@ pub fn apply_heavy_duty_binarization_raw(
     Ok(bin_data)
 }
 
-/// Process an image in parallel patches and combine the results
-fn process_in_patches(
-    processor: &mut HeavySauvolaProcessor,
-    image: &[u8],
-    width: usize,
-    height: usize,
-    options: &BinarizationOptions,
-) -> Result<GrayImage> {
-    let patch_size =
-        ((width.min(height) as f32 * options.patch_percentage / 100.0) as u32).max(256);
-    let stride = (patch_size as f32 * 0.75) as u32; // 25% overlap for smooth blending
-    #[cfg(feature = "debug-logging")]
-    crate::streamline::log_debug_message(&format!(
-        "Using patch size: {}x{}, stride: {}",
-        patch_size, patch_size, stride
-    ));
-
-    // Accumulate blended output as (sum, weight) in flat arrays, then normalise once.
-    let mut pixel_sum = vec![0.0f32; width * height];
-    let mut weight_map = vec![0.0f32; width * height];
-
-    let mut y = 0;
-    while y < height as u32 {
-        let mut x = 0;
-        while x < width as u32 {
-            let patch_w = (x + patch_size).min(width as u32) - x;
-            let patch_h = (y + patch_size).min(height as u32) - y;
-
-            if patch_w == 0 || patch_h == 0 {
-                x += stride;
-                continue;
-            }
-
-            let patch_result = processor.process_rgb_region(
-                image,
-                width as u32,
-                height as u32,
-                x,
-                y,
-                patch_w,
-                patch_h,
-                options,
-            )?;
-
-            let patch_raw = patch_result.as_raw();
-            for py in 0..patch_h as usize {
-                let src_row = &patch_raw[py * patch_w as usize..(py + 1) * patch_w as usize];
-                let dst_off = (y as usize + py) * width + x as usize;
-                for (px, &val) in src_row.iter().enumerate() {
-                    pixel_sum[dst_off + px] += val as f32;
-                    weight_map[dst_off + px] += 1.0;
-                }
-            }
-
-            x += stride;
-        }
-        y += stride;
-    }
-
-    // Normalise accumulated sums
-    let pixels: Vec<u8> = pixel_sum
-        .iter()
-        .zip(weight_map.iter())
-        .map(|(&s, &w)| if w > 0.0 { (s / w) as u8 } else { 255 })
-        .collect();
-    let final_image =
-        GrayImage::from_raw(width as u32, height as u32, pixels).ok_or_else(|| {
-            anyhow!("process_in_patches: failed to construct output image")
-        })?;
-    Ok(final_image)
-}
 
 /// Applies a mask to an already binarized image.
 /// Pixels in the binary data corresponding to a 255 in the mask will be set to white (255).

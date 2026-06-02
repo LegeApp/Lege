@@ -65,7 +65,7 @@ pub use image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 pub use utils::error::{DjvuError, Result};
 
 // Constants
-pub const DJVU_VERSION: &str = "0.1.0";
+pub const DJVU_VERSION: &str = "0.10.0";
 
 #[cfg(test)]
 mod tests {
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(DJVU_VERSION, "0.1.0");
+        assert_eq!(DJVU_VERSION, "0.10.0");
     }
 
     #[test]
@@ -110,12 +110,13 @@ mod tests {
         doc.add_page(page1)?;
 
         let djvu_bytes = doc.finalize()?;
+        // IFF structure: AT&T(4) + FORM(4) + size(4) + DJVM(4) = 16-byte header
         assert!(djvu_bytes.starts_with(b"AT&TFORM"));
-        assert_eq!(&djvu_bytes[8..12], b"DJVM");
+        assert_eq!(&djvu_bytes[12..16], b"DJVM");
 
-        // Parse DIRM chunk header
+        // Parse DIRM chunk header (starts at offset 16)
         let mut cursor = Cursor::new(&djvu_bytes);
-        cursor.set_position(12);
+        cursor.set_position(16);
         let mut id = [0u8; 4];
         cursor.read_exact(&mut id)?;
         assert_eq!(&id, b"DIRM");
@@ -139,23 +140,19 @@ mod tests {
             dirm_data[offsets_start + 3],
         ]) as usize;
 
-        // Parse NAVM chunk to locate the first page position
-        let navm_header_pos = dirm_data_end + dirm_pad;
-        let mut nav_cursor = Cursor::new(&djvu_bytes[navm_header_pos..]);
-        let mut nav_id = [0u8; 4];
-        nav_cursor.read_exact(&mut nav_id)?;
-        assert_eq!(&nav_id, b"NAVM");
-        let navm_size = nav_cursor.read_u32::<BigEndian>()? as usize;
-        let navm_data_end = navm_header_pos + 8 + navm_size;
-        let navm_pad = navm_size % 2;
+        // First page should start right after DIRM chunk (NAVM is disabled)
+        let first_page_pos = dirm_data_end + dirm_pad;
 
-        let first_page_pos = navm_data_end + navm_pad;
-
-        // Offsets are relative to the start of "DJVM" (position 8)
-        let expected_offset = first_page_pos - 8;
         assert_eq!(
-            first_offset, expected_offset,
-            "DIRM offset should match page position"
+            first_offset, first_page_pos,
+            "DIRM offset should match actual page position"
+        );
+
+        // Verify the page chunk starts with FORM
+        assert_eq!(
+            &djvu_bytes[first_page_pos..first_page_pos + 4],
+            b"FORM",
+            "Page data should start with FORM chunk"
         );
 
         Ok(())

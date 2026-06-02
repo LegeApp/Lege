@@ -2,7 +2,7 @@
 //! Pure functions over proto types — no graph state.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -34,6 +34,13 @@ pub(crate) fn attr_f32(node: &NodeProto, name: &str) -> Option<f32> {
         .iter()
         .find(|attr| attr.get_name() == name)
         .map(AttributeProto::get_f)
+}
+
+pub(crate) fn attr_tensor<'a>(node: &'a NodeProto, name: &str) -> Option<&'a TensorProto> {
+    node.get_attribute()
+        .iter()
+        .find(|attr| attr.get_name() == name && attr.has_t())
+        .map(AttributeProto::get_t)
 }
 
 pub(crate) fn attr_string(node: &NodeProto, name: &str) -> Option<String> {
@@ -299,7 +306,7 @@ pub(crate) fn input_shape(
 
 // ── Model loading ─────────────────────────────────────────────────────────────
 
-pub(crate) fn load_model(path: &PathBuf) -> Result<ModelProto> {
+pub(crate) fn load_model(path: &Path) -> Result<ModelProto> {
     use protobuf::Message;
     let bytes = std::fs::read(path)
         .with_context(|| format!("failed to read ONNX model {}", path.display()))?;

@@ -1,7 +1,6 @@
 use freya::prelude::*;
 
-use crate::colors::{APP_BG, PANEL_BG, CARD_BG, TEXT, MUTED, BORDER};
-
+use crate::colors::{APP_BG, BORDER, CARD_BG, MUTED, PANEL_BG, TEXT};
 
 pub fn lege_panel_card(
     title: impl Into<String>,
@@ -29,24 +28,20 @@ pub fn lege_panel_card(
 
     if !title.is_empty() {
         card = card.child(
-            label()
-                .text(title)
-                .font_size(15.)
-                .color(TEXT)
-                .font_weight(700),
+            rect()
+                .width(Size::fill())
+                .height(Size::px(22.))
+                .child(
+                    label()
+                        .text(title)
+                        .font_size(15.)
+                        .color(TEXT)
+                        .font_weight(700),
+                ),
         );
     }
 
     card.children(children).into()
-}
-
-pub fn lege_section_label(text: impl Into<String>) -> Element {
-    label()
-        .text(text.into())
-        .font_size(13.5)
-        .color(MUTED)
-        .font_weight(700)
-        .into()
 }
 
 pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
@@ -66,61 +61,6 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
                 .width(Size::fill())
                 .min_height(Size::px(24.))
                 .child(control),
-        )
-        .into()
-}
-
-pub fn lege_toggle_row(
-    label_text: impl Into<String>,
-    current_text: impl Into<String>,
-    on_press: impl FnMut(Event<PressEventData>) + 'static,
-) -> Element {
-    lege_field(
-        label_text,
-        Button::new()
-            .width(Size::px(104.))
-            .height(Size::px(24.))
-            .on_press(on_press)
-            .child(current_text.into())
-            .into(),
-    )
-}
-
-pub fn lege_inline_toggle_row(
-    label_text: impl Into<String>,
-    current_text: impl Into<String>,
-    on_press: impl FnMut(Event<PressEventData>) + 'static,
-) -> Element {
-    let label_text = label_text.into();
-    let current_text = current_text.into();
-
-    rect()
-        .width(Size::fill())
-        .height(Size::px(28.))
-        .padding((0., 0., 4., 0.))
-        .direction(Direction::Horizontal)
-        .cross_align(Alignment::Center)
-        .spacing(8.)
-        .child(
-            rect()
-                .width(Size::px(150.))
-                .height(Size::fill())
-                .cross_align(Alignment::Start)
-                .main_align(Alignment::Center)
-                .child(
-                    label()
-                        .text(label_text)
-                        .font_size(13.)
-                        .color(TEXT)
-                        .font_weight(500),
-                ),
-        )
-        .child(
-            Button::new()
-                .width(Size::px(104.))
-                .height(Size::px(24.))
-                .on_press(on_press)
-                .child(current_text),
         )
         .into()
 }
@@ -172,11 +112,23 @@ pub fn lege_checkbox_row(
         .into()
 }
 
-pub fn lege_toolbar(
+pub fn lege_header_bar(left: Element, utilities: Element) -> Element {
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .direction(Direction::Horizontal)
+        .main_align(Alignment::SpaceBetween)
+        .cross_align(Alignment::Center)
+        .spacing(8.)
+        .child(left)
+        .child(utilities)
+        .into()
+}
+
+pub fn lege_file_action_row(
     add_file: Element,
     add_folder: Element,
     output_directory: Element,
-    utility_column: Element,
 ) -> Element {
     rect()
         .background(CARD_BG)
@@ -189,7 +141,7 @@ pub fn lege_toolbar(
         .corner_radius(6.)
         .padding(5.)
         .width(Size::fill())
-        .height(Size::px(56.))
+        .height(Size::fill())
         .direction(Direction::Horizontal)
         .cross_align(Alignment::Center)
         .spacing(6.)
@@ -197,55 +149,57 @@ pub fn lege_toolbar(
         .child(
             rect()
                 .width(Size::flex(1.))
-                .height(Size::px(38.))
+                .height(Size::px(40.))
                 .child(add_file),
         )
         .child(
             rect()
                 .width(Size::flex(1.))
-                .height(Size::px(38.))
+                .height(Size::px(40.))
                 .child(add_folder),
         )
         .child(
             rect()
                 .width(Size::flex(1.))
-                .height(Size::px(38.))
+                .height(Size::px(40.))
                 .child(output_directory),
-        )
-        .child(
-            rect()
-                .width(Size::px(90.))
-                .height(Size::px(38.))
-                .child(utility_column),
         )
         .into()
 }
 
-pub fn lege_settings_grid(left_panel: Element, right_panel: Element) -> Element {
+pub fn lege_metric_box(title: impl Into<String>, value: impl Into<String>) -> Element {
     rect()
-        .width(Size::fill())
+        .background(CARD_BG)
+        .border(
+            Border::new()
+                .fill(BORDER)
+                .width(1.)
+                .alignment(BorderAlignment::Inner),
+        )
+        .corner_radius(6.)
+        .padding((5., 8., 5., 8.))
+        .width(Size::px(92.))
         .height(Size::fill())
-        .direction(Direction::Horizontal)
-        .cross_align(Alignment::Start)
-        .spacing(8.)
+        .vertical()
+        .main_align(Alignment::Center)
+        .cross_align(Alignment::Center)
+        .spacing(1.)
         .child(
-            rect()
-                .width(Size::percent(50.))
-                .height(Size::fill())
-                .child(left_panel),
+            label()
+                .text(value.into())
+                .font_size(18.)
+                .font_weight(700)
+                .color(TEXT),
         )
-        .child(
-            rect()
-                .width(Size::percent(50.))
-                .height(Size::fill())
-                .child(right_panel),
-        )
+        .child(label().text(title.into()).font_size(10.).color(MUTED))
         .into()
 }
 
 pub fn lege_status_panel(
     status_content: Element,
+    top_left: Element,
     top_right: Element,
+    bottom_left: Element,
     bottom_right: Element,
 ) -> Element {
     rect()
@@ -264,25 +218,37 @@ pub fn lege_status_panel(
             rect()
                 .width(Size::fill())
                 .height(Size::fill())
+                .padding((8., 8., 8., 8.))
                 .child(status_content),
         )
         .child(
             rect()
-                .position(Position::new_absolute().right(5.).top(5.))
+                .position(Position::new_absolute().left(8.).top(8.))
+                .child(top_left),
+        )
+        .child(
+            rect()
+                .position(Position::new_absolute().right(8.).top(14.))
                 .child(top_right),
         )
         .child(
             rect()
-                .position(Position::new_absolute().right(5.).bottom(5.))
+                .position(Position::new_absolute().left(8.).bottom(8.))
+                .child(bottom_left),
+        )
+        .child(
+            rect()
+                .position(Position::new_absolute().right(8.).bottom(8.))
                 .child(bottom_right),
         )
         .into()
 }
 
 pub fn lege_main_shell(
-    toolbar: Element,
+    header: Element,
+    file_actions: Element,
     settings: Element,
-    process_bar: Element,
+    process_row: Element,
     status_bar: Element,
 ) -> Element {
     rect()
@@ -305,32 +271,40 @@ pub fn lege_main_shell(
                 .child(
                     rect()
                         .padding(8.)
-                        .spacing(6.)
+                        .spacing(8.)
                         .width(Size::fill())
                         .height(Size::fill())
                         .vertical()
                         .content(Content::Flex)
-                        .child(toolbar)
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::flex(1.))
-                                .min_height(Size::px(280.))
+                                .height(Size::px(34.))
+                                .child(header),
+                        )
+                        .child(
+                            rect()
+                                .width(Size::fill())
+                                .height(Size::px(56.))
+                                .child(file_actions),
+                        )
+                        .child(
+                            rect()
+                                .width(Size::fill())
+                                .height(Size::px(326.))
                                 .child(settings),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(64.))
-                                .main_align(Alignment::Center)
-                                .cross_align(Alignment::Center)
-                                .child(process_bar),
+                                .height(Size::px(52.))
+                                .child(process_row),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
                                 .height(Size::flex(1.))
-                                .min_height(Size::px(156.))
+                                .min_height(Size::px(170.))
                                 .child(status_bar),
                         ),
                 ),

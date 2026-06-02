@@ -70,47 +70,53 @@ pub(crate) async fn run_concat(ctx: &GpuContext, axis: usize, inputs: &[Tensor])
             label: Some("concat slice"),
             source: crate::vision::wgpu::ShaderSource::Wgsl(CONCAT_SLICE_WGSL.into()),
         });
-    let bgl = ctx
-        .device
-        .create_bind_group_layout(&crate::vision::wgpu::BindGroupLayoutDescriptor {
-            label: Some("concat slice bgl"),
-            entries: &storage_bgl_entries(&[true, false, true]),
-        });
-    let pipeline = ctx
-        .device
-        .create_compute_pipeline(&crate::vision::wgpu::ComputePipelineDescriptor {
-            label: Some("concat slice pipeline"),
-            layout: Some(
-                &ctx.device
-                    .create_pipeline_layout(&crate::vision::wgpu::PipelineLayoutDescriptor {
+    let bgl =
+        ctx.device
+            .create_bind_group_layout(&crate::vision::wgpu::BindGroupLayoutDescriptor {
+                label: Some("concat slice bgl"),
+                entries: &storage_bgl_entries(&[true, false, true]),
+            });
+    let pipeline =
+        ctx.device
+            .create_compute_pipeline(&crate::vision::wgpu::ComputePipelineDescriptor {
+                label: Some("concat slice pipeline"),
+                layout: Some(&ctx.device.create_pipeline_layout(
+                    &crate::vision::wgpu::PipelineLayoutDescriptor {
                         label: None,
-                        bind_group_layouts: &[&bgl],
-                        push_constant_ranges: &[],
-                    }),
-            ),
-            module: &shader,
-            entry_point: "main",
-            compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
-        });
+                        bind_group_layouts: &[Some(&bgl)],
+                        immediate_size: 0,
+                    },
+                )),
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
 
-    let out_buf = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-        label: Some("concat output"),
-        size: (total_elems * 4) as u64,
-        usage: crate::vision::wgpu::BufferUsages::STORAGE | crate::vision::wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let readback = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-        label: Some("concat readback"),
-        size: (total_elems * 4) as u64,
-        usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = ctx
+    let out_buf = ctx
         .device
-        .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
-            label: Some("concat"),
+        .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some("concat output"),
+            size: (total_elems * 4) as u64,
+            usage: crate::vision::wgpu::BufferUsages::STORAGE
+                | crate::vision::wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
+    let readback = ctx
+        .device
+        .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+            label: Some("concat readback"),
+            size: (total_elems * 4) as u64,
+            usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                | crate::vision::wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+    let mut encoder =
+        ctx.device
+            .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+                label: Some("concat"),
+            });
 
     let mut axis_offset: u32 = 0;
     for inp in inputs {
@@ -128,44 +134,47 @@ pub(crate) async fn run_concat(ctx: &GpuContext, axis: usize, inputs: &[Tensor])
             0,
         ];
 
-        let src_buf = ctx
+        let src_buf =
+            ctx.device
+                .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
+                    label: Some("concat src"),
+                    contents: bytemuck::cast_slice(&inp.data),
+                    usage: crate::vision::wgpu::BufferUsages::STORAGE,
+                });
+        let params_buf =
+            ctx.device
+                .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
+                    label: Some("concat params"),
+                    contents: bytemuck::cast_slice(&params),
+                    usage: crate::vision::wgpu::BufferUsages::STORAGE,
+                });
+        let bg = ctx
             .device
-            .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
-                label: Some("concat src"),
-                contents: bytemuck::cast_slice(&inp.data),
-                usage: crate::vision::wgpu::BufferUsages::STORAGE,
+            .create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
+                label: Some("concat slice bg"),
+                layout: &bgl,
+                entries: &[
+                    crate::vision::wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: src_buf.as_entire_binding(),
+                    },
+                    crate::vision::wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: out_buf.as_entire_binding(),
+                    },
+                    crate::vision::wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: params_buf.as_entire_binding(),
+                    },
+                ],
             });
-        let params_buf = ctx
-            .device
-            .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
-                label: Some("concat params"),
-                contents: bytemuck::cast_slice(&params),
-                usage: crate::vision::wgpu::BufferUsages::STORAGE,
-            });
-        let bg = ctx.device.create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
-            label: Some("concat slice bg"),
-            layout: &bgl,
-            entries: &[
-                crate::vision::wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: src_buf.as_entire_binding(),
-                },
-                crate::vision::wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-                crate::vision::wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buf.as_entire_binding(),
-                },
-            ],
-        });
 
         {
-            let mut pass = encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
-                label: Some("concat slice pass"),
-                timestamp_writes: None,
-            });
+            let mut pass =
+                encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                    label: Some("concat slice pass"),
+                    timestamp_writes: None,
+                });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bg, &[]);
             let (gx, gy, gz) = linear_grid(local_elems.div_ceil(256));

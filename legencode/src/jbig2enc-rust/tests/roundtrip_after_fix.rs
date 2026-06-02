@@ -8,10 +8,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
+use jbig2enc_rust::jbig2enc::Jbig2Encoder;
 use jbig2enc_rust::{
     Jbig2Config, Jbig2Context, encode_single_image, encode_single_image_with_config,
 };
-use jbig2enc_rust::jbig2enc::Jbig2Encoder;
 use ndarray::Array2;
 
 fn jbig2dec_path() -> PathBuf {
@@ -92,7 +92,10 @@ fn decode_embedded(globals: Option<&[u8]>, page: &[u8], w: u32, h: u32) -> Vec<u
     let globals_path: PathBuf;
     if let Some(g) = globals {
         globals_path = dir.path().join("globals.jb2");
-        std::fs::File::create(&globals_path).unwrap().write_all(g).unwrap();
+        std::fs::File::create(&globals_path)
+            .unwrap()
+            .write_all(g)
+            .unwrap();
         cmd.arg(&globals_path);
     }
     cmd.arg(&page_path);
@@ -122,7 +125,10 @@ fn parse_p4_pbm(bytes: &[u8], expected_w: u32, expected_h: u32) -> Vec<u8> {
     fn skip_ws_and_comments(bytes: &[u8], i: &mut usize) {
         loop {
             while *i < bytes.len()
-                && (bytes[*i] == b' ' || bytes[*i] == b'\t' || bytes[*i] == b'\r' || bytes[*i] == b'\n')
+                && (bytes[*i] == b' '
+                    || bytes[*i] == b'\t'
+                    || bytes[*i] == b'\r'
+                    || bytes[*i] == b'\n')
             {
                 *i += 1;
             }
@@ -141,7 +147,10 @@ fn parse_p4_pbm(bytes: &[u8], expected_w: u32, expected_h: u32) -> Vec<u8> {
         while *i < bytes.len() && bytes[*i].is_ascii_digit() {
             *i += 1;
         }
-        std::str::from_utf8(&bytes[start..*i]).unwrap().parse().unwrap()
+        std::str::from_utf8(&bytes[start..*i])
+            .unwrap()
+            .parse()
+            .unwrap()
     }
 
     skip_ws_and_comments(bytes, &mut i);
@@ -192,12 +201,7 @@ fn pdf_fragment_roundtrip_default_config() {
     let result = encode_single_image(&original, w, h, /* pdf_mode = */ true)
         .expect("encode PDF fragment (default cfg)");
 
-    let decoded = decode_embedded(
-        result.global_data.as_deref(),
-        &result.page_data,
-        w,
-        h,
-    );
+    let decoded = decode_embedded(result.global_data.as_deref(), &result.page_data, w, h);
     assert_eq!(
         decoded, original,
         "PDF fragment round-trip differs from input (default config)"
@@ -212,12 +216,7 @@ fn pdf_fragment_roundtrip_lossless_config() {
     let result = encode_single_image_with_config(&original, w, h, ctx)
         .expect("encode PDF fragment (lossless cfg)");
 
-    let decoded = decode_embedded(
-        result.global_data.as_deref(),
-        &result.page_data,
-        w,
-        h,
-    );
+    let decoded = decode_embedded(result.global_data.as_deref(), &result.page_data, w, h);
     assert_eq!(
         decoded, original,
         "PDF fragment round-trip differs from input (lossless config)"
@@ -242,15 +241,13 @@ fn pdf_fragment_roundtrip_wide_bitmap() {
         pixels[(h as usize - 1) * w as usize + x] = 1;
     }
 
-    let result = encode_single_image(&pixels, w, h, /* pdf_mode = */ true)
-        .expect("encode wide bitmap");
-    let decoded = decode_embedded(
-        result.global_data.as_deref(),
-        &result.page_data,
-        w,
-        h,
+    let result =
+        encode_single_image(&pixels, w, h, /* pdf_mode = */ true).expect("encode wide bitmap");
+    let decoded = decode_embedded(result.global_data.as_deref(), &result.page_data, w, h);
+    assert_eq!(
+        decoded, pixels,
+        "wide-bitmap PDF fragment round-trip differs"
     );
-    assert_eq!(decoded, pixels, "wide-bitmap PDF fragment round-trip differs");
 }
 
 /// Build an Array2<u8> from a packed binary list (one byte per pixel, 0/1).
@@ -261,7 +258,13 @@ fn array2_from_pixels(w: u32, h: u32, pixels: &[u8]) -> Array2<u8> {
 /// A page containing a repeated "letter-like" glyph so the symbol-mode planner
 /// sees multiple identical instances and exercises the symbol-dict /
 /// text-region encoding paths affected by fixes #2 and #4–#5.
-fn page_with_repeated_glyph(w: u32, h: u32, glyph: &[(u32, u32)], reps_x: u32, reps_y: u32) -> Vec<u8> {
+fn page_with_repeated_glyph(
+    w: u32,
+    h: u32,
+    glyph: &[(u32, u32)],
+    reps_x: u32,
+    reps_y: u32,
+) -> Vec<u8> {
     let mut pixels = vec![0u8; (w * h) as usize];
     let glyph_w = 8u32;
     let glyph_h = 10u32;

@@ -52,7 +52,7 @@ impl Default for EncoderParams {
             decibels: None,   // No quality limit to match C44 behavior
             slices: Some(74), // C44 default: 74 slices for first chunk
             bytes: None,
-            crcb_mode: CrcbMode::Full,
+            crcb_mode: CrcbMode::Half,
             db_frac: 0.35,
             lossless: false,
             quant_multiplier: 1.0, // Start with C++ default behavior
@@ -167,58 +167,20 @@ pub fn make_ycbcr_codecs(
                         Codec::new(ymap, params)
                     },
                     || {
-                        let (half_width, half_height) = ((width + 1) / 2, (height + 1) / 2);
-                        let half_size = (half_width * half_height) as usize;
-
-                        let mut cb_half = vec![0i8; half_size];
-                        let mut cr_half = vec![0i8; half_size];
-
-                        for y in 0..half_height {
-                            for x in 0..half_width {
-                                let dst_idx = (y * half_width + x) as usize;
-
-                                let mut cb_sum = 0i32;
-                                let mut cr_sum = 0i32;
-                                let mut count = 0;
-
-                                for dy in 0..2 {
-                                    for dx in 0..2 {
-                                        let src_x = x * 2 + dx;
-                                        let src_y = y * 2 + dy;
-                                        if src_x < width && src_y < height {
-                                            let src_idx = (src_y * width + src_x) as usize;
-                                            cb_sum += cb_buf[src_idx] as i32;
-                                            cr_sum += cr_buf[src_idx] as i32;
-                                            count += 1;
-                                        }
-                                    }
-                                }
-
-                                cb_half[dst_idx] = (cb_sum / count) as i8;
-                                cr_half[dst_idx] = (cr_sum / count) as i8;
-                            }
-                        }
-
-                        let (cbmap, crmap) = rayon::join(
+                        let (mut cbmap, mut crmap) = rayon::join(
                             || {
                                 CoeffMap::create_from_signed_channel(
-                                    &cb_half,
-                                    half_width,
-                                    half_height,
-                                    None,
-                                    "Cb",
+                                    cb_buf, width, height, mask, "Cb",
                                 )
                             },
                             || {
                                 CoeffMap::create_from_signed_channel(
-                                    &cr_half,
-                                    half_width,
-                                    half_height,
-                                    None,
-                                    "Cr",
+                                    cr_buf, width, height, mask, "Cr",
                                 )
                             },
                         );
+                        cbmap.slashres(2);
+                        crmap.slashres(2);
 
                         (
                             Some(Codec::new(cbmap, params)),
@@ -270,52 +232,12 @@ pub fn make_ycbcr_codecs(
         let (cb_codec, cr_codec) = match params.crcb_mode {
             CrcbMode::None => (None, None),
             CrcbMode::Half => {
-                let (half_width, half_height) = ((width + 1) / 2, (height + 1) / 2);
-                let half_size = (half_width * half_height) as usize;
-
-                let mut cb_half = vec![0i8; half_size];
-                let mut cr_half = vec![0i8; half_size];
-
-                for y in 0..half_height {
-                    for x in 0..half_width {
-                        let dst_idx = (y * half_width + x) as usize;
-
-                        let mut cb_sum = 0i32;
-                        let mut cr_sum = 0i32;
-                        let mut count = 0;
-
-                        for dy in 0..2 {
-                            for dx in 0..2 {
-                                let src_x = x * 2 + dx;
-                                let src_y = y * 2 + dy;
-                                if src_x < width && src_y < height {
-                                    let src_idx = (src_y * width + src_x) as usize;
-                                    cb_sum += cb_buf[src_idx] as i32;
-                                    cr_sum += cr_buf[src_idx] as i32;
-                                    count += 1;
-                                }
-                            }
-                        }
-
-                        cb_half[dst_idx] = (cb_sum / count) as i8;
-                        cr_half[dst_idx] = (cr_sum / count) as i8;
-                    }
-                }
-
-                let cbmap = CoeffMap::create_from_signed_channel(
-                    &cb_half,
-                    half_width,
-                    half_height,
-                    None,
-                    "Cb",
-                );
-                let crmap = CoeffMap::create_from_signed_channel(
-                    &cr_half,
-                    half_width,
-                    half_height,
-                    None,
-                    "Cr",
-                );
+                let mut cbmap =
+                    CoeffMap::create_from_signed_channel(cb_buf, width, height, mask, "Cb");
+                let mut crmap =
+                    CoeffMap::create_from_signed_channel(cr_buf, width, height, mask, "Cr");
+                cbmap.slashres(2);
+                crmap.slashres(2);
                 (
                     Some(Codec::new(cbmap, params)),
                     Some(Codec::new(crmap, params)),
@@ -566,8 +488,8 @@ impl IWEncoder {
             // - CRCBnormal: crcb_half=0, crcb_delay=10 -> crcbdelay = 0x80 | 10 = 0x8a
             // - CRCBhalf: crcb_half=1, crcb_delay=10 -> crcbdelay = 0x00 | 10 = 0x0a
             let crcb_delay_byte: u8 = if is_color {
-                let mut byte = 0x80;
-                if self.crcb_delay >= 0 && !self.crcb_half {
+                let mut byte = if self.crcb_half { 0x00 } else { 0x80 };
+                if self.crcb_delay >= 0 {
                     byte |= self.crcb_delay as u8;
                 }
                 byte

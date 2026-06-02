@@ -53,12 +53,12 @@ pub(crate) const TARGETS: &[ModelTarget] = &[
         layout: Layout::Nchw,
         dims: [None, Some(3), None, None],
     },
-    // sauvola binarization; NHWC grayscale, H/W dynamic.
+    // sauvola binarization; NHWC grayscale, batch + H/W dynamic (stamped at prep).
     ModelTarget {
         input_name: "img01_inp",
         dtype: "FLOAT",
         layout: Layout::Nhwc,
-        dims: [Some(1), None, None, Some(1)],
+        dims: [None, None, None, Some(1)],
     },
 ];
 
@@ -308,7 +308,6 @@ fn validate_op_set(
         "TopK",
         "GatherElements",
         "Range",
-        "ConstantOfShape",
         "Expand",
         "Tile",
     ];
@@ -320,16 +319,23 @@ fn validate_op_set(
         }
     }
 
-    let shape_plumbing = ["Shape", "Gather", "Cast"];
-    let present = shape_plumbing
-        .iter()
-        .filter_map(|op| op_histogram.get(*op).map(|count| format!("{op}={count}")))
-        .collect::<Vec<_>>();
-    if !present.is_empty() {
-        rejection_reasons.push(format!(
-            "shape-plumbing ops remain ({}) and must be constant-folded or absent in the prepared graph",
-            present.join(", ")
-        ));
+    // The YOLO `images` target is a fully static export; any residual
+    // shape-plumbing there is a real defect. Dynamic-resolution targets
+    // (paddle-deskew, sauvola) legitimately carry a small Shape/Cast/Gather
+    // subgraph that the bridge folds to constants at preparation time once the
+    // concrete input dims are injected, so they are accepted here.
+    if input_name == Some("images") {
+        let shape_plumbing = ["Shape", "Gather", "Cast"];
+        let present = shape_plumbing
+            .iter()
+            .filter_map(|op| op_histogram.get(*op).map(|count| format!("{op}={count}")))
+            .collect::<Vec<_>>();
+        if !present.is_empty() {
+            rejection_reasons.push(format!(
+                "shape-plumbing ops remain ({}) and must be constant-folded or absent in the prepared graph",
+                present.join(", ")
+            ));
+        }
     }
 
     let supported = BTreeSet::from([
@@ -373,17 +379,23 @@ fn validate_op_set(
         let op = op.as_str();
         if !supported.contains(op)
             && ![
+                // Shape-plumbing ops the bridge folds to constants at prep time.
                 "Cast",
                 "ConstantOfShape",
-                "Expand",
+                "Equal",
                 "Gather",
-                "GatherElements",
-                "Range",
+                "Neg",
+                "Not",
                 "Shape",
                 "Squeeze",
+                "Unsqueeze",
+                // Hard-rejected above with a clearer message; listed so they
+                // don't also trip the generic "unsupported op" path.
+                "Expand",
+                "GatherElements",
+                "Range",
                 "Tile",
                 "TopK",
-                "Unsqueeze",
             ]
             .contains(&op)
         {

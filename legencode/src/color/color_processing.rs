@@ -1,11 +1,4 @@
 use anyhow::{Result, anyhow};
-use ndarray::Array4;
-#[cfg(target_os = "macos")]
-use ort::execution_providers::CoreMLExecutionProvider;
-#[cfg(target_os = "windows")]
-use ort::execution_providers::DirectMLExecutionProvider;
-use ort::session::Session;
-use ort::value::Value;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use rayon::slice::ParallelSlice;
@@ -211,7 +204,7 @@ pub fn process_image_region(
 
     // Use heavy binarization if enabled and available
     if use_heavy_binarization {
-        if let Ok(mut processor) = HeavyBinarizationProcessor::new() {
+        if let Ok(processor) = HeavyBinarizationProcessor::new() {
             match processor.process_region(
                 original_rgb,
                 page_width,
@@ -607,147 +600,40 @@ fn rgb_to_grayscale_simd_direct(
     grayscale
 }
 
-/// Heavy binarization processor using ONNX model for high-quality document binarization
+/// Executes the sauvola model through the lege-vision WGPU bridge.
+/// Delegates to HeavySauvolaProcessor (defined in binarization.rs) which
+/// uses the prepared sauvola model.
 struct HeavyBinarizationProcessor {
-    session: Session,
+    inner: crate::color::HeavySauvolaProcessor,
 }
 
 impl HeavyBinarizationProcessor {
-    /// Create a new instance of the heavy binarization processor
     fn new() -> Result<Self> {
-        let model_path = crate::runtime_asset_path_if_exists("sauvola.onnx").ok_or_else(|| {
-            anyhow!(
-                "Heavy binarization model not found (expected sauvola.onnx near the executable or under share/lege/models; set LEGE_ASSET_DIR to override)."
-            )
-        })?;
-
-        let mut builder = Session::builder()
-            .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
-            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
-            .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?;
-
-        // Prefer platform-appropriate execution providers:
-        // - Windows: DirectML
-        // - macOS: CoreML
-        // - Linux/other: WebGPU if available via build feature, else CPU
-        let mut session = {
-            #[cfg(target_os = "windows")]
-            {
-                if let Ok(mut dml_builder) = builder
-                    .clone()
-                    .with_execution_providers([DirectMLExecutionProvider::default().build()])
-                {
-                    if let Ok(sess) = dml_builder.commit_from_file(&model_path) {
-                        #[cfg(feature = "debug-logging")]
-                        crate::streamline::log_debug_message("Heavy binarization: Using DirectML");
-                        sess
-                    } else {
-                        #[cfg(feature = "debug-logging")]
-                        crate::streamline::log_debug_message(
-                            "Heavy binarization: DirectML unavailable, falling back to CPU",
-                        );
-                        builder.commit_from_file(&model_path)?
-                    }
-                } else {
-                    builder.commit_from_file(&model_path)?
-                }
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                if let Ok(coreml_builder) = builder
-                    .clone()
-                    .with_execution_providers([CoreMLExecutionProvider::default().build()])
-                {
-                    if let Ok(sess) = coreml_builder.commit_from_file(&model_path) {
-                        #[cfg(feature = "debug-logging")]
-                        crate::streamline::log_debug_message("Heavy binarization: Using CoreML");
-                        sess
-                    } else {
-                        #[cfg(feature = "debug-logging")]
-                        crate::streamline::log_debug_message(
-                            "Heavy binarization: CoreML unavailable, falling back to CPU",
-                        );
-                        builder.commit_from_file(&model_path)?
-                    }
-                } else {
-                    builder.commit_from_file(&model_path)?
-                }
-            }
-
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            {
-                // With the local ort fork built with the `webgpu` feature on Linux,
-                // not specifying a provider lets ORT select WebGPU automatically when available.
-                #[cfg(feature = "debug-logging")]
-                crate::streamline::log_debug_message(
-                    "Heavy binarization: Using WebGPU if available, else CPU",
-                );
-                builder.commit_from_file(&model_path)?
-            }
-        };
-
-        // Optional warmup to reduce first-inference latency on Windows (DirectML)
-        #[cfg(target_os = "windows")]
-        {
-            use ndarray::Array4;
-            let arr = Array4::<f32>::zeros((1, 8, 8, 1));
-            if let Ok(inp) = Value::from_array(arr) {
-                let _ = session.run(ort::inputs!["img01_inp" => inp]);
-            }
-        }
-
-        Ok(Self { session })
+        Ok(Self {
+            inner: crate::color::HeavySauvolaProcessor::new()?,
+        })
     }
 
-    /// Process a region using the heavy binarization model
     fn process_region(
-        &mut self,
+        &self,
         rgb_data: &[u8],
         page_width: u32,
-        _page_height: u32,
+        page_height: u32,
         bounds: RegionBounds,
         region_width: u32,
         region_height: u32,
     ) -> Result<Vec<u8>> {
-        // Convert RGB to grayscale and normalize to [0,1] in a single pass
-        let img_array = Array4::from_shape_fn(
-            (1, region_height as usize, region_width as usize, 1),
-            |(_, y, x, _)| {
-                let src_x = bounds.x_start as usize + x;
-                let src_y = bounds.y_start as usize + y;
-                let idx = (src_y * page_width as usize + src_x) * 3;
-
-                // Standard sRGB -> Grayscale conversion with fixed-point math
-                let r = rgb_data[idx] as u32;
-                let g = rgb_data[idx + 1] as u32;
-                let b = rgb_data[idx + 2] as u32;
-                let gray = (r * 77 + g * 150 + b * 29) >> 8; // ~= 0.299R + 0.587G + 0.114B
-
-                // Normalize to [0.0, 1.0] for the model
-                (gray as f32) / 255.0
-            },
-        );
-
-        // Run inference
-        let inputs = ort::inputs!["img01_inp" => Value::from_array(img_array)
-            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?];
-        let outputs = self.session.run(inputs)?;
-
-        // Process output
-        let output = outputs
-            .values()
-            .next()
-            .ok_or_else(|| anyhow!("Model produced no output"))?;
-        let (_shape, data) = output.try_extract_tensor::<f32>()?;
-
-        // Convert output to binary image
-        let mut result = vec![0u8; (region_width * region_height) as usize];
-        for i in 0..result.len() {
-            result[i] = if data[i] > 0.5 { 255 } else { 0 };
-        }
-
-        Ok(result)
+        let img = self.inner.process_rgb_region(
+            rgb_data,
+            page_width,
+            page_height,
+            bounds.x_start,
+            bounds.y_start,
+            region_width,
+            region_height,
+            &crate::types::BinarizationOptions::default(),
+        )?;
+        Ok(img.into_raw())
     }
 }
 
