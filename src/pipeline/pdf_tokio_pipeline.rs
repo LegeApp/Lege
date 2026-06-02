@@ -1839,8 +1839,8 @@ async fn perform_document_analysis(
 
     let mut margin_inputs = Vec::new();
     let mut detection_cache = vec![CachedDetections::Missing; source.page_count()];
-    // Keep margin pass inference serialized; ORT is still protected by the inference actor,
-    // while PageSource handles whether loading is Pdfium-backed or image-backed.
+    // Keep margin pass inference queued through the actor; PageSource handles whether
+    // loading is Pdfium-backed or image-backed.
     let analysis_infer_concurrency = 1usize;
     let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
         FuturesUnordered::new();
@@ -1978,8 +1978,8 @@ pub async fn create_and_run_pdf_source_pipeline(
     const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
     crate::resize::set_gpu_resize_enabled(total_pages >= MIN_PAGES_FOR_GPU_RESIZE);
 
-    // InferenceActor serializes ORT calls internally; >1 here lets prep/postproc
-    // overlap with the actor's queue without over-subscribing the ONNX runtime.
+    // InferenceActor owns the resident WGPU layout graph; >1 here lets prep/postproc
+    // overlap with the actor queue without creating extra GPU model instances.
     let infer_concurrency = pipeline_config.page_workers.max(1);
     let process_concurrency = pipeline_config.page_workers.max(1);
 

@@ -11,11 +11,9 @@ use anyhow::{Result, anyhow};
 #[allow(unused_imports)]
 use crate::perf_log;
 use image::RgbImage;
-use once_cell::sync::OnceCell;
 use pdfium_render::prelude::Pdfium;
 
 use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
-use crate::engine::PaddleXEngine;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::policies::{InferenceResizeSpec, PaddleXResizeConfig, YoloResizeConfig};
 use crate::types::CoverFormat;
@@ -23,8 +21,6 @@ use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
 
 pub use Legencode::color::ImageRegionDitherMode;
-
-static INFERENCE_ENGINE: OnceCell<PaddleXEngine> = OnceCell::new();
 
 #[derive(Debug)]
 pub struct PageTask {
@@ -150,13 +146,7 @@ impl ProcessingPipeline {
     }
 
     pub fn get_provider_name(&self) -> String {
-        // Only return provider name if inference engine is already initialized
-        // This avoids forcing expensive initialization just for status display
-        if let Some(engine) = INFERENCE_ENGINE.get() {
-            engine.provider_name().to_string()
-        } else {
-            "Not initialized (will initialize on first use)".to_string()
-        }
+        "WGPU (initialized by inference actor)".to_string()
     }
 
     pub async fn process_document_dag<F>(

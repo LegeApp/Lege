@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 const DEFAULT_MAX_BATCH_SIZE: usize = 16;
-const DEFAULT_BATCH_TIMEOUT_MS: u64 = 10; // Reduced from higher values
+const DEFAULT_BATCH_TIMEOUT_MS: u64 = 10;
 
 pub struct InferenceJob {
     pub page_index: usize,
@@ -72,31 +72,27 @@ impl InferenceActor {
         })
     }
 
-    /// Main run loop - simplified, no fake prefetching
+    /// Main run loop for the resident WGPU layout detector.
     fn run(mut self) {
         info!("InferenceActor: Starting inference loop");
 
         let mut processed_count: usize = 0;
-        let is_gpu = self.engine.provider_name() != "CPU";
 
         loop {
-            // Wait for first job
             let first_job = match self.receiver.blocking_recv() {
                 Some(job) => job,
                 None => break,
             };
 
-            // Try to form a batch (only if GPU and past warmup)
             let mut jobs = vec![first_job];
 
-            if is_gpu && processed_count >= self.initial_single_pages && self.max_batch_size > 1 {
+            if processed_count >= self.initial_single_pages && self.max_batch_size > 1 {
                 let deadline = Instant::now() + Duration::from_millis(self.batch_timeout_ms);
 
                 while jobs.len() < self.max_batch_size && Instant::now() < deadline {
                     match self.receiver.try_recv() {
                         Ok(job) => jobs.push(job),
                         Err(_) => {
-                            // Brief sleep to avoid busy-spin, but very short
                             std::thread::sleep(Duration::from_micros(500));
                         }
                     }
@@ -105,32 +101,17 @@ impl InferenceActor {
 
             let batch_size = jobs.len();
 
-            // Process the batch
             if batch_size == 1 {
-                // Single image - most common case
                 let job = jobs.pop().unwrap();
-                let result = {
-                    let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
-                    match _guard {
-                        Ok(_guard) => self.engine.detect_single_blocking(&job.image),
-                        Err(e) => Err(e),
-                    }
-                };
+                let result = self.engine.detect_single_blocking(&job.image);
                 let _ = job.response_tx.send(result);
             } else {
-                // Batch processing
                 let images: Vec<RgbImage> = jobs.iter().map(|j| (*j.image).clone()).collect();
                 let indices: Vec<usize> = (0..images.len()).collect();
 
-                let batch_result = {
-                    let _guard = crate::pipeline::runtime_limits::lock_ort_gate();
-                    match _guard {
-                        Ok(_guard) => self
-                            .engine
-                            .detect_batch_with_indices_blocking(&images, &indices),
-                        Err(e) => Err(e),
-                    }
-                };
+                let batch_result = self
+                    .engine
+                    .detect_batch_with_indices_blocking(&images, &indices);
 
                 match batch_result {
                     Ok(results) => {
@@ -242,11 +223,11 @@ impl InferenceHandle {
 }
 
 //==============================================================================
-// Alternative: Multi-threaded inference pool for CPU
+// Alternative: multi-worker inference pool
 //==============================================================================
 
-/// For CPU-only inference, we can use multiple threads
-/// Each thread has its own engine instance
+/// Each worker owns an engine instance. The main pipeline currently uses the
+/// single actor so one resident WGPU graph serializes GPU access.
 pub struct InferencePool {
     senders: Vec<mpsc::Sender<InferenceJob>>,
     next_worker: std::sync::atomic::AtomicUsize,
