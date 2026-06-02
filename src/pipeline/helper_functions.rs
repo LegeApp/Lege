@@ -271,7 +271,13 @@ pub fn region_encoding_settings(
                 let q = jp2_quality(high_quality);
                 (EncodingSettings::Jp2Lam { quality: q }, "jp2")
             } else {
-                let q: u8 = if high_quality { 95 } else if is_cover { 50 } else { 45 };
+                let q: u8 = if high_quality {
+                    95
+                } else if is_cover {
+                    50
+                } else {
+                    45
+                };
                 (
                     EncodingSettings::Jpeg(JpegSettings {
                         quality: q,
@@ -293,7 +299,13 @@ pub fn region_encoding_settings(
             "jbig2",
         ),
         CoverFormat::Jp2 => {
-            let q: u8 = if high_quality { 88 } else if is_cover { 80 } else { 72 };
+            let q: u8 = if high_quality {
+                88
+            } else if is_cover {
+                80
+            } else {
+                72
+            };
             (EncodingSettings::Jp2Lam { quality: q }, "jp2")
         }
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),
@@ -342,7 +354,8 @@ pub async fn encode_region_image(
     }
     use Legencode::streamline::{EncodingManager, EncodingResult, ImageBuffer as LegeImageBuffer};
 
-    let (settings, fmt_str) = region_encoding_settings(format, is_cover, high_quality, jpeg_compat)?;
+    let (settings, fmt_str) =
+        region_encoding_settings(format, is_cover, high_quality, jpeg_compat)?;
 
     let image_data_owned = image_data[..expected_len].to_vec();
     let permit = match get_encode_semaphore() {
@@ -1083,9 +1096,9 @@ pub fn spawn_pdf_writer_actor(
                     // This is acceptable since finalize() will check during assembly
 
                     // Finalize the PDF
-                    let output_path_str = output_path
-                        .to_str()
-                        .ok_or_else(|| anyhow::anyhow!("Output path is not valid UTF-8: {}", output_path.display()))?;
+                    let output_path_str = output_path.to_str().ok_or_else(|| {
+                        anyhow::anyhow!("Output path is not valid UTF-8: {}", output_path.display())
+                    })?;
                     if let Err(e) = builder.finalize(output_path_str, has_ocr) {
                         crate::warn_log!("[PdfWriterActor] Finalize failed: {}", e);
                         return Err(anyhow::anyhow!("Finalize failed: {}", e));

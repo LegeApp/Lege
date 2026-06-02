@@ -7,14 +7,14 @@
 pub const APP_BG: (u8, u8, u8) = (226, 232, 235);
 
 #[cfg(target_os = "linux")]
-pub const PANEL_BG: (u8, u8, u8) = (253, 249, 248);
+pub const PANEL_BG: (u8, u8, u8) = (253, 249, 244);
 #[cfg(not(target_os = "linux"))]
-pub const PANEL_BG: (u8, u8, u8) = (255, 250, 250);
+pub const PANEL_BG: (u8, u8, u8) = (255, 250, 245);
 
 #[cfg(target_os = "linux")]
-pub const CARD_BG: (u8, u8, u8) = (253, 249, 248);
+pub const CARD_BG: (u8, u8, u8) = (253, 249, 244);
 #[cfg(not(target_os = "linux"))]
-pub const CARD_BG: (u8, u8, u8) = (255, 250, 250);
+pub const CARD_BG: (u8, u8, u8) = (255, 250, 245);
 
 pub const TEXT: (u8, u8, u8) = (20, 20, 20);
 pub const MUTED: (u8, u8, u8) = (90, 90, 90);

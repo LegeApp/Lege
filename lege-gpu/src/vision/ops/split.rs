@@ -49,28 +49,28 @@ pub(crate) async fn run_split(
             label: Some("split slice"),
             source: crate::vision::wgpu::ShaderSource::Wgsl(SPLIT_SLICE_WGSL.into()),
         });
-    let bgl = ctx
-        .device
-        .create_bind_group_layout(&crate::vision::wgpu::BindGroupLayoutDescriptor {
-            label: Some("split slice bgl"),
-            entries: &storage_bgl_entries(&[true, false, true]),
-        });
-    let pipeline = ctx
-        .device
-        .create_compute_pipeline(&crate::vision::wgpu::ComputePipelineDescriptor {
-            label: Some("split slice pipeline"),
-            layout: Some(
-                &ctx.device
-                    .create_pipeline_layout(&crate::vision::wgpu::PipelineLayoutDescriptor {
+    let bgl =
+        ctx.device
+            .create_bind_group_layout(&crate::vision::wgpu::BindGroupLayoutDescriptor {
+                label: Some("split slice bgl"),
+                entries: &storage_bgl_entries(&[true, false, true]),
+            });
+    let pipeline =
+        ctx.device
+            .create_compute_pipeline(&crate::vision::wgpu::ComputePipelineDescriptor {
+                label: Some("split slice pipeline"),
+                layout: Some(&ctx.device.create_pipeline_layout(
+                    &crate::vision::wgpu::PipelineLayoutDescriptor {
                         label: None,
-                        bind_group_layouts: &[&bgl],
-                        push_constant_ranges: &[],
-                    }),
-            ),
-            module: &shader,
-            entry_point: "main",
-            compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
-        });
+                        bind_group_layouts: &[Some(&bgl)],
+                        immediate_size: 0,
+                    },
+                )),
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
 
     let src_buf = ctx
         .device
@@ -88,18 +88,24 @@ pub(crate) async fn run_split(
         let outer: usize = input.shape[..axis].iter().product();
         let num_elems = outer * local_axis * inner_stride;
 
-        let out_buf = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-            label: Some("split out"),
-            size: (num_elems * 4) as u64,
-            usage: crate::vision::wgpu::BufferUsages::STORAGE | crate::vision::wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readback = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-            label: Some("split readback"),
-            size: (num_elems * 4) as u64,
-            usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let out_buf = ctx
+            .device
+            .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                label: Some("split out"),
+                size: (num_elems * 4) as u64,
+                usage: crate::vision::wgpu::BufferUsages::STORAGE
+                    | crate::vision::wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+        let readback = ctx
+            .device
+            .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                label: Some("split readback"),
+                size: (num_elems * 4) as u64,
+                usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                    | crate::vision::wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
 
         let params: [u32; 8] = [
             num_elems as u32,
@@ -111,42 +117,45 @@ pub(crate) async fn run_split(
             0,
             0,
         ];
-        let params_buf = ctx
+        let params_buf =
+            ctx.device
+                .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
+                    label: Some("split params"),
+                    contents: bytemuck::cast_slice(&params),
+                    usage: crate::vision::wgpu::BufferUsages::STORAGE,
+                });
+        let bg = ctx
             .device
-            .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
-                label: Some("split params"),
-                contents: bytemuck::cast_slice(&params),
-                usage: crate::vision::wgpu::BufferUsages::STORAGE,
+            .create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
+                label: Some("split bg"),
+                layout: &bgl,
+                entries: &[
+                    crate::vision::wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: src_buf.as_entire_binding(),
+                    },
+                    crate::vision::wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: out_buf.as_entire_binding(),
+                    },
+                    crate::vision::wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: params_buf.as_entire_binding(),
+                    },
+                ],
             });
-        let bg = ctx.device.create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
-            label: Some("split bg"),
-            layout: &bgl,
-            entries: &[
-                crate::vision::wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: src_buf.as_entire_binding(),
-                },
-                crate::vision::wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-                crate::vision::wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buf.as_entire_binding(),
-                },
-            ],
-        });
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
-                label: Some("split"),
-            });
+        let mut encoder =
+            ctx.device
+                .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+                    label: Some("split"),
+                });
         {
-            let mut pass = encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
-                label: Some("split pass"),
-                timestamp_writes: None,
-            });
+            let mut pass =
+                encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                    label: Some("split pass"),
+                    timestamp_writes: None,
+                });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(num_elems.div_ceil(256) as u32, 1, 1);

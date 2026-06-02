@@ -28,7 +28,7 @@
     "internal_version_line": "Interne Version: {}",
     "usage_block": "Lege – Kommandozeile für Dokumentverarbeitung\n\nInteraktiver Modus:\n    lege\n    Formatzeile: 1 / 2 / 3 (CCITT4 / JBIG2 / DjVu), optionale Buchstabenmodifikatoren (siehe Eingabeaufforderung), optional jpeg|none für Cover,\n    und alle OPTIONEN unten, z. B. --dither, --halftone, --high-quality, --unify.\n\nNicht-interaktive Verarbeitung:\n    lege <file.pdf|folder|archive.zip> [weitere Eingaben ...] [Seitenbereich] [Ziel] [Optionen...]\n\nWeitere Befehle:\n    lege --help\n    lege --help debug            # Debug-/Datenerzeugungsmodi anzeigen\n    lege --status\n    lege --licenses\n    lege --targets               # integrierte Geräteprofile auflisten\n\nOPTIONEN:\n  Ausgabeformat:\n    --text-format <fmt>          ccitt4 (Standard), jbig2, jpeg oder djvu\n    --cover-format <fmt>         jpeg (Standard), jp2, ccitt4, jbig2 oder none\n    --jbig2-mode <mode>          generic, symbol oder sym-unify\n    --djvu-quality <1-100>       DjVu-IW44-Qualität (Standard: 75)\n\n  Binarisierung:\n    --binarization <method>      adaptive, fixed (Standard) oder heavy\n    --threshold <0-255>          Fester Schwellenwert (Standard: 200)\n    --sauvola-k <0.0-1.0>        Sauvola-k-Faktor für adaptive Binarisierung\n\n  Verarbeitungsschalter:\n    --no-layout                  ONNX-Layout-Erkennungsmodell deaktivieren\n    --ocr                        OCR-Textebene aktivieren\n    --no-ocr                     OCR-Textebene deaktivieren\n    --no-cover                   Separate Behandlung der Coverseite überspringen\n    --invert                     Graustufen vor der Verarbeitung invertieren\n    --symbol-mode                Alias für --jbig2-mode symbol\n    --sym-unify                  Alias für --jbig2-mode sym-unify\n    --unify                      Alias für --jbig2-mode sym-unify\n    --deskew                     Entzerren aktivieren (Drehungs-/Verzerrungskorrektur)\n    --image-only                 Nur-Bild-Modus (Binarisierung überspringen)\n    --original-images            Original-Rasterausschnitte erzwingen (standardmäßig bereits aktiv)\n    --fast-resize                Schnellen CPU-fast_image_resize-Backend erzwingen (GPU-Shader-Skalierung deaktivieren)\n\n  Abbildungs-/Bildbereiche (fortgeschritten; Formatregeln gelten; Layout für Overlays erforderlich):\n    --dither                     Stucki (JBIG2/DjVu) oder 4×4-Clustered-Dot (CCITT4)\n    --halftone                   Nur JBIG2: Halbtonsegmente; überschreibt --dither\n    --high-quality               Höhere Ausgabequalität, z. B. DjVu IW44 100\n\n  Randverarbeitung:\n    --center-margins             Inhalt auf der Seite standardisieren und zentrieren\n    --crop-margins               Auf Inhalt zuschneiden und skalieren\n    --force-crop                 Ränder inklusive Fußnoten zuschneiden\n\n  Ausgabe:\n    --output <dir>               Ausgabeordner (Standard: gleich wie Eingabe)\n\n  OCR-Sprache (nur Linux-Builds):\n    --language <code>            Tesseract-Sprache für die OCR-Textebene, z. B. eng, deu, chi_sim.\n                                 Verwenden Sie denselben Namen wie die .traineddata-Datei in Ihrem tessdata-Ordner.\n\n  Debug / Datenerzeugung:\n    --pdf-to-png <height>        PDF-Seiten mit angegebener Höhe als PNG rendern\n    --crop-areas <text|image|both>  Bereiche der Layout-Erkennung extrahieren\n    --png-folder                 PNG-Ordner verarbeiten (Inferenzmodus)\n    --pdf-to-images              PDF-Seiten in Bilder umwandeln (PNG mit Layout, PBM ohne)\n    --images-to-images           Bildordner in neuen Bildordner verarbeiten (PNG/PBM je nach Layout)\n    --png-quantize               Debug-PNG-Ausgaben mit NeuQuant quantisieren\n    --png-colors <1-256>         Palettengröße für --png-quantize (Standard: 256)\n    --format <png|jpg>           Ausgabeformat für --crop-areas\n\nSEITENBEREICH-FORMEN:\n    1-10, 5, all\n\nZIEL-FORMEN:\n    Zahl, z. B. 1600, BREITExHÖHE, z. B. 1440x1920, oder Gerätename\n\nBEISPIELE:\n    lege book.pdf\n    lege scans_folder --text-format ccitt4\n    lege archive.zip all 1440x1920 --text-format jbig2\n    lege book.pdf 1-10 --text-format ccitt4 --dither\n    lege book.pdf --text-format jbig2 --dither --unify\n    lege book.pdf all 1440x1920 --binarization adaptive --sauvola-k 0.3\n    lege book.pdf --crop-margins --deskew --ocr\n    lege file1.pdf file2.pdf all --text-format jbig2",
     "debug_help_block": "Lege – Debug-Modi\n\nAlle Debug-Modi verwenden dieselbe einheitliche --flag-Syntax wie die normale Verarbeitung.\n\nPDF zu PNG (Seiten zur Prüfung rendern):\n  Verwendung: lege <file.pdf> [Seitenbereich] --pdf-to-png <height>\n  Beispiel:  lege book.pdf 1-5 --pdf-to-png 1600\n\nErkannte Layoutbereiche aus einem PDF als separate Bilder ausschneiden:\n  Verwendung: lege <file.pdf> [Seitenbereich] --crop-areas text|image|both [--output DIR] [--format png|jpg] [--deskew]\n  Beispiel:  lege book.pdf all --crop-areas image --output ./dataset --format jpg --deskew\n  Hinweise:\n    - Bereiche werden pro Seite nummeriert: page_0001_area_001.jpg usw.\n    - Verwendet dasselbe Layoutmodell wie die Hauptpipeline.\n    - Wenn --output nicht angegeben ist, wird die Ausgabe standardmäßig neben der Eingabe in '<pdf_stem>_areas' gespeichert.\n\nPNG-Ordner-Inferenz (Bilder statt PDF):\n  Verwendung: lege <folder> --png-folder [--deskew] [--output DIR]\n  Beispiel:  lege ./scans --png-folder --deskew",
-    "env_variables_help_block": "Lege – Umgebungsvariablen\n\nOptionale Diagnose:\n- LEGE_BBOX_TRACE=1   Gibt Abbildungs-Bounding-Boxes, Kodierungsgrößen und PDF-Platzierung auf stderr aus (kein debug.log).\n\nErwartetes Bereitstellungslayout:\n- Laufzeit-DLLs (pdfium/onnxruntime/front_stage) neben der ausführbaren Datei speichern.\n- Modell-Assets im Ordner der ausführbaren Datei oder in einem models-Unterordner speichern.\n- OCR-Sprachdaten bei Bedarf in einem lokalen tessdata-Ordner speichern.",
+    "env_variables_help_block": "Lege – Umgebungsvariablen\n\nOptionale Diagnose:\n- LEGE_BBOX_TRACE=1   Gibt Abbildungs-Bounding-Boxes, Kodierungsgrößen und PDF-Platzierung auf stderr aus (kein debug.log).\n\nErwartetes Bereitstellungslayout:\n- Laufzeit-DLLs (pdfium) neben der ausführbaren Datei speichern.\n- Modell-Assets im Ordner der ausführbaren Datei oder in einem models-Unterordner speichern.\n- OCR-Sprachdaten bei Bedarf in einem lokalen tessdata-Ordner speichern.",
     "target_profiles_header": "Verfügbare Zielgeräteprofile:",
     "target_profiles_custom_note": "Sie können auch eigene Werte wie 1440x1920 oder eine einzelne Höhe, z. B. 1600, angeben.",
     "target_profiles_page_range_note": "Verwenden Sie 'all' als Seitenbereich-Platzhalter, wenn das gesamte Dokument verarbeitet werden soll.",
@@ -188,34 +188,6 @@
     "cuda_unavailable": "CUDA: Nicht verfügbar",
     "memory_info": "Systemspeicher: {} MB verfügbar",
     "cpu_info": "CPU-Kerne: {} verfügbar"
-  },
-  "providers": {
-    "linux": {
-      "trying_cuda": "NVIDIA-GPU-Unterstützung wird geprüft...",
-      "cuda_success": "NVIDIA-GPU erkannt, CUDA-Beschleunigung wird verwendet",
-      "cuda_failed": "Nvidia CUDA wurde geprüft, aber nicht erkannt...",
-      "trying_openvino": "OpenVINO-Unterstützung wird geprüft...",
-      "openvino_success": "OpenVINO erkannt, Intel-Optimierung wird verwendet",
-      "openvino_failed": "OpenVINO nicht gefunden (Download unter https://www.intel.com/content/www/us/en/developer/tools/openvino-toolkit/download.html), Rückfall auf CPU",
-      "trying_webgpu": "WebGPU-Unterstützung wird geprüft...",
-      "webgpu_success": "WebGPU erkannt, GPU-Beschleunigung wird verwendet",
-      "webgpu_failed": "WebGPU nicht verfügbar, Rückfall auf CPU",
-      "using_cpu": "CPU-Modus"
-    },
-    "windows": {
-      "trying_cuda": "",
-      "cuda_success": "",
-      "cuda_failed": "",
-      "trying_directml": "Hardwarebeschleunigung wird geprüft...",
-      "directml_success": "Hardwarebeschleunigung für ONNX Runtime wird verwendet",
-      "directml_failed": "Hardwarebeschleunigung nicht verfügbar, Rückfall auf CPU",
-      "using_cpu": "CPU-Ausführung für ONNX Runtime wird verwendet"
-    },
-    "install_help": {
-      "nvidia_drivers": "Für NVIDIA-Beschleunigung: GPU-Treiber unter https://www.nvidia.com/drivers aktualisieren",
-      "openvino_linux": "Für Intel-Optimierung unter Linux: OpenVINO unter https://www.intel.com/openvino installieren",
-      "directml_windows": "Für Hardwarebeschleunigung unter Windows: Windows 10/11 mit den neuesten Updates verwenden"
-    }
   },
   "errors": {
     "file_not_found": "Fehler: Datei nicht gefunden – {}",

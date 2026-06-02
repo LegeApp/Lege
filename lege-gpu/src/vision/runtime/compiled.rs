@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
 use crate::vision::wgpu::util::DeviceExt;
+use anyhow::{Context, Result, bail};
 
 use crate::vision::onnx::attrs::shape_i64_to_usize;
 use crate::vision::onnx::graph::PreparedGraph;
@@ -93,14 +93,16 @@ impl CompiledGraph {
         let total_slot_bytes = slot_sizes.iter().sum::<u64>();
         let mut slot_buffers = Vec::with_capacity(slot_sizes.len());
         for (slot, byte_size) in slot_sizes.iter().enumerate() {
-            let buf = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-                label: Some(&format!("resident slot {slot}")),
-                size: *byte_size,
-                usage: crate::vision::wgpu::BufferUsages::STORAGE
-                    | crate::vision::wgpu::BufferUsages::COPY_SRC
-                    | crate::vision::wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let buf = ctx
+                .device
+                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                    label: Some(&format!("resident slot {slot}")),
+                    size: *byte_size,
+                    usage: crate::vision::wgpu::BufferUsages::STORAGE
+                        | crate::vision::wgpu::BufferUsages::COPY_SRC
+                        | crate::vision::wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
             slot_buffers.push(buf);
         }
         let mut tensor_slots = HashMap::new();
@@ -110,12 +112,15 @@ impl CompiledGraph {
             })?;
             tensor_slots.insert(entry.name.clone(), slot);
         }
-        let dummy_bias_buffer = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-            label: Some(DUMMY_BIAS),
-            size: 4,
-            usage: crate::vision::wgpu::BufferUsages::STORAGE | crate::vision::wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let dummy_bias_buffer = ctx
+            .device
+            .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                label: Some(DUMMY_BIAS),
+                size: 4,
+                usage: crate::vision::wgpu::BufferUsages::STORAGE
+                    | crate::vision::wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
         ctx.queue.write_buffer(&dummy_bias_buffer, 0, &[0u8; 4]);
         eprintln!(
             "  compiled.build: allocated {} resident slots, {:.1}MB at {:.0}ms",
@@ -197,8 +202,10 @@ impl CompiledGraph {
         );
 
         // ── Pre-compile pipelines (one per unique WGSL source) ────────────
-        let mut pipeline_cache: HashMap<usize, Arc<crate::vision::wgpu::ComputePipeline>> = HashMap::new();
-        let mut bgl_cache: HashMap<usize, Arc<crate::vision::wgpu::BindGroupLayout>> = HashMap::new();
+        let mut pipeline_cache: HashMap<usize, Arc<crate::vision::wgpu::ComputePipeline>> =
+            HashMap::new();
+        let mut bgl_cache: HashMap<usize, Arc<crate::vision::wgpu::BindGroupLayout>> =
+            HashMap::new();
 
         // ── Build compiled steps ──────────────────────────────────────────
         let mut steps: Vec<CompiledStep> = Vec::new();
@@ -250,18 +257,22 @@ impl CompiledGraph {
                             layout: Some(&ctx.device.create_pipeline_layout(
                                 &crate::vision::wgpu::PipelineLayoutDescriptor {
                                     label: None,
-                                    bind_group_layouts: &[&bgl],
-                                    push_constant_ranges: &[],
+                                    bind_group_layouts: &[Some(&bgl)],
+                                    immediate_size: 0,
                                 },
                             )),
                             module: &ctx.device.create_shader_module(
                                 crate::vision::wgpu::ShaderModuleDescriptor {
                                     label: None,
-                                    source: crate::vision::wgpu::ShaderSource::Wgsl(spec.wgsl.into()),
+                                    source: crate::vision::wgpu::ShaderSource::Wgsl(
+                                        spec.wgsl.into(),
+                                    ),
                                 },
                             ),
-                            entry_point: "main",
-                            compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
+                            entry_point: Some("main"),
+                            compilation_options:
+                                crate::vision::wgpu::PipelineCompilationOptions::default(),
+                            cache: None,
                         },
                     ));
                     pipeline_cache.insert(wgsl_key, pipeline.clone());
@@ -270,13 +281,13 @@ impl CompiledGraph {
                 };
 
                 // Create params buffer (kept alive in params_bufs)
-                let params_buf = ctx
-                    .device
-                    .create_buffer_init(&crate::vision::wgpu::util::BufferInitDescriptor {
+                let params_buf = ctx.device.create_buffer_init(
+                    &crate::vision::wgpu::util::BufferInitDescriptor {
                         label: None,
                         contents: &spec.params,
                         usage: crate::vision::wgpu::BufferUsages::STORAGE,
-                    });
+                    },
+                );
 
                 // Build bind group referencing persistent tensor buffers
                 let mut bg_entries: Vec<crate::vision::wgpu::BindGroupEntry> =
@@ -339,11 +350,13 @@ impl CompiledGraph {
                     resource: params_buf.as_entire_binding(),
                 });
 
-                let bind_group = ctx.device.create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &bgl,
-                    entries: &bg_entries,
-                });
+                let bind_group =
+                    ctx.device
+                        .create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
+                            label: None,
+                            layout: &bgl,
+                            entries: &bg_entries,
+                        });
 
                 let step_index = steps.len();
                 let output_shape = op
@@ -392,12 +405,15 @@ impl CompiledGraph {
                 .with_context(|| format!("missing shape for output `{name}`"))?;
             let shape_u = shape_i64_to_usize(shape)?;
             let bytes = shape_u.iter().product::<usize>() * 4;
-            let rb = ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-                label: Some(&format!("readback_{name}")),
-                size: bytes as u64,
-                usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let rb = ctx
+                .device
+                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                    label: Some(&format!("readback_{name}")),
+                    size: bytes as u64,
+                    usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                        | crate::vision::wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
             let canonical = resolve_alias(name, &aliases);
             output_names.push(name.clone());
             output_buf_names.push(canonical);
@@ -449,33 +465,35 @@ impl CompiledGraph {
 
         let chunk_size = compiled_chunk_size(self.ctx.is_cpu_adapter, self.steps.len());
         for chunk in self.steps.chunks(chunk_size) {
-            let mut encoder =
-                self.ctx
-                    .device
-                    .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
-                        label: Some("compiled_run_chunk"),
-                    });
+            let mut encoder = self.ctx.device.create_command_encoder(
+                &crate::vision::wgpu::CommandEncoderDescriptor {
+                    label: Some("compiled_run_chunk"),
+                },
+            );
             for step in chunk {
-                let mut pass = encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
-                    label: None,
-                    timestamp_writes: None,
-                });
+                let mut pass =
+                    encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                        label: None,
+                        timestamp_writes: None,
+                    });
                 pass.set_pipeline(&step.pipeline);
                 pass.set_bind_group(0, &step.bind_group, &[]);
                 pass.dispatch_workgroups(step.dispatch[0], step.dispatch[1], step.dispatch[2]);
             }
             self.ctx.queue.submit(Some(encoder.finish()));
             if self.ctx.is_cpu_adapter {
-                self.ctx.device.poll(crate::vision::wgpu::Maintain::Wait);
+                let _ = self
+                    .ctx
+                    .device
+                    .poll(crate::vision::wgpu::PollType::wait_indefinitely());
             }
         }
 
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+        let mut encoder = self.ctx.device.create_command_encoder(
+            &crate::vision::wgpu::CommandEncoderDescriptor {
                 label: Some("compiled_readback"),
-            });
+            },
+        );
         for (i, canonical) in self.output_buf_names.iter().enumerate() {
             let out_slot = *self.tensor_slots.get(canonical).with_context(|| {
                 format!("compiled run: missing resident slot for output `{canonical}`")
@@ -519,7 +537,10 @@ impl CompiledGraph {
             receivers.push((i, name, receiver));
         }
 
-        self.ctx.device.poll(crate::vision::wgpu::Maintain::Wait);
+        let _ = self
+            .ctx
+            .device
+            .poll(crate::vision::wgpu::PollType::wait_indefinitely());
 
         for (i, name, receiver) in receivers {
             receiver
@@ -585,41 +606,52 @@ impl CompiledGraph {
             .queue
             .write_buffer(input_buf, 0, bytemuck::cast_slice(&input.data));
 
-        let query_set = self.ctx.device.create_query_set(&crate::vision::wgpu::QuerySetDescriptor {
-            label: Some("compiled_step_timestamps"),
-            ty: crate::vision::wgpu::QueryType::Timestamp,
-            count: query_count,
-        });
-        let resolve_buffer = self.ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-            label: Some("compiled_step_timestamp_resolve"),
-            size: query_bytes as u64,
-            usage: crate::vision::wgpu::BufferUsages::QUERY_RESOLVE | crate::vision::wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readback_buffer = self.ctx.device.create_buffer(&crate::vision::wgpu::BufferDescriptor {
-            label: Some("compiled_step_timestamp_readback"),
-            size: query_bytes as u64,
-            usage: crate::vision::wgpu::BufferUsages::MAP_READ | crate::vision::wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let query_set =
+            self.ctx
+                .device
+                .create_query_set(&crate::vision::wgpu::QuerySetDescriptor {
+                    label: Some("compiled_step_timestamps"),
+                    ty: crate::vision::wgpu::QueryType::Timestamp,
+                    count: query_count,
+                });
+        let resolve_buffer =
+            self.ctx
+                .device
+                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                    label: Some("compiled_step_timestamp_resolve"),
+                    size: query_bytes as u64,
+                    usage: crate::vision::wgpu::BufferUsages::QUERY_RESOLVE
+                        | crate::vision::wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+        let readback_buffer =
+            self.ctx
+                .device
+                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                    label: Some("compiled_step_timestamp_readback"),
+                    size: query_bytes as u64,
+                    usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                        | crate::vision::wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
 
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&crate::vision::wgpu::CommandEncoderDescriptor {
+        let mut encoder = self.ctx.device.create_command_encoder(
+            &crate::vision::wgpu::CommandEncoderDescriptor {
                 label: Some("compiled_profile"),
-            });
+            },
+        );
         for (index, step) in self.steps.iter().enumerate() {
             let begin = (index * 2) as u32;
             let end = begin + 1;
-            let mut pass = encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
-                label: Some("compiled_profile_step"),
-                timestamp_writes: Some(crate::vision::wgpu::ComputePassTimestampWrites {
-                    query_set: &query_set,
-                    beginning_of_pass_write_index: Some(begin),
-                    end_of_pass_write_index: Some(end),
-                }),
-            });
+            let mut pass =
+                encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                    label: Some("compiled_profile_step"),
+                    timestamp_writes: Some(crate::vision::wgpu::ComputePassTimestampWrites {
+                        query_set: &query_set,
+                        beginning_of_pass_write_index: Some(begin),
+                        end_of_pass_write_index: Some(end),
+                    }),
+                });
             pass.set_pipeline(&step.pipeline);
             pass.set_bind_group(0, &step.bind_group, &[]);
             pass.dispatch_workgroups(step.dispatch[0], step.dispatch[1], step.dispatch[2]);

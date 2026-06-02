@@ -1,7 +1,0 @@
-/.vscode
-/.vs
-/target
-*.lock
-*.winmd
-obj
-bin

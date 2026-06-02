@@ -34,7 +34,7 @@ zip = { workspace = true }
 miniz_oxide = { workspace = true }
 tempfile = { workspace = true }
 lopdf = { workspace = true }
-Legencode = { path = "../../Legencode" }
+Legencode = { path = "../../legencode" }
 lege = { path = "../.." }
 
 [build-dependencies]

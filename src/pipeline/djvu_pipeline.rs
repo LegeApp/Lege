@@ -14,8 +14,7 @@ use crate::engine::Detection;
 use crate::pagerender::prelude::PdfiumRenderer;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, init_encode_semaphore, merge_overlapping_image_detections,
-    rounded_clamped_bbox,
+    build_hocr_from_pdf_text, merge_overlapping_image_detections, rounded_clamped_bbox,
 };
 use crate::pipeline::page_analysis::{
     BLANK_PAGE_FALLBACK_THRESHOLD, is_visually_blank_page, maybe_apply_yolo_full_page_detection,
@@ -180,7 +179,10 @@ pub async fn create_and_run_djvu_source_pipeline(
         };
     // Pipeline concurrency settings (similar to PDF pipeline)
     let pipeline_config = PipelineRuntimeLimits::djvu_from_config(&config);
-    init_encode_semaphore(pipeline_config.djvu_encode_workers);
+    // NOTE: no init_encode_semaphore here. The global encode semaphore is only acquired by
+    // encode_region_image/encode_page_data, which the DjVu path never calls — its heavy
+    // IW44/JB2 encode runs inside the in_flight-bounded encode stage (capped at
+    // djvu_encode_workers), so the semaphore would be redundant.
     let deskew_engine = prepare_shared_deskew_engine(&config)?;
     #[cfg(feature = "debug-logging")]
     info_log!(
@@ -431,7 +433,10 @@ pub async fn create_and_run_djvu_source_pipeline(
                             let page_index = binarized_data.index;
                             let page_data = PageData {
                                 index: binarized_data.index,
-                                rgb_image: (*binarized_data.adjusted_image).clone(),
+                                // The Arc is not shared past this point, so unwrap_or_clone
+                                // moves the full-page RgbImage out instead of deep-copying it
+                                // (falls back to a clone only if a reference somehow remains).
+                                rgb_image: Arc::unwrap_or_clone(binarized_data.adjusted_image),
                                 binarized: binarized_data.binarized,
                                 detections: binarized_data.detections,
                                 hocr: binarized_data.hocr_text,
@@ -487,18 +492,33 @@ pub async fn create_and_run_djvu_source_pipeline(
     let h_binarize = binarize_task.abort_handle();
     let h_encode = encode_task.abort_handle();
 
-    await_stage_or_cancel(&mut render_task, &mut shutdown_rx, "render",
-        &[h_infer.clone(), h_binarize.clone(), h_encode.clone()]).await?;
+    await_stage_or_cancel(
+        &mut render_task,
+        &mut shutdown_rx,
+        "render",
+        &[h_infer.clone(), h_binarize.clone(), h_encode.clone()],
+    )
+    .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Render stage complete");
 
-    await_stage_or_cancel(&mut infer_task, &mut shutdown_rx, "inference",
-        &[h_binarize.clone(), h_encode.clone()]).await?;
+    await_stage_or_cancel(
+        &mut infer_task,
+        &mut shutdown_rx,
+        "inference",
+        &[h_binarize.clone(), h_encode.clone()],
+    )
+    .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Inference stage complete");
 
-    await_stage_or_cancel(&mut binarize_task, &mut shutdown_rx, "binarization",
-        &[h_encode.clone()]).await?;
+    await_stage_or_cancel(
+        &mut binarize_task,
+        &mut shutdown_rx,
+        "binarization",
+        &[h_encode.clone()],
+    )
+    .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Binarization stage complete");
 
@@ -510,7 +530,10 @@ pub async fn create_and_run_djvu_source_pipeline(
     info_log!("[DJVU-Parallel] Waiting for writer actor to complete document assembly...");
     await_stage_or_cancel(&mut writer_task, &mut shutdown_rx, "document assembly", &[]).await?;
     #[cfg(feature = "debug-logging")]
-    info_log!("[DJVU-Parallel] Document assembly complete: {}", output_path.display());
+    info_log!(
+        "[DJVU-Parallel] Document assembly complete: {}",
+        output_path.display()
+    );
 
     // Cleanup
     if let Err(_e) = orchestrator.cleanup_work_dir_only() {

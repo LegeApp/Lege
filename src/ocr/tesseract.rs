@@ -1,5 +1,6 @@
 use super::OcrResult;
 use crate::resize::{ResizeMethod, ResizeParams};
+use std::borrow::Cow;
 use tesseract::{OcrEngineMode, PageSegMode, Tesseract};
 
 pub fn run_tesseract(
@@ -27,20 +28,24 @@ pub fn run_tesseract(
     // Memory optimization: downscale large images to prevent Tesseract memory issues
     const MAX_OCR_PIXELS: usize = 2_000_000; // ~1400x1400 (more conservative than Windows)
     let current_pixels = width * height;
-    let (final_width, final_height, scaled_data) = if current_pixels > MAX_OCR_PIXELS {
-        let scale = (MAX_OCR_PIXELS as f64 / current_pixels as f64).sqrt();
-        let new_width = ((width as f64) * scale).round().max(1.0) as usize;
-        let new_height = ((height as f64) * scale).round().max(1.0) as usize;
+    // Tesseract's SetImage references the frame data without copying it, so the buffer
+    // only needs to outlive recognize() (it does — it lives to the end of this function).
+    // Borrow the caller's buffer on the common path; only allocate when downscaling.
+    let (final_width, final_height, scaled_data): (usize, usize, Cow<[u8]>) =
+        if current_pixels > MAX_OCR_PIXELS {
+            let scale = (MAX_OCR_PIXELS as f64 / current_pixels as f64).sqrt();
+            let new_width = ((width as f64) * scale).round().max(1.0) as usize;
+            let new_height = ((height as f64) * scale).round().max(1.0) as usize;
 
-        match downscale_image_bell(data, width, height, new_width, new_height, is_binary) {
-            Some(downscaled) => (new_width, new_height, downscaled),
-            None => {
-                return None;
+            match downscale_image_bell(data, width, height, new_width, new_height, is_binary) {
+                Some(downscaled) => (new_width, new_height, Cow::Owned(downscaled)),
+                None => {
+                    return None;
+                }
             }
-        }
-    } else {
-        (width, height, data.to_vec())
-    };
+        } else {
+            (width, height, Cow::Borrowed(data))
+        };
 
     // Skip OCR for uniform images (all white/all black). This prevents noisy
     // Tesseract "Empty page" output and avoids wasted OCR work.
@@ -94,7 +99,7 @@ pub fn run_tesseract(
 
     // Set the image from raw frame data
     tess = match tess.set_frame(
-        &scaled_data,
+        scaled_data.as_ref(),
         final_width as i32,
         final_height as i32,
         bytes_per_pixel as i32,

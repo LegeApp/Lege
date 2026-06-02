@@ -138,14 +138,5 @@
       "completed": "Abgeschlossen: {}\n{}",
       "completed_with_estimate": "Abgeschlossen: {}\n{}\nKompressionsprozentsatz aus ausgewähltem Seitenbereich extrapoliert."
     }
-  },
-  "providers": {
-    "cuda_success": "CUDA-Beschleunigung aktiviert",
-    "secondary_success": "Hardwarebeschleunigung aktiviert",
-    "using_cpu": "CPU wird verwendet",
-    "install_help": {
-      "openvino_linux": "Für die beste Leistung unter Linux OpenVINO installieren oder aktivieren.",
-      "directml_windows": "Für die beste Leistung unter Windows DirectML und aktuelle GPU-Treiber installieren."
-    }
   }
 }

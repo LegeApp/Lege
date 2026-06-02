@@ -1,50 +1,27 @@
-// deskew.rs
-// Document deskewing and rotation correction module
-// Integrates rotation classification and document unwarping models
+use std::path::PathBuf;
+use std::sync::Mutex;
 
-#[cfg(windows)]
-use crate::gpu::directml_execution_provider_dispatch;
-#[cfg(target_os = "linux")]
-use crate::gpu::webgpu_execution_provider_dispatch;
 #[allow(unused_imports)]
 use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
 use image::{Rgb, RgbImage};
-use log::info;
-use memmap2::Mmap;
-use ndarray::Array;
-use once_cell::sync::OnceCell;
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::{Shape, Value};
-use std::fs::File;
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Mutex;
+use lege_gpu::vision::{
+    DeskewConfig as VisionDeskewConfig, DocumentDeskewer as VisionDocumentDeskewer,
+};
+use lege_gpu::vision::{
+    RotationClassifier as VisionRotationClassifier,
+    RotationConfig as VisionRotationConfig,
+};
 
-// Model input sizes
-const ROTATION_CLASSIFIER_SIZE: u32 = 224; // PP-LCNet rotation classifier expects 224x224
-// UVDoc unwarp model accepts dynamic sizes
-
-#[cfg(target_os = "linux")]
-fn gpu_execution_disabled() -> bool {
-    std::env::var("LEGE_DISABLE_WEBGPU").ok().as_deref() == Some("1")
-}
-
-/// Rotation angle classification results
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationAngle {
-    /// No rotation needed (0°)
     NoRotation = 0,
-    /// 90° clockwise rotation
     Rotate90 = 1,
-    /// 180° rotation
     Rotate180 = 2,
-    /// 270° clockwise (90° counter-clockwise) rotation
     Rotate270 = 3,
 }
 
 impl RotationAngle {
-    /// Convert from classification index
     fn from_index(idx: usize) -> Result<Self> {
         match idx {
             0 => Ok(RotationAngle::NoRotation),
@@ -55,7 +32,6 @@ impl RotationAngle {
         }
     }
 
-    /// Get the rotation angle in degrees
     pub fn degrees(&self) -> f32 {
         match self {
             RotationAngle::NoRotation => 0.0,
@@ -65,20 +41,15 @@ impl RotationAngle {
         }
     }
 
-    /// Check if rotation is needed
     pub fn needs_rotation(&self) -> bool {
         !matches!(self, RotationAngle::NoRotation)
     }
 }
 
-/// Configuration for deskewing operations
 #[derive(Debug, Clone)]
 pub struct DeskewConfig {
-    /// Confidence threshold for rotation classification (0.0-1.0)
     pub rotation_confidence_threshold: f32,
-    /// Whether to apply rotation correction
     pub enable_rotation_correction: bool,
-    /// Whether to apply document unwarping
     pub enable_unwarping: bool,
 }
 
@@ -92,432 +63,61 @@ impl Default for DeskewConfig {
     }
 }
 
-/// Rotation classifier engine using PP-LCNet model
 pub struct RotationClassifier {
-    session: Mutex<Session>,
-    #[allow(dead_code)]
-    provider_name: String,
+    inner: Mutex<VisionRotationClassifier>,
 }
 
 impl RotationClassifier {
-    /// Load the rotation classification model
     pub fn new(model_path: &str) -> Result<Self> {
-        // Ensure ONNX Runtime is initialized (should already be done by main engine)
-        static ONNX_INIT: OnceCell<()> = OnceCell::new();
-        ONNX_INIT.get_or_try_init(|| -> Result<()> {
-            ort::init().with_name("lege").commit();
-            Ok(())
-        })?;
-
-        let (session, provider_name) = Self::build_session(model_path)?;
-
-        debug_println!(
-            "Rotation classifier loaded with provider: {}",
-            provider_name
-        );
+        let vision = VisionRotationClassifier::from_model_path(model_path)
+            .with_context(|| format!("failed to create rotation classifier from {}", model_path))?;
+        info_println!("Rotation classifier loaded via lege-vision WGPU bridge");
 
         Ok(Self {
-            session: Mutex::new(session),
-            provider_name,
+            inner: Mutex::new(vision),
         })
     }
 
-    fn build_session(model_path: &str) -> Result<(Session, String)> {
-        info!("Building rotation classifier session: {}", model_path);
-
-        let mmap = unsafe {
-            let file = File::open(model_path)
-                .with_context(|| format!("Failed to open model file: {}", model_path))?;
-            Mmap::map(&file)
-                .with_context(|| format!("Failed to memory-map model file: {}", model_path))?
-        };
-
-        // Try hardware acceleration first, fallback to CPU
-        let attempts = Self::get_provider_attempts();
-
-        for (providers, names) in attempts {
-            let attempt_result = catch_unwind(AssertUnwindSafe({
-                let mmap_ref = &mmap;
-                move || -> Result<Session> {
-                    let mut builder = Session::builder()
-                        .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                        .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?
-                        .with_execution_providers(providers)
-                        .map_err(|e| anyhow!("failed to set ORT execution providers: {e}"))?;
-                    Ok(builder.commit_from_memory(mmap_ref)?)
-                }
-            }));
-
-            match attempt_result {
-                Ok(Ok(session)) => {
-                    let primary = names.first().copied().unwrap_or("CPU").to_string();
-                    info_println!("Rotation classifier using {}", primary);
-                    return Ok((session, primary));
-                }
-                Ok(Err(err)) => {
-                    debug_println!("Provider {:?} failed: {}", names, err);
-                }
-                Err(_) => {
-                    debug_println!("Provider {:?} panicked", names);
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "All execution providers failed for rotation classifier"
-        ))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_provider_attempts() -> Vec<(
-        Vec<ort::execution_providers::ExecutionProviderDispatch>,
-        Vec<&'static str>,
-    )> {
-        use ort::execution_providers::CPUExecutionProvider;
-
-        if gpu_execution_disabled() {
-            vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
-        } else if let Some(provider) = webgpu_execution_provider_dispatch() {
-            vec![
-                (vec![provider], vec!["WebGPU"]),
-                (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-            ]
-        } else {
-            vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn get_provider_attempts() -> Vec<(
-        Vec<ort::execution_providers::ExecutionProviderDispatch>,
-        Vec<&'static str>,
-    )> {
-        use ort::execution_providers::CPUExecutionProvider;
-        vec![
-            (
-                vec![directml_execution_provider_dispatch()],
-                vec!["DirectML"],
-            ),
-            (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-        ]
-    }
-
-    #[cfg(target_os = "macos")]
-    fn get_provider_attempts() -> Vec<(
-        Vec<ort::execution_providers::ExecutionProviderDispatch>,
-        Vec<&'static str>,
-    )> {
-        use ort::execution_providers::{CPUExecutionProvider, CoreMLExecutionProvider};
-        vec![
-            (
-                vec![CoreMLExecutionProvider::default().build()],
-                vec!["CoreML"],
-            ),
-            (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-        ]
-    }
-
-    /// Classify the rotation of an image
     pub fn classify(&self, image: &RgbImage) -> Result<(RotationAngle, f32)> {
-        // Preprocess: resize to 224x224 and normalize
-        let preprocessed = self.preprocess(image)?;
+        let vision = self.inner.lock().map_err(|_| anyhow!("lock poisoned"))?;
+        let pred = vision
+            .classify_rgb(image)
+            .context("rotation classification failed")?;
 
-        // Run inference
-        let input_value = Value::from_array(preprocessed)
-            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?;
-        let _ort_guard = crate::pipeline::runtime_limits::lock_ort_gate()?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| anyhow!("Rotation classifier session lock poisoned"))?;
-
-        let outputs = session.run(ort::inputs!["x" => input_value])?;
-
-        // Extract and interpret output
-        let output_tensor = outputs["fetch_name_0"]
-            .try_extract_tensor::<f32>()
-            .context("Failed to extract rotation classification output")?;
-
-        let (_shape, data) = output_tensor;
-
-        // Find the class with highest confidence
-        let (max_idx, max_confidence) = data
-            .iter()
-            .take(4)
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .ok_or_else(|| anyhow!("No classification output"))?;
-
-        let angle = RotationAngle::from_index(max_idx)?;
+        let angle = RotationAngle::from_index(pred.class_id)?;
 
         debug_println!(
             "Rotation classification: {:?} with confidence {:.2}%",
             angle,
-            max_confidence * 100.0
+            pred.confidence * 100.0
         );
 
-        Ok((angle, *max_confidence))
-    }
-
-    /// Preprocess image for rotation classification
-    fn preprocess(&self, img: &RgbImage) -> Result<Array<f32, ndarray::Ix4>> {
-        // Resize to 224x224
-        let resized = image::imageops::resize(
-            img,
-            ROTATION_CLASSIFIER_SIZE,
-            ROTATION_CLASSIFIER_SIZE,
-            image::imageops::FilterType::Lanczos3,
-        );
-
-        // Convert to NCHW format and normalize to [0, 1]
-        let mut input_data =
-            vec![0.0f32; (3 * ROTATION_CLASSIFIER_SIZE * ROTATION_CLASSIFIER_SIZE) as usize];
-        let channel_size = (ROTATION_CLASSIFIER_SIZE * ROTATION_CLASSIFIER_SIZE) as usize;
-
-        for y in 0..ROTATION_CLASSIFIER_SIZE {
-            for x in 0..ROTATION_CLASSIFIER_SIZE {
-                let pixel = resized.get_pixel(x, y);
-                let base = (y * ROTATION_CLASSIFIER_SIZE + x) as usize;
-
-                // RGB order, normalized to [0, 1]
-                input_data[base] = pixel[0] as f32 / 255.0;
-                input_data[base + channel_size] = pixel[1] as f32 / 255.0;
-                input_data[base + 2 * channel_size] = pixel[2] as f32 / 255.0;
-            }
-        }
-
-        Array::from_shape_vec(
-            (
-                1,
-                3,
-                ROTATION_CLASSIFIER_SIZE as usize,
-                ROTATION_CLASSIFIER_SIZE as usize,
-            ),
-            input_data,
-        )
-        .context("Failed to create rotation classifier input array")
+        Ok((angle, pred.confidence))
     }
 }
 
-/// Document unwarping engine using UVDoc model
 pub struct DocumentUnwarper {
-    session: Mutex<Session>,
-    #[allow(dead_code)]
-    provider_name: String,
+    inner: VisionDocumentDeskewer,
 }
 
 impl DocumentUnwarper {
-    /// Load the document unwarping model
     pub fn new(model_path: &str) -> Result<Self> {
-        // Ensure ONNX Runtime is initialized
-        static ONNX_INIT: OnceCell<()> = OnceCell::new();
-        ONNX_INIT.get_or_try_init(|| -> Result<()> {
-            ort::init().with_name("lege").commit();
-            Ok(())
-        })?;
-
-        let (session, provider_name) = Self::build_session(model_path)?;
-
-        debug_println!("Document unwarper loaded with provider: {}", provider_name);
-
-        Ok(Self {
-            session: Mutex::new(session),
-            provider_name,
-        })
-    }
-
-    fn build_session(model_path: &str) -> Result<(Session, String)> {
-        info!("Building document unwarper session: {}", model_path);
-
-        let mmap = unsafe {
-            let file = File::open(model_path)
-                .with_context(|| format!("Failed to open model file: {}", model_path))?;
-            Mmap::map(&file)
-                .with_context(|| format!("Failed to memory-map model file: {}", model_path))?
+        // The dynamic-resolution deskew model is prepared per page size on first
+        // use and cached inside the vision deskewer; the graph runs at the page's
+        // native resolution with no resize.
+        let cfg = VisionDeskewConfig {
+            model_path: PathBuf::from(model_path),
         };
-
-        // Try hardware acceleration first
-        let attempts = Self::get_provider_attempts();
-
-        for (providers, names) in attempts {
-            let attempt_result = catch_unwind(AssertUnwindSafe({
-                let mmap_ref = &mmap;
-                move || -> Result<Session> {
-                    let mut builder = Session::builder()
-                        .map_err(|e| anyhow!("failed to create ORT session builder: {e}"))?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)
-                        .map_err(|e| anyhow!("failed to set ORT optimization level: {e}"))?
-                        .with_intra_threads(4)
-                        .map_err(|e| anyhow!("failed to set ORT intra-op threads: {e}"))?
-                        .with_execution_providers(providers)
-                        .map_err(|e| anyhow!("failed to set ORT execution providers: {e}"))?;
-                    Ok(builder.commit_from_memory(mmap_ref)?)
-                }
-            }));
-
-            match attempt_result {
-                Ok(Ok(session)) => {
-                    let primary = names.first().copied().unwrap_or("CPU").to_string();
-                    info_println!("Document unwarper using {}", primary);
-                    return Ok((session, primary));
-                }
-                Ok(Err(err)) => {
-                    debug_println!("Provider {:?} failed: {}", names, err);
-                }
-                Err(_) => {
-                    debug_println!("Provider {:?} panicked", names);
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "All execution providers failed for document unwarper"
-        ))
+        let inner = VisionDocumentDeskewer::new(cfg)
+            .with_context(|| format!("failed to create document unwarper from {}", model_path))?;
+        Ok(Self { inner })
     }
 
-    #[cfg(target_os = "linux")]
-    fn get_provider_attempts() -> Vec<(
-        Vec<ort::execution_providers::ExecutionProviderDispatch>,
-        Vec<&'static str>,
-    )> {
-        use ort::execution_providers::CPUExecutionProvider;
-
-        if gpu_execution_disabled() {
-            vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
-        } else if let Some(provider) = webgpu_execution_provider_dispatch() {
-            vec![
-                (vec![provider], vec!["WebGPU"]),
-                (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-            ]
-        } else {
-            vec![(vec![CPUExecutionProvider::default().build()], vec!["CPU"])]
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn get_provider_attempts() -> Vec<(
-        Vec<ort::execution_providers::ExecutionProviderDispatch>,
-        Vec<&'static str>,
-    )> {
-        use ort::execution_providers::CPUExecutionProvider;
-        vec![
-            (
-                vec![directml_execution_provider_dispatch()],
-                vec!["DirectML"],
-            ),
-            (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-        ]
-    }
-
-    #[cfg(target_os = "macos")]
-    fn get_provider_attempts() -> Vec<(
-        Vec<ort::execution_providers::ExecutionProviderDispatch>,
-        Vec<&'static str>,
-    )> {
-        use ort::execution_providers::{CPUExecutionProvider, CoreMLExecutionProvider};
-        vec![
-            (
-                vec![CoreMLExecutionProvider::default().build()],
-                vec!["CoreML"],
-            ),
-            (vec![CPUExecutionProvider::default().build()], vec!["CPU"]),
-        ]
-    }
-
-    /// Unwarp a document image
     pub fn unwarp(&self, image: &RgbImage) -> Result<RgbImage> {
-        let (width, height) = image.dimensions();
-        debug_println!("Unwarping image: {}x{}", width, height);
-
-        // Preprocess: convert to NCHW float32 [0, 1]
-        let preprocessed = self.preprocess(image)?;
-
-        // Run inference
-        let input_value = Value::from_array(preprocessed)
-            .map_err(|e| anyhow!("failed to create ORT input tensor: {e}"))?;
-        let _ort_guard = crate::pipeline::runtime_limits::lock_ort_gate()?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| anyhow!("Document unwarper session lock poisoned"))?;
-
-        let session_outputs = session.run(ort::inputs!["image" => input_value])?;
-
-        let output_value = session_outputs
-            .into_iter()
-            .find(|(name, _)| *name == "fetch_name_0")
-            .map(|(_, value)| value)
-            .context("Unwarp output missing fetch_name_0")?;
-
-        let (output_shape, output_data) = output_value
-            .try_extract_tensor::<f32>()
-            .context("Failed to extract unwarp output")?;
-
-        // Postprocess: convert back to RGB image
-        let unwarped = self.postprocess(&output_data, &output_shape)?;
-
-        debug_println!("Unwarping complete");
-
-        Ok(unwarped)
-    }
-
-    /// Preprocess image to NCHW float32 [0, 1]
-    fn preprocess(&self, img: &RgbImage) -> Result<Array<f32, ndarray::Ix4>> {
-        let (width, height) = img.dimensions();
-        let width = width as usize;
-        let height = height as usize;
-
-        let mut input_data = vec![0.0f32; 3 * height * width];
-        let channel_size = height * width;
-
-        for y in 0..height {
-            for x in 0..width {
-                let pixel = img.get_pixel(x as u32, y as u32);
-                let base_idx = y * width + x;
-
-                // RGB channels, normalized to [0, 1]
-                input_data[base_idx] = pixel[0] as f32 / 255.0;
-                input_data[base_idx + channel_size] = pixel[1] as f32 / 255.0;
-                input_data[base_idx + 2 * channel_size] = pixel[2] as f32 / 255.0;
-            }
-        }
-
-        Array::from_shape_vec((1, 3, height, width), input_data)
-            .context("Failed to create unwarp input array")
-    }
-
-    /// Postprocess NCHW float32 output back to RGB image
-    fn postprocess(&self, data: &[f32], shape: &Shape) -> Result<RgbImage> {
-        anyhow::ensure!(
-            shape.len() == 4 && shape[0] == 1 && shape[1] == 3,
-            "Unexpected unwarp output shape: {:?}",
-            shape
-        );
-
-        let height = shape[2] as usize;
-        let width = shape[3] as usize;
-        let channel_size = height * width;
-
-        let mut img_buffer = RgbImage::new(width as u32, height as u32);
-
-        for y in 0..height {
-            for x in 0..width {
-                let base_idx = y * width + x;
-
-                let r = (data[base_idx].clamp(0.0, 1.0) * 255.0) as u8;
-                let g = (data[base_idx + channel_size].clamp(0.0, 1.0) * 255.0) as u8;
-                let b = (data[base_idx + 2 * channel_size].clamp(0.0, 1.0) * 255.0) as u8;
-
-                img_buffer.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
-            }
-        }
-
-        Ok(img_buffer)
+        self.inner.unwarp_rgb(image)
     }
 }
 
-/// Apply rotation correction to an image based on rotation angle
 pub fn apply_rotation_correction(image: &RgbImage, angle: RotationAngle) -> RgbImage {
     match angle {
         RotationAngle::NoRotation => image.clone(),
@@ -527,7 +127,6 @@ pub fn apply_rotation_correction(image: &RgbImage, angle: RotationAngle) -> RgbI
     }
 }
 
-/// Combined deskew engine that handles both rotation and unwarping
 pub struct DeskewEngine {
     rotation_classifier: Option<RotationClassifier>,
     document_unwarper: Option<DocumentUnwarper>,
@@ -535,28 +134,23 @@ pub struct DeskewEngine {
 }
 
 impl DeskewEngine {
-    /// Create a new deskew engine with both models
     pub fn new(
         rotation_model_path: Option<&str>,
         unwarp_model_path: Option<&str>,
         config: DeskewConfig,
     ) -> Result<Self> {
         let rotation_classifier = if config.enable_rotation_correction {
-            if let Some(path) = rotation_model_path {
-                Some(RotationClassifier::new(path)?)
-            } else {
-                None
-            }
+            rotation_model_path
+                .map(|path| RotationClassifier::new(path))
+                .transpose()?
         } else {
             None
         };
 
         let document_unwarper = if config.enable_unwarping {
-            if let Some(path) = unwarp_model_path {
-                Some(DocumentUnwarper::new(path)?)
-            } else {
-                None
-            }
+            unwarp_model_path
+                .map(|path| DocumentUnwarper::new(path))
+                .transpose()?
         } else {
             None
         };
@@ -568,11 +162,9 @@ impl DeskewEngine {
         })
     }
 
-    /// Process a single image: detect rotation, correct it, then unwarp if needed
     pub fn process_image(&self, image: &RgbImage) -> Result<RgbImage> {
         let mut processed_image = image.clone();
 
-        // Step 1: Rotation classification and correction
         if let Some(ref classifier) = self.rotation_classifier {
             let (angle, confidence) = classifier.classify(&processed_image)?;
 
@@ -593,7 +185,6 @@ impl DeskewEngine {
             }
         }
 
-        // Step 2: Document unwarping
         if let Some(ref unwarper) = self.document_unwarper {
             info_println!("Applying document unwarp correction...");
             processed_image = unwarper.unwarp(&processed_image)?;
@@ -602,14 +193,11 @@ impl DeskewEngine {
         Ok(processed_image)
     }
 
-    /// Process multiple images in batch
     pub fn process_images(&self, images: &[RgbImage]) -> Result<Vec<RgbImage>> {
         images.iter().map(|img| self.process_image(img)).collect()
     }
 }
 
-/// High-level function to process an image with deskewing
-/// This is the main entry point for the pipeline
 pub fn process_image_with_deskew(
     image: &RgbImage,
     rotation_model_path: Option<&str>,
@@ -617,14 +205,5 @@ pub fn process_image_with_deskew(
     config: &DeskewConfig,
 ) -> Result<RgbImage> {
     let engine = DeskewEngine::new(rotation_model_path, unwarp_model_path, config.clone())?;
-
     engine.process_image(image)
 }
-
-// Safety: The engines are designed to be used in controlled contexts with proper synchronization
-unsafe impl Send for RotationClassifier {}
-unsafe impl Sync for RotationClassifier {}
-unsafe impl Send for DocumentUnwarper {}
-unsafe impl Sync for DocumentUnwarper {}
-unsafe impl Send for DeskewEngine {}
-unsafe impl Sync for DeskewEngine {}

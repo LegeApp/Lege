@@ -16,7 +16,7 @@ use super::types::{
 };
 
 pub(crate) fn lower_all_ops(
-    nodes: &[NodeProto],
+    nodes: &[&NodeProto],
     known_shapes: &BTreeMap<String, Vec<i64>>,
     tensor_consts: &HashMap<String, TensorConst>,
 ) -> Result<Vec<PlannedOp>> {

@@ -7,8 +7,6 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct GuiText {
     pub interactive: GuiInteractiveText,
-    // Provider-related texts (ONNX providers, hints)
-    pub providers: GuiProvidersText,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -181,20 +179,6 @@ pub struct GuiProgressText {
     pub increased: String,
     pub completed: String,
     pub completed_with_estimate: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct GuiProvidersInstallHelp {
-    pub openvino_linux: String,
-    pub directml_windows: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct GuiProvidersText {
-    pub cuda_success: String,
-    pub secondary_success: String,
-    pub using_cpu: String,
-    pub install_help: GuiProvidersInstallHelp,
 }
 
 pub static GUI_TEXT: Lazy<GuiText> = Lazy::new(|| {
