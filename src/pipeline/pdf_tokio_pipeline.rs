@@ -48,7 +48,6 @@ pub struct ProcessedPage {
     pub height: u32,
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
-    pub binarized: Option<Vec<u8>>, // None when OCR is disabled to free memory
 }
 
 #[derive(Clone, Debug)]
@@ -461,23 +460,25 @@ async fn process_single_page(
             .any(|d| d.category.force_generic_jbig2());
 
     // Encode base layer.
-    // - "jpeg" mode: encode the full RGB image (binarized holds luma for OCR storage only).
+    // - "jpeg" mode: encode the full RGB image (binarized held only the OCR luma above).
     // - Deferred path: binarize+encode are fused inside one spawn_blocking so GPU mapped
     //   bytes flow directly to the encoder via callback (no intermediate Vec<u8>).
-    // - Default path: binarized is moved into the encoder; cloned only if OCR storage needs it.
+    // - Default path: binarized is moved into the encoder.
+    //
+    // The binarized/luma buffer is fully consumed by OCR (above) and the base-layer
+    // encoder; the PDF writer never reads a per-page binarized buffer (that field exists
+    // only for the separate DjVu writer). Keeping it out of `ProcessedPage` avoids towing
+    // a full-page grayscale buffer per page through the process→writer channel and the
+    // writer's out-of-order reorder buffer — a major OOM source on large OCR jobs.
     let adjusted_image = Arc::new(adjusted_image);
-    let (base_layer, binarized_for_page) = if config.text_format() == "jpeg" {
+    let base_layer = if config.text_format() == "jpeg" {
         let layer =
             encode_base_layer_for_jpeg_mode(Arc::clone(&adjusted_image), &config, page_index)
                 .await?;
-        let stored = if config.enable_ocr() {
-            Some(binarized)
-        } else {
-            None
-        };
-        (layer, stored)
+        drop(binarized);
+        layer
     } else if let Some(bin_options) = deferred_binarize {
-        let layer = encode_base_layer_fused(
+        encode_base_layer_fused(
             adjusted_image,
             bin_options,
             width,
@@ -486,15 +487,9 @@ async fn process_single_page(
             page_index,
             force_jbig2_generic,
         )
-        .await?;
-        (layer, None)
+        .await?
     } else {
-        let stored = if config.enable_ocr() {
-            Some(binarized.clone())
-        } else {
-            None
-        };
-        let layer = encode_base_layer(
+        encode_base_layer(
             binarized,
             width,
             height,
@@ -502,8 +497,7 @@ async fn process_single_page(
             page_index,
             force_jbig2_generic,
         )
-        .await?;
-        (layer, stored)
+        .await?
     };
 
     elements.insert(
@@ -523,7 +517,6 @@ async fn process_single_page(
         height: height as u32,
         elements,
         hocr_text,
-        binarized: binarized_for_page,
     })
 }
 
@@ -2101,7 +2094,10 @@ pub async fn create_and_run_pdf_source_pipeline(
                     elements: processed_page.elements,
                     hocr_text: processed_page.hocr_text,
                     index: processed_page.index,
-                    binarized: processed_page.binarized, // Already Option<Vec<u8>>
+                    // PDF assembly never reads Page::binarized (it's for the DjVu writer);
+                    // leaving it None keeps full-page grayscale buffers out of the writer's
+                    // reorder buffer.
+                    binarized: None,
                 };
 
                 pdf_writer_handle

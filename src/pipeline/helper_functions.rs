@@ -652,7 +652,24 @@ pub enum MemoryPressure {
 }
 
 pub fn get_memory_monitor() -> &'static MemoryMonitor {
-    MEMORY_MONITOR.get_or_init(|| MemoryMonitor::new(DEFAULT_MEMORY_LIMIT_GB))
+    MEMORY_MONITOR.get_or_init(|| MemoryMonitor::new(adaptive_memory_limit_gb()))
+}
+
+/// Derive a memory limit that is meaningful on the machine actually running.
+///
+/// The pressure ratio used for backpressure is `current_usage / limit`, so a fixed
+/// 12 GB limit is useless on the 4–8 GB machines that actually run out of memory:
+/// `Critical` (ratio ≥ 0.9) would require ~10.8 GB of working set, which those
+/// machines can never reach before the OS kills the process. Scaling the limit to a
+/// fraction of physical RAM keeps backpressure (`wait_for_memory_relief`) engaging
+/// with headroom for the OS and other apps, while never exceeding the original
+/// ceiling on large machines.
+fn adaptive_memory_limit_gb() -> usize {
+    let total_ram_gb = get_available_ram_gb();
+    // Use ~70% of physical RAM as the working-set ceiling, clamped to a small floor so
+    // tiny/undetected configs still trip backpressure rather than overflowing, and to
+    // the historical default as the upper bound.
+    ((total_ram_gb * 7) / 10).clamp(3, DEFAULT_MEMORY_LIMIT_GB)
 }
 
 /// Wait for memory pressure to decrease below critical level.
