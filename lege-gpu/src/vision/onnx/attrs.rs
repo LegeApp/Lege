@@ -95,8 +95,57 @@ pub(crate) fn tensor_const(tensor: &TensorProto) -> Option<TensorConst> {
         1 => Some(TensorConst::Float32(tensor_f32(tensor))),
         6 => Some(TensorConst::Int64(tensor_i32(tensor))),
         7 => Some(TensorConst::Int64(tensor_i64(tensor))),
+        // FLOAT16: up-convert to f32 on load so the rest of the bridge (and all
+        // wgpu kernels) keep operating in f32. This is the loader half of the
+        // "fp16 weights on disk, f32 compute" path — it halves the on-disk model
+        // size with no kernel changes. The separate, larger runtime-fp16-compute
+        // effort is documented in docs/fp16-speed-route.md.
+        10 => Some(TensorConst::Float32(tensor_f16_as_f32(tensor))),
         _ => None,
     }
+}
+
+/// Decode an IEEE-754 half-precision (binary16) value into f32.
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = (bits >> 15) & 0x1;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = bits & 0x3ff;
+    let sign_f = if sign == 1 { -1.0_f32 } else { 1.0_f32 };
+    match exp {
+        // Subnormal / zero: value = sign * 2^-14 * (mant / 1024).
+        0 => sign_f * 2.0_f32.powi(-14) * (mant as f32 / 1024.0),
+        // Inf / NaN.
+        0x1f => {
+            if mant == 0 {
+                sign_f * f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        // Normal: value = sign * 2^(exp-15) * (1 + mant/1024).
+        _ => sign_f * 2.0_f32.powi(exp as i32 - 15) * (1.0 + mant as f32 / 1024.0),
+    }
+}
+
+/// Loads a FLOAT16 tensor, widening to f32. ONNX stores fp16 either packed in
+/// `int32_data` (one half per int32, low 16 bits) or as little-endian `raw_data`.
+pub(crate) fn tensor_f16_as_f32(tensor: &TensorProto) -> Vec<f32> {
+    if !tensor.get_int32_data().is_empty() {
+        return tensor
+            .get_int32_data()
+            .iter()
+            .map(|&v| f16_bits_to_f32(v as u16))
+            .collect();
+    }
+    tensor
+        .get_raw_data()
+        .chunks_exact(2)
+        .map(|bytes| {
+            f16_bits_to_f32(u16::from_le_bytes(
+                bytes.try_into().expect("chunks_exact yields 2 bytes"),
+            ))
+        })
+        .collect()
 }
 
 /// Loads an INT32 tensor, widening to i64. ONNX stores int32 in `int32_data`
