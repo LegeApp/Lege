@@ -8,7 +8,7 @@ use crate::backend;
 use crate::gui_text::GUI_TEXT;
 use crate::logging;
 use crate::models::{
-    CompressionType, DocumentItem, DocumentStatus, ImageProcessingType, LogEntry, OutputFormat,
+    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat,
     ProcessingOptions, ProcessingResult,
 };
 use crate::version::display_version;
@@ -652,6 +652,15 @@ pub fn app() -> impl IntoElement {
                 ProcessDashboardRow(state, page_range_input),
                 StatusBar(state),
             ))
+            // Transient notifications float above ALL window content (high
+            // relative layer at the root → well above normal nesting depth, but
+            // still below the `Overlay`-layer modal dialogs below).
+            .child(
+                rect()
+                    .layer(200i16)
+                    .position(Position::new_absolute().right(16.).bottom(16.))
+                    .child(PopupRail(state)),
+            )
             .child(QueueViewerPopup(state))
             .child(LogViewerPopup(state))
             .child(AboutPopup(state))
@@ -670,25 +679,9 @@ fn app_root(content: Rect) -> Rect {
 }
 
 fn HeaderUtilityBar(mut state: State<AppState>) -> Element {
-    let title: Element = rect()
-        .direction(Direction::Horizontal)
-        .spacing(8.)
-        .cross_align(Alignment::Center)
-        .child(
-            label()
-                .text("Lege")
-                .font_size(18.)
-                .font_weight(700)
-                .color(TEXT),
-        )
-        .child(
-            label()
-                .text(format!("v{}", display_version()))
-                .font_size(12.)
-                .color(MUTED),
-        )
-        .into();
+    let queue_len = state.read().queue.len();
 
+    // Left: settings utilities (Save / Reset / About).
     let utilities: Element = rect()
         .direction(Direction::Horizontal)
         .spacing(6.)
@@ -713,7 +706,27 @@ fn HeaderUtilityBar(mut state: State<AppState>) -> Element {
         )
         .into();
 
-    widgets::lege_header_bar(utilities, title)
+    // Right: navigation (Queue / Log). Moved here from the status bar so they
+    // never overlap the progress bar.
+    let nav: Element = rect()
+        .direction(Direction::Horizontal)
+        .spacing(6.)
+        .cross_align(Alignment::Center)
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| state.write().show_queue_viewer = true)
+                .child(fmt1(&GUI_TEXT.interactive.queue.queue_button, queue_len)),
+        )
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| state.write().show_log_viewer = true)
+                .child(GUI_TEXT.interactive.queue.log_button.clone()),
+        )
+        .into();
+
+    widgets::lege_header_bar(utilities, nav)
 }
 
 fn FileActionRow(state: State<AppState>) -> Element {
@@ -803,22 +816,7 @@ fn SettingsDashboard(
 }
 
 fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) -> Element {
-    let (is_processing, queued, done, errors) = {
-        let s = state.read();
-        let mut queued = 0;
-        let mut done = 0;
-        let mut errors = 0;
-
-        for item in &s.queue {
-            match &item.status {
-                DocumentStatus::Completed => done += 1,
-                DocumentStatus::Failed(_) | DocumentStatus::Cancelled => errors += 1,
-                _ => queued += 1,
-            }
-        }
-
-        (s.is_processing, queued, done, errors)
-    };
+    let is_processing = state.read().is_processing;
 
     let button_text = if is_processing {
         GUI_TEXT.interactive.buttons.cancel.clone()
@@ -826,23 +824,22 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
         GUI_TEXT.interactive.buttons.start_processing.clone()
     };
 
+    // Single, centered Process/Cancel button. Queue/Done/Errors counters were
+    // removed: the queue and log views already convey that state, and surfacing
+    // an "Errors" tally undermined confidence for the common error-free run.
     rect()
         .width(Size::fill())
         .height(Size::fill())
         .direction(Direction::Horizontal)
-        .content(Content::Flex)
-        .spacing(8.)
+        .main_align(Alignment::Center)
         .cross_align(Alignment::Center)
         .child(
             Button::new()
-                .width(Size::flex(1.))
+                .width(Size::percent(45.))
                 .height(Size::fill())
                 .on_press(move |_| start_or_cancel_processing(state, page_range_input))
                 .child(button_text),
         )
-        .child(widgets::lege_metric_box("Queue", queued.to_string()))
-        .child(widgets::lege_metric_box("Done", done.to_string()))
-        .child(widgets::lege_metric_box("Errors", errors.to_string()))
         .into()
 }
 
@@ -1490,40 +1487,13 @@ fn StatusBar(state: State<AppState>) -> Element {
         ],
     );
 
-    // Top-right control strip and right-pane tooltip slot.
-    // Buttons are first so their position is always fixed; tooltip appears below when active.
-    let top_right: Element = rect()
-        .vertical()
-        .spacing(6.)
-        .cross_align(Alignment::End)
-        .child(
-            rect()
-                .direction(Direction::Horizontal)
-                .spacing(4.)
-                .cross_align(Alignment::Center)
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press({
-                            let mut state = state;
-                            move |_| state.write().show_queue_viewer = true
-                        })
-                        .child(fmt1(&GUI_TEXT.interactive.queue.queue_button, queue_len)),
-                )
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press({
-                            let mut state = state;
-                            move |_| state.write().show_log_viewer = true
-                        })
-                        .child(GUI_TEXT.interactive.queue.log_button.clone()),
-                ),
-        )
-        .child(status_tooltip_panel(state, &[TooltipArea::PagesDeviceCard]))
-        .into();
+    // Top-right: tooltip slot only. The Queue/Log buttons now live in the header
+    // bar so they never collide with the progress bar.
+    let top_right: Element = status_tooltip_panel(state, &[TooltipArea::PagesDeviceCard]);
 
-    let bottom_left = PopupRail(state);
+    // Notifications are rendered as a root-level overlay (see `app()`), so the
+    // status panel's bottom-left slot is now empty.
+    let bottom_left: Element = rect().into();
 
     // Bottom-right debug controls; About lives in the header utility bar.
     let bottom_right: Element = {
@@ -2014,6 +1984,25 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                     .width(Size::px(300.))
                     .padding(10.)
                     .spacing(6.)
+                    .child(
+                        rect()
+                            .direction(Direction::Horizontal)
+                            .spacing(8.)
+                            .cross_align(Alignment::Center)
+                            .child(
+                                label()
+                                    .text("Lege")
+                                    .font_size(18.)
+                                    .font_weight(700)
+                                    .color(TEXT),
+                            )
+                            .child(
+                                label()
+                                    .text(format!("v{}", display_version()))
+                                    .font_size(12.)
+                                    .color(MUTED),
+                            ),
+                    )
                     .child(
                         label()
                             .text(GUI_TEXT.interactive.popups.email.clone())
