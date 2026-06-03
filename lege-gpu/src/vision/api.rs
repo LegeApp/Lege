@@ -103,6 +103,19 @@ impl LayoutDetector {
     pub fn detect_rgb(&self, image: &RgbImage) -> Result<Vec<LayoutDetection>> {
         let preprocessed = preprocess::letterbox_rgb(image.clone(), TARGET_INPUT[2] as u32)
             .context("failed to preprocess layout input")?;
+
+        // One-shot GPU timestamp profile to attribute per-page inference time to
+        // kernels vs inter-dispatch barrier/sync idle. Enable with LEGE_INFERENCE_PROFILE=1.
+        if std::env::var_os("LEGE_INFERENCE_PROFILE").is_some() {
+            static PROFILE_ONCE: std::sync::Once = std::sync::Once::new();
+            PROFILE_ONCE.call_once(|| {
+                match pollster::block_on(self.compiled.profile_report(&preprocessed.tensor)) {
+                    Ok(report) => eprintln!("{report}"),
+                    Err(e) => eprintln!("LEGE_INFERENCE_PROFILE failed: {e:#}"),
+                }
+            });
+        }
+
         let outputs = pollster::block_on(self.compiled.run(&preprocessed.tensor))
             .context("layout inference failed")?;
         let mut heads = Vec::with_capacity(self.graph.outputs.len());

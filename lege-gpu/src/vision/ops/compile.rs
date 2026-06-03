@@ -569,6 +569,49 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 }]);
             }
 
+            // 3×3 stride-1, dilation 2..5: 1×2 spatial × 8-channel register tile.
+            // The 2×2 spatial tile exceeds the shared-memory budget at d=5, but
+            // 16×32 output tiles fit up to d=5.
+            let dil = plan.dilations[0];
+            if kh == 3
+                && kw == 3
+                && group == 1
+                && plan.strides == [1, 1]
+                && plan.dilations[0] == plan.dilations[1]
+                && dil >= 2
+                && dil <= 5
+            {
+                let p = [
+                    cout as u32,
+                    cin as u32,
+                    hin as u32,
+                    win as u32,
+                    hout as u32,
+                    wout as u32,
+                    plan.strides[0] as u32,
+                    plan.strides[1] as u32,
+                    plan.pads[0] as u32,
+                    plan.pads[1] as u32,
+                    dil as u32,
+                    dil as u32,
+                    has_bias as u32,
+                    0,
+                    0,
+                ];
+                return Ok(vec![StepSpec {
+                    wgsl: super::conv::CONV3X3_CO8_SP1X2_WGSL,
+                    n_read_inputs: 3,
+                    input_buf_names: vec![op.inputs[0].clone(), op.inputs[1].clone(), bias_name],
+                    output_buf_name: op.outputs[0].clone(),
+                    params: bytemuck::cast_slice(&p).to_vec(),
+                    dispatch: [
+                        wout.div_ceil(32) as u32,
+                        hout.div_ceil(16) as u32,
+                        cout.div_ceil(8) as u32,
+                    ],
+                }]);
+            }
+
             // Group=1 3×3 → shared-memory tiled direct conv, eight output channels per workgroup.
             if kh == 3 && kw == 3 && group == 1 && super::conv::conv3x3_tile_patch_fits(plan) {
                 let p = [
