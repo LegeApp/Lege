@@ -210,6 +210,7 @@ impl CompiledGraph {
         // ── Build compiled steps ──────────────────────────────────────────
         let mut steps: Vec<CompiledStep> = Vec::new();
         let mut params_bufs: Vec<crate::vision::wgpu::Buffer> = Vec::new();
+        let dump_conv_shapes = std::env::var_os("LEGE_CONV_SHAPES").is_some();
 
         for (op_idx, op) in graph.planned_ops.iter().enumerate() {
             // Skip Mul ops that were fused into a preceding SiLU
@@ -235,6 +236,20 @@ impl CompiledGraph {
 
             for spec in step_specs {
                 let op_kind = step_profile_kind(&op.kind, spec.wgsl);
+                if dump_conv_shapes {
+                    if let PlannedOpKind::Conv2d(_) = &op.kind {
+                        eprintln!(
+                            "  conv-shape op={} name={} shader={} input={:?} weight={:?} output={:?} dispatch={:?}",
+                            op_idx,
+                            op.name,
+                            op_kind,
+                            op.input_shapes.first(),
+                            op.input_shapes.get(1),
+                            op.output_shapes.first(),
+                            spec.dispatch,
+                        );
+                    }
+                }
                 // Get or create pipeline keyed by WGSL pointer (unique per op type)
                 let wgsl_key = spec.wgsl.as_ptr() as usize;
                 let (pipeline, bgl) = if let (Some(p), Some(b)) =
@@ -680,6 +695,151 @@ impl CompiledGraph {
         }
         Ok(profiles)
     }
+
+    /// One-shot timestamp profile that decomposes per-page GPU time into kernel
+    /// "busy" time vs inter-dispatch idle ("gaps"). Each op runs in its own compute
+    /// pass — identical to the real `submit()` path — so pass-boundary barriers are
+    /// captured. Gated behind `LEGE_INFERENCE_PROFILE`; prints a summary to stderr.
+    ///
+    /// Interpretation:
+    /// - busy ≈ span ≈ wall  → kernels are the cost (optimize shaders).
+    /// - busy ≪ span         → GPU sits idle between dispatches (barrier/sync stalls).
+    /// - span ≪ wall         → cost is CPU-side submit/poll, not the GPU timeline.
+    pub(crate) async fn profile_report(&self, input: &reference::Tensor) -> Result<String> {
+        if !self.ctx.supports_timestamps {
+            bail!("selected WGPU adapter does not support timestamp queries");
+        }
+        let wall0 = std::time::Instant::now();
+        let profiles = self.profile(input).await?;
+        let wall_ms = wall0.elapsed().as_secs_f64() * 1000.0;
+
+        // Re-run capturing raw ticks so we can measure the GPU-timeline span (and
+        // thus the idle gaps between dispatches), which the per-step durations alone
+        // cannot show.
+        let query_count = (self.steps.len() * 2) as u32;
+        let query_bytes = query_count as usize * std::mem::size_of::<u64>();
+        let input_canonical = resolve_alias(&self.input_name, &self.aliases);
+        let input_slot = *self
+            .tensor_slots
+            .get(&input_canonical)
+            .context("profile_report: missing resident slot for input buffer")?;
+        let input_buf = self
+            .slot_buffers
+            .get(input_slot)
+            .context("profile_report: missing resident input buffer")?;
+        self.ctx
+            .queue
+            .write_buffer(input_buf, 0, bytemuck::cast_slice(&input.data));
+
+        let query_set =
+            self.ctx
+                .device
+                .create_query_set(&crate::vision::wgpu::QuerySetDescriptor {
+                    label: Some("profile_report_ts"),
+                    ty: crate::vision::wgpu::QueryType::Timestamp,
+                    count: query_count,
+                });
+        let resolve_buffer =
+            self.ctx
+                .device
+                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                    label: Some("profile_report_resolve"),
+                    size: query_bytes as u64,
+                    usage: crate::vision::wgpu::BufferUsages::QUERY_RESOLVE
+                        | crate::vision::wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+        let readback_buffer =
+            self.ctx
+                .device
+                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                    label: Some("profile_report_readback"),
+                    size: query_bytes as u64,
+                    usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                        | crate::vision::wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+        let mut encoder = self.ctx.device.create_command_encoder(
+            &crate::vision::wgpu::CommandEncoderDescriptor {
+                label: Some("profile_report"),
+            },
+        );
+        for (index, step) in self.steps.iter().enumerate() {
+            let begin = (index * 2) as u32;
+            let mut pass =
+                encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                    label: Some("profile_report_step"),
+                    timestamp_writes: Some(crate::vision::wgpu::ComputePassTimestampWrites {
+                        query_set: &query_set,
+                        beginning_of_pass_write_index: Some(begin),
+                        end_of_pass_write_index: Some(begin + 1),
+                    }),
+                });
+            pass.set_pipeline(&step.pipeline);
+            pass.set_bind_group(0, &step.bind_group, &[]);
+            pass.dispatch_workgroups(step.dispatch[0], step.dispatch[1], step.dispatch[2]);
+        }
+        encoder.resolve_query_set(&query_set, 0..query_count, &resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(&resolve_buffer, 0, &readback_buffer, 0, query_bytes as u64);
+        self.ctx.queue.submit(Some(encoder.finish()));
+        let raw = map_readback(&self.ctx.device, &readback_buffer, query_bytes).await?;
+        let ticks: Vec<u64> = bytemuck::cast_slice(&raw).to_vec();
+        let period_ns = self.ctx.queue.get_timestamp_period() as f64;
+        let to_ms = |ticks: u64| ticks as f64 * period_ns / 1_000_000.0;
+
+        let busy_ms: f64 = profiles.iter().map(|p| p.gpu_ms).sum();
+        let first_begin = ticks.iter().step_by(2).copied().min().unwrap_or(0);
+        let last_end = ticks
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .copied()
+            .max()
+            .unwrap_or(first_begin);
+        let span_ms = to_ms(last_end.saturating_sub(first_begin));
+        let gap_ms = (span_ms - busy_ms).max(0.0);
+
+        // Rank ops by total GPU busy time.
+        let mut by_kind: HashMap<String, (f64, usize)> = HashMap::new();
+        for p in &profiles {
+            let e = by_kind.entry(p.op_kind.clone()).or_insert((0.0, 0));
+            e.0 += p.gpu_ms;
+            e.1 += 1;
+        }
+        let mut ranked: Vec<(String, f64, usize)> =
+            by_kind.into_iter().map(|(k, (ms, n))| (k, ms, n)).collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut out = String::new();
+        out.push_str("\n=== LEGE_INFERENCE_PROFILE (one-shot) ===\n");
+        out.push_str(&format!(
+            "  steps={}  GPU busy(kernels)={:.1}ms  GPU span={:.1}ms  GPU idle gaps={:.1}ms  profile wall={:.1}ms\n",
+            self.steps.len(),
+            busy_ms,
+            span_ms,
+            gap_ms,
+            wall_ms,
+        ));
+        let gap_pct = if span_ms > 0.0 {
+            gap_ms / span_ms * 100.0
+        } else {
+            0.0
+        };
+        out.push_str(&format!(
+            "  interpretation: {:.0}% of GPU-timeline span is inter-dispatch idle (barrier/sync). High => submission/barrier bound, not kernels.\n",
+            gap_pct,
+        ));
+        out.push_str("  top ops by GPU busy time:\n");
+        for (kind, ms, n) in ranked.into_iter().take(10) {
+            out.push_str(&format!(
+                "    {:<28} {:>7.1}ms  ({} dispatches)\n",
+                kind, ms, n
+            ));
+        }
+        out.push_str("  compare GPU span above against the `compiled.run: ... readback=` wall time.\n");
+        out.push_str("=========================================\n");
+        Ok(out)
+    }
 }
 
 fn resolve_alias(name: &str, aliases: &HashMap<String, String>) -> String {
@@ -713,12 +873,18 @@ fn step_profile_kind(kind: &PlannedOpKind, wgsl: &'static str) -> String {
         conv_profile_label("Conv1x1Gemm", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_TILED_WGSL {
         conv_profile_label("Conv3x3Tiled", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP2X2_S1D1_VEC4LOAD_WGSL {
+        conv_profile_label("Conv3x3Co8Sp2x2Vec4Load", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP2X2_S1D1_WGSL {
         conv_profile_label("Conv3x3Co8Sp2x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP1X2_WGSL {
+        conv_profile_label("Conv3x3Co8Sp1x2", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_COBLOCK8_WGSL {
         conv_profile_label("Conv3x3Co8", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_COBLOCK4_WGSL {
         conv_profile_label("Conv3x3Co4", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP2X1_WGSL {
+        conv_profile_label("Conv5x5Co8Sp2x1", kind)
     } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP1X2_WGSL {
         conv_profile_label("Conv5x5Co8Sp1x2", kind)
     } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP2X2_D1_WGSL {

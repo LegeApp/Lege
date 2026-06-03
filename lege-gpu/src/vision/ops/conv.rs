@@ -1436,8 +1436,14 @@ fn main(
     let oh_base = wg.y * 32u;
     let ow_base = wg.x * 32u;
 
-    var acc: array<f32, 32>;
-    for (var i = 0u; i < 32u; i = i + 1u) { acc[i] = 0.0; }
+    var acc00_0 = 0.0; var acc00_1 = 0.0; var acc00_2 = 0.0; var acc00_3 = 0.0;
+    var acc00_4 = 0.0; var acc00_5 = 0.0; var acc00_6 = 0.0; var acc00_7 = 0.0;
+    var acc01_0 = 0.0; var acc01_1 = 0.0; var acc01_2 = 0.0; var acc01_3 = 0.0;
+    var acc01_4 = 0.0; var acc01_5 = 0.0; var acc01_6 = 0.0; var acc01_7 = 0.0;
+    var acc10_0 = 0.0; var acc10_1 = 0.0; var acc10_2 = 0.0; var acc10_3 = 0.0;
+    var acc10_4 = 0.0; var acc10_5 = 0.0; var acc10_6 = 0.0; var acc10_7 = 0.0;
+    var acc11_0 = 0.0; var acc11_1 = 0.0; var acc11_2 = 0.0; var acc11_3 = 0.0;
+    var acc11_4 = 0.0; var acc11_5 = 0.0; var acc11_6 = 0.0; var acc11_7 = 0.0;
 
     let ih_base_i = i32(oh_base) - i32(pad_top);
     let iw_base_i = i32(ow_base) - i32(pad_left);
@@ -1491,13 +1497,25 @@ fn main(
                 let v01 = smem[(py0 + ky) * PW + px0 + 1u + kx];
                 let v10 = smem[(py0 + 1u + ky) * PW + px0 + kx];
                 let v11 = smem[(py0 + 1u + ky) * PW + px0 + 1u + kx];
-                for (var co = 0u; co < 8u; co = co + 1u) {
-                    let wv = wmem[co * 9u + kk];
-                    acc[co]        = acc[co]        + v00 * wv;
-                    acc[8u + co]   = acc[8u + co]   + v01 * wv;
-                    acc[16u + co]  = acc[16u + co]  + v10 * wv;
-                    acc[24u + co]  = acc[24u + co]  + v11 * wv;
-                }
+                // Keep accumulators as named scalars. Even constant-index private
+                // arrays lower to Function access chains in naga 29 SPIR-V; scalars
+                // avoid feeding the driver local load/store traffic in this hot loop.
+                let w0 = wmem[kk];
+                let w1 = wmem[9u + kk];
+                let w2 = wmem[18u + kk];
+                let w3 = wmem[27u + kk];
+                let w4 = wmem[36u + kk];
+                let w5 = wmem[45u + kk];
+                let w6 = wmem[54u + kk];
+                let w7 = wmem[63u + kk];
+                acc00_0 = acc00_0 + v00 * w0; acc01_0 = acc01_0 + v01 * w0; acc10_0 = acc10_0 + v10 * w0; acc11_0 = acc11_0 + v11 * w0;
+                acc00_1 = acc00_1 + v00 * w1; acc01_1 = acc01_1 + v01 * w1; acc10_1 = acc10_1 + v10 * w1; acc11_1 = acc11_1 + v11 * w1;
+                acc00_2 = acc00_2 + v00 * w2; acc01_2 = acc01_2 + v01 * w2; acc10_2 = acc10_2 + v10 * w2; acc11_2 = acc11_2 + v11 * w2;
+                acc00_3 = acc00_3 + v00 * w3; acc01_3 = acc01_3 + v01 * w3; acc10_3 = acc10_3 + v10 * w3; acc11_3 = acc11_3 + v11 * w3;
+                acc00_4 = acc00_4 + v00 * w4; acc01_4 = acc01_4 + v01 * w4; acc10_4 = acc10_4 + v10 * w4; acc11_4 = acc11_4 + v11 * w4;
+                acc00_5 = acc00_5 + v00 * w5; acc01_5 = acc01_5 + v01 * w5; acc10_5 = acc10_5 + v10 * w5; acc11_5 = acc11_5 + v11 * w5;
+                acc00_6 = acc00_6 + v00 * w6; acc01_6 = acc01_6 + v01 * w6; acc10_6 = acc10_6 + v10 * w6; acc11_6 = acc11_6 + v11 * w6;
+                acc00_7 = acc00_7 + v00 * w7; acc01_7 = acc01_7 + v01 * w7; acc10_7 = acc10_7 + v10 * w7; acc11_7 = acc11_7 + v11 * w7;
             }
         }
 
@@ -1505,21 +1523,271 @@ fn main(
     }
 
     let plane = hout * wout;
-    // 4 spatial sub-positions × 8 channels.
-    for (var s = 0u; s < 4u; s = s + 1u) {
-        let sy = s / 2u;
-        let sx = s % 2u;
-        let oh = oh_base + lid.y * 2u + sy;
-        let ow = ow_base + lid.x * 2u + sx;
-        if oh >= hout || ow >= wout { continue; }
-        let obase = oh * wout + ow;
-        for (var co = 0u; co < 8u; co = co + 1u) {
-            let gco = co0 + co;
-            if gco >= cout { continue; }
-            var b = 0.0;
-            if use_bias != 0u { b = bias[gco]; }
-            out[gco * plane + obase] = acc[s * 8u + co] + b;
+    let py0_out = lid.y * 2u;
+    let px0_out = lid.x * 2u;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    let oh0 = oh_base + py0_out;
+    let ow0 = ow_base + px0_out;
+    if oh0 < hout && ow0 < wout {
+        let obase = oh0 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc00_0 + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc00_1 + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc00_2 + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc00_3 + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc00_4 + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc00_5 + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc00_6 + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc00_7 + b7; }
+    }
+    let ow1 = ow0 + 1u;
+    if oh0 < hout && ow1 < wout {
+        let obase = oh0 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc01_0 + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc01_1 + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc01_2 + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc01_3 + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc01_4 + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc01_5 + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc01_6 + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc01_7 + b7; }
+    }
+    let oh1 = oh0 + 1u;
+    if oh1 < hout && ow0 < wout {
+        let obase = oh1 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc10_0 + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc10_1 + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc10_2 + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc10_3 + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc10_4 + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc10_5 + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc10_6 + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc10_7 + b7; }
+    }
+    if oh1 < hout && ow1 < wout {
+        let obase = oh1 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc11_0 + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc11_1 + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc11_2 + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc11_3 + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc11_4 + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc11_5 + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc11_6 + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc11_7 + b7; }
+    }
+}
+"#;
+
+// Same compute tile as CONV3X3_CO8_SP2X2_S1D1_WGSL, but interior tiles load the
+// 34×34 input patch through vec4 reads. With pad=1, the patch starts one column
+// before the 32-wide output tile, so the aligned vec4 base is shifted left and
+// the shared-memory row is padded to 37 floats. Edge tiles use scalar extraction
+// from vec4 storage and keep the original unshifted coordinates.
+pub(crate) const CONV3X3_CO8_SP2X2_S1D1_VEC4LOAD_WGSL: &str = r#"
+const PW: u32 = 34u;
+const PWV: u32 = 37u;
+const PH: u32 = 34u;
+var<workgroup> smem: array<f32, 1258>; // PH*PWV
+var<workgroup> wmem: array<f32, 72>;   // 8 channels * 9 taps
+
+@group(0) @binding(0) var<storage, read>       inp    : array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read>       wt     : array<f32>;
+@group(0) @binding(2) var<storage, read>       bias   : array<f32>;
+@group(0) @binding(3) var<storage, read_write> out    : array<f32>;
+@group(0) @binding(4) var<storage, read>       params : array<u32>;
+
+fn load_scalar(idx: u32) -> f32 {
+    let v = inp[idx / 4u];
+    let lane = idx & 3u;
+    if lane == 0u { return v.x; }
+    if lane == 1u { return v.y; }
+    if lane == 2u { return v.z; }
+    return v.w;
+}
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(workgroup_id)        wg : vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let cout     = params[0];
+    let cin      = params[1];
+    let hin      = params[2];
+    let win      = params[3];
+    let hout     = params[4];
+    let wout     = params[5];
+    let pad_top  = params[6];
+    let pad_left = params[7];
+    let use_bias = params[8];
+
+    let co0 = wg.z * 8u;
+    let oh_base = wg.y * 32u;
+    let ow_base = wg.x * 32u;
+
+    var acc = array<f32, 32>();
+
+    let ih_base_i = i32(oh_base) - i32(pad_top);
+    let iw_base_i = i32(ow_base) - i32(pad_left);
+    let full_patch = ih_base_i >= 0 && iw_base_i >= 0
+                  && ih_base_i + i32(PW) <= i32(hin)
+                  && iw_base_i + i32(PW) <= i32(win);
+    var x_shift = 0u;
+    if full_patch {
+        x_shift = u32(iw_base_i) & 3u;
+    }
+    let tid = lid.y * 16u + lid.x;
+    let plane_in = hin * win;
+
+    for (var ci: u32 = 0u; ci < cin; ci = ci + 1u) {
+        if full_patch {
+            let aligned_x = u32(iw_base_i) - x_shift;
+            var vidx = tid;
+            loop {
+                if vidx >= PH * 9u { break; }
+                let py = vidx / 9u;
+                let vx = vidx - py * 9u;
+                let base = ci * plane_in + (u32(ih_base_i) + py) * win + aligned_x + vx * 4u;
+                let v = inp[base / 4u];
+                let dst = py * PWV + vx * 4u;
+                smem[dst + 0u] = v.x;
+                smem[dst + 1u] = v.y;
+                smem[dst + 2u] = v.z;
+                smem[dst + 3u] = v.w;
+                vidx = vidx + 256u;
+            }
+        } else {
+            var pidx = tid;
+            loop {
+                if pidx >= PW * PW { break; }
+                let py = pidx / PW;
+                let px = pidx - py * PW;
+                let iy = ih_base_i + i32(py);
+                let ix = iw_base_i + i32(px);
+                if iy >= 0 && u32(iy) < hin && ix >= 0 && u32(ix) < win {
+                    smem[py * PWV + px] = load_scalar(ci * plane_in + u32(iy) * win + u32(ix));
+                } else {
+                    smem[py * PWV + px] = 0.0;
+                }
+                pidx = pidx + 256u;
+            }
         }
+
+        if tid < 72u {
+            let co_local = tid / 9u;
+            let kk = tid - co_local * 9u;
+            let co = co0 + co_local;
+            if co < cout {
+                wmem[tid] = wt[co * cin * 9u + ci * 9u + kk];
+            } else {
+                wmem[tid] = 0.0;
+            }
+        }
+
+        workgroupBarrier();
+
+        let py0 = lid.y * 2u;
+        let px0 = lid.x * 2u + x_shift;
+        for (var ky = 0u; ky < 3u; ky = ky + 1u) {
+            for (var kx = 0u; kx < 3u; kx = kx + 1u) {
+                let kk = ky * 3u + kx;
+                let v00 = smem[(py0 + ky) * PWV + px0 + kx];
+                let v01 = smem[(py0 + ky) * PWV + px0 + 1u + kx];
+                let v10 = smem[(py0 + 1u + ky) * PWV + px0 + kx];
+                let v11 = smem[(py0 + 1u + ky) * PWV + px0 + 1u + kx];
+                let w0 = wmem[kk];
+                let w1 = wmem[9u + kk];
+                let w2 = wmem[18u + kk];
+                let w3 = wmem[27u + kk];
+                let w4 = wmem[36u + kk];
+                let w5 = wmem[45u + kk];
+                let w6 = wmem[54u + kk];
+                let w7 = wmem[63u + kk];
+                acc[0]  = acc[0]  + v00 * w0; acc[8]  = acc[8]  + v01 * w0; acc[16] = acc[16] + v10 * w0; acc[24] = acc[24] + v11 * w0;
+                acc[1]  = acc[1]  + v00 * w1; acc[9]  = acc[9]  + v01 * w1; acc[17] = acc[17] + v10 * w1; acc[25] = acc[25] + v11 * w1;
+                acc[2]  = acc[2]  + v00 * w2; acc[10] = acc[10] + v01 * w2; acc[18] = acc[18] + v10 * w2; acc[26] = acc[26] + v11 * w2;
+                acc[3]  = acc[3]  + v00 * w3; acc[11] = acc[11] + v01 * w3; acc[19] = acc[19] + v10 * w3; acc[27] = acc[27] + v11 * w3;
+                acc[4]  = acc[4]  + v00 * w4; acc[12] = acc[12] + v01 * w4; acc[20] = acc[20] + v10 * w4; acc[28] = acc[28] + v11 * w4;
+                acc[5]  = acc[5]  + v00 * w5; acc[13] = acc[13] + v01 * w5; acc[21] = acc[21] + v10 * w5; acc[29] = acc[29] + v11 * w5;
+                acc[6]  = acc[6]  + v00 * w6; acc[14] = acc[14] + v01 * w6; acc[22] = acc[22] + v10 * w6; acc[30] = acc[30] + v11 * w6;
+                acc[7]  = acc[7]  + v00 * w7; acc[15] = acc[15] + v01 * w7; acc[23] = acc[23] + v10 * w7; acc[31] = acc[31] + v11 * w7;
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    let plane = hout * wout;
+    let py0_out = lid.y * 2u;
+    let px0_out = lid.x * 2u;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    let oh0 = oh_base + py0_out;
+    let ow0 = ow_base + px0_out;
+    if oh0 < hout && ow0 < wout {
+        let obase = oh0 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    let ow1 = ow0 + 1u;
+    if oh0 < hout && ow1 < wout {
+        let obase = oh0 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
+    }
+    let oh1 = oh0 + 1u;
+    if oh1 < hout && ow0 < wout {
+        let obase = oh1 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[16] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[17] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[18] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[19] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[20] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[21] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[22] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[23] + b7; }
+    }
+    if oh1 < hout && ow1 < wout {
+        let obase = oh1 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[24] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[25] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[26] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[27] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[28] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[29] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[30] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[31] + b7; }
     }
 }
 "#;
@@ -1809,8 +2077,7 @@ fn main(
     let oh_base = wg.y * 32u;
     let ow_base = wg.x * 32u;
 
-    var acc: array<f32, 32>;
-    for (var i = 0u; i < 32u; i = i + 1u) { acc[i] = 0.0; }
+    var acc = array<f32, 32>();
 
     let ih_base_i = i32(oh_base) - i32(pad_top);
     let iw_base_i = i32(ow_base) - i32(pad_left);
@@ -1864,13 +2131,25 @@ fn main(
                 let v01 = smem5[(py0 + ky) * PW5 + px0 + 1u + kx];
                 let v10 = smem5[(py0 + 1u + ky) * PW5 + px0 + kx];
                 let v11 = smem5[(py0 + 1u + ky) * PW5 + px0 + 1u + kx];
-                for (var co = 0u; co < 8u; co = co + 1u) {
-                    let wv = wmem5[co * 25u + kk];
-                    acc[co]       = acc[co]       + v00 * wv;
-                    acc[8u + co]  = acc[8u + co]  + v01 * wv;
-                    acc[16u + co] = acc[16u + co] + v10 * wv;
-                    acc[24u + co] = acc[24u + co] + v11 * wv;
-                }
+                // Unrolled over 8 output channels so `acc` is statically indexed and
+                // stays in registers (naga 29 spills a dynamically indexed private
+                // array to local memory — ~12x slower; see CONV3X3_CO8_SP2X2).
+                let w0 = wmem5[kk];
+                let w1 = wmem5[25u + kk];
+                let w2 = wmem5[50u + kk];
+                let w3 = wmem5[75u + kk];
+                let w4 = wmem5[100u + kk];
+                let w5 = wmem5[125u + kk];
+                let w6 = wmem5[150u + kk];
+                let w7 = wmem5[175u + kk];
+                acc[0]  = acc[0]  + v00 * w0; acc[8]  = acc[8]  + v01 * w0; acc[16] = acc[16] + v10 * w0; acc[24] = acc[24] + v11 * w0;
+                acc[1]  = acc[1]  + v00 * w1; acc[9]  = acc[9]  + v01 * w1; acc[17] = acc[17] + v10 * w1; acc[25] = acc[25] + v11 * w1;
+                acc[2]  = acc[2]  + v00 * w2; acc[10] = acc[10] + v01 * w2; acc[18] = acc[18] + v10 * w2; acc[26] = acc[26] + v11 * w2;
+                acc[3]  = acc[3]  + v00 * w3; acc[11] = acc[11] + v01 * w3; acc[19] = acc[19] + v10 * w3; acc[27] = acc[27] + v11 * w3;
+                acc[4]  = acc[4]  + v00 * w4; acc[12] = acc[12] + v01 * w4; acc[20] = acc[20] + v10 * w4; acc[28] = acc[28] + v11 * w4;
+                acc[5]  = acc[5]  + v00 * w5; acc[13] = acc[13] + v01 * w5; acc[21] = acc[21] + v10 * w5; acc[29] = acc[29] + v11 * w5;
+                acc[6]  = acc[6]  + v00 * w6; acc[14] = acc[14] + v01 * w6; acc[22] = acc[22] + v10 * w6; acc[30] = acc[30] + v11 * w6;
+                acc[7]  = acc[7]  + v00 * w7; acc[15] = acc[15] + v01 * w7; acc[23] = acc[23] + v10 * w7; acc[31] = acc[31] + v11 * w7;
             }
         }
 
@@ -1878,20 +2157,67 @@ fn main(
     }
 
     let plane = hout * wout;
-    for (var s = 0u; s < 4u; s = s + 1u) {
-        let sy = s / 2u;
-        let sx = s % 2u;
-        let oh = oh_base + lid.y * 2u + sy;
-        let ow = ow_base + lid.x * 2u + sx;
-        if oh >= hout || ow >= wout { continue; }
-        let obase = oh * wout + ow;
-        for (var co = 0u; co < 8u; co = co + 1u) {
-            let gco = co0 + co;
-            if gco >= cout { continue; }
-            var b = 0.0;
-            if use_bias != 0u { b = bias[gco]; }
-            out[gco * plane + obase] = acc[s * 8u + co] + b;
-        }
+    let py0_out = lid.y * 2u;
+    let px0_out = lid.x * 2u;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    let oh0 = oh_base + py0_out;
+    let ow0 = ow_base + px0_out;
+    if oh0 < hout && ow0 < wout {
+        let obase = oh0 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    let ow1 = ow0 + 1u;
+    if oh0 < hout && ow1 < wout {
+        let obase = oh0 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
+    }
+    let oh1 = oh0 + 1u;
+    if oh1 < hout && ow0 < wout {
+        let obase = oh1 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[16] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[17] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[18] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[19] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[20] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[21] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[22] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[23] + b7; }
+    }
+    if oh1 < hout && ow1 < wout {
+        let obase = oh1 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[24] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[25] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[26] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[27] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[28] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[29] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[30] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[31] + b7; }
     }
 }
 "#;
@@ -1940,17 +2266,10 @@ fn main(
     let valid1 = oh < hout && ow1 < wout;
 
     // Accumulators: acc[0..7] for col0, acc[8..15] for col1.
-    var acc: array<f32, 16>;
-    for (var i = 0u; i < 16u; i = i + 1u) { acc[i] = 0.0; }
-    if use_bias != 0u {
-        for (var c = 0u; c < 8u; c = c + 1u) {
-            let gco = co0 + c;
-            if gco < cout {
-                acc[c]      = bias[gco];
-                acc[8u + c] = bias[gco];
-            }
-        }
-    }
+    // Bias is folded in at store time so acc stays statically indexed and in
+    // registers (naga 29 spills dynamically indexed private arrays to local
+    // memory — ~12x slower; see CONV3X3_CO8_SP2X2).
+    var acc = array<f32, 16>();
 
     let patch_h = 16u * stride_h + 4u * dil_h;
     let patch_w = 32u * stride_w + 4u * dil_w;
@@ -2000,11 +2319,23 @@ fn main(
                     let sm_col0 = sm_col0_base + kx * dil_w;
                     let v0 = smem[sm_row * patch_w + sm_col0];
                     let v1 = smem[sm_row * patch_w + sm_col0 + stride_w];
-                    for (var co = 0u; co < 8u; co = co + 1u) {
-                        let wv = wmem[co * 25u + kk];
-                        acc[co]      = acc[co]      + v0 * wv;
-                        acc[8u + co] = acc[8u + co] + v1 * wv;
-                    }
+                    // Unrolled over 8 channels — constant acc indices keep it in registers.
+                    let w0 = wmem[kk];
+                    let w1 = wmem[25u + kk];
+                    let w2 = wmem[50u + kk];
+                    let w3 = wmem[75u + kk];
+                    let w4 = wmem[100u + kk];
+                    let w5 = wmem[125u + kk];
+                    let w6 = wmem[150u + kk];
+                    let w7 = wmem[175u + kk];
+                    acc[0] = acc[0] + v0 * w0; acc[8]  = acc[8]  + v1 * w0;
+                    acc[1] = acc[1] + v0 * w1; acc[9]  = acc[9]  + v1 * w1;
+                    acc[2] = acc[2] + v0 * w2; acc[10] = acc[10] + v1 * w2;
+                    acc[3] = acc[3] + v0 * w3; acc[11] = acc[11] + v1 * w3;
+                    acc[4] = acc[4] + v0 * w4; acc[12] = acc[12] + v1 * w4;
+                    acc[5] = acc[5] + v0 * w5; acc[13] = acc[13] + v1 * w5;
+                    acc[6] = acc[6] + v0 * w6; acc[14] = acc[14] + v1 * w6;
+                    acc[7] = acc[7] + v0 * w7; acc[15] = acc[15] + v1 * w7;
                 }
             }
         }
@@ -2013,11 +2344,347 @@ fn main(
     }
 
     let plane = hout * wout;
-    for (var co = 0u; co < 8u; co = co + 1u) {
-        let gco = co0 + co;
-        if gco >= cout { continue; }
-        if valid0 { out[gco * plane + oh * wout + ow0] = acc[co]; }
-        if valid1 { out[gco * plane + oh * wout + ow1] = acc[8u + co]; }
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    if valid0 {
+        let obase = oh * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    if valid1 {
+        let obase = oh * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
+    }
+}
+"#;
+
+// 5×5 stride-1 2×1 spatial tile × 8 output channels.
+// YOLO-specific trial for the 96-channel 128×128 d2/d3 dilated blocks. It mirrors
+// CONV5X5_CO8_SP1X2_WGSL but computes two consecutive rows per thread instead of
+// two consecutive columns. Patch footprint is 40×24 for d2 and 44×28 for d3.
+// Same params layout as CONV5X5_COBLOCK8_WGSL.
+// dispatch: (ceil(Wout/16), ceil(Hout/32), ceil(Cout/8)).
+pub(crate) const CONV5X5_CO8_SP2X1_WGSL: &str = r#"
+var<workgroup> smem: array<f32, 1296>;
+var<workgroup> wmem: array<f32, 200>;
+
+@group(0) @binding(0) var<storage, read>       inp    : array<f32>;
+@group(0) @binding(1) var<storage, read>       wt     : array<f32>;
+@group(0) @binding(2) var<storage, read>       bias   : array<f32>;
+@group(0) @binding(3) var<storage, read_write> out    : array<f32>;
+@group(0) @binding(4) var<storage, read>       params : array<u32>;
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(workgroup_id)        wg : vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let cout     = params[0];
+    let cin      = params[1];
+    let hin      = params[2];
+    let win      = params[3];
+    let hout     = params[4];
+    let wout     = params[5];
+    let stride_h = params[6];
+    let stride_w = params[7];
+    let pad_top  = params[8];
+    let pad_left = params[9];
+    let dil_h    = params[10];
+    let dil_w    = params[11];
+    let use_bias = params[12];
+
+    let co0 = wg.z * 8u;
+    let oh0 = wg.y * 32u + lid.y * 2u;
+    let oh1 = oh0 + 1u;
+    let ow  = wg.x * 16u + lid.x;
+    let valid0 = oh0 < hout && ow < wout;
+    let valid1 = oh1 < hout && ow < wout;
+
+    var acc = array<f32, 16>();
+
+    let patch_h = 32u * stride_h + 4u * dil_h;
+    let patch_w = 16u * stride_w + 4u * dil_w;
+    let patch_size = patch_h * patch_w;
+    let ih_base_i = i32(wg.y * 32u * stride_h) - i32(pad_top);
+    let iw_base_i = i32(wg.x * 16u * stride_w) - i32(pad_left);
+    let tid = lid.y * 16u + lid.x;
+
+    for (var ci: u32 = 0u; ci < cin; ci = ci + 1u) {
+        var pidx = tid;
+        loop {
+            if pidx >= patch_size { break; }
+            let py = pidx / patch_w;
+            let px = pidx - py * patch_w;
+            let iy = ih_base_i + i32(py);
+            let ix = iw_base_i + i32(px);
+            if iy >= 0 && u32(iy) < hin && ix >= 0 && u32(ix) < win {
+                smem[py * patch_w + px] = inp[ci * hin * win + u32(iy) * win + u32(ix)];
+            } else {
+                smem[py * patch_w + px] = 0.0;
+            }
+            pidx = pidx + 256u;
+        }
+
+        if tid < 200u {
+            let co_local = tid / 25u;
+            let kk = tid - co_local * 25u;
+            let co = co0 + co_local;
+            if co < cout {
+                wmem[tid] = wt[co * cin * 25u + ci * 25u + kk];
+            } else {
+                wmem[tid] = 0.0;
+            }
+        }
+
+        workgroupBarrier();
+
+        if valid0 || valid1 {
+            let sm_row0_base = lid.y * 2u * stride_h;
+            let sm_col_base = lid.x * stride_w;
+            for (var ky = 0u; ky < 5u; ky = ky + 1u) {
+                for (var kx = 0u; kx < 5u; kx = kx + 1u) {
+                    let kk = ky * 5u + kx;
+                    let sm_col = sm_col_base + kx * dil_w;
+                    let sm_row0 = sm_row0_base + ky * dil_h;
+                    let v0 = smem[sm_row0 * patch_w + sm_col];
+                    let v1 = smem[(sm_row0 + stride_h) * patch_w + sm_col];
+                    let w0 = wmem[kk];
+                    let w1 = wmem[25u + kk];
+                    let w2 = wmem[50u + kk];
+                    let w3 = wmem[75u + kk];
+                    let w4 = wmem[100u + kk];
+                    let w5 = wmem[125u + kk];
+                    let w6 = wmem[150u + kk];
+                    let w7 = wmem[175u + kk];
+                    acc[0] = acc[0] + v0 * w0; acc[8]  = acc[8]  + v1 * w0;
+                    acc[1] = acc[1] + v0 * w1; acc[9]  = acc[9]  + v1 * w1;
+                    acc[2] = acc[2] + v0 * w2; acc[10] = acc[10] + v1 * w2;
+                    acc[3] = acc[3] + v0 * w3; acc[11] = acc[11] + v1 * w3;
+                    acc[4] = acc[4] + v0 * w4; acc[12] = acc[12] + v1 * w4;
+                    acc[5] = acc[5] + v0 * w5; acc[13] = acc[13] + v1 * w5;
+                    acc[6] = acc[6] + v0 * w6; acc[14] = acc[14] + v1 * w6;
+                    acc[7] = acc[7] + v0 * w7; acc[15] = acc[15] + v1 * w7;
+                }
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    let plane = hout * wout;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    if valid0 {
+        let obase = oh0 * wout + ow;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    if valid1 {
+        let obase = oh1 * wout + ow;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
+    }
+}
+"#;
+
+// 3×3 stride-1 1×2 spatial tile × 8 output channels.
+// Targets the dilated 3×3 blocks where the 2×2 spatial tile would exceed the
+// 1296-float shared-memory budget at d=5. Patch for d=5 is 26×42=1092.
+// params match CONV3X3_COBLOCK8_WGSL.
+// dispatch: (ceil(Wout/32), ceil(Hout/16), ceil(Cout/8)).
+pub(crate) const CONV3X3_CO8_SP1X2_WGSL: &str = r#"
+var<workgroup> smem: array<f32, 1296>;
+var<workgroup> wmem: array<f32, 72>;
+
+@group(0) @binding(0) var<storage, read>       inp    : array<f32>;
+@group(0) @binding(1) var<storage, read>       wt     : array<f32>;
+@group(0) @binding(2) var<storage, read>       bias   : array<f32>;
+@group(0) @binding(3) var<storage, read_write> out    : array<f32>;
+@group(0) @binding(4) var<storage, read>       params : array<u32>;
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(workgroup_id)        wg : vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let cout     = params[0];
+    let cin      = params[1];
+    let hin      = params[2];
+    let win      = params[3];
+    let hout     = params[4];
+    let wout     = params[5];
+    let stride_h = params[6];
+    let stride_w = params[7];
+    let pad_top  = params[8];
+    let pad_left = params[9];
+    let dil_h    = params[10];
+    let dil_w    = params[11];
+    let use_bias = params[12];
+
+    let co0 = wg.z * 8u;
+    let oh  = wg.y * 16u + lid.y;
+    let ow0 = wg.x * 32u + lid.x * 2u;
+    let ow1 = ow0 + 1u;
+    let valid0 = oh < hout && ow0 < wout;
+    let valid1 = oh < hout && ow1 < wout;
+
+    var acc = array<f32, 16>();
+
+    let patch_h = 16u * stride_h + 2u * dil_h;
+    let patch_w = 32u * stride_w + 2u * dil_w;
+    let patch_size = patch_h * patch_w;
+    let ih_base_i = i32(wg.y * 16u * stride_h) - i32(pad_top);
+    let iw_base_i = i32(wg.x * 32u * stride_w) - i32(pad_left);
+    let full_patch = ih_base_i >= 0 && iw_base_i >= 0
+                  && ih_base_i + i32(patch_h) <= i32(hin)
+                  && iw_base_i + i32(patch_w) <= i32(win);
+    let tid = lid.y * 16u + lid.x;
+
+    for (var ci: u32 = 0u; ci < cin; ci = ci + 1u) {
+        var pidx = tid;
+        loop {
+            if pidx >= patch_size { break; }
+            let py = pidx / patch_w;
+            let px = pidx - py * patch_w;
+            if full_patch {
+                smem[py * patch_w + px] = inp[ci * hin * win + u32(ih_base_i) * win + u32(iw_base_i) + py * win + px];
+            } else {
+                let iy = ih_base_i + i32(py);
+                let ix = iw_base_i + i32(px);
+                if iy >= 0 && u32(iy) < hin && ix >= 0 && u32(ix) < win {
+                    smem[py * patch_w + px] = inp[ci * hin * win + u32(iy) * win + u32(ix)];
+                } else {
+                    smem[py * patch_w + px] = 0.0;
+                }
+            }
+            pidx = pidx + 256u;
+        }
+
+        if tid < 72u {
+            let co_local = tid / 9u;
+            let kk = tid - co_local * 9u;
+            let co = co0 + co_local;
+            if co < cout {
+                wmem[tid] = wt[co * cin * 9u + ci * 9u + kk];
+            } else {
+                wmem[tid] = 0.0;
+            }
+        }
+
+        workgroupBarrier();
+
+        if valid0 || valid1 {
+            let sm_row_base = lid.y * stride_h;
+            let sm_col0_base = lid.x * 2u * stride_w;
+            for (var ky = 0u; ky < 3u; ky = ky + 1u) {
+                for (var kx = 0u; kx < 3u; kx = kx + 1u) {
+                    let kk = ky * 3u + kx;
+                    let sm_row = sm_row_base + ky * dil_h;
+                    let sm_col0 = sm_col0_base + kx * dil_w;
+                    let v0 = smem[sm_row * patch_w + sm_col0];
+                    let v1 = smem[sm_row * patch_w + sm_col0 + stride_w];
+                    let w0 = wmem[kk];
+                    let w1 = wmem[9u + kk];
+                    let w2 = wmem[18u + kk];
+                    let w3 = wmem[27u + kk];
+                    let w4 = wmem[36u + kk];
+                    let w5 = wmem[45u + kk];
+                    let w6 = wmem[54u + kk];
+                    let w7 = wmem[63u + kk];
+                    acc[0] = acc[0] + v0 * w0; acc[8]  = acc[8]  + v1 * w0;
+                    acc[1] = acc[1] + v0 * w1; acc[9]  = acc[9]  + v1 * w1;
+                    acc[2] = acc[2] + v0 * w2; acc[10] = acc[10] + v1 * w2;
+                    acc[3] = acc[3] + v0 * w3; acc[11] = acc[11] + v1 * w3;
+                    acc[4] = acc[4] + v0 * w4; acc[12] = acc[12] + v1 * w4;
+                    acc[5] = acc[5] + v0 * w5; acc[13] = acc[13] + v1 * w5;
+                    acc[6] = acc[6] + v0 * w6; acc[14] = acc[14] + v1 * w6;
+                    acc[7] = acc[7] + v0 * w7; acc[15] = acc[15] + v1 * w7;
+                }
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    let plane = hout * wout;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    if valid0 {
+        let obase = oh * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    if valid1 {
+        let obase = oh * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
     }
 }
 "#;
