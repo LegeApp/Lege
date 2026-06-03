@@ -14,49 +14,55 @@ pub(crate) struct GpuContext {
 
 impl GpuContext {
     pub(crate) async fn new() -> Result<Self> {
-        let instance = crate::vision::wgpu::Instance::default();
-        let backends = requested_backends();
+        let backends = crate::wgpu_setup::requested_backends();
+        // Constrain the instance to the requested backends (DX12 on Windows by
+        // default, overridable via WGPU_BACKEND) so that the default
+        // `request_adapter` path below honours the same backend choice instead
+        // of silently falling onto, e.g., Vulkan.
+        let instance = crate::wgpu_setup::create_instance();
         let adapter_name_filter = std::env::var("WGPU_ADAPTER_NAME").ok();
+
+        // Enumerate purely for diagnostics and to support the WGPU_ADAPTER_NAME
+        // override; the default pick is delegated to wgpu (see below).
         eprintln!("wgpu adapters:");
-        let mut selected = None;
-        let mut selected_cpu = None;
-        for adapter in instance.enumerate_adapters(backends).await {
+        let enumerated: Vec<crate::vision::wgpu::Adapter> =
+            instance.enumerate_adapters(backends).await;
+        for adapter in &enumerated {
             let info = adapter.get_info();
             eprintln!(
                 "  - {} ({:?}, {:?})",
                 info.name, info.backend, info.device_type
             );
-            if let Some(filter) = adapter_name_filter.as_deref() {
-                if !info
-                    .name
-                    .to_ascii_lowercase()
-                    .contains(&filter.to_ascii_lowercase())
-                {
-                    continue;
-                }
-            }
-            if selected.is_none() && info.device_type != crate::vision::wgpu::DeviceType::Cpu {
-                selected = Some(adapter);
-            } else if selected_cpu.is_none()
-                && info.device_type == crate::vision::wgpu::DeviceType::Cpu
-            {
-                selected_cpu = Some(adapter);
-            }
         }
 
-        let adapter = if let Some(adapter) = selected {
-            adapter
-        } else if let Some(adapter) = selected_cpu {
-            adapter
+        let adapter = if let Some(filter) = adapter_name_filter.as_deref() {
+            // Explicit override: first enumerated adapter whose name matches.
+            let needle = filter.to_ascii_lowercase();
+            enumerated
+                .into_iter()
+                .find(|a| a.get_info().name.to_ascii_lowercase().contains(&needle))
+                .with_context(|| {
+                    format!("WGPU_ADAPTER_NAME=`{filter}` did not match any wgpu adapter")
+                })?
         } else {
-            instance
+            // Default: same strategy as the resize / binarization paths — ask
+            // wgpu for the high-performance adapter, which the OS resolves to the
+            // discrete GPU when one is present (always the larger GPU on a
+            // laptop). Fall back to any enumerated adapter if the request fails.
+            match instance
                 .request_adapter(&crate::vision::wgpu::RequestAdapterOptions {
                     power_preference: crate::vision::wgpu::PowerPreference::HighPerformance,
                     compatible_surface: None,
                     force_fallback_adapter: false,
                 })
                 .await
-                .context("no suitable wgpu adapter found")?
+            {
+                Ok(adapter) => adapter,
+                Err(_) => enumerated
+                    .into_iter()
+                    .next()
+                    .context("no suitable wgpu adapter found")?,
+            }
         };
         let info = adapter.get_info();
         eprintln!(
@@ -104,41 +110,6 @@ impl GpuContext {
             supports_timestamps,
         })
     }
-}
-
-fn requested_backends() -> crate::vision::wgpu::Backends {
-    let Ok(raw) = std::env::var("WGPU_BACKEND") else {
-        return default_backends();
-    };
-    let mut backends = crate::vision::wgpu::Backends::empty();
-    for part in raw.split(',').map(|part| part.trim().to_ascii_lowercase()) {
-        match part.as_str() {
-            "vulkan" | "vk" => backends |= crate::vision::wgpu::Backends::VULKAN,
-            "metal" | "mtl" => backends |= crate::vision::wgpu::Backends::METAL,
-            "dx12" | "d3d12" => backends |= crate::vision::wgpu::Backends::DX12,
-            "gl" | "opengl" | "gles" => backends |= crate::vision::wgpu::Backends::GL,
-            "browser_webgpu" | "webgpu" => {
-                backends |= crate::vision::wgpu::Backends::BROWSER_WEBGPU
-            }
-            "all" => backends |= crate::vision::wgpu::Backends::all(),
-            _ => {}
-        }
-    }
-    if backends.is_empty() {
-        default_backends()
-    } else {
-        backends
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn default_backends() -> crate::vision::wgpu::Backends {
-    crate::vision::wgpu::Backends::DX12
-}
-
-#[cfg(not(target_os = "windows"))]
-fn default_backends() -> crate::vision::wgpu::Backends {
-    crate::vision::wgpu::Backends::all()
 }
 
 // ── Core GPU dispatch ─────────────────────────────────────────────────────────
