@@ -2318,28 +2318,25 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 let mut files_errored = 0usize;
                 let mut handled: HashSet<u64> = HashSet::new();
 
-                loop {
-                    if state.read().should_cancel {
-                        for handle in worker_handles.iter_mut() {
-                            handle.kill();
-                        }
-                        let mut s = state.write();
-                        s.is_processing = false;
-                        s.should_cancel = false;
-                        s.active_task_ids.clear();
-                        s.active_eta = None;
-                        s.progress_metrics = None;
-                        s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
-                        break;
-                    }
+                // Guard against empty queue (all spawns failed before we got here).
+                if files_total == 0 {
+                    let mut s = state.write();
+                    s.is_processing = false;
+                    s.active_task_ids.clear();
+                }
 
-                    match tokio::time::timeout(
-                        tokio::time::Duration::from_millis(50),
-                        receiver.recv_async(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(update)) => match update {
+                loop {
+                    // select! suspends the task — either a worker event wakes it or
+                    // a 200 ms timer fires for the cancel check.  This avoids the
+                    // tight yield_now() spin that starved the renderer.
+                    tokio::select! {
+                        // A worker event arrived.
+                        result = receiver.recv_async() => {
+                            let update = match result {
+                                Ok(u) => u,
+                                Err(_) => break, // all senders dropped — done
+                            };
+                            match update {
                             WorkerProgressUpdate::Status {
                                 task_id: _,
                                 status,
@@ -2488,9 +2485,26 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     }
                                 }
                             }
-                        },
-                        _ => tokio::task::yield_now().await,
-                    }
+                        } // end match update
+                        } // end recv_async arm
+
+                        // Periodic cancel check — fires every 200ms when no events arrive.
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => {
+                            if state.read().should_cancel {
+                                for handle in worker_handles.iter_mut() {
+                                    handle.kill();
+                                }
+                                let mut s = state.write();
+                                s.is_processing = false;
+                                s.should_cancel = false;
+                                s.active_task_ids.clear();
+                                s.active_eta = None;
+                                s.progress_metrics = None;
+                                s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
+                                break;
+                            }
+                        }
+                    } // end select!
 
                     if files_completed >= files_total {
                         break;
