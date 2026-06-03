@@ -50,13 +50,16 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 vergen = { version = "9.0.6", default-features = false, features = ["build"] }
 
 [features]
-default = []
+# `symboldict` gates the symbol-dictionary path: connected-component analysis
+# (jbig2cc.rs) -> symbol extraction -> symbol dictionary + text regions. It is on
+# by default because it is the encoder's primary mode; disable it (or build with
+# --no-default-features) to get the generic-region-only encoder.
+default = ["symboldict"]
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
 trace_encoder = ["dep:tracing", "dep:tracing-subscriber"]
 trace_arith = []
 line_verify = []
-cc-analysis = []
-symboldict = ["cc-analysis"]
+symboldict = []
 refine = []
 halftone_bin = ["dep:image"]
 parallel = ["dep:rayon"]
