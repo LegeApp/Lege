@@ -232,7 +232,13 @@ pub fn lege_status_panel(
                 .child(top_right),
         )
         .child(
+            // Notification popups must paint above the status content (e.g. the PDF
+            // title), which is nested more deeply and would otherwise get a higher
+            // absolute layer. A moderate relative boost lifts the whole popup subtree
+            // above the status content while staying well below modal Overlay layers,
+            // so real dialogs still render on top of these notifications.
             rect()
+                .layer(50i16)
                 .position(Position::new_absolute().left(8.).bottom(8.))
                 .child(bottom_left),
         )
