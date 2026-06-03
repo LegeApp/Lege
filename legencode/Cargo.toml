@@ -42,7 +42,7 @@ log = { workspace = true }                 # For logging
 # Local path dependencies - these will pull in their own dependencies
 toojpeg = { path = "src/TooJpeg-rust" }  # Local JPEG encoder
 jp2lam = { git = "https://github.com/LegeApp/jp2lam.git", optional = true }  # Pure-Rust JPEG 2000 encoder
-jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features = ["cc-analysis", "symboldict"] }   # Local JBIG2 encoder
+jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features = ["symboldict"] }   # Local JBIG2 encoder (symbol dictionary mode)
 
 # Configuration management
 config = { workspace = true }
@@ -50,7 +50,6 @@ config = { workspace = true }
 [features]
 default = ["jp2-lam"]
 debug-logging = []  # No longer requires chrono
-cc-analysis = []  # Enable new connected component analysis for JBIG2 (cjb2-based)
 jp2-lam = ["dep:jp2lam"]  # Pure-Rust JPEG 2000 via jp2lam
 
 [dev-dependencies]

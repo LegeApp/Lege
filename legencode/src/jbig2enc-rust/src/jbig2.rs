@@ -116,7 +116,7 @@ impl From<ndarray::ShapeError> for Jbig2Error {
 }
 
 pub use crate::jbig2arith::Jbig2ArithCoder;
-#[cfg(feature = "cc-analysis")]
+#[cfg(feature = "symboldict")]
 pub use crate::jbig2cc::{BBox, CC, CCImage, Run, analyze_page, extract_symbols_for_jbig2};
 pub use crate::jbig2enc::{PdfSplitOutput, encode_document};
 pub use crate::jbig2structs::Jbig2Config;
