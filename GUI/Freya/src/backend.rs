@@ -247,9 +247,7 @@ pub async fn start_async_processing(
             options,
             events_tx.clone(),
             None,
-        )
-        .await
-        {
+        ) {
             Ok(handle) => {
                 tracker_infos.push(TrackerInfo {
                     id: task_id,
