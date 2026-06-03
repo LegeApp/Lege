@@ -2,7 +2,7 @@
 //
 // Two logical sections:
 //   §1  Resize context: coordinate mapping between inference tensor space and page space,
-//       model-specific resize configs (YOLO letterbox, PaddleX direct), image building.
+//       YOLO letterbox resize config and image building.
 //   §2  Detection & region policies: pluggable strategies consumed by the processing pipelines.
 
 use std::sync::Arc;
@@ -49,18 +49,6 @@ impl Default for YoloResizeConfig {
     }
 }
 
-/// PaddleX model resize configuration — direct stretch.
-#[derive(Debug, Clone)]
-pub struct PaddleXResizeConfig {
-    pub target: u32,
-}
-
-impl Default for PaddleXResizeConfig {
-    fn default() -> Self {
-        Self { target: 640 }
-    }
-}
-
 // ── Unified spec ─────────────────────────────────────────────────────────────
 
 /// Unified inference-resize specification carried through the pipeline.
@@ -74,7 +62,7 @@ pub struct InferenceResizeSpec {
 
 impl Default for InferenceResizeSpec {
     fn default() -> Self {
-        PaddleXResizeConfig::default().into()
+        YoloResizeConfig::default().into()
     }
 }
 
@@ -84,16 +72,6 @@ impl From<YoloResizeConfig> for InferenceResizeSpec {
             target: c.target,
             policy: ResizePolicy::Letterbox,
             border_value: c.border_value,
-        }
-    }
-}
-
-impl From<PaddleXResizeConfig> for InferenceResizeSpec {
-    fn from(c: PaddleXResizeConfig) -> Self {
-        Self {
-            target: c.target,
-            policy: ResizePolicy::Direct,
-            border_value: 0,
         }
     }
 }
@@ -536,8 +514,8 @@ impl RegionPolicy for MarginStandardizeAndCenter {
     }
 }
 
-/// PaddleX-backed detection provider using existing InferenceHandle.
-pub struct PaddleDetectionProvider {
+/// YOLO-backed detection provider using existing InferenceHandle.
+pub struct YoloDetectionProvider {
     pub config: Arc<PipelineConfig>,
     pub inference_callback: Option<Arc<dyn Fn(usize, usize) + Send + Sync + 'static>>,
     pub total_pages: usize,
@@ -546,7 +524,7 @@ pub struct PaddleDetectionProvider {
 }
 
 #[async_trait::async_trait]
-impl DetectionProvider for PaddleDetectionProvider {
+impl DetectionProvider for YoloDetectionProvider {
     async fn run_detection(&self, page: RenderedPageData) -> InferenceResult {
         let dets = match self
             .inference_handle

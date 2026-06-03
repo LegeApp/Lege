@@ -2,97 +2,141 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What Lege Does
+## What this project is
 
-Lege is a document processing application that transforms scanned PDFs and image folders into reader-optimized output for e-ink devices. It runs a multi-stage pipeline: render PDF pages via PDFium → optional ONNX layout detection → region-aware binarization/encoding → assemble output PDF or DjVu. Both a CLI and a Freya-based desktop GUI are provided.
+Lege is a fully-automatic PDF processor for E-Ink ebook readers. It renders PDF pages, runs YOLO layout detection to classify regions (text, image, table, noise), then re-encodes each page with region-aware compression (JBIG2 for text, JPEG2000/JPEG for images) and writes a new PDF or DJVU file. There is both a CLI (`lege`) and a GUI (`lege-gui`) binary.
 
-## Workspace Structure
+## Workspace layout
 
-| Crate | Path | Role |
+| Crate | Path | Purpose |
 |---|---|---|
-| `lege` | `src/` | Core pipeline engine + CLI entry point |
-| `lege-gui` | `GUI/Freya/` | Desktop GUI (Freya/Skia) |
-| `legencode` | `Legencode/` | Encoding and binarization (JBIG2, CCITT4, JPEG, JP2) |
-| `djvu_encoder` | `DJVULibRust/` | Native Rust DjVu encoder (JB2 + IW44 codecs) |
+| `lege` | `.` (root) | CLI binary + core processing library |
+| `lege-gpu` | `lege-gpu/` | wgpu GPU compute: binarization, resize, custom ONNX runtime |
+| `Legencode` | `legencode/` | Pure-Rust image encoders: JPEG, JPEG2000, JBIG2, CCITT4 |
+| `jbig2enc-rust` | `legencode/src/jbig2enc-rust/` | JBIG2 encoder sub-crate |
+| `TooJpeg-rust` | `legencode/src/TooJpeg-rust/` | JPEG encoder sub-crate |
+| `lege-gui` | `GUI/Freya/` | Freya/Skia GUI frontend |
+| `djvu_encoder` | `djvulibrust/` | Pure-Rust DJVU encoder |
 
-Local forks in the workspace: `ort/` (ONNX Runtime), `windows-rs-71/` (Windows API bindings).
+The workspace `default-members` are `.` and `GUI/Freya` — building the workspace builds both the CLI and the GUI.
 
-## Commands
+## Build commands
 
-```bash
-# Build
-cargo build                          # debug build
-cargo build --release                # optimized release
-cargo build --features debug-logging # enable perf/debug macros
-cargo build --profile profiling --features debug-logging  # flamegraph profiling
+```sh
+# Standard release build (CLI + GUI)
+cargo build --release
 
-# GUI only
-cargo build -p lege-gui --release
+# Development build (incremental, 256 codegen units)
+cargo build
 
-# Test
-cargo test
+# Debug-logging build (perf tracing, no LTO) — use alias from .cargo/config.toml
+cargo build-debug-logging          # alias for: cargo build --profile debug-fast --features debug-logging
+cargo run-debug-logging -- <args>  # alias for: cargo run --profile debug-fast --features debug-logging -- <args>
 
-# Lint / format
-cargo clippy
-cargo fmt
+# Run CLI in dev mode
+cargo run -- <pdf-file>
+
+# Linux .deb package
+cargo deb
+
+# Single crate build
+cargo build -p lege-gpu
 ```
 
-## Pipeline Architecture
+Copy `.cargo/config.example.toml` to `.cargo/config.toml` and fill in local patch paths when working on `freya` or `jp2lam` checkouts.
 
-**PDF output path** (`src/pipeline/pdf_tokio_pipeline.rs`):
-1. **Render** — PDFium renders pages to high-res RGB + 640×640 inference image
-2. **Inference** — ONNX layout model detects text/image regions (optional, layout detection flag)
-3. **Process** — Region-aware: text regions → adaptive binarization → JBIG2/CCITT4; image regions → JPEG/IW44
-4. **Accumulate + finalize** — In-order page assembly into output PDF
+## Running tests
 
-**DjVu output path** uses a separate `src/pipeline/djvu_pipeline.rs` that submits pages out-of-order to a DjVu writer actor producing JB2 + optional IW44 layers.
+```sh
+# All workspace tests
+cargo test
 
-`PipelineConfig` (`src/pipeline/config.rs`) is the central runtime control struct passed through all stages.
+# Tests for a specific crate
+cargo test -p djvu_encoder
+cargo test -p Legencode
 
-## Key Architectural Decisions
+# Single test by name
+cargo test -p djvu_encoder jb2_pipeline
 
-- **Two separate pipelines**: PDF and DjVu are independent despite similar stages — DjVu has format-specific ordering and layer constraints.
-- **Inference image is square (640×640)**: Layout model requires fixed-size input; detections are mapped back to original page coordinates.
-- **Region processing requires layout mode**: In no-layout (whole-page) mode, dithering and per-region encoding are disabled.
-- **Adaptive concurrency**: `AdaptiveConcurrency` in `src/pipeline/runtime_limits.rs` adjusts worker count based on free RAM; semaphores gate encoding to prevent memory exhaustion.
-- **`libc::_exit()` on CLI exit**: Bypasses atexit handlers that can segfault during WebGPU/Vulkan teardown on Linux.
-- **Asset discovery order**: exe directory → parent dirs + unix share paths → `LEGE_DATA_DIR`/`LEGE_ASSET_DIR` env vars → system paths (`/usr/lib/lege`, etc.) → cwd. Required assets: `*.onnx` models, `libpdfium.*`, `libonnxruntime.*`, `eng.traineddata` (Linux OCR).
+# Tests with debug-logging output visible
+cargo test --features debug-logging -- --nocapture
+```
 
-## Platform Differences
+## Features
 
-| Feature | Linux | Windows | macOS |
-|---|---|---|---|
-| GPU inference | WebGPU via ONNX Runtime (`engine_yolo_linux.rs`) | DirectML | CoreML in staged macOS engine (`macos-files/macos-engine.rs`) |
-| Layout model | YOLO (`engine_yolo_linux.rs`) | PaddleX (`engine.rs`) | PaddleX in staged macOS engine |
-| OCR | In-process libtesseract via `tesseract` crate | WinRT OCR | In-process libtesseract in staged macOS code |
-| Resize shaders | WGSL/WebGPU (`src/resize/wgpu.rs`, `src/resize/wgpu/shaders/`) | HLSL/DX12 compiled at build time (dxc.exe) | WGSL/WebGPU path exists in shared resize module |
+| Feature | Effect |
+|---|---|
+| `debug-logging` | Enables `perf_log!`, `info_log!`, `warn_log!` macros; activates per-region timing |
+| `jp2-lam` (default) | Enables JPEG2000 encoding via the `jp2lam` library |
+| `static` | Statically links pdfium-render |
+| `profiling` | Inherits `debug-logging`; use with `--profile profiling` for flamegraph-compatible builds |
+| `debug-layers` | Propagated to `lege-gpu` for wgpu validation layer diagnostics |
 
-Notes:
-- The active resize module compiles the WGPU backend on Linux/macOS and attempts it before `fast_image_resize` CPU fallback. The WGSL shaders under `src/resize/wgpu/shaders/` are active code, not unused assets.
-- Linux OCR recognition uses the `tesseract` Rust crate and libtesseract in-process. The current availability check still shells out to `tesseract --version`; do not confuse that probe with the OCR execution path.
-- macOS is currently staged outside the main workspace under `macos-files/`; that staged engine attempts CoreML first and falls back to CPU.
+## Architecture: PDF processing pipeline
 
-## Feature Flags
+The main processing flow lives in `src/pipeline/`. The two concrete pipeline variants are:
 
-- `jp2-lam` (default) — JPEG2000 support via pure-Rust jp2lam
-- `debug-logging` — enables `perf_log!`, `info_println!`, `warning` macros
-- `profiling` — release + debug symbols profile (defined in Cargo.toml)
+- **`pdf_tokio_pipeline.rs`** — PDF → PDF pipeline (Tokio async, parallel stages)
+- **`djvu_pipeline.rs`** — PDF → DJVU pipeline
 
-## Encoding Dispatch (Legencode)
+Both pipelines share the same stage structure:
 
-`Legencode/src/streamline.rs` is the unified encoder entry point. It detects image type (bilevel/grayscale/RGB) and routes to: JBIG2 (`jbig2enc-rust`), CCITT Group 4 (`fax` crate), JPEG (`TooJpeg-rust`), or JPEG2000 (`jp2lam`). Returns `EncodingResult::Standard` or `EncodingResult::JbigWithGlobals`.
+```
+PdfiumPageSource (render pages at high-res + 1024×1024 inference size)
+  → inference_stage_parallel (YOLO layout detection via InferenceActor)
+  → page processing (classify_page, region masking, binarization, encoding)
+  → spawn_pdf_writer_actor (assembles output PDF/DJVU with hOCR text layer)
+```
 
-## Debugging Tools
+Key files per concern:
 
-- `LEGE_BBOX_TRACE=1` — stderr output for layout bounding boxes and region encoding decisions
-- `--pdf-to-png` CLI flag — export rendered pages to PNG for inspection
-- `--png-folder <dir>` — process an image folder as document pages (bypasses PDF rendering)
-- `--crop-areas` — export detected regions as images (layout detection QA)
+| Concern | File |
+|---|---|
+| Pipeline orchestration | `src/pipeline/pdf_tokio_pipeline.rs`, `djvu_pipeline.rs` |
+| Config / shared types | `src/pipeline/config.rs` |
+| YOLO inference actor (batching) | `src/pipeline/inference.rs` |
+| Page classification & blank detection | `src/pipeline/page_analysis.rs` |
+| Region/resize policies | `src/pipeline/policies.rs` |
+| Margin analysis | `src/margin.rs` |
+| Page rendering (pdfium) | `src/pagerender.rs` |
+| Content categories | `src/types.rs` — `ContentCategory` enum drives all downstream decisions |
 
-## GUI ↔ Backend Bridge
+## Layout detection
 
-`GUI/Freya/src/backend.rs` contains `gui_options_to_pipeline_config()` which converts `ProcessingOptions` (GUI state, `GUI/Freya/src/models.rs`) into `PipelineConfig`. When adding new pipeline options, both sides need updating.
+`engine.rs` is a thin `include!("engine_yolo_linux.rs")` redirect; the real code is in `src/engine_yolo_linux.rs`. It wraps `lege_gpu::vision::LayoutDetector` which runs a custom ONNX-graph inference on wgpu (DX12 on Windows, Vulkan on Linux, Metal on macOS).
 
-## CLI Text
+`ContentCategory` (in `src/types.rs`) is the single source of truth for what a detection means downstream — never use raw YOLO class IDs outside of `types.rs`.
 
-CLI-facing strings live in `src/cli_text.json` (loaded via `src/text_loader.rs`). GUI strings are in `GUI/Freya/src/gui_text.rs`.
+## GPU backend (`lege-gpu`)
+
+- **`vision/`** — Custom ONNX runtime: loads `.onnx` protobuf, folds constants, lowers ops to wgpu compute shaders. No `ort`/`tract` dependency.
+- **`binarization/`** — wgpu Sauvola binarization kernel.
+- **`resize/`** — wgpu image resize (letterbox + direct).
+
+WGSL shaders are either embedded at compile time (`include_str!`) or, with the `no-include-shaders` feature, loaded at runtime.
+
+## Encoding (`legencode`)
+
+`legencode/src/streamline.rs` — the `Streamline::encode` method is the single dispatch point for all encoders. Choose encoder via `EncodingSettings` variants: `Jpeg`, `Jp2`, `Jbig2`, `Ccitt4`.
+
+JBIG2 has two modes (`Jbig2Mode`): `Symbol` (symbol-substitution, best for clean text) and `Generic` (bitplane, required when `ContentCategory::Abandon` is present on a page).
+
+## Runtime assets
+
+ONNX models are found at runtime via `runtime_asset_path` / `runtime_asset_path_if_exists` (in `src/pipeline/config.rs` and `legencode/src/lib.rs`). Search order: exe directory → `models/` subdirectory → `LEGE_DATA_DIR` / `LEGE_ASSET_DIR` env vars → `/usr/share/lege/models` (Linux). Models required: `yolo-layout.onnx`, `paddle-rotate.onnx`, `paddle-deskew.onnx`, `sauvola.onnx`.
+
+## Platform notes
+
+- **Windows**: Uses WinRT OCR (`src/ocr/winocr.rs`), Direct3D12 wgpu backend, Windows API for system dirs.
+- **Linux/macOS**: Uses Tesseract OCR, Vulkan/Metal wgpu backend. `libpdfium.so` must be on `LD_LIBRARY_PATH` or next to the binary.
+- `src/windows_dirs.rs` / `src/app_dirs.rs` — platform-specific config/data directory resolution.
+
+## Freya fork
+
+The workspace patches `https://github.com/LegeApp/freya.git` to a local path (`../freya-main/`). If that checkout is absent the GUI won't build. The `rfd` (file dialog) crate is also patched to a local clone (`../../../clones/rfd`).
+
+## Debug tracing
+
+- `LEGE_BBOX_TRACE=1` — prints bbox/region/placement lines to stderr.
+- `LEGE_RAYON_THREADS=N` — override Rayon thread count (default: CPU count − 1).
+- `perf_log!(start, "label")` — zero-cost timing macro; only active with `debug-logging` feature.

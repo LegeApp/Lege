@@ -16,34 +16,12 @@ mod windows_impl {
         Ok(data_dir)
     }
 
-    pub fn get_webview_data_dir() -> Result<PathBuf> {
-        Ok(get_user_data_dir()?.join("WebView2"))
-    }
-
-    pub fn get_cache_dir() -> Result<PathBuf> {
-        let cache_dir = env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .context("Could not find LOCALAPPDATA environment variable")?
-            .join("Lege")
-            .join("Cache");
-
-        Ok(cache_dir)
-    }
-
     pub fn ensure_directories() -> Result<()> {
-        let dirs = [
-            get_user_data_dir()?,
-            get_webview_data_dir()?,
-            get_cache_dir()?,
-        ];
-
-        for dir in &dirs {
-            if !dir.exists() {
-                std::fs::create_dir_all(dir)
-                    .with_context(|| format!("Failed to create directory: {}", dir.display()))?;
-            }
+        let dir = get_user_data_dir()?;
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("Failed to create directory: {}", dir.display()))?;
         }
-
         Ok(())
     }
 
@@ -74,9 +52,4 @@ mod tests {
         assert!(dir.to_string_lossy().contains("Lege"));
     }
 
-    #[test]
-    fn test_webview_data_dir() {
-        let dir = get_webview_data_dir().unwrap();
-        assert!(dir.to_string_lossy().ends_with("WebView2"));
-    }
 }

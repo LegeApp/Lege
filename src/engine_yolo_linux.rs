@@ -26,14 +26,14 @@ impl Detection {
 }
 
 #[derive(Debug, Clone)]
-pub struct PaddleXConfig {
+pub struct YoloConfig {
     pub confidence_threshold: f32,
     pub nms_threshold: f32,
     pub iou_threshold: f32,
     pub batch_size: usize,
 }
 
-impl PaddleXConfig {
+impl YoloConfig {
     pub fn new(
         confidence_threshold: f32,
         nms_threshold: f32,
@@ -49,7 +49,7 @@ impl PaddleXConfig {
     }
 }
 
-impl Default for PaddleXConfig {
+impl Default for YoloConfig {
     fn default() -> Self {
         Self {
             confidence_threshold: 0.2,
@@ -60,18 +60,17 @@ impl Default for PaddleXConfig {
     }
 }
 
-pub struct PaddleXEngine {
+pub struct YoloEngine {
     detector: LayoutDetector,
-    config: PaddleXConfig,
+    config: YoloConfig,
     provider_name: &'static str,
 }
 
 // SAFETY: The production pipeline owns this through a serialized inference actor.
-// The legacy public type was Sync, and callers rely on that bound for globals.
-unsafe impl Sync for PaddleXEngine {}
+unsafe impl Sync for YoloEngine {}
 
-impl PaddleXEngine {
-    pub fn new(model_path: &str, config: PaddleXConfig) -> Result<Self> {
+impl YoloEngine {
+    pub fn new(model_path: &str, config: YoloConfig) -> Result<Self> {
         let detector = LayoutDetector::new(LayoutConfig {
             model_path: model_path.into(),
             confidence_threshold: config.confidence_threshold,
@@ -199,14 +198,6 @@ fn normalize_bbox(mut bbox: [f32; 4], width: u32, height: u32) -> [f32; 4] {
     ]
 }
 
-pub fn get_paddlex_class_name(class_id: i32) -> String {
-    yolo_class_name(class_id).to_string()
-}
-
-pub fn paddlex_class_to_category(class_id: i32) -> crate::types::ContentCategory {
-    yolo_class_to_category(class_id)
-}
-
 fn yolo_class_to_category(class_id: i32) -> crate::types::ContentCategory {
     use crate::types::ContentCategory;
     match class_id {
@@ -240,11 +231,11 @@ fn yolo_class_name(class_id: i32) -> &'static str {
     }
 }
 
-pub fn detect_layout_paddlex_batch(
+pub fn detect_layout_yolo_batch(
     image_paths: &[String],
     model_path: &str,
 ) -> Result<Vec<Vec<Detection>>> {
-    let mut engine = PaddleXEngine::new(model_path, PaddleXConfig::default())?;
+    let mut engine = YoloEngine::new(model_path, YoloConfig::default())?;
     image_paths
         .iter()
         .map(|path| {

@@ -45,7 +45,6 @@ impl Default for BorderMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseCase {
-    PaddleX,
     OCR,
     MarginCalculation,
 }
@@ -53,17 +52,6 @@ pub enum UseCase {
 impl UseCase {
     pub fn default_parameters(self, src_width: u32, src_height: u32) -> ResizeParameters {
         match self {
-            Self::PaddleX => ResizeParameters {
-                src_width,
-                src_height,
-                dst_width: 640,
-                dst_height: 640,
-                filter: FilterType::Bilinear,
-                border_mode: BorderMode::Clamp,
-                border_value: 0.0,
-                channel_count: 3,
-                no_srgb: false,
-            },
             Self::OCR => {
                 let aspect_ratio = src_height as f32 / src_width as f32;
                 let dst_width = 1200;
