@@ -227,9 +227,6 @@ pub async fn start_async_processing(
 
     let (events_tx, events_rx) = flume::unbounded::<WorkerProgressUpdate>();
 
-    // LEGE_VISIBLE_CLI=1 → spawn a visible CLI window for debugging.
-    let visible = std::env::var("LEGE_VISIBLE_CLI").is_ok();
-
     let mut tracker_infos = Vec::new();
     let mut worker_handles = Vec::new();
     let mut next_task_id: u64 = 0;
@@ -248,7 +245,6 @@ pub async fn start_async_processing(
             options,
             events_tx.clone(),
             None,
-            visible,
         ) {
             Ok(handle) => {
                 tracker_infos.push(TrackerInfo {

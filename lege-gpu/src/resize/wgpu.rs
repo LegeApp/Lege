@@ -303,7 +303,9 @@ fn compact_from_rgba(gpu_out: &[u8], channel_count: u32, dst_size: usize) -> Vec
 
 impl WgpuContext {
     async fn new_async(_verbose: bool) -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        // Constrain to the production backend policy (DX12 on Windows) so the
+        // HighPerformance adapter request cannot silently land on Vulkan.
+        let instance = crate::wgpu_setup::create_instance();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
