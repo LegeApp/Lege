@@ -16,7 +16,7 @@ german = ["lege/german"]
 # Keep this feature set aligned with the published Windows Skia binary cache.
 # Slimmer sets such as only `skia-engine` request a non-existent Skia archive
 # and fall back to a local LLVM/clang Skia build.
-freya = { git = "https://github.com/LegeApp/freya.git", branch = "main", default-features = false, features = ["skia-engine", "vulkan", "webp"] }
+freya = { path = "../../../freya-main/crates/freya", default-features = false, features = ["cpu-renderer"] }
 rfd = { path = "../../../clones/rfd" }
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "fs", "time", "sync"] }
 anyhow = "1.0"
