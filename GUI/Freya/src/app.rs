@@ -2321,7 +2321,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 loop {
                     if state.read().should_cancel {
                         for handle in worker_handles.iter_mut() {
-                            let _ = handle.child.kill();
+                            handle.kill();
                         }
                         let mut s = state.write();
                         s.is_processing = false;

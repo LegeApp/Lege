@@ -250,15 +250,19 @@ pub fn find_profile(name: &str) -> Option<TargetDeviceProfile> {
 
 // ── CLI arg generation ────────────────────────────────────────────────────────
 
-/// Map GUI ProcessingOptions to CLI arguments for `lege --gui-worker`.
+/// Map GUI ProcessingOptions to CLI arguments.
+/// Set `gui_worker = true` for JSON-event mode; `false` for the normal human CLI.
 pub fn gui_options_to_cli_args(
     input_path: &PathBuf,
     output_path: &PathBuf,
     options: &ProcessingOptions,
+    gui_worker: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
 
-    args.push("--gui-worker".into());
+    if gui_worker {
+        args.push("--gui-worker".into());
+    }
     args.push(input_path.as_os_str().into());
     args.push("--output".into());
     // Pass the full output file path; the CLI passes through paths with extensions.
@@ -371,14 +375,34 @@ pub fn gui_options_to_cli_args(
 
 // ── Worker handle and subprocess spawning ────────────────────────────────────
 
-/// A running `lege --gui-worker` child process.
-/// Uses `std::process::Child` so I/O threads are fully independent of the
-/// async executor — preventing any interference with freya's render loop.
+/// A running lege child process (either `--gui-worker` or visible-CLI mode).
 pub struct WorkerHandle {
-    pub child: std::process::Child,
+    /// Child handle — `None` in visible-CLI mode (moved to the wait thread).
+    pub child: Option<std::process::Child>,
+    /// PID used for kill when `child` is None.
+    pub pid: u32,
     pub task_id: u64,
     pub input_path: PathBuf,
     pub output_path: PathBuf,
+}
+
+impl WorkerHandle {
+    pub fn kill(&mut self) {
+        if let Some(ref mut c) = self.child {
+            let _ = c.kill();
+        } else {
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &self.pid.to_string()])
+                    .status();
+            }
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(self.pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+    }
 }
 
 fn resolve_cli_path() -> Result<PathBuf> {
@@ -395,11 +419,15 @@ fn resolve_cli_path() -> Result<PathBuf> {
     Ok(PathBuf::from(if cfg!(windows) { "lege.exe" } else { "lege" }))
 }
 
-/// Spawn a hidden `lege --gui-worker` process.
+/// Spawn a lege worker process.
 ///
-/// stdout and stderr are consumed on dedicated OS threads — completely
-/// independent of tokio and freya's async executor.  This prevents any I/O
-/// blocking from interfering with GUI rendering.
+/// When `visible = false` (normal mode): spawns hidden, uses `--gui-worker`,
+/// reads JSON events from stdout on a dedicated OS thread.
+///
+/// When `visible = true` (debug mode, `LEGE_VISIBLE_CLI=1`): spawns a visible
+/// console window running the standard human CLI — no `--gui-worker`, no piped
+/// I/O.  A background thread waits for exit and synthesises a Completed/Error
+/// event so the GUI cleans up properly.
 pub fn spawn_lege_worker(
     gui_task_id: u64,
     input_path: PathBuf,
@@ -407,26 +435,76 @@ pub fn spawn_lege_worker(
     options: &ProcessingOptions,
     events_tx: flume::Sender<WorkerProgressUpdate>,
     log_tx: Option<flume::Sender<String>>,
+    visible: bool,
 ) -> Result<WorkerHandle> {
     let cli_path = resolve_cli_path()?;
-    let cli_args = gui_options_to_cli_args(&input_path, &output_path, options);
+    let cli_args = gui_options_to_cli_args(&input_path, &output_path, options, !visible);
 
     let mut cmd = std::process::Command::new(&cli_path);
     cmd.args(&cli_args);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+    if visible {
+        // Inherit parent stdio so the CLI renders in its own console window.
+        // On Windows, not setting CREATE_NO_WINDOW lets Windows allocate a new
+        // console if none exists (which is the case when launched from the GUI).
+        cmd.stdin(std::process::Stdio::inherit());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+    } else {
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
     }
 
     let mut child = cmd.spawn().map_err(|e| {
         anyhow::anyhow!("Failed to launch lege worker ({:?}): {}", cli_path, e)
     })?;
+
+    let pid = child.id();
+
+    if visible {
+        // Move the child into a wait thread; send a synthetic event on exit.
+        std::thread::spawn(move || {
+            let status = child.wait();
+            let success = status.as_ref().map(|s| s.success()).unwrap_or(false);
+            if success {
+                let _ = events_tx.send(WorkerProgressUpdate::Completed {
+                    task_id: gui_task_id,
+                    message: "Processing completed".into(),
+                    metrics: None,
+                });
+            } else {
+                let code = status
+                    .as_ref()
+                    .ok()
+                    .and_then(|s| s.code())
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".into());
+                let _ = events_tx.send(WorkerProgressUpdate::Error {
+                    task_id: gui_task_id,
+                    error: format!("lege exited with code {code}"),
+                    metrics: None,
+                });
+            }
+        });
+
+        return Ok(WorkerHandle {
+            child: None,
+            pid,
+            task_id: gui_task_id,
+            input_path,
+            output_path,
+        });
+    }
+
+    // ── Hidden / JSON-event mode ──────────────────────────────────────────────
 
     // Dedicated thread: read stdout, parse JSON, forward events.
     let stdout = child.stdout.take().expect("stdout piped");
@@ -459,7 +537,13 @@ pub fn spawn_lege_worker(
         }
     });
 
-    Ok(WorkerHandle { child, task_id: gui_task_id, input_path, output_path })
+    Ok(WorkerHandle {
+        child: Some(child),
+        pid,
+        task_id: gui_task_id,
+        input_path,
+        output_path,
+    })
 }
 
 /// Probe a file using `lege --probe-json` and return the parsed JSON value.
