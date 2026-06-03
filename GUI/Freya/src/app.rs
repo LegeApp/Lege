@@ -2333,6 +2333,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
 
                 let files_total = tracker_infos.len();
                 let mut files_completed = 0usize;
+                let mut files_errored = 0usize;
                 let mut handled: HashSet<u64> = HashSet::new();
 
                 loop {
@@ -2477,6 +2478,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                             } => {
                                 if handled.insert(task_id) {
                                     files_completed += 1;
+                                    files_errored += 1;
                                     if let Some(info) =
                                         tracker_infos.iter().find(|info| info.id == task_id)
                                     {
@@ -2524,23 +2526,28 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     s.active_task_ids.clear();
                     s.active_eta = None;
                     s.progress_metrics = None;
-                    let queue_remaining = s.queue.len();
-                    let line3 = if queue_remaining > 0 {
-                        fmt1(
-                            &GUI_TEXT.interactive.status.files_remaining_in_queue,
-                            queue_remaining,
-                        )
-                    } else {
-                        GUI_TEXT.interactive.status.queue_empty.clone()
-                    };
-                    s.set_status_lines(
-                        GUI_TEXT.interactive.status.complete.clone(),
-                        fmt1(
-                            &GUI_TEXT.interactive.status.files_processed_successfully,
-                            files_total,
-                        ),
-                        line3,
-                    );
+                    // Only overwrite the status with a success summary when every file
+                    // actually succeeded. If any job reported an error, leave the error
+                    // status message in place instead of masking it as "complete".
+                    if files_errored == 0 {
+                        let queue_remaining = s.queue.len();
+                        let line3 = if queue_remaining > 0 {
+                            fmt1(
+                                &GUI_TEXT.interactive.status.files_remaining_in_queue,
+                                queue_remaining,
+                            )
+                        } else {
+                            GUI_TEXT.interactive.status.queue_empty.clone()
+                        };
+                        s.set_status_lines(
+                            GUI_TEXT.interactive.status.complete.clone(),
+                            fmt1(
+                                &GUI_TEXT.interactive.status.files_processed_successfully,
+                                files_total.saturating_sub(files_errored),
+                            ),
+                            line3,
+                        );
+                    }
                 }
             }
             Err(e) => {
