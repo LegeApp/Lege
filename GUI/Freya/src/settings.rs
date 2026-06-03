@@ -2,7 +2,6 @@
 // Keep in sync manually until GUI support code is consolidated.
 
 use anyhow::Result;
-use lege::app_dirs;
 use std::fs;
 use std::path::PathBuf;
 
@@ -11,7 +10,9 @@ use crate::models::ProcessingOptions;
 const SETTINGS_FILE_NAME: &str = "settings.json";
 
 fn settings_directory() -> PathBuf {
-    app_dirs::data_dir()
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Lege")
 }
 
 /// Get the path to the settings file in the user data directory
