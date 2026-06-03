@@ -24,27 +24,17 @@ fn main() {
     // Print a warning to help with debugging
     println!("cargo:warning=Using external version: {}", external_version);
 
-    // Windows: embed icon into .exe ONLY when this is the primary package being built.
-    // This avoids duplicate VERSION resources when other workspace members depend on `lege`.
+    // Windows: embed version metadata into the CLI .exe (no icon — icon lives in lege-gui).
     #[cfg(windows)]
     {
-        // Always embed resources for the lege binary on Windows
-        let icon_path = std::path::Path::new("assets/icon.ico");
-        if icon_path.exists() {
-            let mut res = winres::WindowsResource::new();
-            res.set_icon(icon_path.to_str().unwrap());
-            // Populate version metadata with external version for Windows resources
-            res.set("FileDescription", "Lege - PDF processing CLI");
-            res.set("ProductName", "Lege");
-            res.set("CompanyName", "Lege Apps");
-            // String version fields
-            res.set("FileVersion", &external_version);
-            res.set("ProductVersion", &external_version);
-            if let Err(e) = res.compile() {
-                eprintln!("Warning: resource compile failed: {e}");
-            }
-        } else {
-            eprintln!("Warning: assets/icon.ico not found; skipping icon embedding");
+        let mut res = winres::WindowsResource::new();
+        res.set("FileDescription", "Lege - PDF processor CLI");
+        res.set("ProductName", "Lege");
+        res.set("CompanyName", "Lege Apps");
+        res.set("FileVersion", &external_version);
+        res.set("ProductVersion", &external_version);
+        if let Err(e) = res.compile() {
+            eprintln!("Warning: resource compile failed: {e}");
         }
     }
 

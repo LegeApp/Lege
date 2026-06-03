@@ -5,10 +5,10 @@
 /// are deserialized into local protocol types, then forwarded to a merged
 /// flume channel that the GUI progress loop consumes exactly as before.
 use std::ffi::OsString;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::models::{
     CompressionType, CoverImageType, ImageProcessingType, OutputFormat, ProcessingOptions,
@@ -372,8 +372,10 @@ pub fn gui_options_to_cli_args(
 // ── Worker handle and subprocess spawning ────────────────────────────────────
 
 /// A running `lege --gui-worker` child process.
+/// Uses `std::process::Child` so I/O threads are fully independent of the
+/// async executor — preventing any interference with freya's render loop.
 pub struct WorkerHandle {
-    pub child: tokio::process::Child,
+    pub child: std::process::Child,
     pub task_id: u64,
     pub input_path: PathBuf,
     pub output_path: PathBuf,
@@ -395,11 +397,10 @@ fn resolve_cli_path() -> Result<PathBuf> {
 
 /// Spawn a hidden `lege --gui-worker` process.
 ///
-/// The child's stdout is read line-by-line; each line is deserialized from
-/// JSON into a `WorkerProgressUpdate`, the task_id is rewritten to
-/// `gui_task_id`, and the event is sent to `events_tx`.
-/// Stderr is captured and forwarded to the GUI log via a separate task.
-pub async fn spawn_lege_worker(
+/// stdout and stderr are consumed on dedicated OS threads — completely
+/// independent of tokio and freya's async executor.  This prevents any I/O
+/// blocking from interfering with GUI rendering.
+pub fn spawn_lege_worker(
     gui_task_id: u64,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -410,7 +411,7 @@ pub async fn spawn_lege_worker(
     let cli_path = resolve_cli_path()?;
     let cli_args = gui_options_to_cli_args(&input_path, &output_path, options);
 
-    let mut cmd = tokio::process::Command::new(&cli_path);
+    let mut cmd = std::process::Command::new(&cli_path);
     cmd.args(&cli_args);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
@@ -424,71 +425,68 @@ pub async fn spawn_lege_worker(
     }
 
     let mut child = cmd.spawn().map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to launch lege worker ({:?}): {}",
-            cli_path,
-            e
-        )
+        anyhow::anyhow!("Failed to launch lege worker ({:?}): {}", cli_path, e)
     })?;
 
-    // Spawn stdout reader: deserialize JSON events.
-    let stdout = child.stdout.take().expect("stdout should be piped");
-    let stdout_events_tx = events_tx.clone();
-    tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            match serde_json::from_str::<WorkerProgressUpdate>(&line) {
-                Ok(update) => {
-                    let rewritten = update.with_task_id(gui_task_id);
-                    let _ = stdout_events_tx.send_async(rewritten).await;
-                }
-                Err(e) => {
-                    eprintln!("[worker-process] JSON parse error: {} — line: {}", e, line);
-                }
+    // Dedicated thread: read stdout, parse JSON, forward events.
+    let stdout = child.stdout.take().expect("stdout piped");
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) => match serde_json::from_str::<WorkerProgressUpdate>(&line) {
+                    Ok(update) => {
+                        let _ = events_tx.send(update.with_task_id(gui_task_id));
+                    }
+                    Err(e) => eprintln!("[worker] JSON parse error: {e} — {line}"),
+                },
+                Err(_) => break,
             }
         }
     });
 
-    // Spawn stderr reader: forward to log channel (or just discard).
-    let stderr = child.stderr.take().expect("stderr should be piped");
-    tokio::spawn(async move {
-        let reader = tokio::io::BufReader::new(stderr);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(ref tx) = log_tx {
-                let _ = tx.send_async(line).await;
+    // Dedicated thread: drain stderr (forward to log or discard).
+    let stderr = child.stderr.take().expect("stderr piped");
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            match line {
+                Ok(line) => {
+                    if let Some(ref tx) = log_tx {
+                        let _ = tx.send(line);
+                    }
+                }
+                Err(_) => break,
             }
         }
     });
 
-    Ok(WorkerHandle {
-        child,
-        task_id: gui_task_id,
-        input_path,
-        output_path,
-    })
+    Ok(WorkerHandle { child, task_id: gui_task_id, input_path, output_path })
 }
 
 /// Probe a file using `lege --probe-json` and return the parsed JSON value.
+/// Runs the subprocess on a blocking thread so the async executor is not touched.
 pub async fn probe_file_json(path: &PathBuf) -> Result<serde_json::Value> {
     let cli_path = resolve_cli_path()?;
+    let path = path.clone();
 
-    let mut cmd = tokio::process::Command::new(&cli_path);
-    cmd.arg("--probe-json");
-    cmd.arg(path.as_os_str());
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
+    let output = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(&cli_path);
+        cmd.arg("--probe-json");
+        cmd.arg(&path);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
-    let output = cmd.output().await?;
+        cmd.output()
+    })
+    .await??;
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim())?;
     Ok(json)
