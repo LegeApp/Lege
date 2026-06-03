@@ -167,34 +167,6 @@ pub fn lege_file_action_row(
         .into()
 }
 
-pub fn lege_metric_box(title: impl Into<String>, value: impl Into<String>) -> Element {
-    rect()
-        .background(CARD_BG)
-        .border(
-            Border::new()
-                .fill(BORDER)
-                .width(1.)
-                .alignment(BorderAlignment::Inner),
-        )
-        .corner_radius(6.)
-        .padding((5., 8., 5., 8.))
-        .width(Size::px(92.))
-        .height(Size::fill())
-        .vertical()
-        .main_align(Alignment::Center)
-        .cross_align(Alignment::Center)
-        .spacing(1.)
-        .child(
-            label()
-                .text(value.into())
-                .font_size(18.)
-                .font_weight(700)
-                .color(TEXT),
-        )
-        .child(label().text(title.into()).font_size(10.).color(MUTED))
-        .into()
-}
-
 pub fn lege_status_panel(
     status_content: Element,
     top_left: Element,
