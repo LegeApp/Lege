@@ -12,7 +12,8 @@ use flume::{Receiver, Sender};
 use tokio::sync::{Notify, broadcast};
 
 /// Detailed processing states that can be surfaced to both CLI and GUI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProcessingStatus {
     /// General start-up phase before any page work has begun.
     Initializing,
@@ -508,7 +509,8 @@ fn mini_bar(done: usize, total: usize) -> String {
 }
 
 /// Broadcast events emitted by the processing pipeline to both CLI and GUI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgressUpdate {
     Status {
         task_id: u64,
@@ -528,7 +530,7 @@ pub enum ProgressUpdate {
 }
 
 /// Unified numeric snapshot so GUI and CLI can render without parsing strings.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProgressMetrics {
     pub pages_total: u32,
     pub rendered: u32,
@@ -560,6 +562,7 @@ impl Default for ProgressMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum ProgressMode {
     Unknown,
     NoLayout,

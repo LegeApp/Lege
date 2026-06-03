@@ -13,10 +13,11 @@ use crate::models::{
 };
 use crate::version::display_version;
 use crate::widgets;
-use lege::target_profiles;
+use crate::worker_process::{
+    TARGET_DEVICE_PROFILES, find_profile,
+    WorkerProgressUpdate, WorkerProcessingStatus,
+};
 
-#[cfg(feature = "debug-logging")]
-use lege::dbglog;
 
 use crate::colors::{BORDER, CARD_BG, INFO_BG, MUTED, PANEL_BG, TEXT};
 
@@ -50,10 +51,6 @@ fn retro_theme() -> Theme {
     theme
 }
 
-#[cfg(feature = "debug-logging")]
-fn load_debug_log_file() -> Vec<String> {
-    Legencode::get_debug_log_messages()
-}
 
 fn format_eta_label(seconds: u32) -> String {
     let hours = seconds / 3600;
@@ -113,7 +110,7 @@ pub struct AppState {
     pub status_lines: (String, String, String, String),
     pub status_log: VecDeque<String>,
     pub active_eta: Option<String>,
-    pub progress_metrics: Option<lege::progress::ProgressMetrics>,
+    pub progress_metrics: Option<crate::worker_process::WorkerProgressMetrics>,
     pub active_task_ids: Vec<u64>,
     pub should_cancel: bool,
     pub job_color_index: u32,
@@ -271,7 +268,7 @@ impl AppState {
 fn sync_state_from_options(state: &mut AppState, options: &ProcessingOptions) {
     state.options = options.clone();
     if let Some(device) = options.target_device.clone() {
-        if let Some(profile) = target_profiles::find_profile(&device) {
+        if let Some(profile) = find_profile(&device) {
             state.target_resolution_selection = profile.name.to_string();
             state.target_height_input = profile.height.to_string();
             state.options.target_height = Some(profile.height);
@@ -1118,7 +1115,7 @@ fn PagesDeviceCard(
             .into(),
     );
 
-    for profile in target_profiles::TARGET_DEVICE_PROFILES.iter() {
+    for profile in TARGET_DEVICE_PROFILES.iter() {
         let selected = options.target_device.as_deref() == Some(profile.name);
         let name = profile.name.to_string();
         let item_name = name.clone();
@@ -1459,7 +1456,7 @@ fn progress_stage_card(
 }
 
 fn progress_single_bar(
-    metrics: lege::progress::ProgressMetrics,
+    metrics: crate::worker_process::WorkerProgressMetrics,
     color: (u8, u8, u8),
 ) -> Option<Element> {
     if metrics.pages_total == 0 {
@@ -2086,19 +2083,7 @@ fn add_files(mut state: State<AppState>) {
             let mut valid_paths: Vec<std::path::PathBuf> = Vec::new();
             for file in &files {
                 let path = file.path().to_owned();
-                if backend::is_zip_file(&path) && !backend::zip_has_valid_images(&path) {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    schedule_popup(
-                        state,
-                        PopupKind::Queue,
-                        fmt1(&GUI_TEXT.interactive.popups.zip_no_supported_images, name),
-                        6,
-                    );
-                    continue;
-                }
+                // ZIP validation now happens inside the CLI worker; accept all ZIPs.
                 valid_paths.push(path);
             }
 
@@ -2307,12 +2292,9 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
         );
     }
 
-    let progress_manager = lege::progress::get_progress_manager();
-    let receiver = progress_manager.subscribe();
-
     spawn(async move {
         match backend::start_async_processing(queue, &options).await {
-            Ok(tracker_infos) => {
+            Ok((tracker_infos, mut worker_handles, receiver)) => {
                 {
                     let mut s = state.write();
                     s.active_task_ids = tracker_infos.iter().map(|info| info.id).collect();
@@ -2338,8 +2320,8 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
 
                 loop {
                     if state.read().should_cancel {
-                        for info in tracker_infos.iter() {
-                            let _ = lege::progress::cancel_task(info.id);
+                        for handle in worker_handles.iter_mut() {
+                            let _ = handle.child.kill().await;
                         }
                         let mut s = state.write();
                         s.is_processing = false;
@@ -2358,26 +2340,22 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     .await
                     {
                         Ok(Ok(update)) => match update {
-                            lege::progress::ProgressUpdate::Status {
+                            WorkerProgressUpdate::Status {
                                 task_id: _,
                                 status,
                                 metrics,
                             } => {
                                 state.write().progress_metrics = metrics;
                                 match &status {
-                                    lege::progress::ProcessingStatus::AssemblingOutput => {}
-                                    lege::progress::ProcessingStatus::NoLayoutProgress {
-                                        ..
-                                    }
-                                    | lege::progress::ProcessingStatus::LayoutProgress { .. }
-                                    | lege::progress::ProcessingStatus::MarginProgress { .. } => {
+                                    WorkerProcessingStatus::AssemblingOutput => {}
+                                    WorkerProcessingStatus::NoLayoutProgress { .. }
+                                    | WorkerProcessingStatus::LayoutProgress { .. }
+                                    | WorkerProcessingStatus::MarginProgress { .. } => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().set_status_lines(l1, l2, l3);
                                     }
-                                    lege::progress::ProcessingStatus::PdfAppend { .. }
-                                    | lege::progress::ProcessingStatus::PdfAppendMargin {
-                                        ..
-                                    } => {}
+                                    WorkerProcessingStatus::PdfAppend { .. }
+                                    | WorkerProcessingStatus::PdfAppendMargin { .. } => {}
                                     _ => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().push_status_log(l1);
@@ -2402,14 +2380,13 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     );
                                 }
 
-                                if let lege::progress::ProcessingStatus::FootnotesDetected {
-                                    message,
-                                } = &status
+                                if let WorkerProcessingStatus::FootnotesDetected { message } =
+                                    &status
                                 {
                                     schedule_popup(state, PopupKind::Footnotes, message.clone(), 5);
                                 }
                             }
-                            lege::progress::ProgressUpdate::Completed {
+                            WorkerProgressUpdate::Completed {
                                 task_id,
                                 message: _,
                                 metrics: _,
@@ -2471,7 +2448,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     ));
                                 }
                             }
-                            lege::progress::ProgressUpdate::Error {
+                            WorkerProgressUpdate::Error {
                                 task_id,
                                 error,
                                 metrics: _,

@@ -10,8 +10,9 @@ use lege::{
 };
 
 mod version;
+mod worker_json;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use version::display_version;
 
@@ -96,6 +97,107 @@ fn fast_exit(code: i32) -> ! {
     }
     #[cfg(not(unix))]
     std::process::exit(code);
+}
+
+/// --probe-json: print machine-readable metadata about a file then exit.
+/// stdout is exclusively JSON; errors go to stderr.
+fn probe_json(path: PathBuf) -> Result<()> {
+    if path.is_dir() {
+        let count = count_image_files_in_dir_probe(&path);
+        println!("{}", serde_json::json!({"kind": "image_folder", "pages": count}));
+        return Ok(());
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match ext.as_str() {
+        "pdf" => {
+            let doc = lopdf::Document::load(&path)
+                .map_err(|e| anyhow!("Cannot open PDF '{}': {}", path.display(), e))?;
+            let pages = doc.get_pages().len();
+            println!("{}", serde_json::json!({"kind": "pdf", "pages": pages}));
+        }
+        "zip" => {
+            let file = std::fs::File::open(&path)
+                .map_err(|e| anyhow!("Cannot open ZIP '{}': {}", path.display(), e))?;
+            let mut archive = zip::ZipArchive::new(file)
+                .map_err(|e| anyhow!("Cannot read ZIP '{}': {}", path.display(), e))?;
+            let count = count_images_in_zip_probe(&mut archive, 0);
+            println!("{}", serde_json::json!({"kind": "zip", "pages": count}));
+        }
+        _ => {
+            println!("{}", serde_json::json!({"kind": "unknown", "pages": 0}));
+        }
+    }
+    Ok(())
+}
+
+/// Count supported image files in a directory (non-recursive).
+fn count_image_files_in_dir_probe(dir: &PathBuf) -> usize {
+    const IMG_EXTS: &[&str] = &[
+        "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp", "jp2",
+    ];
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    if !p.is_file() {
+                        return false;
+                    }
+                    p.extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| IMG_EXTS.contains(&x.to_ascii_lowercase().as_str()))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Count supported images inside a ZIP, including nested ZIPs (max depth 4).
+fn count_images_in_zip_probe<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    depth: u32,
+) -> usize {
+    const MAX_DEPTH: u32 = 4;
+    const IMG_EXTS: &[&str] = &[
+        "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp", "jp2",
+    ];
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut nested: Vec<Vec<u8>> = Vec::new();
+    for i in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index_raw(i) else { continue };
+        if entry.is_dir() { continue; }
+        let name = entry.name().to_ascii_lowercase();
+        let ext = std::path::Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if IMG_EXTS.contains(&ext) {
+            count += 1;
+        } else if ext == "zip" && depth < MAX_DEPTH {
+            let mut data = Vec::new();
+            if entry.read_to_end(&mut data).is_ok() {
+                nested.push(data);
+            }
+        }
+    }
+    for data in nested {
+        let cursor = std::io::Cursor::new(data);
+        if let Ok(mut nested_arc) = zip::ZipArchive::new(cursor) {
+            count += count_images_in_zip_probe(&mut nested_arc, depth + 1);
+        }
+    }
+    count
 }
 
 // Binarization parsing moved to CliConfigBuilder in types.rs
@@ -194,6 +296,12 @@ struct CliOptions {
     png_colors: u16,              // --png-colors N
     jp2_debug: Option<u32>,       // --jp2-debug HEIGHT  (render pages → JP2 + size log)
     gray_jp2: bool,               // --gray-jp2  (image regions → grayscale JP2 overlay)
+
+    // --- GUI integration modes ---
+    /// Suppress human output and emit newline-delimited JSON progress events to stdout.
+    gui_worker: bool, // --gui-worker
+    /// Probe a file and print machine-readable metadata as JSON then exit.
+    probe_json: bool, // --probe-json
 }
 
 /// Extract all `--flag` and `--key value` processing options from the arg list,
@@ -493,6 +601,14 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.fast_resize = true;
                 i += 1;
             }
+            "--gui-worker" => {
+                opts.gui_worker = true;
+                i += 1;
+            }
+            "--probe-json" => {
+                opts.probe_json = true;
+                i += 1;
+            }
 
             _ => {
                 remaining.push(args[i].clone());
@@ -601,6 +717,15 @@ fn main() -> Result<()> {
 
     // Extract all --flag / --key value options, leaving only positional args.
     let (args, cli_opts) = extract_cli_options(args)?;
+
+    // Machine-readable probe mode: print JSON metadata and exit.
+    if cli_opts.probe_json {
+        let path_str = args
+            .get(1)
+            .ok_or_else(|| anyhow!("--probe-json requires a path argument"))?;
+        probe_json(PathBuf::from(sanitize_path_arg(path_str)))?;
+        return Ok(());
+    }
 
     // Optional override for resize backend to help diagnose GPU shader regressions.
     if cli_opts.fast_resize {
@@ -1281,76 +1406,87 @@ fn handle_simple_processing(
     // Determine output directory
     let output_dir = determine_output_directory(cli_opts.output_dir, &display_inputs, &config)?;
 
-    // Show batch summary
-    info_println!("\n{}", CLI_TEXT.main.simple_mode_header);
-    info_println!(
-        "{}",
-        fmt1(&CLI_TEXT.main.simple_mode_files_queued, input_jobs.len())
-    );
-    for path in &input_jobs {
+    // Show batch summary (suppressed in --gui-worker mode; all human output goes to stderr)
+    if !cli_opts.gui_worker {
+        info_println!("\n{}", CLI_TEXT.main.simple_mode_header);
+        info_println!(
+            "{}",
+            fmt1(&CLI_TEXT.main.simple_mode_files_queued, input_jobs.len())
+        );
+        for path in &input_jobs {
+            info_println!(
+                "{}",
+                fmt1(
+                    &CLI_TEXT.main.simple_mode_file_item,
+                    path.display_path().display()
+                )
+            );
+        }
+        if let Some(ref range) = page_range {
+            info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_page_range, range));
+        }
+        info_println!(
+            "{}",
+            fmt1(&CLI_TEXT.main.simple_mode_settings, &target_description)
+        );
         info_println!(
             "{}",
             fmt1(
-                &CLI_TEXT.main.simple_mode_file_item,
-                path.display_path().display()
+                &CLI_TEXT.main.simple_mode_output_directory,
+                output_dir.display()
             )
         );
+        info_println!("{}\n", CLI_TEXT.main.simple_mode_footer);
     }
-    if let Some(ref range) = page_range {
-        info_println!("{}", fmt1(&CLI_TEXT.main.simple_mode_page_range, range));
-    }
-    info_println!(
-        "{}",
-        fmt1(&CLI_TEXT.main.simple_mode_settings, &target_description)
-    );
-    info_println!(
-        "{}",
-        fmt1(
-            &CLI_TEXT.main.simple_mode_output_directory,
-            output_dir.display()
-        )
-    );
-    info_println!("{}\n", CLI_TEXT.main.simple_mode_footer);
 
     let total_files = input_jobs.len();
     let mut overall_ok = true;
+    let gui_worker = cli_opts.gui_worker;
 
     for (index, input_job) in input_jobs.drain(..).enumerate() {
         let per_file_config = pipeline_config.clone();
         let file_path = input_job.display_path().to_path_buf();
         let output_path = generate_output_path(&file_path, &output_dir, &per_file_config)?;
 
-        if total_files > 1 {
-            info_println!(
-                "{}",
-                fmt3(
-                    &CLI_TEXT.main.simple_mode_batch_item,
-                    index + 1,
-                    total_files,
-                    file_path.display()
-                )
-            );
-            info_println!(
-                "{}",
-                fmt1(
-                    &CLI_TEXT.main.simple_mode_batch_output,
-                    output_path.display()
-                )
-            );
-        } else {
-            info_println!(
-                "{}",
-                fmt1(&CLI_TEXT.main.simple_mode_input, file_path.display())
-            );
-            info_println!(
-                "{}",
-                fmt1(&CLI_TEXT.main.simple_mode_output, output_path.display())
-            );
+        if !gui_worker {
+            if total_files > 1 {
+                info_println!(
+                    "{}",
+                    fmt3(
+                        &CLI_TEXT.main.simple_mode_batch_item,
+                        index + 1,
+                        total_files,
+                        file_path.display()
+                    )
+                );
+                info_println!(
+                    "{}",
+                    fmt1(
+                        &CLI_TEXT.main.simple_mode_batch_output,
+                        output_path.display()
+                    )
+                );
+            } else {
+                info_println!(
+                    "{}",
+                    fmt1(&CLI_TEXT.main.simple_mode_input, file_path.display())
+                );
+                info_println!(
+                    "{}",
+                    fmt1(&CLI_TEXT.main.simple_mode_output, output_path.display())
+                );
+            }
         }
 
-        match process_input_job(input_job, output_path.clone(), per_file_config) {
+        let result = if gui_worker {
+            process_input_job_json(input_job, output_path.clone(), per_file_config)
+        } else {
+            process_input_job(input_job, output_path.clone(), per_file_config)
+        };
+
+        match result {
             Ok(()) => {
-                if total_files > 1 {
+                if !gui_worker && total_files > 1 {
                     let remaining = total_files - index - 1;
                     info_println!(
                         "{}",
@@ -1946,6 +2082,44 @@ fn process_input_job(
             run_png_mode_with_config(source, Some(output_path), pipeline_config, None)
         }
     }
+}
+
+/// Like process_input_job but emits newline-delimited JSON to stdout instead of human text.
+fn process_input_job_json(
+    input: SimpleInput,
+    output_path: PathBuf,
+    pipeline_config: PipelineConfig,
+) -> Result<()> {
+    use lege::progress;
+
+    let manager = progress::get_progress_manager();
+    let receiver = manager.subscribe();
+
+    match input {
+        SimpleInput::Pdf(path) => {
+            let task_id =
+                progress::spawn_file_processing_task(path, output_path, pipeline_config);
+            worker_json::run_json_worker(&receiver, task_id);
+        }
+        SimpleInput::ImageFolder { source, .. } => {
+            let tracker = manager.create_tracker();
+            let task_id = tracker.task_id();
+            let tracker_for_thread = tracker.clone();
+            std::thread::spawn(move || {
+                match run_png_mode_with_config(
+                    source,
+                    Some(output_path),
+                    pipeline_config,
+                    Some(tracker_for_thread.clone()),
+                ) {
+                    Ok(()) => tracker_for_thread.finish("Image folder processing completed"),
+                    Err(e) => tracker_for_thread.finish_with_error(e),
+                }
+            });
+            worker_json::run_json_worker(&receiver, task_id);
+        }
+    }
+    Ok(())
 }
 
 fn prepare_simple_input(path: &str) -> Result<(SimpleInput, Option<tempfile::TempDir>)> {
@@ -3104,6 +3278,12 @@ fn generate_output_path(
     output_dir: &PathBuf,
     config: &PipelineConfig,
 ) -> Result<PathBuf> {
+    // If the caller supplied a full file path (has extension), use it as-is.
+    // This is the --gui-worker path where the GUI already generated the filename.
+    if output_dir.extension().is_some() {
+        return Ok(output_dir.clone());
+    }
+
     let input_stem = input_path
         .file_stem()
         .ok_or_else(|| anyhow!("Invalid input filename"))?
