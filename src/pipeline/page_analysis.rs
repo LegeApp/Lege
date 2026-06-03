@@ -2,7 +2,7 @@ use image::RgbImage;
 
 use crate::engine::Detection;
 use crate::margin::ContentBounds;
-use crate::pipeline::config::{PipelineConfig, is_yolo_doclayout_model_path};
+use crate::pipeline::config::PipelineConfig;
 use crate::pipeline::helper_functions::rounded_clamped_bbox;
 use crate::types::LabelClassifier;
 
@@ -276,10 +276,6 @@ pub fn maybe_apply_yolo_full_page_detection(
     if !config.enable_layout_detection() || !config.expand_full_bleed_figure_bboxes() {
         return;
     }
-    if !is_yolo_doclayout_model_path(config.model_path()) {
-        return;
-    }
-
     maybe_expand_sole_image_to_full_page(detections, page_w, page_h, classifier);
     apply_full_bleed_image_bbox_expansion(detections, page_w, page_h, classifier, true);
 }

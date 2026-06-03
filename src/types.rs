@@ -9,10 +9,9 @@ use anyhow::anyhow;
 
 /// Broad content category assigned to every layout detection.
 ///
-/// Both YOLO and PaddleX engines map their raw class IDs to one of these
-/// categories.  All downstream decisions (dithering, masking, OCR region
-/// selection, JBIG2 encoding mode) are driven by this enum — never by raw
-/// class IDs.
+/// Broad content category assigned to every YOLO layout detection.
+/// All downstream decisions (dithering, masking, OCR region selection,
+/// JBIG2 encoding mode) are driven by this enum — never by raw class IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentCategory {
     /// Textual content: titles, paragraphs, captions, formulas, references, …
@@ -60,7 +59,7 @@ pub enum RegionType {
 
 use std::collections::HashSet;
 
-/// Centralized label information system that efficiently combines all PaddleX label data
+/// Centralized label information system for YOLO class IDs to names.
 /// Provides O(1) lookups and maintains the complete mapping of class IDs to names
 #[derive(Debug, Clone)]
 pub struct LabelInfo {

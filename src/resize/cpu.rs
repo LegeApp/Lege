@@ -50,7 +50,6 @@ fn bell_filter_type() -> FilterType {
     FilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
-// Removed compute_letterbox function - no longer needed for PaddleX direct resize
 
 pub fn resize_single<T>(src: T, params: &ResizeParams, tw: u32, th: u32) -> Result<RgbImage>
 where
@@ -59,7 +58,6 @@ where
     let _sw = src.width();
     let _sh = src.height();
 
-    // Always do direct resize for PaddleX, ignore aspect ratio and padding
     let rw = tw;
     let rh = th;
 

@@ -15,7 +15,7 @@ use pdfium_render::prelude::Pdfium;
 
 use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
 use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
-use crate::pipeline::policies::{InferenceResizeSpec, PaddleXResizeConfig, YoloResizeConfig};
+use crate::pipeline::policies::{InferenceResizeSpec, YoloResizeConfig};
 use crate::types::CoverFormat;
 use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
@@ -76,7 +76,7 @@ pub struct BatchInferenceResult {
 pub struct RenderedPageData {
     pub index: usize,
     pub high_res_image: Arc<RgbImage>,
-    pub inference_image: Arc<RgbImage>, // Always square (e.g. 640x640)
+    pub inference_image: Arc<RgbImage>, // 1024×1024 letterboxed for YOLO
     pub original_width_pts: f32,        // Original PDF page width in points
     pub original_height_pts: f32,       // Original PDF page height in points
 }
@@ -309,21 +309,9 @@ pub struct PipelineConfig {
 
 impl PipelineConfig {
     pub fn new() -> Result<Self> {
-        #[cfg(target_os = "linux")]
-        let yolo = runtime_asset_path("yolo-layout.onnx");
-        #[cfg(not(target_os = "linux"))]
-        let yolo = PathBuf::new();
-        let optimized = runtime_asset_path("paddle-layout-optimized.onnx");
-        let model_path = if cfg!(target_os = "linux") && yolo.exists() {
-            yolo.to_string_lossy().to_string()
-        } else if optimized.exists() {
-            optimized.to_string_lossy().to_string()
-        } else {
-            runtime_asset_path("paddle-layout.onnx")
-                .to_string_lossy()
-                .to_string()
-        };
-        let use_yolo_model = is_yolo_doclayout_model_path(&model_path);
+        let model_path = runtime_asset_path("yolo-layout.onnx")
+            .to_string_lossy()
+            .to_string();
         let config = Self {
             model_path,
             confidence_threshold: 0.4,
@@ -364,7 +352,7 @@ impl PipelineConfig {
             deskew_unwarp_model: None,
             deskew_config: crate::deskew::DeskewConfig::default(),
             high_res_render_height: 1200,
-            inference_size: if use_yolo_model { 1024 } else { 640 },
+            inference_size: 1024,
             keep_original_images: true,
             expand_full_bleed_figure_bboxes: true,
             djvu_iw44_quality: 75, // Default to good quality
@@ -443,10 +431,8 @@ impl PipelineConfig {
         }
         Self::validate_ocr_language_code(&self.ocr_language)?;
 
-        if !self.model_path.is_empty() && self.model_path != "paddle-layout.onnx" {
-            if !std::path::Path::new(&self.model_path).exists() {
-                return Err(anyhow!("Model file not found: {}", self.model_path));
-            }
+        if !self.model_path.is_empty() && !std::path::Path::new(&self.model_path).exists() {
+            return Err(anyhow!("Model file not found: {}", self.model_path));
         }
 
         if self.enable_deskew {
@@ -605,18 +591,11 @@ impl PipelineConfig {
         self.inference_size
     }
     pub fn inference_resize_spec(&self) -> InferenceResizeSpec {
-        if is_yolo_doclayout_model_path(&self.model_path) {
-            YoloResizeConfig {
-                target: self.inference_size,
-                ..Default::default()
-            }
-            .into()
-        } else {
-            PaddleXResizeConfig {
-                target: self.inference_size,
-            }
-            .into()
+        YoloResizeConfig {
+            target: self.inference_size,
+            ..Default::default()
         }
+        .into()
     }
     pub fn keep_original_images(&self) -> bool {
         self.keep_original_images
@@ -899,14 +878,6 @@ pub fn runtime_asset_path_if_exists(file_name: &str) -> Option<PathBuf> {
 
 pub fn runtime_asset_path(file_name: &str) -> PathBuf {
     runtime_asset_path_if_exists(file_name).unwrap_or_else(|| PathBuf::from(file_name))
-}
-
-pub fn is_yolo_doclayout_model_path(model_path: &str) -> bool {
-    model_path
-        .rsplit(std::path::MAIN_SEPARATOR)
-        .next()
-        .unwrap_or(model_path)
-        .contains("yolo-layout.onnx")
 }
 
 pub fn locate_pdfium_in_runtime_dirs() -> Option<PathBuf> {

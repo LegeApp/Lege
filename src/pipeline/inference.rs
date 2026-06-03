@@ -1,6 +1,6 @@
 // inference.rs
 
-use crate::engine::{Detection, PaddleXConfig, PaddleXEngine};
+use crate::engine::{Detection, YoloConfig, YoloEngine};
 use crate::pipeline::config::PipelineConfig;
 use anyhow::Result;
 use image::RgbImage;
@@ -27,7 +27,7 @@ pub struct InferenceJobAsync {
 
 pub struct InferenceActor {
     receiver: mpsc::Receiver<InferenceJob>,
-    engine: PaddleXEngine,
+    engine: YoloEngine,
     max_batch_size: usize,
     batch_timeout_ms: u64,
     initial_single_pages: usize,
@@ -35,7 +35,7 @@ pub struct InferenceActor {
 
 impl InferenceActor {
     fn new(receiver: mpsc::Receiver<InferenceJob>, config: &PipelineConfig) -> Result<Self> {
-        let engine_config = PaddleXConfig {
+        let engine_config = YoloConfig {
             confidence_threshold: config.confidence_threshold(),
             nms_threshold: config.nms_threshold(),
             iou_threshold: config.nms_threshold(),
@@ -49,7 +49,7 @@ impl InferenceActor {
         let initial_single_pages = config.initial_single_pages();
 
         info!(
-            "InferenceActor: Creating PaddleXEngine with model: {}",
+            "InferenceActor: Creating YoloEngine with model: {}",
             config.model_path()
         );
         info!(
@@ -57,7 +57,7 @@ impl InferenceActor {
             max_batch_size, batch_timeout_ms
         );
 
-        let engine = PaddleXEngine::new(config.model_path(), engine_config)?;
+        let engine = YoloEngine::new(config.model_path(), engine_config)?;
         info!(
             "InferenceActor: Engine initialized with {}",
             engine.provider_name()
