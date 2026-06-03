@@ -444,12 +444,20 @@ pub fn spawn_lege_worker(
     cmd.args(&cli_args);
 
     if visible {
-        // Inherit parent stdio so the CLI renders in its own console window.
-        // On Windows, not setting CREATE_NO_WINDOW lets Windows allocate a new
-        // console if none exists (which is the case when launched from the GUI).
-        cmd.stdin(std::process::Stdio::inherit());
+        // Let the child run in its own visible console window.
+        // Because lege-gui has windows_subsystem="windows" (no console), we must
+        // explicitly request a new console for the child on Windows; otherwise it
+        // inherits null handles and no window appears.
+        cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+            cmd.creation_flags(CREATE_NEW_CONSOLE);
+        }
     } else {
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
