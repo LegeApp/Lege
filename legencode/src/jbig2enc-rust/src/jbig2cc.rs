@@ -15,11 +15,11 @@
 //!
 //! ## Integration with JBIG2 Encoder
 //!
-//! This module is enabled with the `cc-analysis` feature flag. When enabled,
+//! This module is enabled with the `symboldict` feature flag. When enabled,
 //! it replaces the Lutz-based pixel-list approach in jbig2lutz.rs:
 //!
 //! ```rust,ignore
-//! #[cfg(feature = "cc-analysis")]
+//! #[cfg(feature = "symboldict")]
 //! use crate::jbig2cc::{analyze_page, CCImage};
 //! use crate::jbig2sym::BitImage;
 //!
@@ -44,7 +44,7 @@
 //! To enable this module, add to your Cargo.toml:
 //! ```toml
 //! [dependencies]
-//! Legencode = { path = "../Legencode", features = ["cc-analysis"] }
+//! Legencode = { path = "../Legencode", features = ["symboldict"] }
 //! ```
 //!
 //! ## Differences from DjVu JB2 Version

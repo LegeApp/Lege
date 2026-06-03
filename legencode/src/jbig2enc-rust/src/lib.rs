@@ -118,7 +118,7 @@ impl From<ndarray::ShapeError> for Jbig2Error {
 // Module declarations
 pub mod jbig2;
 pub mod jbig2arith;
-#[cfg(feature = "cc-analysis")]
+#[cfg(feature = "symboldict")]
 pub mod jbig2cc;
 pub mod jbig2classify;
 pub mod jbig2comparator;
@@ -133,7 +133,7 @@ pub mod jbig2unify;
 
 // Re-export the main encode functions and config
 pub use crate::jbig2arith::Jbig2ArithCoder;
-#[cfg(feature = "cc-analysis")]
+#[cfg(feature = "symboldict")]
 pub use jbig2cc::{BBox, CC, CCImage, Run, analyze_page, extract_symbols_for_jbig2};
 pub use jbig2enc::encode_document;
 pub use jbig2structs::Jbig2Config;

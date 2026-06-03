@@ -995,9 +995,17 @@ impl Jbig2ArithCoder {
         //   bit  9: ref(rx+1, ry+1)    lower-right
         //   bit 10: target(x+1, y-1)   above-right (already coded)
         //   bit 11: target(x, y-1)     above (already coded)
-        //   bit 12: ref AT pixel       adaptive template
+        //   bit 12: target AT pixel    adaptive template (GRAT1, nominal (-1,-1))
+        //
+        // T.88 §6.3.5.3 Figure 12: GRTEMPLATE=0 has TWO adaptive pixels — GRAT1 in
+        // the already-coded (target/GRREG) bitmap and GRAT2 in the reference. With
+        // nominal AT = (-1,-1), GRAT2 coincides with the fixed reference pixel at
+        // (rx-1, ry-1) (bit 0), so the distinct 13th pixel is the *target* GRAT1 at
+        // (x-1, y-1). Reading bit 12 from the reference instead duplicates a
+        // reference pixel and omits the target AT pixel, which mismatches jbig2dec's
+        // context (blank decode + arithmetic desync).
 
-        let grat_x = grat.first().map_or(2i8, |g| g.0);
+        let grat_x = grat.first().map_or(-1i8, |g| g.0);
         let grat_y = grat.first().map_or(-1i8, |g| g.1);
 
         for y in 0..target.height as i32 {
@@ -1028,9 +1036,9 @@ impl Jbig2ArithCoder {
                 cx |= (target.get_pixel_safely(x + 1, y - 1) as usize) << 10;
                 cx |= (target.get_pixel_safely(x, y - 1) as usize) << 11;
 
-                // Adaptive template pixel from reference (bit 12)
+                // Adaptive template pixel GRAT1 from the target/GRREG bitmap (bit 12).
                 if template == 0 {
-                    cx |= (reference.get_pixel_safely(rx + grat_x as i32, ry + grat_y as i32)
+                    cx |= (target.get_pixel_safely(x + grat_x as i32, y + grat_y as i32)
                         as usize)
                         << 12;
                 }

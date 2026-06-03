@@ -10,7 +10,7 @@ use crate::jbig2context::build_symbol_context_model;
 use crate::jbig2cost::{symbol_dictionary_entries_bytes, symbol_dictionary_entry_bytes};
 use crate::jbig2unify::{SymbolUnifyInputs, UnifiedClass};
 // Symbol extraction using CC analysis
-#[cfg(feature = "cc-analysis")]
+#[cfg(feature = "symboldict")]
 use crate::jbig2cc::analyze_page;
 use crate::jbig2structs::{
     FileHeader, GenericRegionConfig, GenericRegionParams, Jbig2Config, LossySymbolMode, PageInfo,
@@ -517,7 +517,7 @@ pub struct SymbolCandidate {
 /// * `dpi` - Resolution in dots per inch (typically 300 for scanned documents)
 /// * `losslevel` - 0 for lossless, >0 to enable noise removal
 pub fn segment_symbols(image: &BitImage, dpi: i32, losslevel: i32) -> Result<Vec<SymbolCandidate>> {
-    #[cfg(feature = "cc-analysis")]
+    #[cfg(feature = "symboldict")]
     {
         // Use the new CC analysis pipeline from jbig2cc
         let cc_image = analyze_page(image, dpi, losslevel);
@@ -535,9 +535,9 @@ pub fn segment_symbols(image: &BitImage, dpi: i32, losslevel: i32) -> Result<Vec
         }
         Ok(candidates)
     }
-    #[cfg(not(feature = "cc-analysis"))]
+    #[cfg(not(feature = "symboldict"))]
     {
-        Err(anyhow!("Symbol segmentation requires cc-analysis feature"))
+        Err(anyhow!("Symbol segmentation requires the symboldict feature"))
     }
 }
 
@@ -903,8 +903,15 @@ impl<'a> Jbig2Encoder<'a> {
             return (false, false);
         }
 
+        // A non-exact match (err > 0 or a sub-pixel shift) must NOT be substituted
+        // wholesale — that renders the wrong glyph (e.g. "i" as "'"). Accept it but
+        // flag it for per-instance refinement so the decoder reconstructs the
+        // original bitmap from the prototype + the coded difference (lossless).
+        // In an explicitly lossy mode (sym-unify) substitution is intended, so the
+        // old behaviour (accept without refinement) is preserved there.
         if dx.abs() <= 1 && dy == 0 {
-            return (true, false);
+            let lossless = self.config.lossy_symbol_mode == LossySymbolMode::Off;
+            return (true, lossless);
         }
 
         (false, false)
@@ -1736,7 +1743,6 @@ impl<'a> Jbig2Encoder<'a> {
             return Ok(());
         }
         let text_refine = self.config.text_refine;
-        let refine_enabled = self.config.refine;
         let global_indices: Vec<usize> = self
             .global_symbols
             .iter()
@@ -1855,20 +1861,22 @@ impl<'a> Jbig2Encoder<'a> {
                                         true,
                                     )
                                 } else if dx.abs() <= 1 && dy == 0 {
-                                    (true, false)
+                                    // Non-exact: alias onto the global prototype but
+                                    // refine per-instance so the original bitmap is
+                                    // reconstructed losslessly (no substitution). In an
+                                    // explicitly lossy mode (sym-unify) substitution is
+                                    // intended, so refinement is not forced there.
+                                    (
+                                        true,
+                                        self.config.lossy_symbol_mode == LossySymbolMode::Off,
+                                    )
                                 } else {
                                     (false, false)
                                 };
                             if !accept {
                                 continue;
                             }
-                            best_match = Some((
-                                global_symbol_index,
-                                err,
-                                dx,
-                                dy,
-                                needs_refinement && (text_refine || refine_enabled),
-                            ));
+                            best_match = Some((global_symbol_index, err, dx, dy, needs_refinement));
                             if err == 0 && dx == 0 && dy == 0 {
                                 break 'bucket_search;
                             }
@@ -2088,7 +2096,7 @@ impl<'a> Jbig2Encoder<'a> {
 
         // Extract symbols if symbol mode is enabled
         if self.config.symbol_mode && self.state.segment {
-            #[cfg(feature = "cc-analysis")]
+            #[cfg(feature = "symboldict")]
             {
                 let dpi = 300; // Default DPI
                 let losslevel =
@@ -4358,14 +4366,12 @@ impl<'a> Jbig2Encoder<'a> {
                 }
             }
 
-            if self.state.pdf_mode {
-                for instance in &mut planned_instances {
-                    instance.needs_refinement = false;
-                    instance.refinement_dx = 0;
-                    instance.refinement_dy = 0;
-                }
-                needs_family_refinement = false;
-            }
+            // NOTE: PDF-embedded text regions previously stripped all per-instance
+            // refinement here ("until global dictionary encoding is fixed"). That
+            // turned every lossy symbol match into a hard substitution (e.g. "i"
+            // rendered as "'"). Per-instance refinement (SBREFINE=1) round-trips
+            // correctly through jbig2dec in embedded/PDF mode, so the refinement is
+            // now retained and the lossy match is corrected at decode time.
 
             if !planned_instances.is_empty() {
                 let text_start = Instant::now();
@@ -5963,7 +5969,12 @@ pub fn encode_text_region_mapped(
     payload.extend(params.to_bytes());
     payload.extend_from_slice(&(instances.len() as u32).to_be_bytes());
 
-    let symbol_id_bits = log2up(num_total_dict_symbols.max(1)).max(1);
+    // T.88 §7.4.3.1.7 / §6.5.8.2.3 (SDHUFF=0): arithmetic text-region IAID uses
+    // SBSYMCODELEN = ceil(log2(SBNUMSYMS)) with NO floor of 1. The formulas differ
+    // only at SBNUMSYMS == 1, where the decoder reads zero ID bits; emitting a
+    // spurious 1-bit IAID there desyncs the arithmetic decoder for every later
+    // symbol (S-coordinate corruption). encode_iaid is skipped when this is 0.
+    let symbol_id_bits = log2up(num_total_dict_symbols.max(1));
 
     #[derive(Clone, Copy)]
     struct EncodedInstance {
@@ -6116,7 +6127,9 @@ pub fn encode_text_region_mapped(
             if strip_width > 1 {
                 let _ = coder.encode_integer(IntProc::Iait, item.t_offset);
             }
-            let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            if symbol_id_bits > 0 {
+                let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            }
             current_s += item.symbol_width - 1;
             idx += 1;
         }
@@ -6309,7 +6322,12 @@ pub fn encode_text_region_with_refinement(
     payload.extend(params.to_bytes());
     payload.extend_from_slice(&(instances.len() as u32).to_be_bytes());
 
-    let symbol_id_bits = log2up(num_total_dict_symbols.max(1)).max(1);
+    // T.88 §7.4.3.1.7 / §6.5.8.2.3 (SDHUFF=0): arithmetic text-region IAID uses
+    // SBSYMCODELEN = ceil(log2(SBNUMSYMS)) with NO floor of 1. The formulas differ
+    // only at SBNUMSYMS == 1, where the decoder reads zero ID bits; emitting a
+    // spurious 1-bit IAID there desyncs the arithmetic decoder for every later
+    // symbol (S-coordinate corruption). encode_iaid is skipped when this is 0.
+    let symbol_id_bits = log2up(num_total_dict_symbols.max(1));
 
     // Prepare instances with dictionary mapping (same structure as non-refinement)
     #[derive(Clone)]
@@ -6405,7 +6423,9 @@ pub fn encode_text_region_with_refinement(
             }
 
             // Symbol ID
-            let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            if symbol_id_bits > 0 {
+                let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            }
 
             // ── SPM: Refinement indicator (RI) ──
             let ri = if item.needs_refinement { 1i32 } else { 0i32 };
@@ -6435,9 +6455,13 @@ pub fn encode_text_region_with_refinement(
                 let _ = coder.encode_integer(IntProc::Iardx, rdxi);
                 let _ = coder.encode_integer(IntProc::Iardy, rdyi);
 
-                // Compute GRDX/GRDY for the refinement region
-                let grdx = (rdwi / 2) + rdxi;
-                let grdy = (rdhi / 2) + rdyi;
+                // Compute GRDX/GRDY for the refinement region.
+                // §6.4.11.3.2 / §6.3: GRREFERENCEDX = floor(RDW/2) + RDX. Rust's `/`
+                // truncates toward zero, which differs from floor for negative RDW
+                // (instance narrower/shorter than the prototype) and would shift the
+                // reference by one pixel vs the decoder. Use floor division.
+                let grdx = rdwi.div_euclid(2) + rdxi;
+                let grdy = rdhi.div_euclid(2) + rdyi;
 
                 // Encode the refinement region: pixel-by-pixel difference
                 // between the trimmed instance and the prototype
@@ -6450,8 +6474,11 @@ pub fn encode_text_region_with_refinement(
                     &grat,
                 )?;
 
-                // Reset refinement contexts between instances (per JBIG2 spec)
-                coder.reset_refinement_contexts();
+                // Do NOT reset the refinement (GR) contexts between symbol
+                // instances. T.88 §6.4.11 codes each instance's refinement with the
+                // generic refinement procedure using the text region's shared GR
+                // statistics; jbig2dec carries them across instances, so resetting
+                // here desynchronises every refinement after the first.
             }
 
             current_s += item.symbol_width - 1;
@@ -6582,7 +6609,12 @@ pub fn encode_text_region(
 
     // Number of bits used by IAID symbol coding.
     let num_total_dict_symbols = (global_dict_indices.len() + local_dict_indices.len()) as u32;
-    let symbol_id_bits = log2up(num_total_dict_symbols.max(1)).max(1);
+    // T.88 §7.4.3.1.7 / §6.5.8.2.3 (SDHUFF=0): arithmetic text-region IAID uses
+    // SBSYMCODELEN = ceil(log2(SBNUMSYMS)) with NO floor of 1. The formulas differ
+    // only at SBNUMSYMS == 1, where the decoder reads zero ID bits; emitting a
+    // spurious 1-bit IAID there desyncs the arithmetic decoder for every later
+    // symbol (S-coordinate corruption). encode_iaid is skipped when this is 0.
+    let symbol_id_bits = log2up(num_total_dict_symbols.max(1));
 
     #[derive(Clone, Copy)]
     struct EncodedInstance {
@@ -6667,7 +6699,9 @@ pub fn encode_text_region(
             if strip_width > 1 {
                 let _ = coder.encode_integer(IntProc::Iait, item.t_offset);
             }
-            let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            if symbol_id_bits > 0 {
+                let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+            }
             current_s += item.symbol_width - 1;
             idx += 1;
         }
@@ -6855,7 +6889,7 @@ pub fn encode_page_with_symbol_dictionary(
     next_segment_num: u32,
 ) -> Result<(Vec<u8>, u32)> {
     // 1. Extract symbols from the page image using CC analysis
-    #[cfg(feature = "cc-analysis")]
+    #[cfg(feature = "symboldict")]
     let extracted_symbols = {
         let dpi = 300; // Default DPI
         let losslevel = if config.is_lossless { 0 } else { 1 };
@@ -6875,7 +6909,7 @@ pub fn encode_page_with_symbol_dictionary(
             })
             .collect::<Vec<_>>()
     };
-    #[cfg(not(feature = "cc-analysis"))]
+    #[cfg(not(feature = "symboldict"))]
     let extracted_symbols: Vec<(Rect, BitImage)> = Vec::new();
 
     if extracted_symbols.is_empty() {
