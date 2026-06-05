@@ -18,6 +18,7 @@ pub(crate) mod slice;
 pub(crate) mod softmax;
 pub(crate) mod split;
 pub(crate) mod transpose;
+pub(crate) mod winograd;
 
 use anyhow::{Result, bail};
 
