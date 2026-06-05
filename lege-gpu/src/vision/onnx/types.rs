@@ -141,7 +141,7 @@ pub(crate) enum PadMode {
     Reflect,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Conv2dPlan {
     pub(crate) group: i64,
     pub(crate) pads: [i64; 4],

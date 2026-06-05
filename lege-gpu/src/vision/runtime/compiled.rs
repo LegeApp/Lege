@@ -877,6 +877,8 @@ fn step_profile_kind(kind: &PlannedOpKind, wgsl: &'static str) -> String {
         conv_profile_label("Conv3x3Co8Sp2x2Vec4Load", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP2X2_S1D1_WGSL {
         conv_profile_label("Conv3x3Co8Sp2x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP2X2_DIL_WGSL {
+        conv_profile_label("Conv3x3Co8Sp2x2Dil", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_CO8_SP1X2_WGSL {
         conv_profile_label("Conv3x3Co8Sp1x2", kind)
     } else if wgsl == crate::vision::ops::conv::CONV3X3_COBLOCK8_WGSL {
@@ -887,6 +889,8 @@ fn step_profile_kind(kind: &PlannedOpKind, wgsl: &'static str) -> String {
         conv_profile_label("Conv5x5Co8Sp2x1", kind)
     } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP1X2_WGSL {
         conv_profile_label("Conv5x5Co8Sp1x2", kind)
+    } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP2X2_DIL_WGSL {
+        conv_profile_label("Conv5x5Co8Sp2x2Dil", kind)
     } else if wgsl == crate::vision::ops::conv::CONV5X5_CO8_SP2X2_D1_WGSL {
         conv_profile_label("Conv5x5Co8Sp2x2D1", kind)
     } else if wgsl == crate::vision::ops::conv::CONV5X5_COBLOCK8_WGSL {

@@ -569,9 +569,9 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 }]);
             }
 
-            // 3×3 stride-1, dilation 2..5: 1×2 spatial × 8-channel register tile.
-            // The 2×2 spatial tile exceeds the shared-memory budget at d=5, but
-            // 16×32 output tiles fit up to d=5.
+            // 3×3 stride-1, dilation 2..5: 2×2 spatial × 8-channel register tile
+            // (32 accumulators), same arithmetic intensity as the s1d1 tile. Patch
+            // (32+2d)² (d=5→42²=1764) fits the 1764-float smem budget.
             let dil = plan.dilations[0];
             if kh == 3
                 && kw == 3
@@ -588,25 +588,20 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                     win as u32,
                     hout as u32,
                     wout as u32,
-                    plan.strides[0] as u32,
-                    plan.strides[1] as u32,
                     plan.pads[0] as u32,
                     plan.pads[1] as u32,
-                    dil as u32,
-                    dil as u32,
                     has_bias as u32,
-                    0,
-                    0,
+                    dil as u32,
                 ];
                 return Ok(vec![StepSpec {
-                    wgsl: super::conv::CONV3X3_CO8_SP1X2_WGSL,
+                    wgsl: super::conv::CONV3X3_CO8_SP2X2_DIL_WGSL,
                     n_read_inputs: 3,
                     input_buf_names: vec![op.inputs[0].clone(), op.inputs[1].clone(), bias_name],
                     output_buf_name: op.outputs[0].clone(),
                     params: bytemuck::cast_slice(&p).to_vec(),
                     dispatch: [
                         wout.div_ceil(32) as u32,
-                        hout.div_ceil(16) as u32,
+                        hout.div_ceil(32) as u32,
                         cout.div_ceil(8) as u32,
                     ],
                 }]);
@@ -678,8 +673,9 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 }]);
             }
 
-            // 5×5 stride-1, dilation ≤ 3: 1×2 spatial × 8ch (16 accumulators per thread).
-            // patch (16+4d)×(32+4d): d=2→24×40=960, d=3→28×44=1232 — both ≤ 1296 smem.
+            // 5×5 stride-1, dilation 2..3: 2×2 spatial × 8ch (32 accumulators per
+            // thread), same arithmetic intensity as the d1 tile. Patch (32+4d)²
+            // (d=2→40²=1600, d=3→44²=1936) fits the 1936-float smem budget.
             let dil = plan.dilations[0];
             if kh == 5
                 && kw == 5
@@ -696,25 +692,20 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                     win as u32,
                     hout as u32,
                     wout as u32,
-                    plan.strides[0] as u32,
-                    plan.strides[1] as u32,
                     plan.pads[0] as u32,
                     plan.pads[1] as u32,
-                    dil as u32,
-                    dil as u32,
                     has_bias as u32,
-                    0,
-                    0,
+                    dil as u32,
                 ];
                 return Ok(vec![StepSpec {
-                    wgsl: super::conv::CONV5X5_CO8_SP1X2_WGSL,
+                    wgsl: super::conv::CONV5X5_CO8_SP2X2_DIL_WGSL,
                     n_read_inputs: 3,
                     input_buf_names: vec![op.inputs[0].clone(), op.inputs[1].clone(), bias_name],
                     output_buf_name: op.outputs[0].clone(),
                     params: bytemuck::cast_slice(&p).to_vec(),
                     dispatch: [
                         wout.div_ceil(32) as u32,
-                        hout.div_ceil(16) as u32,
+                        hout.div_ceil(32) as u32,
                         cout.div_ceil(8) as u32,
                     ],
                 }]);
