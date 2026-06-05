@@ -426,7 +426,43 @@ detections unchanged, both kernels validated against the CPU reference. The old 
 kernels (`CONV5X5_CO8_SP1X2_WGSL`, `CONV3X3_CO8_SP1X2_WGSL`) are now unused by this model but
 left in place (other shapes / future models may route to them).
 
-### OPTIMIZATION 3 (planned, user-requested): Winograd F(2,3) for 3×3 s1d1
+### OPTIMIZATION 3 (IN PROGRESS): Winograd F(2,3) for 3×3 s1d1
 
-The single biggest line item (`Conv3x3Co8Sp2x2`, 38.9ms ×38). Winograd F(2×2,3×3) ≈ 2.25×
-fewer MACs. Large effort (input/weight/output transforms + tiling). `shader-f16` deferred.
+Target: the single biggest line item (`Conv3x3Co8Sp2x2`, 39.4ms ×38). F(2×2,3×3) computes a
+2×2 output tile from a 4×4 input tile with **16 multiplies instead of 36 → 2.25× fewer MACs**.
+
+**Architecture decision — 3-pass, NOT a single fused kernel.** A fused Winograd kernel needs
+16 accumulators *per output channel*; matching the direct kernel's 8-channels-per-workgroup
+reuse = 128 registers (spills), and dropping channels to fit registers re-loads the input
+patch and goes memory-bound. Since passes are nearly free here (0% idle), the clean form is:
+1. **Input transform** `x[1,Cin,H,W] → V[16,Cin,P]` (P = ⌈H/2⌉·⌈W/2⌉), ξ-major.
+2. **16 batched GEMMs** `M[ξ] = U[ξ]·V[ξ]` (U = transformed weights, Cout×Cin; reuses the
+   `CONV1X1_GEMM_S1` register-blocked SGEMM with a ξ=wg.z stride). This is the 2.25× win.
+3. **Output transform** `M[16,Cout,P] → y[1,Cout,H,W]` (+ bias).
+
+**DONE + validated (committed on branch `yolo-dilated-conv-2x2-tile`):** all numerics in
+`lege-gpu/src/vision/ops/winograd.rs`:
+- CPU transform helpers `weight/input/output_transform_f23` (B/G/A matrices) — the source of
+  truth, reused by the prep-time weight transform.
+- GPU kernels `WINOGRAD_INPUT_TRANSFORM_WGSL`, `WINOGRAD_BATCHED_GEMM_WGSL`,
+  `WINOGRAD_OUTPUT_TRANSFORM_WGSL` + wrappers.
+- Tests (all pass): CPU Winograd vs direct conv; each GPU transform vs CPU oracle; and
+  **full 3-pass GPU pipeline vs direct conv** at 96→128ch (`winograd_gpu_end_to_end_*`,
+  <2e-3). The entire GPU numerical path is proven.
+
+**REMAINING — graph plumbing only** (the memory planner discovers buffers from op
+inputs/outputs + constants, so rewrite one Conv into three ops at prep so V/M get slots
+naturally):
+1. `types.rs`: 3 new `PlannedOpKind` variants (WinogradInputTransform / BatchedGemm /
+   OutputTransform) + `label()`.
+2. Prep rewrite pass (like `fold.rs`): for each 3×3 s1d1 group-1 Conv whose weight is a known
+   constant, compute `U[16,Cout,Cin]` via `weight_transform_f23`, add it as a new constant,
+   and replace the Conv with the 3 ops (intermediates `{conv}_V`, `{conv}_M`). Gate on
+   weight-is-constant (always true for YOLO).
+3. `compile.rs::op_steps`: emit the StepSpec/dispatch for each of the 3 kinds.
+4. `reference.rs::run_op`: CPU impls for the 3 kinds (so `run_cpu`/gpu-diff stay consistent) —
+   trivial via the existing helpers.
+5. Route + end-to-end profile. **Expected:** 39.4ms → est. ~25–30ms (the GEMMs drop 2.25×;
+   transforms add a little). Watch VRAM: V is 16·Cin·P (~4× the input) per conv, transient.
+
+`shader-f16` still deferred.
