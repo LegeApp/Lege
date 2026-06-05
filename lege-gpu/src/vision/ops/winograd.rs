@@ -169,6 +169,142 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+// ── Batched 16-GEMM in transform space: M[ξ] = U[ξ]·V[ξ] ────────────────────
+//
+// 16 independent GEMMs, one per transform position ξ = wg.z. For each ξ:
+//   U[ξ] is Cout×Cin (A), V[ξ] is Cin×P (B), M[ξ] is Cout×P (C).
+// Identical register-blocked SGEMM as CONV1X1_GEMM_S1, with ξ-strided global
+// offsets (A += ξ·Cout·Cin, B += ξ·Cin·P, C += ξ·Cout·P). No bias here — the
+// output transform adds it. params: [0]M(cout) [1]K(cin) [2]N(p).
+// dispatch: (ceil(Cout/64), ceil(P/64), 16).
+pub(crate) const WINOGRAD_BATCHED_GEMM_WGSL: &str = r#"
+const BM: u32 = 64u;
+const BN: u32 = 64u;
+const BK: u32 = 16u;
+
+var<workgroup> As: array<f32, 1024>; // BK*BM, transposed As[k*BM + m]
+var<workgroup> Bs: array<f32, 1024>; // BK*BN, Bs[k*BN + n]
+
+@group(0) @binding(0) var<storage, read>       u_in   : array<f32>;
+@group(0) @binding(1) var<storage, read>       v_in   : array<f32>;
+@group(0) @binding(2) var<storage, read_write> m_out  : array<f32>;
+@group(0) @binding(3) var<storage, read>       params : array<u32>;
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(workgroup_id)           wg  : vec3<u32>,
+    @builtin(local_invocation_index) tid : u32,
+) {
+    let M = params[0];
+    let K = params[1];
+    let N = params[2];
+    let xi = wg.z;
+
+    let a_off = xi * M * K;   // U[ξ] base
+    let b_off = xi * K * N;   // V[ξ] base
+    let c_off = xi * M * N;   // M[ξ] base
+
+    let bm = wg.x * BM;
+    let bn = wg.y * BN;
+
+    let thread_row = tid / 16u;
+    let thread_col = tid % 16u;
+
+    let inner_row_a = tid / BK;
+    let inner_col_a = tid % BK;
+    let inner_row_b = tid / BN;
+    let inner_col_b = tid % BN;
+
+    var acc: array<f32, 16>;
+    for (var i = 0u; i < 16u; i = i + 1u) { acc[i] = 0.0; }
+
+    var bk = 0u;
+    loop {
+        if bk >= K { break; }
+
+        for (var off = 0u; off < BM; off = off + 16u) {
+            let row = inner_row_a + off;
+            let gA_row = bm + row;
+            let gA_col = bk + inner_col_a;
+            var val = 0.0;
+            if gA_row < M && gA_col < K {
+                val = u_in[a_off + gA_row * K + gA_col];
+            }
+            As[inner_col_a * BM + row] = val;
+        }
+
+        for (var off = 0u; off < BK; off = off + 4u) {
+            let krow = inner_row_b + off;
+            let gB_row = bk + krow;
+            let gB_col = bn + inner_col_b;
+            var val = 0.0;
+            if gB_row < K && gB_col < N {
+                val = v_in[b_off + gB_row * N + gB_col];
+            }
+            Bs[krow * BN + inner_col_b] = val;
+        }
+
+        workgroupBarrier();
+
+        for (var k = 0u; k < BK; k = k + 1u) {
+            let a0 = As[k * BM + thread_row * 4u + 0u];
+            let a1 = As[k * BM + thread_row * 4u + 1u];
+            let a2 = As[k * BM + thread_row * 4u + 2u];
+            let a3 = As[k * BM + thread_row * 4u + 3u];
+            let b0 = Bs[k * BN + thread_col * 4u + 0u];
+            let b1 = Bs[k * BN + thread_col * 4u + 1u];
+            let b2 = Bs[k * BN + thread_col * 4u + 2u];
+            let b3 = Bs[k * BN + thread_col * 4u + 3u];
+            acc[0u]  = acc[0u]  + a0 * b0; acc[1u]  = acc[1u]  + a0 * b1;
+            acc[2u]  = acc[2u]  + a0 * b2; acc[3u]  = acc[3u]  + a0 * b3;
+            acc[4u]  = acc[4u]  + a1 * b0; acc[5u]  = acc[5u]  + a1 * b1;
+            acc[6u]  = acc[6u]  + a1 * b2; acc[7u]  = acc[7u]  + a1 * b3;
+            acc[8u]  = acc[8u]  + a2 * b0; acc[9u]  = acc[9u]  + a2 * b1;
+            acc[10u] = acc[10u] + a2 * b2; acc[11u] = acc[11u] + a2 * b3;
+            acc[12u] = acc[12u] + a3 * b0; acc[13u] = acc[13u] + a3 * b1;
+            acc[14u] = acc[14u] + a3 * b2; acc[15u] = acc[15u] + a3 * b3;
+        }
+
+        workgroupBarrier();
+        bk = bk + BK;
+    }
+
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let gm = bm + thread_row * 4u + i;
+        if gm >= M { continue; }
+        for (var j = 0u; j < 4u; j = j + 1u) {
+            let gn = bn + thread_col * 4u + j;
+            if gn < N {
+                m_out[c_off + gm * N + gn] = acc[i * 4u + j];
+            }
+        }
+    }
+}
+"#;
+
+/// Run the batched 16-GEMM: `u` flat `[16*Cout*Cin]`, `v` flat `[16*Cin*P]`
+/// → M flat `[16*Cout*P]`.
+pub(crate) async fn run_batched_gemm(
+    ctx: &GpuContext,
+    u: &[f32],
+    v: &[f32],
+    cout: usize,
+    cin: usize,
+    p: usize,
+) -> Result<Vec<f32>> {
+    let params = [cout as u32, cin as u32, p as u32];
+    let raw = dispatch_compute(
+        ctx,
+        WINOGRAD_BATCHED_GEMM_WGSL,
+        &[bytemuck::cast_slice(u), bytemuck::cast_slice(v)],
+        16 * cout * p * 4,
+        bytemuck::cast_slice(&params),
+        (cout.div_ceil(64) as u32, p.div_ceil(64) as u32, 16),
+    )
+    .await?;
+    Ok(f32_from_bytes(&raw))
+}
+
 /// Run the GPU input transform, returning V flat `[16*Cin*P]` (ξ-major).
 pub(crate) async fn run_input_transform(
     ctx: &GpuContext,
@@ -516,6 +652,54 @@ mod tests {
                 }
             }
             assert!(max_diff < 1e-4, "output transform max diff {max_diff}");
+        });
+    }
+
+    #[test]
+    fn winograd_gpu_end_to_end_matches_direct_conv() {
+        pollster::block_on(async {
+            let ctx = match GpuContext::new().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            // Channel counts ≥64 so the 64×64 GEMM tiles are exercised.
+            let (cin, cout, h, w) = (96usize, 128usize, 28usize, 31usize);
+            let x = Tensor::new(vec![1, cin, h, w], fill(cin * h * w, 11)).unwrap();
+            let wt = fill(cout * cin * 9, 12);
+            let bias = fill(cout, 13);
+
+            // Prep-time weight transform: U[ξ][co][ci] = weight_transform(g_co_ci)[ξ].
+            let mut u = vec![0.0f32; 16 * cout * cin];
+            for co in 0..cout {
+                for ci in 0..cin {
+                    let mut g = [0.0f32; 9];
+                    g.copy_from_slice(&wt[(co * cin + ci) * 9..(co * cin + ci) * 9 + 9]);
+                    let ut = weight_transform_f23(&g);
+                    for e in 0..16 {
+                        u[e * cout * cin + co * cin + ci] = ut[e];
+                    }
+                }
+            }
+
+            // 3-pass GPU Winograd.
+            let (v, p, _ntw, _nth) = run_input_transform(&ctx, &x).await.unwrap();
+            let m = run_batched_gemm(&ctx, &u, &v, cout, cin, p).await.unwrap();
+            let y = run_output_transform(&ctx, &m, &bias, cout, h, w, true)
+                .await
+                .unwrap();
+
+            // Direct-conv oracle.
+            let direct = direct_conv(&x.data, &wt, &bias, cin, cout, h, w);
+            let max_diff = y
+                .data
+                .iter()
+                .zip(&direct)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_diff < 2e-3,
+                "GPU Winograd 3-pass vs direct conv max abs diff {max_diff} too large"
+            );
         });
     }
 
