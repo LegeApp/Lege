@@ -284,3 +284,149 @@ Note: fixed pixel window sizes (w7..w63) mean whole-image native-res binarizatio
 operates at true pixel scale, not the legacy resized-to-1200×736 scale.
 
 **Deployment action required:** deploy the dynamic `sauvola.prepared.onnx` to the models dir (the deployed `sauvola.onnx` is the raw original — the bridge needs the double-cast + Constant extraction prep). Production prefers `sauvola.prepared.onnx`, falling back to `sauvola.onnx`.
+
+---
+
+## YOLO inference perf — measured investigation (2026-06-05, DX12 / RTX 4060)
+
+This section supersedes loose hypotheses about the wgpu↔CUDA perf gap with **measured**
+results. Read this before attempting any of the optimizations suggested in
+`lege-gpu/New Text Document.txt` (the conv.rs micro-opt memo) — most of them do not pan
+out, and two are specified backwards for this codebase.
+
+### The harness (use this to validate any conv change)
+
+Per-kernel GPU-timestamp profiler, already in-tree:
+`compiled.rs::profile_report`, gated behind `LEGE_INFERENCE_PROFILE`, plus
+`LEGE_CONV_SHAPES` to dump per-conv shape/shader/dispatch. Each op runs in its own pass
+exactly like the real `submit()` path, so it reports **busy (kernel) ms vs inter-dispatch
+idle (gap) ms vs wall**:
+
+```sh
+# next to lege.exe with the 4 models in ./models/ and pdfium.dll present:
+LEGE_INFERENCE_PROFILE=1 LEGE_CONV_SHAPES=1 ./lege.exe <file.pdf> 1-3
+```
+
+Test PDF used: `D:\to-sort\test\wheelsofcommerce00brau_1.pdf` (large; profile a page subset).
+Numeric kernel correctness: `cargo test -p lege-gpu conv5x5_sp2x2_dil_matches_reference --release`
+(GPU test in `conv.rs`; compares a kernel against the CPU `reference::run_op` oracle, skips
+cleanly if no adapter).
+
+### KEY FINDING: YOLO is GPU-compute-bound, NOT barrier/pass-count bound
+
+Baseline profile (pages 1-3, release, DX12 / RTX 4060):
+
+```
+steps=528   GPU busy(kernels)=147.4ms   GPU span=144.9ms   GPU idle gaps=0.0ms (0%)
+per-page wall (compiled.run): ~128–144ms (readback line ≈ GPU-compute wait)
+```
+
+**Idle gaps = 0.0 ms.** busy (147) actually *exceeds* span (145) → the DX12 driver
+**overlaps consecutive compute passes**; the ~528 separate `begin_compute_pass` dispatches
+cost essentially nothing. The intuition that "~450 conv+SiLU+concat passes = barrier/
+submission bound" is **false on this DX12 path**. All 528 steps go into one command buffer /
+one `submit` anyway (`compiled_chunk_size` returns `step_count` on a GPU adapter).
+
+Corollary: the wgpu (100–145ms) vs CUDA (20ms) gap is **structural arithmetic**, not graph
+overhead. CUDA wins via **tensor cores (FP16/TF32, 8–16× FP32 ALU) + a fusing graph
+compiler (TensorRT) + Winograd** — none of which WebGPU/wgpu FP32 can reach. 20ms is not a
+reachable target on this backend. Realistic wgpu ceilings: ~70ms with conv-arithmetic work,
+~45–55ms if `shader-f16` packed math is added. The model is **not** "poorly built for wgpu."
+
+### Baseline per-kernel breakdown (the real hot spots)
+
+| Kernel (profiler label) | Total | # | per-conv |
+|---|---|---|---|
+| `Conv3x3Co8Sp2x2` 3×3 s1d1 | 38.9ms | 38 | ~1.0ms |
+| `Conv1x1GemmS1Vec4` 1×1 | 22.8ms | 79 | ~0.29ms |
+| `Conv5x5Co8Sp1x2` d3 | 14.3ms | 4 | **3.6ms** |
+| `Conv3x3Co8` 3×3 s2 | 14.2ms | 4 | 3.6ms |
+| `Conv5x5Co8Sp1x2` d2 | 14.0ms | 4 | **3.5ms** |
+| `Conv5x5Co8Sp2x2D1` d1 | 9.4ms | 4 | **2.35ms** |
+| `Conv3x3Co8Sp1x2` d5 / d3 | 13.4ms | 8 | ~1.7ms |
+| `SiLU` (all of them) | **3.5ms** | 178 | — |
+
+Model op histogram (`yolo-layout.onnx`, 644 nodes): 191 Conv (79× 1×1 g1, 38× 3×3 s1d1 g1,
+34× 3×3 depthwise, 12× 5×5 dilated g1, …), 186 SiLU (Sigmoid+Mul, fused to one pass each),
+29 Add (mostly `Add(Mul,Mul)` residuals), 25 Concat.
+
+### Verdict on the `New Text Document.txt` recommendations
+
+1. **Double-buffer 3×3/5×5 co-blocked patch — DO NOT DO.** WGSL/naga has no async-copy
+   (`cp.async`); "double buffering" still compiles to load→reg→smem + barrier, and doubles
+   smem (halves occupancy). Targets `COBLOCK8`, which isn't even the hot 3×3 path
+   (`CO8_SP2X2_S1D1` is). The analogous 5×5 interior-tile experiment already regressed and
+   was reverted (see top of this file).
+2. **Vectorize depthwise — right target, WRONG mechanism.** `DEPTHWISE3X3_WGSL` is the least
+   optimized hot kernel (34 instances, naive scalar, no reuse). But the memo's "vec4 over 4
+   consecutive channels" is wrong for **NCHW** (consecutive channels are H·W apart → 4 strided
+   loads, no coalescing). The real win is input *reuse* (smem/register spatial tiling, vec4
+   along contiguous W). Not yet attempted.
+3. **Pad smem rows to multiple of 32 — BACKWARDS.** That forces every row to the same bank
+   (max column-conflict). Correct fix is an *odd*/+1 stride — which the existing
+   `CONV3X3_CO8_SP2X2_S1D1_VEC4LOAD` already does (`PWV=37`). Low ceiling.
+4. **Bigger 1×1 GEMM tile (BM=128) — MAYBE, shape-dependent.** 1×1 is only 0.29ms/conv and
+   deep YOLO layers have small planes where BN=64 already over-tiles. A/B only; risks
+   regressing the many small-plane GEMMs.
+5. **Prefetch GEMM weight tile — DO NOT DO.** Same no-async-copy problem as #1.
+
+### Conv+SiLU epilogue fusion — ABANDONED (data-driven)
+
+Originally proposed as the big win (remove ~186 SiLU passes + barriers). The profiler shows
+**all 178 SiLU passes = 3.5ms total (2.4%)**, and passes already overlap, so fusion would
+save ≤3.5ms for invasive graph surgery. Not worth it. (Design that *would* have been correct,
+if ever revisited: rewrite `planned_ops` to drop Sigmoid+Mul and annotate the producing Conv
+with an activation flag **before** memory planning — not a post-plan output redirect, which
+risks clobbering a slot the planner thinks is free. Each conv kernel applies `silu()` at its
+store site behind a trailing `use_silu` param. The Sigmoid+Mul→SiLU detection already exists
+at `compiled.rs:158`.)
+
+### OPTIMIZATION 1 (in progress): dilated 5×5 conv → 2×2 register tile
+
+**Observation:** same 96-ch 5×5 FLOPs, but the **d1** variant uses the 2×2 spatial tile (32
+accumulators) at **2.35ms**, while **d2/d3** fell back to the 1×2 tile (16 accumulators, half
+the arithmetic intensity) at **3.5–3.6ms**. The fallback reason in the old comments ("exceeds
+smem budget at d≥2") was about the **self-imposed `array<f32,1296>` constant, not hardware** —
+the RTX 4060 allows ~32KB shared (8192 f32).
+
+**Change (committed to working tree):**
+- New kernel `CONV5X5_CO8_SP2X2_DIL_WGSL` in `conv.rs`: generalizes
+  `CONV5X5_CO8_SP2X2_D1_WGSL` to runtime dilation (patch span `32 + 4·dil` per side, smem
+  `array<f32,1936>` = 44² for d3, tap reads strided by `dil`). d1 keeps its hardcoded PW5=36
+  fast path; only d2/d3 route to the new kernel (`compile.rs`).
+- Profiler label `Conv5x5Co8Sp2x2Dil` added (`compiled.rs`). `Conv2dPlan` gained `Clone`.
+- Correctness: GPU test `conv5x5_sp2x2_dil_matches_reference` (d=1/2/3 vs CPU reference,
+  max abs diff < 1e-3) — **PASSES**.
+
+**Expected:** d2/d3 ~3.5ms → ~2.4ms each, ≈ -9ms across the 8 dilated 5×5 convs.
+
+**Measured post-result (CONFIRMED, no backslide):**
+- d3: 14.4ms → **10.4ms** (3.6 → 2.6ms/conv)
+- d2: 14.0ms → **10.1ms** (3.5 → 2.5ms/conv)
+- ≈ **-7.9ms** across the 8 dilated 5×5 convs; total GPU busy 147.4 → 140.8ms. Per-conv
+  (2.5–2.6ms) now sits just above the d1 tile's 2.35ms — the small gap is the runtime-dilation
+  multiply + larger smem, as expected. Detections unchanged. Kept.
+
+### OPTIMIZATION 2 (DONE): same 2×2-tile generalization for dilated 3×3 (d3, d5)
+
+New kernel `CONV3X3_CO8_SP2X2_DIL_WGSL` (patch span `32 + 2·dil`, smem `array<f32,1764>`
+= 42² for d5), routed for 3×3 s1 d2..d5 in `compile.rs`, profiler label
+`Conv3x3Co8Sp2x2Dil`, wrapper `run_conv3x3_co8_sp2x2_dil`, test
+`conv3x3_sp2x2_dil_matches_reference` (d=1/2/3/5 vs CPU reference) — **PASSES**.
+
+**Measured post-result (CONFIRMED, no backslide):**
+- d5: 6.9ms → **5.0ms** (1.7 → 1.25ms/conv)
+- d3: 6.5ms → **4.7ms** (1.6 → 1.18ms/conv)
+- ≈ **-3.7ms** across the 8 dilated 3×3 convs.
+
+### Combined dilated-tile result
+
+Optimizations 1+2 together: **GPU busy 147.4ms → 137.1ms (-10.3ms, ~7%)** on pages 1-3,
+detections unchanged, both kernels validated against the CPU reference. The old 1×2-tile
+kernels (`CONV5X5_CO8_SP1X2_WGSL`, `CONV3X3_CO8_SP1X2_WGSL`) are now unused by this model but
+left in place (other shapes / future models may route to them).
+
+### OPTIMIZATION 3 (planned, user-requested): Winograd F(2,3) for 3×3 s1d1
+
+The single biggest line item (`Conv3x3Co8Sp2x2`, 38.9ms ×38). Winograd F(2×2,3×3) ≈ 2.25×
+fewer MACs. Large effort (input/weight/output transforms + tiling). `shader-f16` deferred.
