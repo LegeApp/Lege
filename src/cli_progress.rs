@@ -122,6 +122,7 @@ pub async fn run_cli_three_line(
                     | crate::progress::ProcessingStatus::OcrLayerDetected { .. }
                     | crate::progress::ProcessingStatus::MarginPass1Analyzing
                     | crate::progress::ProcessingStatus::MarginAnalysisSummary { .. }
+                    | crate::progress::ProcessingStatus::PipelineMessage { .. }
                     | crate::progress::ProcessingStatus::PdfAppend { .. }
                     | crate::progress::ProcessingStatus::PdfAppendMargin { .. } => {
                         is_significant = true;

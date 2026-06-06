@@ -1,6 +1,6 @@
 use crate::{
     EncodeOptions, ImageFormat, PipelineConfig, debug_println, encode_jpeg,
-    engine::{Detection, PaddleXConfig, PaddleXEngine},
+    engine::{Detection, YoloConfig, YoloEngine},
     error_println, info_println,
     pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig},
     pipeline::helper_functions::init_encode_semaphore,
@@ -262,9 +262,9 @@ pub async fn run_pdf_layout_crop_debug(
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
 
     let deskew_engine = prepare_shared_deskew_engine(&pipeline_config)?;
-    let mut engine = PaddleXEngine::new(
+    let mut engine = YoloEngine::new(
         pipeline_config.model_path(),
-        PaddleXConfig::new(
+        YoloConfig::new(
             pipeline_config.confidence_threshold(),
             pipeline_config.nms_threshold(),
             pipeline_config.nms_threshold(),

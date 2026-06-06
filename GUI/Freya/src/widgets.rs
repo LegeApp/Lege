@@ -28,16 +28,13 @@ pub fn lege_panel_card(
 
     if !title.is_empty() {
         card = card.child(
-            rect()
-                .width(Size::fill())
-                .height(Size::px(22.))
-                .child(
-                    label()
-                        .text(title)
-                        .font_size(15.)
-                        .color(TEXT)
-                        .font_weight(700),
-                ),
+            rect().width(Size::fill()).height(Size::px(22.)).child(
+                label()
+                    .text(title)
+                    .font_size(15.)
+                    .color(TEXT)
+                    .font_weight(700),
+            ),
         );
     }
 
@@ -164,34 +161,6 @@ pub fn lege_file_action_row(
                 .height(Size::px(40.))
                 .child(output_directory),
         )
-        .into()
-}
-
-pub fn lege_metric_box(title: impl Into<String>, value: impl Into<String>) -> Element {
-    rect()
-        .background(CARD_BG)
-        .border(
-            Border::new()
-                .fill(BORDER)
-                .width(1.)
-                .alignment(BorderAlignment::Inner),
-        )
-        .corner_radius(6.)
-        .padding((5., 8., 5., 8.))
-        .width(Size::px(92.))
-        .height(Size::fill())
-        .vertical()
-        .main_align(Alignment::Center)
-        .cross_align(Alignment::Center)
-        .spacing(1.)
-        .child(
-            label()
-                .text(value.into())
-                .font_size(18.)
-                .font_weight(700)
-                .color(TEXT),
-        )
-        .child(label().text(title.into()).font_size(10.).color(MUTED))
         .into()
 }
 

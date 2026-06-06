@@ -910,7 +910,6 @@ pub fn apply_heavy_duty_binarization_raw(
     Ok(bin_data)
 }
 
-
 /// Applies a mask to an already binarized image.
 /// Pixels in the binary data corresponding to a 255 in the mask will be set to white (255).
 pub fn apply_mask_to_binary(binary_data: &mut [u8], mask: &[u8]) {

@@ -537,7 +537,9 @@ pub fn segment_symbols(image: &BitImage, dpi: i32, losslevel: i32) -> Result<Vec
     }
     #[cfg(not(feature = "symboldict"))]
     {
-        Err(anyhow!("Symbol segmentation requires the symboldict feature"))
+        Err(anyhow!(
+            "Symbol segmentation requires the symboldict feature"
+        ))
     }
 }
 
@@ -1866,10 +1868,7 @@ impl<'a> Jbig2Encoder<'a> {
                                     // reconstructed losslessly (no substitution). In an
                                     // explicitly lossy mode (sym-unify) substitution is
                                     // intended, so refinement is not forced there.
-                                    (
-                                        true,
-                                        self.config.lossy_symbol_mode == LossySymbolMode::Off,
-                                    )
+                                    (true, self.config.lossy_symbol_mode == LossySymbolMode::Off)
                                 } else {
                                     (false, false)
                                 };

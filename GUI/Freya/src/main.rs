@@ -9,6 +9,7 @@ mod models;
 mod settings;
 mod version;
 mod widgets;
+mod worker_process;
 
 use freya::prelude::*;
 
@@ -17,14 +18,9 @@ use winapi::um::wincon::GetConsoleWindow;
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::{SW_HIDE, ShowWindow};
 
-#[cfg(feature = "debug-logging")]
-use lege::debug_log::write_debug_line;
-
 const ICON: &[u8] = include_bytes!("../../../assets/icon.png");
 
 fn main() {
-    lege::configure_runtime_env();
-
     #[cfg(target_os = "windows")]
     unsafe {
         let console_window = GetConsoleWindow();
@@ -48,13 +44,6 @@ fn main() {
                     libc::dup2(null_fd, 2);
                 }
             }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Err(e) = lege::windows_dirs::ensure_directories() {
-            eprintln!("Failed to create user directories: {e}");
         }
     }
 
@@ -99,9 +88,4 @@ fn main() {
                 }),
         ),
     );
-
-    #[cfg(feature = "debug-logging")]
-    {
-        write_debug_line("Lege Freya GUI launched.");
-    }
 }
