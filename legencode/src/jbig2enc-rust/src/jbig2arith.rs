@@ -1038,8 +1038,7 @@ impl Jbig2ArithCoder {
 
                 // Adaptive template pixel GRAT1 from the target/GRREG bitmap (bit 12).
                 if template == 0 {
-                    cx |= (target.get_pixel_safely(x + grat_x as i32, y + grat_y as i32)
-                        as usize)
+                    cx |= (target.get_pixel_safely(x + grat_x as i32, y + grat_y as i32) as usize)
                         << 12;
                 }
 

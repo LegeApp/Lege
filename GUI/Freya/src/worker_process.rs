@@ -28,7 +28,9 @@ pub enum WorkerProgressMode {
 }
 
 impl Default for WorkerProgressMode {
-    fn default() -> Self { Self::Unknown }
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
@@ -52,14 +54,30 @@ pub struct WorkerProgressMetrics {
 pub enum WorkerProcessingStatus {
     Initializing,
     AssemblingOutput,
-    Complete { message: String },
-    Error { error: String },
-    FootnotesDetected { message: String },
-    OcrLayerDetected { has_ocr: bool },
+    Complete {
+        message: String,
+    },
+    Error {
+        error: String,
+    },
+    FootnotesDetected {
+        message: String,
+    },
+    OcrLayerDetected {
+        has_ocr: bool,
+    },
     MarginPass1Analyzing,
-    MarginAnalysisSummary { summary: String },
-    PdfAppend { current: usize, total: usize },
-    PdfAppendMargin { current: usize, total: usize },
+    MarginAnalysisSummary {
+        summary: String,
+    },
+    PdfAppend {
+        current: usize,
+        total: usize,
+    },
+    PdfAppendMargin {
+        current: usize,
+        total: usize,
+    },
     LayoutProgress {
         rendered: usize,
         detected: usize,
@@ -109,11 +127,7 @@ impl WorkerProcessingStatus {
                 message.clone(),
                 "Ready for next task.".into(),
             ),
-            Self::Error { error } => (
-                "[Error]".into(),
-                "An error occurred.".into(),
-                error.clone(),
-            ),
+            Self::Error { error } => ("[Error]".into(), "An error occurred.".into(), error.clone()),
             Self::FootnotesDetected { message } => (
                 "[Margin Analysis]".into(),
                 "Margin Analysis: note".into(),
@@ -147,15 +161,11 @@ impl WorkerProcessingStatus {
             Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => {
                 (String::new(), String::new(), String::new())
             }
-            Self::LayoutProgress { .. } => {
-                ("[Layout Mode]".into(), String::new(), String::new())
-            }
+            Self::LayoutProgress { .. } => ("[Layout Mode]".into(), String::new(), String::new()),
             Self::NoLayoutProgress { .. } => {
                 ("[No-Layout Mode]".into(), String::new(), String::new())
             }
-            Self::MarginProgress { .. } => {
-                ("[Margin Mode]".into(), String::new(), String::new())
-            }
+            Self::MarginProgress { .. } => ("[Margin Mode]".into(), String::new(), String::new()),
         }
     }
 }
@@ -185,9 +195,25 @@ impl WorkerProgressUpdate {
     /// Rewrite the task_id embedded in the event (so GUI-assigned IDs match tracker_infos).
     pub fn with_task_id(self, new_id: u64) -> Self {
         match self {
-            Self::Status { status, metrics, .. } => Self::Status { task_id: new_id, status, metrics },
-            Self::Completed { message, metrics, .. } => Self::Completed { task_id: new_id, message, metrics },
-            Self::Error { error, metrics, .. } => Self::Error { task_id: new_id, error, metrics },
+            Self::Status {
+                status, metrics, ..
+            } => Self::Status {
+                task_id: new_id,
+                status,
+                metrics,
+            },
+            Self::Completed {
+                message, metrics, ..
+            } => Self::Completed {
+                task_id: new_id,
+                message,
+                metrics,
+            },
+            Self::Error { error, metrics, .. } => Self::Error {
+                task_id: new_id,
+                error,
+                metrics,
+            },
         }
     }
 }
@@ -202,34 +228,146 @@ pub struct TargetDeviceProfile {
 }
 
 pub const TARGET_DEVICE_PROFILES: &[TargetDeviceProfile] = &[
-    TargetDeviceProfile { name: "Amazon Kindle (11th Gen, 2022)", width: 1072, height: 1448 },
-    TargetDeviceProfile { name: "Amazon Kindle Paperwhite (11th Gen, 2021)", width: 1236, height: 1648 },
-    TargetDeviceProfile { name: "Amazon Kindle Scribe (2022)", width: 1860, height: 2480 },
-    TargetDeviceProfile { name: "B&N Nook GlowLight 4 (2021)", width: 1072, height: 1448 },
-    TargetDeviceProfile { name: "B&N Nook GlowLight 4e (2022)", width: 758, height: 1024 },
-    TargetDeviceProfile { name: "Bigme InkNote Color (2022)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Boyue Likebook P10 (2021)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Huawei MatePad Paper (2022)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Kobo Clara 2E (2022)", width: 1072, height: 1448 },
-    TargetDeviceProfile { name: "Kobo Elipsa 2E (2023)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Kobo Libra 2 (2021)", width: 1264, height: 1680 },
-    TargetDeviceProfile { name: "Kobo Sage (2021)", width: 1440, height: 1920 },
-    TargetDeviceProfile { name: "Onyx Boox Leaf 2 (2022)", width: 1264, height: 1680 },
-    TargetDeviceProfile { name: "Onyx Boox Note Air (2020)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Onyx Boox Nova Air 2 (2023)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Onyx Boox Nova3 Color (2021)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Onyx Boox Palma (2023)", width: 824, height: 1648 },
-    TargetDeviceProfile { name: "Onyx Boox Tab Ultra (2022)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Onyx Boox Tab X (2023)", width: 1650, height: 2200 },
-    TargetDeviceProfile { name: "PocketBook Color (2020)", width: 1072, height: 1448 },
-    TargetDeviceProfile { name: "PocketBook Era (2022)", width: 1264, height: 1680 },
-    TargetDeviceProfile { name: "PocketBook InkPad Color 2 (2023)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Ratta Supernote A5 X (2020)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Ratta Supernote A6 X (2020)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "reMarkable 2 (2020)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Tolino Epos 3 (2021)", width: 1404, height: 1872 },
-    TargetDeviceProfile { name: "Tolino Vision 6 (2021)", width: 1264, height: 1680 },
-    TargetDeviceProfile { name: "Xiaomi Mi Reader Pro (2020)", width: 1404, height: 1872 },
+    TargetDeviceProfile {
+        name: "Amazon Kindle (11th Gen, 2022)",
+        width: 1072,
+        height: 1448,
+    },
+    TargetDeviceProfile {
+        name: "Amazon Kindle Paperwhite (11th Gen, 2021)",
+        width: 1236,
+        height: 1648,
+    },
+    TargetDeviceProfile {
+        name: "Amazon Kindle Scribe (2022)",
+        width: 1860,
+        height: 2480,
+    },
+    TargetDeviceProfile {
+        name: "B&N Nook GlowLight 4 (2021)",
+        width: 1072,
+        height: 1448,
+    },
+    TargetDeviceProfile {
+        name: "B&N Nook GlowLight 4e (2022)",
+        width: 758,
+        height: 1024,
+    },
+    TargetDeviceProfile {
+        name: "Bigme InkNote Color (2022)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Boyue Likebook P10 (2021)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Huawei MatePad Paper (2022)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Kobo Clara 2E (2022)",
+        width: 1072,
+        height: 1448,
+    },
+    TargetDeviceProfile {
+        name: "Kobo Elipsa 2E (2023)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Kobo Libra 2 (2021)",
+        width: 1264,
+        height: 1680,
+    },
+    TargetDeviceProfile {
+        name: "Kobo Sage (2021)",
+        width: 1440,
+        height: 1920,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Leaf 2 (2022)",
+        width: 1264,
+        height: 1680,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Note Air (2020)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Nova Air 2 (2023)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Nova3 Color (2021)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Palma (2023)",
+        width: 824,
+        height: 1648,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Tab Ultra (2022)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Onyx Boox Tab X (2023)",
+        width: 1650,
+        height: 2200,
+    },
+    TargetDeviceProfile {
+        name: "PocketBook Color (2020)",
+        width: 1072,
+        height: 1448,
+    },
+    TargetDeviceProfile {
+        name: "PocketBook Era (2022)",
+        width: 1264,
+        height: 1680,
+    },
+    TargetDeviceProfile {
+        name: "PocketBook InkPad Color 2 (2023)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Ratta Supernote A5 X (2020)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Ratta Supernote A6 X (2020)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "reMarkable 2 (2020)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Tolino Epos 3 (2021)",
+        width: 1404,
+        height: 1872,
+    },
+    TargetDeviceProfile {
+        name: "Tolino Vision 6 (2021)",
+        width: 1264,
+        height: 1680,
+    },
+    TargetDeviceProfile {
+        name: "Xiaomi Mi Reader Pro (2020)",
+        width: 1404,
+        height: 1872,
+    },
 ];
 
 pub const PROPORTIONAL_OPTION_LABEL: &str = "Set height, width proportional";
@@ -313,7 +451,9 @@ pub fn gui_options_to_cli_args(
     }
 
     // Image processing
-    if matches!(options.image_processing_type, ImageProcessingType::Dithered) && options.layout_analysis {
+    if matches!(options.image_processing_type, ImageProcessingType::Dithered)
+        && options.layout_analysis
+    {
         args.push("--dither".into());
     }
 
@@ -424,7 +564,11 @@ fn resolve_cli_path() -> Result<PathBuf> {
         }
     }
     // Dev fallback: assume `lege` is on PATH (cargo run layout).
-    Ok(PathBuf::from(if cfg!(windows) { "lege.exe" } else { "lege" }))
+    Ok(PathBuf::from(if cfg!(windows) {
+        "lege.exe"
+    } else {
+        "lege"
+    }))
 }
 
 /// Spawn a hidden `lege --gui-worker` child process and stream its

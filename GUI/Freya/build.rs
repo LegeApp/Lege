@@ -64,7 +64,10 @@ fn compile_windows_resource(external_version: &str) {
     let icon_line = {
         let current_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
         let icon = PathBuf::from(&current_dir)
-            .join("..") .join("..") .join("assets") .join("icon.ico");
+            .join("..")
+            .join("..")
+            .join("assets")
+            .join("icon.ico");
         if icon.exists() {
             // Use a forward-slash path inside the .rc (rc.exe accepts both separators).
             let icon_str = icon
