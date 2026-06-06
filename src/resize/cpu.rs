@@ -50,7 +50,6 @@ fn bell_filter_type() -> FilterType {
     FilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
-
 pub fn resize_single<T>(src: T, params: &ResizeParams, tw: u32, th: u32) -> Result<RgbImage>
 where
     T: IntoImageView,

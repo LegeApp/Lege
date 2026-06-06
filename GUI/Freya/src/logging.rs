@@ -28,8 +28,8 @@ pub fn load_log_entries() -> Result<Vec<LogEntry>> {
     if !log_path.exists() {
         return Ok(Vec::new());
     }
-    let content = fs::read_to_string(&log_path)
-        .with_context(|| format!("Reading {}", log_path.display()))?;
+    let content =
+        fs::read_to_string(&log_path).with_context(|| format!("Reading {}", log_path.display()))?;
     let entries: Vec<LogEntry> = serde_json::from_str(&content)
         .with_context(|| format!("Parsing {}", log_path.display()))?;
     Ok(entries)
@@ -38,12 +38,10 @@ pub fn load_log_entries() -> Result<Vec<LogEntry>> {
 fn save_log_entries(entries: &[LogEntry]) -> Result<()> {
     let log_path = get_log_file_path();
     if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("Creating {}", parent.display()))?;
     }
     let content = serde_json::to_string_pretty(entries)?;
-    fs::write(&log_path, content)
-        .with_context(|| format!("Writing {}", log_path.display()))?;
+    fs::write(&log_path, content).with_context(|| format!("Writing {}", log_path.display()))?;
     Ok(())
 }
 

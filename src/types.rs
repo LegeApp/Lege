@@ -350,6 +350,9 @@ pub struct AppConfig {
     /// Enable OCR by default
     pub enable_ocr: Option<bool>,
 
+    /// Use the slower line-segmented OCR pipeline by default
+    pub slow_ocr: Option<bool>,
+
     /// Default binarization method
     pub binarization: Option<String>,
 
@@ -426,6 +429,7 @@ impl AppConfig {
             default_cover_format: Some("jpeg".to_string()),  // Fast, compatible JPEG for images
             default_height: Some(1200), // Balanced quality/size for most documents
             enable_ocr: Some(true),     // Enable OCR by default if available
+            slow_ocr: Some(false),      // Keep the existing fast OCR path by default
             binarization: Some("adaptive".to_string()), // Good for varied lighting conditions
             keep_color_images: Some(false), // Dither by default for smaller files
             disable_layout: Some(true), // Disable layout detection for faster processing
@@ -462,6 +466,10 @@ impl AppConfig {
 
         if let Some(ocr) = self.enable_ocr {
             pipeline_config.enable_ocr = ocr;
+        }
+
+        if let Some(slow_ocr) = self.slow_ocr {
+            pipeline_config.set_slow_ocr(slow_ocr);
         }
 
         if let Some(keep_color) = self.keep_color_images {
