@@ -71,6 +71,7 @@ impl CompiledGraph {
     pub(crate) async fn build(graph: &PreparedGraph) -> Result<Self> {
         let t0 = std::time::Instant::now();
         let ctx = GpuContext::new().await?;
+        #[cfg(feature = "debug-logging")]
         eprintln!(
             "  compiled.build: gpu_init={:.0}ms",
             t0.elapsed().as_millis()
@@ -87,9 +88,12 @@ impl CompiledGraph {
         ctx: GpuContext,
         t0: std::time::Instant,
     ) -> Result<Self> {
+        #[cfg(not(feature = "debug-logging"))]
+        let _ = t0;
         // ── Allocate GPU buffers ──────────────────────────────────────────
         let plan = ResidentMemoryPlan::from_graph(graph)?;
         let slot_sizes = plan.slot_sizes();
+        #[cfg(feature = "debug-logging")]
         let total_slot_bytes = slot_sizes.iter().sum::<u64>();
         let mut slot_buffers = Vec::with_capacity(slot_sizes.len());
         for (slot, byte_size) in slot_sizes.iter().enumerate() {
@@ -122,6 +126,7 @@ impl CompiledGraph {
                 mapped_at_creation: false,
             });
         ctx.queue.write_buffer(&dummy_bias_buffer, 0, &[0u8; 4]);
+        #[cfg(feature = "debug-logging")]
         eprintln!(
             "  compiled.build: allocated {} resident slots, {:.1}MB at {:.0}ms",
             slot_buffers.len(),
@@ -130,6 +135,7 @@ impl CompiledGraph {
         );
 
         // ── Upload all weight constants ───────────────────────────────────
+        #[cfg(feature = "debug-logging")]
         let mut uploaded_mb = 0.0f64;
         for (name, tensor) in &graph.constants {
             if tensor.data.is_empty() {
@@ -143,8 +149,12 @@ impl CompiledGraph {
                 .with_context(|| format!("compiled: missing resident slot buffer {slot}"))?;
             let bytes: &[u8] = bytemuck::cast_slice(&tensor.data);
             ctx.queue.write_buffer(buf, 0, bytes);
-            uploaded_mb += bytes.len() as f64 / (1024.0 * 1024.0);
+            #[cfg(feature = "debug-logging")]
+            {
+                uploaded_mb += bytes.len() as f64 / (1024.0 * 1024.0);
+            }
         }
+        #[cfg(feature = "debug-logging")]
         eprintln!(
             "  compiled.build: uploaded {uploaded_mb:.1}MB constants at {:.0}ms",
             t0.elapsed().as_millis()
@@ -196,6 +206,7 @@ impl CompiledGraph {
                 }
             }
         }
+        #[cfg(feature = "debug-logging")]
         eprintln!(
             "  compiled.build: SiLU fused {} sigmoid+mul pairs",
             silu_overrides.len()
@@ -397,6 +408,7 @@ impl CompiledGraph {
             }
         }
 
+        #[cfg(feature = "debug-logging")]
         eprintln!(
             "  compiled.build: {} steps, {} pipelines, build total={:.0}ms",
             steps.len(),
@@ -540,6 +552,7 @@ impl CompiledGraph {
         if !std::ptr::eq(self, submitted.graph) {
             bail!("submitted run belongs to a different CompiledGraph");
         }
+        #[cfg(feature = "debug-logging")]
         let t0 = std::time::Instant::now();
         let mut result = HashMap::new();
         let mut receivers = Vec::with_capacity(self.output_readback_bufs.len());
@@ -581,13 +594,16 @@ impl CompiledGraph {
             );
         }
 
-        let readback_elapsed = t0.elapsed();
-        eprintln!(
-            "  compiled.run: encode+submit={:.1}ms readback={:.1}ms total={:.1}ms",
-            submitted.submit_elapsed.as_secs_f64() * 1000.0,
-            readback_elapsed.as_secs_f64() * 1000.0,
-            (submitted.submit_elapsed + readback_elapsed).as_secs_f64() * 1000.0,
-        );
+        #[cfg(feature = "debug-logging")]
+        {
+            let readback_elapsed = t0.elapsed();
+            eprintln!(
+                "  compiled.run: encode+submit={:.1}ms readback={:.1}ms total={:.1}ms",
+                submitted.submit_elapsed.as_secs_f64() * 1000.0,
+                readback_elapsed.as_secs_f64() * 1000.0,
+                (submitted.submit_elapsed + readback_elapsed).as_secs_f64() * 1000.0,
+            );
+        }
 
         Ok(result)
     }
@@ -836,7 +852,9 @@ impl CompiledGraph {
                 kind, ms, n
             ));
         }
-        out.push_str("  compare GPU span above against the `compiled.run: ... readback=` wall time.\n");
+        out.push_str(
+            "  compare GPU span above against the `compiled.run: ... readback=` wall time.\n",
+        );
         out.push_str("=========================================\n");
         Ok(out)
     }
@@ -857,6 +875,12 @@ fn resolve_alias(name: &str, aliases: &HashMap<String, String>) -> String {
 fn step_profile_kind(kind: &PlannedOpKind, wgsl: &'static str) -> String {
     if wgsl == SILU_WGSL || wgsl == SILU_VEC4_WGSL {
         "SiLU".to_owned()
+    } else if wgsl == crate::vision::ops::winograd::WINOGRAD_INPUT_TRANSFORM_WGSL {
+        "WinogradInput".to_owned()
+    } else if wgsl == crate::vision::ops::winograd::WINOGRAD_BATCHED_GEMM_WGSL {
+        "WinogradGemm".to_owned()
+    } else if wgsl == crate::vision::ops::winograd::WINOGRAD_OUTPUT_TRANSFORM_WGSL {
+        "WinogradOutput".to_owned()
     } else if wgsl == crate::vision::ops::conv::CONV1X1_GEMM_S1_VEC4_WGSL {
         conv_profile_label("Conv1x1GemmS1Vec4", kind)
     } else if wgsl == crate::vision::ops::conv::CONV1X1_GEMM_S1_WGSL {

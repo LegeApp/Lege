@@ -483,7 +483,15 @@ mod tests {
     }
 
     /// Direct 3×3 stride-1 pad-1 multi-channel conv (NCHW), the oracle.
-    fn direct_conv(x: &[f32], w: &[f32], bias: &[f32], cin: usize, cout: usize, h: usize, wid: usize) -> Vec<f32> {
+    fn direct_conv(
+        x: &[f32],
+        w: &[f32],
+        bias: &[f32],
+        cin: usize,
+        cout: usize,
+        h: usize,
+        wid: usize,
+    ) -> Vec<f32> {
         let mut out = vec![0.0f32; cout * h * wid];
         for co in 0..cout {
             for oh in 0..h {
@@ -514,7 +522,15 @@ mod tests {
     }
 
     /// Winograd F(2,3) conv using the transform helpers, same layout as direct_conv.
-    fn winograd_conv(x: &[f32], w: &[f32], bias: &[f32], cin: usize, cout: usize, h: usize, wid: usize) -> Vec<f32> {
+    fn winograd_conv(
+        x: &[f32],
+        w: &[f32],
+        bias: &[f32],
+        cin: usize,
+        cout: usize,
+        h: usize,
+        wid: usize,
+    ) -> Vec<f32> {
         // Precompute U[cout][cin][16].
         let mut u_all = vec![0.0f32; cout * cin * 16];
         for co in 0..cout {
