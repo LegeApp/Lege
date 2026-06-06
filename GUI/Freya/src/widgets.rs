@@ -28,16 +28,13 @@ pub fn lege_panel_card(
 
     if !title.is_empty() {
         card = card.child(
-            rect()
-                .width(Size::fill())
-                .height(Size::px(22.))
-                .child(
-                    label()
-                        .text(title)
-                        .font_size(15.)
-                        .color(TEXT)
-                        .font_weight(700),
-                ),
+            rect().width(Size::fill()).height(Size::px(22.)).child(
+                label()
+                    .text(title)
+                    .font_size(15.)
+                    .color(TEXT)
+                    .font_weight(700),
+            ),
         );
     }
 

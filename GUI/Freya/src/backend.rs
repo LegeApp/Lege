@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::{ImageProcessingType, OutputFormat, ProcessingOptions};
-use crate::worker_process::{WorkerHandle, WorkerProgressUpdate, spawn_lege_worker, probe_file_json};
+use crate::worker_process::{
+    WorkerHandle, WorkerProgressUpdate, probe_file_json, spawn_lege_worker,
+};
 
 use crate::models::DocumentItem;
 use std::collections::VecDeque;
@@ -60,7 +62,6 @@ pub fn is_zip_file(path: &PathBuf) -> bool {
         .map(|s| s.to_lowercase() == "zip")
         .unwrap_or(false)
 }
-
 
 /// Validate that a path is a PDF file
 pub fn is_pdf_file(path: &PathBuf) -> bool {
@@ -156,7 +157,6 @@ pub fn calculate_path_size(path: &PathBuf) -> u64 {
         0
     }
 }
-
 
 /// Generate an appropriate output filename based on the input and processing options
 pub fn generate_output_filename(
