@@ -14,6 +14,7 @@ categories = ["multimedia::images", "text-processing"]
 members = [
     ".",  # The root crate
     "lege-gpu",
+    "lege-ocr",
     "legencode",
     "legencode/src/jbig2enc-rust",
     "legencode/src/TooJpeg-rust",
@@ -128,6 +129,8 @@ lazy_static = { workspace = true }
 ndarray = { workspace = true }
 Legencode = { path = "legencode" }
 lege-gpu = { path = "lege-gpu" }
+lege-ocr = { path = "lege-ocr" }
+epub-builder = "0.8"
 quick-xml = "0.38.4"
 # mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
 sysinfo = "0.31.4"
@@ -206,7 +209,7 @@ ndarray = "0.17.2"
 [features]
 default = ["jp2-lam"]
 static = ["pdfium-render/static"]
-debug-logging = ["Legencode/debug-logging", "dep:fontdue"]
+debug-logging = ["Legencode/debug-logging", "lege-gpu/debug-logging", "dep:fontdue"]
 jp2-lam = ["Legencode/jp2-lam"]
 # Feature for profiling with debug symbols - enables both debug logging and debug symbols
 profiling = ["debug-logging"]

@@ -4,6 +4,7 @@
 pub mod config;
 pub mod deskew_graph;
 pub mod djvu_pipeline;
+pub mod epub_pipeline;
 pub mod helper_functions;
 pub mod inference;
 pub mod page_analysis;
