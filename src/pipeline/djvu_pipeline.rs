@@ -640,6 +640,7 @@ async fn process_single_djvu_page(
     let DjvuPageProcessingOutput {
         adjusted_image,
         adjusted_detections,
+        ocr_image,
         binarized,
         width,
         height,
@@ -650,6 +651,8 @@ async fn process_single_djvu_page(
     let hocr_text = extract_djvu_text_layer(
         &config,
         pdf_renderer.as_ref(),
+        &adjusted_image,
+        ocr_image.as_ref(),
         &binarized,
         width,
         height,
@@ -676,6 +679,9 @@ struct DjvuPageProcessingInput {
 struct DjvuPageProcessingOutput {
     adjusted_image: RgbImage,
     adjusted_detections: Vec<crate::engine::Detection>,
+    /// High-resolution adjusted raster retained for slow OCR ("render high,
+    /// resize low"); `Some` only when rendered above `target_height`.
+    ocr_image: Option<RgbImage>,
     binarized: Vec<u8>,
     width: usize,
     height: usize,
@@ -698,6 +704,11 @@ fn process_djvu_cpu_intensive_work(
     // Always normalize page dimensions regardless of layout mode — PDF source already
     // renders at target_height so this is a no-op there, but folder source supplies
     // images at native resolution and viewers reject DjVus built at those sizes.
+    //
+    // "Render high, resize low": when slow OCR rendered the page above
+    // target_height, retain the high-res raster for recognition (moved out, not
+    // cloned) before downscaling the encode-path image.
+    let mut ocr_image: Option<RgbImage> = None;
     if adjusted_image.height() != config.target_height() {
         let current_w = adjusted_image.width();
         let current_h = adjusted_image.height();
@@ -707,7 +718,7 @@ fn process_djvu_cpu_intensive_work(
             .target_width()
             .unwrap_or_else(|| (target_h as f32 * aspect_ratio).round() as u32);
         if target_w > 0 && target_h > 0 {
-            // Scale detection bboxes
+            // Scale detection bboxes into target (output) space
             let sx = target_w as f32 / current_w as f32;
             let sy = target_h as f32 / current_h as f32;
             let mut scaled_detections = adjusted_detections.clone();
@@ -732,7 +743,7 @@ fn process_djvu_cpu_intensive_work(
             )
             .ok()
             .and_then(|bytes| RgbImage::from_raw(target_w, target_h, bytes));
-            adjusted_image = match resized {
+            let resized = match resized {
                 Some(buf) => buf,
                 None => image::imageops::resize(
                     &adjusted_image,
@@ -741,6 +752,11 @@ fn process_djvu_cpu_intensive_work(
                     image::imageops::FilterType::Lanczos3,
                 ),
             };
+            if config.slow_ocr_enabled() && current_h > target_h {
+                ocr_image = Some(std::mem::replace(&mut adjusted_image, resized));
+            } else {
+                adjusted_image = resized;
+            }
             adjusted_detections = scaled_detections;
         }
     }
@@ -869,6 +885,7 @@ fn process_djvu_cpu_intensive_work(
     Ok(DjvuPageProcessingOutput {
         adjusted_image,
         adjusted_detections,
+        ocr_image,
         binarized,
         width,
         height,
@@ -877,18 +894,45 @@ fn process_djvu_cpu_intensive_work(
     })
 }
 /// Extract text layer via OCR or PDF text extraction (runs in async context)
+#[allow(clippy::too_many_arguments)]
 async fn extract_djvu_text_layer(
     config: &PipelineConfig,
     pdf_renderer: Option<&Arc<PdfiumRenderer>>,
+    adjusted_image: &RgbImage,
+    ocr_image: Option<&RgbImage>,
     binarized: &[u8],
     width: usize,
     height: usize,
     detections: &[crate::engine::Detection],
     page_index: usize,
 ) -> Option<String> {
-    if config.enable_ocr() {
+    if config.enable_ocr() && config.slow_ocr_enabled() {
+        // Recognize on the high-res raster when available; detections and the
+        // returned hOCR are in output (page) space.
+        let (ocr_src, ocr_binary): (&RgbImage, &[u8]) = match ocr_image {
+            Some(hi) => (hi, &[]),
+            None => (adjusted_image, binarized),
+        };
+        match crate::ocr::slow::perform_slow_ocr(
+            ocr_src,
+            ocr_binary,
+            detections,
+            width as u32,
+            height as u32,
+            config,
+            page_index,
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(e) => {
+                warn_log!("Page {}: slow OCR failed: {}", page_index, e);
+                Some(String::new())
+            }
+        }
+    } else if config.enable_ocr() {
         let use_regions =
-            crate::ocr::ocr::should_use_region_ocr(config.enable_layout_detection(), detections);
+            crate::ocr::fast::should_use_region_ocr(config.enable_layout_detection(), detections);
         #[cfg(feature = "debug-logging")]
         info_log!(
             "[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}",
@@ -897,7 +941,7 @@ async fn extract_djvu_text_layer(
             detections.len()
         );
         let result = if use_regions {
-            crate::ocr::ocr::perform_region_based_ocr(
+            crate::ocr::fast::perform_region_based_ocr(
                 binarized,
                 width,
                 height,
@@ -906,7 +950,7 @@ async fn extract_djvu_text_layer(
             )
             .await
         } else {
-            crate::ocr::ocr::perform_tiling_based_ocr(
+            crate::ocr::fast::perform_tiling_based_ocr(
                 binarized,
                 width,
                 height,
