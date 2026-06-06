@@ -27,5 +27,6 @@ wgpu = { version = "29.0.3", default-features = false, features = ["std", "wgsl"
 
 [features]
 default = []
+debug-logging = []
 debug-layers = []
 no-include-shaders = []

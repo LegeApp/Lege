@@ -9,10 +9,9 @@ use anyhow::anyhow;
 
 /// Broad content category assigned to every layout detection.
 ///
-/// Both YOLO and PaddleX engines map their raw class IDs to one of these
-/// categories.  All downstream decisions (dithering, masking, OCR region
-/// selection, JBIG2 encoding mode) are driven by this enum — never by raw
-/// class IDs.
+/// Broad content category assigned to every YOLO layout detection.
+/// All downstream decisions (dithering, masking, OCR region selection,
+/// JBIG2 encoding mode) are driven by this enum — never by raw class IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentCategory {
     /// Textual content: titles, paragraphs, captions, formulas, references, …
@@ -60,7 +59,7 @@ pub enum RegionType {
 
 use std::collections::HashSet;
 
-/// Centralized label information system that efficiently combines all PaddleX label data
+/// Centralized label information system for YOLO class IDs to names.
 /// Provides O(1) lookups and maintains the complete mapping of class IDs to names
 #[derive(Debug, Clone)]
 pub struct LabelInfo {
@@ -351,6 +350,9 @@ pub struct AppConfig {
     /// Enable OCR by default
     pub enable_ocr: Option<bool>,
 
+    /// Use the slower line-segmented OCR pipeline by default
+    pub slow_ocr: Option<bool>,
+
     /// Default binarization method
     pub binarization: Option<String>,
 
@@ -427,6 +429,7 @@ impl AppConfig {
             default_cover_format: Some("jpeg".to_string()),  // Fast, compatible JPEG for images
             default_height: Some(1200), // Balanced quality/size for most documents
             enable_ocr: Some(true),     // Enable OCR by default if available
+            slow_ocr: Some(false),      // Keep the existing fast OCR path by default
             binarization: Some("adaptive".to_string()), // Good for varied lighting conditions
             keep_color_images: Some(false), // Dither by default for smaller files
             disable_layout: Some(true), // Disable layout detection for faster processing
@@ -463,6 +466,10 @@ impl AppConfig {
 
         if let Some(ocr) = self.enable_ocr {
             pipeline_config.enable_ocr = ocr;
+        }
+
+        if let Some(slow_ocr) = self.slow_ocr {
+            pipeline_config.set_slow_ocr(slow_ocr);
         }
 
         if let Some(keep_color) = self.keep_color_images {

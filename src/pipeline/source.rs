@@ -62,12 +62,15 @@ impl PageSource for PdfiumPageSource {
     }
 
     async fn load_page(&self, page_index: usize) -> Result<SourcePage> {
+        // "Render high, resize low": render at the highest resolution any stage
+        // needs (OCR when slow-OCR is enabled), then downstream stages resize
+        // down to target_height for encoding. Equals target_height otherwise.
         let rgb_page = self
             .renderer
             .render_page_rgb(
                 page_index as u32,
-                self.config.target_height(),
-                self.config.target_width(),
+                self.config.source_render_height(),
+                self.config.source_render_width(),
             )
             .await
             .map_err(|e| anyhow!("Failed to render page {}: {}", page_index, e))?;
@@ -153,6 +156,23 @@ impl PageSource for ImageFolderPageSource {
     }
 }
 
+enum DeskewAttempt {
+    Corrected(RgbImage),
+    Failed(anyhow::Error, RgbImage),
+    Panicked(RgbImage),
+}
+
+fn deskew_preserving_original(
+    original: RgbImage,
+    deskew: impl FnOnce(&RgbImage) -> Result<RgbImage>,
+) -> DeskewAttempt {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deskew(&original))) {
+        Ok(Ok(corrected)) => DeskewAttempt::Corrected(corrected),
+        Ok(Err(error)) => DeskewAttempt::Failed(error, original),
+        Err(_) => DeskewAttempt::Panicked(original),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn source_stage(
     source: Arc<dyn PageSource>,
@@ -193,40 +213,39 @@ pub async fn source_stage(
 
                 #[cfg(feature = "debug-logging")]
                 crate::info_log!("[SourceStage] Loading page {}", page_index);
-                let mut source_page = source.load_page(page_index).await.map_err(|e| {
+                let source_page = source.load_page(page_index).await.map_err(|e| {
                     #[cfg(feature = "debug-logging")]
                     crate::error_println!("[SourceStage] Page {} load failed: {:#}", page_index, e);
                     e
                 })?;
+                let SourcePage {
+                    mut image,
+                    original_width_pts,
+                    original_height_pts,
+                } = source_page;
 
                 if let Some(engine) = deskew_engine {
-                    let original = std::mem::replace(&mut source_page.image, RgbImage::new(0, 0));
                     match tokio::task::spawn_blocking(move || {
-                        match engine.process_image(&original) {
-                            Ok(corrected) => Ok(corrected),
-                            Err(e) => Err((e, original)),
-                        }
+                        deskew_preserving_original(image, |original| engine.process_image(original))
                     })
                     .await
+                    .map_err(|e| anyhow!("Page {}: deskew task failed: {}", page_index, e))?
                     {
-                        Ok(Ok(corrected)) => source_page.image = corrected,
-                        Ok(Err((e, original))) => {
-                            crate::warn_log!("Page {}: deskew failed: {}", page_index, e);
-                            source_page.image = original;
+                        DeskewAttempt::Corrected(corrected) => image = corrected,
+                        DeskewAttempt::Failed(_error, original) => {
+                            crate::warn_log!("Page {}: deskew failed: {}", page_index, _error);
+                            image = original;
                         }
-                        Err(e) => {
-                            crate::warn_log!("Page {}: deskew task panicked: {}", page_index, e);
-                            // image already replaced with 0×0; page will be skipped downstream
+                        DeskewAttempt::Panicked(original) => {
+                            crate::warn_log!("Page {}: deskew task panicked", page_index);
+                            image = original;
                         }
                     }
                 }
 
-                crate::pipeline::set_standard_dimensions_once(
-                    source_page.image.width(),
-                    source_page.image.height(),
-                );
+                crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
 
-                let high_res_arc = Arc::new(source_page.image);
+                let high_res_arc = Arc::new(image);
                 // In no-layout mode the inference image is never used; share the
                 // high-res Arc instead of deep-cloning a full RGB page per file.
                 let inference_image = if config.enable_layout_detection() {
@@ -242,8 +261,8 @@ pub async fn source_stage(
                     index: page_index,
                     high_res_image: high_res_arc,
                     inference_image,
-                    original_width_pts: source_page.original_width_pts,
-                    original_height_pts: source_page.original_height_pts,
+                    original_width_pts,
+                    original_height_pts,
                 })
             }));
         }
@@ -537,4 +556,42 @@ fn longest_consecutive_run(sorted: &[(u64, PathBuf)]) -> Vec<PathBuf> {
         .iter()
         .map(|(_, path)| path.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeskewAttempt, deskew_preserving_original};
+    use anyhow::anyhow;
+    use image::{Rgb, RgbImage};
+
+    fn test_image() -> RgbImage {
+        RgbImage::from_pixel(3, 2, Rgb([17, 34, 51]))
+    }
+
+    fn assert_original(attempt: DeskewAttempt, expected: &RgbImage) {
+        let original = match attempt {
+            DeskewAttempt::Failed(_, original) | DeskewAttempt::Panicked(original) => original,
+            DeskewAttempt::Corrected(_) => panic!("deskew unexpectedly succeeded"),
+        };
+        assert_eq!(&original, expected);
+        assert_eq!(original.dimensions(), (3, 2));
+    }
+
+    #[test]
+    fn deskew_failure_keeps_original_image() {
+        let original = test_image();
+        assert_original(
+            deskew_preserving_original(original.clone(), |_| Err(anyhow!("deskew failed"))),
+            &original,
+        );
+    }
+
+    #[test]
+    fn deskew_panic_keeps_original_image() {
+        let original = test_image();
+        assert_original(
+            deskew_preserving_original(original.clone(), |_| panic!("deskew panicked")),
+            &original,
+        );
+    }
 }

@@ -1,0 +1,118 @@
+on: [push, pull_request]
+
+name: CI
+
+jobs:
+  check_msrv:
+    name: Check MSRV
+    strategy:
+      matrix:
+        target:
+          - os: ubuntu-latest
+            backend: vulkan
+          - os: windows-latest
+            backend: vulkan,d3d12
+          - os: macos-latest
+            backend: vulkan,metal
+        version:
+          - msrv: 1.71.0
+            features: std
+          - msrv: 1.81.0
+            features: hashbrown
+    runs-on: ${{ matrix.target.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Generate lockfile with minimal dependency versions
+        run: cargo +nightly generate-lockfile -Zminimal-versions
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.version.msrv }}
+      # Note that examples are exempt from the MSRV check, so that they can use newer Rust features
+      - run: cargo check --workspace --no-default-features --features ${{ matrix.target.backend }},${{ matrix.version.features }}
+
+  test:
+    name: Test Suite
+    strategy:
+      matrix:
+        target:
+          - os: ubuntu-latest
+            backend: vulkan
+          - os: windows-latest
+            backend: vulkan,d3d12
+          - os: macos-latest
+            backend: vulkan,metal
+        features:
+          - hashbrown
+          - std
+          - hashbrown,std
+          - visualizer,std
+    runs-on: ${{ matrix.target.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cargo test all targets
+        run: cargo test --workspace --all-targets --no-default-features --features ${{ matrix.target.backend }},${{ matrix.features }}
+      - name: Cargo test docs
+        run: cargo test --workspace --doc --no-default-features --features ${{ matrix.target.backend }},${{ matrix.features }}
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    strategy:
+      matrix:
+        target:
+          - os: ubuntu-latest
+            backend: vulkan
+          - os: windows-latest
+            backend: vulkan,d3d12
+          - os: macos-latest
+            backend: vulkan,metal
+        features:
+          - hashbrown
+          - std
+          - hashbrown,std
+          - visualizer,std
+    runs-on: ${{ matrix.target.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets --no-default-features --features ${{ matrix.target.backend }},${{ matrix.features }} -- -D warnings
+
+  doc:
+    name: Build documentation
+    strategy:
+      matrix:
+        # Rely on Windows and Mac to also compile the Vulkan portion (via --all-features)
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTDOCFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build documentation
+        run: cargo doc --no-deps --workspace --all-features --document-private-items
+
+  readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Use cached cargo-readme
+        uses: actions/cache@v5
+        id: cargo-readme-cache
+        with:
+          path: ~/.cargo/bin/cargo-readme
+          key: ${{ runner.os }}-cargo-readme
+      - name: Install cargo-readme
+        if: steps.cargo-readme-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-readme
+      - name: Check if README.md is up-to-date
+        run: |
+          cargo readme > README.md
+          git diff --quiet || (echo '::error::Generated README is different, please regenerate with `cargo readme > README.md`'; git diff; false)

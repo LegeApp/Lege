@@ -18,6 +18,7 @@ pub(crate) mod slice;
 pub(crate) mod softmax;
 pub(crate) mod split;
 pub(crate) mod transpose;
+pub(crate) mod winograd;
 
 use anyhow::{Result, bail};
 
@@ -84,6 +85,50 @@ pub(crate) async fn run_op(
             }
             Ok(vec![
                 globalavgpool::run_global_avg_pool(ctx, &inputs[0]).await?,
+            ])
+        }
+        PlannedOpKind::WinogradInputTransform => {
+            if inputs.len() != 1 {
+                bail!("WinogradInputTransform expects 1 input");
+            }
+            let (v, _p, _ntw, _nth) = winograd::run_input_transform(ctx, &inputs[0]).await?;
+            Ok(vec![Tensor::new(
+                vec![
+                    16,
+                    inputs[0].shape[1],
+                    inputs[0].shape[2].div_ceil(2) * inputs[0].shape[3].div_ceil(2),
+                ],
+                v,
+            )?])
+        }
+        PlannedOpKind::WinogradBatchedGemm => {
+            if inputs.len() != 2 {
+                bail!("WinogradBatchedGemm expects U and V inputs");
+            }
+            let cout = inputs[0].shape[1];
+            let cin = inputs[0].shape[2];
+            let p = inputs[1].shape[2];
+            let m = winograd::run_batched_gemm(ctx, &inputs[0].data, &inputs[1].data, cout, cin, p)
+                .await?;
+            Ok(vec![Tensor::new(vec![16, cout, p], m)?])
+        }
+        PlannedOpKind::WinogradOutputTransform { use_bias, h, w } => {
+            let expected = if *use_bias { 2 } else { 1 };
+            if inputs.len() != expected {
+                bail!("WinogradOutputTransform expects {expected} input(s)");
+            }
+            let cout = inputs[0].shape[1];
+            Ok(vec![
+                winograd::run_output_transform(
+                    ctx,
+                    &inputs[0].data,
+                    inputs.get(1).map(|t| t.data.as_slice()).unwrap_or(&[0.0]),
+                    cout,
+                    *h,
+                    *w,
+                    *use_bias,
+                )
+                .await?,
             ])
         }
         PlannedOpKind::CumSum { axis } => {
@@ -317,6 +362,9 @@ pub(crate) fn op_is_gpu_implemented(kind: &PlannedOpKind) -> bool {
             | PlannedOpKind::Gemm { .. }
             | PlannedOpKind::Softmax { .. }
             | PlannedOpKind::GlobalAveragePool
+            | PlannedOpKind::WinogradInputTransform
+            | PlannedOpKind::WinogradBatchedGemm
+            | PlannedOpKind::WinogradOutputTransform { .. }
             | PlannedOpKind::CumSum { .. }
             | PlannedOpKind::ReduceSum { .. }
             | PlannedOpKind::SpaceToDepth { .. }
