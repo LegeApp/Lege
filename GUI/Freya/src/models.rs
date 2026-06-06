@@ -135,14 +135,31 @@ impl ProcessingResult {
         compressed_size: u64,
         page_range_used: bool,
     ) -> Self {
-        let input_filename = input_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let output_filename = output_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let input_filename = input_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let output_filename = output_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let compression_percentage = if original_size > 0 {
             (compressed_size as f64 / original_size as f64) * 100.0
         } else {
             0.0
         };
-        Self { input_filename, input_path, output_filename, output_path, original_size, compressed_size, compression_percentage, page_range_used }
+        Self {
+            input_filename,
+            input_path,
+            output_filename,
+            output_path,
+            original_size,
+            compressed_size,
+            compression_percentage,
+            page_range_used,
+        }
     }
 }
 

@@ -133,6 +133,7 @@ pub struct ProcessingOptions {
     pub png_folder_mode: bool,
     pub layout_analysis: bool,
     pub use_ocr: bool,
+    pub slow_ocr: bool,
     pub high_quality_output: bool,
     pub jpeg_compat: bool,
     pub invert_input: bool,
@@ -168,6 +169,7 @@ impl ProcessingOptions {
             png_folder_mode: false,
             layout_analysis: true,
             use_ocr: false,
+            slow_ocr: false,
             high_quality_output: false,
             jpeg_compat: false,
             invert_input: false,
@@ -220,6 +222,7 @@ impl ProcessingOptions {
         options.target_height = Some(config.target_height());
         options.layout_analysis = config.enable_layout_detection();
         options.use_ocr = config.enable_ocr();
+        options.slow_ocr = config.slow_ocr_enabled();
         options.high_quality_output = config.high_quality_output();
         options.jpeg_compat = config.jpeg_compat();
         options.invert_input = config.invert_input();

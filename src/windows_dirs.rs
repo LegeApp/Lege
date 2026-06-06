@@ -51,5 +51,4 @@ mod tests {
         let dir = get_user_data_dir().unwrap();
         assert!(dir.to_string_lossy().contains("Lege"));
     }
-
 }

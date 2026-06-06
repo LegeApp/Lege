@@ -8,16 +8,14 @@ use crate::backend;
 use crate::gui_text::GUI_TEXT;
 use crate::logging;
 use crate::models::{
-    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat,
-    ProcessingOptions, ProcessingResult,
+    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat, ProcessingOptions,
+    ProcessingResult,
 };
 use crate::version::display_version;
 use crate::widgets;
 use crate::worker_process::{
-    TARGET_DEVICE_PROFILES, find_profile,
-    WorkerProgressUpdate, WorkerProcessingStatus,
+    TARGET_DEVICE_PROFILES, WorkerProcessingStatus, WorkerProgressUpdate, find_profile,
 };
-
 
 use crate::colors::{BORDER, CARD_BG, INFO_BG, MUTED, PANEL_BG, TEXT};
 
@@ -50,7 +48,6 @@ fn retro_theme() -> Theme {
     };
     theme
 }
-
 
 fn format_eta_label(seconds: u32) -> String {
     let hours = seconds / 3600;
@@ -796,7 +793,11 @@ fn SettingsDashboard(
                     rect()
                         .width(Size::fill())
                         .height(Size::flex(1.))
-                        .child(PagesDeviceCard(state, target_height_input, page_range_input)),
+                        .child(PagesDeviceCard(
+                            state,
+                            target_height_input,
+                            page_range_input,
+                        )),
                 )
                 .child(
                     rect()
@@ -976,11 +977,7 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
                         rect()
                             .direction(Direction::Horizontal)
                             .spacing(10.)
-                            .child(
-                                rect()
-                                    .width(Size::percent(50.))
-                                    .child(layout_control),
-                            )
+                            .child(rect().width(Size::percent(50.)).child(layout_control))
                             .maybe_child(base_format_control.map(|control| -> Element {
                                 rect().width(Size::percent(50.)).child(control).into()
                             })),
