@@ -55,6 +55,77 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
         | PlannedOpKind::Unsqueeze { .. }
         | PlannedOpKind::Squeeze { .. } => Ok(vec![]),
 
+        // ── Winograd F(2,3) input transform ──────────────────────────────
+        PlannedOpKind::WinogradInputTransform => {
+            let xs = &in_shapes[0];
+            let cin = xs[1];
+            let h = xs[2];
+            let w = xs[3];
+            let ntw = w.div_ceil(2);
+            let nth = h.div_ceil(2);
+            let p = ntw * nth;
+            let params = [cin as u32, h as u32, w as u32, ntw as u32, nth as u32];
+            Ok(vec![StepSpec {
+                wgsl: super::winograd::WINOGRAD_INPUT_TRANSFORM_WGSL,
+                n_read_inputs: 1,
+                input_buf_names: vec![op.inputs[0].clone()],
+                output_buf_name: op.outputs[0].clone(),
+                params: bytemuck::cast_slice(&params).to_vec(),
+                dispatch: [(cin * p).div_ceil(256) as u32, 1, 1],
+            }])
+        }
+
+        // ── Winograd F(2,3) batched 16-GEMM ──────────────────────────────
+        PlannedOpKind::WinogradBatchedGemm => {
+            let us = &in_shapes[0];
+            let vs = &in_shapes[1];
+            let cout = us[1];
+            let cin = us[2];
+            let p = vs[2];
+            let params = [cout as u32, cin as u32, p as u32];
+            Ok(vec![StepSpec {
+                wgsl: super::winograd::WINOGRAD_BATCHED_GEMM_WGSL,
+                n_read_inputs: 2,
+                input_buf_names: vec![op.inputs[0].clone(), op.inputs[1].clone()],
+                output_buf_name: op.outputs[0].clone(),
+                params: bytemuck::cast_slice(&params).to_vec(),
+                dispatch: [cout.div_ceil(64) as u32, p.div_ceil(64) as u32, 16],
+            }])
+        }
+
+        // ── Winograd F(2,3) output transform ─────────────────────────────
+        PlannedOpKind::WinogradOutputTransform { use_bias, .. } => {
+            let ms = &in_shapes[0];
+            let ys = &out_shapes[0];
+            let cout = ms[1];
+            let h = ys[2];
+            let w = ys[3];
+            let ntw = w.div_ceil(2);
+            let nth = h.div_ceil(2);
+            let p = ntw * nth;
+            let bias_name = if *use_bias {
+                op.inputs[1].clone()
+            } else {
+                dummy_bias_name.to_owned()
+            };
+            let params = [
+                cout as u32,
+                h as u32,
+                w as u32,
+                ntw as u32,
+                nth as u32,
+                *use_bias as u32,
+            ];
+            Ok(vec![StepSpec {
+                wgsl: super::winograd::WINOGRAD_OUTPUT_TRANSFORM_WGSL,
+                n_read_inputs: 2,
+                input_buf_names: vec![op.inputs[0].clone(), bias_name],
+                output_buf_name: op.outputs[0].clone(),
+                params: bytemuck::cast_slice(&params).to_vec(),
+                dispatch: [(cout * p).div_ceil(256) as u32, 1, 1],
+            }])
+        }
+
         // ── Sigmoid ───────────────────────────────────────────────────────
         PlannedOpKind::Unary(UnaryKind::Sigmoid) => {
             let len = in_shapes[0].iter().product::<usize>();
@@ -579,8 +650,14 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 && plan.strides == [1, 1]
                 && plan.dilations[0] == plan.dilations[1]
                 && dil >= 2
-                && dil <= 5
+                && dil <= super::conv::CONV3X3_DIL_MAX
             {
+                // The shader's workgroup smem is sized for the max routed dilation;
+                // a relaxed ceiling without a matching array resize is silent UB.
+                debug_assert!(
+                    (32 + 2 * dil as usize).pow(2) <= super::conv::CONV3X3_DIL_SMEM,
+                    "CONV3X3_CO8_SP2X2_DIL smem overflow at dil={dil}"
+                );
                 let p = [
                     cout as u32,
                     cin as u32,
@@ -683,8 +760,14 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 && plan.strides == [1, 1]
                 && plan.dilations[0] == plan.dilations[1]
                 && dil >= 2
-                && dil <= 3
+                && dil <= super::conv::CONV5X5_DIL_MAX
             {
+                // The shader's workgroup smem is sized for the max routed dilation;
+                // a relaxed ceiling without a matching array resize is silent UB.
+                debug_assert!(
+                    (32 + 4 * dil as usize).pow(2) <= super::conv::CONV5X5_DIL_SMEM,
+                    "CONV5X5_CO8_SP2X2_DIL smem overflow at dil={dil}"
+                );
                 let p = [
                     cout as u32,
                     cin as u32,

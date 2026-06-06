@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use crate::vision::onnx::types::{
     Conv2dPlan, ElementwiseKind, PadMode, PlannedOpKind, Pool2dPlan, UnaryKind,
 };
+use crate::vision::ops::winograd::{input_transform_f23, output_transform_f23};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Tensor {
@@ -43,6 +44,13 @@ impl Tensor {
 pub(crate) fn run_op(kind: &PlannedOpKind, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
     match kind {
         PlannedOpKind::Conv2d(plan) => Ok(vec![conv2d(plan, inputs)?]),
+        PlannedOpKind::WinogradInputTransform => Ok(vec![winograd_input_transform(inputs[0])?]),
+        PlannedOpKind::WinogradBatchedGemm => {
+            Ok(vec![winograd_batched_gemm(inputs[0], inputs[1])?])
+        }
+        PlannedOpKind::WinogradOutputTransform { use_bias, h, w } => {
+            Ok(vec![winograd_output_transform(inputs, *use_bias, *h, *w)?])
+        }
         PlannedOpKind::Elementwise(kind) => Ok(vec![elementwise(kind, inputs)?]),
         PlannedOpKind::Unary(kind) => Ok(vec![unary(kind, inputs)?]),
         PlannedOpKind::Concat { axis } => Ok(vec![concat(inputs, *axis)?]),
@@ -319,6 +327,138 @@ fn depth_to_space(input: &Tensor, b: usize) -> Result<Tensor> {
             }
         });
     Tensor::new(vec![n, oc, oh, ow], data)
+}
+
+fn winograd_input_transform(input: &Tensor) -> Result<Tensor> {
+    require_rank(input, 4, "WinogradInputTransform input")?;
+    if input.shape[0] != 1 {
+        bail!("WinogradInputTransform only supports batch 1");
+    }
+    let cin = input.shape[1];
+    let h = input.shape[2];
+    let w = input.shape[3];
+    let ntw = w.div_ceil(2);
+    let nth = h.div_ceil(2);
+    let p = ntw * nth;
+    let stride = cin * p;
+    let mut out = vec![0.0f32; 16 * stride];
+
+    for ci in 0..cin {
+        for ty in 0..nth {
+            for tx in 0..ntw {
+                let tile = ty * ntw + tx;
+                let mut d = [0.0f32; 16];
+                for py in 0..4 {
+                    let ih = (2 * ty + py) as isize - 1;
+                    for px in 0..4 {
+                        let iw = (2 * tx + px) as isize - 1;
+                        if ih >= 0 && ih < h as isize && iw >= 0 && iw < w as isize {
+                            d[py * 4 + px] = input.data[ci * h * w + ih as usize * w + iw as usize];
+                        }
+                    }
+                }
+                let v = input_transform_f23(&d);
+                let base = ci * p + tile;
+                for e in 0..16 {
+                    out[e * stride + base] = v[e];
+                }
+            }
+        }
+    }
+
+    Tensor::new(vec![16, cin, p], out)
+}
+
+fn winograd_batched_gemm(u: &Tensor, v: &Tensor) -> Result<Tensor> {
+    if u.shape.len() != 3 || v.shape.len() != 3 {
+        bail!("WinogradBatchedGemm expects rank-3 U and V");
+    }
+    let cout = u.shape[1];
+    let cin = u.shape[2];
+    if u.shape[0] != 16 || v.shape[0] != 16 || v.shape[1] != cin {
+        bail!(
+            "WinogradBatchedGemm shape mismatch: U={:?} V={:?}",
+            u.shape,
+            v.shape
+        );
+    }
+    let p = v.shape[2];
+    let mut out = vec![0.0f32; 16 * cout * p];
+    for e in 0..16 {
+        let u_base = e * cout * cin;
+        let v_base = e * cin * p;
+        let m_base = e * cout * p;
+        for co in 0..cout {
+            for tile in 0..p {
+                let mut acc = 0.0f32;
+                for ci in 0..cin {
+                    acc += u.data[u_base + co * cin + ci] * v.data[v_base + ci * p + tile];
+                }
+                out[m_base + co * p + tile] = acc;
+            }
+        }
+    }
+    Tensor::new(vec![16, cout, p], out)
+}
+
+fn winograd_output_transform(
+    inputs: &[&Tensor],
+    use_bias: bool,
+    h: usize,
+    w: usize,
+) -> Result<Tensor> {
+    let m = inputs[0];
+    if m.shape.len() != 3 || m.shape[0] != 16 {
+        bail!("WinogradOutputTransform expects M shape [16,Cout,P]");
+    }
+    if use_bias && inputs.len() != 2 {
+        bail!("WinogradOutputTransform expected bias input");
+    }
+    let cout = m.shape[1];
+    let p = m.shape[2];
+    let bias = inputs.get(1).copied();
+    if let Some(bias) = bias {
+        if bias.shape != [cout] {
+            bail!("WinogradOutputTransform bias shape mismatch");
+        }
+    }
+
+    let ntw = w.div_ceil(2);
+    let nth = h.div_ceil(2);
+    if p != ntw * nth {
+        bail!("WinogradOutputTransform P mismatch: M P={p}, output H/W={h}x{w}");
+    }
+    let mut out = vec![0.0f32; cout * h * w];
+    let stride = cout * p;
+    for co in 0..cout {
+        for tile in 0..p {
+            let ty = tile / ntw;
+            let tx = tile - ty * ntw;
+            let mut mm = [0.0f32; 16];
+            let base = co * p + tile;
+            for e in 0..16 {
+                mm[e] = m.data[e * stride + base];
+            }
+            let y = output_transform_f23(&mm);
+            let b = bias.map(|tensor| tensor.data[co]).unwrap_or(0.0);
+            let oh0 = 2 * ty;
+            let ow0 = 2 * tx;
+            let cbase = co * h * w;
+            if oh0 < h && ow0 < w {
+                out[cbase + oh0 * w + ow0] = y[0] + b;
+            }
+            if oh0 < h && ow0 + 1 < w {
+                out[cbase + oh0 * w + ow0 + 1] = y[1] + b;
+            }
+            if oh0 + 1 < h && ow0 < w {
+                out[cbase + (oh0 + 1) * w + ow0] = y[2] + b;
+            }
+            if oh0 + 1 < h && ow0 + 1 < w {
+                out[cbase + (oh0 + 1) * w + ow0 + 1] = y[3] + b;
+            }
+        }
+    }
+    Tensor::new(vec![1, cout, h, w], out)
 }
 
 fn unary(kind: &UnaryKind, inputs: &[&Tensor]) -> Result<Tensor> {

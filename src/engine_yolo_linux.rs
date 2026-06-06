@@ -77,6 +77,7 @@ impl YoloEngine {
             iou_threshold: config.iou_threshold,
             max_detections: 300,
         })?;
+        #[cfg(feature = "debug-logging")]
         info_println!("Using WGPU execution for YOLO layout detection");
         Ok(Self {
             provider_name: detector.provider_name(),
@@ -101,7 +102,8 @@ impl YoloEngine {
 
     pub async fn detect_batch_async(&mut self, images: &[RgbImage]) -> Result<Vec<Vec<Detection>>> {
         let page_indices = (0..images.len()).collect::<Vec<_>>();
-        self.detect_batch_with_indices_async(images, &page_indices).await
+        self.detect_batch_with_indices_async(images, &page_indices)
+            .await
     }
 
     pub async fn detect_batch_with_indices_async(
