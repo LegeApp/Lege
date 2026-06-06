@@ -1,0 +1,46 @@
+[package]
+name = "lege-ocr"
+version = "0.1.0"
+edition = "2024"
+description = "Slow OCR pipeline for Lege — line-level preprocessing and hOCR assembly"
+
+[lib]
+name = "lege_ocr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lege-ocr-debug"
+path = "src/bin/lege_ocr_debug.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rayon = { workspace = true }
+once_cell = { workspace = true }
+html-escape = { workspace = true }
+regex = "1.12.2"
+lege-gpu = { path = "../lege-gpu" }
+env_logger = "0.10"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tesseract = "0.14"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = [
+    "Foundation",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+] }
+windows-core = { workspace = true }
+
+[features]
+default = []
+trocr = []

@@ -178,7 +178,19 @@ impl ProcessingPipeline {
         progress_tracker.update(crate::progress::ProcessingStatus::Initializing);
 
         // Route to separate pipelines based on output format
-        if self.config.text_format() == "djvu" {
+        if self.config.text_format() == "epub" {
+            crate::info_log!("Using EPUB pipeline");
+            super::epub_pipeline::create_and_run_epub_pipeline(
+                self.pdf_bytes.clone(),
+                Arc::new(self.config.clone()),
+                output_path,
+                page_range,
+                progress_tracker,
+                shutdown_rx,
+                progress_callback,
+            )
+            .await?;
+        } else if self.config.text_format() == "djvu" {
             // Use standalone DJVU pipeline (simplified tokio version)
             crate::info_log!("Using standalone DJVU pipeline");
             super::djvu_pipeline::create_and_run_djvu_pipeline(
@@ -305,7 +317,18 @@ pub struct PipelineConfig {
     pub(crate) expand_full_bleed_figure_bboxes: bool,
     // DjVu IW44 quality (0-100 scale, maps to slices)
     pub(crate) djvu_iw44_quality: u8,
+    /// Use the slow line-segmentation OCR pipeline instead of the fast region/tile path.
+    pub(crate) slow_ocr: bool,
+    /// Resolution multiplier applied to `target_height` when slow OCR is enabled,
+    /// determining the height pdfium renders at ("render high, resize low"). The
+    /// high-res raster feeds OCR; the encode path is resized back down to
+    /// `target_height`. Clamped so the render height never exceeds
+    /// `MAX_SLOW_OCR_RENDER_HEIGHT`.
+    pub(crate) slow_ocr_scale: f32,
 }
+
+/// Upper bound on the slow-OCR render height (pixels) to cap memory use.
+pub const MAX_SLOW_OCR_RENDER_HEIGHT: u32 = 6000;
 
 impl PipelineConfig {
     pub fn new() -> Result<Self> {
@@ -356,6 +379,8 @@ impl PipelineConfig {
             keep_original_images: true,
             expand_full_bleed_figure_bboxes: true,
             djvu_iw44_quality: 75, // Default to good quality
+            slow_ocr: false,
+            slow_ocr_scale: 2.5,
         };
 
         config.validate()?;
@@ -606,16 +631,55 @@ impl PipelineConfig {
     pub fn djvu_iw44_quality(&self) -> u8 {
         self.djvu_iw44_quality
     }
+    pub fn slow_ocr_enabled(&self) -> bool {
+        self.slow_ocr
+    }
+
+    pub fn slow_ocr_scale(&self) -> f32 {
+        self.slow_ocr_scale
+    }
+
+    /// Height (pixels) pdfium should render pages at. When slow OCR is enabled
+    /// this is `target_height * slow_ocr_scale` (clamped), so a high-resolution
+    /// raster is available for recognition; otherwise it equals `target_height`.
+    pub fn source_render_height(&self) -> u32 {
+        if self.slow_ocr && self.slow_ocr_scale > 1.0 {
+            let scaled = (self.target_height as f32 * self.slow_ocr_scale).round() as u32;
+            scaled
+                .min(MAX_SLOW_OCR_RENDER_HEIGHT)
+                .max(self.target_height)
+        } else {
+            self.target_height
+        }
+    }
+
+    /// Width (pixels) pdfium should render at, scaled in proportion to
+    /// `source_render_height`. `None` lets pdfium derive width from the page
+    /// aspect ratio (mirrors `target_width`).
+    pub fn source_render_width(&self) -> Option<u32> {
+        let render_h = self.source_render_height();
+        match self.target_width {
+            Some(w) if self.target_height > 0 && render_h != self.target_height => Some(
+                ((w as f32 * render_h as f32 / self.target_height as f32).round() as u32).max(1),
+            ),
+            other => other,
+        }
+    }
 
     // Setters
     pub fn set_text_format(&mut self, format: &str) -> Result<()> {
         match format {
-            "jbig2" | "ccitt4" | "jpeg" | "djvu" => {
+            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "epub" => {
                 self.text_format = format.to_string();
+                // EPUB is a text-only reflowable format: it needs the slow,
+                // structured OCR path and has no image-encoding stage.
+                if format == "epub" {
+                    self.set_slow_ocr(true);
+                }
                 Ok(())
             }
             _ => Err(anyhow!(
-                "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu",
+                "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, epub",
                 format
             )),
         }
@@ -683,6 +747,19 @@ impl PipelineConfig {
     }
     pub fn set_enable_layout_detection(&mut self, enable: bool) {
         self.enable_layout_detection = enable;
+    }
+    pub fn set_slow_ocr(&mut self, enable: bool) {
+        self.slow_ocr = enable;
+        if enable {
+            self.enable_ocr = true;
+        }
+    }
+    /// Set the slow-OCR render-resolution multiplier. Values <= 1.0 disable the
+    /// high-resolution render (OCR then runs at `target_height`).
+    pub fn set_slow_ocr_scale(&mut self, scale: f32) {
+        if scale.is_finite() && scale >= 1.0 {
+            self.slow_ocr_scale = scale;
+        }
     }
     pub fn set_keep_original_images(&mut self, keep: bool) {
         self.keep_original_images = keep;
