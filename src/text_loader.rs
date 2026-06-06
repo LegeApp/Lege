@@ -24,6 +24,7 @@ pub struct MainCliText {
     pub version_line: String,
     pub internal_version_line: String,
     pub usage_block: String,
+    pub ocr_mode_help_line: String,
     pub debug_help_block: String,
     pub env_variables_help_block: String,
     pub target_profiles_header: String,
@@ -61,6 +62,7 @@ pub struct MainCliText {
     pub selected_options_note: String,
     pub selected_options_reason: String,
     pub selected_options_ocr_enabled: String,
+    pub selected_options_ocr_mode: String,
     pub selected_options_no_cover_page: String,
     pub selected_options_invert_input: String,
     pub selected_options_deskew_enabled: String,
@@ -313,6 +315,7 @@ fn default_cli_text() -> CliText {
             version_line: "Lege version {}".to_string(),
             internal_version_line: "Internal version: {}".to_string(),
             usage_block: missing.clone(),
+            ocr_mode_help_line: missing.clone(),
             debug_help_block: missing.clone(),
             env_variables_help_block: missing.clone(),
             target_profiles_header: missing.clone(),
@@ -350,6 +353,7 @@ fn default_cli_text() -> CliText {
             selected_options_note: missing.clone(),
             selected_options_reason: missing.clone(),
             selected_options_ocr_enabled: missing.clone(),
+            selected_options_ocr_mode: missing.clone(),
             selected_options_no_cover_page: missing.clone(),
             selected_options_invert_input: missing.clone(),
             selected_options_deskew_enabled: missing.clone(),
@@ -526,5 +530,4 @@ impl CliText {
     pub fn format_percentage(&self, pct: i32) -> String {
         self.progress.percentage.replace("{}", &pct.to_string())
     }
-
 }

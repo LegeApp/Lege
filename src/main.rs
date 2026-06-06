@@ -12,7 +12,7 @@ use lege::{
 mod version;
 mod worker_json;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use version::display_version;
 
@@ -104,7 +104,10 @@ fn fast_exit(code: i32) -> ! {
 fn probe_json(path: PathBuf) -> Result<()> {
     if path.is_dir() {
         let count = count_image_files_in_dir_probe(&path);
-        println!("{}", serde_json::json!({"kind": "image_folder", "pages": count}));
+        println!(
+            "{}",
+            serde_json::json!({"kind": "image_folder", "pages": count})
+        );
         return Ok(());
     }
 
@@ -175,8 +178,12 @@ fn count_images_in_zip_probe<R: std::io::Read + std::io::Seek>(
     let mut count = 0usize;
     let mut nested: Vec<Vec<u8>> = Vec::new();
     for i in 0..archive.len() {
-        let Ok(mut entry) = archive.by_index_raw(i) else { continue };
-        if entry.is_dir() { continue; }
+        let Ok(mut entry) = archive.by_index_raw(i) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
         let name = entry.name().to_ascii_lowercase();
         let ext = std::path::Path::new(&name)
             .extension()
@@ -250,7 +257,7 @@ fn hardware_acceleration_status() -> (bool, String) {
 #[derive(Default)]
 struct CliOptions {
     // --- Output format ---
-    text_format: Option<String>,  // --text-format ccitt4|jbig2|jpeg|djvu
+    text_format: Option<String>, // --text-format ccitt4|jbig2|jpeg|djvu|epub
     cover_format: Option<String>, // --cover-format jpeg|jp2|ccitt4|jbig2|none
 
     // --- Binarization ---
@@ -269,6 +276,8 @@ struct CliOptions {
     dither: bool,                  // --dither
     no_layout: bool,               // --no-layout
     ocr: Option<bool>,             // --ocr / --no-ocr
+    ocr_mode: Option<OcrMode>,     // --ocr-mode fast|best / --best-ocr
+    slow_ocr_scale: Option<f32>,   // --best-ocr-scale N
     no_cover: bool,                // --no-cover
     invert: bool,                  // --invert
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
@@ -304,6 +313,29 @@ struct CliOptions {
     probe_json: bool, // --probe-json
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrMode {
+    Fast,
+    Best,
+}
+
+impl OcrMode {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "fast" => Ok(Self::Fast),
+            "best" => Ok(Self::Best),
+            _ => bail!("Invalid OCR mode '{}'. Use: fast or best", raw),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Best => "best",
+        }
+    }
+}
+
 /// Extract all `--flag` and `--key value` processing options from the arg list,
 /// returning the remaining positional args and the parsed options.
 fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
@@ -329,9 +361,9 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     .ok_or_else(|| anyhow!("Missing value after --text-format"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
-                    "ccitt4" | "jbig2" | "jpeg" | "djvu" => {}
+                    "ccitt4" | "jbig2" | "jpeg" | "djvu" | "epub" => {}
                     _ => bail!(
-                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, or djvu",
+                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, djvu, or epub",
                         val
                     ),
                 }
@@ -438,6 +470,15 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.language = Some(normalized);
                 i += 2;
             }
+            "--ocr-mode" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --ocr-mode"))?;
+                let mode = OcrMode::parse(val)?;
+                opts.ocr = Some(true);
+                opts.ocr_mode = Some(mode);
+                i += 2;
+            }
 
             // --- debug / data-generation key-value ---
             "--pdf-to-png" => {
@@ -535,7 +576,27 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--no-ocr" => {
                 opts.ocr = Some(false);
+                opts.ocr_mode = None;
                 i += 1;
+            }
+            "--best-ocr" => {
+                opts.ocr_mode = Some(OcrMode::Best);
+                opts.ocr = Some(true); // best OCR implies --ocr
+                i += 1;
+            }
+            "--best-ocr-scale" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after {}", arg))?;
+                let scale: f32 = val
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid {} '{}'. Use a number >= 1.0", arg, val))?;
+                if !(scale.is_finite() && scale >= 1.0) {
+                    bail!("Invalid {} '{}'. Use a number >= 1.0", arg, val);
+                }
+                opts.slow_ocr_scale = Some(scale);
+                i += 2;
             }
             "--no-cover" => {
                 opts.no_cover = true;
@@ -633,6 +694,27 @@ fn parse_jbig2_mode_flag(raw: &str) -> Result<Jbig2Mode> {
     }
 }
 
+fn apply_ocr_options(config: &mut PipelineConfig, cli_opts: &CliOptions) {
+    if let Some(ocr_val) = cli_opts.ocr {
+        config.set_enable_ocr(ocr_val);
+        if !ocr_val {
+            config.set_slow_ocr(false);
+        }
+    }
+
+    if let Some(mode) = cli_opts.ocr_mode {
+        match mode {
+            OcrMode::Fast => {
+                config.set_enable_ocr(true);
+                config.set_slow_ocr(false);
+            }
+            OcrMode::Best => {
+                config.set_slow_ocr(true);
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Configure dynamic runtime library paths early (before ORT/PDF pipelines initialize).
     lege::configure_runtime_env();
@@ -716,7 +798,7 @@ fn main() -> Result<()> {
     }
 
     // Extract all --flag / --key value options, leaving only positional args.
-    let (args, cli_opts) = extract_cli_options(args)?;
+    let (args, mut cli_opts) = extract_cli_options(args)?;
 
     // Machine-readable probe mode: print JSON metadata and exit.
     if cli_opts.probe_json {
@@ -938,6 +1020,18 @@ fn main() -> Result<()> {
         let mut positional: Vec<String> = args[1..].iter().map(|s| sanitize_path_arg(s)).collect();
         let mut page_range: Option<String> = None;
         let mut target_arg: Option<String> = None;
+        let epub_command = pop_trailing_epub_command(&mut positional);
+        if epub_command {
+            if let Some(fmt) = cli_opts.text_format.as_deref()
+                && fmt != "epub"
+            {
+                bail!(
+                    "Trailing `epub` command cannot be combined with --text-format {}",
+                    fmt
+                );
+            }
+            cli_opts.text_format = Some("epub".to_string());
+        }
 
         // Trailing target (height/profile) takes precedence over page range so numeric targets aren't misread.
         if let Some(last) = positional.last() {
@@ -992,6 +1086,32 @@ fn main() -> Result<()> {
 
 fn print_usage() {
     println!("{}", CLI_TEXT.main.usage_block);
+    println!("{}", CLI_TEXT.main.ocr_mode_help_line);
+}
+
+fn pop_trailing_epub_command(positionals: &mut Vec<String>) -> bool {
+    if positionals.len() >= 2
+        && positionals
+            .last()
+            .is_some_and(|arg| arg.eq_ignore_ascii_case("epub"))
+    {
+        positionals.pop();
+        true
+    } else {
+        false
+    }
+}
+
+fn split_trailing_epub_command(input: &str) -> (String, bool) {
+    let trimmed = input.trim();
+    let Some(last) = trimmed.split_whitespace().last() else {
+        return (String::new(), false);
+    };
+    if !last.eq_ignore_ascii_case("epub") {
+        return (trimmed.to_string(), false);
+    }
+    let command_start = trimmed.len().saturating_sub(last.len());
+    (trimmed[..command_start].trim_end().to_string(), true)
 }
 
 fn print_licenses() {
@@ -1218,7 +1338,7 @@ fn handle_simple_processing(
         pipeline_config.set_ocr_language(language)?;
     }
 
-    // Text format (ccitt4 | jbig2 | djvu)
+    // Text format (ccitt4 | jbig2 | djvu | epub)
     if let Some(ref fmt) = cli_opts.text_format {
         pipeline_config.set_text_format(fmt)?;
     }
@@ -1304,8 +1424,9 @@ fn handle_simple_processing(
     if cli_opts.no_layout {
         pipeline_config.set_enable_layout_detection(false);
     }
-    if let Some(ocr_val) = cli_opts.ocr {
-        pipeline_config.set_enable_ocr(ocr_val);
+    apply_ocr_options(&mut pipeline_config, &cli_opts);
+    if let Some(scale) = cli_opts.slow_ocr_scale {
+        pipeline_config.set_slow_ocr_scale(scale);
     }
     if cli_opts.no_cover {
         pipeline_config.set_no_cover_page(true);
@@ -1573,6 +1694,8 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     if input.is_empty() {
         return Ok(None);
     }
+    let (input, epub_command) = split_trailing_epub_command(input);
+    let input = input.as_str();
 
     // Check for special modes
     if input.contains("--png-folder") {
@@ -1606,6 +1729,18 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
 
     let file_path = &files[0];
     validate_cli_input_path(file_path)?;
+
+    if epub_command {
+        let mut config = PipelineConfig::default();
+        config.set_text_format("epub")?;
+        config.set_image_format(CoverFormat::None);
+        config.set_enable_layout_detection(true);
+        if let Some(ref range) = page_range {
+            validate_page_range(range)?;
+            config.set_page_range(Some(PageRange::parse(range)?));
+        }
+        return Ok(Some((PathBuf::from(file_path), config)));
+    }
 
     // Check for OCR layer in the PDF right after validation
     if PathBuf::from(file_path)
@@ -1652,6 +1787,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         final_enable_dithering,
         layout_detection_enabled,
         ocr_enabled,
+        ocr_mode,
         original_image,
         no_cover_page,
         no_binarization,
@@ -1702,6 +1838,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 enable_dithering,
                 layout_detection_enabled,
                 ocr_enabled,
+                ocr_mode,
                 original_image,
                 no_cover_page,
                 no_binarization,
@@ -1722,6 +1859,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     enable_dithering,
                     layout_detection_enabled,
                     ocr_enabled,
+                    ocr_mode,
                     original_image,
                     no_cover_page,
                     no_binarization,
@@ -1877,6 +2015,12 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     }
     config.set_enable_layout_detection(effective_layout_detection);
     config.set_enable_ocr(ocr_enabled);
+    if ocr_enabled {
+        match ocr_mode {
+            OcrMode::Fast => config.set_slow_ocr(false),
+            OcrMode::Best => config.set_slow_ocr(true),
+        }
+    }
     config.set_no_cover_page(no_cover_page);
     config.set_invert_input(invert_input);
     config.set_enable_deskew(deskew_enabled);
@@ -1991,6 +2135,17 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     println!(
         "{}{}:{} {}",
         COLORS.info,
+        CLI_TEXT.main.selected_options_ocr_mode,
+        COLORS.reset,
+        if config.slow_ocr_enabled() {
+            OcrMode::Best.as_str()
+        } else {
+            OcrMode::Fast.as_str()
+        }
+    );
+    println!(
+        "{}{}:{} {}",
+        COLORS.info,
         CLI_TEXT.main.selected_options_no_cover_page,
         COLORS.reset,
         config.no_cover_page()
@@ -2097,8 +2252,7 @@ fn process_input_job_json(
 
     match input {
         SimpleInput::Pdf(path) => {
-            let task_id =
-                progress::spawn_file_processing_task(path, output_path, pipeline_config);
+            let task_id = progress::spawn_file_processing_task(path, output_path, pipeline_config);
             worker_json::run_json_worker(&receiver, task_id);
         }
         SimpleInput::ImageFolder { source, .. } => {
@@ -2222,6 +2376,7 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
+    OcrMode,
     bool,
     bool,
     bool,
@@ -2244,6 +2399,7 @@ fn parse_format_selection_with_options(
             false, // enable_dithering
             true,  // layout_detection enabled by default
             false, // ocr_enabled
+            OcrMode::Fast,
             true,  // original_image (no dithering)
             false, // no_cover_page
             false, // no_binarization
@@ -2343,6 +2499,7 @@ fn parse_format_selection_with_options(
     let (
         layout_detection,
         ocr_enabled,
+        ocr_mode,
         mut original_image,
         no_cover_page,
         no_binarization,
@@ -2392,6 +2549,7 @@ fn parse_format_selection_with_options(
         final_enable_dithering,
         layout_detection,
         ocr_enabled,
+        ocr_mode,
         original_image,
         no_cover_page,
         no_binarization,
@@ -2437,12 +2595,44 @@ fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool)> {
 
 fn parse_options(
     input: &str,
-) -> Result<(bool, bool, bool, bool, bool, bool, bool, bool, bool, bool)> {
+) -> Result<(
+    bool,
+    bool,
+    OcrMode,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+)> {
     let options: Vec<&str> = input.split_whitespace().collect();
 
     // 'a' now DISABLES layout detection (it's enabled by default)
     let layout_detection = !options.contains(&"a");
-    let ocr_enabled = options.contains(&"b");
+    let mut ocr_enabled = false;
+    let mut ocr_mode = OcrMode::Fast;
+    for option in &options {
+        match option.to_ascii_lowercase().as_str() {
+            "o1" => {
+                ocr_enabled = true;
+                ocr_mode = OcrMode::Fast;
+            }
+            "o2" => {
+                ocr_enabled = true;
+                ocr_mode = OcrMode::Best;
+            }
+            other if other.starts_with('o') && other.len() > 1 => {
+                bail!(
+                    "Invalid OCR option '{}'. Use o1 for fast OCR or o2 for best OCR",
+                    option
+                );
+            }
+            _ => {}
+        }
+    }
     // 'c' now selects DITHERED images (quality-vs-size toggle). Original is default.
     let original_image = !options.contains(&"c");
     let no_cover_page = options.contains(&"d");
@@ -2456,6 +2646,7 @@ fn parse_options(
     Ok((
         layout_detection,
         ocr_enabled,
+        ocr_mode,
         original_image,
         no_cover_page,
         no_binarization,
@@ -2465,6 +2656,43 @@ fn parse_options(
         crop_margins,
         force_crop,
     ))
+}
+
+#[cfg(test)]
+mod cli_parser_tests {
+    use super::*;
+
+    #[test]
+    fn interactive_format_4_is_not_epub() {
+        let err = match parse_format_selection_with_options("4") {
+            Ok(_) => panic!("format 4 should not parse"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("Format number must be"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn trailing_epub_command_is_removed_from_positionals() {
+        let mut positional = vec![
+            "book.pdf".to_string(),
+            "1-10".to_string(),
+            "epub".to_string(),
+        ];
+
+        assert!(pop_trailing_epub_command(&mut positional));
+        assert_eq!(positional, vec!["book.pdf".to_string(), "1-10".to_string()]);
+    }
+
+    #[test]
+    fn initial_epub_command_strips_only_final_token() {
+        let (input, is_epub) = split_trailing_epub_command("\"book path.pdf\" 1-10 epub");
+
+        assert!(is_epub);
+        assert_eq!(input, "\"book path.pdf\" 1-10");
+    }
 }
 
 fn parse_binarization_method(input: &str) -> Result<String> {
@@ -3303,6 +3531,12 @@ fn generate_output_path(
         return Ok(output_dir.join(output_filename));
     }
 
+    // EPUB: reflowable text-only output
+    if config.text_format() == "epub" {
+        let output_filename = format!("{}_processed_{}.epub", input_stem, timestamp);
+        return Ok(output_dir.join(output_filename));
+    }
+
     // For PDF: use text format as the identifier (no cover format suffix)
     let output_filename = format!(
         "{}_processed_{}_{}.pdf",
@@ -3382,8 +3616,9 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     if cli_opts.no_layout {
         pipeline_config.set_enable_layout_detection(false);
     }
-    if let Some(ocr_val) = cli_opts.ocr {
-        pipeline_config.set_enable_ocr(ocr_val);
+    apply_ocr_options(&mut pipeline_config, cli_opts);
+    if let Some(scale) = cli_opts.slow_ocr_scale {
+        pipeline_config.set_slow_ocr_scale(scale);
     }
     if cli_opts.invert {
         pipeline_config.set_invert_input(true);
@@ -3470,6 +3705,7 @@ struct CliStageSnapshot {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "debug-logging")]
 struct CliStageEvent<'a> {
     current: u32,
     stage_order: u8,
@@ -3504,6 +3740,7 @@ fn print_timestamped_line(line: &str) {
     }
 }
 
+#[cfg(feature = "debug-logging")]
 fn print_stage_progress_line(
     stage_label: &str,
     stage_color: &str,
@@ -3553,94 +3790,107 @@ fn emit_cli_stage_progress(
     snapshot: &mut CliStageSnapshot,
     metrics: lege::progress::ProgressMetrics,
 ) {
-    let total = metrics.pages_total.max(1);
-    let mut events: Vec<CliStageEvent<'static>> = Vec::new();
-
-    let mut push_stage_events = |start: u32,
-                                 end: u32,
-                                 stage_order: u8,
-                                 stage_label: &'static str,
-                                 stage_color: &'static str,
-                                 verb: &'static str| {
-        if end > start {
-            for current in (start + 1)..=end {
-                events.push(CliStageEvent {
-                    current,
-                    stage_order,
-                    stage_label,
-                    stage_color,
-                    verb,
-                    include_percentage: stage_label == "Encode",
-                });
-            }
-        }
-    };
-
-    match metrics.mode {
-        lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => {
-            push_stage_events(
-                snapshot.rendered,
-                metrics.rendered,
-                2,
-                "Render",
-                COLORS.render,
-                "Page rendered",
-            );
-            push_stage_events(
-                snapshot.detected,
-                metrics.detected,
-                1,
-                "Infer",
-                COLORS.detect,
-                "Page inferred",
-            );
-            push_stage_events(
-                snapshot.encoded,
-                metrics.encoded,
-                0,
-                "Encode",
-                COLORS.encode,
-                "Page encoded",
-            );
-            snapshot.rendered = metrics.rendered;
-            snapshot.detected = metrics.detected;
-            snapshot.encoded = metrics.encoded;
-        }
-        lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
-            push_stage_events(
-                snapshot.encoded,
-                metrics.encoded,
-                0,
-                "Encode",
-                COLORS.encode,
-                "Page encoded",
-            );
-            snapshot.encoded = metrics.encoded;
-        }
-        lege::progress::ProgressMode::Unknown => {}
+    #[cfg(not(feature = "debug-logging"))]
+    {
+        snapshot.encoded = metrics.encoded;
+        snapshot.rendered = metrics.rendered;
+        snapshot.detected = metrics.detected;
+        snapshot.deskewed = metrics.deskewed;
+        return;
     }
 
-    push_stage_events(
-        snapshot.deskewed,
-        metrics.deskewed,
-        3,
-        "Deskew",
-        COLORS.page_start,
-        "Page deskewed",
-    );
-    snapshot.deskewed = metrics.deskewed;
+    #[cfg(feature = "debug-logging")]
+    {
+        let total = metrics.pages_total.max(1);
+        let mut events: Vec<CliStageEvent<'static>> = Vec::new();
 
-    events.sort_by_key(|event| (event.current, event.stage_order));
+        let mut push_stage_events = |start: u32,
+                                     end: u32,
+                                     stage_order: u8,
+                                     stage_label: &'static str,
+                                     stage_color: &'static str,
+                                     verb: &'static str| {
+            if end > start {
+                for current in (start + 1)..=end {
+                    events.push(CliStageEvent {
+                        current,
+                        stage_order,
+                        stage_label,
+                        stage_color,
+                        verb,
+                        include_percentage: stage_label == "Encode",
+                    });
+                }
+            }
+        };
 
-    for event in events {
-        print_stage_progress_line(
-            event.stage_label,
-            event.stage_color,
-            event.verb,
-            event.current,
-            total,
-            event.include_percentage,
+        match metrics.mode {
+            lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => {
+                push_stage_events(
+                    snapshot.rendered,
+                    metrics.rendered,
+                    2,
+                    "Render",
+                    COLORS.render,
+                    "Page rendered",
+                );
+                push_stage_events(
+                    snapshot.detected,
+                    metrics.detected,
+                    1,
+                    "Infer",
+                    COLORS.detect,
+                    "Page inferred",
+                );
+                push_stage_events(
+                    snapshot.encoded,
+                    metrics.encoded,
+                    0,
+                    "Encode",
+                    COLORS.encode,
+                    "Page encoded",
+                );
+                snapshot.rendered = metrics.rendered;
+                snapshot.detected = metrics.detected;
+                snapshot.encoded = metrics.encoded;
+            }
+            lege::progress::ProgressMode::NoLayout
+            | lege::progress::ProgressMode::HeavySequential => {
+                push_stage_events(
+                    snapshot.encoded,
+                    metrics.encoded,
+                    0,
+                    "Encode",
+                    COLORS.encode,
+                    "Page encoded",
+                );
+                snapshot.encoded = metrics.encoded;
+            }
+            lege::progress::ProgressMode::Unknown => {}
+        }
+
+        push_stage_events(
+            snapshot.deskewed,
+            metrics.deskewed,
+            3,
+            "Deskew",
+            COLORS.page_start,
+            "Page deskewed",
         );
+        snapshot.deskewed = metrics.deskewed;
+
+        events.sort_by_key(|event| (event.current, event.stage_order));
+
+        for event in events {
+            print_stage_progress_line(
+                event.stage_label,
+                event.stage_color,
+                event.verb,
+                event.current,
+                total,
+                event.include_percentage,
+            );
+        }
     }
 }
 

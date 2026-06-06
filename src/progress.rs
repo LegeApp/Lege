@@ -39,6 +39,10 @@ pub enum ProcessingStatus {
     MarginAnalysisSummary {
         summary: String,
     },
+    PipelineMessage {
+        stage: String,
+        message: String,
+    },
     PdfAppend {
         current: usize,
         total: usize,
@@ -140,6 +144,9 @@ impl ProcessingStatus {
                 "Margin Analysis: complete".to_string(),
                 summary.clone(),
             ),
+            Self::PipelineMessage { stage, message } => {
+                (format!("[{stage}]"), message.clone(), String::new())
+            }
             Self::PdfAppend { current, total } => {
                 let pct = if *total > 0 {
                     ((*current as f64 / *total as f64) * 100.0).round() as usize
@@ -454,6 +461,9 @@ impl ProcessingStatus {
                 "Margin Analysis: complete".to_string(),
                 summary.clone(),
             ),
+            Self::PipelineMessage { stage, message } => {
+                (format!("[{stage}]"), message.clone(), String::new())
+            }
             // PdfAppend and PdfAppendMargin: These "page completed" messages are
             // suppressed to avoid flickering and align with the 3-part progress display pattern
             // (render/inference/encoding). Return empty strings to suppress them.
@@ -561,8 +571,7 @@ impl Default for ProgressMetrics {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProgressMode {
     Unknown,
     NoLayout,
