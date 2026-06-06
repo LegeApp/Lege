@@ -20,6 +20,16 @@ pub(crate) struct PlannedOp {
 #[derive(Debug)]
 pub(crate) enum PlannedOpKind {
     Conv2d(Conv2dPlan),
+    /// Winograd F(2,3) input transform: x[1,Cin,H,W] -> V[16,Cin,P].
+    WinogradInputTransform,
+    /// Winograd F(2,3) batched transform-space GEMM: U[16,Cout,Cin] * V[16,Cin,P] -> M[16,Cout,P].
+    WinogradBatchedGemm,
+    /// Winograd F(2,3) output transform: M[16,Cout,P] -> y[1,Cout,H,W].
+    WinogradOutputTransform {
+        use_bias: bool,
+        h: usize,
+        w: usize,
+    },
     Elementwise(ElementwiseKind),
     Unary(UnaryKind),
     Concat {
@@ -98,6 +108,9 @@ impl PlannedOpKind {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             PlannedOpKind::Conv2d(_) => "Conv2d",
+            PlannedOpKind::WinogradInputTransform => "WinogradInputTransform",
+            PlannedOpKind::WinogradBatchedGemm => "WinogradBatchedGemm",
+            PlannedOpKind::WinogradOutputTransform { .. } => "WinogradOutputTransform",
             PlannedOpKind::Elementwise(ElementwiseKind::Add) => "Add",
             PlannedOpKind::Elementwise(ElementwiseKind::Mul) => "Mul",
             PlannedOpKind::Elementwise(ElementwiseKind::Sub) => "Sub",

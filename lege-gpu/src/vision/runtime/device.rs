@@ -24,15 +24,18 @@ impl GpuContext {
 
         // Enumerate purely for diagnostics and to support the WGPU_ADAPTER_NAME
         // override; the default pick is delegated to wgpu (see below).
-        eprintln!("wgpu adapters:");
         let enumerated: Vec<crate::vision::wgpu::Adapter> =
             instance.enumerate_adapters(backends).await;
-        for adapter in &enumerated {
-            let info = adapter.get_info();
-            eprintln!(
-                "  - {} ({:?}, {:?})",
-                info.name, info.backend, info.device_type
-            );
+        #[cfg(feature = "debug-logging")]
+        {
+            eprintln!("wgpu adapters:");
+            for adapter in &enumerated {
+                let info = adapter.get_info();
+                eprintln!(
+                    "  - {} ({:?}, {:?})",
+                    info.name, info.backend, info.device_type
+                );
+            }
         }
 
         let adapter = if let Some(filter) = adapter_name_filter.as_deref() {

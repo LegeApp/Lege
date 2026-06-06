@@ -1588,6 +1588,25 @@ fn main(
 }
 "#;
 
+/// Smem-derived dilation ceilings for the `*_SP2X2_DIL` shaders. The workgroup
+/// patch is (32 + 2·k·dil)² floats (k=1 for 3×3, k=2 for 5×5); these are the
+/// largest `dil` that still fit the hardcoded smem arrays below. The compile.rs
+/// routing guards reference these consts so the WGSL array size and the routing
+/// bound stay coupled — bumping a ceiling without resizing the array trips the
+/// `debug_assert!` in `compile.rs` (and in the `run_*` validation wrappers).
+///
+/// 3×3: (32 + 2·dil)² ≤ 1764 ⟹ dil ≤ 5 (d5 → 42² = 1764).
+pub(crate) const CONV3X3_DIL_MAX: i64 = 5;
+/// 5×5: (32 + 4·dil)² ≤ 1936 ⟹ dil ≤ 3 (d3 → 44² = 1936).
+pub(crate) const CONV5X5_DIL_MAX: i64 = 3;
+
+/// Smem element count for `CONV3X3_CO8_SP2X2_DIL_WGSL` (keep in sync with the
+/// `var<workgroup> smem` declaration). `debug_assert`ed against `pw*pw`.
+pub(crate) const CONV3X3_DIL_SMEM: usize = 1764;
+/// Smem element count for `CONV5X5_CO8_SP2X2_DIL_WGSL` (keep in sync with the
+/// `var<workgroup> smem5` declaration).
+pub(crate) const CONV5X5_DIL_SMEM: usize = 1936;
+
 // 3×3 stride-1, runtime dilation, 2×2 spatial register tile × 8 output channels.
 // Generalizes CONV3X3_CO8_SP2X2_S1D1_WGSL to dilation > 1 by sizing the shared
 // patch for the dilated span (32 + 2*dil per side) and striding tap reads by
@@ -3519,11 +3538,8 @@ mod tests {
         let inputs = [x.clone(), wt.clone(), bias.clone()];
 
         let gpu = run_conv5x5_co8_sp2x2_dil(&ctx, &plan, &inputs).await?;
-        let cpu = reference::run_op(
-            &PlannedOpKind::Conv2d(plan.clone()),
-            &[&x, &wt, &bias],
-        )?
-        .remove(0);
+        let cpu =
+            reference::run_op(&PlannedOpKind::Conv2d(plan.clone()), &[&x, &wt, &bias])?.remove(0);
 
         assert_eq!(gpu.shape, cpu.shape, "shape mismatch d={dil}");
         let max_diff = gpu
