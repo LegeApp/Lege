@@ -188,5 +188,4 @@ mod tests {
         assert!(limits.process_workers + limits.djvu_encode_workers <= limits.page_workers.max(2));
         assert!(limits.channel_capacity >= limits.page_workers);
     }
-
 }

@@ -17,7 +17,6 @@ pub struct DetectionContext {
     pub original_height: f32,
     pub scale_x: f32,
     pub scale_y: f32,
-    // Padding is not used for PaddleX direct resize
 }
 
 pub fn two_pass_nms(

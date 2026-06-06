@@ -8,15 +8,14 @@ use crate::backend;
 use crate::gui_text::GUI_TEXT;
 use crate::logging;
 use crate::models::{
-    CompressionType, DocumentItem, DocumentStatus, ImageProcessingType, LogEntry, OutputFormat,
-    ProcessingOptions, ProcessingResult,
+    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OutputFormat, ProcessingOptions,
+    ProcessingResult,
 };
 use crate::version::display_version;
 use crate::widgets;
-use lege::target_profiles;
-
-#[cfg(feature = "debug-logging")]
-use lege::dbglog;
+use crate::worker_process::{
+    TARGET_DEVICE_PROFILES, WorkerProcessingStatus, WorkerProgressUpdate, find_profile,
+};
 
 use crate::colors::{BORDER, CARD_BG, INFO_BG, MUTED, PANEL_BG, TEXT};
 
@@ -48,11 +47,6 @@ fn retro_theme() -> Theme {
         ..LIGHT_COLORS
     };
     theme
-}
-
-#[cfg(feature = "debug-logging")]
-fn load_debug_log_file() -> Vec<String> {
-    Legencode::get_debug_log_messages()
 }
 
 fn format_eta_label(seconds: u32) -> String {
@@ -113,7 +107,7 @@ pub struct AppState {
     pub status_lines: (String, String, String, String),
     pub status_log: VecDeque<String>,
     pub active_eta: Option<String>,
-    pub progress_metrics: Option<lege::progress::ProgressMetrics>,
+    pub progress_metrics: Option<crate::worker_process::WorkerProgressMetrics>,
     pub active_task_ids: Vec<u64>,
     pub should_cancel: bool,
     pub job_color_index: u32,
@@ -271,7 +265,7 @@ impl AppState {
 fn sync_state_from_options(state: &mut AppState, options: &ProcessingOptions) {
     state.options = options.clone();
     if let Some(device) = options.target_device.clone() {
-        if let Some(profile) = target_profiles::find_profile(&device) {
+        if let Some(profile) = find_profile(&device) {
             state.target_resolution_selection = profile.name.to_string();
             state.target_height_input = profile.height.to_string();
             state.options.target_height = Some(profile.height);
@@ -655,6 +649,15 @@ pub fn app() -> impl IntoElement {
                 ProcessDashboardRow(state, page_range_input),
                 StatusBar(state),
             ))
+            // Transient notifications float above ALL window content (high
+            // relative layer at the root → well above normal nesting depth, but
+            // still below the `Overlay`-layer modal dialogs below).
+            .child(
+                rect()
+                    .layer(200i16)
+                    .position(Position::new_absolute().right(16.).bottom(16.))
+                    .child(PopupRail(state)),
+            )
             .child(QueueViewerPopup(state))
             .child(LogViewerPopup(state))
             .child(AboutPopup(state))
@@ -673,25 +676,9 @@ fn app_root(content: Rect) -> Rect {
 }
 
 fn HeaderUtilityBar(mut state: State<AppState>) -> Element {
-    let title: Element = rect()
-        .direction(Direction::Horizontal)
-        .spacing(8.)
-        .cross_align(Alignment::Center)
-        .child(
-            label()
-                .text("Lege")
-                .font_size(18.)
-                .font_weight(700)
-                .color(TEXT),
-        )
-        .child(
-            label()
-                .text(format!("v{}", display_version()))
-                .font_size(12.)
-                .color(MUTED),
-        )
-        .into();
+    let queue_len = state.read().queue.len();
 
+    // Left: settings utilities (Save / Reset / About).
     let utilities: Element = rect()
         .direction(Direction::Horizontal)
         .spacing(6.)
@@ -716,7 +703,27 @@ fn HeaderUtilityBar(mut state: State<AppState>) -> Element {
         )
         .into();
 
-    widgets::lege_header_bar(utilities, title)
+    // Right: navigation (Queue / Log). Moved here from the status bar so they
+    // never overlap the progress bar.
+    let nav: Element = rect()
+        .direction(Direction::Horizontal)
+        .spacing(6.)
+        .cross_align(Alignment::Center)
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| state.write().show_queue_viewer = true)
+                .child(fmt1(&GUI_TEXT.interactive.queue.queue_button, queue_len)),
+        )
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| state.write().show_log_viewer = true)
+                .child(GUI_TEXT.interactive.queue.log_button.clone()),
+        )
+        .into();
+
+    widgets::lege_header_bar(utilities, nav)
 }
 
 fn FileActionRow(state: State<AppState>) -> Element {
@@ -786,7 +793,11 @@ fn SettingsDashboard(
                     rect()
                         .width(Size::fill())
                         .height(Size::flex(1.))
-                        .child(PagesDeviceCard(state, target_height_input, page_range_input)),
+                        .child(PagesDeviceCard(
+                            state,
+                            target_height_input,
+                            page_range_input,
+                        )),
                 )
                 .child(
                     rect()
@@ -806,22 +817,7 @@ fn SettingsDashboard(
 }
 
 fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) -> Element {
-    let (is_processing, queued, done, errors) = {
-        let s = state.read();
-        let mut queued = 0;
-        let mut done = 0;
-        let mut errors = 0;
-
-        for item in &s.queue {
-            match &item.status {
-                DocumentStatus::Completed => done += 1,
-                DocumentStatus::Failed(_) | DocumentStatus::Cancelled => errors += 1,
-                _ => queued += 1,
-            }
-        }
-
-        (s.is_processing, queued, done, errors)
-    };
+    let is_processing = state.read().is_processing;
 
     let button_text = if is_processing {
         GUI_TEXT.interactive.buttons.cancel.clone()
@@ -829,23 +825,22 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
         GUI_TEXT.interactive.buttons.start_processing.clone()
     };
 
+    // Single, centered Process/Cancel button. Queue/Done/Errors counters were
+    // removed: the queue and log views already convey that state, and surfacing
+    // an "Errors" tally undermined confidence for the common error-free run.
     rect()
         .width(Size::fill())
         .height(Size::fill())
         .direction(Direction::Horizontal)
-        .content(Content::Flex)
-        .spacing(8.)
+        .main_align(Alignment::Center)
         .cross_align(Alignment::Center)
         .child(
             Button::new()
-                .width(Size::flex(1.))
+                .width(Size::percent(45.))
                 .height(Size::fill())
                 .on_press(move |_| start_or_cancel_processing(state, page_range_input))
                 .child(button_text),
         )
-        .child(widgets::lege_metric_box("Queue", queued.to_string()))
-        .child(widgets::lege_metric_box("Done", done.to_string()))
-        .child(widgets::lege_metric_box("Errors", errors.to_string()))
         .into()
 }
 
@@ -982,11 +977,7 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
                         rect()
                             .direction(Direction::Horizontal)
                             .spacing(10.)
-                            .child(
-                                rect()
-                                    .width(Size::percent(50.))
-                                    .child(layout_control),
-                            )
+                            .child(rect().width(Size::percent(50.)).child(layout_control))
                             .maybe_child(base_format_control.map(|control| -> Element {
                                 rect().width(Size::percent(50.)).child(control).into()
                             })),
@@ -1118,7 +1109,7 @@ fn PagesDeviceCard(
             .into(),
     );
 
-    for profile in target_profiles::TARGET_DEVICE_PROFILES.iter() {
+    for profile in TARGET_DEVICE_PROFILES.iter() {
         let selected = options.target_device.as_deref() == Some(profile.name);
         let name = profile.name.to_string();
         let item_name = name.clone();
@@ -1459,7 +1450,7 @@ fn progress_stage_card(
 }
 
 fn progress_single_bar(
-    metrics: lege::progress::ProgressMetrics,
+    metrics: crate::worker_process::WorkerProgressMetrics,
     color: (u8, u8, u8),
 ) -> Option<Element> {
     if metrics.pages_total == 0 {
@@ -1493,40 +1484,13 @@ fn StatusBar(state: State<AppState>) -> Element {
         ],
     );
 
-    // Top-right control strip and right-pane tooltip slot.
-    // Buttons are first so their position is always fixed; tooltip appears below when active.
-    let top_right: Element = rect()
-        .vertical()
-        .spacing(6.)
-        .cross_align(Alignment::End)
-        .child(
-            rect()
-                .direction(Direction::Horizontal)
-                .spacing(4.)
-                .cross_align(Alignment::Center)
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press({
-                            let mut state = state;
-                            move |_| state.write().show_queue_viewer = true
-                        })
-                        .child(fmt1(&GUI_TEXT.interactive.queue.queue_button, queue_len)),
-                )
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press({
-                            let mut state = state;
-                            move |_| state.write().show_log_viewer = true
-                        })
-                        .child(GUI_TEXT.interactive.queue.log_button.clone()),
-                ),
-        )
-        .child(status_tooltip_panel(state, &[TooltipArea::PagesDeviceCard]))
-        .into();
+    // Top-right: tooltip slot only. The Queue/Log buttons now live in the header
+    // bar so they never collide with the progress bar.
+    let top_right: Element = status_tooltip_panel(state, &[TooltipArea::PagesDeviceCard]);
 
-    let bottom_left = PopupRail(state);
+    // Notifications are rendered as a root-level overlay (see `app()`), so the
+    // status panel's bottom-left slot is now empty.
+    let bottom_left: Element = rect().into();
 
     // Bottom-right debug controls; About lives in the header utility bar.
     let bottom_right: Element = {
@@ -2018,6 +1982,25 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                     .padding(10.)
                     .spacing(6.)
                     .child(
+                        rect()
+                            .direction(Direction::Horizontal)
+                            .spacing(8.)
+                            .cross_align(Alignment::Center)
+                            .child(
+                                label()
+                                    .text("Lege")
+                                    .font_size(18.)
+                                    .font_weight(700)
+                                    .color(TEXT),
+                            )
+                            .child(
+                                label()
+                                    .text(format!("v{}", display_version()))
+                                    .font_size(12.)
+                                    .color(MUTED),
+                            ),
+                    )
+                    .child(
                         label()
                             .text(GUI_TEXT.interactive.popups.email.clone())
                             .font_size(13.)
@@ -2086,19 +2069,7 @@ fn add_files(mut state: State<AppState>) {
             let mut valid_paths: Vec<std::path::PathBuf> = Vec::new();
             for file in &files {
                 let path = file.path().to_owned();
-                if backend::is_zip_file(&path) && !backend::zip_has_valid_images(&path) {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    schedule_popup(
-                        state,
-                        PopupKind::Queue,
-                        fmt1(&GUI_TEXT.interactive.popups.zip_no_supported_images, name),
-                        6,
-                    );
-                    continue;
-                }
+                // ZIP validation now happens inside the CLI worker; accept all ZIPs.
                 valid_paths.push(path);
             }
 
@@ -2307,12 +2278,9 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
         );
     }
 
-    let progress_manager = lege::progress::get_progress_manager();
-    let receiver = progress_manager.subscribe();
-
     spawn(async move {
         match backend::start_async_processing(queue, &options).await {
-            Ok(tracker_infos) => {
+            Ok((tracker_infos, mut worker_handles, receiver)) => {
                 {
                     let mut s = state.write();
                     s.active_task_ids = tracker_infos.iter().map(|info| info.id).collect();
@@ -2336,48 +2304,41 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 let mut files_errored = 0usize;
                 let mut handled: HashSet<u64> = HashSet::new();
 
-                loop {
-                    if state.read().should_cancel {
-                        for info in tracker_infos.iter() {
-                            let _ = lege::progress::cancel_task(info.id);
-                        }
-                        let mut s = state.write();
-                        s.is_processing = false;
-                        s.should_cancel = false;
-                        s.active_task_ids.clear();
-                        s.active_eta = None;
-                        s.progress_metrics = None;
-                        s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
-                        break;
-                    }
+                // Guard against empty queue (all spawns failed before we got here).
+                if files_total == 0 {
+                    let mut s = state.write();
+                    s.is_processing = false;
+                    s.active_task_ids.clear();
+                }
 
-                    match tokio::time::timeout(
-                        tokio::time::Duration::from_millis(50),
-                        receiver.recv_async(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(update)) => match update {
-                            lege::progress::ProgressUpdate::Status {
+                loop {
+                    // select! suspends the task — either a worker event wakes it or
+                    // a 200 ms timer fires for the cancel check.  This avoids the
+                    // tight yield_now() spin that starved the renderer.
+                    tokio::select! {
+                        // A worker event arrived.
+                        result = receiver.recv_async() => {
+                            let update = match result {
+                                Ok(u) => u,
+                                Err(_) => break, // all senders dropped — done
+                            };
+                            match update {
+                            WorkerProgressUpdate::Status {
                                 task_id: _,
                                 status,
                                 metrics,
                             } => {
                                 state.write().progress_metrics = metrics;
                                 match &status {
-                                    lege::progress::ProcessingStatus::AssemblingOutput => {}
-                                    lege::progress::ProcessingStatus::NoLayoutProgress {
-                                        ..
-                                    }
-                                    | lege::progress::ProcessingStatus::LayoutProgress { .. }
-                                    | lege::progress::ProcessingStatus::MarginProgress { .. } => {
+                                    WorkerProcessingStatus::AssemblingOutput => {}
+                                    WorkerProcessingStatus::NoLayoutProgress { .. }
+                                    | WorkerProcessingStatus::LayoutProgress { .. }
+                                    | WorkerProcessingStatus::MarginProgress { .. } => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().set_status_lines(l1, l2, l3);
                                     }
-                                    lege::progress::ProcessingStatus::PdfAppend { .. }
-                                    | lege::progress::ProcessingStatus::PdfAppendMargin {
-                                        ..
-                                    } => {}
+                                    WorkerProcessingStatus::PdfAppend { .. }
+                                    | WorkerProcessingStatus::PdfAppendMargin { .. } => {}
                                     _ => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().push_status_log(l1);
@@ -2402,14 +2363,13 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     );
                                 }
 
-                                if let lege::progress::ProcessingStatus::FootnotesDetected {
-                                    message,
-                                } = &status
+                                if let WorkerProcessingStatus::FootnotesDetected { message } =
+                                    &status
                                 {
                                     schedule_popup(state, PopupKind::Footnotes, message.clone(), 5);
                                 }
                             }
-                            lege::progress::ProgressUpdate::Completed {
+                            WorkerProgressUpdate::Completed {
                                 task_id,
                                 message: _,
                                 metrics: _,
@@ -2471,7 +2431,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     ));
                                 }
                             }
-                            lege::progress::ProgressUpdate::Error {
+                            WorkerProgressUpdate::Error {
                                 task_id,
                                 error,
                                 metrics: _,
@@ -2511,9 +2471,26 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     }
                                 }
                             }
-                        },
-                        _ => tokio::task::yield_now().await,
-                    }
+                        } // end match update
+                        } // end recv_async arm
+
+                        // Periodic cancel check — fires every 200ms when no events arrive.
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => {
+                            if state.read().should_cancel {
+                                for handle in worker_handles.iter_mut() {
+                                    handle.kill();
+                                }
+                                let mut s = state.write();
+                                s.is_processing = false;
+                                s.should_cancel = false;
+                                s.active_task_ids.clear();
+                                s.active_eta = None;
+                                s.progress_metrics = None;
+                                s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
+                                break;
+                            }
+                        }
+                    } // end select!
 
                     if files_completed >= files_total {
                         break;

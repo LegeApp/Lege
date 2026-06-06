@@ -1588,6 +1588,208 @@ fn main(
 }
 "#;
 
+/// Smem-derived dilation ceilings for the `*_SP2X2_DIL` shaders. The workgroup
+/// patch is (32 + 2·k·dil)² floats (k=1 for 3×3, k=2 for 5×5); these are the
+/// largest `dil` that still fit the hardcoded smem arrays below. The compile.rs
+/// routing guards reference these consts so the WGSL array size and the routing
+/// bound stay coupled — bumping a ceiling without resizing the array trips the
+/// `debug_assert!` in `compile.rs` (and in the `run_*` validation wrappers).
+///
+/// 3×3: (32 + 2·dil)² ≤ 1764 ⟹ dil ≤ 5 (d5 → 42² = 1764).
+pub(crate) const CONV3X3_DIL_MAX: i64 = 5;
+/// 5×5: (32 + 4·dil)² ≤ 1936 ⟹ dil ≤ 3 (d3 → 44² = 1936).
+pub(crate) const CONV5X5_DIL_MAX: i64 = 3;
+
+/// Smem element count for `CONV3X3_CO8_SP2X2_DIL_WGSL` (keep in sync with the
+/// `var<workgroup> smem` declaration). `debug_assert`ed against `pw*pw`.
+pub(crate) const CONV3X3_DIL_SMEM: usize = 1764;
+/// Smem element count for `CONV5X5_CO8_SP2X2_DIL_WGSL` (keep in sync with the
+/// `var<workgroup> smem5` declaration).
+pub(crate) const CONV5X5_DIL_SMEM: usize = 1936;
+
+// 3×3 stride-1, runtime dilation, 2×2 spatial register tile × 8 output channels.
+// Generalizes CONV3X3_CO8_SP2X2_S1D1_WGSL to dilation > 1 by sizing the shared
+// patch for the dilated span (32 + 2*dil per side) and striding tap reads by
+// `dil`. This is the d2..d5 route, replacing the 1×2 fallback
+// (CONV3X3_CO8_SP1X2) with the same 32-accumulator arithmetic intensity the
+// s1d1 tile already achieves. Smem: up to 42×42 = 1764 floats (d5).
+// dispatch: (ceil(Wout/32), ceil(Hout/32), ceil(Cout/8)).
+// params: [0]cout [1]cin [2]hin [3]win [4]hout [5]wout [6]pad_top [7]pad_left
+//         [8]use_bias [9]dil
+pub(crate) const CONV3X3_CO8_SP2X2_DIL_WGSL: &str = r#"
+var<workgroup> smem: array<f32, 1764>;   // up to PW * PW (PW = 32 + 2*dil, d5 → 42)
+var<workgroup> wmem: array<f32, 72>;     // 8 channels * 9 taps
+
+@group(0) @binding(0) var<storage, read>       inp    : array<f32>;
+@group(0) @binding(1) var<storage, read>       wt     : array<f32>;
+@group(0) @binding(2) var<storage, read>       bias   : array<f32>;
+@group(0) @binding(3) var<storage, read_write> out    : array<f32>;
+@group(0) @binding(4) var<storage, read>       params : array<u32>;
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(workgroup_id)        wg : vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let cout     = params[0];
+    let cin      = params[1];
+    let hin      = params[2];
+    let win      = params[3];
+    let hout     = params[4];
+    let wout     = params[5];
+    let pad_top  = params[6];
+    let pad_left = params[7];
+    let use_bias = params[8];
+    let dil      = params[9];
+
+    let co0 = wg.z * 8u;
+    let oh_base = wg.y * 32u;
+    let ow_base = wg.x * 32u;
+
+    let pw = 32u + 2u * dil;
+    let patch_size = pw * pw;
+
+    var acc = array<f32, 32>();
+
+    let ih_base_i = i32(oh_base) - i32(pad_top);
+    let iw_base_i = i32(ow_base) - i32(pad_left);
+    let full_patch = ih_base_i >= 0 && iw_base_i >= 0
+                  && ih_base_i + i32(pw) <= i32(hin)
+                  && iw_base_i + i32(pw) <= i32(win);
+    let tid = lid.y * 16u + lid.x;
+
+    for (var ci: u32 = 0u; ci < cin; ci = ci + 1u) {
+        var pidx = tid;
+        loop {
+            if pidx >= patch_size { break; }
+            let py = pidx / pw;
+            let px = pidx - py * pw;
+            if full_patch {
+                smem[pidx] = inp[ci * hin * win + (u32(ih_base_i) + py) * win + u32(iw_base_i) + px];
+            } else {
+                let iy = ih_base_i + i32(py);
+                let ix = iw_base_i + i32(px);
+                if iy >= 0 && u32(iy) < hin && ix >= 0 && u32(ix) < win {
+                    smem[pidx] = inp[ci * hin * win + u32(iy) * win + u32(ix)];
+                } else {
+                    smem[pidx] = 0.0;
+                }
+            }
+            pidx = pidx + 256u;
+        }
+
+        if tid < 72u {
+            let co_local = tid / 9u;
+            let kk = tid - co_local * 9u;
+            let co = co0 + co_local;
+            if co < cout {
+                wmem[tid] = wt[co * cin * 9u + ci * 9u + kk];
+            } else {
+                wmem[tid] = 0.0;
+            }
+        }
+
+        workgroupBarrier();
+
+        let py0 = lid.y * 2u;
+        let px0 = lid.x * 2u;
+        for (var ky = 0u; ky < 3u; ky = ky + 1u) {
+            for (var kx = 0u; kx < 3u; kx = kx + 1u) {
+                let kk = ky * 3u + kx;
+                let ry = ky * dil;
+                let rx = kx * dil;
+                let v00 = smem[(py0 + ry) * pw + px0 + rx];
+                let v01 = smem[(py0 + ry) * pw + px0 + 1u + rx];
+                let v10 = smem[(py0 + 1u + ry) * pw + px0 + rx];
+                let v11 = smem[(py0 + 1u + ry) * pw + px0 + 1u + rx];
+                let w0 = wmem[kk];
+                let w1 = wmem[9u + kk];
+                let w2 = wmem[18u + kk];
+                let w3 = wmem[27u + kk];
+                let w4 = wmem[36u + kk];
+                let w5 = wmem[45u + kk];
+                let w6 = wmem[54u + kk];
+                let w7 = wmem[63u + kk];
+                acc[0]  = acc[0]  + v00 * w0; acc[8]  = acc[8]  + v01 * w0; acc[16] = acc[16] + v10 * w0; acc[24] = acc[24] + v11 * w0;
+                acc[1]  = acc[1]  + v00 * w1; acc[9]  = acc[9]  + v01 * w1; acc[17] = acc[17] + v10 * w1; acc[25] = acc[25] + v11 * w1;
+                acc[2]  = acc[2]  + v00 * w2; acc[10] = acc[10] + v01 * w2; acc[18] = acc[18] + v10 * w2; acc[26] = acc[26] + v11 * w2;
+                acc[3]  = acc[3]  + v00 * w3; acc[11] = acc[11] + v01 * w3; acc[19] = acc[19] + v10 * w3; acc[27] = acc[27] + v11 * w3;
+                acc[4]  = acc[4]  + v00 * w4; acc[12] = acc[12] + v01 * w4; acc[20] = acc[20] + v10 * w4; acc[28] = acc[28] + v11 * w4;
+                acc[5]  = acc[5]  + v00 * w5; acc[13] = acc[13] + v01 * w5; acc[21] = acc[21] + v10 * w5; acc[29] = acc[29] + v11 * w5;
+                acc[6]  = acc[6]  + v00 * w6; acc[14] = acc[14] + v01 * w6; acc[22] = acc[22] + v10 * w6; acc[30] = acc[30] + v11 * w6;
+                acc[7]  = acc[7]  + v00 * w7; acc[15] = acc[15] + v01 * w7; acc[23] = acc[23] + v10 * w7; acc[31] = acc[31] + v11 * w7;
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    let plane = hout * wout;
+    let py0_out = lid.y * 2u;
+    let px0_out = lid.x * 2u;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    let oh0 = oh_base + py0_out;
+    let ow0 = ow_base + px0_out;
+    if oh0 < hout && ow0 < wout {
+        let obase = oh0 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    let ow1 = ow0 + 1u;
+    if oh0 < hout && ow1 < wout {
+        let obase = oh0 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
+    }
+    let oh1 = oh0 + 1u;
+    if oh1 < hout && ow0 < wout {
+        let obase = oh1 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[16] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[17] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[18] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[19] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[20] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[21] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[22] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[23] + b7; }
+    }
+    if oh1 < hout && ow1 < wout {
+        let obase = oh1 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[24] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[25] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[26] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[27] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[28] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[29] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[30] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[31] + b7; }
+    }
+}
+"#;
+
 // Same compute tile as CONV3X3_CO8_SP2X2_S1D1_WGSL, but interior tiles load the
 // 34×34 input patch through vec4 reads. With pad=1, the patch starts one column
 // before the 32-wide output tile, so the aligned vec4 base is shifted left and
@@ -2134,6 +2336,195 @@ fn main(
                 // Unrolled over 8 output channels so `acc` is statically indexed and
                 // stays in registers (naga 29 spills a dynamically indexed private
                 // array to local memory — ~12x slower; see CONV3X3_CO8_SP2X2).
+                let w0 = wmem5[kk];
+                let w1 = wmem5[25u + kk];
+                let w2 = wmem5[50u + kk];
+                let w3 = wmem5[75u + kk];
+                let w4 = wmem5[100u + kk];
+                let w5 = wmem5[125u + kk];
+                let w6 = wmem5[150u + kk];
+                let w7 = wmem5[175u + kk];
+                acc[0]  = acc[0]  + v00 * w0; acc[8]  = acc[8]  + v01 * w0; acc[16] = acc[16] + v10 * w0; acc[24] = acc[24] + v11 * w0;
+                acc[1]  = acc[1]  + v00 * w1; acc[9]  = acc[9]  + v01 * w1; acc[17] = acc[17] + v10 * w1; acc[25] = acc[25] + v11 * w1;
+                acc[2]  = acc[2]  + v00 * w2; acc[10] = acc[10] + v01 * w2; acc[18] = acc[18] + v10 * w2; acc[26] = acc[26] + v11 * w2;
+                acc[3]  = acc[3]  + v00 * w3; acc[11] = acc[11] + v01 * w3; acc[19] = acc[19] + v10 * w3; acc[27] = acc[27] + v11 * w3;
+                acc[4]  = acc[4]  + v00 * w4; acc[12] = acc[12] + v01 * w4; acc[20] = acc[20] + v10 * w4; acc[28] = acc[28] + v11 * w4;
+                acc[5]  = acc[5]  + v00 * w5; acc[13] = acc[13] + v01 * w5; acc[21] = acc[21] + v10 * w5; acc[29] = acc[29] + v11 * w5;
+                acc[6]  = acc[6]  + v00 * w6; acc[14] = acc[14] + v01 * w6; acc[22] = acc[22] + v10 * w6; acc[30] = acc[30] + v11 * w6;
+                acc[7]  = acc[7]  + v00 * w7; acc[15] = acc[15] + v01 * w7; acc[23] = acc[23] + v10 * w7; acc[31] = acc[31] + v11 * w7;
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    let plane = hout * wout;
+    let py0_out = lid.y * 2u;
+    let px0_out = lid.x * 2u;
+    var b0 = 0.0; var b1 = 0.0; var b2 = 0.0; var b3 = 0.0;
+    var b4 = 0.0; var b5 = 0.0; var b6 = 0.0; var b7 = 0.0;
+    if use_bias != 0u {
+        if co0 + 0u < cout { b0 = bias[co0 + 0u]; }
+        if co0 + 1u < cout { b1 = bias[co0 + 1u]; }
+        if co0 + 2u < cout { b2 = bias[co0 + 2u]; }
+        if co0 + 3u < cout { b3 = bias[co0 + 3u]; }
+        if co0 + 4u < cout { b4 = bias[co0 + 4u]; }
+        if co0 + 5u < cout { b5 = bias[co0 + 5u]; }
+        if co0 + 6u < cout { b6 = bias[co0 + 6u]; }
+        if co0 + 7u < cout { b7 = bias[co0 + 7u]; }
+    }
+    let oh0 = oh_base + py0_out;
+    let ow0 = ow_base + px0_out;
+    if oh0 < hout && ow0 < wout {
+        let obase = oh0 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[0] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[1] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[2] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[3] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[4] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[5] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[6] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[7] + b7; }
+    }
+    let ow1 = ow0 + 1u;
+    if oh0 < hout && ow1 < wout {
+        let obase = oh0 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[8] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[9] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[10] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[11] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[12] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[13] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[14] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[15] + b7; }
+    }
+    let oh1 = oh0 + 1u;
+    if oh1 < hout && ow0 < wout {
+        let obase = oh1 * wout + ow0;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[16] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[17] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[18] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[19] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[20] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[21] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[22] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[23] + b7; }
+    }
+    if oh1 < hout && ow1 < wout {
+        let obase = oh1 * wout + ow1;
+        if co0 + 0u < cout { out[(co0 + 0u) * plane + obase] = acc[24] + b0; }
+        if co0 + 1u < cout { out[(co0 + 1u) * plane + obase] = acc[25] + b1; }
+        if co0 + 2u < cout { out[(co0 + 2u) * plane + obase] = acc[26] + b2; }
+        if co0 + 3u < cout { out[(co0 + 3u) * plane + obase] = acc[27] + b3; }
+        if co0 + 4u < cout { out[(co0 + 4u) * plane + obase] = acc[28] + b4; }
+        if co0 + 5u < cout { out[(co0 + 5u) * plane + obase] = acc[29] + b5; }
+        if co0 + 6u < cout { out[(co0 + 6u) * plane + obase] = acc[30] + b6; }
+        if co0 + 7u < cout { out[(co0 + 7u) * plane + obase] = acc[31] + b7; }
+    }
+}
+"#;
+
+// 5×5 stride-1, runtime dilation, 2×2 spatial register tile × 8 output channels.
+// Generalizes CONV5X5_CO8_SP2X2_D1_WGSL to dilation > 1 by sizing the shared
+// patch for the dilated receptive span (32 + 4*dil per side) and striding the
+// tap reads by `dil`. The d1 variant keeps its hardcoded PW5=36 fast path; this
+// is the d2/d3 route (44×44 = 1936 smem max), giving the same 32-accumulator
+// arithmetic intensity the 1×2 fallback (CONV5X5_CO8_SP1X2) lacks.
+// Smem: up to 44×44 = 1936 floats (d3). Wmem: 8 channels × 25 taps = 200.
+// dispatch: (ceil(Wout/32), ceil(Hout/32), ceil(Cout/8)).
+// params: [0]cout [1]cin [2]hin [3]win [4]hout [5]wout [6]pad_top [7]pad_left
+//         [8]use_bias [9]dil
+pub(crate) const CONV5X5_CO8_SP2X2_DIL_WGSL: &str = r#"
+var<workgroup> smem5: array<f32, 1936>;   // up to PW * PW (PW = 32 + 4*dil, d3 → 44)
+var<workgroup> wmem5: array<f32, 200>;    // 8 channels * 25 taps
+
+@group(0) @binding(0) var<storage, read>       inp    : array<f32>;
+@group(0) @binding(1) var<storage, read>       wt     : array<f32>;
+@group(0) @binding(2) var<storage, read>       bias   : array<f32>;
+@group(0) @binding(3) var<storage, read_write> out    : array<f32>;
+@group(0) @binding(4) var<storage, read>       params : array<u32>;
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(workgroup_id)        wg : vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let cout     = params[0];
+    let cin      = params[1];
+    let hin      = params[2];
+    let win      = params[3];
+    let hout     = params[4];
+    let wout     = params[5];
+    let pad_top  = params[6];
+    let pad_left = params[7];
+    let use_bias = params[8];
+    let dil      = params[9];
+
+    let co0 = wg.z * 8u;
+    let oh_base = wg.y * 32u;
+    let ow_base = wg.x * 32u;
+
+    // Patch spans the 32-wide output tile plus the dilated halo on both sides.
+    let pw = 32u + 4u * dil;
+    let patch_size = pw * pw;
+
+    var acc = array<f32, 32>();
+
+    let ih_base_i = i32(oh_base) - i32(pad_top);
+    let iw_base_i = i32(ow_base) - i32(pad_left);
+    let full_patch = ih_base_i >= 0 && iw_base_i >= 0
+                  && ih_base_i + i32(pw) <= i32(hin)
+                  && iw_base_i + i32(pw) <= i32(win);
+    let tid = lid.y * 16u + lid.x;
+
+    for (var ci: u32 = 0u; ci < cin; ci = ci + 1u) {
+        // Cooperatively load the pw×pw input patch.
+        var pidx = tid;
+        loop {
+            if pidx >= patch_size { break; }
+            let py = pidx / pw;
+            let px = pidx - py * pw;
+            if full_patch {
+                smem5[pidx] = inp[ci * hin * win + (u32(ih_base_i) + py) * win + u32(iw_base_i) + px];
+            } else {
+                let iy = ih_base_i + i32(py);
+                let ix = iw_base_i + i32(px);
+                if iy >= 0 && u32(iy) < hin && ix >= 0 && u32(ix) < win {
+                    smem5[pidx] = inp[ci * hin * win + u32(iy) * win + u32(ix)];
+                } else {
+                    smem5[pidx] = 0.0;
+                }
+            }
+            pidx = pidx + 256u;
+        }
+
+        // Load 8×25 weight tile for this input channel.
+        if tid < 200u {
+            let co_local = tid / 25u;
+            let kk = tid - co_local * 25u;
+            let co = co0 + co_local;
+            if co < cout {
+                wmem5[tid] = wt[co * cin * 25u + ci * 25u + kk];
+            } else {
+                wmem5[tid] = 0.0;
+            }
+        }
+
+        workgroupBarrier();
+
+        // Each thread: 2×2 spatial block, top-left at (lid.y*2, lid.x*2).
+        // Taps stride by `dil` in shared memory.
+        let py0 = lid.y * 2u;
+        let px0 = lid.x * 2u;
+        for (var ky = 0u; ky < 5u; ky = ky + 1u) {
+            for (var kx = 0u; kx < 5u; kx = kx + 1u) {
+                let kk = ky * 5u + kx;
+                let ry = ky * dil;
+                let rx = kx * dil;
+                let v00 = smem5[(py0 + ry) * pw + px0 + rx];
+                let v01 = smem5[(py0 + ry) * pw + px0 + 1u + rx];
+                let v10 = smem5[(py0 + 1u + ry) * pw + px0 + rx];
+                let v11 = smem5[(py0 + 1u + ry) * pw + px0 + 1u + rx];
                 let w0 = wmem5[kk];
                 let w1 = wmem5[25u + kk];
                 let w2 = wmem5[50u + kk];
@@ -2995,4 +3386,228 @@ pub(crate) fn conv_out_usize(
 ) -> Result<usize> {
     let v = (inp as i64 + pad0 + pad1 - dil * (k as i64 - 1) - 1) / stride + 1;
     usize::try_from(v).context("conv output dimension is non-positive")
+}
+
+/// 5×5 stride-1, dilation 1..3, group-1 conv via the 2×2-spatial × 8-channel
+/// register tile. Mirrors the compiled-executor routing so gpu-diff / tests can
+/// validate `CONV5X5_CO8_SP2X2_DIL_WGSL` against the CPU reference.
+pub(crate) async fn run_conv5x5_co8_sp2x2_dil(
+    ctx: &GpuContext,
+    plan: &Conv2dPlan,
+    inputs: &[Tensor],
+) -> Result<Tensor> {
+    let x = &inputs[0];
+    let w = &inputs[1];
+    let bias_opt = inputs.get(2);
+    let cin = x.shape[1];
+    let hin = x.shape[2];
+    let win = x.shape[3];
+    let cout = w.shape[0];
+    let dil = plan.dilations[0];
+    let hout = conv_out_usize(hin, plan.pads[0], plan.pads[2], dil, 5, 1)?;
+    let wout = conv_out_usize(win, plan.pads[1], plan.pads[3], dil, 5, 1)?;
+    let has_bias = bias_opt.is_some();
+    let bias_data: Vec<f32> = match bias_opt {
+        Some(b) => b.data.clone(),
+        None => vec![0.0f32; 1],
+    };
+    let p = [
+        cout as u32,
+        cin as u32,
+        hin as u32,
+        win as u32,
+        hout as u32,
+        wout as u32,
+        plan.pads[0] as u32,
+        plan.pads[1] as u32,
+        has_bias as u32,
+        dil as u32,
+    ];
+    let raw = dispatch_compute(
+        ctx,
+        CONV5X5_CO8_SP2X2_DIL_WGSL,
+        &[
+            bytemuck::cast_slice(&x.data),
+            bytemuck::cast_slice(&w.data),
+            bytemuck::cast_slice(&bias_data),
+        ],
+        cout * hout * wout * 4,
+        bytemuck::cast_slice(&p),
+        (
+            wout.div_ceil(32) as u32,
+            hout.div_ceil(32) as u32,
+            cout.div_ceil(8) as u32,
+        ),
+    )
+    .await?;
+    Tensor::new(vec![1, cout, hout, wout], f32_from_bytes(&raw))
+}
+
+/// 3×3 stride-1, dilation 1..5, group-1 conv via the 2×2-spatial × 8-channel
+/// register tile. Mirrors the compiled-executor routing for validation.
+pub(crate) async fn run_conv3x3_co8_sp2x2_dil(
+    ctx: &GpuContext,
+    plan: &Conv2dPlan,
+    inputs: &[Tensor],
+) -> Result<Tensor> {
+    let x = &inputs[0];
+    let w = &inputs[1];
+    let bias_opt = inputs.get(2);
+    let cin = x.shape[1];
+    let hin = x.shape[2];
+    let win = x.shape[3];
+    let cout = w.shape[0];
+    let dil = plan.dilations[0];
+    let hout = conv_out_usize(hin, plan.pads[0], plan.pads[2], dil, 3, 1)?;
+    let wout = conv_out_usize(win, plan.pads[1], plan.pads[3], dil, 3, 1)?;
+    let has_bias = bias_opt.is_some();
+    let bias_data: Vec<f32> = match bias_opt {
+        Some(b) => b.data.clone(),
+        None => vec![0.0f32; 1],
+    };
+    let p = [
+        cout as u32,
+        cin as u32,
+        hin as u32,
+        win as u32,
+        hout as u32,
+        wout as u32,
+        plan.pads[0] as u32,
+        plan.pads[1] as u32,
+        has_bias as u32,
+        dil as u32,
+    ];
+    let raw = dispatch_compute(
+        ctx,
+        CONV3X3_CO8_SP2X2_DIL_WGSL,
+        &[
+            bytemuck::cast_slice(&x.data),
+            bytemuck::cast_slice(&w.data),
+            bytemuck::cast_slice(&bias_data),
+        ],
+        cout * hout * wout * 4,
+        bytemuck::cast_slice(&p),
+        (
+            wout.div_ceil(32) as u32,
+            hout.div_ceil(32) as u32,
+            cout.div_ceil(8) as u32,
+        ),
+    )
+    .await?;
+    Tensor::new(vec![1, cout, hout, wout], f32_from_bytes(&raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vision::onnx::types::PlannedOpKind;
+    use crate::vision::reference;
+    use crate::vision::runtime::device::GpuContext;
+
+    // Deterministic pseudo-random fill in [-1, 1).
+    fn fill(n: usize, seed: u64) -> Vec<f32> {
+        let mut s = seed.wrapping_add(0x9E3779B97F4A7C15);
+        (0..n)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                ((s >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    async fn check_5x5_dil(dil: i64) -> Result<()> {
+        let ctx = match GpuContext::new().await {
+            Ok(c) => c,
+            Err(_) => return Ok(()), // no GPU adapter (e.g. CI) — skip
+        };
+        // Sizes that exercise full interior tiles + edge tiles (not a multiple of 32).
+        let (cin, cout, h, w) = (12usize, 16usize, 40usize, 37usize);
+        let pad = (dil * 2) as i64; // keep output size == input for 5×5 dilation d
+        let plan = Conv2dPlan {
+            group: 1,
+            pads: [pad, pad, pad, pad],
+            strides: [1, 1],
+            dilations: [dil, dil],
+            kernel_shape: [5, 5],
+        };
+        let x = Tensor::new(vec![1, cin, h, w], fill(cin * h * w, 1))?;
+        let wt = Tensor::new(vec![cout, cin, 5, 5], fill(cout * cin * 25, 2))?;
+        let bias = Tensor::new(vec![cout], fill(cout, 3))?;
+        let inputs = [x.clone(), wt.clone(), bias.clone()];
+
+        let gpu = run_conv5x5_co8_sp2x2_dil(&ctx, &plan, &inputs).await?;
+        let cpu =
+            reference::run_op(&PlannedOpKind::Conv2d(plan.clone()), &[&x, &wt, &bias])?.remove(0);
+
+        assert_eq!(gpu.shape, cpu.shape, "shape mismatch d={dil}");
+        let max_diff = gpu
+            .data
+            .iter()
+            .zip(&cpu.data)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_diff < 1e-3,
+            "5x5 dil={dil} max abs diff {max_diff} exceeds tolerance"
+        );
+        Ok(())
+    }
+
+    async fn check_3x3_dil(dil: i64) -> Result<()> {
+        let ctx = match GpuContext::new().await {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let (cin, cout, h, w) = (12usize, 16usize, 40usize, 37usize);
+        let pad = dil; // keep output size == input for 3×3 dilation d (pad = dil)
+        let plan = Conv2dPlan {
+            group: 1,
+            pads: [pad, pad, pad, pad],
+            strides: [1, 1],
+            dilations: [dil, dil],
+            kernel_shape: [3, 3],
+        };
+        let x = Tensor::new(vec![1, cin, h, w], fill(cin * h * w, 4))?;
+        let wt = Tensor::new(vec![cout, cin, 3, 3], fill(cout * cin * 9, 5))?;
+        let bias = Tensor::new(vec![cout], fill(cout, 6))?;
+        let inputs = [x.clone(), wt.clone(), bias.clone()];
+
+        let gpu = run_conv3x3_co8_sp2x2_dil(&ctx, &plan, &inputs).await?;
+        let cpu =
+            reference::run_op(&PlannedOpKind::Conv2d(plan.clone()), &[&x, &wt, &bias])?.remove(0);
+
+        assert_eq!(gpu.shape, cpu.shape, "shape mismatch d={dil}");
+        let max_diff = gpu
+            .data
+            .iter()
+            .zip(&cpu.data)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_diff < 1e-3,
+            "3x3 dil={dil} max abs diff {max_diff} exceeds tolerance"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn conv5x5_sp2x2_dil_matches_reference() {
+        pollster::block_on(async {
+            check_5x5_dil(1).await.unwrap();
+            check_5x5_dil(2).await.unwrap();
+            check_5x5_dil(3).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn conv3x3_sp2x2_dil_matches_reference() {
+        pollster::block_on(async {
+            check_3x3_dil(1).await.unwrap();
+            check_3x3_dil(2).await.unwrap();
+            check_3x3_dil(3).await.unwrap();
+            check_3x3_dil(5).await.unwrap();
+        });
+    }
 }

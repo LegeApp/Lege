@@ -60,8 +60,29 @@ fn compile_windows_resource(external_version: &str) {
     let version_tuple = version_tuple(external_version);
     let escaped_version = external_version.replace('"', "");
 
+    // Resolve icon path relative to the project root (two levels up from GUI/Freya/).
+    let icon_line = {
+        let current_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+        let icon = PathBuf::from(&current_dir)
+            .join("..")
+            .join("..")
+            .join("assets")
+            .join("icon.ico");
+        if icon.exists() {
+            // Use a forward-slash path inside the .rc (rc.exe accepts both separators).
+            let icon_str = icon
+                .canonicalize()
+                .unwrap_or(icon)
+                .to_string_lossy()
+                .replace('\\', "/");
+            format!("IDI_APPLICATION ICON \"{icon_str}\"\n")
+        } else {
+            String::new()
+        }
+    };
+
     let rc_contents = format!(
-        r#"VS_VERSION_INFO VERSIONINFO
+        r#"{icon_line}VS_VERSION_INFO VERSIONINFO
  FILEVERSION {version_tuple}
  PRODUCTVERSION {version_tuple}
  FILEFLAGSMASK 0x3fL
@@ -79,7 +100,7 @@ BEGIN
         BLOCK "040904E4"
         BEGIN
             VALUE "CompanyName", "Lege Apps\0"
-            VALUE "FileDescription", "Lege GUI\0"
+            VALUE "FileDescription", "Lege\0"
             VALUE "FileVersion", "{escaped_version}\0"
             VALUE "ProductName", "Lege\0"
             VALUE "ProductVersion", "{escaped_version}\0"

@@ -1,35 +1,20 @@
 // src/ocr/mod.rs
-// Unified OCR interface for Windows (winocr) and Linux (tesseract)
+// OCR interface — delegates to lege-ocr for all engine and pipeline logic.
 
-pub mod ocr;
+pub mod fast;
+pub mod slow;
 
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod tesseract;
-#[cfg(target_os = "windows")]
-mod winocr;
+/// Re-export the shared `OcrResult` type from lege-ocr.
+pub use lege_ocr::OcrResult;
 
-#[derive(Clone, Debug)]
-pub struct OcrResult {
-    pub hocr: String,
-    pub plain_text: String,
-}
-
-#[cfg(target_os = "windows")]
-pub fn run_ocr(
-    image_data: &[u8],
-    width: usize,
-    height: usize,
-    is_binary: bool,
-    _language: &str,
-) -> Option<OcrResult> {
-    winocr::run_winocr(image_data, width, height, is_binary)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Run the platform OCR engine on raw image data and return hOCR + plain text.
+///
+/// `is_binary` = true when `image_data` is 1bpp (0=ink, 255=background).
+/// Delegates to `lege_ocr::engine::default_engine().run_image(…)`.
 pub fn run_ocr(
     image_data: &[u8],
     width: usize,
@@ -37,18 +22,7 @@ pub fn run_ocr(
     is_binary: bool,
     language: &str,
 ) -> Option<OcrResult> {
-    tesseract::run_tesseract(image_data, width, height, is_binary, language)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-pub fn run_ocr(
-    _image_data: &[u8],
-    _width: usize,
-    _height: usize,
-    _is_binary: bool,
-    _language: &str,
-) -> Option<OcrResult> {
-    None
+    lege_ocr::engine::default_engine().run_image(image_data, width, height, is_binary, language)
 }
 
 /// Check if Tesseract is available on Linux/macOS systems

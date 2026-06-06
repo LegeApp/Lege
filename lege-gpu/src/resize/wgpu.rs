@@ -45,7 +45,6 @@ impl Default for BorderMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseCase {
-    PaddleX,
     OCR,
     MarginCalculation,
 }
@@ -53,17 +52,6 @@ pub enum UseCase {
 impl UseCase {
     pub fn default_parameters(self, src_width: u32, src_height: u32) -> ResizeParameters {
         match self {
-            Self::PaddleX => ResizeParameters {
-                src_width,
-                src_height,
-                dst_width: 640,
-                dst_height: 640,
-                filter: FilterType::Bilinear,
-                border_mode: BorderMode::Clamp,
-                border_value: 0.0,
-                channel_count: 3,
-                no_srgb: false,
-            },
             Self::OCR => {
                 let aspect_ratio = src_height as f32 / src_width as f32;
                 let dst_width = 1200;
@@ -315,7 +303,9 @@ fn compact_from_rgba(gpu_out: &[u8], channel_count: u32, dst_size: usize) -> Vec
 
 impl WgpuContext {
     async fn new_async(_verbose: bool) -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        // Constrain to the production backend policy (DX12 on Windows) so the
+        // HighPerformance adapter request cannot silently land on Vulkan.
+        let instance = crate::wgpu_setup::create_instance();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
