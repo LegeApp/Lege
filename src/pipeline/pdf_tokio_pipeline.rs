@@ -51,7 +51,7 @@ pub struct ProcessedPage {
 }
 
 #[derive(Clone, Debug)]
-enum CachedDetections {
+pub(crate) enum CachedDetections {
     Missing,
     Present(Vec<crate::engine::Detection>),
 }
@@ -60,7 +60,7 @@ enum CachedDetections {
 ///
 /// Instead of: recv -> infer -> send -> recv -> infer -> send (sequential)
 /// Now:        recv -> spawn(infer) -> recv -> spawn(infer) -> collect results -> send
-async fn inference_stage_parallel(
+pub(crate) async fn inference_stage_parallel(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     mut rx: mpsc::Receiver<RenderedPageData>,
     tx: mpsc::Sender<PdfInferenceData>,
@@ -365,6 +365,7 @@ async fn process_single_page(
     let PageProcessingOutput {
         adjusted_image,
         adjusted_detections,
+        ocr_image,
         binarized,
         deferred_binarize,
         width,
@@ -438,7 +439,24 @@ async fn process_single_page(
     }
 
     // OCR or text extraction (can run concurrently with other pages)
-    let hocr_text = if config.enable_ocr() {
+    let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
+        // Recognize on the high-res raster when available, else the page image.
+        // Detections and the returned hOCR are in output (page) space.
+        let (ocr_src, ocr_binary): (&RgbImage, &[u8]) = match ocr_image.as_ref() {
+            Some(hi) => (hi, &[]),
+            None => (&adjusted_image, binarized.as_slice()),
+        };
+        crate::ocr::slow::perform_slow_ocr(
+            ocr_src,
+            ocr_binary,
+            &adjusted_detections,
+            width as u32,
+            height as u32,
+            &config,
+            page_index,
+        )
+        .await?
+    } else if config.enable_ocr() {
         perform_ocr(
             &binarized,
             width,
@@ -548,6 +566,10 @@ struct RegionProcessingResult {
 struct PageProcessingOutput {
     adjusted_image: RgbImage,
     adjusted_detections: Vec<crate::engine::Detection>,
+    /// High-resolution adjusted raster retained for slow OCR ("render high,
+    /// resize low"). `Some` only when the page was rendered above `target_height`
+    /// for OCR; the encode path always uses the resized-down `adjusted_image`.
+    ocr_image: Option<RgbImage>,
     binarized: Vec<u8>,
     /// When `Some`, binarization was deferred — `binarized` is empty and the encoder
     /// must binarize from `adjusted_image` using these options. Set only when the
@@ -585,7 +607,14 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         apply_region_policy(&rendered, &inference_result, &config)?
     };
 
-    if config.enable_layout_detection() && adjusted_image.height() != config.target_height() {
+    // "Render high, resize low": when the page was rendered above target_height
+    // (for slow OCR), retain the high-res raster for recognition, then resize the
+    // image used by the encode path down to target_height. The slow-OCR gate is
+    // OR'd in so the downscale still runs in no-layout mode.
+    let mut ocr_image: Option<RgbImage> = None;
+    if (config.enable_layout_detection() || config.slow_ocr_enabled())
+        && adjusted_image.height() != config.target_height()
+    {
         let current_w = adjusted_image.width();
         let current_h = adjusted_image.height();
         let target_h = config.target_height();
@@ -595,7 +624,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             .unwrap_or_else(|| (target_h as f32 * aspect_ratio).round() as u32);
 
         if target_w > 0 && target_h > 0 {
-            // Scale detection bboxes
+            // Scale detection bboxes into target (output) space.
             let sx = target_w as f32 / current_w as f32;
             let sy = target_h as f32 / current_h as f32;
             for det in &mut adjusted_detections {
@@ -620,7 +649,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             )
             .ok()
             .and_then(|bytes| RgbImage::from_raw(target_w, target_h, bytes));
-            adjusted_image = match resized {
+            let resized = match resized {
                 Some(buf) => buf,
                 None => image::imageops::resize(
                     &adjusted_image,
@@ -629,6 +658,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     image::imageops::FilterType::Lanczos3,
                 ),
             };
+            // Move the pre-resize high-res raster out for OCR (no clone) when it
+            // is genuinely higher resolution than the output.
+            if config.slow_ocr_enabled() && current_h > target_h {
+                ocr_image = Some(std::mem::replace(&mut adjusted_image, resized));
+            } else {
+                adjusted_image = resized;
+            }
         }
     }
 
@@ -1038,6 +1074,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     Ok(PageProcessingOutput {
         adjusted_image,
         adjusted_detections,
+        ocr_image,
         binarized,
         deferred_binarize,
         width,
@@ -1326,10 +1363,10 @@ async fn perform_ocr(
 ) -> Result<Option<String>> {
     // Note: This function is only called when config.enable_ocr() is true
     let use_regions =
-        crate::ocr::ocr::should_use_region_ocr(config.enable_layout_detection(), detections);
+        crate::ocr::fast::should_use_region_ocr(config.enable_layout_detection(), detections);
 
     let result = if use_regions {
-        crate::ocr::ocr::perform_region_based_ocr(
+        crate::ocr::fast::perform_region_based_ocr(
             binarized,
             width,
             height,
@@ -1338,7 +1375,7 @@ async fn perform_ocr(
         )
         .await
     } else {
-        crate::ocr::ocr::perform_tiling_based_ocr(binarized, width, height, config.ocr_language())
+        crate::ocr::fast::perform_tiling_based_ocr(binarized, width, height, config.ocr_language())
             .await
     };
 

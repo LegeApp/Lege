@@ -9,8 +9,7 @@ use lege_gpu::vision::{
     DeskewConfig as VisionDeskewConfig, DocumentDeskewer as VisionDocumentDeskewer,
 };
 use lege_gpu::vision::{
-    RotationClassifier as VisionRotationClassifier,
-    RotationConfig as VisionRotationConfig,
+    RotationClassifier as VisionRotationClassifier, RotationConfig as VisionRotationConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
