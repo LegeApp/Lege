@@ -35,6 +35,7 @@
     },
     "tooltips": {
       "add_file_or_folder": "Accepts PDF files, image folders, or image ZIPs.",
+      "output_directory": "Choose where processed files are saved. Outputs default to this folder.",
       "base_format": "1bit encoding - JBIG2 or CCITT4",
       "image_output_type": "Original color with CCITT4 encoding, or dithered with JBIG2 encoding",
       "layout_detection": "GPU accelerated layout detection preserves image areas from binarization; disable if no images in document.",

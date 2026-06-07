@@ -32,10 +32,19 @@ impl BlockKind {
 }
 
 #[derive(Debug, Clone)]
+pub struct TextWord {
+    pub text: String,
+    /// [x1, y1, x2, y2] in page-global high-res pixel space
+    pub bbox: [u32; 4],
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TextLine {
     pub text: String,
     /// [x1, y1, x2, y2] in page-global high-res pixel space
     pub bbox: [u32; 4],
+    pub words: Vec<TextWord>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,14 +77,7 @@ impl TextBlock {
             // De-hyphenate: a trailing hyphen before another line usually splits a
             // single word. Only repair when the preceding char is alphabetic so we
             // do not eat intentional dashes (e.g. ranges, em-dash-as-hyphen).
-            let has_more = self.lines[i..].iter().any(|l| !l.text.trim().is_empty());
-            let prev_is_alpha = out
-                .chars()
-                .rev()
-                .nth(1)
-                .map(|c| c.is_alphabetic())
-                .unwrap_or(false);
-            if out.ends_with('-') && prev_is_alpha && has_more {
+            if should_dehyphenate(&out, self.lines.get(i)) {
                 out.pop();
                 out.push_str(trimmed);
             } else {
@@ -90,6 +92,31 @@ impl TextBlock {
     pub fn is_empty(&self) -> bool {
         self.lines.iter().all(|l| l.text.trim().is_empty())
     }
+}
+
+fn should_dehyphenate(current: &str, next_line: Option<&TextLine>) -> bool {
+    if !current.ends_with('-') {
+        return false;
+    }
+    let prev_is_alpha = current
+        .chars()
+        .rev()
+        .nth(1)
+        .map(|c| c.is_alphabetic())
+        .unwrap_or(false);
+    if !prev_is_alpha {
+        return false;
+    }
+
+    let Some(next_line) = next_line else {
+        return false;
+    };
+    let first_next = next_line
+        .words
+        .first()
+        .and_then(|word| word.text.chars().next())
+        .or_else(|| next_line.text.trim().chars().next());
+    first_next.is_some_and(|c| c.is_alphabetic() && c.is_lowercase())
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +141,7 @@ mod tests {
                 .map(|t| TextLine {
                     text: t.to_string(),
                     bbox: [0, 0, 0, 0],
+                    words: Vec::new(),
                 })
                 .collect(),
             indent_px: 0,

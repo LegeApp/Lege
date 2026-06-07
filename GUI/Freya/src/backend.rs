@@ -11,7 +11,7 @@ use crate::worker_process::{
 };
 
 use crate::models::DocumentItem;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 // Re-export settings helpers for convenience
 pub use crate::settings::{
     clear_settings as remove_saved_settings, load_settings as load_saved_settings,
@@ -42,17 +42,68 @@ pub async fn check_pdf_has_ocr(pdf_path: &PathBuf) -> Result<Option<bool>> {
 }
 
 /// Estimate the original size for a page range based on file size proportions.
-/// Now purely file-system based (no PDF parsing).
 pub async fn estimate_original_size_for_page_range(
     input_path: &PathBuf,
     page_range: &Option<String>,
     fallback_size: u64,
 ) -> u64 {
-    if page_range.is_none() {
+    let Some(range) = page_range
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return fallback_size;
+    };
+
+    let Some(total_pages) = precheck_page_count(input_path.clone()).await else {
+        return fallback_size;
+    };
+    if total_pages == 0 {
         return fallback_size;
     }
-    // Without full PDF parsing, fall back to the total file size.
-    fallback_size
+
+    let Some(selected_pages) = selected_page_count(range, total_pages) else {
+        return fallback_size;
+    };
+    if selected_pages == 0 {
+        return fallback_size;
+    }
+
+    ((fallback_size as f64 / total_pages as f64) * selected_pages as f64).round() as u64
+}
+
+fn selected_page_count(range: &str, total_pages: u32) -> Option<u32> {
+    let trimmed = range.trim();
+    if trimmed.eq_ignore_ascii_case("all") || trimmed.eq_ignore_ascii_case("full") || trimmed == "*"
+    {
+        return Some(total_pages);
+    }
+
+    let mut pages = BTreeSet::new();
+    for part in trimmed.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start.trim().parse::<u32>().ok()?;
+            let end = end.trim().parse::<u32>().ok()?;
+            if start == 0 || end == 0 || start > end {
+                return None;
+            }
+            let clamped_start = start.min(total_pages);
+            let clamped_end = end.min(total_pages);
+            if clamped_start <= clamped_end {
+                pages.extend(clamped_start..=clamped_end);
+            }
+        } else {
+            let page = part.parse::<u32>().ok()?;
+            if page == 0 {
+                return None;
+            }
+            if page <= total_pages {
+                pages.insert(page);
+            }
+        }
+    }
+
+    Some(pages.len() as u32)
 }
 
 /// Validate that a path is a ZIP file

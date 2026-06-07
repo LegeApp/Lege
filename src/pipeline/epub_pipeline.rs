@@ -19,7 +19,7 @@ use epub_builder::{EpubBuilder, EpubContent, ReferenceType, ZipLibrary};
 use tokio::sync::mpsc;
 
 use lege_ocr::{
-    OcrPipeline, SlowOcrConfig,
+    OcrPipeline, SlowOcrConfig, SlowOcrOutputMode,
     coordinate::CoordinateMap,
     document::{BlockKind, PageText, TextBlock},
     normalize,
@@ -33,7 +33,7 @@ use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
 use crate::progress::{ProcessingStatus, ProgressTracker};
 use crate::types::ContentCategory;
-use crate::{info_log, success_log};
+use crate::{info_log, success_log, warn_log};
 
 /// Run the full EPUB pipeline over a PDF byte buffer.
 #[allow(clippy::too_many_arguments)]
@@ -49,8 +49,26 @@ pub async fn create_and_run_epub_pipeline(
     info_log!("[EPUB] Starting EPUB pipeline");
     crate::pipeline::reset_standard_dimensions();
 
+    let mut config = config;
     let source: Arc<dyn PageSource> = Arc::new(PdfiumPageSource::new(pdf_bytes, config.clone())?);
 
+    let inference_handle = if config.enable_layout_detection() {
+        match crate::pipeline::inference::InferenceHandle::new(&config) {
+            Ok(handle) => Some(Arc::new(handle)),
+            Err(e) if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) => {
+                warn_log!("[EPUB] {e}. Layout detection disabled for this run.");
+                let mut fallback = (*config).clone();
+                fallback.set_enable_layout_detection(false);
+                config = Arc::new(fallback);
+                None
+            }
+            Err(e) => return Err(anyhow!("[EPUB] Failed to create InferenceHandle: {}", e)),
+        }
+    } else {
+        None
+    };
+
+    let layout_enabled = config.enable_layout_detection();
     let limits = PipelineRuntimeLimits::from_config(&config);
 
     let document_pages = source.page_count();
@@ -62,7 +80,13 @@ pub async fn create_and_run_epub_pipeline(
     }
     progress_tracker.update(ProcessingStatus::PipelineMessage {
         stage: "EPUB".to_string(),
-        message: format!("Rendering {} pages...", total_pages),
+        // Rendering, layout detection and OCR are pipelined and run concurrently;
+        // a single up-front message sets that expectation. The live "OCR'd X/N"
+        // heartbeat emitted from the OCR stage is the real start-to-finish signal.
+        message: format!(
+            "Processing {} pages (render + layout + OCR run concurrently)...",
+            total_pages
+        ),
     });
 
     // GPU resize only pays off past a page threshold (matches the PDF pipeline).
@@ -73,19 +97,12 @@ pub async fn create_and_run_epub_pipeline(
     let ocr_concurrency = limits.page_workers.clamp(1, 4);
 
     let deskew_engine = crate::pipeline::prepare_shared_deskew_engine(&config)?;
-    let layout_enabled = config.enable_layout_detection();
-    let inference_handle = if layout_enabled {
-        Some(Arc::new(
-            crate::pipeline::inference::InferenceHandle::new(&config)
-                .map_err(|e| anyhow!("[EPUB] Failed to create InferenceHandle: {}", e))?,
-        ))
-    } else {
-        None
-    };
 
     // Shared OCR pipeline (engine initialized once, reused across pages).
     let ocr_pipeline = Arc::new(OcrPipeline::new(SlowOcrConfig {
         language: config.ocr_language().to_string(),
+        output_mode: SlowOcrOutputMode::Structured,
+        binary_is_analysis_mask: true,
         ..Default::default()
     }));
 
@@ -132,8 +149,17 @@ pub async fn create_and_run_epub_pipeline(
     let mut ocr_task = {
         let config = config.clone();
         let ocr_pipeline = ocr_pipeline.clone();
+        let progress = progress_tracker.clone();
         tokio::spawn(async move {
-            ocr_collect_stage(infer_rx, config, ocr_pipeline, ocr_concurrency).await
+            ocr_collect_stage(
+                infer_rx,
+                config,
+                ocr_pipeline,
+                ocr_concurrency,
+                progress,
+                total_pages,
+            )
+            .await
         })
     };
 
@@ -149,11 +175,12 @@ pub async fn create_and_run_epub_pipeline(
         &[h_infer.clone(), h_ocr.clone()],
     )
     .await?;
+    // Note: render/inference/OCR are pipelined, so these stage joins complete in
+    // quick succession once the (sequential) render stage drains its backlog.
+    // Emitting "Rendering complete → inference complete" as user-facing progress
+    // here is misleading because OCR has been running the whole time; keep them as
+    // debug logs and let the live OCR heartbeat report real progress instead.
     info_log!("[EPUB] Render stage complete");
-    progress_tracker.update(ProcessingStatus::PipelineMessage {
-        stage: "EPUB".to_string(),
-        message: "Rendering complete. Running layout inference...".to_string(),
-    });
 
     await_stage_or_cancel(
         &mut infer_task,
@@ -163,10 +190,6 @@ pub async fn create_and_run_epub_pipeline(
     )
     .await?;
     info_log!("[EPUB] Inference stage complete");
-    progress_tracker.update(ProcessingStatus::PipelineMessage {
-        stage: "EPUB".to_string(),
-        message: "Layout inference complete. Running OCR...".to_string(),
-    });
 
     // The OCR stage returns a value, so it cannot use the `Result<()>`-typed
     // `await_stage_or_cancel`; drive it with an inline shutdown select instead.
@@ -222,6 +245,8 @@ async fn ocr_collect_stage(
     config: Arc<PipelineConfig>,
     ocr_pipeline: Arc<OcrPipeline>,
     concurrency: usize,
+    progress: ProgressTracker,
+    total_pages: usize,
 ) -> Result<BTreeMap<usize, PageText>> {
     use futures::stream::{FuturesUnordered, StreamExt};
 
@@ -230,6 +255,21 @@ async fn ocr_collect_stage(
         FuturesUnordered::new();
     let mut results: BTreeMap<usize, PageText> = BTreeMap::new();
 
+    // Coarse, release-visible heartbeat. OCR is the final (and on Linux the
+    // slowest) stage, so its completed-page count is the single best indicator of
+    // overall progress. Report in ~5% steps to avoid per-page log spam.
+    let report_step = (total_pages / 20).max(1);
+    let mut last_reported = 0usize;
+    let mut report_ocr_progress = |done: usize| {
+        if done > last_reported && (done - last_reported >= report_step || done == total_pages) {
+            last_reported = done;
+            progress.update(ProcessingStatus::PipelineMessage {
+                stage: "EPUB".to_string(),
+                message: format!("OCR'd {done}/{total_pages} pages..."),
+            });
+        }
+    };
+
     loop {
         tokio::select! {
             biased;
@@ -237,6 +277,7 @@ async fn ocr_collect_stage(
                 let page: PageText = joined
                     .map_err(|e| anyhow!("[EPUB] OCR task panicked: {e}"))??;
                 results.insert(page.page_index, page);
+                report_ocr_progress(results.len());
             }
             maybe = infer_rx.recv() => {
                 match maybe {
@@ -260,6 +301,7 @@ async fn ocr_collect_stage(
     while let Some(joined) = in_flight.next().await {
         let page: PageText = joined.map_err(|e| anyhow!("[EPUB] OCR task panicked: {e}"))??;
         results.insert(page.page_index, page);
+        report_ocr_progress(results.len());
     }
 
     Ok(results)
@@ -430,8 +472,15 @@ fn blocks_with_layout_geometry(page: &PageText) -> Vec<(usize, TextBlock)> {
         } else {
             0
         };
+        let first_line_left = blocks[i]
+            .1
+            .lines
+            .iter()
+            .find(|line| !line.text.trim().is_empty())
+            .map(|line| line.bbox[0])
+            .unwrap_or(blocks[i].1.bbox[0]);
         blocks[i].1.spacing_before_px = spacing;
-        blocks[i].1.indent_px = blocks[i].1.bbox[0].saturating_sub(frame.left);
+        blocks[i].1.indent_px = first_line_left.saturating_sub(frame.left);
         blocks[i].1.spacing_after_px = frame.right.saturating_sub(blocks[i].1.bbox[2]);
     }
 
@@ -664,6 +713,7 @@ mod tests {
             lines: vec![TextLine {
                 text: text.to_string(),
                 bbox,
+                words: Vec::new(),
             }],
             indent_px: 0,
             spacing_before_px: 0,

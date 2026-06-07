@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.5"
+version = "1.4.51"
 edition = "2024"
 description = "Fully automatic PDF processor especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -27,7 +27,7 @@ default-members = [
 
 [workspace.lints.rust]
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "german", "trace_arith"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "german", "tesseract-ocr", "trace_arith"))'] }
 
 [workspace.dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
@@ -74,7 +74,7 @@ windows-future = { version = "0.3.2", default-features = false }
 resolver = "2"
 
 # Local development override of LegeApp/freya fork.
-# Aspect-ratio constraint and Position::corner helper live in this checkout.
+# CPU rendering, aspect-ratio constraint and Position::corner helper live in this checkout.
 [patch."https://github.com/LegeApp/freya.git"]
 freya = { path = "../freya-main/crates/freya" }
 freya-core = { path = "../freya-main/crates/freya-core" }
@@ -108,7 +108,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 fontdue = { version = "0.9.3", optional = true }
 png = "0.17.16"
-image = { workspace = true }  # Restored for sophisticated image types and operations
+image = { workspace = true }  
 # Enhanced CLI dependencies
 dialoguer = { workspace = true }
 config = { workspace = true }
@@ -137,7 +137,7 @@ sysinfo = "0.31.4"
 shlex = "1.3.0"
 cfg-if = { workspace = true }
 html-escape = { workspace = true }
-chrono = { version = "0.4.43", features = ["serde"] }  # Updated
+chrono = { version = "0.4.43", features = ["serde"] }  
 memmap2 = "0.9.9"
 winres = "0.1.12"
 libloading = "0.8.9"
@@ -164,16 +164,17 @@ djvu_encoder = { path = "djvulibrust" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
-tesseract = "0.14"
+tesseract = { version = "0.14", optional = true }
 wgpu = "29.0.3"
 pollster = "0.4"
 libc = "0.2"
 
 # macOS-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
-tesseract = "0.14"
+tesseract = { version = "0.14", optional = true }
 wgpu = "29.0.3"
 pollster = "0.4"
+libc = "0.2"
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -207,10 +208,11 @@ jbig2 = { package = "jbig2enc-rust", path = "legencode/src/jbig2enc-rust" }
 ndarray = "0.17.2"
 
 [features]
-default = ["jp2-lam"]
+default = ["jp2-lam", "tesseract-ocr"]
 static = ["pdfium-render/static"]
 debug-logging = ["Legencode/debug-logging", "lege-gpu/debug-logging", "dep:fontdue"]
 jp2-lam = ["Legencode/jp2-lam"]
+tesseract-ocr = ["dep:tesseract", "lege-ocr/tesseract-ocr"]
 # Feature for profiling with debug symbols - enables both debug logging and debug symbols
 profiling = ["debug-logging"]
 debug-layers = []
