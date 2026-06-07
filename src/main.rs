@@ -12,7 +12,7 @@ use lege::{
 mod version;
 mod worker_json;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use version::display_version;
 
@@ -66,6 +66,47 @@ pub const COLORS: ColorConfig = ColorConfig {
     reset: "\x1b[0m", // Reset
 };
 // ============================================================================
+
+fn cli_ansi_enabled() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+
+    if !std::io::stdout().is_terminal() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        // Avoid printing raw ESC sequences on Windows consoles that have not
+        // opted into virtual terminal processing, such as some sandboxed VMs.
+        std::env::var_os("WT_SESSION").is_some()
+            || std::env::var_os("ANSICON").is_some()
+            || std::env::var_os("ConEmuANSI")
+                .map(|v| v != "OFF")
+                .unwrap_or(false)
+            || std::env::var_os("TERM")
+                .and_then(|v| v.into_string().ok())
+                .map(|v| !v.eq_ignore_ascii_case("dumb"))
+                .unwrap_or(false)
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("TERM")
+            .and_then(|v| v.into_string().ok())
+            .map(|v| !v.eq_ignore_ascii_case("dumb"))
+            .unwrap_or(false)
+    }
+}
+
+fn cli_color(code: &'static str) -> &'static str {
+    if cli_ansi_enabled() { code } else { "" }
+}
+
+fn cli_reset() -> &'static str {
+    cli_color(COLORS.reset)
+}
 
 use lege::processing_log::{
     self as history_log, ProcessingOptions as LogProcessingOptions,
@@ -1683,7 +1724,9 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     println!("{}", CLI_TEXT.app.file_prompt);
     print!(
         "{}{} {}",
-        COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset
+        cli_color(COLORS.prompt),
+        CLI_TEXT.main.run_cli_input_prompt,
+        cli_reset()
     );
     io::stdout().flush()?;
 
@@ -1757,7 +1800,9 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
             Ok(true) => {
                 println!(
                     "\n{}{}{}",
-                    COLORS.info, CLI_TEXT.interactive.messages.ocr_detected, COLORS.reset
+                    cli_color(COLORS.info),
+                    CLI_TEXT.interactive.messages.ocr_detected,
+                    cli_reset()
                 );
                 println!("{}", CLI_TEXT.interactive.messages.ocr_detected_msg);
                 println!("{}\n", CLI_TEXT.interactive.messages.ocr_detected_tip);
@@ -1765,16 +1810,18 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
             Ok(false) => {
                 println!(
                     "\n{}{}{}",
-                    COLORS.highlight, CLI_TEXT.interactive.messages.no_ocr_detected, COLORS.reset
+                    cli_color(COLORS.highlight),
+                    CLI_TEXT.interactive.messages.no_ocr_detected,
+                    cli_reset()
                 );
                 println!("{}\n", CLI_TEXT.interactive.messages.no_ocr_detected_msg);
             }
             Err(e) => {
                 eprintln!(
                     "{}{}{}",
-                    COLORS.highlight,
+                    cli_color(COLORS.highlight),
                     fmt1(&CLI_TEXT.main.ocr_check_warning, e),
-                    COLORS.reset
+                    cli_reset()
                 );
             }
         }
@@ -1803,27 +1850,39 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     ) = loop {
         print!(
             "\n{}{}{}\n",
-            COLORS.info, CLI_TEXT.interactive.processing_options_title, COLORS.reset
+            cli_color(COLORS.info),
+            CLI_TEXT.interactive.processing_options_title,
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.prompt, CLI_TEXT.interactive.format_prompt, COLORS.reset
+            cli_color(COLORS.prompt),
+            CLI_TEXT.interactive.format_prompt,
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.prompt, CLI_TEXT.interactive.modifiers_prompt, COLORS.reset
+            cli_color(COLORS.prompt),
+            CLI_TEXT.interactive.modifiers_prompt,
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.highlight, CLI_TEXT.interactive.examples_prompt, COLORS.reset
+            cli_color(COLORS.highlight),
+            CLI_TEXT.interactive.examples_prompt,
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.info, CLI_TEXT.interactive.default_prompt, COLORS.reset
+            cli_color(COLORS.info),
+            CLI_TEXT.interactive.default_prompt,
+            cli_reset()
         );
         print!(
             "{}{} {}",
-            COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset
+            cli_color(COLORS.prompt),
+            CLI_TEXT.main.run_cli_input_prompt,
+            cli_reset()
         );
         io::stdout().flush()?;
 
@@ -1887,7 +1946,9 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     let binarization_method = if layout_detection_enabled {
         println!(
             "\n{}{}{}",
-            COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset
+            cli_color(COLORS.info),
+            CLI_TEXT.interactive.binarization_title,
+            cli_reset()
         );
         println!(
             "{}",
@@ -1900,11 +1961,15 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         );
         println!(
             "{}{}{}",
-            COLORS.highlight, CLI_TEXT.interactive.binarization_advanced, COLORS.reset
+            cli_color(COLORS.highlight),
+            CLI_TEXT.interactive.binarization_advanced,
+            cli_reset()
         );
         print!(
             "{}{} {} ",
-            COLORS.prompt, CLI_TEXT.interactive.binarization_prompt, COLORS.reset
+            cli_color(COLORS.prompt),
+            CLI_TEXT.interactive.binarization_prompt,
+            cli_reset()
         );
         io::stdout().flush()?;
 
@@ -1916,30 +1981,38 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     } else {
         println!(
             "\n{}{}{}",
-            COLORS.info, CLI_TEXT.interactive.binarization_title, COLORS.reset
+            cli_color(COLORS.info),
+            CLI_TEXT.interactive.binarization_title,
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.highlight, CLI_TEXT.interactive.binarization_no_layout_note, COLORS.reset
+            cli_color(COLORS.highlight),
+            CLI_TEXT.interactive.binarization_no_layout_note,
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.info,
+            cli_color(COLORS.info),
             fmt3(
                 &CLI_TEXT.main.binarization_choices_template,
                 &CLI_TEXT.interactive.binarization_methods[0],
                 &CLI_TEXT.interactive.binarization_methods[1],
                 &CLI_TEXT.interactive.binarization_methods[2]
             ),
-            COLORS.reset
+            cli_reset()
         );
         println!(
             "{}{}{}",
-            COLORS.highlight, CLI_TEXT.interactive.binarization_advanced, COLORS.reset
+            cli_color(COLORS.highlight),
+            CLI_TEXT.interactive.binarization_advanced,
+            cli_reset()
         );
         print!(
             "{}{} {} ",
-            COLORS.prompt, CLI_TEXT.interactive.binarization_prompt, COLORS.reset
+            cli_color(COLORS.prompt),
+            CLI_TEXT.interactive.binarization_prompt,
+            cli_reset()
         );
         io::stdout().flush()?;
 
@@ -2044,7 +2117,9 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     // Log the selected options
     println!(
         "\n{}{}{}",
-        COLORS.info, CLI_TEXT.interactive.selected_options_title, COLORS.reset
+        cli_color(COLORS.info),
+        CLI_TEXT.interactive.selected_options_title,
+        cli_reset()
     );
     let text_format_display = if config.text_format() == "jbig2" {
         format!("jbig2 ({})", config.jbig2_mode().as_str())
@@ -2053,90 +2128,93 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     };
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_text_encoding,
-        COLORS.reset,
+        cli_reset(),
         text_format_display
     );
     println!(
         "{}{}:{} {:?}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_image_format,
-        COLORS.reset,
+        cli_reset(),
         config.image_format()
     );
     println!(
         "{}{}:{} {:?}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_dithering,
-        COLORS.reset,
+        cli_reset(),
         config.image_region_dither_mode()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_original_quality,
-        COLORS.reset,
+        cli_reset(),
         config.keep_original_images()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_high_quality_output,
-        COLORS.reset,
+        cli_reset(),
         config.high_quality_output()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info, CLI_TEXT.main.selected_options_target_output, COLORS.reset, target_summary
+        cli_color(COLORS.info),
+        CLI_TEXT.main.selected_options_target_output,
+        cli_reset(),
+        target_summary
     );
 
     let original_layout_detection = config.enable_layout_detection();
     if config.invert_input() && original_layout_detection {
         println!(
             "{}{}:{} {} (disabled - inverted documents not supported)",
-            COLORS.info,
+            cli_color(COLORS.info),
             CLI_TEXT.main.selected_options_layout_detection,
-            COLORS.reset,
+            cli_reset(),
             original_layout_detection
         );
         println!(
             "{}{}:{} {}",
-            COLORS.highlight,
+            cli_color(COLORS.highlight),
             CLI_TEXT.main.selected_options_note,
-            COLORS.reset,
+            cli_reset(),
             CLI_TEXT.interactive.messages.layout_disabled_inverted
         );
         println!(
             "{}{}:{} {}",
-            COLORS.highlight,
+            cli_color(COLORS.highlight),
             CLI_TEXT.main.selected_options_reason,
-            COLORS.reset,
+            cli_reset(),
             CLI_TEXT.interactive.messages.layout_disabled_reason
         );
         config.set_enable_layout_detection(false);
     } else {
         println!(
             "{}{}:{} {}",
-            COLORS.info,
+            cli_color(COLORS.info),
             CLI_TEXT.main.selected_options_layout_detection,
-            COLORS.reset,
+            cli_reset(),
             config.enable_layout_detection()
         );
     }
 
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_ocr_enabled,
-        COLORS.reset,
+        cli_reset(),
         config.enable_ocr()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_ocr_mode,
-        COLORS.reset,
+        cli_reset(),
         if config.slow_ocr_enabled() {
             OcrMode::Best.as_str()
         } else {
@@ -2145,56 +2223,58 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_no_cover_page,
-        COLORS.reset,
+        cli_reset(),
         config.no_cover_page()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_invert_input,
-        COLORS.reset,
+        cli_reset(),
         config.invert_input()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_deskew_enabled,
-        COLORS.reset,
+        cli_reset(),
         config.enable_deskew()
     );
     println!(
         "{}{}:{} {:?}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_margin_processing,
-        COLORS.reset,
+        cli_reset(),
         config.margin_settings()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_force_crop,
-        COLORS.reset,
+        cli_reset(),
         config.crop_footnotes()
     );
     println!(
         "{}{}:{} {}",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_max_retries,
-        COLORS.reset,
+        cli_reset(),
         config.max_retries()
     );
     println!(
         "{}{}:{} {}ms",
-        COLORS.info,
+        cli_color(COLORS.info),
         CLI_TEXT.main.selected_options_retry_delay,
-        COLORS.reset,
+        cli_reset(),
         config.retry_delay_ms()
     );
     println!(
         "{}{}{}\n",
-        COLORS.info, CLI_TEXT.main.selected_options_footer, COLORS.reset
+        cli_color(COLORS.info),
+        CLI_TEXT.main.selected_options_footer,
+        cli_reset()
     );
 
     // Set binarization method (inversion no longer changes binarization selection)
@@ -2876,12 +2956,14 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
     loop {
         println!(
             "\n{}{}{}",
-            COLORS.info, CLI_TEXT.interactive.target_device_title, COLORS.reset
+            cli_color(COLORS.info),
+            CLI_TEXT.interactive.target_device_title,
+            cli_reset()
         );
         println!(
             "{}[0]{} {}",
-            COLORS.prompt,
-            COLORS.reset,
+            cli_color(COLORS.prompt),
+            cli_reset(),
             fmt1(
                 &CLI_TEXT.interactive.target_device_default,
                 config.target_height()
@@ -2890,16 +2972,25 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
         for (idx, profile, _slug) in &profile_entries {
             println!(
                 "{}[{:>2}]{} {} ({}x{})",
-                COLORS.prompt, idx, COLORS.reset, profile.name, profile.width, profile.height
+                cli_color(COLORS.prompt),
+                idx,
+                cli_reset(),
+                profile.name,
+                profile.width,
+                profile.height
             );
         }
         println!(
             "{}{}{}",
-            COLORS.highlight, CLI_TEXT.main.target_device_custom_with_hw, COLORS.reset
+            cli_color(COLORS.highlight),
+            CLI_TEXT.main.target_device_custom_with_hw,
+            cli_reset()
         );
         print!(
             "{}{} {}",
-            COLORS.prompt, CLI_TEXT.main.run_cli_input_prompt, COLORS.reset
+            cli_color(COLORS.prompt),
+            CLI_TEXT.main.run_cli_input_prompt,
+            cli_reset()
         );
         io::stdout().flush()?;
 
@@ -2916,9 +3007,9 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
             if let Err(e) = config.set_high_res_render_height(height) {
                 println!(
                     "{}{}{}",
-                    COLORS.highlight,
+                    cli_color(COLORS.highlight),
                     fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
-                    COLORS.reset
+                    cli_reset()
                 );
                 continue;
             }
@@ -2958,18 +3049,18 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                         if let Err(e) = config.set_target_dimensions(width, selection.height) {
                             println!(
                                 "{}{}{}",
-                                COLORS.highlight,
+                                cli_color(COLORS.highlight),
                                 fmt1(&CLI_TEXT.main.target_device_apply_dimensions_error, e),
-                                COLORS.reset
+                                cli_reset()
                             );
                             continue;
                         }
                         if let Err(e) = config.set_high_res_render_height(selection.height) {
                             println!(
                                 "{}{}{}",
-                                COLORS.highlight,
+                                cli_color(COLORS.highlight),
                                 fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
-                                COLORS.reset
+                                cli_reset()
                             );
                             continue;
                         }
@@ -2978,18 +3069,18 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                         if let Err(e) = config.set_target_height(selection.height) {
                             println!(
                                 "{}{}{}",
-                                COLORS.highlight,
+                                cli_color(COLORS.highlight),
                                 fmt1(&CLI_TEXT.main.target_device_set_target_height_error, e),
-                                COLORS.reset
+                                cli_reset()
                             );
                             continue;
                         }
                         if let Err(e) = config.set_high_res_render_height(selection.height) {
                             println!(
                                 "{}{}{}",
-                                COLORS.highlight,
+                                cli_color(COLORS.highlight),
                                 fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
-                                COLORS.reset
+                                cli_reset()
                             );
                             continue;
                         }
@@ -3004,9 +3095,9 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                     if let Err(e) = config.set_high_res_render_height(height) {
                         println!(
                             "{}{}{}",
-                            COLORS.highlight,
+                            cli_color(COLORS.highlight),
                             fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
-                            COLORS.reset
+                            cli_reset()
                         );
                         continue;
                     }
@@ -3015,9 +3106,9 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 Err(e) => {
                     println!(
                         "{}{}{}",
-                        COLORS.highlight,
+                        cli_color(COLORS.highlight),
                         fmt2(&CLI_TEXT.main.target_device_invalid_spec_error, spec, e),
-                        COLORS.reset
+                        cli_reset()
                     );
                     continue;
                 }
@@ -3027,9 +3118,9 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
             if let Err(e) = config.set_high_res_render_height(height) {
                 println!(
                     "{}{}{}",
-                    COLORS.highlight,
+                    cli_color(COLORS.highlight),
                     fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
-                    COLORS.reset
+                    cli_reset()
                 );
                 continue;
             }
@@ -3705,7 +3796,6 @@ struct CliStageSnapshot {
 }
 
 #[derive(Clone, Copy)]
-#[cfg(feature = "debug-logging")]
 struct CliStageEvent<'a> {
     current: u32,
     stage_order: u8,
@@ -3740,7 +3830,6 @@ fn print_timestamped_line(line: &str) {
     }
 }
 
-#[cfg(feature = "debug-logging")]
 fn print_stage_progress_line(
     stage_label: &str,
     stage_color: &str,
@@ -3758,14 +3847,14 @@ fn print_stage_progress_line(
             "{}[{}]{} {}{}{}: {}{}/{}{} ({}%)",
             stage_color,
             stage_label,
-            COLORS.reset,
+            cli_reset(),
             stage_color,
             verb,
-            COLORS.reset,
-            COLORS.page_complete,
+            cli_reset(),
+            cli_color(COLORS.page_complete),
             current,
             total,
-            COLORS.reset,
+            cli_reset(),
             pct
         )
     } else {
@@ -3773,14 +3862,14 @@ fn print_stage_progress_line(
             "{}[{}]{} {}{}{}: {}{}/{}{}",
             stage_color,
             stage_label,
-            COLORS.reset,
+            cli_reset(),
             stage_color,
             verb,
-            COLORS.reset,
-            COLORS.page_complete,
+            cli_reset(),
+            cli_color(COLORS.page_complete),
             current,
             total,
-            COLORS.reset
+            cli_reset()
         )
     };
     print_timestamped_line(&line);
@@ -3790,107 +3879,104 @@ fn emit_cli_stage_progress(
     snapshot: &mut CliStageSnapshot,
     metrics: lege::progress::ProgressMetrics,
 ) {
-    #[cfg(not(feature = "debug-logging"))]
-    {
-        snapshot.encoded = metrics.encoded;
-        snapshot.rendered = metrics.rendered;
-        snapshot.detected = metrics.detected;
-        snapshot.deskewed = metrics.deskewed;
-        return;
+    let total = metrics.pages_total.max(1);
+    let rendered = metrics.rendered.min(total);
+    let detected = metrics.detected.min(rendered);
+    let encoded = metrics.encoded.min(match metrics.mode {
+        lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => detected,
+        lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
+            rendered.max(metrics.encoded).min(total)
+        }
+        lege::progress::ProgressMode::Unknown => metrics.encoded.min(total),
+    });
+    let deskewed = metrics.deskewed.min(rendered.max(encoded));
+    let mut events: Vec<CliStageEvent<'static>> = Vec::new();
+
+    let mut push_stage_events = |start: u32,
+                                 end: u32,
+                                 stage_order: u8,
+                                 stage_label: &'static str,
+                                 stage_color: &'static str,
+                                 verb: &'static str| {
+        if end > start {
+            for current in (start + 1)..=end {
+                events.push(CliStageEvent {
+                    current,
+                    stage_order,
+                    stage_label,
+                    stage_color,
+                    verb,
+                    include_percentage: stage_label == "Encode",
+                });
+            }
+        }
+    };
+
+    match metrics.mode {
+        lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => {
+            push_stage_events(
+                snapshot.rendered,
+                rendered,
+                0,
+                "Render",
+                cli_color(COLORS.render),
+                "Page rendered",
+            );
+            push_stage_events(
+                snapshot.detected,
+                detected,
+                1,
+                "Infer",
+                cli_color(COLORS.detect),
+                "Page inferred",
+            );
+            push_stage_events(
+                snapshot.encoded,
+                encoded,
+                2,
+                "Encode",
+                cli_color(COLORS.encode),
+                "Page encoded",
+            );
+            snapshot.rendered = rendered;
+            snapshot.detected = detected;
+            snapshot.encoded = encoded;
+        }
+        lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
+            push_stage_events(
+                snapshot.encoded,
+                encoded,
+                2,
+                "Encode",
+                cli_color(COLORS.encode),
+                "Page encoded",
+            );
+            snapshot.encoded = encoded;
+        }
+        lege::progress::ProgressMode::Unknown => {}
     }
 
-    #[cfg(feature = "debug-logging")]
-    {
-        let total = metrics.pages_total.max(1);
-        let mut events: Vec<CliStageEvent<'static>> = Vec::new();
+    push_stage_events(
+        snapshot.deskewed,
+        deskewed,
+        3,
+        "Deskew",
+        cli_color(COLORS.page_start),
+        "Page deskewed",
+    );
+    snapshot.deskewed = deskewed;
 
-        let mut push_stage_events = |start: u32,
-                                     end: u32,
-                                     stage_order: u8,
-                                     stage_label: &'static str,
-                                     stage_color: &'static str,
-                                     verb: &'static str| {
-            if end > start {
-                for current in (start + 1)..=end {
-                    events.push(CliStageEvent {
-                        current,
-                        stage_order,
-                        stage_label,
-                        stage_color,
-                        verb,
-                        include_percentage: stage_label == "Encode",
-                    });
-                }
-            }
-        };
+    events.sort_by_key(|event| (event.current, event.stage_order));
 
-        match metrics.mode {
-            lege::progress::ProgressMode::Layout | lege::progress::ProgressMode::Margin => {
-                push_stage_events(
-                    snapshot.rendered,
-                    metrics.rendered,
-                    2,
-                    "Render",
-                    COLORS.render,
-                    "Page rendered",
-                );
-                push_stage_events(
-                    snapshot.detected,
-                    metrics.detected,
-                    1,
-                    "Infer",
-                    COLORS.detect,
-                    "Page inferred",
-                );
-                push_stage_events(
-                    snapshot.encoded,
-                    metrics.encoded,
-                    0,
-                    "Encode",
-                    COLORS.encode,
-                    "Page encoded",
-                );
-                snapshot.rendered = metrics.rendered;
-                snapshot.detected = metrics.detected;
-                snapshot.encoded = metrics.encoded;
-            }
-            lege::progress::ProgressMode::NoLayout
-            | lege::progress::ProgressMode::HeavySequential => {
-                push_stage_events(
-                    snapshot.encoded,
-                    metrics.encoded,
-                    0,
-                    "Encode",
-                    COLORS.encode,
-                    "Page encoded",
-                );
-                snapshot.encoded = metrics.encoded;
-            }
-            lege::progress::ProgressMode::Unknown => {}
-        }
-
-        push_stage_events(
-            snapshot.deskewed,
-            metrics.deskewed,
-            3,
-            "Deskew",
-            COLORS.page_start,
-            "Page deskewed",
+    for event in events {
+        print_stage_progress_line(
+            event.stage_label,
+            event.stage_color,
+            event.verb,
+            event.current,
+            total,
+            event.include_percentage,
         );
-        snapshot.deskewed = metrics.deskewed;
-
-        events.sort_by_key(|event| (event.current, event.stage_order));
-
-        for event in events {
-            print_stage_progress_line(
-                event.stage_label,
-                event.stage_color,
-                event.verb,
-                event.current,
-                total,
-                event.include_percentage,
-            );
-        }
     }
 }
 
@@ -3957,8 +4043,11 @@ fn process_single_file(
             Ok(ProgressUpdate::Completed {
                 task_id: id,
                 message,
-                metrics: _,
+                metrics,
             }) if id == task_id => {
+                if let Some(m) = metrics {
+                    emit_cli_stage_progress(&mut stage_snapshot, m);
+                }
                 let elapsed = format_elapsed(job_started_at.elapsed());
                 let completed = format!("{}\nElapsed: {}", message, elapsed);
                 print_timestamped_line(&fmt1(&CLI_TEXT.main.progress_complete, completed));

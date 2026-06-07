@@ -2012,6 +2012,28 @@ pub async fn create_and_run_pdf_source_pipeline(
     // Reset standard dimensions at the start of each new document
     crate::pipeline::reset_standard_dimensions();
 
+    let mut config = config;
+    let inference_handle = if config.enable_layout_detection() {
+        match crate::pipeline::inference::InferenceHandle::new(&config) {
+            Ok(handle) => Some(Arc::new(handle)),
+            Err(e) if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) => {
+                warn_log!("[PDF-Parallel] {e}. Layout detection disabled for this run.");
+                let mut fallback = (*config).clone();
+                fallback.set_enable_layout_detection(false);
+                config = Arc::new(fallback);
+                None
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "[PDF-Parallel] Failed to create InferenceHandle: {}",
+                    e
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     let pipeline_config = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(pipeline_config.page_workers);
 
@@ -2048,19 +2070,6 @@ pub async fn create_and_run_pdf_source_pipeline(
 
     // Initialize shared resources
     let deskew_engine = prepare_shared_deskew_engine(&config)?;
-    let inference_handle = if config.enable_layout_detection() {
-        match crate::pipeline::inference::InferenceHandle::new(&config) {
-            Ok(handle) => Some(Arc::new(handle)),
-            Err(e) => {
-                return Err(anyhow!(
-                    "[PDF-Parallel] Failed to create InferenceHandle: {}",
-                    e
-                ));
-            }
-        }
-    } else {
-        None
-    };
 
     // Check for cancellation before starting processing
     if let Ok(signal) = shutdown_rx.try_recv() {

@@ -86,7 +86,7 @@ impl LayoutDetector {
             );
         }
 
-        let compiled = pollster::block_on(CompiledGraph::build(&graph))
+        let compiled = pollster::block_on(CompiledGraph::build_layout(&graph))
             .context("failed to compile layout graph for WGPU")?;
 
         Ok(Self {
@@ -162,6 +162,18 @@ impl LayoutDetector {
     pub fn model_path(&self) -> &Path {
         &self.config.model_path
     }
+}
+
+pub fn is_layout_software_adapter_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let marker = CompiledGraph::layout_software_adapter_error();
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.to_string().contains(marker) {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 #[derive(Debug, Clone)]

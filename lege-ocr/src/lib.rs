@@ -20,6 +20,15 @@ use image::RgbImage;
 use segment::SegmentParams;
 use types::{OcrLineResult, SegmentationConfidence, SlowOcrPage, TextRegion};
 
+/// Controls which expensive page-level artifacts the slow OCR pipeline builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlowOcrOutputMode {
+    /// Build structured line/block data and a page hOCR document.
+    Hocr,
+    /// Build structured line/block data only. Debug output may still write hOCR.
+    Structured,
+}
+
 /// Parameters controlling the slow OCR pipeline.
 #[derive(Debug, Clone)]
 pub struct SlowOcrConfig {
@@ -32,6 +41,11 @@ pub struct SlowOcrConfig {
     /// Minimum confidence level required to use line-segmented OCR; pages below
     /// this fall back to region-level OCR on the full bbox.
     pub min_segment_confidence: SegmentationConfidence,
+    /// Controls whether page-level hOCR is built for the returned page.
+    pub output_mode: SlowOcrOutputMode,
+    /// True when the `process_page` binary argument is already a normalized
+    /// analysis mask with 0=ink and 255=background.
+    pub binary_is_analysis_mask: bool,
 }
 
 impl Default for SlowOcrConfig {
@@ -42,6 +56,8 @@ impl Default for SlowOcrConfig {
             debug: false,
             debug_out_dir: None,
             min_segment_confidence: SegmentationConfidence::Medium,
+            output_mode: SlowOcrOutputMode::Hocr,
+            binary_is_analysis_mask: false,
         }
     }
 }
@@ -84,7 +100,12 @@ impl OcrPipeline {
     ) -> Result<SlowOcrPage> {
         let page_w = high_res.width();
         let page_h = high_res.height();
-        let analysis_binary = normalize::build_analysis_binary(binary, high_res);
+        let expected = page_w as usize * page_h as usize;
+        let analysis_binary = if self.config.binary_is_analysis_mask && binary.len() == expected {
+            binary.to_vec()
+        } else {
+            normalize::build_analysis_binary(binary, high_res)
+        };
 
         let debug_dir = if self.config.debug {
             let base = self
@@ -126,11 +147,34 @@ impl OcrPipeline {
             // region's class so downstream output can distinguish headings,
             // captions, footnotes, etc.
             let region = &regions[ri];
+            let block_bbox = line_union_bbox(&lines).unwrap_or(region.bbox_highres);
             let block_lines: Vec<document::TextLine> = lines
                 .iter()
                 .map(|l| document::TextLine {
                     text: l.text.clone(),
                     bbox: l.bbox_highres,
+                    words: l
+                        .words
+                        .iter()
+                        .map(|word| {
+                            let line_w = l.bbox_highres[2].saturating_sub(l.bbox_highres[0]);
+                            let line_h = l.bbox_highres[3].saturating_sub(l.bbox_highres[1]);
+                            document::TextWord {
+                                text: word.text.clone(),
+                                bbox: [
+                                    l.bbox_highres[0]
+                                        .saturating_add(word.bbox_crop_local[0].min(line_w)),
+                                    l.bbox_highres[1]
+                                        .saturating_add(word.bbox_crop_local[1].min(line_h)),
+                                    l.bbox_highres[0]
+                                        .saturating_add(word.bbox_crop_local[2].min(line_w)),
+                                    l.bbox_highres[1]
+                                        .saturating_add(word.bbox_crop_local[3].min(line_h)),
+                                ],
+                                confidence: word.confidence,
+                            }
+                        })
+                        .collect(),
                 })
                 .collect();
             if block_lines.iter().any(|l| !l.text.trim().is_empty()) {
@@ -138,7 +182,7 @@ impl OcrPipeline {
                     kind: document::BlockKind::from_class_name(
                         region.class_name.as_deref().unwrap_or("text"),
                     ),
-                    bbox: region.bbox_highres,
+                    bbox: block_bbox,
                     lines: block_lines,
                     indent_px: 0,
                     spacing_before_px: 0,
@@ -149,7 +193,13 @@ impl OcrPipeline {
             all_lines.extend(lines);
         }
 
-        let hocr = hocr::build_page_hocr(&all_lines, page_w, page_h);
+        let should_build_hocr = self.config.output_mode == SlowOcrOutputMode::Hocr
+            || self.config.debug;
+        let hocr = if should_build_hocr {
+            hocr::build_page_hocr(&all_lines, page_w, page_h)
+        } else {
+            String::new()
+        };
 
         if let Some(ref dir) = debug_dir {
             debug::save_page_hocr(&dir.join("page.hocr"), &hocr)?;
@@ -347,12 +397,12 @@ impl OcrPipeline {
             }
         };
 
-        // Evaluate a clean binary variant as well when it is materially
-        // different from the grayscale crop. Tesseract confidence chooses the
-        // less ambiguous rendering; confidence-less backends retain grayscale
-        // unless it failed.
+        // Evaluate a clean binary variant only for engines that can use it to
+        // choose a materially better result. WinOCR takes the grayscale path;
+        // Tesseract keeps the confidence-based retry.
         let mut binary_result = None;
-        if !gray_img.as_raw().iter().all(|&p| p == 0 || p == 255)
+        if self.engine.use_binary_line_retry()
+            && !gray_img.as_raw().iter().all(|&p| p == 0 || p == 255)
             && let Ok((binary_crop, width, height)) =
                 normalize::extract_binary_crop(binary, page_w, page_h, line_bbox)
             && let Some(binary_img) = image::GrayImage::from_raw(width, height, binary_crop)
@@ -471,6 +521,27 @@ impl OcrPipeline {
             })
             .collect()
     }
+}
+
+fn line_union_bbox(lines: &[OcrLineResult]) -> Option<[u32; 4]> {
+    let mut left = u32::MAX;
+    let mut top = u32::MAX;
+    let mut right = 0;
+    let mut bottom = 0;
+    let mut found = false;
+    for line in lines.iter().filter(|line| !line.text.trim().is_empty()) {
+        if line.bbox_highres[2] <= line.bbox_highres[0]
+            || line.bbox_highres[3] <= line.bbox_highres[1]
+        {
+            continue;
+        }
+        found = true;
+        left = left.min(line.bbox_highres[0]);
+        top = top.min(line.bbox_highres[1]);
+        right = right.max(line.bbox_highres[2]);
+        bottom = bottom.max(line.bbox_highres[3]);
+    }
+    found.then_some([left, top, right, bottom])
 }
 
 fn region_supports_line_segmentation(region: &TextRegion) -> bool {
@@ -757,6 +828,10 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "mock"
+        }
+
+        fn use_binary_line_retry(&self) -> bool {
+            true
         }
     }
 

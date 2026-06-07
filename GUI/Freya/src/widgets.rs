@@ -1,6 +1,6 @@
 use freya::prelude::*;
 
-use crate::colors::{APP_BG, BORDER, CARD_BG, MUTED, PANEL_BG, TEXT};
+use crate::colors::{APP_BG, BORDER, CARD_BG, PANEL_BG, TEXT};
 
 pub fn lege_panel_card(
     title: impl Into<String>,
@@ -266,20 +266,20 @@ pub fn lege_main_shell(
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(326.))
+                                .height(Size::px(336.))
                                 .child(settings),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(52.))
+                                .height(Size::px(92.))
                                 .child(process_row),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
                                 .height(Size::flex(1.))
-                                .min_height(Size::px(170.))
+                                .min_height(Size::px(120.))
                                 .child(status_bar),
                         ),
                 ),

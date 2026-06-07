@@ -38,6 +38,12 @@ pub trait OcrEngine: Send + Sync {
         self.ocr_region(image, lang)
     }
 
+    /// Whether the shared line OCR path should run a second binary-image pass
+    /// and choose between grayscale/binary outputs.
+    fn use_binary_line_retry(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &'static str;
 }
 
@@ -49,24 +55,88 @@ pub fn default_engine() -> Box<dyn OcrEngine> {
     #[cfg(target_os = "windows")]
     return Box::new(WinOcrEngine);
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "tesseract-ocr"
+    ))]
     return Box::new(TesseractEngine);
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    compile_error!("lege-ocr: no OCR engine for this target (need windows, linux, or macos)");
+    #[cfg(not(any(
+        target_os = "windows",
+        all(
+            any(target_os = "linux", target_os = "macos"),
+            feature = "tesseract-ocr"
+        )
+    )))]
+    return Box::new(UnavailableOcrEngine);
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "tesseract-ocr"
+    )
+)))]
+pub struct UnavailableOcrEngine;
+
+#[cfg(not(any(
+    target_os = "windows",
+    all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "tesseract-ocr"
+    )
+)))]
+impl OcrEngine for UnavailableOcrEngine {
+    fn name(&self) -> &'static str {
+        "unavailable"
+    }
+
+    fn run_image(
+        &self,
+        _data: &[u8],
+        _width: usize,
+        _height: usize,
+        _is_binary: bool,
+        _lang: &str,
+    ) -> Option<OcrResult> {
+        None
+    }
+
+    fn ocr_line(&self, _image: &GrayImage, _lang: &str) -> Result<OcrLineResult> {
+        Err(anyhow::anyhow!(
+            "OCR support was not compiled into this build"
+        ))
+    }
+
+    fn ocr_region(&self, _image: &GrayImage, _lang: &str) -> Result<Vec<OcrLineResult>> {
+        Err(anyhow::anyhow!(
+            "OCR support was not compiled into this build"
+        ))
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Tesseract engine (Linux / macOS)
 // ═════════════════════════════════════════════════════════════════════════════
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 pub struct TesseractEngine;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 impl OcrEngine for TesseractEngine {
     fn name(&self) -> &'static str {
         "tesseract"
+    }
+
+    fn use_binary_line_retry(&self) -> bool {
+        true
     }
 
     fn run_image(
@@ -194,7 +264,10 @@ impl OcrEngine for TesseractEngine {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn ocr_tesseract_multiline(
     image: &GrayImage,
     lang: &str,
@@ -225,7 +298,10 @@ fn ocr_tesseract_multiline(
     ))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn build_tesseract(lang: &str, psm: tesseract::PageSegMode) -> Result<tesseract::Tesseract> {
     use tesseract::{OcrEngineMode, Tesseract};
 
@@ -249,7 +325,10 @@ fn build_tesseract(lang: &str, psm: tesseract::PageSegMode) -> Result<tesseract:
     Ok(tess)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn set_image_with_downscale(
     tess: tesseract::Tesseract,
     data: &[u8],
@@ -303,7 +382,10 @@ fn resize_cpu(
     out
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn find_tessdata_dir(lang: &str) -> Option<String> {
     use std::path::PathBuf;
     let filename = format!("{}.traineddata", lang);
@@ -331,7 +413,10 @@ fn find_tessdata_dir(lang: &str) -> Option<String> {
 // Windows OCR engine (WinRT)
 // ═════════════════════════════════════════════════════════════════════════════
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn scale_hocr_coords(hocr: &str, sw: usize, sh: usize, ow: usize, oh: usize) -> String {
     let sx = ow as f32 / sw as f32;
     let sy = oh as f32 / sh as f32;
