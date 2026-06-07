@@ -4,8 +4,20 @@
 pub mod fast;
 pub mod slow;
 
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 use std::env;
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 use std::path::{Path, PathBuf};
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 use std::process::Command;
 
 /// Re-export the shared `OcrResult` type from lege-ocr.
@@ -26,12 +38,18 @@ pub fn run_ocr(
 }
 
 /// Check if Tesseract is available on Linux/macOS systems
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 pub fn check_tesseract_availability() -> Result<String, String> {
     check_tesseract_availability_for_language("eng")
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 pub fn check_tesseract_availability_for_language(language: &str) -> Result<String, String> {
     let normalized = language.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -70,7 +88,10 @@ pub fn check_tesseract_availability_for_language(language: &str) -> Result<Strin
 }
 
 /// Check for partial Tesseract installation (libraries/data without binary)
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn check_for_partial_installation() -> Result<String, String> {
     // Check for library files (indicates installation)
     let lib_paths = [
@@ -115,12 +136,18 @@ fn check_for_partial_installation() -> Result<String, String> {
 }
 
 /// Get the appropriate tessdata directory path, preferring local eng.traineddata
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 pub fn get_tessdata_path() -> Option<String> {
     get_tessdata_path_for_language("eng")
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 pub fn get_tessdata_path_for_language(language: &str) -> Option<String> {
     let normalized = language.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -155,7 +182,10 @@ pub fn get_tessdata_path_for_language(_language: &str) -> Option<String> {
     None
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn find_tesseract_binary() -> Option<String> {
     if let Ok(output) = Command::new("tesseract").arg("--version").output() {
         if output.status.success() {
@@ -187,7 +217,10 @@ fn find_tesseract_binary() -> Option<String> {
     None
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn tessdata_search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push_unique = |path: PathBuf| {
@@ -226,7 +259,10 @@ fn tessdata_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "tesseract-ocr"
+))]
 fn find_traineddata_path(language: &str) -> Option<PathBuf> {
     let filename = format!("{}.traineddata", language);
     for dir in tessdata_search_dirs() {
@@ -235,6 +271,38 @@ fn find_traineddata_path(language: &str) -> Option<PathBuf> {
             return Some(candidate);
         }
     }
+    None
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(feature = "tesseract-ocr")
+))]
+pub fn check_tesseract_availability() -> Result<String, String> {
+    Err("OCR support was not compiled into this build".to_string())
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(feature = "tesseract-ocr")
+))]
+pub fn get_tessdata_path() -> Option<String> {
+    None
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(feature = "tesseract-ocr")
+))]
+pub fn check_tesseract_availability_for_language(_language: &str) -> Result<String, String> {
+    Err("OCR support was not compiled into this build".to_string())
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(feature = "tesseract-ocr")
+))]
+pub fn get_tessdata_path_for_language(_language: &str) -> Option<String> {
     None
 }
 

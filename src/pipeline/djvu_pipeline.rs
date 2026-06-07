@@ -98,6 +98,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
     use tokio::sync::mpsc;
+    let mut config = config;
     #[cfg(feature = "debug-logging")]
     {
         info_log!("[DJVU-Parallel] Entering parallel tokio pipeline");
@@ -166,11 +167,18 @@ pub async fn create_and_run_djvu_source_pipeline(
             match crate::pipeline::inference::InferenceHandle::new(&config) {
                 Ok(handle) => Some(Arc::new(handle)),
                 Err(e) => {
-                    #[cfg(feature = "debug-logging")]
-                    warn_log!(
-                        "[DJVU-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.",
-                        e
-                    );
+                    if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) {
+                        warn_log!("[DJVU-Parallel] {e}. Layout detection disabled for this run.");
+                    } else {
+                        #[cfg(feature = "debug-logging")]
+                        warn_log!(
+                            "[DJVU-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.",
+                            e
+                        );
+                    }
+                    let mut fallback = (*config).clone();
+                    fallback.set_enable_layout_detection(false);
+                    config = Arc::new(fallback);
                     None
                 }
             }
