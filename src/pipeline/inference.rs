@@ -5,6 +5,7 @@ use crate::pipeline::config::PipelineConfig;
 use anyhow::Result;
 use image::RgbImage;
 use log::{error, info};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -103,15 +104,30 @@ impl InferenceActor {
 
             if batch_size == 1 {
                 let job = jobs.pop().unwrap();
-                let result = self.engine.detect_single_blocking(&job.image);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    self.engine.detect_single_blocking(&job.image)
+                }))
+                .unwrap_or_else(|payload| {
+                    Err(anyhow::anyhow!(
+                        "layout inference panicked: {}",
+                        panic_payload_message(payload)
+                    ))
+                });
                 let _ = job.response_tx.send(result);
             } else {
                 let images: Vec<RgbImage> = jobs.iter().map(|j| (*j.image).clone()).collect();
                 let indices: Vec<usize> = (0..images.len()).collect();
 
-                let batch_result = self
-                    .engine
-                    .detect_batch_with_indices_blocking(&images, &indices);
+                let batch_result = catch_unwind(AssertUnwindSafe(|| {
+                    self.engine
+                        .detect_batch_with_indices_blocking(&images, &indices)
+                }))
+                .unwrap_or_else(|payload| {
+                    Err(anyhow::anyhow!(
+                        "layout inference panicked: {}",
+                        panic_payload_message(payload)
+                    ))
+                });
 
                 match batch_result {
                     Ok(results) => {
@@ -138,6 +154,20 @@ impl InferenceActor {
     }
 }
 
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+pub fn is_layout_software_adapter_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    lege_gpu::vision::is_layout_software_adapter_error(error)
+}
+
 #[derive(Clone)]
 pub struct InferenceHandle {
     sender: mpsc::Sender<InferenceJob>,
@@ -155,7 +185,12 @@ impl InferenceHandle {
             .spawn(move || match InferenceActor::new(receiver, &config_clone) {
                 Ok(actor) => {
                     let _ = ready_tx.send(Ok(()));
-                    actor.run();
+                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| actor.run())) {
+                        error!(
+                            "InferenceActor panicked: {}",
+                            panic_payload_message(payload)
+                        );
+                    }
                 }
                 Err(e) => {
                     error!("InferenceActor failed to initialize: {}", e);

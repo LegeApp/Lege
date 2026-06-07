@@ -332,9 +332,10 @@ pub const MAX_SLOW_OCR_RENDER_HEIGHT: u32 = 6000;
 
 impl PipelineConfig {
     pub fn new() -> Result<Self> {
-        let model_path = runtime_asset_path("yolo-layout.onnx")
-            .to_string_lossy()
-            .to_string();
+        let model_path = runtime_asset_path_if_exists("yolo-layout.onnx")
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let enable_layout_detection = !model_path.is_empty();
         let config = Self {
             model_path,
             confidence_threshold: 0.4,
@@ -349,7 +350,7 @@ impl PipelineConfig {
             ocr_language: "eng".to_string(),
             cover_format: CoverFormat::Jpeg,
             text_format: "jbig2".to_string(),
-            enable_layout_detection: true,
+            enable_layout_detection,
             heavy_sauvola_concurrency: 4,
             page_range: None,
             enable_cover_page: true,
@@ -746,7 +747,9 @@ impl PipelineConfig {
         Ok(())
     }
     pub fn set_enable_layout_detection(&mut self, enable: bool) {
-        self.enable_layout_detection = enable;
+        self.enable_layout_detection = enable
+            && !self.model_path.is_empty()
+            && std::path::Path::new(&self.model_path).exists();
     }
     pub fn set_slow_ocr(&mut self, enable: bool) {
         self.slow_ocr = enable;
