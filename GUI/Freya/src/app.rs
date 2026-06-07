@@ -2,6 +2,7 @@ use freya::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 use std::fs;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::backend;
@@ -98,6 +99,13 @@ pub(crate) enum TooltipArea {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingQueueDisplayItem {
+    pub task_id: u64,
+    pub path: PathBuf,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
     pub queue: VecDeque<DocumentItem>,
     pub options: ProcessingOptions,
@@ -109,6 +117,7 @@ pub struct AppState {
     pub active_eta: Option<String>,
     pub progress_metrics: Option<crate::worker_process::WorkerProgressMetrics>,
     pub active_task_ids: Vec<u64>,
+    pub processing_items: Vec<ProcessingQueueDisplayItem>,
     pub should_cancel: bool,
     pub job_color_index: u32,
 
@@ -167,6 +176,7 @@ impl Default for AppState {
             active_eta: None,
             progress_metrics: None,
             active_task_ids: Vec::new(),
+            processing_items: Vec::new(),
             should_cancel: false,
             job_color_index: u32::MAX,
             target_height_input: options.target_height.unwrap_or(1200).to_string(),
@@ -259,6 +269,16 @@ impl AppState {
             .cloned()
             .unwrap_or_default();
         self.status_lines = (l1, l2, l3, self.status_lines.3.clone());
+    }
+
+    fn set_processing_item_status(&mut self, task_id: u64, status: impl Into<String>) {
+        if let Some(item) = self
+            .processing_items
+            .iter_mut()
+            .find(|item| item.task_id == task_id)
+        {
+            item.status = status.into();
+        }
     }
 }
 
@@ -732,7 +752,7 @@ fn FileActionRow(state: State<AppState>) -> Element {
         .options
         .output_path
         .as_ref()
-        .map(|path| backend::truncate_path(path, 42))
+        .map(|path| format!("Output: {}", backend::truncate_path(path, 34)))
         .unwrap_or_else(|| GUI_TEXT.interactive.buttons.output_directory.clone());
 
     widgets::lege_file_action_row(
@@ -760,12 +780,18 @@ fn FileActionRow(state: State<AppState>) -> Element {
                 .child(GUI_TEXT.interactive.buttons.add_folder.clone())
                 .into(),
         ),
-        Button::new()
-            .width(Size::fill())
-            .height(Size::fill())
-            .on_press(move |_| choose_output_folder(state))
-            .child(output_text)
-            .into(),
+        tooltip_wrap_at(
+            state,
+            TooltipArea::FileActions,
+            GUI_TEXT.interactive.tooltips.output_directory.clone(),
+            AttachedPosition::Left,
+            Button::new()
+                .width(Size::fill())
+                .height(Size::fill())
+                .on_press(move |_| choose_output_folder(state))
+                .child(output_text)
+                .into(),
+        ),
     )
 }
 
@@ -817,7 +843,11 @@ fn SettingsDashboard(
 }
 
 fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) -> Element {
-    let is_processing = state.read().is_processing;
+    let read = state.read();
+    let is_processing = read.is_processing;
+    let processing_items = read.processing_items.clone();
+    let queued_items = read.queue.iter().cloned().collect::<Vec<_>>();
+    drop(read);
 
     let button_text = if is_processing {
         GUI_TEXT.interactive.buttons.cancel.clone()
@@ -825,21 +855,84 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
         GUI_TEXT.interactive.buttons.start_processing.clone()
     };
 
-    // Single, centered Process/Cancel button. Queue/Done/Errors counters were
-    // removed: the queue and log views already convey that state, and surfacing
-    // an "Errors" tally undermined confidence for the common error-free run.
+    let item_rows: Vec<Element> = if is_processing && !processing_items.is_empty() {
+        processing_items
+            .iter()
+            .take(3)
+            .map(|item| process_queue_row(&item.status, &backend::truncate_path(&item.path, 54)))
+            .collect()
+    } else {
+        queued_items
+            .iter()
+            .take(3)
+            .map(|item| process_queue_row("Queued", &backend::truncate_path(&item.file_path, 54)))
+            .collect()
+    };
+
+    let overflow_count = if is_processing && !processing_items.is_empty() {
+        processing_items.len().saturating_sub(3)
+    } else {
+        queued_items.len().saturating_sub(3)
+    };
+
     rect()
         .width(Size::fill())
         .height(Size::fill())
-        .direction(Direction::Horizontal)
+        .vertical()
+        .spacing(4.)
         .main_align(Alignment::Center)
         .cross_align(Alignment::Center)
         .child(
             Button::new()
                 .width(Size::percent(45.))
-                .height(Size::fill())
+                .height(Size::px(36.))
                 .on_press(move |_| start_or_cancel_processing(state, page_range_input))
                 .child(button_text),
+        )
+        .maybe_child(if item_rows.is_empty() {
+            None::<Element>
+        } else {
+            Some(
+                rect()
+                    .width(Size::fill())
+                    .height(Size::px(42.))
+                    .vertical()
+                    .spacing(2.)
+                    .children(item_rows)
+                    .maybe_child(if overflow_count > 0 {
+                        Some(
+                            label()
+                                .text(format!("+{overflow_count} more"))
+                                .font_size(10.)
+                                .color(MUTED)
+                                .into(),
+                        )
+                    } else {
+                        None::<Element>
+                    })
+                    .into(),
+            )
+        })
+        .into()
+}
+
+fn process_queue_row(status: &str, path: &str) -> Element {
+    rect()
+        .width(Size::fill())
+        .direction(Direction::Horizontal)
+        .spacing(8.)
+        .cross_align(Alignment::Center)
+        .child(
+            label()
+                .text(status.to_string())
+                .font_size(10.)
+                .font_weight(700)
+                .color(MUTED),
+        )
+        .child(
+            rect()
+                .width(Size::fill())
+                .child(label().text(path.to_string()).font_size(10.).color(TEXT)),
         )
         .into()
 }
@@ -1456,9 +1549,20 @@ fn progress_single_bar(
     if metrics.pages_total == 0 {
         return None;
     }
+    let current = match metrics.mode {
+        crate::worker_process::WorkerProgressMode::Layout
+        | crate::worker_process::WorkerProgressMode::Margin => {
+            metrics.rendered.max(metrics.detected).max(metrics.encoded)
+        }
+        crate::worker_process::WorkerProgressMode::NoLayout
+        | crate::worker_process::WorkerProgressMode::HeavySequential
+        | crate::worker_process::WorkerProgressMode::Unknown => {
+            metrics.rendered.max(metrics.encoded)
+        }
+    };
     Some(progress_stage_card(
-        GUI_TEXT.interactive.progress.encode.clone(),
-        metrics.encoded,
+        "Progress".to_string(),
+        current,
         metrics.pages_total,
         color,
     ))
@@ -1525,6 +1629,9 @@ fn StatusBar(state: State<AppState>) -> Element {
         let progress_section = progress_metrics.and_then(|m| progress_single_bar(m, bar_color));
         let secondary_text = if progress_section.is_some() {
             let mut parts = Vec::new();
+            if !status.1.is_empty() {
+                parts.push(status.1.clone());
+            }
             if !status.3.is_empty() {
                 parts.push(status.3.clone());
             }
@@ -1583,7 +1690,8 @@ fn StatusBar(state: State<AppState>) -> Element {
             )
             .into()
     } else {
-        // Idle with queue items: show per-item list and total summary.
+        // Idle with queue items: show only the aggregate summary. File paths are
+        // shown below the Process button so they are not duplicated here.
         let total_pages: Option<u32> = {
             let all_known = queue_items.iter().all(|i| i.page_count.is_some());
             if all_known {
@@ -1593,49 +1701,6 @@ fn StatusBar(state: State<AppState>) -> Element {
             }
         };
 
-        let item_rows: Vec<Element> = queue_items
-            .iter()
-            .map(|item| {
-                let badge = item.input_kind.badge();
-                let count_str = match item.page_count {
-                    Some(n) => {
-                        let label = if matches!(
-                            item.input_kind,
-                            crate::models::InputKind::ImageFolder
-                                | crate::models::InputKind::ZipArchive
-                        ) {
-                            &GUI_TEXT.interactive.queue.images
-                        } else {
-                            &GUI_TEXT.interactive.queue.pages
-                        };
-                        format!("{n} {label}")
-                    }
-                    None => GUI_TEXT.interactive.progress.scanning.clone(),
-                };
-                rect()
-                    .width(Size::fill())
-                    .direction(Direction::Horizontal)
-                    .spacing(8.)
-                    .cross_align(Alignment::Center)
-                    .child(
-                        label()
-                            .text(format!("[{badge}]"))
-                            .font_size(10.)
-                            .color(MUTED),
-                    )
-                    .child(
-                        rect().width(Size::fill()).child(
-                            label()
-                                .text(item.file_name.clone())
-                                .font_size(12.)
-                                .color(TEXT),
-                        ),
-                    )
-                    .child(label().text(count_str).font_size(11.).color(MUTED))
-                    .into()
-            })
-            .collect();
-
         let summary_line = match total_pages {
             Some(n) => fmt2(&GUI_TEXT.interactive.queue.item_ready_summary, queue_len, n),
             None => fmt1(&GUI_TEXT.interactive.queue.item_queued_summary, queue_len),
@@ -1644,10 +1709,9 @@ fn StatusBar(state: State<AppState>) -> Element {
         rect()
             .width(Size::fill())
             .height(Size::fill())
-            .vertical()
-            .spacing(4.)
-            .children(item_rows)
-            .child(label().text(summary_line).font_size(11.).color(MUTED))
+            .main_align(Alignment::Center)
+            .cross_align(Alignment::Center)
+            .child(label().text(summary_line).font_size(12.).color(MUTED))
             .into()
     };
 
@@ -2266,6 +2330,15 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
         s.job_color_index = picked;
         s.active_eta = None;
         s.progress_metrics = None;
+        s.processing_items = queue
+            .iter()
+            .enumerate()
+            .map(|(index, item)| ProcessingQueueDisplayItem {
+                task_id: index as u64,
+                path: item.file_path.clone(),
+                status: "Queued".to_string(),
+            })
+            .collect();
         s.show_completion_popup = false;
         s.completion_popup = None;
         s.set_status_lines(
@@ -2284,6 +2357,14 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 {
                     let mut s = state.write();
                     s.active_task_ids = tracker_infos.iter().map(|info| info.id).collect();
+                    s.processing_items = tracker_infos
+                        .iter()
+                        .map(|info| ProcessingQueueDisplayItem {
+                            task_id: info.id,
+                            path: info.input_path.clone(),
+                            status: "Queued".to_string(),
+                        })
+                        .collect();
                 }
 
                 if options.layout_analysis || options.use_heavy_binarization {
@@ -2309,6 +2390,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     let mut s = state.write();
                     s.is_processing = false;
                     s.active_task_ids.clear();
+                    s.processing_items.clear();
                 }
 
                 loop {
@@ -2324,11 +2406,15 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                             };
                             match update {
                             WorkerProgressUpdate::Status {
-                                task_id: _,
+                                task_id,
                                 status,
                                 metrics,
                             } => {
-                                state.write().progress_metrics = metrics;
+                                {
+                                    let mut s = state.write();
+                                    s.progress_metrics = metrics;
+                                    s.set_processing_item_status(task_id, "Processing");
+                                }
                                 match &status {
                                     WorkerProcessingStatus::AssemblingOutput => {}
                                     WorkerProcessingStatus::NoLayoutProgress { .. }
@@ -2354,15 +2440,6 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 state.write().active_eta =
                                     metrics.and_then(|m| m.eta_seconds.map(format_eta_label));
 
-                                if files_total > 1 {
-                                    let current_file = files_completed + 1;
-                                    state.write().status_lines.3 = fmt2(
-                                        &GUI_TEXT.interactive.status.processing_file,
-                                        current_file,
-                                        files_total,
-                                    );
-                                }
-
                                 if let WorkerProcessingStatus::FootnotesDetected { message } =
                                     &status
                                 {
@@ -2376,6 +2453,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                             } => {
                                 if handled.insert(task_id) {
                                     files_completed += 1;
+                                    state.write().set_processing_item_status(task_id, "Completed");
                                     if let Some(info) =
                                         tracker_infos.iter().find(|info| info.id == task_id)
                                     {
@@ -2439,6 +2517,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 if handled.insert(task_id) {
                                     files_completed += 1;
                                     files_errored += 1;
+                                    state.write().set_processing_item_status(task_id, "Failed");
                                     if let Some(info) =
                                         tracker_infos.iter().find(|info| info.id == task_id)
                                     {
@@ -2484,6 +2563,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 s.is_processing = false;
                                 s.should_cancel = false;
                                 s.active_task_ids.clear();
+                                s.processing_items.clear();
                                 s.active_eta = None;
                                 s.progress_metrics = None;
                                 s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
@@ -2501,6 +2581,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                     let mut s = state.write();
                     s.is_processing = false;
                     s.active_task_ids.clear();
+                    s.processing_items.clear();
                     s.active_eta = None;
                     s.progress_metrics = None;
                     // Only overwrite the status with a success summary when every file
@@ -2531,6 +2612,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 let mut s = state.write();
                 s.is_processing = false;
                 s.active_task_ids.clear();
+                s.processing_items.clear();
                 s.active_eta = None;
                 s.progress_metrics = None;
                 s.set_status_message(fmt1(

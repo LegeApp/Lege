@@ -406,9 +406,6 @@ impl ProcessingStatus {
     }
 
     /// Converts the status into three concise display lines for GUI (NO ANSI color codes).
-    ///
-    /// For layout / no-layout / margin page progress, only line 1 (mode label) is returned;
-    /// the Freya GUI shows counts via `ProgressMetrics` tiles instead of text mini-bars.
     pub fn to_gui_display_lines(&self) -> (String, String, String) {
         match self {
             Self::Initializing => (
@@ -471,33 +468,73 @@ impl ProcessingStatus {
                 (String::new(), String::new(), String::new())
             }
             Self::LayoutProgress {
-                rendered: _,
-                detected: _,
-                encoded: _,
-                deskewed: _,
-                total: _,
+                rendered,
+                detected,
+                encoded,
+                deskewed,
+                total,
                 enable_layout_detection: _,
-                enable_deskew: _,
-                eta: _,
-            } => ("[Layout Mode]".to_string(), String::new(), String::new()),
+                enable_deskew,
+                eta,
+            } => {
+                let mut detail = format!(
+                    "Render {rendered}/{total} | Infer {detected}/{total} | Encode {encoded}/{total}"
+                );
+                if *enable_deskew {
+                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
+                }
+                (
+                    "[Layout Mode]".to_string(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
             Self::NoLayoutProgress {
-                rendered: _,
-                encoded: _,
-                deskewed: _,
-                total: _,
-                enable_deskew: _,
-                eta: _,
-            } => ("[No-Layout Mode]".to_string(), String::new(), String::new()),
+                rendered,
+                encoded,
+                deskewed,
+                total,
+                enable_deskew,
+                eta,
+            } => {
+                let mut detail = format!("Render {rendered}/{total} | Encode {encoded}/{total}");
+                if *enable_deskew {
+                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
+                }
+                (
+                    "[No-Layout Mode]".to_string(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
             Self::MarginProgress {
-                pass1_rendered: _,
-                pass1_detected: _,
-                pass2_processed: _,
-                deskewed: _,
-                total: _,
+                pass1_rendered,
+                pass1_detected,
+                pass2_processed,
+                deskewed,
+                total,
                 enable_layout_detection: _,
-                enable_deskew: _,
-                eta: _,
-            } => ("[Margin Mode]".to_string(), String::new(), String::new()),
+                enable_deskew,
+                eta,
+            } => {
+                let mut detail = format!(
+                    "Analyze {pass1_rendered}/{total} | Infer {pass1_detected}/{total} | Process {pass2_processed}/{total}"
+                );
+                if *enable_deskew {
+                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
+                }
+                (
+                    "[Margin Mode]".to_string(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
         }
     }
 }
@@ -1101,14 +1138,13 @@ impl ProgressTracker {
         if self.is_done.load(Ordering::Relaxed) {
             return;
         }
-        // Use try_send: non-blocking. If the UI is completely frozen, we'd rather
-        // drop an intermediate frame than block the processing thread.
-        // For guaranteed delivery, use `sender.send_async(...)` in an async context.
-        let _ = self.sender.try_send(ProgressUpdate::Status {
+        if let Err(e) = self.sender.send(ProgressUpdate::Status {
             task_id: self.task_id,
             status,
             metrics: Some(metrics),
-        });
+        }) {
+            eprintln!("warning: failed to send progress update: {e}");
+        }
     }
 
     pub fn finish(&self, message: &str) {

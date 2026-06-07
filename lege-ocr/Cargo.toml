@@ -27,7 +27,7 @@ lege-gpu = { path = "../lege-gpu" }
 env_logger = "0.10"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-tesseract = "0.14"
+tesseract = { version = "0.14", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [
@@ -43,4 +43,5 @@ windows-core = { workspace = true }
 
 [features]
 default = []
+tesseract-ocr = ["dep:tesseract"]
 trocr = []

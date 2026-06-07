@@ -161,11 +161,74 @@ impl WorkerProcessingStatus {
             Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => {
                 (String::new(), String::new(), String::new())
             }
-            Self::LayoutProgress { .. } => ("[Layout Mode]".into(), String::new(), String::new()),
-            Self::NoLayoutProgress { .. } => {
-                ("[No-Layout Mode]".into(), String::new(), String::new())
+            Self::LayoutProgress {
+                rendered,
+                detected,
+                encoded,
+                deskewed,
+                total,
+                enable_deskew,
+                eta,
+                ..
+            } => {
+                let mut detail = format!(
+                    "Render {rendered}/{total} | Infer {detected}/{total} | Encode {encoded}/{total}"
+                );
+                if *enable_deskew {
+                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
+                }
+                (
+                    "[Layout Mode]".into(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
             }
-            Self::MarginProgress { .. } => ("[Margin Mode]".into(), String::new(), String::new()),
+            Self::NoLayoutProgress {
+                rendered,
+                encoded,
+                deskewed,
+                total,
+                enable_deskew,
+                eta,
+            } => {
+                let mut detail = format!("Render {rendered}/{total} | Encode {encoded}/{total}");
+                if *enable_deskew {
+                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
+                }
+                (
+                    "[No-Layout Mode]".into(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
+            Self::MarginProgress {
+                pass1_rendered,
+                pass1_detected,
+                pass2_processed,
+                deskewed,
+                total,
+                enable_deskew,
+                eta,
+                ..
+            } => {
+                let mut detail = format!(
+                    "Analyze {pass1_rendered}/{total} | Infer {pass1_detected}/{total} | Process {pass2_processed}/{total}"
+                );
+                if *enable_deskew {
+                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
+                }
+                (
+                    "[Margin Mode]".into(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
         }
     }
 }
