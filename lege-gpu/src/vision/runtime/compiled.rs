@@ -68,6 +68,9 @@ pub(crate) struct SubmittedRun<'a> {
 }
 
 impl CompiledGraph {
+    pub(crate) const LAYOUT_SOFTWARE_ADAPTER_ERROR: &'static str =
+        "software WGPU adapter selected; continuing without layout detection";
+
     pub(crate) async fn build(graph: &PreparedGraph) -> Result<Self> {
         let t0 = std::time::Instant::now();
         let ctx = GpuContext::new().await?;
@@ -77,6 +80,24 @@ impl CompiledGraph {
             t0.elapsed().as_millis()
         );
         Self::build_from_context(graph, ctx, t0)
+    }
+
+    pub(crate) async fn build_layout(graph: &PreparedGraph) -> Result<Self> {
+        let t0 = std::time::Instant::now();
+        let ctx = GpuContext::new().await?;
+        if ctx.is_cpu_adapter {
+            bail!("{}", Self::LAYOUT_SOFTWARE_ADAPTER_ERROR);
+        }
+        #[cfg(feature = "debug-logging")]
+        eprintln!(
+            "  compiled.layout_build: gpu_init={:.0}ms",
+            t0.elapsed().as_millis()
+        );
+        Self::build_from_context(graph, ctx, t0)
+    }
+
+    pub(crate) fn layout_software_adapter_error() -> &'static str {
+        Self::LAYOUT_SOFTWARE_ADAPTER_ERROR
     }
 
     pub(crate) fn build_sibling(&self, graph: &PreparedGraph) -> Result<Self> {

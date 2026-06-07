@@ -18,5 +18,5 @@ mod api;
 pub use api::{
     DeskewConfig, DocumentDeskewer, LayoutConfig, LayoutDetection, LayoutDetector,
     RotationClassifier, RotationConfig, RotationPrediction, SauvolaConfig, SauvolaCpuProcessor,
-    SauvolaProcessor,
+    SauvolaProcessor, is_layout_software_adapter_error,
 };
