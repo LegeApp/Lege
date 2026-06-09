@@ -56,7 +56,33 @@ pub async fn create_and_run_epub_pipeline(
         match crate::pipeline::inference::InferenceHandle::new(&config) {
             Ok(handle) => Some(Arc::new(handle)),
             Err(e) if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) => {
-                warn_log!("[EPUB] {e}. Layout detection disabled for this run.");
+                let msg = format!(
+                    "No usable hardware GPU found — wgpu fell back to a CPU/software adapter. \
+                     Layout detection has been disabled for this run. \
+                     Install or update your GPU driver to enable hardware acceleration."
+                );
+                warn_log!("[EPUB] {msg}");
+                progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
+                    stage: "GPU Warning".to_string(),
+                    message: msg,
+                });
+                let mut fallback = (*config).clone();
+                fallback.set_enable_layout_detection(false);
+                config = Arc::new(fallback);
+                None
+            }
+            Err(e) if crate::pipeline::inference::is_gpu_device_error(e.as_ref()) => {
+                let msg = format!(
+                    "GPU initialization failed ({}). Layout detection disabled; \
+                     processing will continue without it. \
+                     Check that your GPU driver supports DX12 (Windows) or Vulkan (Linux/macOS).",
+                    e
+                );
+                warn_log!("[EPUB] {msg}");
+                progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
+                    stage: "GPU Warning".to_string(),
+                    message: msg,
+                });
                 let mut fallback = (*config).clone();
                 fallback.set_enable_layout_detection(false);
                 config = Arc::new(fallback);

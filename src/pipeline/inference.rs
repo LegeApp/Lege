@@ -168,6 +168,10 @@ pub fn is_layout_software_adapter_error(error: &(dyn std::error::Error + 'static
     lege_gpu::vision::is_layout_software_adapter_error(error)
 }
 
+pub fn is_gpu_device_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    lege_gpu::vision::is_layout_gpu_device_error(error)
+}
+
 #[derive(Clone)]
 pub struct InferenceHandle {
     sender: mpsc::Sender<InferenceJob>,

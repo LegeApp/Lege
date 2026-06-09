@@ -1043,6 +1043,12 @@ pub enum WriterMessage {
         page: crate::accumulator::Page,
         page_index: usize,
     },
+    /// Supply bookmarks to be written at finalize time (must arrive before Finalize)
+    SetBookmarks {
+        bookmarks: Vec<crate::pagerender::OwnedBookmarkNode>,
+        /// For reflow: source-page-index → output-page-index mapping. Empty = identity.
+        source_to_output: std::collections::HashMap<usize, usize>,
+    },
     /// Signal that all pages have been sent and PDF should be finalized
     Finalize,
 }
@@ -1062,6 +1068,19 @@ impl PdfWriterHandle {
     ) -> Result<(), anyhow::Error> {
         self.sender
             .send(WriterMessage::AppendPage { page, page_index })
+            .await
+            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+        Ok(())
+    }
+
+    /// Send bookmarks to be written at finalize time. Must be called before finalize().
+    pub async fn send_bookmarks(
+        &self,
+        bookmarks: Vec<crate::pagerender::OwnedBookmarkNode>,
+        source_to_output: std::collections::HashMap<usize, usize>,
+    ) -> Result<(), anyhow::Error> {
+        self.sender
+            .send(WriterMessage::SetBookmarks { bookmarks, source_to_output })
             .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
@@ -1163,6 +1182,12 @@ pub fn spawn_pdf_writer_actor(
                                 );
                             }
                         }
+                    }
+                }
+                WriterMessage::SetBookmarks { bookmarks, source_to_output } => {
+                    builder.set_bookmarks(bookmarks);
+                    if !source_to_output.is_empty() {
+                        builder.set_source_to_output_map(source_to_output);
                     }
                 }
                 WriterMessage::Finalize => {
