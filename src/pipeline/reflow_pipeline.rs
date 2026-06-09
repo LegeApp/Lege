@@ -413,9 +413,40 @@ pub(crate) async fn run_raster_reflow_pipeline(
             ));
         }
 
-        let canvas = compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg);
-        let encoded =
-            encode_base_layer_for_jpeg_mode(Arc::new(canvas), &config, reflow_page.index).await?;
+        let canvas = Arc::new(compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg));
+
+        // Overlay a searchable text layer onto the reflowed page, reusing the
+        // text rows / words reflow already detected. Slow OCR recognizes the
+        // source crops and re-projects each word; fast OCR recognizes the
+        // composed reflow raster block-by-block. Either way the hOCR lands in
+        // output-page coordinates so the text overlays the reflowed bitmaps.
+        let hocr_text = if config.enable_ocr() {
+            let result = if config.slow_ocr_enabled() {
+                crate::ocr::slow::perform_reflow_page_ocr(reflow_page, &source_pages, &config).await
+            } else {
+                crate::ocr::fast::perform_reflow_page_fast_ocr(
+                    reflow_page,
+                    &canvas,
+                    config.ocr_language(),
+                )
+                .await
+            };
+            match result {
+                Ok(hocr) => hocr,
+                Err(e) => {
+                    warn_log!(
+                        "[Reflow] Page {}: OCR text layer failed: {}",
+                        reflow_page.index,
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let encoded = encode_base_layer_for_jpeg_mode(canvas, &config, reflow_page.index).await?;
 
         let page = crate::accumulator::Page {
             width: reflow_page.width as f32,
@@ -427,7 +458,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
                 height: reflow_page.height as f32,
                 content: encoded,
             }],
-            hocr_text: None,
+            hocr_text,
             index: reflow_page.index,
             binarized: None,
         };
