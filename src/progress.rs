@@ -52,6 +52,12 @@ pub enum ProcessingStatus {
         current: usize,
         total: usize,
     },
+    ReflowProgress {
+        stage: ReflowStage,
+        current: usize,
+        total: usize,
+        eta: Option<String>,
+    },
 
     // --- Progress variants for different modes ---
     LayoutProgress {
@@ -82,6 +88,14 @@ pub enum ProcessingStatus {
         enable_deskew: bool,
         eta: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflowStage {
+    SourceAnalysis,
+    Compose,
+    OutputPages,
 }
 
 impl ProcessingStatus {
@@ -180,6 +194,47 @@ impl ProcessingStatus {
                     ),
                     String::new(),
                 )
+            }
+            Self::ReflowProgress {
+                stage,
+                current,
+                total,
+                eta,
+            } => {
+                let total = *total;
+                let current = (*current).min(total);
+                let pct = if total > 0 {
+                    ((current as f64 / total as f64) * 100.0).round() as usize
+                } else {
+                    0
+                };
+                let bar = mini_bar(current, total);
+                let eta_line = eta
+                    .as_ref()
+                    .map(|eta| format!("Estimated time remaining: {eta}"))
+                    .unwrap_or_default();
+                match stage {
+                    ReflowStage::SourceAnalysis => (
+                        "[Reflow - Source Analysis]".to_string(),
+                        format!(
+                            "Rendering source pages and detecting layout: {bar} {current}/{total} ({pct}%)"
+                        ),
+                        eta_line,
+                    ),
+                    ReflowStage::Compose => (
+                        "[Reflow - Compose]".to_string(),
+                        "Building reflow plan from detected regions, rows, and words..."
+                            .to_string(),
+                        String::new(),
+                    ),
+                    ReflowStage::OutputPages => (
+                        "[Reflow - Output Pages]".to_string(),
+                        format!(
+                            "Rasterizing and encoding reflowed output pages: {bar} {current}/{total} ({pct}%)"
+                        ),
+                        eta_line,
+                    ),
+                }
             }
             Self::LayoutProgress {
                 rendered,
@@ -467,6 +522,36 @@ impl ProcessingStatus {
             Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => {
                 (String::new(), String::new(), String::new())
             }
+            Self::ReflowProgress {
+                stage,
+                current,
+                total,
+                eta,
+            } => {
+                let detail = match stage {
+                    ReflowStage::SourceAnalysis => {
+                        format!("Rendering source pages and detecting layout: {current}/{total}")
+                    }
+                    ReflowStage::Compose => {
+                        "Building reflow plan from detected regions, rows, and words...".to_string()
+                    }
+                    ReflowStage::OutputPages => {
+                        format!("Rasterizing and encoding reflowed output pages: {current}/{total}")
+                    }
+                };
+                let title = match stage {
+                    ReflowStage::SourceAnalysis => "[Reflow - Source Analysis]",
+                    ReflowStage::Compose => "[Reflow - Compose]",
+                    ReflowStage::OutputPages => "[Reflow - Output Pages]",
+                };
+                (
+                    title.to_string(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
             Self::LayoutProgress {
                 rendered,
                 detected,
@@ -615,6 +700,7 @@ pub enum ProgressMode {
     Layout,
     Margin,
     HeavySequential,
+    Reflow,
 }
 
 /// Unified numeric snapshot so GUI and CLI can render without parsing strings.
@@ -723,7 +809,7 @@ impl ProgressTracker {
                         .min(state.metrics.encoded)
                 }
             }
-            ProgressMode::NoLayout | ProgressMode::HeavySequential => {
+            ProgressMode::NoLayout | ProgressMode::HeavySequential | ProgressMode::Reflow => {
                 if state.metrics.enable_deskew {
                     // In no-layout mode with deskew enabled, consider both encoding and deskewing
                     state.metrics.encoded.min(state.metrics.deskewed)
@@ -819,6 +905,12 @@ impl ProgressTracker {
                 enable_deskew: m.enable_deskew,
                 eta,
             }, // Heavy sequential behaves like no-layout but with more consistent updates
+            ProgressMode::Reflow => ProcessingStatus::ReflowProgress {
+                stage: ReflowStage::OutputPages,
+                current: m.encoded as usize,
+                total,
+                eta,
+            },
             ProgressMode::Unknown => ProcessingStatus::Initializing,
         }
     }
@@ -1127,6 +1219,67 @@ impl ProgressTracker {
         self.send_update(status, metrics);
     }
 
+    pub fn publish_reflow_progress(&self, stage: ReflowStage, current: usize, total: usize) {
+        let mut state = self.state.lock().unwrap();
+
+        let old_encoded = state.metrics.encoded;
+        let old_total = state.metrics.pages_total;
+        let old_mode = state.metrics.mode;
+
+        state.metrics.mode = ProgressMode::Reflow;
+        state.metrics.pages_total = total as u32;
+        let current = current.min(total) as u32;
+        match stage {
+            ReflowStage::SourceAnalysis => {
+                state.metrics.rendered = current;
+                state.metrics.detected = current;
+                state.metrics.encoded = current;
+            }
+            ReflowStage::Compose => {
+                state.metrics.rendered = 0;
+                state.metrics.detected = 0;
+                state.metrics.encoded = 0;
+            }
+            ReflowStage::OutputPages => {
+                state.metrics.rendered = current;
+                state.metrics.detected = current;
+                state.metrics.encoded = current;
+            }
+        }
+        state.metrics.deskewed = 0;
+
+        self.ensure_started_nolock(&mut state, current > 0);
+        self.compute_eta_nolock(&mut state);
+
+        let is_meaningful_change = state.metrics.encoded != old_encoded
+            || state.metrics.pages_total != old_total
+            || state.metrics.mode != old_mode
+            || state.last_update.is_none();
+
+        if !is_meaningful_change {
+            return;
+        }
+
+        if !self.should_send_update(&state) {
+            return;
+        }
+
+        state.last_update = Some(Instant::now());
+        let eta = state
+            .metrics
+            .eta_seconds
+            .map(|s| human_duration(Duration::from_secs(s as u64)));
+        let status = ProcessingStatus::ReflowProgress {
+            stage,
+            current: current as usize,
+            total,
+            eta,
+        };
+        let metrics = state.metrics;
+        drop(state);
+        self.send_update(status, metrics);
+    }
+
     // --- Communication methods ---
 
     pub fn update(&self, status: ProcessingStatus) {
@@ -1158,7 +1311,9 @@ impl ProgressTracker {
             state.metrics.rendered = total;
             state.metrics.detected = total;
             state.metrics.encoded = total;
-            state.metrics.deskewed = total;
+            if state.metrics.enable_deskew {
+                state.metrics.deskewed = total;
+            }
             state.metrics.eta_seconds = None;
             state.metrics
         };
@@ -1543,6 +1698,20 @@ mod tests {
         assert_eq!(metrics.rendered, 10);
         assert_eq!(metrics.detected, 9);
         assert_eq!(metrics.encoded, 6);
+    }
+
+    #[test]
+    fn finish_does_not_mark_pages_deskewed_when_deskew_is_disabled() {
+        let tracker = tracker();
+        tracker.set_total_pages(20);
+        tracker.set_feature_flags(false, false);
+
+        tracker.finish("done");
+        let metrics = tracker.current_metrics();
+
+        assert_eq!(metrics.rendered, 20);
+        assert_eq!(metrics.encoded, 20);
+        assert_eq!(metrics.deskewed, 0);
     }
 }
 

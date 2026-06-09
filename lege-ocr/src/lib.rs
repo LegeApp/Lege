@@ -193,8 +193,8 @@ impl OcrPipeline {
             all_lines.extend(lines);
         }
 
-        let should_build_hocr = self.config.output_mode == SlowOcrOutputMode::Hocr
-            || self.config.debug;
+        let should_build_hocr =
+            self.config.output_mode == SlowOcrOutputMode::Hocr || self.config.debug;
         let hocr = if should_build_hocr {
             hocr::build_page_hocr(&all_lines, page_w, page_h)
         } else {

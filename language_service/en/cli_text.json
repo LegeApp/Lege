@@ -111,7 +111,7 @@
     "step3_title": "Step 3: Encoding Format",
     "processing_options_title": "=== Processing Options ===",
     "format_prompt": "Format: [1] CCITT4 | [2] JBIG2 | [3] DJVU",
-    "modifiers_prompt": "Modifiers: c=Dithered images | a=No layout detection | o1=Fast OCR | o2=Best OCR | d=No cover | e=PDF-compat | f=Force-crop | g=Invert | h=Deskew | m=Center | w=Crop",
+    "modifiers_prompt": "Modifiers: c=Dithered images | a=No layout detection | o1=Fast OCR | o2=Best OCR | d=No cover | e=PDF-compat | f=Force-crop | g=Invert | h=Deskew | m=Center | w=Crop | r=Raster reflow (requires layout detection)",
     "examples_prompt": "Examples: '1' | '2 o1' | '2 o2' | '3hw'",
     "default_prompt": "Default: 1 (CCITT4, original figures, layout on). Full flag list: lege --help",
     "binarization_title": "Binarization method:",

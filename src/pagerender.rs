@@ -6,6 +6,13 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[derive(Debug, Clone)]
+pub struct NativeTextWord {
+    pub text: String,
+    /// Bounding box in the source rendered page pixel space: [x1, y1, x2, y2].
+    pub bbox: [f32; 4],
+}
+
 struct PdfiumWorkerContext {
     pdf_data: Arc<[u8]>,
     leaked_pdf_ptr: *const [u8],
@@ -162,6 +169,59 @@ impl PdfiumWorkerContext {
         let text = page.text()?.all();
         Ok(text.chars().any(|c| !c.is_whitespace()))
     }
+
+    fn extract_positioned_text_words(
+        &mut self,
+        page_index: u32,
+        source_width: u32,
+        source_height: u32,
+    ) -> Result<Vec<NativeTextWord>> {
+        let _guard = PDFIUM_GLOBAL_LOCK
+            .lock()
+            .map_err(|e| anyhow!("Failed to acquire Pdfium lock: {}", e))?;
+
+        let document = self
+            .document
+            .as_ref()
+            .ok_or_else(|| anyhow!("Pdfium document not available"))?;
+        let page_total = document.pages().len() as u32;
+        if page_index >= page_total {
+            return Err(anyhow!(
+                "Page index {} out of bounds (0..{})",
+                page_index,
+                page_total
+            ));
+        }
+
+        let page = document.pages().get(page_index as u16)?;
+        let page_width_pts = page.width().value.max(1.0);
+        let page_height_pts = page.height().value.max(1.0);
+        let text = page.text()?;
+        let mut words = Vec::new();
+
+        for segment in text.segments().iter() {
+            let segment_text = segment.text();
+            if segment_text.trim().is_empty() {
+                continue;
+            }
+            let rect = segment.bounds();
+            #[allow(deprecated)]
+            let bbox = pdf_rect_to_pixels(
+                rect.left.value,
+                rect.bottom.value,
+                rect.right.value,
+                rect.top.value,
+                page_width_pts,
+                page_height_pts,
+                source_width,
+                source_height,
+            );
+            push_segment_words(&mut words, &segment_text, bbox);
+        }
+
+        Ok(words)
+    }
+
     fn build_config(
         target_height: u32,
         target_width: Option<u32>,
@@ -175,6 +235,64 @@ impl PdfiumWorkerContext {
             config = config.set_target_width(width as i32);
         }
         config
+    }
+}
+
+fn pdf_rect_to_pixels(
+    left: f32,
+    bottom: f32,
+    right: f32,
+    top: f32,
+    page_width_pts: f32,
+    page_height_pts: f32,
+    source_width: u32,
+    source_height: u32,
+) -> [f32; 4] {
+    let sx = source_width as f32 / page_width_pts;
+    let sy = source_height as f32 / page_height_pts;
+    [
+        (left * sx).clamp(0.0, source_width as f32),
+        ((page_height_pts - top) * sy).clamp(0.0, source_height as f32),
+        (right * sx).clamp(0.0, source_width as f32),
+        ((page_height_pts - bottom) * sy).clamp(0.0, source_height as f32),
+    ]
+}
+
+fn push_segment_words(words: &mut Vec<NativeTextWord>, text: &str, bbox: [f32; 4]) {
+    let total_chars = text.chars().count();
+    if total_chars == 0 {
+        return;
+    }
+
+    let width = (bbox[2] - bbox[0]).max(1.0);
+    let mut current_word = String::new();
+    let mut word_start = 0usize;
+
+    for (char_index, ch) in text.chars().enumerate() {
+        if ch.is_whitespace() {
+            if !current_word.is_empty() {
+                let x1 = bbox[0] + width * (word_start as f32 / total_chars as f32);
+                let x2 = bbox[0] + width * (char_index as f32 / total_chars as f32);
+                words.push(NativeTextWord {
+                    text: std::mem::take(&mut current_word),
+                    bbox: [x1, bbox[1], x2.max(x1 + 1.0).min(bbox[2]), bbox[3]],
+                });
+            }
+        } else {
+            if current_word.is_empty() {
+                word_start = char_index;
+            }
+            current_word.push(ch);
+        }
+    }
+
+    if !current_word.is_empty() {
+        let x1 = bbox[0] + width * (word_start as f32 / total_chars as f32);
+        let x2 = bbox[2];
+        words.push(NativeTextWord {
+            text: current_word,
+            bbox: [x1, bbox[1], x2.max(x1 + 1.0).min(bbox[2]), bbox[3]],
+        });
     }
 }
 
@@ -423,6 +541,51 @@ impl PdfiumRenderer {
                 let page = document.pages().get(page_index as u16)?;
                 let text = page.text()?.all();
                 Ok(text)
+            })
+        })
+        .await?
+    }
+
+    pub async fn extract_positioned_text_words(
+        &self,
+        page_index: u32,
+        source_width: u32,
+        source_height: u32,
+    ) -> Result<Vec<NativeTextWord>> {
+        if page_index >= self.page_count as u32 {
+            return Err(anyhow!(
+                "Page index {} out of bounds (0..{})",
+                page_index,
+                self.page_count
+            ));
+        }
+
+        let pdf_bytes = self.pdf_bytes.clone();
+        let raster_cfg = self.raster_cfg.clone();
+
+        tokio::task::spawn_blocking(move || {
+            PDFIUM_THREAD_CONTEXT.with(|cell| -> Result<Vec<NativeTextWord>> {
+                let mut borrowed = cell.borrow_mut();
+
+                let should_rebuild = borrowed
+                    .as_ref()
+                    .map(|ctx| !ctx.matches(&pdf_bytes, &raster_cfg))
+                    .unwrap_or(true);
+
+                if should_rebuild {
+                    *borrowed = Some(PdfiumWorkerContext::new(
+                        pdf_bytes.clone(),
+                        &raster_cfg,
+                        1,
+                        None,
+                    )?);
+                }
+
+                let ctx = borrowed
+                    .as_mut()
+                    .expect("Pdfium worker context must be initialized");
+
+                ctx.extract_positioned_text_words(page_index, source_width, source_height)
             })
         })
         .await?

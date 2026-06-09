@@ -827,47 +827,76 @@ impl StreamingPdfBuilder {
             ],
         ));
 
-        for line in lines {
-            // Prefer engine-provided line text if available
-            let line_text = line.raw_text.unwrap_or_default();
-            if line_text.is_empty() {
-                continue;
-            }
-
-            // Position text at line coordinates (PDF coordinates are bottom-left origin)
-            let y_pdf = page_height - line.baseline; // Convert baseline to PDF coordinate system
-            let font_scale = line.height.max(1.0); // Use line height as font scale
-
-            // Set text matrix for the entire line
+        fn emit_invisible_text(
+            operations: &mut Vec<Operation>,
+            text: &str,
+            x: f32,
+            y_pdf: f32,
+            font_scale: f32,
+            use_unicode_font: bool,
+        ) {
             operations.push(Operation::new(
                 "Tm",
                 vec![
-                    Object::Real(font_scale), // a: horizontal scale
-                    Object::Real(0.0),        // b: horizontal skew
-                    Object::Real(0.0),        // c: vertical skew
-                    Object::Real(font_scale), // d: vertical scale
-                    Object::Real(line.x),     // e: x position
-                    Object::Real(y_pdf),      // f: y position (baseline)
+                    Object::Real(font_scale),
+                    Object::Real(0.0),
+                    Object::Real(0.0),
+                    Object::Real(font_scale),
+                    Object::Real(x),
+                    Object::Real(y_pdf),
                 ],
             ));
 
-            // Encode and emit the line text
             let encoded = if use_unicode_font {
-                let mut bytes = Vec::with_capacity(line_text.len() * 2);
-                for u in line_text.encode_utf16() {
+                let mut bytes = Vec::with_capacity(text.len() * 2);
+                for u in text.encode_utf16() {
                     bytes.extend_from_slice(&u.to_be_bytes());
                 }
                 bytes
             } else {
-                let (cow, _, _) = WINDOWS_1252.encode(&line_text);
+                let (cow, _, _) = WINDOWS_1252.encode(text);
                 cow.into_owned()
             };
 
-            // Emit the whole line in one Tj operation
             operations.push(Operation::new(
                 "Tj",
                 vec![Object::String(encoded, lopdf::StringFormat::Hexadecimal)],
             ));
+        }
+
+        for line in lines {
+            if !line.words.is_empty() {
+                let last_word_index = line.words.len().saturating_sub(1);
+                for (i, word) in line.words.iter().enumerate() {
+                    let mut word_text = word.text.clone();
+                    if i < last_word_index {
+                        word_text.push(' ');
+                    }
+                    emit_invisible_text(
+                        &mut operations,
+                        &word_text,
+                        word.x,
+                        page_height - (word.y + word.height),
+                        word.height.max(1.0),
+                        use_unicode_font,
+                    );
+                }
+                continue;
+            }
+
+            if let Some(line_text) = line.raw_text.as_deref() {
+                if line_text.is_empty() {
+                    continue;
+                }
+                emit_invisible_text(
+                    &mut operations,
+                    line_text,
+                    line.x,
+                    page_height - line.baseline,
+                    line.height.max(1.0),
+                    use_unicode_font,
+                );
+            }
         }
 
         operations.push(Operation::new("ET", vec![])); // End text

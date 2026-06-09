@@ -1,6 +1,6 @@
 //! wgpu device context and core GPU dispatch primitives.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail};
 
@@ -112,6 +112,21 @@ impl GpuContext {
             is_cpu_adapter: info.device_type == crate::vision::wgpu::DeviceType::Cpu,
             supports_timestamps,
         })
+    }
+
+    pub(crate) async fn shared() -> Result<Self> {
+        static SHARED: OnceLock<GpuContext> = OnceLock::new();
+
+        if let Some(ctx) = SHARED.get() {
+            return Ok(ctx.clone());
+        }
+
+        let ctx = Self::new().await?;
+        let _ = SHARED.set(ctx);
+        Ok(SHARED
+            .get()
+            .expect("shared GPU context was just initialized")
+            .clone())
     }
 }
 

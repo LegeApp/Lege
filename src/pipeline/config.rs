@@ -281,6 +281,10 @@ pub struct PipelineConfig {
     pub(crate) cover_format: CoverFormat,
     pub(crate) text_format: String,
     pub(crate) enable_layout_detection: bool,
+    /// Raster reflow: re-composes rendered page images into reflowed output
+    /// pages (see `crate::reflow`). Requires layout detection — region hints
+    /// drive reading order and reflow eligibility.
+    pub(crate) enable_reflow: bool,
     pub(crate) heavy_sauvola_concurrency: usize,
     pub(crate) page_range: Option<PageRange>,
     pub(crate) enable_cover_page: bool,
@@ -351,6 +355,7 @@ impl PipelineConfig {
             cover_format: CoverFormat::Jpeg,
             text_format: "jbig2".to_string(),
             enable_layout_detection,
+            enable_reflow: false,
             heavy_sauvola_concurrency: 4,
             page_range: None,
             enable_cover_page: true,
@@ -533,6 +538,13 @@ impl PipelineConfig {
         } else {
             self.enable_layout_detection
         }
+    }
+    /// Raster reflow is only active while layout detection is actually
+    /// available — it is gated at CLI parse time, but `invert_input` (or a
+    /// missing model) can disable layout detection afterward, so re-derive
+    /// the effective state here rather than trusting the stored flag alone.
+    pub fn enable_reflow(&self) -> bool {
+        self.enable_reflow && self.enable_layout_detection()
     }
     pub fn heavy_sauvola_concurrency(&self) -> usize {
         self.heavy_sauvola_concurrency
@@ -751,6 +763,11 @@ impl PipelineConfig {
             && !self.model_path.is_empty()
             && std::path::Path::new(&self.model_path).exists();
     }
+    /// Enable raster reflow. Has no effect unless layout detection is also
+    /// enabled — see [`PipelineConfig::enable_reflow`].
+    pub fn set_enable_reflow(&mut self, enable: bool) {
+        self.enable_reflow = enable;
+    }
     pub fn set_slow_ocr(&mut self, enable: bool) {
         self.slow_ocr = enable;
         if enable {
@@ -820,6 +837,11 @@ impl PipelineConfig {
     }
     pub fn set_enable_deskew(&mut self, enable: bool) {
         self.enable_deskew = enable;
+        if enable {
+            self.deskew_config = crate::deskew::DeskewConfig::full_correction();
+        } else {
+            self.deskew_config = crate::deskew::DeskewConfig::default();
+        }
     }
     pub fn set_deskew_model_paths(&mut self, rotation: Option<PathBuf>, unwarp: Option<PathBuf>) {
         self.deskew_rotation_model = rotation;
