@@ -191,38 +191,30 @@ fn binarized_reflow_text_crop(
     rgb
 }
 
-/// Whole-document batch path used when [`PipelineConfig::enable_reflow`] is set.
+/// Shared render+detect+reflow setup used by both the PDF and DJVU reflow variants.
 ///
-/// Reflow re-composes the *entire* document into new pages before any of it can
-/// be written, so it cannot stream page-by-page like
-/// [`crate::pipeline::pdf_tokio_pipeline::create_and_run_pdf_source_pipeline`].
-/// This renders every source page and runs layout detection up front
-/// (sequentially — `PdfiumPageSource` only supports `source_concurrency() == 1`
-/// anyway), builds the reflow plan via [`crate::reflow::reflow_document`], then
-/// rasterizes, encodes and writes each output page through the same RGB-capable
-/// encoder / writer-actor path the streaming pipeline uses.
-pub(crate) async fn run_raster_reflow_pipeline(
-    source: Arc<dyn PageSource>,
-    config: Arc<PipelineConfig>,
-    output_path: &Path,
-    page_range: Option<std::ops::Range<usize>>,
+/// Validates layout detection is enabled, renders all source pages, runs YOLO
+/// layout detection, calibrates the reflow config, and runs `reflow_document`.
+/// Returns the rendered source pages, the calibrated config, and the reflow plan.
+async fn render_detect_and_reflow(
+    source: &Arc<dyn PageSource>,
+    config: &Arc<PipelineConfig>,
+    page_range: &Option<std::ops::Range<usize>>,
     progress_tracker: &ProgressTracker,
-    mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
-) -> Result<()> {
-    info_log!("[Reflow] Starting raster-reflow pipeline");
-    crate::pipeline::reset_standard_dimensions();
-
+    shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+) -> Result<(
+    Vec<crate::reflow::SourcePageImage>,
+    crate::reflow::RasterReflowConfig,
+    crate::reflow::ReflowDocument,
+)> {
     if !config.enable_layout_detection() {
         return Err(anyhow!(
             "Raster reflow requires layout detection; it cannot run with layout detection disabled"
         ));
     }
 
-    let inference_handle = crate::pipeline::inference::InferenceHandle::new(&config)?;
-    let deskew_engine = prepare_shared_deskew_engine(&config)?;
-
-    let runtime_limits = PipelineRuntimeLimits::from_config(&config);
-    init_encode_semaphore(runtime_limits.page_workers);
+    let inference_handle = crate::pipeline::inference::InferenceHandle::new(config)?;
+    let deskew_engine = prepare_shared_deskew_engine(config)?;
 
     let document_pages = source.page_count();
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
@@ -322,13 +314,9 @@ pub(crate) async fn run_raster_reflow_pipeline(
         );
     }
 
-    let mut reflow_cfg = build_raster_reflow_config(&config, &source_pages[0]);
+    let mut reflow_cfg = build_raster_reflow_config(config, &source_pages[0]);
 
-    // Adaptive target text height: instead of forcing body text to a fixed
-    // absolute size (which balloons page count when the source text is small),
-    // size it to a controlled magnification of its *source* relative height.
-    // `text_magnification == 1.0` keeps body text at roughly its original
-    // relative size; the tuned absolute `target_text_height` becomes the ceiling.
+    // Adaptive target text height calibration
     if reflow_cfg.text_magnification > 0.0 {
         if let Some(body_src) = crate::reflow::estimate_document_body_height(
             &source_pages,
@@ -355,8 +343,6 @@ pub(crate) async fn run_raster_reflow_pipeline(
                 ceil
             );
             reflow_cfg.target_text_height = target;
-            // Scale every page by this one body height so glyph size is uniform
-            // document-wide (per-page estimates drift and cause visible steps).
             reflow_cfg.calibrated_body_height = Some(body_src);
         } else {
             info_log!(
@@ -383,15 +369,47 @@ pub(crate) async fn run_raster_reflow_pipeline(
         eta: None,
     });
     let doc = crate::reflow::reflow_document(&source_pages, &hints_per_page, &reflow_cfg);
-    let total_out_pages = doc.pages.len();
-    if total_out_pages == 0 {
+    if doc.pages.is_empty() {
         return Err(anyhow!("Raster reflow produced no output pages"));
     }
     info_log!(
         "[Reflow] Reflowed {} source pages into {} output pages",
         source_pages.len(),
-        total_out_pages
+        doc.pages.len()
     );
+
+    Ok((source_pages, reflow_cfg, doc))
+}
+
+/// Whole-document batch path used when [`PipelineConfig::enable_reflow`] is set.
+///
+/// Reflow re-composes the *entire* document into new pages before any of it can
+/// be written, so it cannot stream page-by-page like
+/// [`crate::pipeline::pdf_tokio_pipeline::create_and_run_pdf_source_pipeline`].
+/// This renders every source page and runs layout detection up front
+/// (sequentially — `PdfiumPageSource` only supports `source_concurrency() == 1`
+/// anyway), builds the reflow plan via [`crate::reflow::reflow_document`], then
+/// rasterizes, encodes and writes each output page through the same RGB-capable
+/// encoder / writer-actor path the streaming pipeline uses.
+pub(crate) async fn run_raster_reflow_pipeline(
+    source: Arc<dyn PageSource>,
+    config: Arc<PipelineConfig>,
+    output_path: &Path,
+    page_range: Option<std::ops::Range<usize>>,
+    progress_tracker: &ProgressTracker,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+) -> Result<()> {
+    info_log!("[Reflow] Starting raster-reflow PDF pipeline");
+    crate::pipeline::reset_standard_dimensions();
+
+    let runtime_limits = PipelineRuntimeLimits::from_config(&config);
+    init_encode_semaphore(runtime_limits.page_workers);
+
+    let (source_pages, reflow_cfg, doc) =
+        render_detect_and_reflow(&source, &config, &page_range, progress_tracker, &mut shutdown_rx)
+            .await?;
+
+    let total_out_pages = doc.pages.len();
     progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, 0, total_out_pages);
 
     let (pdf_writer_handle, mut pdf_writer_task) = spawn_pdf_writer_actor(
@@ -437,9 +455,145 @@ pub(crate) async fn run_raster_reflow_pipeline(
         progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, done, total_out_pages);
     }
 
+    // After all pages are composed, extract bookmarks and send them before finalize.
+    // Reflow re-paginates, so we build source-page → first-output-page mapping from SourceMap.
+    if let Some(renderer) = source.pdf_renderer() {
+        let source_map = &doc.source_map;
+        let mut src_to_out: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for placement in &source_map.placements {
+            src_to_out
+                .entry(placement.src.page_index)
+                .and_modify(|e| *e = (*e).min(placement.out_page))
+                .or_insert(placement.out_page);
+        }
+        let bookmarks = tokio::task::spawn_blocking(move || renderer.extract_bookmarks()).await?;
+        if !bookmarks.is_empty() {
+            pdf_writer_handle
+                .send_bookmarks(bookmarks, src_to_out)
+                .await?;
+        }
+    }
+
     pdf_writer_handle.finalize().await?;
     await_stage_or_cancel(&mut pdf_writer_task, &mut shutdown_rx, "PDF writer", &[]).await?;
 
     success_log!("Raster reflow pipeline complete: {}", output_path.display());
+    Ok(())
+}
+
+/// DJVU variant of the raster reflow pipeline.
+///
+/// Shares the render+detect+reflow setup with the PDF variant. For each output
+/// page the composed RGB canvas is binarized and figure placements are mapped to
+/// `ContentCategory::Image` detections so the DJVU orchestrator can route them
+/// to the IW44 color background layer while text stays in the JB2 foreground.
+pub(crate) async fn run_raster_reflow_djvu_pipeline(
+    source: Arc<dyn PageSource>,
+    config: Arc<PipelineConfig>,
+    output_path: &Path,
+    page_range: Option<std::ops::Range<usize>>,
+    progress_tracker: &ProgressTracker,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+) -> Result<()> {
+    info_log!("[Reflow] Starting raster-reflow DJVU pipeline");
+    crate::pipeline::reset_standard_dimensions();
+
+    let runtime_limits = PipelineRuntimeLimits::djvu_from_config(&config);
+
+    let (source_pages, reflow_cfg, doc) =
+        render_detect_and_reflow(&source, &config, &page_range, progress_tracker, &mut shutdown_rx)
+            .await?;
+
+    let total_out_pages = doc.pages.len();
+    progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, 0, total_out_pages);
+
+    let djvu_config =
+        crate::pipeline::djvu_pipeline::create_djvu_pipeline_config(output_path, &config)?;
+    let dpi = djvu_config.dpi;
+    let iw44_quality = djvu_config.iw44_quality;
+    let orchestrator = Arc::new(crate::djvu::DjvuOrchestrator::new(djvu_config)?);
+    let (djvu_writer, djvu_doc, mut writer_task) = crate::djvu::spawn_djvu_writer_actor(
+        output_path.to_path_buf(),
+        total_out_pages,
+        dpi,
+        iw44_quality,
+        progress_tracker.clone(),
+        runtime_limits.channel_capacity,
+    );
+
+    for reflow_page in &doc.pages {
+        if let Ok(signal) = shutdown_rx.try_recv() {
+            writer_task.abort();
+            return Err(anyhow!(
+                "Processing cancelled: {}",
+                signal
+                    .message
+                    .unwrap_or_else(|| "User requested cancellation".to_string())
+            ));
+        }
+
+        let canvas = compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg);
+        let binarized = crate::pipeline::djvu_pipeline::binarize_djvu_image(&canvas, &config, false);
+
+        // Map figure placements to image-category detections so the DJVU
+        // orchestrator routes them to the IW44 color background layer.
+        let detections: Vec<crate::engine::Detection> = reflow_page
+            .items
+            .iter()
+            .filter(|item| matches!(item.kind, crate::reflow::PlacedKind::Figure))
+            .map(|item| crate::engine::Detection {
+                class_id: 3,
+                class_name: Some("figure".to_string()),
+                confidence: 1.0,
+                bbox: [
+                    item.out_rect.x as f32,
+                    item.out_rect.y as f32,
+                    (item.out_rect.x + item.out_rect.w) as f32,
+                    (item.out_rect.y + item.out_rect.h) as f32,
+                ],
+                category: crate::types::ContentCategory::Image,
+                context: None,
+            })
+            .collect();
+
+        let page_data = crate::djvu::PageData {
+            index: reflow_page.index,
+            rgb_image: canvas,
+            binarized,
+            detections,
+            hocr: None,
+        };
+
+        let orchestrator = orchestrator.clone();
+        let djvu_doc = djvu_doc.clone();
+        let page_index = reflow_page.index;
+        let encoded = tokio::task::spawn_blocking(move || -> Result<_> {
+            let page = orchestrator.process_page(page_data)?;
+            let encoded = djvu_doc
+                .encode_page(page)
+                .map_err(|e| anyhow!("DjVu encode failed: {}", e))?;
+            Ok(encoded)
+        })
+        .await
+        .map_err(|e| anyhow!("DjVu encode task panicked: {}", e))??;
+
+        djvu_writer.append_encoded(encoded, page_index).await?;
+
+        let done = reflow_page.index + 1;
+        progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, done, total_out_pages);
+    }
+
+    djvu_writer.finalize().await?;
+    await_stage_or_cancel(&mut writer_task, &mut shutdown_rx, "DJVU writer", &[]).await?;
+
+    if let Err(_e) = orchestrator.cleanup_work_dir_only() {
+        #[cfg(feature = "debug-logging")]
+        warn_log!("[Reflow] Failed to clean up DJVU work directory: {}", _e);
+    }
+
+    success_log!(
+        "Raster reflow DJVU pipeline complete: {}",
+        output_path.display()
+    );
     Ok(())
 }

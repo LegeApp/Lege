@@ -13,105 +13,163 @@ pub(crate) struct GpuContext {
 }
 
 impl GpuContext {
+    /// Marker embedded in errors when every adapter fails `request_device`.
+    /// Used by the pipeline to distinguish GPU-unavailable from model errors.
+    pub(crate) fn gpu_device_unavailable_marker() -> &'static str {
+        "wgpu GPU device unavailable"
+    }
+
     pub(crate) async fn new() -> Result<Self> {
         let backends = crate::wgpu_setup::requested_backends();
-        // Constrain the instance to the requested backends (DX12 on Windows by
-        // default, overridable via WGPU_BACKEND) so that the default
-        // `request_adapter` path below honours the same backend choice instead
-        // of silently falling onto, e.g., Vulkan.
         let instance = crate::wgpu_setup::create_instance();
         let adapter_name_filter = std::env::var("WGPU_ADAPTER_NAME").ok();
 
-        // Enumerate purely for diagnostics and to support the WGPU_ADAPTER_NAME
-        // override; the default pick is delegated to wgpu (see below).
         let enumerated: Vec<crate::vision::wgpu::Adapter> =
             instance.enumerate_adapters(backends).await;
-        #[cfg(feature = "debug-logging")]
-        {
-            eprintln!("wgpu adapters:");
-            for adapter in &enumerated {
-                let info = adapter.get_info();
-                eprintln!(
-                    "  - {} ({:?}, {:?})",
-                    info.name, info.backend, info.device_type
-                );
-            }
-        }
 
-        let adapter = if let Some(filter) = adapter_name_filter.as_deref() {
-            // Explicit override: first enumerated adapter whose name matches.
-            let needle = filter.to_ascii_lowercase();
-            enumerated
-                .into_iter()
-                .find(|a| a.get_info().name.to_ascii_lowercase().contains(&needle))
-                .with_context(|| {
-                    format!("WGPU_ADAPTER_NAME=`{filter}` did not match any wgpu adapter")
-                })?
-        } else {
-            // Default: same strategy as the resize / binarization paths — ask
-            // wgpu for the high-performance adapter, which the OS resolves to the
-            // discrete GPU when one is present (always the larger GPU on a
-            // laptop). Fall back to any enumerated adapter if the request fails.
-            match instance
-                .request_adapter(&crate::vision::wgpu::RequestAdapterOptions {
-                    power_preference: crate::vision::wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                })
-                .await
-            {
-                Ok(adapter) => adapter,
-                Err(_) => enumerated
-                    .into_iter()
-                    .next()
-                    .context("no suitable wgpu adapter found")?,
-            }
-        };
-        let info = adapter.get_info();
-        eprintln!(
-            "wgpu selected adapter: {} ({:?}, {:?})",
-            info.name, info.backend, info.device_type
-        );
-        if info.device_type == crate::vision::wgpu::DeviceType::Cpu {
-            let require_real_gpu = std::env::var("WGPU_REQUIRE_REAL_GPU")
-                .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
-                .unwrap_or(false);
-            if require_real_gpu {
-                bail!(
-                    "selected WGPU adapter is CPU/software (`{}`); install/expose a real GPU driver or unset WGPU_REQUIRE_REAL_GPU",
-                    info.name
-                );
-            }
+        eprintln!("wgpu: found {} adapter(s)", enumerated.len());
+        #[cfg(feature = "debug-logging")]
+        for adapter in &enumerated {
+            let info = adapter.get_info();
             eprintln!(
-                "warning: selected WGPU adapter is CPU/software; set WGPU_REQUIRE_REAL_GPU=1 to fail instead"
+                "  - {} ({:?}, {:?})",
+                info.name, info.backend, info.device_type
             );
         }
 
-        let adapter_features = adapter.features();
-        let supports_timestamps =
-            adapter_features.contains(crate::vision::wgpu::Features::TIMESTAMP_QUERY);
-        let required_features = if supports_timestamps {
-            crate::vision::wgpu::Features::TIMESTAMP_QUERY
-        } else {
-            crate::vision::wgpu::Features::empty()
-        };
+        // Build an ordered candidate list: the explicit WGPU_ADAPTER_NAME filter
+        // selects a single candidate; otherwise the HighPerformance preference
+        // adapter goes first, followed by remaining enumerated adapters sorted by
+        // device type (Discrete → Integrated → Other → Virtual → Cpu) so that if
+        // the preferred adapter's driver rejects request_device we fall to a real
+        // iGPU before landing on a software rasterizer.
+        let candidates: Vec<crate::vision::wgpu::Adapter> =
+            if let Some(filter) = adapter_name_filter.as_deref() {
+                let needle = filter.to_ascii_lowercase();
+                let matched = enumerated
+                    .into_iter()
+                    .find(|a| a.get_info().name.to_ascii_lowercase().contains(&needle))
+                    .with_context(|| {
+                        format!("WGPU_ADAPTER_NAME=`{filter}` did not match any wgpu adapter")
+                    })?;
+                vec![matched]
+            } else {
+                let sort_key = |a: &crate::vision::wgpu::Adapter| {
+                    match a.get_info().device_type {
+                        crate::vision::wgpu::DeviceType::DiscreteGpu   => 0u8,
+                        crate::vision::wgpu::DeviceType::IntegratedGpu => 1,
+                        crate::vision::wgpu::DeviceType::Other         => 2,
+                        crate::vision::wgpu::DeviceType::VirtualGpu    => 3,
+                        crate::vision::wgpu::DeviceType::Cpu           => 4,
+                    }
+                };
+                match instance
+                    .request_adapter(&crate::vision::wgpu::RequestAdapterOptions {
+                        power_preference: crate::vision::wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: None,
+                        force_fallback_adapter: false,
+                    })
+                    .await
+                {
+                    Ok(preferred) => {
+                        let preferred_name = preferred.get_info().name.clone();
+                        // Keep the preferred adapter first; sort the rest so
+                        // integrated GPUs are tried before software adapters.
+                        let mut rest: Vec<_> = enumerated
+                            .into_iter()
+                            .filter(|a| a.get_info().name != preferred_name)
+                            .collect();
+                        rest.sort_by_key(|a| sort_key(a));
+                        let mut list = vec![preferred];
+                        list.extend(rest);
+                        list
+                    }
+                    Err(_) => {
+                        // No HighPerformance preference returned — order all by
+                        // device type so we prefer real hardware over software.
+                        let mut list = enumerated;
+                        list.sort_by_key(|a| sort_key(&a));
+                        list
+                    }
+                }
+            };
 
-        let (device, queue) = adapter
-            .request_device(&crate::vision::wgpu::DeviceDescriptor {
-                label: Some("wgpu-yolo-layout"),
-                required_features,
-                required_limits: adapter.limits(),
-                memory_hints: crate::vision::wgpu::MemoryHints::Performance,
-                ..Default::default()
-            })
-            .await
-            .context("failed to create wgpu device")?;
-        Ok(Self {
-            device: Arc::new(device),
-            queue: Arc::new(queue),
-            is_cpu_adapter: info.device_type == crate::vision::wgpu::DeviceType::Cpu,
-            supports_timestamps,
-        })
+        if candidates.is_empty() {
+            bail!(
+                "{}: no adapters found for backends {:?}",
+                Self::gpu_device_unavailable_marker(),
+                backends
+            );
+        }
+
+        let require_real_gpu = std::env::var("WGPU_REQUIRE_REAL_GPU")
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false);
+
+        let mut adapter_errors: Vec<String> = Vec::new();
+
+        for adapter in candidates {
+            let info = adapter.get_info();
+            let adapter_desc = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            let is_cpu = info.device_type == crate::vision::wgpu::DeviceType::Cpu;
+
+            if is_cpu && require_real_gpu {
+                adapter_errors.push(format!(
+                    "`{adapter_desc}` skipped: CPU/software adapter not allowed (WGPU_REQUIRE_REAL_GPU)"
+                ));
+                continue;
+            }
+
+            let adapter_features = adapter.features();
+            let supports_timestamps =
+                adapter_features.contains(crate::vision::wgpu::Features::TIMESTAMP_QUERY);
+            let required_features = if supports_timestamps {
+                crate::vision::wgpu::Features::TIMESTAMP_QUERY
+            } else {
+                crate::vision::wgpu::Features::empty()
+            };
+
+            match adapter
+                .request_device(&crate::vision::wgpu::DeviceDescriptor {
+                    label: Some("wgpu-yolo-layout"),
+                    required_features,
+                    required_limits: adapter.limits(),
+                    memory_hints: crate::vision::wgpu::MemoryHints::Performance,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok((device, queue)) => {
+                    eprintln!("wgpu: selected adapter: {adapter_desc}");
+                    if is_cpu {
+                        eprintln!(
+                            "wgpu: WARNING — no hardware GPU adapter was usable; \
+                             falling back to CPU/software rendering (`{}`). \
+                             Layout detection will be disabled. \
+                             Install or update your GPU driver, or set WGPU_REQUIRE_REAL_GPU=1 \
+                             to surface this as an error instead.",
+                            info.name
+                        );
+                    }
+                    return Ok(Self {
+                        device: Arc::new(device),
+                        queue: Arc::new(queue),
+                        is_cpu_adapter: is_cpu,
+                        supports_timestamps,
+                    });
+                }
+                Err(e) => {
+                    eprintln!("wgpu: adapter `{adapter_desc}` rejected by driver: {e}");
+                    adapter_errors.push(format!("`{adapter_desc}`: {e}"));
+                }
+            }
+        }
+
+        bail!(
+            "{}: every adapter failed request_device — {}",
+            Self::gpu_device_unavailable_marker(),
+            adapter_errors.join("; ")
+        )
     }
 
     pub(crate) async fn shared() -> Result<Self> {

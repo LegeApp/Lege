@@ -98,38 +98,6 @@ impl std::fmt::Display for ResizeError {
 }
 impl std::error::Error for ResizeError {}
 
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidDimensions(String),
-    CoordError(String),
-    JsonError(String),
-    Io(std::io::Error),
-    Serde(serde_json::Error),
-    Other(String),
-}
-impl std::fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProcessingError::InvalidDimensions(s) => write!(f, "Invalid dimensions: {s}"),
-            ProcessingError::CoordError(s) => write!(f, "Coord error: {s}"),
-            ProcessingError::JsonError(s) => write!(f, "Json error: {s}"),
-            ProcessingError::Io(e) => write!(f, "IO error: {e}"),
-            ProcessingError::Serde(e) => write!(f, "Serde error: {e}"),
-            ProcessingError::Other(s) => write!(f, "Other error: {s}"),
-        }
-    }
-}
-impl std::error::Error for ProcessingError {}
-impl From<std::io::Error> for ProcessingError {
-    fn from(e: std::io::Error) -> Self {
-        ProcessingError::Io(e)
-    }
-}
-impl From<serde_json::Error> for ProcessingError {
-    fn from(e: serde_json::Error) -> Self {
-        ProcessingError::Serde(e)
-    }
-}
 
 fn resize_alg_from_method(method: ResizeMethod) -> ResizeAlg {
     match method {
