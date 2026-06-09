@@ -111,7 +111,7 @@
     "step3_title": "Schritt 3: Kodierungsformat",
     "processing_options_title": "=== Verarbeitungsoptionen ===",
     "format_prompt": "Format: [1] CCITT4 | [2] JBIG2 | [3] DJVU",
-    "modifiers_prompt": "Modifikatoren: c=Gerasterte Bilder | a=Keine Layout-Erkennung | o1=Schnelle OCR | o2=Best-OCR | d=Kein Cover | e=PDF-kompatibel | f=Zuschneiden erzwingen | g=Invertieren | h=Entzerren | m=Zentrieren | w=Zuschneiden",
+    "modifiers_prompt": "Modifikatoren: c=Gerasterte Bilder | a=Keine Layout-Erkennung | o1=Schnelle OCR | o2=Best-OCR | d=Kein Cover | e=PDF-kompatibel | f=Zuschneiden erzwingen | g=Invertieren | h=Entzerren | m=Zentrieren | w=Zuschneiden | r=Raster-Reflow (erfordert Layout-Erkennung)",
     "examples_prompt": "Beispiele: '1' | '2 o1' | '2 o2' | '3hw'",
     "default_prompt": "Standard: 1 (CCITT4, Originalabbildungen, Layout aktiv). Vollständige Flag-Liste: lege --help",
     "binarization_title": "Binarisierungsmethode:",

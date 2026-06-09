@@ -6,6 +6,7 @@ use tokio::sync::Semaphore;
 use crate::bbox_trace;
 use crate::engine::Detection;
 use crate::ocr::check_tesseract_availability;
+use crate::pagerender::NativeTextWord;
 use crate::pipeline::config::PipelineConfig;
 use crate::types::CoverFormat;
 use crate::{info_log, warn_log};
@@ -511,6 +512,109 @@ pub fn build_hocr_from_pdf_text(text: &str, width: u32, height: u32) -> String {
             }
         }
 
+        hocr.push_str("</span>");
+    }
+
+    hocr.push_str("</div>");
+    hocr
+}
+
+pub fn build_hocr_from_positioned_words(
+    words: &[NativeTextWord],
+    width: u32,
+    height: u32,
+) -> String {
+    fn escape_minimal(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&#39;"),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    let mut positioned: Vec<NativeTextWord> = words
+        .iter()
+        .filter(|w| !w.text.trim().is_empty())
+        .filter(|w| w.bbox[2] > w.bbox[0] && w.bbox[3] > w.bbox[1])
+        .cloned()
+        .collect();
+    if positioned.is_empty() {
+        return String::new();
+    }
+
+    positioned.sort_by(|a, b| {
+        a.bbox[1]
+            .partial_cmp(&b.bbox[1])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.bbox[0]
+                    .partial_cmp(&b.bbox[0])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    let mut lines: Vec<Vec<NativeTextWord>> = Vec::new();
+    for word in positioned {
+        let cy = (word.bbox[1] + word.bbox[3]) * 0.5;
+        let h = (word.bbox[3] - word.bbox[1]).max(1.0);
+        if let Some(line) = lines.last_mut() {
+            let line_top = line.iter().map(|w| w.bbox[1]).fold(f32::MAX, f32::min);
+            let line_bottom = line.iter().map(|w| w.bbox[3]).fold(0.0f32, f32::max);
+            let line_cy = (line_top + line_bottom) * 0.5;
+            let line_h = (line_bottom - line_top).max(1.0);
+            if (cy - line_cy).abs() <= h.max(line_h) * 0.6 {
+                line.push(word);
+                continue;
+            }
+        }
+        lines.push(vec![word]);
+    }
+
+    let mut hocr = String::new();
+    hocr.push_str(&format!(
+        "<div class='ocr_page' id='page_1' title='bbox 0 0 {} {}'>",
+        width.max(1),
+        height.max(1)
+    ));
+
+    for mut line in lines {
+        line.sort_by(|a, b| {
+            a.bbox[0]
+                .partial_cmp(&b.bbox[0])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let x1 = line.iter().map(|w| w.bbox[0]).fold(f32::MAX, f32::min);
+        let y1 = line.iter().map(|w| w.bbox[1]).fold(f32::MAX, f32::min);
+        let x2 = line.iter().map(|w| w.bbox[2]).fold(0.0f32, f32::max);
+        let y2 = line.iter().map(|w| w.bbox[3]).fold(0.0f32, f32::max);
+        hocr.push_str(&format!(
+            "<span class='ocr_line' title='bbox {} {} {} {}; baseline 0 0'>",
+            x1.round().max(0.0) as u32,
+            y1.round().max(0.0) as u32,
+            x2.round().max(1.0) as u32,
+            y2.round().max(1.0) as u32
+        ));
+
+        for (i, word) in line.iter().enumerate() {
+            if i > 0 {
+                hocr.push(' ');
+            }
+            hocr.push_str(&format!(
+                "<span class='ocrx_word' title='bbox {} {} {} {}'>{}</span>",
+                word.bbox[0].round().max(0.0) as u32,
+                word.bbox[1].round().max(0.0) as u32,
+                word.bbox[2].round().max(1.0) as u32,
+                word.bbox[3].round().max(1.0) as u32,
+                escape_minimal(&word.text)
+            ));
+        }
         hocr.push_str("</span>");
     }
 

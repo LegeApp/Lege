@@ -122,7 +122,6 @@ pub use crate::jbig2enc::{PdfSplitOutput, encode_document};
 pub use crate::jbig2structs::Jbig2Config;
 
 use crate::jbig2enc::Jbig2Encoder;
-use crate::jbig2sym::{BitImage, binary_pixels_to_bitimage};
 use log::info;
 use std::env;
 

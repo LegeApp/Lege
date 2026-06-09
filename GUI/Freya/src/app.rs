@@ -943,10 +943,24 @@ fn compact_option_button(
 ) -> Element {
     Button::new()
         .width(Size::fill())
-        .height(Size::px(22.))
+        .height(Size::px(20.))
         .on_press(on_press)
         .child(current_text.into())
         .into()
+}
+
+fn image_processing_button_label(value: ImageProcessingType) -> &'static str {
+    match value {
+        ImageProcessingType::Original => "Original",
+        ImageProcessingType::Dithered => "Dither",
+    }
+}
+
+fn compression_button_label(value: CompressionType) -> &'static str {
+    match value {
+        CompressionType::Ccitt4 => "CCITT4",
+        CompressionType::Jbig2 => "JBIG2",
+    }
 }
 
 fn OutputSettingsCard(state: State<AppState>) -> Element {
@@ -954,18 +968,24 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
     let show_base_format =
         matches!(options.output_format, OutputFormat::Pdf) && !options.layout_analysis;
 
-    let format_control = settings_row(
-        GUI_TEXT.interactive.labels.output_format.clone(),
-        compact_option_button(options.output_format.to_string(), {
-            let mut state = state;
-            move |_| {
-                let next = match state.read().options.output_format {
-                    OutputFormat::Pdf => OutputFormat::Djvu,
-                    OutputFormat::Djvu => OutputFormat::Pdf,
-                };
-                state.write().options.output_format = next;
-            }
-        }),
+    let format_control = tooltip_wrap_at(
+        state,
+        TooltipArea::OutputCard,
+        GUI_TEXT.interactive.tooltips.output_format.clone(),
+        AttachedPosition::Right,
+        settings_row(
+            GUI_TEXT.interactive.labels.output_format.clone(),
+            compact_option_button(options.output_format.to_string(), {
+                let mut state = state;
+                move |_| {
+                    let next = match state.read().options.output_format {
+                        OutputFormat::Pdf => OutputFormat::Djvu,
+                        OutputFormat::Djvu => OutputFormat::Pdf,
+                    };
+                    state.write().options.output_format = next;
+                }
+            }),
+        ),
     );
 
     let image_control = tooltip_wrap_at(
@@ -975,16 +995,19 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
         AttachedPosition::Right,
         settings_row(
             GUI_TEXT.interactive.labels.image_output_type.clone(),
-            compact_option_button(options.image_processing_type.to_string(), {
-                let mut state = state;
-                move |_| {
-                    let next = match state.read().options.image_processing_type {
-                        ImageProcessingType::Original => ImageProcessingType::Dithered,
-                        ImageProcessingType::Dithered => ImageProcessingType::Original,
-                    };
-                    state.write().options.image_processing_type = next;
-                }
-            }),
+            compact_option_button(
+                image_processing_button_label(options.image_processing_type),
+                {
+                    let mut state = state;
+                    move |_| {
+                        let next = match state.read().options.image_processing_type {
+                            ImageProcessingType::Original => ImageProcessingType::Dithered,
+                            ImageProcessingType::Dithered => ImageProcessingType::Original,
+                        };
+                        state.write().options.image_processing_type = next;
+                    }
+                },
+            ),
         ),
     );
 
@@ -1031,7 +1054,7 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
             AttachedPosition::Right,
             settings_row(
                 GUI_TEXT.interactive.labels.base_format.clone(),
-                compact_option_button(options.compression_type.to_string(), {
+                compact_option_button(compression_button_label(options.compression_type), {
                     let mut state = state;
                     move |_| {
                         let next = match state.read().options.compression_type {
@@ -1062,14 +1085,14 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
                     .child(
                         rect()
                             .direction(Direction::Horizontal)
-                            .spacing(12.)
-                            .child(rect().width(Size::percent(45.)).child(format_control))
-                            .child(rect().width(Size::percent(45.)).child(image_control)),
+                            .spacing(6.)
+                            .child(rect().width(Size::percent(50.)).child(format_control))
+                            .child(rect().width(Size::percent(50.)).child(image_control)),
                     )
                     .child(
                         rect()
                             .direction(Direction::Horizontal)
-                            .spacing(10.)
+                            .spacing(6.)
                             .child(rect().width(Size::percent(50.)).child(layout_control))
                             .maybe_child(base_format_control.map(|control| -> Element {
                                 rect().width(Size::percent(50.)).child(control).into()
@@ -1556,6 +1579,7 @@ fn progress_single_bar(
         }
         crate::worker_process::WorkerProgressMode::NoLayout
         | crate::worker_process::WorkerProgressMode::HeavySequential
+        | crate::worker_process::WorkerProgressMode::Reflow
         | crate::worker_process::WorkerProgressMode::Unknown => {
             metrics.rendered.max(metrics.encoded)
         }
@@ -2419,7 +2443,8 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     WorkerProcessingStatus::AssemblingOutput => {}
                                     WorkerProcessingStatus::NoLayoutProgress { .. }
                                     | WorkerProcessingStatus::LayoutProgress { .. }
-                                    | WorkerProcessingStatus::MarginProgress { .. } => {
+                                    | WorkerProcessingStatus::MarginProgress { .. }
+                                    | WorkerProcessingStatus::ReflowProgress { .. } => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().set_status_lines(l1, l2, l3);
                                     }

@@ -10,7 +10,8 @@ use std::process::Command;
 
 use jbig2enc_rust::jbig2enc::Jbig2Encoder;
 use jbig2enc_rust::{
-    Jbig2Config, Jbig2Context, encode_single_image, encode_single_image_with_config,
+    Jbig2Config, Jbig2Context, encode_document_pdf_split, encode_single_image,
+    encode_single_image_with_config,
 };
 use ndarray::Array2;
 
@@ -321,5 +322,51 @@ fn pdf_fragment_roundtrip_symbol_mode_repeated_glyph() {
     assert_eq!(
         decoded, pixels,
         "symbol-mode PDF fragment round-trip differs from input"
+    );
+}
+
+/// Multi-page documents must share one symbol dictionary: the per-page text
+/// regions reference symbol indices into the *same* global dictionary that's
+/// embedded once as `JBIG2Globals`. Building the dictionary and the page
+/// streams from independent encoders desyncs those indices — this is the
+/// failure mode `encode_document_pdf_split` exists to avoid (see its doc
+/// comment). Two pages sharing the repeated glyph exercise that shared-table
+/// path: each page must decode correctly against the *same* globals blob.
+#[test]
+fn pdf_split_multi_page_shares_global_dictionary() {
+    let w: u32 = 96;
+    let h: u32 = 48;
+    let glyph: Vec<(u32, u32)> = (0..10)
+        .flat_map(|y| [(0u32, y), (6u32, y)].into_iter())
+        .chain((1..6).map(|x| (x, 5)))
+        .collect();
+    let page0 = page_with_repeated_glyph(w, h, &glyph, 9, 3);
+    let page1 = page_with_repeated_glyph(w, h, &glyph, 6, 2);
+
+    let mut cfg = Jbig2Config::text();
+    cfg.refine = false;
+    cfg.text_refine = false;
+
+    let images = vec![
+        array2_from_pixels(w, h, &page0),
+        array2_from_pixels(w, h, &page1),
+    ];
+    let split = encode_document_pdf_split(&images, &cfg).expect("encode_document_pdf_split");
+    assert_eq!(split.page_streams.len(), 2, "expected one stream per page");
+    assert!(
+        split.global_segments.is_some(),
+        "symbol-mode multi-page document should produce a shared global dictionary"
+    );
+
+    let globals = split.global_segments.as_deref();
+    let decoded0 = decode_embedded(globals, &split.page_streams[0], w, h);
+    let decoded1 = decode_embedded(globals, &split.page_streams[1], w, h);
+    assert_eq!(
+        decoded0, page0,
+        "page 0 round-trip against shared globals differs from input"
+    );
+    assert_eq!(
+        decoded1, page1,
+        "page 1 round-trip against shared globals differs from input"
     );
 }
