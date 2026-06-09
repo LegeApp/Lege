@@ -35,8 +35,11 @@ pub fn requested_backends() -> wgpu::Backends {
 
 #[cfg(target_os = "windows")]
 fn default_backends() -> wgpu::Backends {
-    // Insist on DX12 in production on Windows.
-    wgpu::Backends::DX12
+    // DX12 is the validated production path on Windows. GL is included as a
+    // last-resort fallback for older Intel iGPUs (pre-6th-gen) that lack DX12
+    // support. wgpu's adapter ordering still places DX12 adapters first, so this
+    // doesn't change behaviour on any system that already works.
+    wgpu::Backends::DX12 | wgpu::Backends::GL
 }
 
 #[cfg(target_os = "macos")]

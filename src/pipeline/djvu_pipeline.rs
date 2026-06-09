@@ -123,6 +123,19 @@ pub async fn create_and_run_djvu_source_pipeline(
         ));
     }
 
+    // Dispatch to the reflow variant when enabled
+    if config.enable_reflow() {
+        return crate::pipeline::reflow_pipeline::run_raster_reflow_djvu_pipeline(
+            source,
+            config,
+            output_path,
+            page_range,
+            progress_tracker,
+            shutdown_rx,
+        )
+        .await;
+    }
+
     // Reset standard dimensions at the start of each new document
     crate::pipeline::reset_standard_dimensions();
     // Calculate total pages
@@ -166,20 +179,44 @@ pub async fn create_and_run_djvu_source_pipeline(
         if config.enable_layout_detection() {
             match crate::pipeline::inference::InferenceHandle::new(&config) {
                 Ok(handle) => Some(Arc::new(handle)),
-                Err(e) => {
-                    if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) {
-                        warn_log!("[DJVU-Parallel] {e}. Layout detection disabled for this run.");
-                    } else {
-                        #[cfg(feature = "debug-logging")]
-                        warn_log!(
-                            "[DJVU-Parallel] Failed to create InferenceHandle: {}. Layout detection disabled.",
-                            e
-                        );
-                    }
+                Err(e) if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) => {
+                    let msg = format!(
+                        "No usable hardware GPU found — wgpu fell back to a CPU/software adapter. \
+                         Layout detection has been disabled for this run. \
+                         Install or update your GPU driver to enable hardware acceleration."
+                    );
+                    warn_log!("[DJVU-Parallel] {msg}");
+                    progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
+                        stage: "GPU Warning".to_string(),
+                        message: msg,
+                    });
                     let mut fallback = (*config).clone();
                     fallback.set_enable_layout_detection(false);
                     config = Arc::new(fallback);
                     None
+                }
+                Err(e) if crate::pipeline::inference::is_gpu_device_error(e.as_ref()) => {
+                    let msg = format!(
+                        "GPU initialization failed ({}). Layout detection disabled; \
+                         processing will continue without it. \
+                         Check that your GPU driver supports DX12 (Windows) or Vulkan (Linux/macOS).",
+                        e
+                    );
+                    warn_log!("[DJVU-Parallel] {msg}");
+                    progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
+                        stage: "GPU Warning".to_string(),
+                        message: msg,
+                    });
+                    let mut fallback = (*config).clone();
+                    fallback.set_enable_layout_detection(false);
+                    config = Arc::new(fallback);
+                    None
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "[DJVU-Parallel] Failed to create InferenceHandle: {}",
+                        e
+                    ));
                 }
             }
         } else {
@@ -1032,7 +1069,7 @@ fn apply_djvu_region_policy(
     Ok(policy.transform(rendered, inference_result, config))
 }
 /// Binarize DJVU image — delegates to the shared pipeline helper.
-fn binarize_djvu_image(
+pub(crate) fn binarize_djvu_image(
     image: &RgbImage,
     config: &PipelineConfig,
     force_blank_threshold: bool,

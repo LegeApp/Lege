@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow};
 use encoding_rs::WINDOWS_1252;
 use flate2::{Compression, write::ZlibEncoder};
 use lopdf::{
-    Dictionary, Document, Object, ObjectId, SaveOptions, Stream, StringFormat,
+    Bookmark, Dictionary, Document, Object, ObjectId, SaveOptions, Stream, StringFormat,
     content::{Content, Operation},
 };
 use quick_xml::Reader;
@@ -360,6 +360,9 @@ pub struct StreamingPdfBuilder {
     page_ids: Vec<ObjectId>,
     global_resources: HashMap<Vec<u8>, ObjectId>, // Shared resources like JBIG2 globals
     unicode_font: Option<CachedUnicodeFont>,
+    bookmarks: Vec<crate::pagerender::OwnedBookmarkNode>,
+    /// source page index → output page index (empty = identity mapping for non-reflow)
+    source_to_output_idx: HashMap<usize, usize>,
 }
 
 impl StreamingPdfBuilder {
@@ -370,7 +373,20 @@ impl StreamingPdfBuilder {
             page_ids: Vec::new(),
             global_resources: HashMap::new(),
             unicode_font: get_unicode_font().map(CachedUnicodeFont::new),
+            bookmarks: Vec::new(),
+            source_to_output_idx: HashMap::new(),
         }
+    }
+
+    /// Store bookmarks to be written when finalize() is called.
+    pub fn set_bookmarks(&mut self, bookmarks: Vec<crate::pagerender::OwnedBookmarkNode>) {
+        self.bookmarks = bookmarks;
+    }
+
+    /// For reflow output: map source page index → output page index so bookmark destinations
+    /// can be wired to the correct output page. Non-reflow paths leave this empty (identity assumed).
+    pub fn set_source_to_output_map(&mut self, map: HashMap<usize, usize>) {
+        self.source_to_output_idx = map;
     }
 
     fn ensure_unicode_font(&mut self) -> Result<Option<ObjectId>> {
@@ -994,6 +1010,50 @@ impl StreamingPdfBuilder {
             info.set("Trapped", Object::Name(b"False".to_vec()));
             let info_id = doc.add_object(info);
             doc.trailer.set("Info", Object::Reference(info_id));
+        }
+
+        // Build bookmark outline if any were supplied
+        if !self.bookmarks.is_empty() {
+            let page_ids = &self.page_ids;
+            let source_map = &self.source_to_output_idx;
+            // Helper closure: source page index → ObjectId in the output document
+            let resolve_page = |src: usize| -> Option<ObjectId> {
+                if src == usize::MAX {
+                    return None;
+                }
+                let out_idx = if source_map.is_empty() {
+                    src
+                } else {
+                    *source_map.get(&src)?
+                };
+                page_ids.get(out_idx).copied()
+            };
+
+            fn add_tree(
+                doc: &mut Document,
+                nodes: &[crate::pagerender::OwnedBookmarkNode],
+                parent: Option<u32>,
+                resolve: &dyn Fn(usize) -> Option<ObjectId>,
+            ) {
+                for node in nodes {
+                    let page_id = match resolve(node.source_page) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+                    let bm = Bookmark::new(node.title.clone(), [0.0, 0.0, 0.0], 0, page_id);
+                    let id = doc.add_bookmark(bm, parent);
+                    if !node.children.is_empty() {
+                        add_tree(doc, &node.children, Some(id), resolve);
+                    }
+                }
+            }
+
+            add_tree(&mut doc, &self.bookmarks, None, &resolve_page);
+
+            if let Some(outline_id) = doc.build_outline() {
+                let catalog_dict = doc.get_object_mut(catalog_id)?.as_dict_mut()?;
+                catalog_dict.set("Outlines", Object::Reference(outline_id));
+            }
         }
 
         doc.trailer.set("Root", Object::Reference(catalog_id));

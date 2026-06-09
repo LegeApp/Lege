@@ -159,6 +159,8 @@ pub struct GuiPopupsText {
     pub processing_log_title: String,
     pub debug_log_title: String,
     pub email: String,
+    pub copy_email: String,
+    pub docs_not_found: String,
     pub documentation: String,
     pub licenses: String,
     pub ocr_detected: String,

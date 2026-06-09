@@ -119,6 +119,8 @@
       "processing_log_title": "Processing Log",
       "debug_log_title": "Debug Log",
       "email": "Email",
+      "copy_email": "Copy Email",
+      "docs_not_found": "Documentation not found. Ensure docs/ is next to the Lege executable.",
       "documentation": "Documentation",
       "licenses": "Licenses",
       "ocr_detected": "OCR layer detected - Leave OCR off to preserve the existing text layer.",
