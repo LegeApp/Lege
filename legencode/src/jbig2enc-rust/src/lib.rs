@@ -135,17 +135,12 @@ pub mod jbig2unify;
 pub use crate::jbig2arith::Jbig2ArithCoder;
 #[cfg(feature = "symboldict")]
 pub use jbig2cc::{BBox, CC, CCImage, Run, analyze_page, extract_symbols_for_jbig2};
-pub use jbig2enc::encode_document;
+pub use jbig2enc::{PdfSplitOutput, encode_document};
 pub use jbig2structs::Jbig2Config;
 
 use jbig2enc::Jbig2Encoder;
 use jbig2sym::binary_pixels_to_bitimage;
-use log::info;
 use std::env;
-
-// Constants for default thresholds (symbol classification only)
-const JBIG2_THRESHOLD_DEF: f32 = 0.92;
-const JBIG2_WEIGHT_DEF: f32 = 0.5;
 
 /// Result of JBIG2 encoding with separate global and page data for PDF embedding
 #[derive(Debug, Clone)]
@@ -161,10 +156,6 @@ pub struct Jbig2EncodeResult {
 pub struct Jbig2Context {
     /// The underlying configuration
     config: Jbig2Config,
-
-    // Legacy fields for backward compatibility
-    threshold: f32,
-    weight: f32,
     pdf_mode: bool,
 }
 
@@ -172,8 +163,6 @@ impl Default for Jbig2Context {
     fn default() -> Self {
         Self {
             config: Jbig2Config::default(),
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
             pdf_mode: false,
         }
     }
@@ -189,20 +178,13 @@ impl Jbig2Context {
     pub fn with_pdf_mode(pdf_mode: bool) -> Self {
         Self {
             config: Jbig2Config::default(),
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
             pdf_mode,
         }
     }
 
     /// Create a new context with custom configuration
     pub fn with_config(config: Jbig2Config, pdf_mode: bool) -> Self {
-        Self {
-            config,
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
-            pdf_mode,
-        }
+        Self { config, pdf_mode }
     }
 
     /// Create a new context with lossless configuration (no symbol dictionaries)
@@ -210,8 +192,6 @@ impl Jbig2Context {
     pub fn with_lossless_config(pdf_mode: bool) -> Self {
         Self {
             config: Jbig2Config::lossless(),
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
             pdf_mode,
         }
     }
@@ -306,6 +286,55 @@ pub fn encode_single_image_lossless(
     encode_single_bitimage(bitimage, Jbig2Context::with_lossless_config(pdf_mode))
 }
 
+/// Encodes a multi-page document for PDF embedding, sharing one symbol
+/// dictionary across every page.
+///
+/// PDF readers expect multi-page JBIG2 content as a single `JBIG2Globals`
+/// object (the shared symbol dictionary) referenced by each page's separate
+/// `/JBIG2Decode` stream. Producing that layout requires every page to be
+/// planned and serialized by the *same* encoder instance so that the symbol
+/// indices referenced by each page's text regions line up with the shared
+/// dictionary's symbol table — building the dictionary and the page streams
+/// from independent encoders silently desyncs those indices and produces
+/// undecodable pages (solid black/white, decoder errors, etc.).
+///
+/// # Arguments
+/// * `images` - the page images, in document order
+/// * `config` - encoder configuration; `symbol_mode` controls whether a
+///   shared global dictionary is produced at all (when disabled, every page
+///   is encoded as an independent generic region and `global_segments` is
+///   `None`)
+///
+/// # Returns
+/// A [`PdfSplitOutput`] with the optional global dictionary segment plus one
+/// page stream per input image, ready to embed directly.
+pub fn encode_document_pdf_split(
+    images: &[Array2<u8>],
+    config: &Jbig2Config,
+) -> Result<PdfSplitOutput, Jbig2Error> {
+    let mut enc_config = config.clone();
+    enc_config.want_full_headers = false;
+    if !enc_config.symbol_mode {
+        enc_config.refine = false;
+        enc_config.text_refine = false;
+    }
+
+    let mut encoder = Jbig2Encoder::new(&enc_config);
+    for image in images {
+        encoder
+            .add_page(image)
+            .map_err(|e| Jbig2Error::EncodingFailed {
+                message: e.to_string(),
+            })?;
+    }
+
+    encoder
+        .flush_pdf_split()
+        .map_err(|e| Jbig2Error::EncodingFailed {
+            message: e.to_string(),
+        })
+}
+
 fn validate_and_build_bitimage(
     input: &[u8],
     width: u32,
@@ -381,87 +410,6 @@ fn encode_single_bitimage(
             page_data,
         })
     }
-}
-
-/// Encodes a list of text-only binary PBM ROIs into JBIG2 streams.
-///
-/// # Arguments
-/// * `rois` - A slice of 2D arrays where each array represents a binary image (0/255 or 0/1 values)
-/// * `ctx` - JBIG2 encoding context with configuration
-pub fn encode_rois(
-    rois: &[Array2<u8>],
-    ctx: Jbig2Context,
-) -> Result<(Option<Vec<u8>>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
-    if rois.is_empty() {
-        return Ok((None, Vec::new()));
-    }
-
-    info!(
-        "Processing {} ROIs in PDF mode: {}",
-        rois.len(),
-        ctx.get_pdf_mode()
-    );
-
-    // Initialize encoder configuration - use the context's config instead of default
-    let mut enc_config = ctx.config.clone();
-    enc_config.want_full_headers = !ctx.get_pdf_mode(); // PDF mode shouldn't have file headers
-    if !enc_config.symbol_mode {
-        enc_config.refine = false;
-        enc_config.text_refine = false;
-    }
-
-    // For PDF mode with symbol encoding, create global dictionary
-    let global_dict = if ctx.get_symbol_mode() && ctx.get_pdf_mode() {
-        let dict_data =
-            build_page_dict(rois, &enc_config, &ctx).map_err(|e| Jbig2Error::DictionaryFailed {
-                message: e.to_string(),
-            })?;
-        Some(dict_data)
-    } else {
-        None
-    };
-
-    let mut roi_streams = Vec::with_capacity(rois.len());
-
-    for roi in rois {
-        let mut encoder = Jbig2Encoder::new(&enc_config);
-
-        // Add the image data to the encoder.
-        encoder.add_page(roi).map_err(|e| e.to_string())?;
-
-        // Encode the document to get the final stream.
-        // This will produce a stream with or without headers based on `enc_config`.
-        let stream = encoder.flush().map_err(|e| e.to_string())?;
-        roi_streams.push(stream);
-    }
-
-    Ok((global_dict, roi_streams))
-}
-
-/// Encodes a dictionary covering every ROI on a page.
-fn build_page_dict(
-    rois: &[Array2<u8>],
-    cfg: &Jbig2Config,
-    ctx: &Jbig2Context,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    // Create encoder with the configuration
-    let mut encoder = Jbig2Encoder::new(cfg);
-
-    // Set PDF mode if needed
-    if ctx.get_pdf_mode() {
-        encoder = encoder.dict_only();
-    }
-
-    // Add all ROIs to the encoder
-    for roi in rois {
-        encoder
-            .add_page(roi)
-            .map_err(|e| format!("Failed to add page: {}", e))?;
-    }
-
-    encoder
-        .flush_dict()
-        .map_err(|e| format!("Failed to flush dictionary: {}", e).into())
 }
 
 /// Get the version string for the crate

@@ -10,6 +10,7 @@ pub mod inference;
 pub mod page_analysis;
 pub mod pdf_tokio_pipeline;
 pub mod policies;
+pub mod reflow_pipeline;
 pub mod runtime_limits;
 pub mod source;
 
