@@ -417,6 +417,27 @@ pub(crate) async fn run_raster_reflow_pipeline(
         let encoded =
             encode_base_layer_for_jpeg_mode(Arc::new(canvas), &config, reflow_page.index).await?;
 
+        // When slow OCR is enabled, overlay a searchable text layer onto the
+        // reflowed page by recognizing the reflow-detected text rows and
+        // re-projecting the words onto their new output positions.
+        let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
+            match crate::ocr::slow::perform_reflow_page_ocr(reflow_page, &source_pages, &config)
+                .await
+            {
+                Ok(hocr) => hocr,
+                Err(e) => {
+                    warn_log!(
+                        "[Reflow] Page {}: OCR text layer failed: {}",
+                        reflow_page.index,
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let page = crate::accumulator::Page {
             width: reflow_page.width as f32,
             height: reflow_page.height as f32,
@@ -427,7 +448,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
                 height: reflow_page.height as f32,
                 content: encoded,
             }],
-            hocr_text: None,
+            hocr_text,
             index: reflow_page.index,
             binarized: None,
         };
