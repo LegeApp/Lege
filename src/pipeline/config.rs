@@ -28,23 +28,6 @@ pub struct PageTask {
     pub total_pages: usize,
     pub pdf_bytes: Arc<[u8]>,
 }
-// Specific error types for better error handling
-#[derive(thiserror::Error, Debug)]
-pub enum ProcessingError {
-    #[error("Binarization failed: {0}")]
-    Binarization(String),
-    #[error("Encoding failed: {0}")]
-    Encoding(String),
-    #[error("OCR failed: {0}")]
-    Ocr(String),
-    #[error("Layout detection failed: {0}")]
-    LayoutDetection(String),
-    #[error("Image processing failed: {0}")]
-    ImageProcessing(String),
-    #[error("PDF assembly failed: {0}")]
-    PdfAssembly(String),
-}
-
 /// Detection results from inference worker
 #[derive(Debug, Clone)]
 pub struct InferenceResult {

@@ -11,7 +11,6 @@ pub mod djvu; // Native Rust DJVU encoder
 #[cfg_attr(target_os = "linux", path = "engine_yolo_linux.rs")]
 #[cfg_attr(not(target_os = "linux"), path = "engine.rs")]
 pub mod engine;
-pub mod errors;
 pub mod icon;
 pub mod margin;
 pub mod nms;
