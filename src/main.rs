@@ -324,6 +324,7 @@ struct CliOptions {
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
     halftone: bool, // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
     deskew: bool,   // --deskew
+    reflow: bool,   // --reflow (raster reflow; requires layout detection)
     jpeg_compat: bool, // --jpeg-compat
     center_margins: bool, // --center-margins
     crop_margins: bool, // --crop-margins
@@ -667,6 +668,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.gray_jp2 = true;
                 i += 1;
             }
+            "--reflow" => {
+                opts.reflow = true;
+                i += 1;
+            }
             "--deskew" => {
                 opts.deskew = true;
                 i += 1;
@@ -756,7 +761,53 @@ fn apply_ocr_options(config: &mut PipelineConfig, cli_opts: &CliOptions) {
     }
 }
 
+fn emit_worker_status_json(status: lege::progress::ProcessingStatus) {
+    let update = ProgressUpdate::Status {
+        task_id: 0,
+        status,
+        metrics: None,
+    };
+    match serde_json::to_string(&update) {
+        Ok(json) => {
+            println!("{json}");
+            let _ = std::io::stdout().flush();
+        }
+        Err(err) => {
+            eprintln!("[worker-json] serialization error: {err}");
+        }
+    }
+}
+
+fn emit_worker_error_json(error: impl std::fmt::Display) {
+    let update = ProgressUpdate::Error {
+        task_id: 0,
+        error: error.to_string(),
+        metrics: None,
+    };
+    match serde_json::to_string(&update) {
+        Ok(json) => {
+            println!("{json}");
+            let _ = std::io::stdout().flush();
+        }
+        Err(err) => {
+            eprintln!("[worker-json] serialization error: {err}");
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    let is_gui_worker = std::env::args().any(|arg| arg == "--gui-worker");
+    match run_main() {
+        Ok(()) => Ok(()),
+        Err(err) if is_gui_worker => {
+            emit_worker_error_json(format!("{err:#}"));
+            fast_exit(1);
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn run_main() -> Result<()> {
     // Configure dynamic runtime library paths early (before ORT/PDF pipelines initialize).
     lege::configure_runtime_env();
 
@@ -840,6 +891,10 @@ fn main() -> Result<()> {
 
     // Extract all --flag / --key value options, leaving only positional args.
     let (args, mut cli_opts) = extract_cli_options(args)?;
+
+    if cli_opts.gui_worker {
+        emit_worker_status_json(lege::progress::ProcessingStatus::Initializing);
+    }
 
     // Machine-readable probe mode: print JSON metadata and exit.
     if cli_opts.probe_json {
@@ -1493,6 +1548,12 @@ fn handle_simple_processing(
     if cli_opts.deskew {
         pipeline_config.set_enable_deskew(true);
     }
+    if cli_opts.reflow {
+        if !pipeline_config.enable_layout_detection() {
+            bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
+        }
+        pipeline_config.set_enable_reflow(true);
+    }
     if cli_opts.jpeg_compat {
         pipeline_config.set_jpeg_compat(true);
     }
@@ -1663,6 +1724,10 @@ fn handle_simple_processing(
             }
             Err(error) => {
                 overall_ok = false;
+                if gui_worker {
+                    emit_worker_error_json(format!("{error:#}"));
+                    continue;
+                }
                 error_println!(
                     "{}",
                     fmt2(
@@ -1847,6 +1912,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         high_quality_output,
         interactive_halftone,
         djvu_quality,
+        enable_reflow,
     ) = loop {
         print!(
             "\n{}{}{}\n",
@@ -1910,6 +1976,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 high_quality_output,
                 interactive_halftone,
                 djvu_quality,
+                enable_reflow,
             )) => {
                 // No immediate rejection; we'll apply precedence rules below when building config
                 break (
@@ -1931,6 +1998,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     high_quality_output,
                     interactive_halftone,
                     djvu_quality,
+                    enable_reflow,
                 );
             }
             Err(e) => {
@@ -2087,6 +2155,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         config.set_dither_images(false);
     }
     config.set_enable_layout_detection(effective_layout_detection);
+    config.set_enable_reflow(enable_reflow);
     config.set_enable_ocr(ocr_enabled);
     if ocr_enabled {
         match ocr_mode {
@@ -2469,6 +2538,7 @@ fn parse_format_selection_with_options(
     bool,
     bool,       // halftone (--halftone, JBIG2 halftone segments)
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
+    bool,       // enable_reflow (raster reflow; requires layout detection)
 )> {
     if input.is_empty() {
         // Default: Original images with CCITT4 text, JPEG cover, layout detection ENABLED
@@ -2492,6 +2562,7 @@ fn parse_format_selection_with_options(
             false, // high_quality_output
             false, // halftone
             None,  // djvu_quality (not DjVu)
+            false, // enable_reflow
         ));
     }
 
@@ -2588,6 +2659,7 @@ fn parse_format_selection_with_options(
         center_margins,
         crop_margins,
         force_crop,
+        enable_reflow,
     ) = parse_options(&options_str)?;
 
     // Dithered / halftone figure regions require re-encoding (letters may not be in options_str).
@@ -2642,6 +2714,7 @@ fn parse_format_selection_with_options(
         has_high_flag,
         has_halftone_flag,
         djvu_quality,
+        enable_reflow,
     ))
 }
 
@@ -2687,6 +2760,7 @@ fn parse_options(
     bool,
     bool,
     bool,
+    bool,
 )> {
     let options: Vec<&str> = input.split_whitespace().collect();
 
@@ -2722,6 +2796,10 @@ fn parse_options(
     let center_margins = options.contains(&"m");
     let crop_margins = options.contains(&"w");
     let force_crop = options.contains(&"f");
+    let raster_reflow = options.contains(&"r");
+    if raster_reflow && !layout_detection {
+        bail!("Raster reflow ('r') requires layout detection. Remove the 'a' flag to use 'r'.");
+    }
 
     Ok((
         layout_detection,
@@ -2735,6 +2813,7 @@ fn parse_options(
         center_margins,
         crop_margins,
         force_crop,
+        raster_reflow,
     ))
 }
 
@@ -3731,6 +3810,12 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     if cli_opts.deskew {
         pipeline_config.set_enable_deskew(true);
     }
+    if cli_opts.reflow {
+        if !pipeline_config.enable_layout_detection() {
+            bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
+        }
+        pipeline_config.set_enable_reflow(true);
+    }
     if cli_opts.jpeg_compat {
         pipeline_config.set_jpeg_compat(true);
     }
@@ -3887,6 +3972,7 @@ fn emit_cli_stage_progress(
         lege::progress::ProgressMode::NoLayout | lege::progress::ProgressMode::HeavySequential => {
             rendered.max(metrics.encoded).min(total)
         }
+        lege::progress::ProgressMode::Reflow => metrics.encoded.min(total),
         lege::progress::ProgressMode::Unknown => metrics.encoded.min(total),
     });
     let deskewed = metrics.deskewed.min(rendered.max(encoded));
@@ -3953,18 +4039,21 @@ fn emit_cli_stage_progress(
             );
             snapshot.encoded = encoded;
         }
+        lege::progress::ProgressMode::Reflow => {}
         lege::progress::ProgressMode::Unknown => {}
     }
 
-    push_stage_events(
-        snapshot.deskewed,
-        deskewed,
-        3,
-        "Deskew",
-        cli_color(COLORS.page_start),
-        "Page deskewed",
-    );
-    snapshot.deskewed = deskewed;
+    if metrics.enable_deskew {
+        push_stage_events(
+            snapshot.deskewed,
+            deskewed,
+            3,
+            "Deskew",
+            cli_color(COLORS.page_start),
+            "Page deskewed",
+        );
+        snapshot.deskewed = deskewed;
+    }
 
     events.sort_by_key(|event| (event.current, event.stage_order));
 

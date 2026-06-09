@@ -23,6 +23,7 @@ pub mod pnginference;
 pub mod preprocess;
 pub mod processing_log;
 pub mod progress;
+pub mod reflow; // RasterReflow: raster-first reflow for scanned books (scaffolding)
 pub mod resize;
 // resize context is now merged into pipeline::policies
 pub mod target_profiles;

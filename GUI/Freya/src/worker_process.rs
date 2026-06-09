@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 /// Subprocess-based processing worker for the GUI.
 ///
 /// Each queue item spawns a hidden `lege` CLI process in `--gui-worker` mode.
@@ -7,6 +8,10 @@
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use anyhow::Result;
 
@@ -25,6 +30,7 @@ pub enum WorkerProgressMode {
     Layout,
     Margin,
     HeavySequential,
+    Reflow,
 }
 
 impl Default for WorkerProgressMode {
@@ -70,6 +76,10 @@ pub enum WorkerProcessingStatus {
     MarginAnalysisSummary {
         summary: String,
     },
+    PipelineMessage {
+        stage: String,
+        message: String,
+    },
     PdfAppend {
         current: usize,
         total: usize,
@@ -77,6 +87,12 @@ pub enum WorkerProcessingStatus {
     PdfAppendMargin {
         current: usize,
         total: usize,
+    },
+    ReflowProgress {
+        stage: WorkerReflowStage,
+        current: usize,
+        total: usize,
+        eta: Option<String>,
     },
     LayoutProgress {
         rendered: usize,
@@ -106,6 +122,14 @@ pub enum WorkerProcessingStatus {
         enable_deskew: bool,
         eta: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerReflowStage {
+    SourceAnalysis,
+    Compose,
+    OutputPages,
 }
 
 impl WorkerProcessingStatus {
@@ -158,8 +182,41 @@ impl WorkerProcessingStatus {
                 "Margin Analysis: complete".into(),
                 summary.clone(),
             ),
+            Self::PipelineMessage { stage, message } => {
+                (format!("[{stage}]"), message.clone(), String::new())
+            }
             Self::PdfAppend { .. } | Self::PdfAppendMargin { .. } => {
                 (String::new(), String::new(), String::new())
+            }
+            Self::ReflowProgress {
+                stage,
+                current,
+                total,
+                eta,
+            } => {
+                let detail = match stage {
+                    WorkerReflowStage::SourceAnalysis => {
+                        format!("Rendering source pages and detecting layout: {current}/{total}")
+                    }
+                    WorkerReflowStage::Compose => {
+                        "Building reflow plan from detected regions, rows, and words...".into()
+                    }
+                    WorkerReflowStage::OutputPages => {
+                        format!("Rasterizing and encoding reflowed output pages: {current}/{total}")
+                    }
+                };
+                let title = match stage {
+                    WorkerReflowStage::SourceAnalysis => "[Reflow - Source Analysis]",
+                    WorkerReflowStage::Compose => "[Reflow - Compose]",
+                    WorkerReflowStage::OutputPages => "[Reflow - Output Pages]",
+                };
+                (
+                    title.into(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
             }
             Self::LayoutProgress {
                 rendered,
@@ -595,24 +652,56 @@ pub struct WorkerHandle {
     pub task_id: u64,
     pub input_path: PathBuf,
     pub output_path: PathBuf,
+    active_pids: Option<Arc<Mutex<Vec<u32>>>>,
+    cancelled: Option<Arc<AtomicBool>>,
 }
 
 impl WorkerHandle {
+    pub fn supervisor(active_pids: Arc<Mutex<Vec<u32>>>, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            child: None,
+            pid: 0,
+            task_id: u64::MAX,
+            input_path: PathBuf::new(),
+            output_path: PathBuf::new(),
+            active_pids: Some(active_pids),
+            cancelled: Some(cancelled),
+        }
+    }
+
     pub fn kill(&mut self) {
+        if let Some(cancelled) = &self.cancelled {
+            cancelled.store(true, Ordering::SeqCst);
+        }
+        if let Some(active_pids) = &self.active_pids {
+            if let Ok(pids) = active_pids.lock() {
+                for pid in pids.iter().copied() {
+                    kill_pid(pid);
+                }
+            }
+            return;
+        }
         if let Some(ref mut c) = self.child {
             let _ = c.kill();
         } else {
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &self.pid.to_string()])
-                    .status();
-            }
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(self.pid as libc::pid_t, libc::SIGTERM);
-            }
+            kill_pid(self.pid);
         }
+    }
+}
+
+fn kill_pid(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status();
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
     }
 }
 
@@ -665,15 +754,26 @@ pub fn spawn_lege_worker(
         .map_err(|e| anyhow::anyhow!("Failed to launch lege worker ({:?}): {}", cli_path, e))?;
 
     let pid = child.id();
+    let terminal_seen = Arc::new(AtomicBool::new(false));
+    let stderr_lines = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(50)));
 
     // Dedicated thread: read stdout, parse JSON, forward events.
     let stdout = child.stdout.take().expect("stdout piped");
+    let stdout_events_tx = events_tx.clone();
+    let stdout_terminal_seen = terminal_seen.clone();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             match line {
                 Ok(line) => {
                     if let Ok(update) = serde_json::from_str::<WorkerProgressUpdate>(&line) {
-                        let _ = events_tx.send(update.with_task_id(gui_task_id));
+                        if matches!(
+                            update,
+                            WorkerProgressUpdate::Completed { .. }
+                                | WorkerProgressUpdate::Error { .. }
+                        ) {
+                            stdout_terminal_seen.store(true, Ordering::SeqCst);
+                        }
+                        let _ = stdout_events_tx.send(update.with_task_id(gui_task_id));
                     }
                 }
                 Err(_) => break,
@@ -683,10 +783,17 @@ pub fn spawn_lege_worker(
 
     // Dedicated thread: drain stderr (forward to log or discard).
     let stderr = child.stderr.take().expect("stderr piped");
+    let stderr_lines_for_thread = stderr_lines.clone();
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             match line {
                 Ok(line) => {
+                    if let Ok(mut lines) = stderr_lines_for_thread.lock() {
+                        if lines.len() >= 50 {
+                            lines.pop_front();
+                        }
+                        lines.push_back(line.clone());
+                    }
                     if let Some(ref tx) = log_tx {
                         let _ = tx.send(line);
                     }
@@ -696,12 +803,45 @@ pub fn spawn_lege_worker(
         }
     });
 
+    let wait_events_tx = events_tx.clone();
+    let wait_terminal_seen = terminal_seen.clone();
+    let wait_stderr_lines = stderr_lines.clone();
+    std::thread::spawn(move || {
+        let wait_result = child.wait();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if wait_terminal_seen.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let stderr_tail = wait_stderr_lines
+            .lock()
+            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default();
+
+        let mut error = match wait_result {
+            Ok(status) => format!("Worker exited before completion with status: {status}"),
+            Err(e) => format!("Failed to wait for worker process: {e}"),
+        };
+        if !stderr_tail.trim().is_empty() {
+            error.push_str("\n\nLast worker stderr:\n");
+            error.push_str(stderr_tail.trim());
+        }
+
+        let _ = wait_events_tx.send(WorkerProgressUpdate::Error {
+            task_id: gui_task_id,
+            error,
+            metrics: None,
+        });
+    });
+
     Ok(WorkerHandle {
-        child: Some(child),
+        child: None,
         pid,
         task_id: gui_task_id,
         input_path,
         output_path,
+        active_pids: None,
+        cancelled: None,
     })
 }
 
@@ -710,6 +850,7 @@ pub fn spawn_lege_worker(
 pub async fn probe_file_json(path: &PathBuf) -> Result<serde_json::Value> {
     let cli_path = resolve_cli_path()?;
     let path = path.clone();
+    let path_display = path.display().to_string();
 
     let output = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(&cli_path);
@@ -717,7 +858,7 @@ pub async fn probe_file_json(path: &PathBuf) -> Result<serde_json::Value> {
         cmd.arg(&path);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
 
         #[cfg(windows)]
         {
@@ -731,6 +872,24 @@ pub async fn probe_file_json(path: &PathBuf) -> Result<serde_json::Value> {
     .await??;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(stdout.trim())?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        anyhow::bail!(
+            "Probe failed for '{}': status {}{}{}",
+            path_display,
+            output.status,
+            if stderr.trim().is_empty() { "" } else { "\n" },
+            stderr.trim()
+        );
+    }
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|e| {
+        anyhow::anyhow!(
+            "Probe returned invalid JSON for '{}': {}{}{}",
+            path_display,
+            e,
+            if stderr.trim().is_empty() { "" } else { "\n" },
+            stderr.trim()
+        )
+    })?;
     Ok(json)
 }

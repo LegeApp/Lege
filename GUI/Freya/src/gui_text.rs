@@ -108,6 +108,7 @@ pub struct GuiTooltipsText {
     pub margin_centering: String,
     pub margin_crop_resize: String,
     pub deskew_documents: String,
+    pub output_format: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
