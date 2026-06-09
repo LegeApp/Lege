@@ -18,42 +18,74 @@ struct WgpuContext {
 
 impl WgpuContext {
     async fn new_async() -> Result<Self> {
-        // Constrain to the production backend policy (DX12 on Windows) so the
-        // HighPerformance adapter request cannot silently land on Vulkan.
+        let backends = crate::wgpu_setup::requested_backends();
         let instance = crate::wgpu_setup::create_instance();
-        let adapter = instance
+
+        // Build candidate list: HighPerformance preferred adapter first, then
+        // remaining enumerated adapters as fallback for bad-driver scenarios.
+        let enumerated: Vec<wgpu::Adapter> = instance.enumerate_adapters(backends).await;
+        let candidates: Vec<wgpu::Adapter> = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|e| {
-                GpuBinarizationError::Initialization(format!("request_adapter failed: {e:?}"))
-            })?;
+        {
+            Ok(preferred) => {
+                let preferred_name = preferred.get_info().name.clone();
+                let mut list = vec![preferred];
+                for a in enumerated {
+                    if a.get_info().name != preferred_name {
+                        list.push(a);
+                    }
+                }
+                list
+            }
+            Err(_) => enumerated,
+        };
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("lege-wgpu-binarize-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits {
-                    max_storage_buffers_per_shader_stage: 8,
-                    ..wgpu::Limits::downlevel_defaults()
-                },
-                memory_hints: wgpu::MemoryHints::Performance,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| {
-                GpuBinarizationError::Initialization(format!("request_device failed: {e}"))
-            })?;
+        if candidates.is_empty() {
+            return Err(GpuBinarizationError::Initialization(format!(
+                "no wgpu adapters found for backends {backends:?}"
+            )));
+        }
 
-        Ok(Self {
-            _instance: instance,
-            _adapter: adapter,
-            device,
-            queue,
-        })
+        let device_desc = wgpu::DeviceDescriptor {
+            label: Some("lege-wgpu-binarize-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits {
+                max_storage_buffers_per_shader_stage: 8,
+                ..wgpu::Limits::downlevel_defaults()
+            },
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        };
+
+        let mut adapter_errors: Vec<String> = Vec::new();
+        for adapter in candidates {
+            let info = adapter.get_info();
+            let desc = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            match adapter.request_device(&device_desc).await {
+                Ok((device, queue)) => {
+                    return Ok(Self {
+                        _instance: instance,
+                        _adapter: adapter,
+                        device,
+                        queue,
+                    });
+                }
+                Err(e) => {
+                    log::debug!("[GPU binarizer] adapter `{desc}` rejected: {e}");
+                    adapter_errors.push(format!("`{desc}`: {e}"));
+                }
+            }
+        }
+
+        Err(GpuBinarizationError::Initialization(format!(
+            "every adapter failed request_device — {}",
+            adapter_errors.join("; ")
+        )))
     }
 
     fn new() -> Result<Self> {

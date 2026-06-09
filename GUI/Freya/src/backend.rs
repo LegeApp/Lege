@@ -438,6 +438,18 @@ pub fn bundled_docs_path(file_name: &str) -> Option<PathBuf> {
     Some(exe_dir.join("docs").join(file_name))
 }
 
+/// Like [`bundled_docs_path`] but returns `None` if the file does not exist.
+/// Also checks next to the exe directly (for flat release layouts).
+pub fn bundled_docs_path_if_exists(file_name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let candidates = [
+        exe_dir.join("docs").join(file_name),
+        exe_dir.join(file_name),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
 // A helper function to truncate the path from the beginning.
 // This preserves the file/folder name which is often more useful.
 pub fn truncate_path(path: &std::path::Path, max_len: usize) -> String {

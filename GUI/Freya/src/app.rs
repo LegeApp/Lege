@@ -88,6 +88,7 @@ enum PopupKind {
     Queue,
     Complete,
     AddFileHelp,
+    Warning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,6 +145,8 @@ pub struct AppState {
     pub show_completion_popup: bool,
     pub add_file_help_popup: Option<String>,
     pub show_add_file_help_popup: bool,
+    pub warning_popup: Option<String>,
+    pub show_warning_popup: bool,
     pub show_log_viewer: bool,
     pub processing_log: Vec<LogEntry>,
     pub show_about: bool,
@@ -205,6 +208,8 @@ impl Default for AppState {
             show_completion_popup: false,
             add_file_help_popup: None,
             show_add_file_help_popup: false,
+            warning_popup: None,
+            show_warning_popup: false,
             show_log_viewer: false,
             processing_log: logging::load_log_entries().unwrap_or_default(),
             show_about: false,
@@ -403,6 +408,11 @@ fn popup_message_entries(state: State<AppState>) -> Vec<(String, PopupKind)> {
             read.add_file_help_popup.clone(),
             PopupKind::AddFileHelp,
         ),
+        (
+            read.show_warning_popup,
+            read.warning_popup.clone(),
+            PopupKind::Warning,
+        ),
     ];
 
     for (show, msg, kind) in entries {
@@ -522,6 +532,7 @@ fn hide_popup(mut state: State<AppState>, kind: PopupKind) {
         PopupKind::Queue => s.show_queue_operation_popup = false,
         PopupKind::Complete => s.show_completion_popup = false,
         PopupKind::AddFileHelp => s.show_add_file_help_popup = false,
+        PopupKind::Warning => s.show_warning_popup = false,
     }
 }
 
@@ -562,6 +573,10 @@ fn schedule_popup(mut state: State<AppState>, kind: PopupKind, message: String, 
                 PopupKind::AddFileHelp => {
                     s.add_file_help_popup = Some(message);
                     s.show_add_file_help_popup = true;
+                }
+                PopupKind::Warning => {
+                    s.warning_popup = Some(message);
+                    s.show_warning_popup = true;
                 }
             }
         }
@@ -2048,17 +2063,20 @@ fn DebugLogViewerPopup(_state: State<AppState>) -> Element {
 
 fn AboutPopup(mut state: State<AppState>) -> Element {
     let show_about = state.read().show_about;
-    let email_text = use_state(|| "read@legeapp.com".to_string());
 
     if !show_about {
         return rect().into();
     }
+
+    const EMAIL: &str = "read@legeapp.com";
 
     let on_close = Rc::new(RefCell::new(move || state.write().show_about = false));
     let on_close_request = on_close.clone();
     let on_close_button = on_close.clone();
     let documentation_button = on_close.clone();
     let licenses_button = on_close.clone();
+    let state_for_docs = state;
+    let state_for_licenses = state;
 
     Popup::new()
         .show(true)
@@ -2089,12 +2107,33 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             ),
                     )
                     .child(
-                        label()
-                            .text(GUI_TEXT.interactive.popups.email.clone())
-                            .font_size(13.)
-                            .color(TEXT),
-                    )
-                    .child(Input::new(email_text).width(Size::px(200.))),
+                        rect()
+                            .direction(Direction::Horizontal)
+                            .spacing(8.)
+                            .cross_align(Alignment::Center)
+                            .child(
+                                label()
+                                    .text(format!(
+                                        "{}: {}",
+                                        GUI_TEXT.interactive.popups.email,
+                                        EMAIL
+                                    ))
+                                    .font_size(13.)
+                                    .color(TEXT),
+                            )
+                            .child(
+                                Button::new()
+                                    .on_press(move |_| {
+                                        let _ = Clipboard::set(EMAIL.to_string());
+                                    })
+                                    .child(
+                                        label()
+                                            .text(GUI_TEXT.interactive.popups.copy_email.clone())
+                                            .font_size(12.)
+                                            .color(TEXT),
+                                    ),
+                            ),
+                    ),
             ),
         )
         .child(
@@ -2102,20 +2141,40 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                 .child(
                     Button::new()
                         .on_press(move |_| {
-                            if let Some(path) = backend::bundled_docs_path("documentation.html") {
-                                let _ = backend::open_with_system(&path.to_string_lossy());
+                            match backend::bundled_docs_path_if_exists("documentation.html") {
+                                Some(path) => {
+                                    let _ = backend::open_with_system(&path.to_string_lossy());
+                                    (documentation_button.borrow_mut())();
+                                }
+                                None => {
+                                    schedule_popup(
+                                        state_for_docs,
+                                        PopupKind::Warning,
+                                        GUI_TEXT.interactive.popups.docs_not_found.clone(),
+                                        5,
+                                    );
+                                }
                             }
-                            (documentation_button.borrow_mut())();
                         })
                         .child(GUI_TEXT.interactive.popups.documentation.clone()),
                 )
                 .child(
                     Button::new()
                         .on_press(move |_| {
-                            if let Some(path) = backend::bundled_docs_path("licenses.html") {
-                                let _ = backend::open_with_system(&path.to_string_lossy());
+                            match backend::bundled_docs_path_if_exists("licenses.html") {
+                                Some(path) => {
+                                    let _ = backend::open_with_system(&path.to_string_lossy());
+                                    (licenses_button.borrow_mut())();
+                                }
+                                None => {
+                                    schedule_popup(
+                                        state_for_licenses,
+                                        PopupKind::Warning,
+                                        GUI_TEXT.interactive.popups.docs_not_found.clone(),
+                                        5,
+                                    );
+                                }
                             }
-                            (licenses_button.borrow_mut())();
                         })
                         .child(GUI_TEXT.interactive.popups.licenses.clone()),
                 )
@@ -2469,6 +2528,18 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     &status
                                 {
                                     schedule_popup(state, PopupKind::Footnotes, message.clone(), 5);
+                                }
+                                if let WorkerProcessingStatus::PipelineMessage { stage, message } =
+                                    &status
+                                {
+                                    if stage == "GPU Warning" {
+                                        schedule_popup(
+                                            state,
+                                            PopupKind::Warning,
+                                            message.clone(),
+                                            8,
+                                        );
+                                    }
                                 }
                             }
                             WorkerProgressUpdate::Completed {

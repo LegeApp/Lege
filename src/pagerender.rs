@@ -361,6 +361,12 @@ impl PdfiumRenderer {
         Ok(document.pages().len())
     }
 
+    /// Extract the bookmark tree from this PDF. Returns an empty vec if there are no bookmarks.
+    /// Must be called after all rendering is complete; acquires PDFIUM_GLOBAL_LOCK internally.
+    pub fn extract_bookmarks(&self) -> Vec<OwnedBookmarkNode> {
+        extract_bookmarks_from_bytes(&self.pdf_bytes)
+    }
+
     /// Get cached page count - no locking required
     pub fn page_count(&self) -> u16 {
         self.page_count
@@ -722,6 +728,82 @@ impl PdfiumRenderer {
             format_memory_size(estimated_raster_memory)
         ))
     }
+}
+
+/// An owned representation of a single bookmark node in the outline tree.
+#[derive(Debug, Clone)]
+pub struct OwnedBookmarkNode {
+    /// Bookmark title; empty string when pdfium returns None.
+    pub title: String,
+    /// 0-based source page index this bookmark points to.
+    pub source_page: usize,
+    pub children: Vec<OwnedBookmarkNode>,
+}
+
+/// Recursively walk pdfium bookmark tree starting from `node`.
+/// `depth` guards against cycles or pathologically deep trees.
+fn walk_bookmark<'a>(node: pdfium_render::prelude::PdfBookmark<'a>, depth: u32) -> OwnedBookmarkNode {
+    let title = node.title().unwrap_or_default();
+
+    let source_page = {
+        let via_dest = node
+            .destination()
+            .and_then(|d| d.page_index().ok())
+            .map(|idx| idx as usize);
+        let via_action = node.action().and_then(|action| {
+            action
+                .as_local_destination_action()
+                .and_then(|ld| ld.destination().ok())
+                .and_then(|d| d.page_index().ok())
+                .map(|idx| idx as usize)
+        });
+        via_dest.or(via_action)
+    };
+
+    let mut children = Vec::new();
+    if depth < 64 {
+        let mut child = node.first_child();
+        while let Some(c) = child {
+            let sibling = c.next_sibling();
+            children.push(walk_bookmark(c, depth + 1));
+            child = sibling;
+        }
+    }
+
+    OwnedBookmarkNode {
+        title,
+        source_page: source_page.unwrap_or(usize::MAX),
+        children,
+    }
+}
+
+/// Extract the full bookmark tree from raw PDF bytes.
+/// Returns an empty vec when there are no bookmarks or pdfium is unavailable.
+/// Acquires PDFIUM_GLOBAL_LOCK; call only after all rendering is complete.
+pub fn extract_bookmarks_from_bytes(pdf_bytes: &[u8]) -> Vec<OwnedBookmarkNode> {
+    let guard = match PDFIUM_GLOBAL_LOCK.lock() {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
+    let document = match PDFIUM.load_pdf_from_byte_slice(pdf_bytes, None) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let bookmarks = document.bookmarks();
+    let first = match bookmarks.root() {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    // Walk all top-level bookmarks (siblings of the first)
+    let mut result = Vec::new();
+    let mut current = Some(first);
+    while let Some(node) = current {
+        let sibling = node.next_sibling();
+        result.push(walk_bookmark(node, 0));
+        current = sibling;
+    }
+    drop(guard);
+    result
 }
 
 fn format_memory_size(bytes: usize) -> String {

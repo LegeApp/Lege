@@ -176,6 +176,16 @@ pub fn is_layout_software_adapter_error(error: &(dyn std::error::Error + 'static
     false
 }
 
+/// Returns true when `error` was caused by every wgpu adapter rejecting
+/// `request_device` (bad or absent drivers). Distinct from the software-adapter
+/// case: here wgpu *found* an adapter but the driver refused to create a device.
+pub fn is_layout_gpu_device_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    use crate::vision::runtime::device::GpuContext;
+    let marker = GpuContext::gpu_device_unavailable_marker();
+    let msg = format!("{error:#}");
+    msg.contains(marker)
+}
+
 #[derive(Debug, Clone)]
 pub struct RotationConfig {
     pub model_path: PathBuf,

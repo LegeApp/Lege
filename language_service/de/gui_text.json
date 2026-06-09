@@ -119,6 +119,8 @@
       "processing_log_title": "Verarbeitungsprotokoll",
       "debug_log_title": "Debug-Protokoll",
       "email": "E-Mail",
+      "copy_email": "E-Mail kopieren",
+      "docs_not_found": "Dokumentation nicht gefunden. Stelle sicher, dass docs/ neben der Lege-Anwendung liegt.",
       "documentation": "Dokumentation",
       "licenses": "Lizenzen",
       "ocr_detected": "OCR-Ebene erkannt - OCR deaktiviert lassen, um die vorhandene Textebene beizubehalten.",
