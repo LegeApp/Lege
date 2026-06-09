@@ -55,7 +55,8 @@
       "threshold_value": "Fester Schwellenwert (0-255), der nach der Linearisierung angewendet wird.",
       "margin_centering": "Zentriert den Inhaltsbereich innerhalb der Seitenmaße.",
       "margin_crop_resize": "Schneidet Ränder auf Inhaltsgrenzen zu und skaliert auf die angegebenen Maße.",
-      "deskew_documents": "Korrigiert Drehung und Schräglage Seite für Seite."
+      "deskew_documents": "Korrigiert Drehung und Schräglage Seite für Seite.",
+      "output_format": "PDF oder DjVu"
     },
     "status": {
       "ready": "Bereit",

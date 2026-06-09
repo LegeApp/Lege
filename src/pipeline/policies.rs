@@ -320,6 +320,13 @@ pub fn set_standard_dimensions_once(width: u32, height: u32) {
     }
 }
 
+pub fn standard_dimensions() -> (u32, u32) {
+    (
+        STANDARD_WIDTH.load(Ordering::Relaxed),
+        STANDARD_HEIGHT.load(Ordering::Relaxed),
+    )
+}
+
 /// Neutral unit of work for the processor: what area to render/encode and how.
 #[derive(Debug, Clone)]
 pub struct RegionTask {

@@ -41,11 +41,23 @@ pub fn prepare_shared_deskew_engine(
         return Ok(None);
     }
 
-    // Updated default model filenames (previously doc-orientation.onnx / uvdoc-unwarp.onnx)
-    // Align with new runtime distribution naming: paddle-rotate.onnx (rotation cls) and paddle-deskew.onnx (unwarp/correction)
-    let rotation_path =
-        locate_deskew_model_path(config.deskew_rotation_model(), "paddle-rotate.onnx");
-    let unwarp_path = locate_deskew_model_path(config.deskew_unwarp_model(), "paddle-deskew.onnx");
+    let deskew_config = config.deskew_config();
+    if !deskew_config.enable_rotation_correction && !deskew_config.enable_unwarping {
+        return Ok(None);
+    }
+
+    // Updated default model filenames (previously doc-orientation.onnx / uvdoc-unwarp.onnx).
+    // Only resolve models for transforms that were explicitly enabled.
+    let rotation_path = if deskew_config.enable_rotation_correction {
+        locate_deskew_model_path(config.deskew_rotation_model(), "paddle-rotate.onnx")
+    } else {
+        None
+    };
+    let unwarp_path = if deskew_config.enable_unwarping {
+        locate_deskew_model_path(config.deskew_unwarp_model(), "paddle-deskew.onnx")
+    } else {
+        None
+    };
 
     if rotation_path.is_none() && unwarp_path.is_none() {
         return Err(anyhow!(
@@ -63,7 +75,7 @@ pub fn prepare_shared_deskew_engine(
     let engine = crate::deskew::DeskewEngine::new(
         rotation_owned.as_deref(),
         unwarp_owned.as_deref(),
-        config.deskew_config().clone(),
+        deskew_config.clone(),
     )?;
 
     info_log!(
