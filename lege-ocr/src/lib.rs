@@ -83,6 +83,35 @@ impl OcrPipeline {
         Self { engine, config }
     }
 
+    /// OCR a single pre-cropped grayscale line image.
+    ///
+    /// Unlike [`process_page`], this skips layout detection and line
+    /// segmentation: the caller has already isolated one text line (for example
+    /// a source text-row already detected by the reflow pipeline). Word
+    /// bounding boxes in the returned result are in the crop's own pixel space
+    /// (crop-local), and `bbox_highres` spans the whole crop. Returns `None`
+    /// when the engine produces no usable text.
+    pub fn ocr_gray_line(&self, gray_img: &image::GrayImage) -> Option<OcrLineResult> {
+        if gray_img.width() == 0 || gray_img.height() == 0 {
+            return None;
+        }
+        let (gray_ocr, scale_x, scale_y) = normalize::prepare_line_for_ocr(gray_img, false);
+        match self.engine.ocr_line(&gray_ocr, &self.config.language) {
+            Ok(mut result) if !result.text.trim().is_empty() => {
+                rescale_word_bboxes(
+                    &mut result,
+                    scale_x,
+                    scale_y,
+                    gray_img.width(),
+                    gray_img.height(),
+                );
+                result.bbox_highres = [0, 0, gray_img.width(), gray_img.height()];
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
     /// Process a single page.
     ///
     /// `high_res`: the page rendered at full resolution (same pixel space as `binary`).
