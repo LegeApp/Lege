@@ -4,12 +4,10 @@ use std::sync::Mutex;
 #[allow(unused_imports)]
 use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
-use image::{Rgb, RgbImage};
+use image::RgbImage;
+use lege_gpu::vision::RotationClassifier as VisionRotationClassifier;
 use lege_gpu::vision::{
     DeskewConfig as VisionDeskewConfig, DocumentDeskewer as VisionDocumentDeskewer,
-};
-use lege_gpu::vision::{
-    RotationClassifier as VisionRotationClassifier, RotationConfig as VisionRotationConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +54,18 @@ impl Default for DeskewConfig {
     fn default() -> Self {
         Self {
             rotation_confidence_threshold: 0.5,
+            enable_rotation_correction: false,
+            enable_unwarping: false,
+        }
+    }
+}
+
+impl DeskewConfig {
+    pub fn full_correction() -> Self {
+        Self {
             enable_rotation_correction: true,
             enable_unwarping: true,
+            ..Self::default()
         }
     }
 }

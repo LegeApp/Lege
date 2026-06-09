@@ -1,25 +1,28 @@
 // pdf_tokio_pipeline.rs
 use crate::margin::{DocumentMarginAnalysis, PageMarginInput};
+use crate::pagerender::NativeTextWord;
 use crate::pagerender::prelude::PdfiumRenderer;
 use crate::pipeline::config::{
     ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData,
 };
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, init_encode_semaphore, merge_overlapping_image_detections,
-    rounded_clamped_bbox, should_treat_as_cover_page, spawn_pdf_writer_actor,
+    build_hocr_from_pdf_text, build_hocr_from_positioned_words, init_encode_semaphore,
+    merge_overlapping_image_detections, rounded_clamped_bbox, should_treat_as_cover_page,
+    spawn_pdf_writer_actor,
 };
 use crate::pipeline::page_analysis::{
     BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, is_visually_blank_page,
     maybe_apply_yolo_full_page_detection, should_force_blank_page_threshold,
 };
 use crate::pipeline::policies::{
-    LayoutRegions, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
+    LayoutRegions, MarginCorrection, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
     build_inference_image,
 };
 use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
 use crate::progress::ProgressTracker;
+use crate::progress::ReflowStage;
 use crate::{info_log, success_log, warn_log};
 
 use Legencode::streamline::Jbig2Mode;
@@ -373,6 +376,7 @@ async fn process_single_page(
         is_cover_page: _is_cover_page,
         cover_encoded_data,
         region_processing_results,
+        native_text_transform,
     } = cpu_result;
 
     // Build elements
@@ -467,7 +471,13 @@ async fn process_single_page(
         )
         .await?
     } else {
-        extract_pdf_text(pdf_renderer.as_ref(), page_index, &adjusted_image).await?
+        extract_pdf_text(
+            pdf_renderer.as_ref(),
+            page_index,
+            &adjusted_image,
+            &native_text_transform,
+        )
+        .await?
     };
 
     // If any region on this page is Abandon and we're using JBIG2 Symbol mode,
@@ -581,6 +591,43 @@ struct PageProcessingOutput {
     is_cover_page: bool,
     cover_encoded_data: Option<(Vec<u8>, String)>,
     region_processing_results: Vec<RegionProcessingResult>,
+    native_text_transform: NativeTextTransform,
+}
+
+#[derive(Debug, Clone)]
+struct NativeTextTransform {
+    source_width: u32,
+    source_height: u32,
+    correction: MarginCorrection,
+}
+
+impl NativeTextTransform {
+    fn apply(&self, bbox: [f32; 4], output_width: u32, output_height: u32) -> Option<[f32; 4]> {
+        let mut mapped =
+            crate::pipeline::policies::apply_page_adjustments(bbox, None, Some(&self.correction));
+        let max_x = output_width as f32;
+        let max_y = output_height as f32;
+        mapped[0] = mapped[0].clamp(0.0, max_x);
+        mapped[1] = mapped[1].clamp(0.0, max_y);
+        mapped[2] = mapped[2].clamp(0.0, max_x);
+        mapped[3] = mapped[3].clamp(0.0, max_y);
+        if mapped[2] > mapped[0] && mapped[3] > mapped[1] {
+            Some(mapped)
+        } else {
+            None
+        }
+    }
+
+    fn compose_scale(&mut self, sx: f32, sy: f32) {
+        self.correction.scale_x *= sx;
+        self.correction.scale_y *= sy;
+        self.correction.offset_x *= sx;
+        self.correction.offset_y *= sy;
+    }
+}
+
+fn identity_margin_correction() -> MarginCorrection {
+    MarginCorrection::new(0.0, 0.0, 1.0, 1.0)
 }
 
 /// Consolidated CPU-intensive work for a single page
@@ -593,19 +640,24 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         margin_analysis,
     } = input;
 
-    let (mut adjusted_image, mut adjusted_detections) = if let Some(analysis) = &margin_analysis {
-        // Use document-wide margin analysis (2-pass mode)
-        apply_margin_analysis_to_page(
-            &rendered,
-            inference_result.detections,
-            &config,
-            analysis,
-            page_index,
-        )?
-    } else {
-        // Use per-page policy (1-pass mode)
-        apply_region_policy(&rendered, &inference_result, &config)?
-    };
+    let source_width = rendered.high_res_image.width();
+    let source_height = rendered.high_res_image.height();
+    let (mut adjusted_image, mut adjusted_detections, mut native_text_transform) =
+        if let Some(analysis) = &margin_analysis {
+            // Use document-wide margin analysis (2-pass mode)
+            apply_margin_analysis_to_page(
+                &rendered,
+                inference_result.detections,
+                &config,
+                analysis,
+                page_index,
+            )?
+        } else {
+            // Use per-page policy (1-pass mode)
+            apply_region_policy(&rendered, &inference_result, &config)?
+        };
+    native_text_transform.source_width = source_width;
+    native_text_transform.source_height = source_height;
 
     // "Render high, resize low": when the page was rendered above target_height
     // (for slow OCR), retain the high-res raster for recognition, then resize the
@@ -630,6 +682,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             for det in &mut adjusted_detections {
                 det.scale_bbox(sx, sy);
             }
+            native_text_transform.compose_scale(sx, sy);
 
             // Resize image
             let params = crate::resize::ResizeParams {
@@ -1082,6 +1135,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         is_cover_page,
         cover_encoded_data,
         region_processing_results,
+        native_text_transform,
     })
 }
 
@@ -1093,7 +1147,7 @@ fn apply_margin_analysis_to_page(
     cfg: &PipelineConfig,
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
-) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
+) -> Result<(RgbImage, Vec<crate::engine::Detection>, NativeTextTransform)> {
     use crate::pipeline::policies::{is_in_inference_space, map_bbox_infer_to_page};
 
     // Remap detections from inference space to page space
@@ -1230,7 +1284,23 @@ fn apply_margin_analysis_to_page(
                     det.bbox[0] < det.bbox[2] && det.bbox[1] < det.bbox[3]
                 });
 
-                return Ok((img, new_dets));
+                let correction = crate::margin::compute_margin_correction(
+                    &effective_bounds,
+                    effective_setting,
+                    &standard_dims,
+                    cfg.target_width(),
+                    cfg.target_height(),
+                    Some((page_w, page_h)),
+                );
+                return Ok((
+                    img,
+                    new_dets,
+                    NativeTextTransform {
+                        source_width: page_w,
+                        source_height: page_h,
+                        correction,
+                    },
+                ));
             }
             Err(e) => {
                 warn_log!(
@@ -1243,14 +1313,22 @@ fn apply_margin_analysis_to_page(
     }
 
     // Fallback: return original image
-    Ok(((*page.high_res_image).clone(), dets))
+    Ok((
+        (*page.high_res_image).clone(),
+        dets,
+        NativeTextTransform {
+            source_width: page.high_res_image.width(),
+            source_height: page.high_res_image.height(),
+            correction: identity_margin_correction(),
+        },
+    ))
 }
 
 fn apply_region_policy(
     rendered: &RenderedPageData,
     inference_result: &InferenceResult,
     config: &PipelineConfig,
-) -> Result<(RgbImage, Vec<crate::engine::Detection>)> {
+) -> Result<(RgbImage, Vec<crate::engine::Detection>, NativeTextTransform)> {
     let policy: Arc<dyn RegionPolicy> = match config.margin_settings() {
         crate::margin::MarginSettings::StandardizeAndCenter
         | crate::margin::MarginSettings::CropAndResize => Arc::new(MarginStandardizeAndCenter),
@@ -1263,7 +1341,68 @@ fn apply_region_policy(
         }
     };
 
-    Ok(policy.transform(rendered, inference_result, config))
+    let page_w = rendered.high_res_image.width();
+    let page_h = rendered.high_res_image.height();
+
+    let mut dets_for_bounds = inference_result.detections.clone();
+    let spec = config.inference_resize_spec();
+    for d in dets_for_bounds.iter_mut() {
+        if crate::pipeline::policies::is_in_inference_space(&d.bbox, &spec) {
+            d.bbox =
+                crate::pipeline::policies::map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
+        }
+    }
+
+    let transform = match config.margin_settings() {
+        crate::margin::MarginSettings::StandardizeAndCenter
+        | crate::margin::MarginSettings::CropAndResize => {
+            let bounds = if !dets_for_bounds.is_empty() {
+                crate::margin::calculate_content_bounds(&dets_for_bounds, page_w, page_h, true)
+            } else {
+                compute_pixel_bounds_for_margin(&rendered.high_res_image, config)
+            };
+            if let Some(bounds) = bounds {
+                let (standard_w, standard_h) = crate::pipeline::policies::standard_dimensions();
+                let dims = crate::margin::StandardPageDimensions {
+                    width: standard_w,
+                    height: standard_h,
+                };
+                if dims.width > 0 && dims.height > 0 {
+                    let setting = match config.margin_settings() {
+                        crate::margin::MarginSettings::StandardizeAndCenter
+                        | crate::margin::MarginSettings::CropAndResize => {
+                            crate::margin::MarginSettings::StandardizeAndCenter
+                        }
+                        crate::margin::MarginSettings::None => crate::margin::MarginSettings::None,
+                    };
+                    crate::margin::compute_margin_correction(
+                        &bounds,
+                        setting,
+                        &dims,
+                        config.target_width(),
+                        config.target_height(),
+                        Some((page_w, page_h)),
+                    )
+                } else {
+                    identity_margin_correction()
+                }
+            } else {
+                identity_margin_correction()
+            }
+        }
+        crate::margin::MarginSettings::None => identity_margin_correction(),
+    };
+
+    let (img, dets) = policy.transform(rendered, inference_result, config);
+    Ok((
+        img,
+        dets,
+        NativeTextTransform {
+            source_width: page_w,
+            source_height: page_h,
+            correction: transform,
+        },
+    ))
 }
 
 /// Binarize image with special handling for blank pages in adaptive mode.
@@ -1393,29 +1532,73 @@ async fn extract_pdf_text(
     pdf_renderer: Option<&Arc<PdfiumRenderer>>,
     page_index: usize,
     image: &RgbImage,
+    text_transform: &NativeTextTransform,
 ) -> Result<Option<String>> {
     let Some(pdf_renderer) = pdf_renderer else {
         return Ok(None);
     };
 
     match pdf_renderer.has_text_layer(page_index as u32).await {
-        Ok(true) => match pdf_renderer.extract_page_text(page_index as u32).await {
-            Ok(raw_text) => Ok(Some(build_hocr_from_pdf_text(
-                &raw_text,
-                image.width(),
-                image.height(),
-            ))),
-            Err(e) => {
-                warn_log!("Failed to extract text from page {}: {}", page_index, e);
-                Ok(None)
+        Ok(true) => {
+            match pdf_renderer
+                .extract_positioned_text_words(
+                    page_index as u32,
+                    text_transform.source_width,
+                    text_transform.source_height,
+                )
+                .await
+            {
+                Ok(words) => {
+                    let mapped =
+                        map_native_text_words(words, text_transform, image.width(), image.height());
+                    let hocr =
+                        build_hocr_from_positioned_words(&mapped, image.width(), image.height());
+                    if !hocr.trim().is_empty() {
+                        return Ok(Some(hocr));
+                    }
+                }
+                Err(e) => {
+                    warn_log!(
+                        "Failed to extract positioned text from page {}: {}",
+                        page_index,
+                        e
+                    );
+                }
             }
-        },
+
+            match pdf_renderer.extract_page_text(page_index as u32).await {
+                Ok(raw_text) => Ok(Some(build_hocr_from_pdf_text(
+                    &raw_text,
+                    image.width(),
+                    image.height(),
+                ))),
+                Err(e) => {
+                    warn_log!("Failed to extract text from page {}: {}", page_index, e);
+                    Ok(None)
+                }
+            }
+        }
         Ok(false) => Ok(None),
         Err(e) => {
             warn_log!("Failed to check text layer for page {}: {}", page_index, e);
             Ok(None)
         }
     }
+}
+
+fn map_native_text_words(
+    words: Vec<NativeTextWord>,
+    text_transform: &NativeTextTransform,
+    output_width: u32,
+    output_height: u32,
+) -> Vec<NativeTextWord> {
+    words
+        .into_iter()
+        .filter_map(|mut word| {
+            word.bbox = text_transform.apply(word.bbox, output_width, output_height)?;
+            Some(word)
+        })
+        .collect()
 }
 
 /// Encode base layer (binarized image) using the full encoding pipeline
@@ -1689,7 +1872,7 @@ async fn encode_base_layer_fused(
 }
 
 /// Encode base layer as full-color image for full-page mode (JP2 by default, JPEG in compat mode)
-async fn encode_base_layer_for_jpeg_mode(
+pub(crate) async fn encode_base_layer_for_jpeg_mode(
     image: Arc<RgbImage>,
     config: &PipelineConfig,
     page_index: usize,
@@ -2008,6 +2191,18 @@ pub async fn create_and_run_pdf_source_pipeline(
     _progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
     info_log!("[PDF-Parallel] Starting parallel PDF pipeline");
+
+    if config.enable_reflow() {
+        return crate::pipeline::reflow_pipeline::run_raster_reflow_pipeline(
+            source,
+            config,
+            output_path,
+            page_range,
+            progress_tracker,
+            shutdown_rx,
+        )
+        .await;
+    }
 
     // Reset standard dimensions at the start of each new document
     crate::pipeline::reset_standard_dimensions();

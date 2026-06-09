@@ -295,7 +295,7 @@ pub fn resize_bytes(
 
             #[cfg(feature = "debug-logging")]
             {
-                if count == 1 {
+                if _count == 1 {
                     println!(
                         "WGPU resize #1: {}x{} -> {}x{} ({} channels) - Hardware acceleration active!",
                         src_width,

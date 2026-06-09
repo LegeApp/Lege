@@ -3,6 +3,10 @@
 
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::{ImageProcessingType, OutputFormat, ProcessingOptions};
@@ -276,10 +280,7 @@ pub async fn start_async_processing(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No output path specified"))?;
 
-    let (events_tx, events_rx) = flume::unbounded::<WorkerProgressUpdate>();
-
     let mut tracker_infos = Vec::new();
-    let mut worker_handles = Vec::new();
     let mut next_task_id: u64 = 0;
 
     for document in queue.iter() {
@@ -288,38 +289,86 @@ pub async fn start_async_processing(
 
         let input_path = document.file_path.clone();
         let output_file_path = generate_output_filename(&input_path, output_path, options);
+        tracker_infos.push(TrackerInfo {
+            id: task_id,
+            input_path,
+            output_path: output_file_path,
+        });
+    }
 
-        match spawn_lege_worker(
-            task_id,
-            input_path.clone(),
-            output_file_path.clone(),
-            options,
-            events_tx.clone(),
-            None,
-        ) {
-            Ok(handle) => {
-                tracker_infos.push(TrackerInfo {
-                    id: task_id,
-                    input_path,
-                    output_path: output_file_path,
-                });
-                worker_handles.push(handle);
+    let (events_tx, events_rx) = flume::unbounded::<WorkerProgressUpdate>();
+    let active_pids = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let scheduler_active_pids = active_pids.clone();
+    let scheduler_cancelled = cancelled.clone();
+    let scheduler_options = options.clone();
+    let scheduler_tracker_infos = tracker_infos.clone();
+
+    std::thread::spawn(move || {
+        for info in scheduler_tracker_infos {
+            if scheduler_cancelled.load(Ordering::SeqCst) {
+                break;
             }
-            Err(e) => {
-                eprintln!(
-                    "Failed to spawn worker for {}: {}",
-                    document.file_path.display(),
-                    e
+
+            let (worker_events_tx, worker_events_rx) = flume::unbounded::<WorkerProgressUpdate>();
+
+            let handle = match spawn_lege_worker(
+                info.id,
+                info.input_path.clone(),
+                info.output_path.clone(),
+                &scheduler_options,
+                worker_events_tx,
+                None,
+            ) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    let error = format!(
+                        "Failed to spawn worker for {}: {}",
+                        info.input_path.display(),
+                        e
+                    );
+                    eprintln!("{error}");
+                    let _ = events_tx.send(WorkerProgressUpdate::Error {
+                        task_id: info.id,
+                        error,
+                        metrics: None,
+                    });
+                    continue;
+                }
+            };
+
+            if let Ok(mut pids) = scheduler_active_pids.lock() {
+                pids.clear();
+                pids.push(handle.pid);
+            }
+
+            while let Ok(update) = worker_events_rx.recv() {
+                let terminal = matches!(
+                    update,
+                    WorkerProgressUpdate::Completed { .. } | WorkerProgressUpdate::Error { .. }
                 );
-                // Synthesise an error event so the GUI removes the item.
+                let _ = events_tx.send(update);
+                if terminal {
+                    break;
+                }
+            }
+
+            if let Ok(mut pids) = scheduler_active_pids.lock() {
+                pids.retain(|pid| *pid != handle.pid);
+            }
+
+            if scheduler_cancelled.load(Ordering::SeqCst) {
                 let _ = events_tx.send(WorkerProgressUpdate::Error {
-                    task_id,
-                    error: e.to_string(),
+                    task_id: info.id,
+                    error: "Processing cancelled".to_string(),
                     metrics: None,
                 });
+                break;
             }
         }
-    }
+    });
+
+    let worker_handles = vec![WorkerHandle::supervisor(active_pids, cancelled)];
 
     Ok((tracker_infos, worker_handles, events_rx))
 }

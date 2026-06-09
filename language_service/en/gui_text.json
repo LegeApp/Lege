@@ -55,7 +55,8 @@
       "threshold_value": "Fixed threshold value (0-255) applied after linearization.",
       "margin_centering": "Centers content area within page dimensions",
       "margin_crop_resize": "Crops margins to content bounds and resizes to specified dimensions",
-      "deskew_documents": "Corrects rotation and skew from page by page"
+      "deskew_documents": "Corrects rotation and skew from page by page",
+      "output_format": "PDF or DjVu"
     },
     "status": {
       "ready": "Ready",

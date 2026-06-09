@@ -113,6 +113,12 @@ pub async fn run_cli_three_line(
                         last_rendered = *pass1_rendered;
                         last_encoded = *pass2_processed;
                     }
+                    crate::progress::ProcessingStatus::ReflowProgress { current, .. } => {
+                        if *current % 10 == 0 || *current > last_encoded {
+                            is_significant = true;
+                        }
+                        last_encoded = *current;
+                    }
                     // Always show these status types
                     crate::progress::ProcessingStatus::Initializing
                     | crate::progress::ProcessingStatus::AssemblingOutput
@@ -157,6 +163,9 @@ pub async fn run_cli_three_line(
                             ("\x1b[2;34m", "\x1b[96m")
                         }
                         crate::progress::ProcessingStatus::MarginProgress { .. } => {
+                            ("\x1b[2;34m", "\x1b[96m")
+                        }
+                        crate::progress::ProcessingStatus::ReflowProgress { .. } => {
                             ("\x1b[2;34m", "\x1b[96m")
                         }
                         crate::progress::ProcessingStatus::PdfAppend { .. }

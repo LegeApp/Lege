@@ -73,7 +73,7 @@ impl CompiledGraph {
 
     pub(crate) async fn build(graph: &PreparedGraph) -> Result<Self> {
         let t0 = std::time::Instant::now();
-        let ctx = GpuContext::new().await?;
+        let ctx = GpuContext::shared().await?;
         #[cfg(feature = "debug-logging")]
         eprintln!(
             "  compiled.build: gpu_init={:.0}ms",
@@ -84,7 +84,7 @@ impl CompiledGraph {
 
     pub(crate) async fn build_layout(graph: &PreparedGraph) -> Result<Self> {
         let t0 = std::time::Instant::now();
-        let ctx = GpuContext::new().await?;
+        let ctx = GpuContext::shared().await?;
         if ctx.is_cpu_adapter {
             bail!("{}", Self::LAYOUT_SOFTWARE_ADAPTER_ERROR);
         }

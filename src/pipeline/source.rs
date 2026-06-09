@@ -192,6 +192,7 @@ pub async fn source_stage(
         total_pages,
         source.source_concurrency()
     );
+    let deskew_active = deskew_engine.is_some();
 
     let mut in_flight = FuturesUnordered::new();
     let mut next_page = page_range.start;
@@ -276,11 +277,7 @@ pub async fn source_stage(
         }
 
         let rendered_val = render_count.fetch_add(1, Ordering::Relaxed) + 1;
-        let deskewed_val = if config.enable_deskew() {
-            rendered_val
-        } else {
-            0
-        };
+        let deskewed_val = if deskew_active { rendered_val } else { 0 };
         if layout_enabled {
             let detected_val = detect_count.load(Ordering::Relaxed);
             let encoded_val = encode_count.load(Ordering::Relaxed);
