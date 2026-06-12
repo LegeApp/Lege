@@ -3,7 +3,6 @@
 //! This pipeline handles DJVU document creation with full support for:
 //! - Layout detection and region-based processing
 //! - Margin processing (standardize/center and crop modes)
-//! - Deskewing (rotation and unwarp)
 //! - OCR with region-based and tiling modes
 //! - All binarization options (heavy sauvola, fixed threshold, etc.)
 //! - Page ranges
@@ -20,7 +19,6 @@ use crate::pipeline::page_analysis::{
     BLANK_PAGE_FALLBACK_THRESHOLD, is_visually_blank_page, maybe_apply_yolo_full_page_detection,
     should_force_blank_page_threshold,
 };
-use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
 use crate::progress::ProgressTracker;
@@ -179,7 +177,9 @@ pub async fn create_and_run_djvu_source_pipeline(
         if config.enable_layout_detection() {
             match crate::pipeline::inference::InferenceHandle::new(&config) {
                 Ok(handle) => Some(Arc::new(handle)),
-                Err(e) if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) => {
+                Err(e)
+                    if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) =>
+                {
                     let msg = format!(
                         "No usable hardware GPU found — wgpu fell back to a CPU/software adapter. \
                          Layout detection has been disabled for this run. \
@@ -228,7 +228,6 @@ pub async fn create_and_run_djvu_source_pipeline(
     // encode_region_image/encode_page_data, which the DjVu path never calls — its heavy
     // IW44/JB2 encode runs inside the in_flight-bounded encode stage (capped at
     // djvu_encode_workers), so the semaphore would be redundant.
-    let deskew_engine = prepare_shared_deskew_engine(&config)?;
     #[cfg(feature = "debug-logging")]
     info_log!(
         "[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, page_workers={}, process_workers={}, djvu_encode_workers={}",
@@ -266,7 +265,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         tokio::spawn(source_stage(
             source,
             config,
-            deskew_engine,
             page_start..page_end,
             render_tx,
             rc,
@@ -308,7 +306,7 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 if layout_enabled {
                                     let rendered_val = rc.load(Ordering::Relaxed);
                                     let encoded_val = ec.load(Ordering::Relaxed);
-                                    tracker.publish_layout_progress(rendered_val, detected_val, encoded_val, 0, total_pages);
+                                    tracker.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
                                 }
                                 infer_tx.send(data).await.map_err(|e| anyhow!("Infer send failed: {}", e))?;
                             }
@@ -377,9 +375,9 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 if layout_enabled {
                                     let rendered_val = rc.load(Ordering::Relaxed);
                                     let detected_val = dc.load(Ordering::Relaxed);
-                                    tracker.publish_layout_progress(rendered_val, detected_val, encoded_val, 0, total_pages);
+                                    tracker.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
                                 } else {
-                                    tracker.publish_no_layout_progress(encoded_val, 0, total_pages);
+                                    tracker.publish_no_layout_progress(encoded_val, total_pages);
                                 }
                                 external_cb(encoded_val, total_pages);
                                 binarize_tx.send(processed_data).await.map_err(|e| anyhow!("Binarize send failed: {}", e))?;

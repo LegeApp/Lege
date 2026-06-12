@@ -31,7 +31,7 @@
       "target_height": "Zielauflösung:",
       "margin_centering": "Inhalt auf Standardseite zentrieren",
       "margin_crop_resize": "Auf Inhalt zuschneiden und skalieren",
-      "deskew_documents": "Entzerren"
+      "reflow": "Reflow"
     },
     "tooltips": {
       "add_file_or_folder": "Akzeptiert PDF-Dateien, Bildordner oder ZIP-Dateien mit Bildern.",
@@ -55,7 +55,7 @@
       "threshold_value": "Fester Schwellenwert (0-255), der nach der Linearisierung angewendet wird.",
       "margin_centering": "Zentriert den Inhaltsbereich innerhalb der Seitenmaße.",
       "margin_crop_resize": "Schneidet Ränder auf Inhaltsgrenzen zu und skaliert auf die angegebenen Maße.",
-      "deskew_documents": "Korrigiert Drehung und Schräglage Seite für Seite.",
+      "reflow": "Setzt den Text in einem sauberen einspaltigen Layout für das Zielgerät neu, wobei Wörter und Zeilen der Originalseiten neu umbrochen werden.",
       "output_format": "PDF oder DjVu"
     },
     "status": {
@@ -119,7 +119,6 @@
       "processing_log_title": "Verarbeitungsprotokoll",
       "debug_log_title": "Debug-Protokoll",
       "email": "E-Mail",
-      "copy_email": "E-Mail kopieren",
       "docs_not_found": "Dokumentation nicht gefunden. Stelle sicher, dass docs/ neben der Lege-Anwendung liegt.",
       "documentation": "Dokumentation",
       "licenses": "Lizenzen",
@@ -134,7 +133,6 @@
       "infer": "Erkennen",
       "encode": "Kodieren",
       "margin": "Ränder",
-      "deskew": "Entzerren",
       "eta": "Restzeit {}",
       "scanning": "wird geprüft...",
       "reduced": "Reduziert um {}% ({} -> {})",

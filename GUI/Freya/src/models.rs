@@ -89,7 +89,7 @@ pub struct ProcessingOptions {
     pub center_margins: bool,
     pub crop_margins: bool,
     pub crop_footnotes: bool,
-    pub deskew_documents: bool,
+    pub reflow: bool,
 
     pub use_heavy_binarization: bool,
     pub k_factor: f32,
@@ -108,6 +108,7 @@ impl ProcessingOptions {
             target_height: Some(1200),
             layout_analysis: true,
             k_factor: 0.2,
+            threshold_value: 180,
             ..Default::default()
         }
     }

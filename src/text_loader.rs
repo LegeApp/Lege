@@ -65,7 +65,6 @@ pub struct MainCliText {
     pub selected_options_ocr_mode: String,
     pub selected_options_no_cover_page: String,
     pub selected_options_invert_input: String,
-    pub selected_options_deskew_enabled: String,
     pub selected_options_margin_processing: String,
     pub selected_options_force_crop: String,
     pub selected_options_max_retries: String,
@@ -80,7 +79,6 @@ pub struct MainCliText {
     pub target_device_invalid_spec_error: String,
     pub image_folder_mode_title: String,
     pub image_folder_mode_input: String,
-    pub image_folder_mode_deskew: String,
     pub image_folder_mode_description: String,
     pub pdf_to_png_mode_title: String,
     pub pdf_to_png_mode_input: String,
@@ -101,6 +99,8 @@ pub struct MainCliText {
     pub progress_complete: String,
     pub progress_error: String,
     pub history_log_warning: String,
+    pub pause_on_exit_success: String,
+    pub pause_on_exit_failure: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -356,7 +356,6 @@ fn default_cli_text() -> CliText {
             selected_options_ocr_mode: missing.clone(),
             selected_options_no_cover_page: missing.clone(),
             selected_options_invert_input: missing.clone(),
-            selected_options_deskew_enabled: missing.clone(),
             selected_options_margin_processing: missing.clone(),
             selected_options_force_crop: missing.clone(),
             selected_options_max_retries: missing.clone(),
@@ -371,7 +370,6 @@ fn default_cli_text() -> CliText {
             target_device_invalid_spec_error: missing.clone(),
             image_folder_mode_title: missing.clone(),
             image_folder_mode_input: missing.clone(),
-            image_folder_mode_deskew: missing.clone(),
             image_folder_mode_description: missing.clone(),
             pdf_to_png_mode_title: missing.clone(),
             pdf_to_png_mode_input: missing.clone(),
@@ -392,6 +390,10 @@ fn default_cli_text() -> CliText {
             progress_complete: missing.clone(),
             progress_error: missing.clone(),
             history_log_warning: missing.clone(),
+            pause_on_exit_success: "Processing complete. Press Enter to close this window..."
+                .to_string(),
+            pause_on_exit_failure: "Processing failed. Press Enter to close this window..."
+                .to_string(),
         },
         interactive: InteractiveText {
             step1_title: missing.clone(),

@@ -10,7 +10,6 @@
 // detection behaves differently in reflow mode.
 
 use crate::pipeline::config::PipelineConfig;
-use crate::pipeline::deskew_graph::prepare_shared_deskew_engine;
 use crate::pipeline::helper_functions::{
     await_stage_or_cancel, init_encode_semaphore, spawn_pdf_writer_actor,
 };
@@ -214,7 +213,6 @@ async fn render_detect_and_reflow(
     }
 
     let inference_handle = crate::pipeline::inference::InferenceHandle::new(config)?;
-    let deskew_engine = prepare_shared_deskew_engine(config)?;
 
     let document_pages = source.page_count();
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
@@ -246,27 +244,10 @@ async fn render_detect_and_reflow(
         }
 
         let crate::pipeline::source::SourcePage {
-            mut image,
+            image,
             original_width_pts,
             original_height_pts,
         } = source.load_page(page_index).await?;
-
-        if let Some(engine) = &deskew_engine {
-            let engine = Arc::clone(engine);
-            let original = image.clone();
-            image = match tokio::task::spawn_blocking(move || engine.process_image(&original)).await
-            {
-                Ok(Ok(corrected)) => corrected,
-                Ok(Err(e)) => {
-                    warn_log!("[Reflow] Page {}: deskew failed: {}", page_index, e);
-                    image
-                }
-                Err(e) => {
-                    warn_log!("[Reflow] Page {}: deskew task failed: {}", page_index, e);
-                    image
-                }
-            };
-        }
 
         crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
         let render_dpi = (image.width() as f32 / original_width_pts.max(1.0)) * 72.0;
@@ -405,9 +386,14 @@ pub(crate) async fn run_raster_reflow_pipeline(
     let runtime_limits = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(runtime_limits.page_workers);
 
-    let (source_pages, reflow_cfg, doc) =
-        render_detect_and_reflow(&source, &config, &page_range, progress_tracker, &mut shutdown_rx)
-            .await?;
+    let (source_pages, reflow_cfg, doc) = render_detect_and_reflow(
+        &source,
+        &config,
+        &page_range,
+        progress_tracker,
+        &mut shutdown_rx,
+    )
+    .await?;
 
     let total_out_pages = doc.pages.len();
     progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, 0, total_out_pages);
@@ -490,7 +476,8 @@ pub(crate) async fn run_raster_reflow_pipeline(
     // Reflow re-paginates, so we build source-page → first-output-page mapping from SourceMap.
     if let Some(renderer) = source.pdf_renderer() {
         let source_map = &doc.source_map;
-        let mut src_to_out: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut src_to_out: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
         for placement in &source_map.placements {
             src_to_out
                 .entry(placement.src.page_index)
@@ -531,9 +518,14 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
 
     let runtime_limits = PipelineRuntimeLimits::djvu_from_config(&config);
 
-    let (source_pages, reflow_cfg, doc) =
-        render_detect_and_reflow(&source, &config, &page_range, progress_tracker, &mut shutdown_rx)
-            .await?;
+    let (source_pages, reflow_cfg, doc) = render_detect_and_reflow(
+        &source,
+        &config,
+        &page_range,
+        progress_tracker,
+        &mut shutdown_rx,
+    )
+    .await?;
 
     let total_out_pages = doc.pages.len();
     progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, 0, total_out_pages);
@@ -564,7 +556,8 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         }
 
         let canvas = compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg);
-        let binarized = crate::pipeline::djvu_pipeline::binarize_djvu_image(&canvas, &config, false);
+        let binarized =
+            crate::pipeline::djvu_pipeline::binarize_djvu_image(&canvas, &config, false);
 
         // Map figure placements to image-category detections so the DJVU
         // orchestrator routes them to the IW44 color background layer.
@@ -573,8 +566,8 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
             .iter()
             .filter(|item| matches!(item.kind, crate::reflow::PlacedKind::Figure))
             .map(|item| crate::engine::Detection {
-                class_id: 3,
-                class_name: Some("figure".to_string()),
+                class_id: crate::types::class_id_for("figure").unwrap_or(3),
+                class_name: Some(crate::types::class_name_for(3).to_string()),
                 confidence: 1.0,
                 bbox: [
                     item.out_rect.x as f32,

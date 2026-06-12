@@ -781,11 +781,10 @@ fn calculate_robust_baseline_bounds(candidates: &[PageMarginData]) -> ContentBou
 
 /// Detects footnotes across all pages in the document
 fn detect_footnotes_in_document(all_page_data: &[PageMarginInput]) -> bool {
-    const FOOTNOTE_CLASS_ID: i32 = 12; // Based on engine.rs footnote detection
-
+    let classifier = &crate::types::LABEL_CLASSIFIER;
     for page in all_page_data {
         for detection in &page.detections {
-            if detection.class_id == FOOTNOTE_CLASS_ID {
+            if classifier.is_footnote_label(detection) {
                 return true; // Found at least one footnote
             }
         }
@@ -1152,4 +1151,69 @@ fn standardize_and_center_page(
     image::imageops::overlay(&mut new_image, &resized, target_x, target_y);
 
     Ok(new_image)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detection(class_name: &str, bbox: [f32; 4]) -> Detection {
+        let class_id = crate::types::class_id_for(class_name).unwrap();
+        Detection {
+            class_id,
+            class_name: Some(class_name.to_string()),
+            confidence: 0.9,
+            bbox,
+            category: crate::types::category_for_class(class_id),
+            context: None,
+        }
+    }
+
+    #[test]
+    fn table_footnote_switches_crop_to_center_when_not_forced() {
+        let pages = vec![PageMarginInput {
+            page_index: 0,
+            page_width: 1000,
+            page_height: 1400,
+            detections: vec![detection("table_footnote", [100.0, 1200.0, 900.0, 1300.0])],
+            pixel_bounds: None,
+        }];
+
+        let analysis = analyze_document_margins(
+            &pages,
+            &crate::pipeline::config::PipelineConfig::default(),
+            MarginSettings::CropAndResize,
+            false,
+        );
+
+        assert_eq!(
+            analysis.effective_margin_setting,
+            MarginSettings::StandardizeAndCenter
+        );
+        assert!(analysis.setting_override_reason.is_some());
+    }
+
+    #[test]
+    fn table_footnote_keeps_crop_when_forced() {
+        let pages = vec![PageMarginInput {
+            page_index: 0,
+            page_width: 1000,
+            page_height: 1400,
+            detections: vec![detection("table_footnote", [100.0, 1200.0, 900.0, 1300.0])],
+            pixel_bounds: None,
+        }];
+
+        let analysis = analyze_document_margins(
+            &pages,
+            &crate::pipeline::config::PipelineConfig::default(),
+            MarginSettings::CropAndResize,
+            true,
+        );
+
+        assert_eq!(
+            analysis.effective_margin_setting,
+            MarginSettings::CropAndResize
+        );
+        assert!(analysis.setting_override_reason.is_none());
+    }
 }
