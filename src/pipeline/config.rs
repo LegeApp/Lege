@@ -289,11 +289,6 @@ pub struct PipelineConfig {
     pub(crate) max_inference_batch_size: Option<usize>,
     pub(crate) margin_settings: crate::margin::MarginSettings,
     pub(crate) crop_footnotes: bool,
-    // Deskew settings
-    pub(crate) enable_deskew: bool,
-    pub(crate) deskew_rotation_model: Option<PathBuf>,
-    pub(crate) deskew_unwarp_model: Option<PathBuf>,
-    pub(crate) deskew_config: crate::deskew::DeskewConfig,
     // Rendering and inference sizes
     pub(crate) high_res_render_height: u32,
     pub(crate) inference_size: u32,
@@ -359,10 +354,6 @@ impl PipelineConfig {
             max_inference_batch_size: Some(16), // Dynamic batching: greedy up to 16 images
             margin_settings: crate::margin::MarginSettings::None,
             crop_footnotes: false,
-            enable_deskew: false,
-            deskew_rotation_model: None,
-            deskew_unwarp_model: None,
-            deskew_config: crate::deskew::DeskewConfig::default(),
             high_res_render_height: 1200,
             inference_size: 1024,
             keep_original_images: true,
@@ -447,22 +438,6 @@ impl PipelineConfig {
 
         if !self.model_path.is_empty() && !std::path::Path::new(&self.model_path).exists() {
             return Err(anyhow!("Model file not found: {}", self.model_path));
-        }
-
-        if self.enable_deskew {
-            if let Some(path) = &self.deskew_rotation_model {
-                if !path.exists() {
-                    return Err(anyhow!(
-                        "Deskew rotation model not found: {}",
-                        path.display()
-                    ));
-                }
-            }
-            if let Some(path) = &self.deskew_unwarp_model {
-                if !path.exists() {
-                    return Err(anyhow!("Deskew unwarp model not found: {}", path.display()));
-                }
-            }
         }
 
         Ok(())
@@ -592,18 +567,6 @@ impl PipelineConfig {
     }
     pub fn crop_footnotes(&self) -> bool {
         self.crop_footnotes
-    }
-    pub fn enable_deskew(&self) -> bool {
-        self.enable_deskew
-    }
-    pub fn deskew_rotation_model(&self) -> Option<&PathBuf> {
-        self.deskew_rotation_model.as_ref()
-    }
-    pub fn deskew_unwarp_model(&self) -> Option<&PathBuf> {
-        self.deskew_unwarp_model.as_ref()
-    }
-    pub fn deskew_config(&self) -> &crate::deskew::DeskewConfig {
-        &self.deskew_config
     }
     pub fn high_res_render_height(&self) -> u32 {
         self.high_res_render_height
@@ -818,21 +781,6 @@ impl PipelineConfig {
     pub fn set_invert_input(&mut self, invert: bool) {
         self.invert_input = invert;
     }
-    pub fn set_enable_deskew(&mut self, enable: bool) {
-        self.enable_deskew = enable;
-        if enable {
-            self.deskew_config = crate::deskew::DeskewConfig::full_correction();
-        } else {
-            self.deskew_config = crate::deskew::DeskewConfig::default();
-        }
-    }
-    pub fn set_deskew_model_paths(&mut self, rotation: Option<PathBuf>, unwarp: Option<PathBuf>) {
-        self.deskew_rotation_model = rotation;
-        self.deskew_unwarp_model = unwarp;
-    }
-    pub fn set_deskew_config(&mut self, config: crate::deskew::DeskewConfig) {
-        self.deskew_config = config;
-    }
     pub fn set_jbig2_mode(&mut self, mode: Jbig2Mode) {
         self.jbig2_mode = mode;
     }
@@ -1001,33 +949,4 @@ pub fn ensure_pdfium_available() -> Result<()> {
         "Missing Pdfium library ({}). Place it next to the Lege executable or set PDFIUM_PATH to its full path before starting.",
         library_name.to_string_lossy()
     ))
-}
-
-pub fn locate_deskew_model_path(
-    hint: Option<&PathBuf>,
-    fallback_filename: &str,
-) -> Option<PathBuf> {
-    if let Some(path) = hint {
-        if path.exists() {
-            return Some(path.clone());
-        }
-    }
-
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(parent) = exe_path.parent() {
-            let candidate = parent.join(fallback_filename);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join(fallback_filename);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    runtime_asset_path_if_exists(fallback_filename)
 }

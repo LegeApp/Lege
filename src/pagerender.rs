@@ -308,6 +308,20 @@ pub static PDFIUM: Lazy<Pdfium> =
 /// Pdfium is not thread-safe for ANY concurrent operations, even on different documents
 static PDFIUM_GLOBAL_LOCK: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
 
+/// Count pages in a PDF from raw bytes using pdfium.
+///
+/// Robust to PDFs that `lopdf` cannot parse (e.g. Internet Archive scans with
+/// nonstandard trailers), so this is the page-count path used by `--probe-json`.
+/// Requires the pdfium library to be available (see `ensure_pdfium_available`).
+pub fn count_pdf_pages_from_bytes(pdf_bytes: &[u8]) -> Result<u16> {
+    let _guard = PDFIUM_GLOBAL_LOCK
+        .lock()
+        .map_err(|e| anyhow!("Failed to acquire Pdfium lock: {}", e))?;
+
+    let document = PDFIUM.load_pdf_from_byte_slice(pdf_bytes, None)?;
+    Ok(document.pages().len())
+}
+
 fn bind_pdfium_from_runtime_dirs() -> Result<Box<dyn PdfiumLibraryBindings>, anyhow::Error> {
     // Only look in the runtime directory
     let lib_name = Pdfium::pdfium_platform_library_name();
@@ -353,12 +367,7 @@ impl PdfiumRenderer {
 
     /// Internal method to get page count with proper locking
     fn get_page_count_internal(pdf_bytes: &[u8]) -> Result<u16> {
-        let _guard = PDFIUM_GLOBAL_LOCK
-            .lock()
-            .map_err(|e| anyhow!("Failed to acquire Pdfium lock: {}", e))?;
-
-        let document = PDFIUM.load_pdf_from_byte_slice(pdf_bytes, None)?;
-        Ok(document.pages().len())
+        count_pdf_pages_from_bytes(pdf_bytes)
     }
 
     /// Extract the bookmark tree from this PDF. Returns an empty vec if there are no bookmarks.
@@ -742,7 +751,10 @@ pub struct OwnedBookmarkNode {
 
 /// Recursively walk pdfium bookmark tree starting from `node`.
 /// `depth` guards against cycles or pathologically deep trees.
-fn walk_bookmark<'a>(node: pdfium_render::prelude::PdfBookmark<'a>, depth: u32) -> OwnedBookmarkNode {
+fn walk_bookmark<'a>(
+    node: pdfium_render::prelude::PdfBookmark<'a>,
+    depth: u32,
+) -> OwnedBookmarkNode {
     let title = node.title().unwrap_or_default();
 
     let source_page = {

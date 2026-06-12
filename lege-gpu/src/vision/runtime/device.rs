@@ -54,14 +54,12 @@ impl GpuContext {
                     })?;
                 vec![matched]
             } else {
-                let sort_key = |a: &crate::vision::wgpu::Adapter| {
-                    match a.get_info().device_type {
-                        crate::vision::wgpu::DeviceType::DiscreteGpu   => 0u8,
-                        crate::vision::wgpu::DeviceType::IntegratedGpu => 1,
-                        crate::vision::wgpu::DeviceType::Other         => 2,
-                        crate::vision::wgpu::DeviceType::VirtualGpu    => 3,
-                        crate::vision::wgpu::DeviceType::Cpu           => 4,
-                    }
+                let sort_key = |a: &crate::vision::wgpu::Adapter| match a.get_info().device_type {
+                    crate::vision::wgpu::DeviceType::DiscreteGpu => 0u8,
+                    crate::vision::wgpu::DeviceType::IntegratedGpu => 1,
+                    crate::vision::wgpu::DeviceType::Other => 2,
+                    crate::vision::wgpu::DeviceType::VirtualGpu => 3,
+                    crate::vision::wgpu::DeviceType::Cpu => 4,
                 };
                 match instance
                     .request_adapter(&crate::vision::wgpu::RequestAdapterOptions {
@@ -110,7 +108,8 @@ impl GpuContext {
 
         for adapter in candidates {
             let info = adapter.get_info();
-            let adapter_desc = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            let adapter_desc =
+                format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
             let is_cpu = info.device_type == crate::vision::wgpu::DeviceType::Cpu;
 
             if is_cpu && require_real_gpu {

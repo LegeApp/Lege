@@ -17,15 +17,18 @@ pub enum BlockKind {
 impl BlockKind {
     pub fn from_class_name(name: &str) -> Self {
         match name {
-            "doc_title" => BlockKind::Title,
+            "title" | "doc_title" => BlockKind::Title,
             "paragraph_title" => BlockKind::SectionHeading,
-            "text" | "content" | "abstract" | "reference" | "aside_text" => BlockKind::Paragraph,
-            "footnote" => BlockKind::Footnote,
+            "plain_text" | "text" | "content" | "abstract" | "reference" | "aside_text" => {
+                BlockKind::Paragraph
+            }
+            "table_footnote" | "footnote" => BlockKind::Footnote,
             "header" => BlockKind::Header,
             "footer" => BlockKind::Footer,
-            "figure_title" | "chart_title" | "table_title" => BlockKind::Caption,
+            "figure_caption" | "table_caption" | "formula_caption" | "figure_title"
+            | "chart_title" | "table_title" => BlockKind::Caption,
             "table" => BlockKind::Table,
-            "formula" | "formula_number" | "algorithm" => BlockKind::Formula,
+            "isolate_formula" | "formula" | "formula_number" | "algorithm" => BlockKind::Formula,
             other => BlockKind::Other(other.to_string()),
         }
     }
@@ -176,12 +179,19 @@ mod tests {
 
     #[test]
     fn from_class_name_maps_headings() {
-        assert_eq!(BlockKind::from_class_name("doc_title"), BlockKind::Title);
+        assert_eq!(BlockKind::from_class_name("title"), BlockKind::Title);
         assert_eq!(
             BlockKind::from_class_name("paragraph_title"),
             BlockKind::SectionHeading
         );
-        assert_eq!(BlockKind::from_class_name("text"), BlockKind::Paragraph);
+        assert_eq!(
+            BlockKind::from_class_name("plain_text"),
+            BlockKind::Paragraph
+        );
+        assert_eq!(
+            BlockKind::from_class_name("table_footnote"),
+            BlockKind::Footnote
+        );
     }
 }
 
