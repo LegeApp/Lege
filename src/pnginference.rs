@@ -5,7 +5,6 @@ use crate::{
     pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig},
     pipeline::helper_functions::init_encode_semaphore,
     pipeline::runtime_limits::{AdaptiveConcurrency, PipelineRuntimeLimits},
-    prepare_shared_deskew_engine,
     progress::{ProgressMode, ProgressTracker},
 };
 use anyhow::{Context, Result, anyhow};
@@ -20,15 +19,9 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp", "jp2",
 ];
 
-pub fn run_png_mode(
-    folder: PathBuf,
-    output: Option<PathBuf>,
-    _config: AppConfig,
-    enable_deskew: bool,
-) -> Result<()> {
+pub fn run_png_mode(folder: PathBuf, output: Option<PathBuf>, _config: AppConfig) -> Result<()> {
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(true);
-    pipeline_config.set_enable_deskew(enable_deskew);
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
 
     run_png_mode_with_config(folder, output, pipeline_config, None)
@@ -58,15 +51,10 @@ pub fn run_png_mode_with_config(
     std::fs::create_dir_all(parent)?;
 
     info_println!(
-        "Image Folder Mode\n  Input: {}\n  Output: {}\n  Layout: {}\n  Deskew: {}",
+        "Image Folder Mode\n  Input: {}\n  Output: {}\n  Layout: {}",
         folder.display(),
         output_path.display(),
         if pipeline_config.enable_layout_detection() {
-            "ENABLED"
-        } else {
-            "disabled"
-        },
-        if pipeline_config.enable_deskew() {
             "ENABLED"
         } else {
             "disabled"
@@ -99,14 +87,11 @@ pub fn run_png_mode_with_config(
             ProgressMode::NoLayout
         });
         tracker.set_output_is_djvu(pipeline_config.text_format() == "djvu");
-        tracker.set_feature_flags(
-            pipeline_config.enable_layout_detection(),
-            pipeline_config.enable_deskew(),
-        );
+        tracker.set_feature_flags(pipeline_config.enable_layout_detection());
         if pipeline_config.enable_layout_detection() {
-            tracker.publish_layout_progress(0, 0, 0, 0, total_pages);
+            tracker.publish_layout_progress(0, 0, 0, total_pages);
         } else {
-            tracker.publish_no_layout_progress(0, 0, total_pages);
+            tracker.publish_no_layout_progress(0, total_pages);
         }
     }
 
@@ -220,7 +205,6 @@ pub async fn run_pdf_layout_crop_debug(
     crop_kind: DebugCropKind,
     page_range: Option<String>,
     _config: AppConfig,
-    enable_deskew: bool,
     save_format: Option<&str>,
     png_quantize: bool,
     png_colors: u16,
@@ -237,10 +221,9 @@ pub async fn run_pdf_layout_crop_debug(
     std::fs::create_dir_all(&output_dir)?;
 
     info_println!(
-        "PDF Layout Crop Debug\n  Input: {}\n  Output: {}\n  Deskew: {}\n  Mode: {}",
+        "PDF Layout Crop Debug\n  Input: {}\n  Output: {}\n  Mode: {}",
         pdf_path.display(),
         output_dir.display(),
-        if enable_deskew { "ENABLED" } else { "disabled" },
         match crop_kind {
             DebugCropKind::Text => "text",
             DebugCropKind::Image => "image",
@@ -258,10 +241,8 @@ pub async fn run_pdf_layout_crop_debug(
 
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(true);
-    pipeline_config.set_enable_deskew(enable_deskew);
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
 
-    let deskew_engine = prepare_shared_deskew_engine(&pipeline_config)?;
     let mut engine = YoloEngine::new(
         pipeline_config.model_path(),
         YoloConfig::new(
@@ -330,18 +311,7 @@ pub async fn run_pdf_layout_crop_debug(
             .await?;
         let img_buf = RgbImage::from_raw(rgb.width, rgb.height, rgb.data)
             .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_num))?;
-        let mut img: RgbImage = img_buf;
-
-        if let Some(engine_dk) = deskew_engine.as_ref() {
-            match engine_dk.process_image(&img) {
-                Ok(corrected) => {
-                    img = corrected;
-                }
-                Err(err) => {
-                    error_println!("Deskew failed for page {}: {}", page_num, err);
-                }
-            }
-        }
+        let img: RgbImage = img_buf;
 
         let detections = engine.detect_single_async(&img).await?;
         let filtered: Vec<Detection> = match crop_kind {
@@ -402,7 +372,6 @@ pub fn run_pdf_to_images_mode(
     output_dir: Option<PathBuf>,
     _config: AppConfig,
     enable_layout_detection: bool,
-    enable_deskew: bool,
     image_only: bool,
     png_quantize: bool,
     png_colors: u16,
@@ -419,15 +388,14 @@ pub fn run_pdf_to_images_mode(
     std::fs::create_dir_all(&output_dir)?;
 
     info_println!(
-        "PDF to Images Mode\n  Input: {}\n  Output: {}\n  Layout: {}\n  Deskew: {}",
+        "PDF to Images Mode\n  Input: {}\n  Output: {}\n  Layout: {}",
         pdf_path.display(),
         output_dir.display(),
         if enable_layout_detection {
             "ENABLED (PNG)"
         } else {
             "DISABLED (PBM)"
-        },
-        if enable_deskew { "ENABLED" } else { "disabled" }
+        }
     );
 
     // Read PDF and initialize renderer
@@ -493,10 +461,8 @@ pub fn run_pdf_to_images_mode(
     // Setup pipeline config
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(enable_layout_detection);
-    pipeline_config.set_enable_deskew(enable_deskew);
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
 
-    let deskew_engine = prepare_shared_deskew_engine(&pipeline_config)?;
     let target_height = pipeline_config.high_res_render_height();
 
     for page_num in pages_to_render.iter() {
@@ -506,19 +472,7 @@ pub fn run_pdf_to_images_mode(
         let rgb = renderer.render_page_rgb_sync((*page_num - 1) as u32, target_height, None)?;
         let img_buf = RgbImage::from_raw(rgb.width, rgb.height, rgb.data)
             .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_num))?;
-        let mut img: RgbImage = img_buf;
-
-        // Apply deskew if enabled
-        if let Some(engine_dk) = deskew_engine.as_ref() {
-            match engine_dk.process_image(&img) {
-                Ok(corrected) => {
-                    img = corrected;
-                }
-                Err(err) => {
-                    error_println!("Deskew failed for page {}: {}", page_num, err);
-                }
-            }
-        }
+        let img: RgbImage = img_buf;
 
         // Determine output format based on layout detection and image_only flag
         if enable_layout_detection {
@@ -622,7 +576,6 @@ pub fn run_images_to_images_mode(
     output_dir: Option<PathBuf>,
     _config: AppConfig,
     enable_layout_detection: bool,
-    enable_deskew: bool,
     image_only: bool,
     png_quantize: bool,
     png_colors: u16,
@@ -638,15 +591,14 @@ pub fn run_images_to_images_mode(
     std::fs::create_dir_all(&output_dir)?;
 
     info_println!(
-        "Images to Images Mode\n  Input: {}\n  Output: {}\n  Layout: {}\n  Deskew: {}",
+        "Images to Images Mode\n  Input: {}\n  Output: {}\n  Layout: {}",
         input_folder.display(),
         output_dir.display(),
         if enable_layout_detection {
             "ENABLED (PNG)"
         } else {
             "DISABLED (PBM)"
-        },
-        if enable_deskew { "ENABLED" } else { "disabled" }
+        }
     );
 
     let image_files = collect_supported_images(&input_folder)?;
@@ -661,10 +613,7 @@ pub fn run_images_to_images_mode(
 
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(enable_layout_detection);
-    pipeline_config.set_enable_deskew(enable_deskew);
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
-
-    let deskew_engine = prepare_shared_deskew_engine(&pipeline_config)?;
 
     for (idx, image_path) in image_files.iter().enumerate() {
         println!(
@@ -678,7 +627,6 @@ pub fn run_images_to_images_mode(
             image_path,
             &output_dir,
             &pipeline_config,
-            deskew_engine.clone(),
             image_only,
             png_quantize,
             png_colors,
@@ -701,7 +649,6 @@ fn process_single_image_to_image(
     image_path: &Path,
     output_dir: &Path,
     pipeline_config: &PipelineConfig,
-    deskew_engine: Option<std::sync::Arc<crate::deskew::DeskewEngine>>,
     image_only: bool,
     png_quantize: bool,
     png_colors: u16,
@@ -709,23 +656,7 @@ fn process_single_image_to_image(
     let dynamic = image::open(image_path)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
-    let mut rgb_image: RgbImage = dynamic.to_rgb8();
-
-    // Apply deskew if enabled
-    if let Some(engine) = deskew_engine.as_ref() {
-        match engine.process_image(&rgb_image) {
-            Ok(corrected) => {
-                rgb_image = corrected;
-            }
-            Err(err) => {
-                error_println!(
-                    "Deskew failed for {} (continuing without correction): {}",
-                    image_path.display(),
-                    err
-                );
-            }
-        }
-    }
+    let rgb_image: RgbImage = dynamic.to_rgb8();
 
     let file_stem = image_path.file_stem().unwrap_or_default().to_string_lossy();
 

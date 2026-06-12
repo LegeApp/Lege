@@ -16,7 +16,6 @@ pub(crate) mod runtime;
 mod api;
 
 pub use api::{
-    DeskewConfig, DocumentDeskewer, LayoutConfig, LayoutDetection, LayoutDetector,
-    RotationClassifier, RotationConfig, RotationPrediction, SauvolaConfig, SauvolaCpuProcessor,
+    LayoutConfig, LayoutDetection, LayoutDetector, SauvolaConfig, SauvolaCpuProcessor,
     SauvolaProcessor, is_layout_gpu_device_error, is_layout_software_adapter_error,
 };

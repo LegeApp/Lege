@@ -159,8 +159,8 @@ impl DjvuOrchestrator {
             // In no-binarization mode: treat the entire page as one IW44 image, no text layer
             image_regions.push(ImageRegion {
                 bbox: [0.0, 0.0, width as f32, height as f32],
-                class_id: 1,
-                class_name: "page".to_string(),
+                class_id: crate::types::class_id_for("figure").unwrap_or(3),
+                class_name: "figure".to_string(),
                 confidence: 1.0,
             });
             dbglog!("[djvu-native] NO-BINARIZATION mode - full page as single IW44");

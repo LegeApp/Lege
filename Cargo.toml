@@ -3,7 +3,7 @@ build = "build.rs"
 name = "lege"
 version = "1.4.52"
 edition = "2024"
-description = "Fully automatic PDF processor especially for E-Ink ebook readers"
+description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
 homepage = "https://www.legeapp.com"
 repository = "https://github.com/LegeApp/Lege/"
@@ -264,7 +264,7 @@ strip = false
 maintainer = "Lege Apps <read@legeapp.com>"
 copyright = "2025, Lege Apps"
 extended-description = """\
-The only app that helps you prepare a scanned book PDF for pleasant reading on E-ink readers. Automatic selective text binarization and optimal per-page re-encoding. """
+Lege helps you prepare a scanned book PDF for pleasant reading on E-ink readers. Automatic selective text binarization and optimal per-page re-encoding. """
 depends = "tesseract-ocr"
 section = "graphics"
 priority = "optional"
@@ -279,8 +279,6 @@ assets = [
     ["/home/dk/Desktop/lege-run/installer/linux64/libpdfium.so", "usr/lib/lege/", "644"],
     # ONNX models
     ["/home/dk/Desktop/lege-run/installer/linux64/yolo-layout.onnx", "usr/share/lege/models/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/paddle-rotate.onnx", "usr/share/lege/models/", "644"],
-    ["/home/dk/Desktop/lege-run/installer/linux64/paddle-deskew.onnx", "usr/share/lege/models/", "644"],
     ["/home/dk/Desktop/lege-run/installer/linux64/sauvola.onnx", "usr/share/lege/models/", "644"],
     # Tesseract data
     ["/home/dk/Desktop/lege-run/installer/linux64/eng.traineddata", "usr/share/lege/tessdata/", "644"],

@@ -145,10 +145,10 @@ impl YoloEngine {
             })
             .map(|d| Detection {
                 class_id: d.class_id,
-                class_name: Some(yolo_class_name(d.class_id).to_string()),
+                class_name: Some(crate::types::class_name_for(d.class_id).to_string()),
                 confidence: d.confidence,
                 bbox: normalize_bbox(d.bbox, original_width, original_height),
-                category: yolo_class_to_category(d.class_id),
+                category: crate::types::category_for_class(d.class_id),
                 context: Some(DetectionContext {
                     original_width: original_width as f32,
                     original_height: original_height as f32,
@@ -177,7 +177,7 @@ impl YoloEngine {
         .into_iter()
         .map(|d| Detection {
             class_id: d.class_id,
-            category: yolo_class_to_category(d.class_id),
+            category: crate::types::category_for_class(d.class_id),
             class_name: d.class_name,
             confidence: d.confidence,
             bbox: d.bbox,
@@ -198,39 +198,6 @@ fn normalize_bbox(mut bbox: [f32; 4], width: u32, height: u32) -> [f32; 4] {
         bbox[0].max(bbox[2]),
         bbox[1].max(bbox[3]),
     ]
-}
-
-fn yolo_class_to_category(class_id: i32) -> crate::types::ContentCategory {
-    use crate::types::ContentCategory;
-    match class_id {
-        0 => ContentCategory::Text,
-        1 => ContentCategory::Text,
-        2 => ContentCategory::Abandon,
-        3 => ContentCategory::Image,
-        4 => ContentCategory::Text,
-        5 => ContentCategory::Table,
-        6 => ContentCategory::Text,
-        7 => ContentCategory::Text,
-        8 => ContentCategory::Text,
-        9 => ContentCategory::Text,
-        _ => ContentCategory::Text,
-    }
-}
-
-fn yolo_class_name(class_id: i32) -> &'static str {
-    match class_id {
-        0 => "title",
-        1 => "plain_text",
-        2 => "abandon",
-        3 => "figure",
-        4 => "figure_caption",
-        5 => "table",
-        6 => "table_caption",
-        7 => "table_footnote",
-        8 => "isolate_formula",
-        9 => "formula_caption",
-        _ => "unknown",
-    }
 }
 
 pub fn detect_layout_yolo_batch(

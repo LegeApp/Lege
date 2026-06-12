@@ -140,6 +140,78 @@ fn fast_exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
+/// Number of processes attached to the current Windows console, or `None` if it
+/// could not be determined.
+#[cfg(windows)]
+fn windows_console_process_count() -> Option<u32> {
+    use windows::Win32::System::Console::GetConsoleProcessList;
+
+    let mut processes = [0u32; 16];
+    let count = unsafe { GetConsoleProcessList(&mut processes) };
+
+    if count == 0 { None } else { Some(count) }
+}
+
+/// Decide whether to pause for a keypress before exiting, so a console window
+/// opened by double-clicking a shortcut doesn't vanish before the user can read
+/// the result. Never pauses for machine-readable modes or when explicitly
+/// disabled via `LEGE_NO_PAUSE`.
+fn should_pause_before_exit(gui_worker: bool, probe_json: bool, pause_on_exit: bool) -> bool {
+    if gui_worker || probe_json {
+        return false;
+    }
+
+    if std::env::var_os("LEGE_NO_PAUSE").is_some() {
+        return false;
+    }
+
+    if pause_on_exit {
+        return true;
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+
+    #[cfg(windows)]
+    {
+        if !std::io::stdout().is_terminal() {
+            return false;
+        }
+
+        // If Lege is the only process attached to this console, Windows created
+        // a temporary console for it (e.g. a double-clicked shortcut) and will
+        // destroy it the instant we exit.
+        windows_console_process_count()
+            .map(|count| count <= 1)
+            .unwrap_or(false)
+    }
+}
+
+/// Pause for Enter before exiting if `should_pause_before_exit` says to.
+fn pause_before_exit_if_needed(
+    exit_code: i32,
+    gui_worker: bool,
+    probe_json: bool,
+    pause_on_exit: bool,
+) {
+    if !should_pause_before_exit(gui_worker, probe_json, pause_on_exit) {
+        return;
+    }
+
+    eprintln!();
+    if exit_code == 0 {
+        eprintln!("{}", CLI_TEXT.main.pause_on_exit_success);
+    } else {
+        eprintln!("{}", CLI_TEXT.main.pause_on_exit_failure);
+    }
+    let _ = std::io::stderr().flush();
+
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+}
+
 /// --probe-json: print machine-readable metadata about a file then exit.
 /// stdout is exclusively JSON; errors go to stderr.
 fn probe_json(path: PathBuf) -> Result<()> {
@@ -160,9 +232,14 @@ fn probe_json(path: PathBuf) -> Result<()> {
 
     match ext.as_str() {
         "pdf" => {
-            let doc = lopdf::Document::load(&path)
+            // Use pdfium, not lopdf: lopdf rejects PDFs with nonstandard trailers
+            // (e.g. Internet Archive scans), which would force the GUI page-range
+            // size estimate to fall back to the full-document size.
+            lege::pipeline::config::ensure_pdfium_available()?;
+            let bytes = std::fs::read(&path)
                 .map_err(|e| anyhow!("Cannot open PDF '{}': {}", path.display(), e))?;
-            let pages = doc.get_pages().len();
+            let pages = lege::pagerender::count_pdf_pages_from_bytes(&bytes)
+                .map_err(|e| anyhow!("Cannot read PDF '{}': {}", path.display(), e))?;
             println!("{}", serde_json::json!({"kind": "pdf", "pages": pages}));
         }
         "zip" => {
@@ -323,7 +400,6 @@ struct CliOptions {
     invert: bool,                  // --invert
     jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
     halftone: bool, // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
-    deskew: bool,   // --deskew
     reflow: bool,   // --reflow (raster reflow; requires layout detection)
     jpeg_compat: bool, // --jpeg-compat
     center_margins: bool, // --center-margins
@@ -353,6 +429,9 @@ struct CliOptions {
     gui_worker: bool, // --gui-worker
     /// Probe a file and print machine-readable metadata as JSON then exit.
     probe_json: bool, // --probe-json
+    /// Pause for a keypress before exiting, so double-clicked shortcuts don't
+    /// instantly close the console window.
+    pause_on_exit: bool, // --pause-on-exit
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -672,10 +751,6 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.reflow = true;
                 i += 1;
             }
-            "--deskew" => {
-                opts.deskew = true;
-                i += 1;
-            }
             "--jpeg-compat" => {
                 opts.jpeg_compat = true;
                 i += 1;
@@ -714,6 +789,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--probe-json" => {
                 opts.probe_json = true;
+                i += 1;
+            }
+            "--pause-on-exit" => {
+                opts.pause_on_exit = true;
                 i += 1;
             }
 
@@ -924,7 +1003,7 @@ fn run_main() -> Result<()> {
         if cli_opts.language.is_some() {
             bail!("--language requires a direct CLI input file");
         }
-        handle_cli_mode(AppConfig::default())?;
+        handle_cli_mode(AppConfig::default(), cli_opts.pause_on_exit)?;
         return Ok(());
     }
 
@@ -984,7 +1063,7 @@ fn run_main() -> Result<()> {
         );
     }
 
-    // PNG-folder inference: lege <folder> --png-folder [--deskew]
+    // PNG-folder inference: lege <folder> --png-folder
     if cli_opts.png_folder {
         let folder_arg = args
             .get(1)
@@ -999,7 +1078,7 @@ fn run_main() -> Result<()> {
         return run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, None);
     }
 
-    // Crop-areas debug: lege <file.pdf> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg] [--deskew]
+    // Crop-areas debug: lege <file.pdf> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg]
     if let Some(ref crop_mode) = cli_opts.crop_areas {
         let pdf_arg = args
             .get(1)
@@ -1031,15 +1110,14 @@ fn run_main() -> Result<()> {
                 crop_kind,
                 page_range,
                 AppConfig::default(),
-                cli_opts.deskew,
                 cli_opts.debug_format.as_deref(),
                 cli_opts.png_quantize,
                 cli_opts.png_colors,
             ));
     }
 
-    // PDF-to-Images: lege <file.pdf> [page-range] --pdf-to-images [--deskew] [--no-layout]
-    // Or: lege --pdf-to-images <file.pdf> [page-range] [--deskew] [--no-layout]
+    // PDF-to-Images: lege <file.pdf> [page-range] --pdf-to-images [--no-layout]
+    // Or: lege --pdf-to-images <file.pdf> [page-range] [--no-layout]
     if cli_opts.pdf_to_images {
         // Find PDF path - could be args[1] or args[2] depending on order
         let pdf_arg = if args.len() > 1
@@ -1085,14 +1163,13 @@ fn run_main() -> Result<()> {
             cli_opts.output_dir,
             AppConfig::default(),
             !cli_opts.no_layout,
-            cli_opts.deskew,
             cli_opts.image_only,
             cli_opts.png_quantize,
             cli_opts.png_colors,
         );
     }
 
-    // Images-to-Images: lege <folder> --images-to-images [--deskew] [--no-layout]
+    // Images-to-Images: lege <folder> --images-to-images [--no-layout]
     if cli_opts.images_to_images {
         let folder_arg = args
             .get(1)
@@ -1103,7 +1180,6 @@ fn run_main() -> Result<()> {
             cli_opts.output_dir,
             AppConfig::default(),
             !cli_opts.no_layout,
-            cli_opts.deskew,
             cli_opts.image_only,
             cli_opts.png_quantize,
             cli_opts.png_colors,
@@ -1545,9 +1621,6 @@ fn handle_simple_processing(
         });
         pipeline_config.set_jbig2_mode(selected_mode);
     }
-    if cli_opts.deskew {
-        pipeline_config.set_enable_deskew(true);
-    }
     if cli_opts.reflow {
         if !pipeline_config.enable_layout_detection() {
             bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
@@ -1742,18 +1815,21 @@ fn handle_simple_processing(
 
     cleanup_cli_resources();
     drop(zip_tempdirs);
-    if overall_ok {
-        fast_exit(0);
-    } else {
-        fast_exit(1);
-    }
+    let exit_code = if overall_ok { 0 } else { 1 };
+    pause_before_exit_if_needed(
+        exit_code,
+        gui_worker,
+        cli_opts.probe_json,
+        cli_opts.pause_on_exit,
+    );
+    fast_exit(exit_code);
 }
 
 fn print_env_variables_help() {
     println!("{}", CLI_TEXT.main.env_variables_help_block);
 }
 
-fn handle_cli_mode(config: AppConfig) -> Result<()> {
+fn handle_cli_mode(config: AppConfig, pause_on_exit: bool) -> Result<()> {
     match run_cli()? {
         Some((file_path, pipeline_config)) => {
             let output_dir = determine_output_directory(
@@ -1772,9 +1848,13 @@ fn handle_cli_mode(config: AppConfig) -> Result<()> {
 
             cleanup_cli_resources();
             match result {
-                Ok(()) => fast_exit(0),
+                Ok(()) => {
+                    pause_before_exit_if_needed(0, false, false, pause_on_exit);
+                    fast_exit(0);
+                }
                 Err(error) => {
                     error_println!("Processing failed: {:#}", error);
+                    pause_before_exit_if_needed(1, false, false, pause_on_exit);
                     fast_exit(1);
                 }
             }
@@ -1807,14 +1887,9 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
 
     // Check for special modes
     if input.contains("--png-folder") {
-        let enable_deskew = input.contains("--deskew");
-        let folder_path_str = input
-            .replace("--png-folder", "")
-            .replace("--deskew", "")
-            .trim()
-            .to_string();
+        let folder_path_str = input.replace("--png-folder", "").trim().to_string();
         let folder_path = parse_quoted_path(&folder_path_str);
-        return handle_png_folder(PathBuf::from(folder_path), enable_deskew);
+        return handle_png_folder(PathBuf::from(folder_path));
     }
 
     if input.contains("--pdf-to-png") {
@@ -1908,7 +1983,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         center_margins,
         crop_margins,
         force_crop,
-        deskew_enabled,
         high_quality_output,
         interactive_halftone,
         djvu_quality,
@@ -1972,7 +2046,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                 center_margins,
                 crop_margins,
                 force_crop,
-                deskew_enabled,
                 high_quality_output,
                 interactive_halftone,
                 djvu_quality,
@@ -1994,7 +2067,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
                     center_margins,
                     crop_margins,
                     force_crop,
-                    deskew_enabled,
                     high_quality_output,
                     interactive_halftone,
                     djvu_quality,
@@ -2165,7 +2237,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     }
     config.set_no_cover_page(no_cover_page);
     config.set_invert_input(invert_input);
-    config.set_enable_deskew(deskew_enabled);
     config.set_jbig2_mode(jbig2_mode);
     config.set_keep_original_images(original_image);
 
@@ -2303,13 +2374,6 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         CLI_TEXT.main.selected_options_invert_input,
         cli_reset(),
         config.invert_input()
-    );
-    println!(
-        "{}{}:{} {}",
-        cli_color(COLORS.info),
-        CLI_TEXT.main.selected_options_deskew_enabled,
-        cli_reset(),
-        config.enable_deskew()
     );
     println!(
         "{}{}:{} {:?}",
@@ -2535,7 +2599,6 @@ fn parse_format_selection_with_options(
     bool,
     bool,
     bool,
-    bool,
     bool,       // halftone (--halftone, JBIG2 halftone segments)
     Option<u8>, // djvu_quality (None for non-DjVu formats, Some for DjVu)
     bool,       // enable_reflow (raster reflow; requires layout detection)
@@ -2558,7 +2621,6 @@ fn parse_format_selection_with_options(
             false, // center_margins
             false, // crop_margins
             false, // force_crop
-            false, // deskew_enabled
             false, // high_quality_output
             false, // halftone
             None,  // djvu_quality (not DjVu)
@@ -2655,7 +2717,6 @@ fn parse_format_selection_with_options(
         no_cover_page,
         no_binarization,
         invert_input,
-        deskew_enabled,
         center_margins,
         crop_margins,
         force_crop,
@@ -2710,7 +2771,6 @@ fn parse_format_selection_with_options(
         center_margins,
         crop_margins,
         force_crop,
-        deskew_enabled,
         has_high_flag,
         has_halftone_flag,
         djvu_quality,
@@ -2760,7 +2820,6 @@ fn parse_options(
     bool,
     bool,
     bool,
-    bool,
 )> {
     let options: Vec<&str> = input.split_whitespace().collect();
 
@@ -2792,7 +2851,6 @@ fn parse_options(
     let no_cover_page = options.contains(&"d");
     let no_binarization = options.contains(&"i"); // 'i' for image-only (no binarization)
     let invert_input = options.contains(&"g");
-    let deskew_enabled = options.contains(&"h");
     let center_margins = options.contains(&"m");
     let crop_margins = options.contains(&"w");
     let force_crop = options.contains(&"f");
@@ -2809,7 +2867,6 @@ fn parse_options(
         no_cover_page,
         no_binarization,
         invert_input,
-        deskew_enabled,
         center_margins,
         crop_margins,
         force_crop,
@@ -3208,10 +3265,7 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
     }
 }
 
-fn handle_png_folder(
-    folder_path: PathBuf,
-    enable_deskew: bool,
-) -> Result<Option<(PathBuf, PipelineConfig)>> {
+fn handle_png_folder(folder_path: PathBuf) -> Result<Option<(PathBuf, PipelineConfig)>> {
     if !folder_path.exists() {
         return Err(anyhow!(
             "Image folder does not exist: {}",
@@ -3233,13 +3287,10 @@ fn handle_png_folder(
             folder_path.display()
         )
     );
-    if enable_deskew {
-        println!("{}", CLI_TEXT.main.image_folder_mode_deskew);
-    }
     println!("{}", CLI_TEXT.main.image_folder_mode_description);
 
     // Call the image processing function from the library
-    run_png_mode(folder_path, None, AppConfig::default(), enable_deskew)?;
+    run_png_mode(folder_path, None, AppConfig::default())?;
 
     // Return None to indicate image mode was handled
     Ok(None)
@@ -3305,11 +3356,11 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
 }
 
 fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
-    // Parse input: "file.pdf [page_range] --pdf-to-images [--deskew] [--no-layout]"
+    // Parse input: "file.pdf [page_range] --pdf-to-images [--no-layout]"
     let parts: Vec<&str> = input.split("--pdf-to-images").collect();
     if parts.len() != 2 {
         return Err(anyhow!(
-            "Invalid PDF-to-Images format. Use: file.pdf [page_range] --pdf-to-images [--deskew] [--no-layout]"
+            "Invalid PDF-to-Images format. Use: file.pdf [page_range] --pdf-to-images [--no-layout]"
         ));
     }
 
@@ -3317,7 +3368,6 @@ fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>
     let options_str = parts[1].trim();
 
     // Parse options
-    let enable_deskew = options_str.contains("--deskew");
     let enable_layout = !options_str.contains("--no-layout");
 
     // Parse file path and page range
@@ -3339,10 +3389,6 @@ fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>
             "DISABLED (PBM output)"
         }
     );
-    println!(
-        "Deskew: {}",
-        if enable_deskew { "ENABLED" } else { "disabled" }
-    );
     if let Some(ref range) = page_range {
         println!("Page range: {}", range);
     } else {
@@ -3356,7 +3402,6 @@ fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>
         None, // Use default output directory
         AppConfig::default(),
         enable_layout,
-        enable_deskew,
         false, // image_only - default to false in interactive mode
         false,
         256,
@@ -3367,11 +3412,11 @@ fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>
 }
 
 fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
-    // Parse input: "folder --images-to-images [--deskew] [--no-layout]"
+    // Parse input: "folder --images-to-images [--no-layout]"
     let parts: Vec<&str> = input.split("--images-to-images").collect();
     if parts.len() != 2 {
         return Err(anyhow!(
-            "Invalid Images-to-Images format. Use: folder --images-to-images [--deskew] [--no-layout]"
+            "Invalid Images-to-Images format. Use: folder --images-to-images [--no-layout]"
         ));
     }
 
@@ -3379,7 +3424,6 @@ fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfi
     let options_str = parts[1].trim();
 
     // Parse options
-    let enable_deskew = options_str.contains("--deskew");
     let enable_layout = !options_str.contains("--no-layout");
 
     let folder_path = parse_quoted_path(folder_str);
@@ -3408,10 +3452,6 @@ fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfi
             "DISABLED (PBM output)"
         }
     );
-    println!(
-        "Deskew: {}",
-        if enable_deskew { "ENABLED" } else { "disabled" }
-    );
 
     // Call the Images-to-Images processing function
     run_images_to_images_mode(
@@ -3419,7 +3459,6 @@ fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfi
         None, // Use default output directory
         AppConfig::default(),
         enable_layout,
-        enable_deskew,
         false, // image_only - default to false in interactive mode
         false,
         256,
@@ -3807,9 +3846,6 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
         });
         pipeline_config.set_jbig2_mode(selected_mode);
     }
-    if cli_opts.deskew {
-        pipeline_config.set_enable_deskew(true);
-    }
     if cli_opts.reflow {
         if !pipeline_config.enable_layout_detection() {
             bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
@@ -3877,7 +3913,6 @@ struct CliStageSnapshot {
     rendered: u32,
     detected: u32,
     encoded: u32,
-    deskewed: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -3973,9 +4008,9 @@ fn emit_cli_stage_progress(
             rendered.max(metrics.encoded).min(total)
         }
         lege::progress::ProgressMode::Reflow => metrics.encoded.min(total),
+        lege::progress::ProgressMode::Epub => metrics.encoded.min(total),
         lege::progress::ProgressMode::Unknown => metrics.encoded.min(total),
     });
-    let deskewed = metrics.deskewed.min(rendered.max(encoded));
     let mut events: Vec<CliStageEvent<'static>> = Vec::new();
 
     let mut push_stage_events = |start: u32,
@@ -3992,7 +4027,7 @@ fn emit_cli_stage_progress(
                     stage_label,
                     stage_color,
                     verb,
-                    include_percentage: stage_label == "Encode",
+                    include_percentage: matches!(stage_label, "Encode" | "OCR"),
                 });
             }
         }
@@ -4039,20 +4074,37 @@ fn emit_cli_stage_progress(
             );
             snapshot.encoded = encoded;
         }
+        lege::progress::ProgressMode::Epub => {
+            push_stage_events(
+                snapshot.rendered,
+                rendered,
+                0,
+                "Render",
+                cli_color(COLORS.render),
+                "Page rendered",
+            );
+            push_stage_events(
+                snapshot.detected,
+                detected,
+                1,
+                "Layout",
+                cli_color(COLORS.detect),
+                "Page analyzed",
+            );
+            push_stage_events(
+                snapshot.encoded,
+                encoded,
+                2,
+                "OCR",
+                cli_color(COLORS.ocr),
+                "Page OCR'd",
+            );
+            snapshot.rendered = rendered;
+            snapshot.detected = detected;
+            snapshot.encoded = encoded;
+        }
         lege::progress::ProgressMode::Reflow => {}
         lege::progress::ProgressMode::Unknown => {}
-    }
-
-    if metrics.enable_deskew {
-        push_stage_events(
-            snapshot.deskewed,
-            deskewed,
-            3,
-            "Deskew",
-            cli_color(COLORS.page_start),
-            "Page deskewed",
-        );
-        snapshot.deskewed = deskewed;
     }
 
     events.sort_by_key(|event| (event.current, event.stage_order));
@@ -4106,6 +4158,7 @@ fn process_single_file(
                     lege::progress::ProcessingStatus::LayoutProgress { .. }
                         | lege::progress::ProcessingStatus::NoLayoutProgress { .. }
                         | lege::progress::ProcessingStatus::MarginProgress { .. }
+                        | lege::progress::ProcessingStatus::EpubProgress { .. }
                         | lege::progress::ProcessingStatus::PdfAppend { .. }
                         | lege::progress::ProcessingStatus::PdfAppendMargin { .. }
                 ) {

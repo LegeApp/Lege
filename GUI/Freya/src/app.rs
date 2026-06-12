@@ -1347,16 +1347,16 @@ fn PagesDeviceCard(
                                     .child(tooltip_wrap_at(
                                         state,
                                         TooltipArea::PagesDeviceCard,
-                                        GUI_TEXT.interactive.tooltips.deskew_documents.clone(),
+                                        GUI_TEXT.interactive.tooltips.reflow.clone(),
                                         AttachedPosition::Left,
                                         bool_tile(
-                                            GUI_TEXT.interactive.labels.deskew_documents.clone(),
-                                            options.deskew_documents,
+                                            GUI_TEXT.interactive.labels.reflow.clone(),
+                                            options.reflow,
                                             {
                                                 let mut state = state;
                                                 move |_| {
-                                                    state.write().options.deskew_documents =
-                                                        !state.read().options.deskew_documents
+                                                    state.write().options.reflow =
+                                                        !state.read().options.reflow
                                                 }
                                             },
                                         ),
@@ -1597,6 +1597,14 @@ fn progress_single_bar(
         | crate::worker_process::WorkerProgressMode::Reflow
         | crate::worker_process::WorkerProgressMode::Unknown => {
             metrics.rendered.max(metrics.encoded)
+        }
+        crate::worker_process::WorkerProgressMode::Epub => {
+            return Some(progress_stage_card(
+                "Progress".to_string(),
+                metrics.rendered + metrics.detected + metrics.encoded,
+                metrics.pages_total.saturating_mul(3),
+                color,
+            ));
         }
     };
     Some(progress_stage_card(
@@ -2107,32 +2115,12 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             ),
                     )
                     .child(
-                        rect()
-                            .direction(Direction::Horizontal)
-                            .spacing(8.)
-                            .cross_align(Alignment::Center)
-                            .child(
-                                label()
-                                    .text(format!(
-                                        "{}: {}",
-                                        GUI_TEXT.interactive.popups.email,
-                                        EMAIL
-                                    ))
-                                    .font_size(13.)
-                                    .color(TEXT),
-                            )
-                            .child(
-                                Button::new()
-                                    .on_press(move |_| {
-                                        let _ = Clipboard::set(EMAIL.to_string());
-                                    })
-                                    .child(
-                                        label()
-                                            .text(GUI_TEXT.interactive.popups.copy_email.clone())
-                                            .font_size(12.)
-                                            .color(TEXT),
-                                    ),
-                            ),
+                        SelectableText::new(format!(
+                            "{}: {}",
+                            GUI_TEXT.interactive.popups.email, EMAIL
+                        ))
+                        .font_size(13.)
+                        .color(TEXT),
                     ),
             ),
         )
@@ -2503,6 +2491,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     WorkerProcessingStatus::NoLayoutProgress { .. }
                                     | WorkerProcessingStatus::LayoutProgress { .. }
                                     | WorkerProcessingStatus::MarginProgress { .. }
+                                    | WorkerProcessingStatus::EpubProgress { .. }
                                     | WorkerProcessingStatus::ReflowProgress { .. } => {
                                         let (l1, l2, l3) = status.to_gui_display_lines();
                                         state.write().set_status_lines(l1, l2, l3);

@@ -250,16 +250,16 @@ mod tests {
     fn hints_take_priority_and_sort_reading_order() {
         let detections = vec![
             Detection {
-                class_id: 2,
-                class_name: Some("text".into()),
+                class_id: crate::types::class_id_for("plain_text").unwrap(),
+                class_name: Some("plain_text".into()),
                 confidence: 0.9,
                 bbox: [10.0, 60.0, 90.0, 95.0], // lower-left
                 category: ContentCategory::Text,
                 context: None,
             },
             Detection {
-                class_id: 2,
-                class_name: Some("text".into()),
+                class_id: crate::types::class_id_for("plain_text").unwrap(),
+                class_name: Some("plain_text".into()),
                 confidence: 0.9,
                 bbox: [10.0, 10.0, 90.0, 40.0], // upper-left
                 category: ContentCategory::Text,
