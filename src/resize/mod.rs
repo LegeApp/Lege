@@ -98,7 +98,6 @@ impl std::fmt::Display for ResizeError {
 }
 impl std::error::Error for ResizeError {}
 
-
 fn resize_alg_from_method(method: ResizeMethod) -> ResizeAlg {
     match method {
         ResizeMethod::Nearest => ResizeAlg::Nearest,

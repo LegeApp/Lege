@@ -68,7 +68,7 @@ pub struct GuiLabelsText {
     pub target_height: String,
     pub margin_centering: String,
     pub margin_crop_resize: String,
-    pub deskew_documents: String,
+    pub reflow: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,7 +107,7 @@ pub struct GuiTooltipsText {
     pub threshold_value: String,
     pub margin_centering: String,
     pub margin_crop_resize: String,
-    pub deskew_documents: String,
+    pub reflow: String,
     pub output_format: String,
 }
 
@@ -159,7 +159,6 @@ pub struct GuiPopupsText {
     pub processing_log_title: String,
     pub debug_log_title: String,
     pub email: String,
-    pub copy_email: String,
     pub docs_not_found: String,
     pub documentation: String,
     pub licenses: String,
@@ -176,7 +175,6 @@ pub struct GuiProgressText {
     pub infer: String,
     pub encode: String,
     pub margin: String,
-    pub deskew: String,
     pub eta: String,
     pub scanning: String,
     pub reduced: String,

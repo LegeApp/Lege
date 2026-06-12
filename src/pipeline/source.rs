@@ -156,28 +156,10 @@ impl PageSource for ImageFolderPageSource {
     }
 }
 
-enum DeskewAttempt {
-    Corrected(RgbImage),
-    Failed(anyhow::Error, RgbImage),
-    Panicked(RgbImage),
-}
-
-fn deskew_preserving_original(
-    original: RgbImage,
-    deskew: impl FnOnce(&RgbImage) -> Result<RgbImage>,
-) -> DeskewAttempt {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deskew(&original))) {
-        Ok(Ok(corrected)) => DeskewAttempt::Corrected(corrected),
-        Ok(Err(error)) => DeskewAttempt::Failed(error, original),
-        Err(_) => DeskewAttempt::Panicked(original),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn source_stage(
     source: Arc<dyn PageSource>,
     config: Arc<PipelineConfig>,
-    deskew_engine: Option<Arc<crate::deskew::DeskewEngine>>,
     page_range: std::ops::Range<usize>,
     tx: mpsc::Sender<RenderedPageData>,
     render_count: Arc<AtomicUsize>,
@@ -192,7 +174,6 @@ pub async fn source_stage(
         total_pages,
         source.source_concurrency()
     );
-    let deskew_active = deskew_engine.is_some();
 
     let mut in_flight = FuturesUnordered::new();
     let mut next_page = page_range.start;
@@ -203,7 +184,6 @@ pub async fn source_stage(
         while next_page < page_end && in_flight.len() < concurrency {
             let source = source.clone();
             let config = config.clone();
-            let deskew_engine = deskew_engine.clone();
             let page_index = next_page;
             next_page += 1;
 
@@ -220,29 +200,10 @@ pub async fn source_stage(
                     e
                 })?;
                 let SourcePage {
-                    mut image,
+                    image,
                     original_width_pts,
                     original_height_pts,
                 } = source_page;
-
-                if let Some(engine) = deskew_engine {
-                    match tokio::task::spawn_blocking(move || {
-                        deskew_preserving_original(image, |original| engine.process_image(original))
-                    })
-                    .await
-                    .map_err(|e| anyhow!("Page {}: deskew task failed: {}", page_index, e))?
-                    {
-                        DeskewAttempt::Corrected(corrected) => image = corrected,
-                        DeskewAttempt::Failed(_error, original) => {
-                            crate::warn_log!("Page {}: deskew failed: {}", page_index, _error);
-                            image = original;
-                        }
-                        DeskewAttempt::Panicked(original) => {
-                            crate::warn_log!("Page {}: deskew task panicked", page_index);
-                            image = original;
-                        }
-                    }
-                }
 
                 crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
 
@@ -277,19 +238,12 @@ pub async fn source_stage(
         }
 
         let rendered_val = render_count.fetch_add(1, Ordering::Relaxed) + 1;
-        let deskewed_val = if deskew_active { rendered_val } else { 0 };
         if layout_enabled {
             let detected_val = detect_count.load(Ordering::Relaxed);
             let encoded_val = encode_count.load(Ordering::Relaxed);
-            progress.publish_layout_progress(
-                rendered_val,
-                detected_val,
-                encoded_val,
-                deskewed_val,
-                total_pages,
-            );
+            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
         } else {
-            progress.publish_no_layout_render_progress(rendered_val, deskewed_val, total_pages);
+            progress.publish_no_layout_render_progress(rendered_val, total_pages);
         }
     }
 
@@ -553,42 +507,4 @@ fn longest_consecutive_run(sorted: &[(u64, PathBuf)]) -> Vec<PathBuf> {
         .iter()
         .map(|(_, path)| path.clone())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DeskewAttempt, deskew_preserving_original};
-    use anyhow::anyhow;
-    use image::{Rgb, RgbImage};
-
-    fn test_image() -> RgbImage {
-        RgbImage::from_pixel(3, 2, Rgb([17, 34, 51]))
-    }
-
-    fn assert_original(attempt: DeskewAttempt, expected: &RgbImage) {
-        let original = match attempt {
-            DeskewAttempt::Failed(_, original) | DeskewAttempt::Panicked(original) => original,
-            DeskewAttempt::Corrected(_) => panic!("deskew unexpectedly succeeded"),
-        };
-        assert_eq!(&original, expected);
-        assert_eq!(original.dimensions(), (3, 2));
-    }
-
-    #[test]
-    fn deskew_failure_keeps_original_image() {
-        let original = test_image();
-        assert_original(
-            deskew_preserving_original(original.clone(), |_| Err(anyhow!("deskew failed"))),
-            &original,
-        );
-    }
-
-    #[test]
-    fn deskew_panic_keeps_original_image() {
-        let original = test_image();
-        assert_original(
-            deskew_preserving_original(original.clone(), |_| panic!("deskew panicked")),
-            &original,
-        );
-    }
 }

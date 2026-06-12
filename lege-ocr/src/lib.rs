@@ -547,14 +547,31 @@ fn line_union_bbox(lines: &[OcrLineResult]) -> Option<[u32; 4]> {
 fn region_supports_line_segmentation(region: &TextRegion) -> bool {
     !matches!(
         region.class_name.as_deref(),
-        Some("table" | "formula" | "algorithm" | "seal" | "chart" | "formula_number" | "page")
+        Some(
+            "table"
+                | "isolate_formula"
+                | "formula"
+                | "algorithm"
+                | "seal"
+                | "chart"
+                | "formula_number"
+                | "page"
+        )
     )
 }
 
 fn region_supports_line_refinement(region: &TextRegion) -> bool {
     !matches!(
         region.class_name.as_deref(),
-        Some("table" | "formula" | "algorithm" | "seal" | "chart" | "formula_number")
+        Some(
+            "table"
+                | "isolate_formula"
+                | "formula"
+                | "algorithm"
+                | "seal"
+                | "chart"
+                | "formula_number"
+        )
     )
 }
 
@@ -903,7 +920,7 @@ mod tests {
         let region = TextRegion {
             page_index: 0,
             region_id: 0,
-            class_name: Some("text".to_string()),
+            class_name: Some("plain_text".to_string()),
             bbox_highres: [0, 0, 100, 40],
             confidence: 1.0,
         };

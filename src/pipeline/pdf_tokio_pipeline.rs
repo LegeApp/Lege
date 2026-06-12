@@ -18,7 +18,6 @@ use crate::pipeline::policies::{
     LayoutRegions, MarginCorrection, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
     build_inference_image,
 };
-use crate::pipeline::prepare_shared_deskew_engine;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
 use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
 use crate::progress::ProgressTracker;
@@ -99,7 +98,7 @@ pub(crate) async fn inference_stage_parallel(
                         if layout_enabled {
                             let rendered_val = render_count.load(Ordering::Relaxed);
                             let encoded_val = encode_count.load(Ordering::Relaxed);
-                            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, 0, total_pages);
+                            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
                         }
                         if tx.send(data).await.is_err() {
                             info_log!("[PDF-Parallel-Infer] Downstream closed, stopping");
@@ -281,9 +280,9 @@ async fn processing_stage_parallel(
                         if layout_enabled {
                             let rendered_val = render_count.load(Ordering::Relaxed);
                             let detected_val = detect_count.load(Ordering::Relaxed);
-                            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, 0, total_pages);
+                            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
                         } else {
-                            progress.publish_no_layout_progress(encoded_val, 0, total_pages);
+                            progress.publish_no_layout_progress(encoded_val, total_pages);
                         }
                         if tx.send(processed_page).await.is_err() {
                             return Ok(());
@@ -604,7 +603,7 @@ struct NativeTextTransform {
 impl NativeTextTransform {
     fn apply(&self, bbox: [f32; 4], output_width: u32, output_height: u32) -> Option<[f32; 4]> {
         let mut mapped =
-            crate::pipeline::policies::apply_page_adjustments(bbox, None, Some(&self.correction));
+            crate::pipeline::policies::apply_page_adjustments(bbox, Some(&self.correction));
         let max_x = output_width as f32;
         let max_y = output_height as f32;
         mapped[0] = mapped[0].clamp(0.0, max_x);
@@ -2289,9 +2288,6 @@ pub async fn create_and_run_pdf_source_pipeline(
     info_log!("  - Inference concurrency: {}", infer_concurrency);
     info_log!("  - Process concurrency: {}", process_concurrency);
 
-    // Initialize shared resources
-    let deskew_engine = prepare_shared_deskew_engine(&config)?;
-
     // Check for cancellation before starting processing
     if let Ok(signal) = shutdown_rx.try_recv() {
         return Err(anyhow::anyhow!(
@@ -2396,7 +2392,6 @@ pub async fn create_and_run_pdf_source_pipeline(
     let mut render_task = tokio::spawn(source_stage(
         source.clone(),
         config.clone(),
-        deskew_engine,
         page_start..page_end,
         render_tx,
         render_count.clone(),

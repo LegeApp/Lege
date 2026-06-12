@@ -75,8 +75,6 @@ Lege requires several external files to be placed alongside the executables:
 **ONNX Models** (AI inference, loaded at runtime):
 - `yolo-layout.onnx` — Layout detection (Linux production model)
 - `paddle-layout.onnx` — Layout detection (Windows and macOS model)
-- `paddle-rotate.onnx` — Page orientation detection
-- `paddle-deskew.onnx` — Page deskew correction
 - `sauvola.onnx` — Heavy neural binarization model (runs on CPU)
 
 **Platform libraries:**
@@ -92,7 +90,7 @@ Lege requires several external files to be placed alongside the executables:
 - `libpdfium.dylib` — PDF rendering engine
 - Tesseract language data (system installation)
 
-> GPU inference (layout detection, deskew, rotation) runs through the native **WebGPU** backend built into Lege — no external GPU runtime libraries are required on any platform.
+> GPU inference (layout detection and page rotation) runs through the native **WebGPU** backend built into Lege — no external GPU runtime libraries are required on any platform.
 
 ---
 
@@ -136,7 +134,7 @@ Separate pipeline to match DjVu constraints:
 
 ## GPU inference — native wgpu runtime
 
-All AI model inference (layout detection, page rotation, deskew) runs through a **native WebGPU/wgpu compute runtime** compiled into Lege. ONNX models are parsed and lowered to WGSL compute shaders at startup; compiled kernel pipelines are cached per model resolution and reused across pages.
+All AI model inference (layout detection and page rotation) runs through a **native WebGPU/wgpu compute runtime** compiled into Lege. ONNX models are parsed and lowered to WGSL compute shaders at startup; compiled kernel pipelines are cached per model resolution and reused across pages.
 
 - **Windows**: DX12 backend via wgpu
 - **Linux**: Vulkan backend via wgpu

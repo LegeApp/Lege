@@ -1080,7 +1080,10 @@ impl PdfWriterHandle {
         source_to_output: std::collections::HashMap<usize, usize>,
     ) -> Result<(), anyhow::Error> {
         self.sender
-            .send(WriterMessage::SetBookmarks { bookmarks, source_to_output })
+            .send(WriterMessage::SetBookmarks {
+                bookmarks,
+                source_to_output,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
@@ -1184,7 +1187,10 @@ pub fn spawn_pdf_writer_actor(
                         }
                     }
                 }
-                WriterMessage::SetBookmarks { bookmarks, source_to_output } => {
+                WriterMessage::SetBookmarks {
+                    bookmarks,
+                    source_to_output,
+                } => {
                     builder.set_bookmarks(bookmarks);
                     if !source_to_output.is_empty() {
                         builder.set_source_to_output_map(source_to_output);

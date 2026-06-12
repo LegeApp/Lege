@@ -56,7 +56,7 @@ pub struct AdaptiveConcurrency {
     /// wider count helps — bounded by RAM (each in-flight RGB buffer can be
     /// ~50–200 MB for high-res scans).
     pub io_workers: usize,
-    /// Max parallel rayon-heavy stages (deskew + binarize + encode). Each
+    /// Max parallel rayon-heavy stages (binarize + encode). Each
     /// stage is internally parallel via rayon, so running too many at once
     /// oversubscribes the global rayon pool.
     pub cpu_workers: usize,

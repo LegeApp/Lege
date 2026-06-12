@@ -142,7 +142,6 @@ pub struct ProcessingOptions {
     pub center_margins: bool,
     pub crop_margins: bool,
     pub crop_footnotes: bool,
-    pub deskew_documents: bool,
 
     // Binarization options
     pub use_heavy_binarization: bool,
@@ -176,7 +175,6 @@ impl ProcessingOptions {
             center_margins: false,
             crop_margins: false,
             crop_footnotes: false,
-            deskew_documents: false,
             use_heavy_binarization: false,
             k_factor: 0.2,
             use_fixed_threshold: false,
@@ -233,7 +231,6 @@ impl ProcessingOptions {
         );
         options.crop_margins = matches!(config.margin_settings(), MarginSettings::CropAndResize);
         options.crop_footnotes = config.crop_footnotes();
-        options.deskew_documents = config.enable_deskew();
 
         let bin = config.binarization();
         options.use_heavy_binarization = bin.use_heavy_duty;

@@ -232,10 +232,6 @@ pub fn build_inference_image(high_res: &RgbImage, spec: &InferenceResizeSpec) ->
 
 // ── Page-geometry adjustments ────────────────────────────────────────────────
 
-/// Placeholder for future deskew transform.
-#[derive(Debug, Clone, Default)]
-pub struct DeskewTransform {/* rotation matrix, etc. */}
-
 /// Margin correction: offset + scale for mapping original page space
 /// to the margin-corrected page space.
 #[derive(Debug, Clone, Default)]
@@ -257,13 +253,9 @@ impl MarginCorrection {
     }
 }
 
-/// Apply deskew + margin corrections to a page-space bbox.
+/// Apply margin corrections to a page-space bbox.
 #[inline]
-pub fn apply_page_adjustments(
-    b: [f32; 4],
-    _deskew: Option<&DeskewTransform>,
-    margin: Option<&MarginCorrection>,
-) -> [f32; 4] {
+pub fn apply_page_adjustments(b: [f32; 4], margin: Option<&MarginCorrection>) -> [f32; 4] {
     let mut r = b;
     if let Some(m) = margin {
         r[0] = b[0] * m.scale_x + m.offset_x;
@@ -281,11 +273,10 @@ pub fn full_infer_bbox_to_final_page(
     page_w: u32,
     page_h: u32,
     spec: &InferenceResizeSpec,
-    deskew: Option<&DeskewTransform>,
     margin: Option<&MarginCorrection>,
 ) -> [f32; 4] {
     let bb = map_bbox_infer_to_page(b, page_w, page_h, spec);
-    apply_page_adjustments(bb, deskew, margin)
+    apply_page_adjustments(bb, margin)
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -632,14 +623,22 @@ mod tests {
 
     #[test]
     fn test_direct_scale_and_map() {
-        let spec = InferenceResizeSpec::default();
+        let spec = InferenceResizeSpec {
+            target: 640,
+            policy: ResizePolicy::Direct,
+            border_value: 0,
+        };
         let mapped = map_bbox_infer_to_page([0.0, 0.0, 640.0, 640.0], 1280, 1920, &spec);
         assert_eq!(mapped, [0.0, 0.0, 1280.0, 1920.0]);
     }
 
     #[test]
     fn test_maybe_remap() {
-        let spec = InferenceResizeSpec::default();
+        let spec = InferenceResizeSpec {
+            target: 640,
+            policy: ResizePolicy::Direct,
+            border_value: 0,
+        };
         let b = maybe_remap_bbox_from_infer([10.0, 20.0, 30.0, 40.0], 2560, 1600, &spec);
         assert!(b[0] > 10.0 && b[1] > 20.0);
     }
