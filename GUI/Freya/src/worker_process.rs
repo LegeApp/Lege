@@ -31,6 +31,7 @@ pub enum WorkerProgressMode {
     Margin,
     HeavySequential,
     Reflow,
+    Epub,
 }
 
 impl Default for WorkerProgressMode {
@@ -45,11 +46,9 @@ pub struct WorkerProgressMetrics {
     pub rendered: u32,
     pub detected: u32,
     pub encoded: u32,
-    pub deskewed: u32,
     pub mode: WorkerProgressMode,
     pub is_djvu: bool,
     pub enable_layout_detection: bool,
-    pub enable_deskew: bool,
     pub eta_seconds: Option<u32>,
 }
 
@@ -94,32 +93,33 @@ pub enum WorkerProcessingStatus {
         total: usize,
         eta: Option<String>,
     },
+    EpubProgress {
+        rendered: usize,
+        detected: usize,
+        ocr: usize,
+        total: usize,
+        eta: Option<String>,
+    },
     LayoutProgress {
         rendered: usize,
         detected: usize,
         encoded: usize,
-        deskewed: usize,
         total: usize,
         enable_layout_detection: bool,
-        enable_deskew: bool,
         eta: Option<String>,
     },
     NoLayoutProgress {
         rendered: usize,
         encoded: usize,
-        deskewed: usize,
         total: usize,
-        enable_deskew: bool,
         eta: Option<String>,
     },
     MarginProgress {
         pass1_rendered: usize,
         pass1_detected: usize,
         pass2_processed: usize,
-        deskewed: usize,
         total: usize,
         enable_layout_detection: bool,
-        enable_deskew: bool,
         eta: Option<String>,
     },
 }
@@ -218,22 +218,35 @@ impl WorkerProcessingStatus {
                         .unwrap_or_default(),
                 )
             }
+            Self::EpubProgress {
+                rendered,
+                detected,
+                ocr,
+                total,
+                eta,
+            } => {
+                let detail = format!(
+                    "Render {rendered}/{total} | Layout {detected}/{total} | OCR {ocr}/{total}"
+                );
+                (
+                    "[EPUB]".into(),
+                    detail,
+                    eta.as_ref()
+                        .map(|eta| format!("Estimated time remaining: {eta}"))
+                        .unwrap_or_default(),
+                )
+            }
             Self::LayoutProgress {
                 rendered,
                 detected,
                 encoded,
-                deskewed,
                 total,
-                enable_deskew,
                 eta,
                 ..
             } => {
-                let mut detail = format!(
+                let detail = format!(
                     "Render {rendered}/{total} | Infer {detected}/{total} | Encode {encoded}/{total}"
                 );
-                if *enable_deskew {
-                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
-                }
                 (
                     "[Layout Mode]".into(),
                     detail,
@@ -245,15 +258,10 @@ impl WorkerProcessingStatus {
             Self::NoLayoutProgress {
                 rendered,
                 encoded,
-                deskewed,
                 total,
-                enable_deskew,
                 eta,
             } => {
-                let mut detail = format!("Render {rendered}/{total} | Encode {encoded}/{total}");
-                if *enable_deskew {
-                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
-                }
+                let detail = format!("Render {rendered}/{total} | Encode {encoded}/{total}");
                 (
                     "[No-Layout Mode]".into(),
                     detail,
@@ -266,18 +274,13 @@ impl WorkerProcessingStatus {
                 pass1_rendered,
                 pass1_detected,
                 pass2_processed,
-                deskewed,
                 total,
-                enable_deskew,
                 eta,
                 ..
             } => {
-                let mut detail = format!(
+                let detail = format!(
                     "Analyze {pass1_rendered}/{total} | Infer {pass1_detected}/{total} | Process {pass2_processed}/{total}"
                 );
-                if *enable_deskew {
-                    detail.push_str(&format!(" | Deskew {deskewed}/{total}"));
-                }
                 (
                     "[Margin Mode]".into(),
                     detail,
@@ -565,9 +568,9 @@ pub fn gui_options_to_cli_args(
         args.push("--no-ocr".into());
     }
 
-    // Deskew
-    if options.deskew_documents {
-        args.push("--deskew".into());
+    // Reflow
+    if options.reflow {
+        args.push("--reflow".into());
     }
 
     // Image processing

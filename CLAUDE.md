@@ -123,7 +123,7 @@ JBIG2 has two modes (`Jbig2Mode`): `Symbol` (symbol-substitution, best for clean
 
 ## Runtime assets
 
-ONNX models are found at runtime via `runtime_asset_path` / `runtime_asset_path_if_exists` (in `src/pipeline/config.rs` and `legencode/src/lib.rs`). Search order: exe directory → `models/` subdirectory → `LEGE_DATA_DIR` / `LEGE_ASSET_DIR` env vars → `/usr/share/lege/models` (Linux). Models required: `yolo-layout.onnx`, `paddle-rotate.onnx`, `paddle-deskew.onnx`, `sauvola.onnx`.
+ONNX models are found at runtime via `runtime_asset_path` / `runtime_asset_path_if_exists` (in `src/pipeline/config.rs` and `legencode/src/lib.rs`). Search order: exe directory → `models/` subdirectory → `LEGE_DATA_DIR` / `LEGE_ASSET_DIR` env vars → `/usr/share/lege/models` (Linux). Models required: `yolo-layout.onnx`, `sauvola.onnx`.
 
 ## Platform notes
 

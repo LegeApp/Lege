@@ -127,7 +127,7 @@ mod tests {
         TextRegion {
             page_index: 0,
             region_id: id,
-            class_name: Some("text".to_string()),
+            class_name: Some("plain_text".to_string()),
             bbox_highres: bbox,
             confidence: 1.0,
         }

@@ -13,7 +13,7 @@ pub struct OcrResult {
 pub struct TextRegion {
     pub page_index: usize,
     pub region_id: usize,
-    /// YOLO class name, e.g. "text", "paragraph_title", "footnote"
+    /// Canonical DocLayout-YOLO class name, e.g. "plain_text" or "table_footnote".
     pub class_name: Option<String>,
     /// [x1, y1, x2, y2] in high-res page pixel space
     pub bbox_highres: [u32; 4],

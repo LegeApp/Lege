@@ -2,7 +2,6 @@
 // DAGRS pipeline module declarations
 
 pub mod config;
-pub mod deskew_graph;
 pub mod djvu_pipeline;
 pub mod epub_pipeline;
 pub mod helper_functions;
@@ -19,7 +18,6 @@ pub use config::{
     ImageRegionDitherMode, PageRange, PageTask, PipelineConfig, ProcessingPipeline,
     RenderedPageData, ensure_pdfium_available, runtime_asset_path, runtime_asset_path_if_exists,
 };
-pub use deskew_graph::prepare_shared_deskew_engine;
 pub use djvu_pipeline::{
     DjvuBinarizedData,
     DjvuInferenceData,

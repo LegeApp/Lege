@@ -119,6 +119,22 @@ pub async fn run_cli_three_line(
                         }
                         last_encoded = *current;
                     }
+                    crate::progress::ProcessingStatus::EpubProgress {
+                        rendered,
+                        detected,
+                        ocr,
+                        ..
+                    } => {
+                        if *rendered > last_rendered
+                            || *detected > last_detected
+                            || *ocr > last_encoded
+                        {
+                            is_significant = true;
+                        }
+                        last_rendered = *rendered;
+                        last_detected = *detected;
+                        last_encoded = *ocr;
+                    }
                     // Always show these status types
                     crate::progress::ProcessingStatus::Initializing
                     | crate::progress::ProcessingStatus::AssemblingOutput
@@ -166,6 +182,9 @@ pub async fn run_cli_three_line(
                             ("\x1b[2;34m", "\x1b[96m")
                         }
                         crate::progress::ProcessingStatus::ReflowProgress { .. } => {
+                            ("\x1b[2;34m", "\x1b[96m")
+                        }
+                        crate::progress::ProcessingStatus::EpubProgress { .. } => {
                             ("\x1b[2;34m", "\x1b[96m")
                         }
                         crate::progress::ProcessingStatus::PdfAppend { .. }

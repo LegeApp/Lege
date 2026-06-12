@@ -122,8 +122,6 @@ pub async fn create_and_run_epub_pipeline(
     let infer_concurrency = limits.page_workers.max(1);
     let ocr_concurrency = limits.page_workers.clamp(1, 4);
 
-    let deskew_engine = crate::pipeline::prepare_shared_deskew_engine(&config)?;
-
     // Shared OCR pipeline (engine initialized once, reused across pages).
     let ocr_pipeline = Arc::new(OcrPipeline::new(SlowOcrConfig {
         language: config.ocr_language().to_string(),
@@ -143,7 +141,6 @@ pub async fn create_and_run_epub_pipeline(
     let mut render_task = tokio::spawn(source_stage(
         source.clone(),
         config.clone(),
-        deskew_engine,
         page_start..page_end,
         render_tx,
         render_count.clone(),
@@ -176,6 +173,9 @@ pub async fn create_and_run_epub_pipeline(
         let config = config.clone();
         let ocr_pipeline = ocr_pipeline.clone();
         let progress = progress_tracker.clone();
+        let render_count = render_count.clone();
+        let detect_count = detect_count.clone();
+        let encode_count = encode_count.clone();
         tokio::spawn(async move {
             ocr_collect_stage(
                 infer_rx,
@@ -183,6 +183,9 @@ pub async fn create_and_run_epub_pipeline(
                 ocr_pipeline,
                 ocr_concurrency,
                 progress,
+                render_count.clone(),
+                detect_count.clone(),
+                encode_count.clone(),
                 total_pages,
             )
             .await
@@ -234,11 +237,10 @@ pub async fn create_and_run_epub_pipeline(
     };
     info_log!("[EPUB] OCR stage complete ({} pages)", pages_map.len());
     let ocr_pages = pages_map.len();
-    progress_tracker.publish_layout_progress(
+    progress_tracker.publish_epub_progress(
         render_count.load(std::sync::atomic::Ordering::Relaxed),
         detect_count.load(std::sync::atomic::Ordering::Relaxed),
         ocr_pages,
-        0,
         total_pages,
     );
     progress_tracker.update(ProcessingStatus::PipelineMessage {
@@ -272,6 +274,9 @@ async fn ocr_collect_stage(
     ocr_pipeline: Arc<OcrPipeline>,
     concurrency: usize,
     progress: ProgressTracker,
+    render_count: Arc<AtomicUsize>,
+    detect_count: Arc<AtomicUsize>,
+    ocr_count: Arc<AtomicUsize>,
     total_pages: usize,
 ) -> Result<BTreeMap<usize, PageText>> {
     use futures::stream::{FuturesUnordered, StreamExt};
@@ -289,10 +294,13 @@ async fn ocr_collect_stage(
     let mut report_ocr_progress = |done: usize| {
         if done > last_reported && (done - last_reported >= report_step || done == total_pages) {
             last_reported = done;
-            progress.update(ProcessingStatus::PipelineMessage {
-                stage: "EPUB".to_string(),
-                message: format!("OCR'd {done}/{total_pages} pages..."),
-            });
+            ocr_count.store(done, std::sync::atomic::Ordering::Relaxed);
+            progress.publish_epub_progress(
+                render_count.load(std::sync::atomic::Ordering::Relaxed),
+                detect_count.load(std::sync::atomic::Ordering::Relaxed),
+                done,
+                total_pages,
+            );
         }
     };
 
@@ -380,7 +388,7 @@ fn text_regions_from_detections(
     for det in detections {
         if !classifier.should_process_with_ocr(det)
             || matches!(det.category, ContentCategory::Abandon)
-            || is_epub_skippable_class(det.class_name.as_deref())
+            || classifier.is_page_furniture_label(det)
         {
             continue;
         }
@@ -429,10 +437,6 @@ fn is_skippable(kind: &BlockKind) -> bool {
     matches!(kind, BlockKind::Header | BlockKind::Footer)
         || matches!(kind, BlockKind::Other(name)
             if matches!(name.as_str(), "page" | "page_number" | "number" | "seal" | "stamp"))
-}
-
-fn is_epub_skippable_class(class_name: Option<&str>) -> bool {
-    is_skippable(&BlockKind::from_class_name(class_name.unwrap_or("text")))
 }
 
 fn is_heading(kind: &BlockKind) -> bool {
@@ -748,8 +752,9 @@ mod tests {
     }
 
     fn det(class_name: &str, category: ContentCategory) -> Detection {
+        let class_id = crate::types::class_id_for(class_name).unwrap_or(-1);
         Detection {
-            class_id: 2,
+            class_id,
             class_name: Some(class_name.to_string()),
             confidence: 0.9,
             bbox: [10.0, 20.0, 80.0, 90.0],
@@ -885,10 +890,11 @@ mod tests {
             det("footer", ContentCategory::Text),
             det("number", ContentCategory::Text),
             det("seal", ContentCategory::Text),
-            det("image", ContentCategory::Image),
+            det("figure", ContentCategory::Image),
             det("abandon", ContentCategory::Abandon),
-            det("text", ContentCategory::Text),
+            det("plain_text", ContentCategory::Text),
             det("table", ContentCategory::Table),
+            det("table_footnote", ContentCategory::Text),
         ];
 
         let regions =
@@ -898,7 +904,7 @@ mod tests {
             .filter_map(|r| r.class_name.as_deref())
             .collect();
 
-        assert_eq!(classes, vec!["text", "table"]);
+        assert_eq!(classes, vec!["plain_text", "table", "table_footnote"]);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use anyhow::anyhow;
 pub enum ContentCategory {
     /// Textual content: titles, paragraphs, captions, formulas, references, …
     Text,
-    /// Photographic / illustrative content: figures, header/footer images.
+    /// Photographic / illustrative content: figures.
     Image,
     /// Tabular content.  Treated as text-like for binarization (no dithering).
     Table,
@@ -47,6 +47,76 @@ impl ContentCategory {
 /// Legacy alias kept for any remaining references.
 pub type LabelCategory = ContentCategory;
 
+/// The 10-class DocLayout-YOLO (DocStructBench) label set — the only layout
+/// model this program ships. This table is the **single source of truth** for
+/// the layout class space: every class name and every `ContentCategory` derives
+/// from here via `class_name_for` / `category_for_class`. Index == YOLO class id.
+pub const LAYOUT_CLASSES: &[(&str, ContentCategory)] = &[
+    ("title", ContentCategory::Text),           // 0
+    ("plain_text", ContentCategory::Text),      // 1
+    ("abandon", ContentCategory::Abandon),      // 2
+    ("figure", ContentCategory::Image),         // 3
+    ("figure_caption", ContentCategory::Text),  // 4
+    ("table", ContentCategory::Table),          // 5
+    ("table_caption", ContentCategory::Text),   // 6
+    ("table_footnote", ContentCategory::Text),  // 7
+    ("isolate_formula", ContentCategory::Text), // 8
+    ("formula_caption", ContentCategory::Text), // 9
+];
+
+/// Class name for a YOLO class id (`"unknown"` if out of range).
+pub fn class_name_for(class_id: i32) -> &'static str {
+    usize::try_from(class_id)
+        .ok()
+        .and_then(|i| LAYOUT_CLASSES.get(i))
+        .map(|(name, _)| *name)
+        .unwrap_or("unknown")
+}
+
+/// YOLO class id for a canonical DocLayout label.
+pub fn class_id_for(class_name: &str) -> Option<i32> {
+    LAYOUT_CLASSES
+        .iter()
+        .position(|(name, _)| *name == class_name)
+        .and_then(|i| i32::try_from(i).ok())
+}
+
+/// `ContentCategory` for a YOLO class id (`Text` if out of range — the safe
+/// default, since unknown regions are binarized normally rather than masked).
+pub fn category_for_class(class_id: i32) -> ContentCategory {
+    usize::try_from(class_id)
+        .ok()
+        .and_then(|i| LAYOUT_CLASSES.get(i))
+        .map(|(_, cat)| *cat)
+        .unwrap_or(ContentCategory::Text)
+}
+
+/// True when `class_id` is one of the shipped DocLayout-YOLO classes.
+pub fn is_known_layout_class(class_id: i32) -> bool {
+    usize::try_from(class_id)
+        .ok()
+        .is_some_and(|i| i < LAYOUT_CLASSES.len())
+}
+
+/// Label name attached to a detection, falling back to the canonical class-id
+/// mapping for old/synthetic callers that do not populate `class_name`.
+pub fn detection_label(detection: &Detection) -> &str {
+    detection
+        .class_name
+        .as_deref()
+        .unwrap_or_else(|| class_name_for(detection.class_id))
+}
+
+/// Match a detection against a canonical DocLayout label. Known class ids win
+/// over any stale display name carried by older test fixtures or callers.
+pub fn detection_is_class(detection: &Detection, class_name: &str) -> bool {
+    if is_known_layout_class(detection.class_id) {
+        class_name_for(detection.class_id) == class_name
+    } else {
+        detection_label(detection) == class_name
+    }
+}
+
 /// Type of content in a document region (used by `Region` struct)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RegionType {
@@ -57,167 +127,26 @@ pub enum RegionType {
     Other,
 }
 
-use std::collections::HashSet;
-
-/// Centralized label information system for YOLO class IDs to names.
-/// Provides O(1) lookups and maintains the complete mapping of class IDs to names
-#[derive(Debug, Clone)]
-pub struct LabelInfo {
-    // Complete mapping of class IDs to names
-    class_names: Vec<&'static str>,
-
-    // Precomputed sets for efficient lookups
-    image_class_ids: HashSet<i32>,
-    text_class_ids: HashSet<i32>,
-    margin_crop_excluded_ids: HashSet<i32>,
-}
-
-impl LabelInfo {
-    pub fn new() -> Self {
-        let class_names = vec![
-            "paragraph_title", // 0
-            "image",           // 1
-            "text",            // 2
-            "number",          // 3
-            "abstract",        // 4
-            "content",         // 5
-            "figure_title",    // 6
-            "formula",         // 7
-            "table",           // 8
-            "table_title",     // 9
-            "reference",       // 10
-            "doc_title",       // 11
-            "footnote",        // 12
-            "header",          // 13
-            "algorithm",       // 14
-            "footer",          // 15
-            "seal",            // 16
-            "chart_title",     // 17
-            "chart",           // 18
-            "formula_number",  // 19
-            "header_image",    // 20
-            "footer_image",    // 21
-            "aside_text",      // 22
-        ];
-
-        // Image-like classes: treat charts (18) as text-like (thin lines threshold well),
-        // so exclude 18 to avoid unnecessary IW44 regions and background artifacts by default.
-        // Allow overriding this behavior via an env var for troubleshooting or special documents.
-        let mut image_class_ids: HashSet<i32> = [1, 20, 21].into_iter().collect();
-        if std::env::var("LEGE_TREAT_CHART_AS_IMAGE")
-            .map(|v| {
-                let v = v.to_ascii_lowercase();
-                v == "1" || v == "true" || v == "yes"
-            })
-            .unwrap_or(false)
-        {
-            image_class_ids.insert(18); // chart
-        }
-        let text_class_ids: HashSet<i32> = [
-            0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22,
-        ]
-        .into_iter()
-        .collect();
-        let margin_crop_excluded_ids: HashSet<i32> = [3, 12].into_iter().collect();
-
-        Self {
-            class_names,
-            image_class_ids,
-            text_class_ids,
-            margin_crop_excluded_ids,
-        }
-    }
-
-    // === Core lookup methods ===
-
-    pub fn get_class_name(&self, class_id: i32) -> String {
-        self.class_names
-            .get(class_id as usize)
-            .map(|&s| s.to_string())
-            .unwrap_or_else(|| format!("unknown_{}", class_id))
-    }
-
-    pub fn is_image_class(&self, class_id: i32) -> bool {
-        self.image_class_ids.contains(&class_id)
-    }
-
-    pub fn is_text_class(&self, class_id: i32) -> bool {
-        self.text_class_ids.contains(&class_id)
-    }
-
-    pub fn is_margin_crop_excluded(&self, class_id: i32) -> bool {
-        self.margin_crop_excluded_ids.contains(&class_id)
-    }
-
-    // === Bulk access methods for compatibility ===
-
-    pub fn all_image_class_ids(&self) -> Vec<i32> {
-        self.image_class_ids.iter().copied().collect()
-    }
-
-    pub fn all_text_class_ids(&self) -> Vec<i32> {
-        self.text_class_ids.iter().copied().collect()
-    }
-
-    pub fn all_margin_crop_excluded_ids(&self) -> Vec<i32> {
-        self.margin_crop_excluded_ids.iter().copied().collect()
-    }
-
-    // === Utility methods ===
-
-    pub fn total_classes(&self) -> usize {
-        self.class_names.len()
-    }
-
-    pub fn class_id_exists(&self, class_id: i32) -> bool {
-        (class_id >= 0) && (class_id < self.class_names.len() as i32)
-    }
-
-    // === Iterator support ===
-
-    pub fn iter_class_names(&self) -> impl Iterator<Item = (i32, &str)> {
-        self.class_names
-            .iter()
-            .enumerate()
-            .map(|(id, &name)| (id as i32, name))
-    }
-
-    // === Original const arrays for specific use cases ===
-    pub const IMAGE_CLASS_IDS: &'static [i32] = &[1, 20, 21];
-    pub const TEXT_CLASS_IDS: &'static [i32] = &[
-        0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22,
-    ];
-    pub const MARGIN_CROP_EXCLUDED_CLASS_IDS: &'static [i32] = &[3, 12];
-}
-
-impl Default for LabelInfo {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Standardized label classifier that provides consistent label categorization
-/// across all modules (engine, margin, OCR, color_processing)
+/// across all modules (engine, margin, OCR, color_processing).
 ///
-/// This is a compatibility layer that uses the centralized LabelInfo
-pub struct LabelClassifier {
-    label_info: LabelInfo,
-}
+/// All decisions are driven by `ContentCategory` (set from `LAYOUT_CLASSES`),
+/// never by raw class-id tables — that is the single source of truth.
+pub struct LabelClassifier;
 
 impl LabelClassifier {
     pub fn new() -> Self {
-        Self {
-            label_info: LabelInfo::new(),
-        }
+        Self
     }
 
     /// Classify a detection for margin calculation purposes
     /// - For StandardizeAndCenter: includes all content
-    /// - For CropAndResize: excludes page numbers and footnotes
+    /// - For CropAndResize: excludes margin clutter (Abandon: page numbers,
+    ///   headers/footers, scan noise)
     pub fn is_margin_calc_label(&self, detection: &Detection, for_cropping: bool) -> bool {
         if for_cropping {
-            // Exclude page numbers and footnotes when cropping
-            !self.label_info.is_margin_crop_excluded(detection.class_id)
+            // Exclude margin clutter (Abandon) when cropping.
+            !matches!(detection.category, ContentCategory::Abandon)
         } else {
             // Include all detected content for centering
             true
@@ -236,30 +165,36 @@ impl LabelClassifier {
 
     /// True when a detection is substantive body text that should block
     /// full-page image expansion (paragraphs, tables, formulas, code, etc.).
-    /// Returns false for minor peripheral content: page numbers, titles,
-    /// headers, footers, captions, abandon, seals, aside text.
+    /// Returns false for minor peripheral content: titles, captions,
+    /// table footnotes, and abandon regions.
     pub fn is_substantive_text(&self, detection: &Detection) -> bool {
         if detection.category.is_image() || matches!(detection.category, ContentCategory::Abandon) {
             return false;
         }
-        !matches!(
-            detection.class_name.as_deref(),
-            Some(
-                "title"
-                    | "page_number"
-                    | "doc_title"
-                    | "header"
-                    | "footer"
-                    | "footnote"
-                    | "figure_caption"
-                    | "table_caption"
-                    | "formula_caption"
-                    | "chart_title"
-                    | "formula_number"
-                    | "seal"
-                    | "aside_text"
-                    | "abandon"
-            )
+        ![
+            "title",
+            "figure_caption",
+            "table_caption",
+            "formula_caption",
+            "table_footnote",
+            "abandon",
+        ]
+        .iter()
+        .any(|name| detection_is_class(detection, name))
+    }
+
+    /// True for the DocLayout class that represents table footnotes.
+    pub fn is_footnote_label(&self, detection: &Detection) -> bool {
+        detection_is_class(detection, "table_footnote")
+    }
+
+    /// True for old furniture labels that may still appear from non-DocLayout
+    /// callers. The shipped 10-class model uses `abandon` for clutter; this
+    /// method deliberately does not include substantive canonical labels.
+    pub fn is_page_furniture_label(&self, detection: &Detection) -> bool {
+        matches!(
+            detection_label(detection),
+            "header" | "footer" | "page" | "page_number" | "number" | "seal" | "stamp"
         )
     }
 
@@ -281,11 +216,6 @@ impl LabelClassifier {
     /// Check if detection should be dithered (image processing)
     pub fn should_dither(&self, detection: &Detection) -> bool {
         detection.category.is_image()
-    }
-
-    /// Get the underlying label info for direct access to efficient lookups
-    pub fn label_info(&self) -> &LabelInfo {
-        &self.label_info
     }
 }
 

@@ -412,8 +412,8 @@ mod tests {
         // causes them to be thresholded to black-and-white, which destroys the image.
         let page = synthetic_prose_page(0);
         let hints = vec![Detection {
-            class_id: 1,
-            class_name: Some("image".into()),
+            class_id: crate::types::class_id_for("figure").unwrap(),
+            class_name: Some("figure".into()),
             confidence: 0.95,
             bbox: [10.0, 10.0, 290.0, 390.0],
             category: crate::types::ContentCategory::Image,
@@ -454,8 +454,8 @@ mod tests {
             page_pts: (w as f32, h as f32),
         };
         let hints = vec![Detection {
-            class_id: 1,
-            class_name: Some("image".into()),
+            class_id: crate::types::class_id_for("figure").unwrap(),
+            class_name: Some("figure".into()),
             confidence: 0.95,
             bbox: [10.0, 10.0, 290.0, 390.0],
             category: crate::types::ContentCategory::Image,

@@ -71,13 +71,7 @@ pub fn maybe_expand_sole_image_to_full_page(
         .count();
 
     if image_count == 1 && substantive_text_count == 0 {
-        if let Some(det) = detections.iter_mut().find(|d| {
-            classifier.is_image_label(d)
-                && !matches!(
-                    d.class_name.as_deref(),
-                    Some("header_image" | "footer_image")
-                )
-        }) {
+        if let Some(det) = detections.iter_mut().find(|d| classifier.is_image_label(d)) {
             crate::bbox_trace!(
                 "[FULL-PAGE] sole image det, expanding [{:.0},{:.0},{:.0},{:.0}] -> [0,0,{pw},{ph}]",
                 det.bbox[0],
@@ -422,9 +416,10 @@ pub fn should_force_blank_page_threshold(
         return false;
     }
 
-    // Without layout detection we have no detection boxes to analyse, but a
-    // visually blank page should still binarize to white rather than noise.
-    if !config.enable_layout_detection() {
+    // Without layout detection we normally have no detection boxes to analyse,
+    // but callers may pass cached/post-NMS boxes from another phase. Use them
+    // when present rather than discarding useful layout evidence.
+    if !config.enable_layout_detection() && post_nms_detections.is_empty() {
         return page_is_visually_blank;
     }
 
@@ -457,6 +452,9 @@ pub fn is_full_page_image(
 ) -> bool {
     if detections.len() == 1 {
         let det = &detections[0];
+        if !crate::types::LABEL_CLASSIFIER.is_image_label(det) {
+            return false;
+        }
         let region_width = det.bbox[2] - det.bbox[0];
         let region_height = det.bbox[3] - det.bbox[1];
         let coverage = (region_width * region_height) as f32 / (page_width * page_height) as f32;
@@ -504,22 +502,15 @@ mod tests {
     use crate::types::{ContentCategory, LABEL_CLASSIFIER};
 
     fn test_detection(category: ContentCategory, bbox: [f32; 4]) -> Detection {
+        let class_id = match category {
+            ContentCategory::Text => 1,
+            ContentCategory::Image => 3,
+            ContentCategory::Table => 5,
+            ContentCategory::Abandon => 2,
+        };
         Detection {
-            class_id: match category {
-                ContentCategory::Text => 2,
-                ContentCategory::Image => 1,
-                ContentCategory::Table => 8,
-                ContentCategory::Abandon => 0,
-            },
-            class_name: Some(
-                match category {
-                    ContentCategory::Text => "text",
-                    ContentCategory::Image => "image",
-                    ContentCategory::Table => "table",
-                    ContentCategory::Abandon => "abandon",
-                }
-                .to_string(),
-            ),
+            class_id,
+            class_name: Some(crate::types::class_name_for(class_id).to_string()),
             confidence: 0.8,
             bbox,
             category,
@@ -535,7 +526,8 @@ mod tests {
 
     #[test]
     fn post_nms_tiny_noise_boxes_force_blank_fallback() {
-        let config = PipelineConfig::default();
+        let mut config = PipelineConfig::default();
+        config.set_enable_layout_detection(true);
         let detections = vec![test_detection(
             ContentCategory::Abandon,
             [10.0, 10.0, 14.0, 16.0],
@@ -554,7 +546,8 @@ mod tests {
 
     #[test]
     fn substantial_image_box_blocks_blank_fallback() {
-        let config = PipelineConfig::default();
+        let mut config = PipelineConfig::default();
+        config.set_enable_layout_detection(true);
         let detections = vec![test_detection(
             ContentCategory::Image,
             [100.0, 100.0, 600.0, 600.0],
@@ -584,5 +577,25 @@ mod tests {
             1000,
             &LABEL_CLASSIFIER,
         ));
+    }
+
+    #[test]
+    fn single_full_page_text_box_is_not_full_page_image() {
+        let detections = vec![test_detection(
+            ContentCategory::Text,
+            [0.0, 0.0, 1000.0, 1000.0],
+        )];
+
+        assert!(!is_full_page_image(&detections, 1000, 1000, None));
+    }
+
+    #[test]
+    fn single_full_page_figure_box_is_full_page_image() {
+        let detections = vec![test_detection(
+            ContentCategory::Image,
+            [0.0, 0.0, 1000.0, 1000.0],
+        )];
+
+        assert!(is_full_page_image(&detections, 1000, 1000, None));
     }
 }

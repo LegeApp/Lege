@@ -6,7 +6,6 @@ pub mod bbox_trace;
 pub mod cli_progress;
 pub mod colorquant;
 pub mod debug_log;
-pub mod deskew;
 pub mod djvu; // Native Rust DJVU encoder
 #[cfg_attr(target_os = "linux", path = "engine_yolo_linux.rs")]
 #[cfg_attr(not(target_os = "linux"), path = "engine.rs")]
@@ -60,7 +59,6 @@ pub use pipeline::{
     get_available_ram_gb,
     is_ocr_available,
     // Other
-    prepare_shared_deskew_engine,
     runtime_asset_path,
     runtime_asset_path_if_exists,
     should_treat_as_cover_page,
