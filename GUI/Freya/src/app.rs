@@ -1318,12 +1318,14 @@ fn PagesDeviceCard(
                                                     s.options.center_margins = enable;
                                                     if enable {
                                                         s.options.crop_margins = false;
+                                                        s.options.crop_footnotes = false;
+                                                        s.options.reflow = false;
                                                     }
                                                 }
                                             },
                                         ),
                                     ))
-                                    .child(tooltip_wrap_at(
+                                    .child(rect().padding((0., 0., 0., 5.)).child(tooltip_wrap_at(
                                         state,
                                         TooltipArea::PagesDeviceCard,
                                         GUI_TEXT.interactive.tooltips.margin_crop_resize.clone(),
@@ -1339,26 +1341,35 @@ fn PagesDeviceCard(
                                                     s.options.crop_margins = enable;
                                                     if enable {
                                                         s.options.center_margins = false;
+                                                        s.options.reflow = false;
                                                     }
                                                 }
                                             },
                                         ),
-                                    ))
-                                    .child(tooltip_wrap_at(
-                                        state,
-                                        TooltipArea::PagesDeviceCard,
-                                        GUI_TEXT.interactive.tooltips.reflow.clone(),
-                                        AttachedPosition::Left,
-                                        bool_tile(
-                                            GUI_TEXT.interactive.labels.reflow.clone(),
-                                            options.reflow,
-                                            {
-                                                let mut state = state;
-                                                move |_| {
-                                                    state.write().options.reflow =
-                                                        !state.read().options.reflow
-                                                }
-                                            },
+                                    )))
+                                    .child(rect().padding((0., 0., 0., 10.)).child(
+                                        tooltip_wrap_at(
+                                            state,
+                                            TooltipArea::PagesDeviceCard,
+                                            GUI_TEXT.interactive.tooltips.reflow.clone(),
+                                            AttachedPosition::Left,
+                                            bool_tile(
+                                                GUI_TEXT.interactive.labels.reflow.clone(),
+                                                options.reflow,
+                                                {
+                                                    let mut state = state;
+                                                    move |_| {
+                                                        let mut s = state.write();
+                                                        let enable = !s.options.reflow;
+                                                        s.options.reflow = enable;
+                                                        if enable {
+                                                            s.options.center_margins = false;
+                                                            s.options.crop_margins = false;
+                                                            s.options.crop_footnotes = false;
+                                                        }
+                                                    }
+                                                },
+                                            ),
                                         ),
                                     )),
                             ),

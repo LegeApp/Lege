@@ -806,6 +806,36 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
     Ok((remaining, opts))
 }
 
+fn validate_page_geometry_options(
+    center_margins: bool,
+    crop_margins: bool,
+    force_crop: bool,
+    reflow: bool,
+) -> Result<()> {
+    let mut selected = Vec::new();
+    if center_margins {
+        selected.push("--center-margins");
+    }
+    if crop_margins {
+        selected.push("--crop-margins");
+    }
+    if force_crop {
+        selected.push("--force-crop");
+    }
+    if reflow {
+        selected.push("--reflow");
+    }
+
+    if selected.len() > 1 {
+        bail!(
+            "Page geometry options are mutually exclusive; choose only one of: {}",
+            selected.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 fn parse_jbig2_mode_flag(raw: &str) -> Result<Jbig2Mode> {
     let normalized = raw.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -1476,6 +1506,13 @@ fn handle_simple_processing(
     cli_opts: CliOptions,
     config: AppConfig,
 ) -> Result<()> {
+    validate_page_geometry_options(
+        cli_opts.center_margins,
+        cli_opts.crop_margins,
+        cli_opts.force_crop,
+        cli_opts.reflow,
+    )?;
+
     if input_paths.is_empty() {
         bail!("No input files to process");
     }
@@ -2855,6 +2892,7 @@ fn parse_options(
     let crop_margins = options.contains(&"w");
     let force_crop = options.contains(&"f");
     let raster_reflow = options.contains(&"r");
+    validate_page_geometry_options(center_margins, crop_margins, force_crop, raster_reflow)?;
     if raster_reflow && !layout_detection {
         bail!("Raster reflow ('r') requires layout detection. Remove the 'a' flag to use 'r'.");
     }
@@ -2908,6 +2946,17 @@ mod cli_parser_tests {
 
         assert!(is_epub);
         assert_eq!(input, "\"book path.pdf\" 1-10");
+    }
+
+    #[test]
+    fn page_geometry_options_are_mutually_exclusive() {
+        let err = validate_page_geometry_options(true, false, false, true)
+            .expect_err("center margins and reflow should conflict");
+
+        assert!(
+            err.to_string().contains("mutually exclusive"),
+            "unexpected error: {err}"
+        );
     }
 }
 
@@ -3757,6 +3806,13 @@ fn generate_output_path(
 }
 
 fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineConfig> {
+    validate_page_geometry_options(
+        cli_opts.center_margins,
+        cli_opts.crop_margins,
+        cli_opts.force_crop,
+        cli_opts.reflow,
+    )?;
+
     let mut pipeline_config = PipelineConfig::simple_cli_defaults()
         .map_err(|e| anyhow!("Failed to construct CLI defaults: {}", e))?;
 
