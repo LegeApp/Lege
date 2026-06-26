@@ -1,0 +1,467 @@
+use freya_core::prelude::*;
+use torin::{content::Content, gaps::Gaps, prelude::Alignment, size::Size};
+
+use crate::{define_theme, get_theme, icons::arrow::ArrowIcon};
+
+define_theme! {
+    %[component]
+    pub Table {
+        %[fields]
+        background: Color,
+        arrow_fill: Color,
+        hover_row_background: Color,
+        row_background: Color,
+        divider_fill: Color,
+        corner_radius: CornerRadius,
+        color: Color,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum OrderDirection {
+    Up,
+    #[default]
+    Down,
+}
+
+#[derive(PartialEq)]
+pub struct TableArrow {
+    pub order_direction: OrderDirection,
+    key: DiffKey,
+}
+
+impl TableArrow {
+    pub fn new(order_direction: OrderDirection) -> Self {
+        Self {
+            order_direction,
+            key: DiffKey::None,
+        }
+    }
+}
+
+impl KeyExt for TableArrow {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+impl Component for TableArrow {
+    fn render(&self) -> impl IntoElement {
+        let TableTheme { arrow_fill, .. } =
+            get_theme!(None::<TableThemePartial>, TableThemePreference, "table");
+        let rotate = match self.order_direction {
+            OrderDirection::Down => 0.,
+            OrderDirection::Up => 180.,
+        };
+        ArrowIcon::new().rotate(rotate).fill(arrow_fill)
+    }
+
+    fn render_key(&self) -> DiffKey {
+        self.key.clone().or(self.default_key())
+    }
+}
+
+/// TableHead props (manual)
+#[derive(PartialEq, Default)]
+pub struct TableHead {
+    pub children: Vec<Element>,
+    key: DiffKey,
+}
+
+impl TableHead {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ChildrenExt for TableHead {
+    fn get_children(&mut self) -> &mut Vec<Element> {
+        &mut self.children
+    }
+}
+
+impl KeyExt for TableHead {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+impl Component for TableHead {
+    fn render(&self) -> impl IntoElement {
+        rect().width(Size::fill()).children(self.children.clone())
+    }
+
+    fn render_key(&self) -> DiffKey {
+        self.key.clone().or(self.default_key())
+    }
+}
+
+#[derive(PartialEq, Default)]
+pub struct TableBody {
+    pub children: Vec<Element>,
+    key: DiffKey,
+}
+
+impl TableBody {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+impl ChildrenExt for TableBody {
+    fn get_children(&mut self) -> &mut Vec<Element> {
+        &mut self.children
+    }
+}
+
+impl KeyExt for TableBody {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+impl Component for TableBody {
+    fn render(&self) -> impl IntoElement {
+        rect().width(Size::fill()).children(self.children.clone())
+    }
+
+    fn render_key(&self) -> DiffKey {
+        self.key.clone().or(self.default_key())
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum TableRowState {
+    Idle,
+    Hovering,
+}
+
+#[derive(PartialEq, Default)]
+pub struct TableRow {
+    pub theme: Option<TableThemePartial>,
+    pub children: Vec<Element>,
+    key: DiffKey,
+}
+
+impl TableRow {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ChildrenExt for TableRow {
+    fn get_children(&mut self) -> &mut Vec<Element> {
+        &mut self.children
+    }
+}
+
+impl KeyExt for TableRow {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+impl Component for TableRow {
+    fn render(&self) -> impl IntoElement {
+        let theme = get_theme!(&self.theme, TableThemePreference, "table");
+        let config = use_try_consume::<TableConfig>().unwrap_or_default();
+        let mut state = use_state(|| TableRowState::Idle);
+        let TableTheme {
+            divider_fill,
+            hover_row_background,
+            row_background,
+            ..
+        } = theme;
+        let background = if state() == TableRowState::Hovering {
+            hover_row_background
+        } else {
+            row_background
+        };
+
+        rect()
+            .on_pointer_enter(move |_| state.set(TableRowState::Hovering))
+            .on_pointer_leave(move |_| state.set(TableRowState::Idle))
+            .background(background)
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .content(Content::Flex)
+                    .children(self.children.iter().enumerate().map(|(index, child)| {
+                        let width = config
+                            .column_widths
+                            .as_ref()
+                            .and_then(|widths| widths.get(index).cloned())
+                            .unwrap_or_else(|| Size::flex(1.));
+
+                        rect().width(width).child(child.clone()).into()
+                    })),
+            )
+            .child(
+                rect()
+                    .height(Size::px(1.))
+                    .width(Size::fill())
+                    .background(divider_fill),
+            )
+    }
+
+    fn render_key(&self) -> DiffKey {
+        self.key.clone().or(self.default_key())
+    }
+}
+
+#[derive(PartialEq)]
+pub struct TableCell {
+    pub children: Vec<Element>,
+    /// optional press handler
+    pub on_press: Option<EventHandler<Event<PressEventData>>>,
+    /// optional visual order direction
+    pub order_direction: Option<OrderDirection>,
+    /// padding as typed Gaps
+    pub padding: Gaps,
+    /// height as typed Size
+    pub height: Size,
+    key: DiffKey,
+}
+
+impl ChildrenExt for TableCell {
+    fn get_children(&mut self) -> &mut Vec<Element> {
+        &mut self.children
+    }
+}
+
+impl Default for TableCell {
+    fn default() -> Self {
+        Self {
+            children: vec![],
+            on_press: None,
+            order_direction: None,
+            padding: Gaps::new_all(5.0),
+            height: Size::px(35.0),
+            key: DiffKey::None,
+        }
+    }
+}
+
+impl TableCell {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn padding(mut self, padding: Gaps) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Size>) -> Self {
+        self.height = height.into();
+        self
+    }
+
+    pub fn on_press(mut self, handler: impl Into<EventHandler<Event<PressEventData>>>) -> Self {
+        self.on_press = Some(handler.into());
+        self
+    }
+
+    pub fn order_direction(mut self, dir: Option<OrderDirection>) -> Self {
+        self.order_direction = dir;
+        self
+    }
+}
+
+impl KeyExt for TableCell {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+impl Component for TableCell {
+    fn render(&self) -> impl IntoElement {
+        let mut container = rect()
+            .overflow(Overflow::Clip)
+            .padding(self.padding)
+            .width(Size::fill())
+            .main_align(Alignment::End)
+            .cross_align(Alignment::Center)
+            .height(self.height.clone())
+            .horizontal();
+
+        if let Some(on_press) = &self.on_press {
+            let handler = on_press.clone();
+            container = container.on_press(move |e| handler.call(e));
+        }
+
+        if let Some(order_direction) = self.order_direction {
+            container = container.child(
+                rect()
+                    .margin(Gaps::new_all(10.0))
+                    .width(Size::px(10.0))
+                    .height(Size::px(10.0))
+                    .child(TableArrow::new(order_direction)),
+            );
+        }
+
+        container.children(self.children.clone())
+    }
+
+    fn render_key(&self) -> DiffKey {
+        self.key.clone().or(self.default_key())
+    }
+}
+
+/// A table component with rows and columns.
+///
+/// # Example
+///
+/// ```rust
+/// # use freya::prelude::*;
+/// fn app() -> impl IntoElement {
+///     Table::new()
+///         .child(
+///             TableHead::new().child(
+///                 TableRow::new()
+///                     .child(TableCell::new().child("Header 1"))
+///                     .child(TableCell::new().child("Header 2")),
+///             ),
+///         )
+///         .child(
+///             TableBody::new().child(
+///                 TableRow::new()
+///                     .child(TableCell::new().child("Data 1"))
+///                     .child(TableCell::new().child("Data 2")),
+///             ),
+///         )
+///         .child(
+///             TableBody::new().child(
+///                 TableRow::new()
+///                     .child(TableCell::new().child("Data 3"))
+///                     .child(TableCell::new().child("Data 4")),
+///             ),
+///         )
+/// }
+/// # use freya_testing::prelude::*;
+/// # launch_doc(|| {
+/// #   rect().padding(8.).center().expanded().child(
+/// #       app()
+/// #   )
+/// # }, "./images/gallery_table.png")
+/// #   .with_hook(|t| { t.move_cursor((125., 125.)); t.sync_and_update(); })
+/// #   .with_scale_factor(0.9)
+/// #   .render();
+/// ```
+///
+/// # Preview
+/// ![Table Preview][table]
+#[cfg_attr(feature = "docs",
+    doc = embed_doc_image::embed_image!("table", "images/gallery_table.png"),
+)]
+#[derive(PartialEq)]
+pub struct Table {
+    pub height: Size,
+    pub theme: Option<TableThemePartial>,
+    pub column_widths: Option<Vec<Size>>,
+    pub children: Vec<Element>,
+    key: DiffKey,
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self {
+            height: Size::Inner,
+            theme: None,
+            column_widths: None,
+            children: vec![],
+            key: DiffKey::None,
+        }
+    }
+}
+
+impl Table {
+    pub fn new() -> Self {
+        Self {
+            ..Default::default()
+        }
+    }
+
+    pub fn height(mut self, height: impl Into<Size>) -> Self {
+        self.height = height.into();
+        self
+    }
+
+    pub fn theme(mut self, theme: TableThemePartial) -> Self {
+        self.theme = Some(theme);
+        self
+    }
+
+    /// Set custom widths for each column.
+    ///
+    /// Accepts any [Size], defaults to [Size::Flex].
+    pub fn column_widths(mut self, widths: impl Into<Vec<Size>>) -> Self {
+        self.column_widths = Some(widths.into());
+        self
+    }
+}
+
+impl ChildrenExt for Table {
+    fn get_children(&mut self) -> &mut Vec<Element> {
+        &mut self.children
+    }
+}
+
+impl KeyExt for Table {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct TableConfig {
+    pub column_widths: Option<Vec<Size>>,
+}
+
+impl TableConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_column_widths(column_widths: Vec<Size>) -> Self {
+        Self {
+            column_widths: Some(column_widths),
+        }
+    }
+}
+
+impl Component for Table {
+    fn render(&self) -> impl IntoElement {
+        let TableTheme {
+            background,
+            corner_radius,
+            divider_fill,
+            color,
+            ..
+        } = get_theme!(&self.theme, TableThemePreference, "table");
+
+        let config = match &self.column_widths {
+            Some(widths) => TableConfig::with_column_widths(widths.clone()),
+            None => TableConfig::default(),
+        };
+        provide_context(config);
+
+        rect()
+            .overflow(Overflow::Clip)
+            .color(color)
+            .background(background)
+            .corner_radius(corner_radius)
+            .height(self.height.clone())
+            .border(
+                Border::new()
+                    .alignment(BorderAlignment::Outer)
+                    .fill(divider_fill)
+                    .width(1.0),
+            )
+            .children(self.children.clone())
+    }
+
+    fn render_key(&self) -> DiffKey {
+        self.key.clone().or(self.default_key())
+    }
+}

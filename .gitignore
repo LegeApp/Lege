@@ -27,6 +27,7 @@ Thumbs.db
 *.tar.gz
 .idea/
 .vscode/
+.codegraph/
 
 # Dev / large binary files
 *.pdf

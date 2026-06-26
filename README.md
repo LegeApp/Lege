@@ -29,6 +29,14 @@ cd Lege
 cargo build --release
 ```
 
+#### Linux dependencies
+
+On Linux, you need to install the following system dependencies:
+
+```bash
+sudo apt-get install tesseract-ocr libtesseract-dev libleptonica-dev
+```
+
 You'll get:
 
 * CLI: `target/release/lege`

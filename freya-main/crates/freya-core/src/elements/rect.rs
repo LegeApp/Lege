@@ -1,0 +1,943 @@
+//! [rect()] acts as a generic container to contain other elements inside, like a box.
+
+use std::{any::Any, borrow::Cow, rc::Rc};
+
+use freya_engine::prelude::{
+    Canvas, ClipOp, Paint, PaintStyle, PathBuilder, SkBlurStyle, SkMaskFilter, SkPath,
+    SkPathFillType, SkPoint, SkRRect, SkRect,
+};
+#[cfg(feature = "cpu-renderer")]
+use freya_render_api as render_api;
+use rustc_hash::FxHashMap;
+use torin::{prelude::Area, scaled::Scaled};
+
+use crate::{
+    diff_key::DiffKey,
+    element::{ClipContext, ElementExt, EventHandlerType, EventMeasurementContext, RenderContext},
+    events::name::EventName,
+    layers::Layer,
+    prelude::*,
+    style::{
+        font_size::FontSize,
+        scale::Scale,
+        shadow::{Shadow, ShadowPosition},
+    },
+    tree::DiffModifies,
+};
+
+#[cfg(feature = "cpu-renderer")]
+use crate::element::{CpuClipContext, CpuRenderContext};
+
+/// [rect()] acts as a generic container to contain other elements inside, like a box.
+///
+/// Its the equivalent of `view`/`div`/`container` in other UI models.
+///
+/// See the available methods in [Rect].
+///
+/// ```rust
+/// # use freya::prelude::*;
+/// fn app() -> impl IntoElement {
+///     rect().expanded().background((0, 255, 0))
+/// }
+/// ```
+pub fn rect() -> Rect {
+    Rect::empty()
+}
+
+#[derive(PartialEq, Clone)]
+pub struct RectElement {
+    pub style: StyleState,
+    pub layout: LayoutData,
+    pub text_style_data: TextStyleData,
+    pub relative_layer: Layer,
+    pub event_handlers: FxHashMap<EventName, EventHandlerType>,
+    pub accessibility: AccessibilityData,
+    pub effect: Option<EffectData>,
+}
+
+impl Default for RectElement {
+    fn default() -> Self {
+        let mut accessibility = AccessibilityData::default();
+        accessibility
+            .builder
+            .set_role(accesskit::Role::GenericContainer);
+        Self {
+            style: Default::default(),
+            layout: Default::default(),
+            text_style_data: Default::default(),
+            relative_layer: Default::default(),
+            event_handlers: Default::default(),
+            accessibility,
+            effect: Default::default(),
+        }
+    }
+}
+
+impl RectElement {
+    #[cfg(feature = "cpu-renderer")]
+    fn cpu_color(color: Color) -> render_api::Color {
+        render_api::Color::rgba(color.r(), color.g(), color.b(), color.a())
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn cpu_rect(area: &Area) -> render_api::Rect {
+        render_api::Rect::new(area.min_x(), area.min_y(), area.max_x(), area.max_y())
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn cpu_rrect(area: &Area, corner_radius: &CornerRadius) -> render_api::RRect {
+        let rect = Self::cpu_rect(area);
+
+        render_api::RRect {
+            rect,
+            tl: render_api::Radius::circular(corner_radius.top_left),
+            tr: render_api::Radius::circular(corner_radius.top_right),
+            br: render_api::Radius::circular(corner_radius.bottom_right),
+            bl: render_api::Radius::circular(corner_radius.bottom_left),
+        }
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn cpu_rrect_path(rrect: render_api::RRect) -> render_api::PathData {
+        let rect = rrect.rect;
+        let width = rect.width().max(0.0);
+        let height = rect.height().max(0.0);
+        let tl = rrect.tl.x.min(width / 2.0).min(height / 2.0).max(0.0);
+        let tr = rrect.tr.x.min(width / 2.0).min(height / 2.0).max(0.0);
+        let br = rrect.br.x.min(width / 2.0).min(height / 2.0).max(0.0);
+        let bl = rrect.bl.x.min(width / 2.0).min(height / 2.0).max(0.0);
+
+        render_api::PathData::new(vec![
+            render_api::PathVerb::MoveTo(render_api::Point::new(rect.left + tl, rect.top)),
+            render_api::PathVerb::LineTo(render_api::Point::new(rect.right - tr, rect.top)),
+            render_api::PathVerb::QuadTo(
+                render_api::Point::new(rect.right, rect.top),
+                render_api::Point::new(rect.right, rect.top + tr),
+            ),
+            render_api::PathVerb::LineTo(render_api::Point::new(rect.right, rect.bottom - br)),
+            render_api::PathVerb::QuadTo(
+                render_api::Point::new(rect.right, rect.bottom),
+                render_api::Point::new(rect.right - br, rect.bottom),
+            ),
+            render_api::PathVerb::LineTo(render_api::Point::new(rect.left + bl, rect.bottom)),
+            render_api::PathVerb::QuadTo(
+                render_api::Point::new(rect.left, rect.bottom),
+                render_api::Point::new(rect.left, rect.bottom - bl),
+            ),
+            render_api::PathVerb::LineTo(render_api::Point::new(rect.left, rect.top + tl)),
+            render_api::PathVerb::QuadTo(
+                render_api::Point::new(rect.left, rect.top),
+                render_api::Point::new(rect.left + tl, rect.top),
+            ),
+            render_api::PathVerb::Close,
+        ])
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn cpu_border_path(
+        area: &Area,
+        corner_radius: &CornerRadius,
+        border: &Border,
+    ) -> render_api::PathData {
+        let outer = Self::cpu_border_rrect(area, corner_radius, border, true);
+        let inner = Self::cpu_border_rrect(area, corner_radius, border, false);
+        let mut verbs = Self::cpu_rrect_path(outer).verbs.to_vec();
+        verbs.extend(Self::cpu_rrect_path(inner).verbs.iter().cloned());
+        render_api::PathData::new(verbs)
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn cpu_border_rrect(
+        area: &Area,
+        corner_radius: &CornerRadius,
+        border: &Border,
+        outer: bool,
+    ) -> render_api::RRect {
+        let mut rect = Self::cpu_rect(area);
+        let border_width = border.width;
+        let alignment_scale = match (border.alignment, outer) {
+            (BorderAlignment::Outer, true) => 1.0,
+            (BorderAlignment::Center, true) => 0.5,
+            (BorderAlignment::Inner, true) => 0.0,
+            (BorderAlignment::Outer, false) => 0.0,
+            (BorderAlignment::Center, false) => 0.5,
+            (BorderAlignment::Inner, false) => 1.0,
+        };
+
+        if outer {
+            rect.left -= border_width.left * alignment_scale;
+            rect.top -= border_width.top * alignment_scale;
+            rect.right += border_width.right * alignment_scale;
+            rect.bottom += border_width.bottom * alignment_scale;
+        } else {
+            rect.left += border_width.left * alignment_scale;
+            rect.top += border_width.top * alignment_scale;
+            rect.right -= border_width.right * alignment_scale;
+            rect.bottom -= border_width.bottom * alignment_scale;
+        }
+
+        let radius_offset = |radius: f32, first: f32, second: f32| {
+            let offset = if first == 0.0 {
+                second
+            } else if second == 0.0 {
+                first
+            } else {
+                first.min(second)
+            };
+
+            if outer {
+                match border.alignment {
+                    BorderAlignment::Inner => radius,
+                    BorderAlignment::Center => radius + offset * 0.5,
+                    BorderAlignment::Outer => radius + offset,
+                }
+            } else {
+                match border.alignment {
+                    BorderAlignment::Outer => radius,
+                    BorderAlignment::Center => (radius - offset * 0.5).max(0.0),
+                    BorderAlignment::Inner => (radius - offset).max(0.0),
+                }
+            }
+        };
+
+        render_api::RRect {
+            rect,
+            tl: render_api::Radius::circular(radius_offset(
+                corner_radius.top_left,
+                border_width.top,
+                border_width.left,
+            )),
+            tr: render_api::Radius::circular(radius_offset(
+                corner_radius.top_right,
+                border_width.top,
+                border_width.right,
+            )),
+            br: render_api::Radius::circular(radius_offset(
+                corner_radius.bottom_right,
+                border_width.bottom,
+                border_width.right,
+            )),
+            bl: render_api::Radius::circular(radius_offset(
+                corner_radius.bottom_left,
+                border_width.bottom,
+                border_width.left,
+            )),
+        }
+    }
+
+    pub fn render_shadow(
+        canvas: &Canvas,
+        path: &mut SkPath,
+        rounded_rect: SkRRect,
+        _area: Area,
+        shadow: &Shadow,
+        corner_radius: &CornerRadius,
+    ) {
+        let mut shadow_path = PathBuilder::new();
+        let mut shadow_paint = Paint::default();
+        shadow_paint.set_anti_alias(true);
+        shadow_paint.set_color(shadow.color);
+
+        // Shadows can be either outset or inset
+        // If they are outset, we fill a copy of the path outset by spread_radius, and blur it.
+        // Otherwise, we draw a stroke with the inner portion being spread_radius width, and the outer portion being blur_radius width.
+        let outset: SkPoint = match shadow.position {
+            ShadowPosition::Normal => {
+                shadow_paint.set_style(PaintStyle::Fill);
+                (shadow.spread, shadow.spread).into()
+            }
+            ShadowPosition::Inset => {
+                shadow_paint.set_style(PaintStyle::Stroke);
+                shadow_paint.set_stroke_width(shadow.blur / 2.0 + shadow.spread);
+                (-shadow.spread / 2.0, -shadow.spread / 2.0).into()
+            }
+        };
+
+        // Apply gassuan blur to the copied path.
+        if shadow.blur > 0.0 {
+            shadow_paint.set_mask_filter(SkMaskFilter::blur(
+                SkBlurStyle::Normal,
+                shadow.blur / 2.0,
+                false,
+            ));
+        }
+
+        // Add either the RRect or smoothed path based on whether smoothing is used.
+        if corner_radius.smoothing > 0.0 {
+            shadow_path.add_path(&corner_radius.smoothed_path(rounded_rect.with_outset(outset)));
+        } else {
+            shadow_path.add_rrect(rounded_rect.with_outset(outset), None, None);
+        }
+
+        // Offset our path by the shadow's x and y coordinates.
+        shadow_path.offset((shadow.x, shadow.y));
+
+        // Exclude the original path bounds from the shadow using a clip, then draw the shadow.
+        canvas.save();
+        canvas.clip_path(
+            path,
+            match shadow.position {
+                ShadowPosition::Normal => ClipOp::Difference,
+                ShadowPosition::Inset => ClipOp::Intersect,
+            },
+            true,
+        );
+        let shadow_path = shadow_path.detach();
+        canvas.draw_path(&shadow_path, &shadow_paint);
+        canvas.restore();
+    }
+
+    pub fn render_border(
+        canvas: &Canvas,
+        rect: SkRect,
+        border: &Border,
+        corner_radius: &CornerRadius,
+    ) {
+        let mut border_paint = Paint::default();
+        border_paint.set_style(PaintStyle::Fill);
+        border_paint.set_anti_alias(true);
+        border_paint.set_color(border.fill);
+
+        match Self::border_shape(rect, corner_radius, border) {
+            BorderShape::DRRect(outer, inner) => {
+                canvas.draw_drrect(outer, inner, &border_paint);
+            }
+            BorderShape::Path(path) => {
+                canvas.draw_path(&path, &border_paint);
+            }
+        }
+    }
+
+    /// Returns a `Path` that will draw a [`Border`] around a base rectangle.
+    ///
+    /// We don't use Skia's stroking API here, since we might need different widths for each side.
+    pub fn border_shape(
+        base_rect: SkRect,
+        base_corner_radius: &CornerRadius,
+        border: &Border,
+    ) -> BorderShape {
+        let border_alignment = border.alignment;
+        let border_width = border.width;
+
+        // First we create a path that is outset from the rect by a certain amount on each side.
+        //
+        // Let's call this the outer border path.
+        let (outer_rrect, outer_corner_radius) = {
+            // Calculate the outer corner radius for the border.
+            let corner_radius = CornerRadius {
+                top_left: Self::outer_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.top_left,
+                    border_width.top,
+                    border_width.left,
+                ),
+                top_right: Self::outer_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.top_right,
+                    border_width.top,
+                    border_width.right,
+                ),
+                bottom_left: Self::outer_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.bottom_left,
+                    border_width.bottom,
+                    border_width.left,
+                ),
+                bottom_right: Self::outer_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.bottom_right,
+                    border_width.bottom,
+                    border_width.right,
+                ),
+                smoothing: base_corner_radius.smoothing,
+            };
+
+            let rrect = SkRRect::new_rect_radii(
+                {
+                    let mut rect = base_rect;
+                    let alignment_scale = match border_alignment {
+                        BorderAlignment::Outer => 1.0,
+                        BorderAlignment::Center => 0.5,
+                        BorderAlignment::Inner => 0.0,
+                    };
+
+                    rect.left -= border_width.left * alignment_scale;
+                    rect.top -= border_width.top * alignment_scale;
+                    rect.right += border_width.right * alignment_scale;
+                    rect.bottom += border_width.bottom * alignment_scale;
+
+                    rect
+                },
+                &[
+                    (corner_radius.top_left, corner_radius.top_left).into(),
+                    (corner_radius.top_right, corner_radius.top_right).into(),
+                    (corner_radius.bottom_right, corner_radius.bottom_right).into(),
+                    (corner_radius.bottom_left, corner_radius.bottom_left).into(),
+                ],
+            );
+
+            (rrect, corner_radius)
+        };
+
+        // After the outer path, we will then move to the inner bounds of the border.
+        let (inner_rrect, inner_corner_radius) = {
+            // Calculate the inner corner radius for the border.
+            let corner_radius = CornerRadius {
+                top_left: Self::inner_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.top_left,
+                    border_width.top,
+                    border_width.left,
+                ),
+                top_right: Self::inner_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.top_right,
+                    border_width.top,
+                    border_width.right,
+                ),
+                bottom_left: Self::inner_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.bottom_left,
+                    border_width.bottom,
+                    border_width.left,
+                ),
+                bottom_right: Self::inner_border_path_corner_radius(
+                    border_alignment,
+                    base_corner_radius.bottom_right,
+                    border_width.bottom,
+                    border_width.right,
+                ),
+                smoothing: base_corner_radius.smoothing,
+            };
+
+            let rrect = SkRRect::new_rect_radii(
+                {
+                    let mut rect = base_rect;
+                    let alignment_scale = match border_alignment {
+                        BorderAlignment::Outer => 0.0,
+                        BorderAlignment::Center => 0.5,
+                        BorderAlignment::Inner => 1.0,
+                    };
+
+                    rect.left += border_width.left * alignment_scale;
+                    rect.top += border_width.top * alignment_scale;
+                    rect.right -= border_width.right * alignment_scale;
+                    rect.bottom -= border_width.bottom * alignment_scale;
+
+                    rect
+                },
+                &[
+                    (corner_radius.top_left, corner_radius.top_left).into(),
+                    (corner_radius.top_right, corner_radius.top_right).into(),
+                    (corner_radius.bottom_right, corner_radius.bottom_right).into(),
+                    (corner_radius.bottom_left, corner_radius.bottom_left).into(),
+                ],
+            );
+
+            (rrect, corner_radius)
+        };
+
+        if base_corner_radius.smoothing > 0.0 {
+            let mut path = PathBuilder::new();
+            path.set_fill_type(SkPathFillType::EvenOdd);
+
+            path.add_path(&outer_corner_radius.smoothed_path(outer_rrect));
+
+            path.add_path(&inner_corner_radius.smoothed_path(inner_rrect));
+
+            let path = path.detach();
+            BorderShape::Path(path)
+        } else {
+            BorderShape::DRRect(outer_rrect, inner_rrect)
+        }
+    }
+
+    fn outer_border_path_corner_radius(
+        alignment: BorderAlignment,
+        corner_radius: f32,
+        width_1: f32,
+        width_2: f32,
+    ) -> f32 {
+        if alignment == BorderAlignment::Inner || corner_radius == 0.0 {
+            return corner_radius;
+        }
+
+        let mut offset = if width_1 == 0.0 {
+            width_2
+        } else if width_2 == 0.0 {
+            width_1
+        } else {
+            width_1.min(width_2)
+        };
+
+        if alignment == BorderAlignment::Center {
+            offset *= 0.5;
+        }
+
+        corner_radius + offset
+    }
+
+    fn inner_border_path_corner_radius(
+        alignment: BorderAlignment,
+        corner_radius: f32,
+        width_1: f32,
+        width_2: f32,
+    ) -> f32 {
+        if alignment == BorderAlignment::Outer || corner_radius == 0.0 {
+            return corner_radius;
+        }
+
+        let mut offset = if width_1 == 0.0 {
+            width_2
+        } else if width_2 == 0.0 {
+            width_1
+        } else {
+            width_1.min(width_2)
+        };
+
+        if alignment == BorderAlignment::Center {
+            offset *= 0.5;
+        }
+
+        corner_radius - offset
+    }
+}
+
+impl ElementExt for RectElement {
+    fn changed(&self, other: &Rc<dyn ElementExt>) -> bool {
+        let Some(rect) = (other.as_ref() as &dyn Any).downcast_ref::<Self>() else {
+            return false;
+        };
+
+        self != rect
+    }
+
+    fn diff(&self, other: &Rc<dyn ElementExt>) -> DiffModifies {
+        let Some(rect) = (other.as_ref() as &dyn Any).downcast_ref::<Self>() else {
+            return DiffModifies::all();
+        };
+
+        let mut diff = DiffModifies::empty();
+
+        if self.style != rect.style {
+            diff.insert(DiffModifies::STYLE);
+        }
+
+        if self.effect != rect.effect {
+            diff.insert(DiffModifies::EFFECT);
+        }
+
+        if !self.layout.self_layout_eq(&rect.layout.layout) {
+            diff.insert(DiffModifies::STYLE);
+            diff.insert(DiffModifies::LAYOUT);
+        }
+
+        if !self.layout.inner_layout_eq(&rect.layout.layout) {
+            diff.insert(DiffModifies::STYLE);
+            diff.insert(DiffModifies::INNER_LAYOUT);
+        }
+
+        if self.accessibility != rect.accessibility {
+            diff.insert(DiffModifies::ACCESSIBILITY);
+        }
+
+        if self.relative_layer != rect.relative_layer {
+            diff.insert(DiffModifies::LAYER);
+        }
+
+        if self.event_handlers != rect.event_handlers {
+            diff.insert(DiffModifies::EVENT_HANDLERS);
+        }
+
+        if self.text_style_data != rect.text_style_data {
+            diff.insert(DiffModifies::TEXT_STYLE);
+        }
+
+        diff
+    }
+
+    fn layout(&'_ self) -> Cow<'_, LayoutData> {
+        Cow::Borrowed(&self.layout)
+    }
+
+    fn effect(&'_ self) -> Option<Cow<'_, EffectData>> {
+        self.effect.as_ref().map(Cow::Borrowed)
+    }
+
+    fn style(&'_ self) -> Cow<'_, StyleState> {
+        Cow::Borrowed(&self.style)
+    }
+
+    fn text_style(&'_ self) -> Cow<'_, TextStyleData> {
+        Cow::Borrowed(&self.text_style_data)
+    }
+
+    fn accessibility(&'_ self) -> Cow<'_, AccessibilityData> {
+        Cow::Borrowed(&self.accessibility)
+    }
+
+    fn layer(&self) -> Layer {
+        self.relative_layer
+    }
+
+    fn events_handlers(&'_ self) -> Option<Cow<'_, FxHashMap<EventName, EventHandlerType>>> {
+        Some(Cow::Borrowed(&self.event_handlers))
+    }
+
+    /// Checks if the cursor point is inside the rounded rectangle of this element,
+    /// using local coordinates relative to the element's visible area for improved precision with large absolute coordinates.
+    fn is_point_inside(&self, context: EventMeasurementContext) -> bool {
+        let area = context.layout_node.visible_area();
+        let cursor = context.cursor.to_f32();
+        let local_x = cursor.x - area.min_x();
+        let local_y = cursor.y - area.min_y();
+
+        #[cfg(not(feature = "cpu-renderer"))]
+        {
+            let local_area = Area::new((0., 0.).into(), area.size);
+            let rounded_rect = self.render_rect(&local_area, context.scale_factor as f32);
+            return rounded_rect.contains(SkRect::new(
+                local_x,
+                local_y,
+                local_x.next_up(),
+                local_y.next_up(),
+            ));
+        }
+
+        #[cfg(feature = "cpu-renderer")]
+        {
+            let style = self.style();
+            let corner_radius = style.corner_radius.with_scale(context.scale_factor as f32);
+            let rrect = Self::cpu_rrect(&Area::new((0., 0.).into(), area.size), &corner_radius);
+            point_in_rounded_rect(local_x, local_y, &rrect)
+        }
+    }
+
+    fn clip(&self, context: ClipContext) {
+        let area = context.visible_area;
+
+        let rounded_rect = self.render_rect(area, context.scale_factor as f32);
+
+        context
+            .canvas
+            .clip_rrect(rounded_rect, ClipOp::Intersect, true);
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn clip_cpu(&self, context: CpuClipContext) {
+        let style = self.style();
+        let corner_radius = style.corner_radius.with_scale(context.scale_factor as f32);
+        let rrect = Self::cpu_rrect(context.visible_area, &corner_radius);
+
+        context
+            .cmds
+            .clip(&render_api::ClipShape::RRect(rrect), true);
+    }
+
+    fn render(&self, context: RenderContext) {
+        let style = self.style();
+
+        let area = context.layout_node.visible_area();
+        let corner_radius = style.corner_radius.with_scale(context.scale_factor as f32);
+
+        let mut path = PathBuilder::new();
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Fill);
+        style.background.apply_to_paint(&mut paint, area);
+
+        // Container
+        let rounded_rect = self.render_rect(&area, context.scale_factor as f32);
+        if corner_radius.smoothing > 0.0 {
+            path.add_path(&corner_radius.smoothed_path(rounded_rect));
+        } else {
+            path.add_rrect(rounded_rect, None, None);
+        }
+
+        let mut path = path.detach();
+        context.canvas.draw_path(&path, &paint);
+
+        // Shadows
+        for shadow in style.shadows.iter() {
+            if shadow.color != Color::TRANSPARENT {
+                let shadow = shadow.with_scale(context.scale_factor as f32);
+
+                Self::render_shadow(
+                    context.canvas,
+                    &mut path,
+                    rounded_rect,
+                    area,
+                    &shadow,
+                    &corner_radius,
+                );
+            }
+        }
+
+        // Borders
+        for border in style.borders.iter() {
+            if border.is_visible() {
+                let border = border.with_scale(context.scale_factor as f32);
+                let rect = *rounded_rect.rect();
+                Self::render_border(context.canvas, rect, &border, &corner_radius);
+            }
+        }
+    }
+
+    #[cfg(feature = "cpu-renderer")]
+    fn render_cpu(&self, context: CpuRenderContext) {
+        let style = self.style();
+        let area = context.layout_node.visible_area();
+        let corner_radius = style.corner_radius.with_scale(context.scale_factor as f32);
+        let rounded_rect = Self::cpu_rrect(&area, &corner_radius);
+        let background_path = Self::cpu_rrect_path(rounded_rect);
+
+        // Drop shadows
+        for shadow in style.shadows.iter() {
+            if shadow.color != Color::TRANSPARENT && shadow.position == ShadowPosition::Normal {
+                let shadow = shadow.with_scale(context.scale_factor as f32);
+                let spread = shadow.spread;
+                let outset_rect = render_api::RRect {
+                    rect: render_api::Rect::new(
+                        rounded_rect.rect.left - spread,
+                        rounded_rect.rect.top - spread,
+                        rounded_rect.rect.right + spread,
+                        rounded_rect.rect.bottom + spread,
+                    ),
+                    tl: render_api::Radius::circular((corner_radius.top_left + spread).max(0.0)),
+                    tr: render_api::Radius::circular((corner_radius.top_right + spread).max(0.0)),
+                    br: render_api::Radius::circular(
+                        (corner_radius.bottom_right + spread).max(0.0),
+                    ),
+                    bl: render_api::Radius::circular((corner_radius.bottom_left + spread).max(0.0)),
+                };
+                let shadow_path = Self::cpu_rrect_path(outset_rect);
+
+                context.cmds.fill_drop_shadow(
+                    &shadow_path,
+                    Self::cpu_color(shadow.color),
+                    shadow.blur,
+                    shadow.x,
+                    shadow.y,
+                    shadow.spread,
+                );
+            }
+        }
+
+        // Background fill
+        if let Fill::Color(background) = style.background
+            && background != Color::TRANSPARENT
+        {
+            context.cmds.fill_path(
+                &background_path,
+                render_api::FillRule::NonZero,
+                &render_api::PaintStyle::solid(Self::cpu_color(background)),
+            );
+        }
+
+        // Borders
+        for border in style.borders.iter() {
+            if border.is_visible() {
+                let border = border.with_scale(context.scale_factor as f32);
+                let path = Self::cpu_border_path(&area, &corner_radius, &border);
+                context.cmds.fill_path(
+                    &path,
+                    render_api::FillRule::EvenOdd,
+                    &render_api::PaintStyle::solid(Self::cpu_color(border.fill)),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "cpu-renderer")]
+fn point_in_rounded_rect(px: f32, py: f32, rrect: &render_api::RRect) -> bool {
+    let r = &rrect.rect;
+    if px < r.left || px > r.right || py < r.top || py > r.bottom {
+        return false;
+    }
+
+    let tl = rrect.tl.x.max(0.0);
+    let tr = rrect.tr.x.max(0.0);
+    let br = rrect.br.x.max(0.0);
+    let bl = rrect.bl.x.max(0.0);
+
+    // Check each corner quadrant
+    if tl > 0.0 && px < r.left + tl && py < r.top + tl {
+        return (px - (r.left + tl)).powi(2) + (py - (r.top + tl)).powi(2) <= tl.powi(2);
+    }
+    if tr > 0.0 && px > r.right - tr && py < r.top + tr {
+        return (px - (r.right - tr)).powi(2) + (py - (r.top + tr)).powi(2) <= tr.powi(2);
+    }
+    if br > 0.0 && px > r.right - br && py > r.bottom - br {
+        return (px - (r.right - br)).powi(2) + (py - (r.bottom - br)).powi(2) <= br.powi(2);
+    }
+    if bl > 0.0 && px < r.left + bl && py > r.bottom - bl {
+        return (px - (r.left + bl)).powi(2) + (py - (r.bottom - bl)).powi(2) <= bl.powi(2);
+    }
+
+    true
+}
+
+pub struct Rect {
+    element: RectElement,
+    elements: Vec<Element>,
+    key: DiffKey,
+}
+
+impl ChildrenExt for Rect {
+    fn get_children(&mut self) -> &mut Vec<Element> {
+        &mut self.elements
+    }
+}
+
+impl KeyExt for Rect {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
+}
+
+impl EventHandlersExt for Rect {
+    fn get_event_handlers(&mut self) -> &mut FxHashMap<EventName, EventHandlerType> {
+        &mut self.element.event_handlers
+    }
+}
+
+impl AccessibilityExt for Rect {
+    fn get_accessibility_data(&mut self) -> &mut AccessibilityData {
+        &mut self.element.accessibility
+    }
+}
+
+impl TextStyleExt for Rect {
+    fn get_text_style_data(&mut self) -> &mut TextStyleData {
+        &mut self.element.text_style_data
+    }
+}
+
+impl StyleExt for Rect {
+    fn get_style(&mut self) -> &mut StyleState {
+        &mut self.element.style
+    }
+}
+
+impl MaybeExt for Rect {}
+
+impl LayerExt for Rect {
+    fn get_layer(&mut self) -> &mut Layer {
+        &mut self.element.relative_layer
+    }
+}
+
+impl LayoutExt for Rect {
+    fn get_layout(&mut self) -> &mut LayoutData {
+        &mut self.element.layout
+    }
+}
+
+impl ContainerExt for Rect {}
+
+impl ContainerWithContentExt for Rect {}
+
+impl ScrollableExt for Rect {
+    fn get_effect(&mut self) -> &mut EffectData {
+        if self.element.effect.is_none() {
+            self.element.effect = Some(EffectData::default())
+        }
+
+        self.element.effect.as_mut().unwrap()
+    }
+}
+
+impl InteractiveExt for Rect {
+    fn get_effect(&mut self) -> &mut EffectData {
+        if self.element.effect.is_none() {
+            self.element.effect = Some(EffectData::default())
+        }
+
+        self.element.effect.as_mut().unwrap()
+    }
+}
+
+impl EffectExt for Rect {
+    fn get_effect(&mut self) -> &mut EffectData {
+        if self.element.effect.is_none() {
+            self.element.effect = Some(EffectData::default())
+        }
+
+        self.element.effect.as_mut().unwrap()
+    }
+}
+
+impl From<Rect> for Element {
+    fn from(value: Rect) -> Self {
+        Element::Element {
+            key: value.key,
+            element: Rc::new(value.element),
+            elements: value.elements,
+        }
+    }
+}
+
+impl Rect {
+    pub fn empty() -> Self {
+        Self {
+            element: RectElement::default(),
+            elements: Vec::default(),
+            key: DiffKey::None,
+        }
+    }
+
+    pub fn try_downcast(element: &dyn ElementExt) -> Option<RectElement> {
+        (element as &dyn Any).downcast_ref::<RectElement>().cloned()
+    }
+
+    pub fn color(mut self, color: impl Into<Color>) -> Self {
+        self.element.text_style_data.color = Some(color.into());
+        self
+    }
+
+    pub fn font_size(mut self, font_size: impl Into<FontSize>) -> Self {
+        self.element.text_style_data.font_size = Some(font_size.into());
+        self
+    }
+
+    pub fn overflow<S: Into<Overflow>>(mut self, overflow: S) -> Self {
+        self.element
+            .effect
+            .get_or_insert_with(Default::default)
+            .overflow = overflow.into();
+        self
+    }
+
+    pub fn rotate<R: Into<Option<f32>>>(mut self, rotation: R) -> Self {
+        self.element
+            .effect
+            .get_or_insert_with(Default::default)
+            .rotation = rotation.into();
+        self
+    }
+
+    pub fn scale(mut self, scale: impl Into<Scale>) -> Self {
+        self.element
+            .effect
+            .get_or_insert_with(Default::default)
+            .scale = Some(scale.into());
+        self
+    }
+
+    pub fn opacity(mut self, opacity: impl Into<f32>) -> Self {
+        self.element
+            .effect
+            .get_or_insert_with(Default::default)
+            .opacity = Some(opacity.into());
+        self
+    }
+
+    pub fn blur(mut self, blur: impl Into<f32>) -> Self {
+        self.element
+            .effect
+            .get_or_insert_with(Default::default)
+            .blur = Some(blur.into());
+        self
+    }
+}

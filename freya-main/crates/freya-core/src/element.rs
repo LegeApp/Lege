@@ -1,0 +1,374 @@
+use std::{any::Any, borrow::Cow, fmt::Debug, rc::Rc};
+
+use freya_engine::prelude::{Canvas, FontCollection, FontMgr, SkRRect, SkRect};
+#[cfg(feature = "cpu-renderer")]
+use freya_render_api::RenderCommands;
+use rustc_hash::FxHashMap;
+use torin::{
+    prelude::{Area, LayoutNode, Size2D},
+    scaled::Scaled,
+};
+
+use crate::{
+    data::{AccessibilityData, EffectData, LayoutData, StyleState, TextStyleData, TextStyleState},
+    diff_key::DiffKey,
+    event_handler::EventHandler,
+    events::{
+        data::{
+            Event, KeyboardEventData, MouseEventData, PointerEventData, SizedEventData,
+            TouchEventData, WheelEventData,
+        },
+        name::EventName,
+    },
+    helpers::from_fn_standalone_borrowed_keyed,
+    layers::Layer,
+    node_id::NodeId,
+    prelude::{FileEventData, ImePreeditEventData, MaybeExt},
+    text_cache::TextCache,
+    tree::{DiffModifies, Tree},
+};
+
+pub trait ElementExt: Any {
+    fn into_element(self) -> Element
+    where
+        Self: Sized + Into<Element>,
+    {
+        self.into()
+    }
+
+    fn changed(&self, _other: &Rc<dyn ElementExt>) -> bool {
+        false
+    }
+
+    fn diff(&self, _other: &Rc<dyn ElementExt>) -> DiffModifies {
+        DiffModifies::empty()
+    }
+
+    fn layout(&'_ self) -> Cow<'_, LayoutData> {
+        Cow::Owned(Default::default())
+    }
+
+    fn accessibility(&'_ self) -> Cow<'_, AccessibilityData> {
+        Cow::Owned(Default::default())
+    }
+
+    fn effect(&'_ self) -> Option<Cow<'_, EffectData>> {
+        None
+    }
+
+    fn style(&'_ self) -> Cow<'_, StyleState> {
+        Cow::Owned(Default::default())
+    }
+
+    fn text_style(&'_ self) -> Cow<'_, TextStyleData> {
+        Cow::Owned(Default::default())
+    }
+
+    fn layer(&self) -> Layer {
+        Layer::default()
+    }
+
+    fn events_handlers(&'_ self) -> Option<Cow<'_, FxHashMap<EventName, EventHandlerType>>> {
+        None
+    }
+
+    fn measure(&self, _context: LayoutContext) -> Option<(Size2D, Rc<dyn Any>)> {
+        None
+    }
+
+    fn should_hook_measurement(&self) -> bool {
+        false
+    }
+
+    fn should_measure_inner_children(&self) -> bool {
+        true
+    }
+
+    fn is_point_inside(&self, context: EventMeasurementContext) -> bool {
+        context
+            .layout_node
+            .visible_area()
+            .contains(context.cursor.to_f32())
+    }
+
+    fn clip(&self, _context: ClipContext) {}
+
+    fn render(&self, _context: RenderContext) {}
+
+    #[cfg(feature = "cpu-renderer")]
+    fn clip_cpu(&self, _context: CpuClipContext) {}
+
+    #[cfg(feature = "cpu-renderer")]
+    fn render_cpu(&self, _context: CpuRenderContext) {}
+
+    fn render_rect(&self, area: &Area, scale_factor: f32) -> SkRRect {
+        let style = self.style();
+        let corner_radius = style.corner_radius.with_scale(scale_factor);
+        SkRRect::new_rect_radii(
+            SkRect::new(area.min_x(), area.min_y(), area.max_x(), area.max_y()),
+            &[
+                (corner_radius.top_left, corner_radius.top_left).into(),
+                (corner_radius.top_right, corner_radius.top_right).into(),
+                (corner_radius.bottom_right, corner_radius.bottom_right).into(),
+                (corner_radius.bottom_left, corner_radius.bottom_left).into(),
+            ],
+        )
+    }
+}
+
+#[allow(dead_code)]
+pub struct LayoutContext<'a> {
+    pub node_id: NodeId,
+    pub torin_node: &'a torin::node::Node,
+    pub area_size: &'a Size2D,
+    pub font_collection: &'a mut FontCollection,
+    pub font_manager: &'a FontMgr,
+    pub text_style_state: &'a TextStyleState,
+    pub fallback_fonts: &'a [Cow<'static, str>],
+    pub scale_factor: f64,
+    pub text_cache: &'a mut TextCache,
+}
+
+#[allow(dead_code)]
+pub struct RenderContext<'a> {
+    pub font_collection: &'a mut FontCollection,
+    pub canvas: &'a Canvas,
+    pub layout_node: &'a LayoutNode,
+    pub text_style_state: &'a TextStyleState,
+    pub tree: &'a Tree,
+    pub scale_factor: f64,
+}
+
+#[cfg(feature = "cpu-renderer")]
+pub struct CpuRenderContext<'a> {
+    pub cmds: &'a mut dyn RenderCommands,
+    pub layout_node: &'a LayoutNode,
+    pub text_style_state: &'a TextStyleState,
+    pub tree: &'a Tree,
+    pub scale_factor: f64,
+}
+
+pub struct EventMeasurementContext<'a> {
+    pub cursor: ragnarok::CursorPoint,
+    pub layout_node: &'a LayoutNode,
+    pub scale_factor: f64,
+}
+
+pub struct ClipContext<'a> {
+    pub canvas: &'a Canvas,
+    pub visible_area: &'a Area,
+    pub scale_factor: f64,
+}
+
+#[cfg(feature = "cpu-renderer")]
+pub struct CpuClipContext<'a> {
+    pub cmds: &'a mut dyn RenderCommands,
+    pub visible_area: &'a Area,
+    pub scale_factor: f64,
+}
+
+impl<T: Any + PartialEq> ComponentProps for T {
+    fn changed(&self, other: &dyn ComponentProps) -> bool {
+        let other = (other as &dyn Any).downcast_ref::<T>().unwrap();
+        self != other
+    }
+}
+
+pub trait ComponentProps: Any {
+    fn changed(&self, other: &dyn ComponentProps) -> bool;
+}
+
+#[derive(Clone)]
+pub enum Element {
+    Component {
+        key: DiffKey,
+        comp: Rc<dyn Fn(Rc<dyn ComponentProps>) -> Element>,
+        props: Rc<dyn ComponentProps>,
+    },
+    Element {
+        key: DiffKey,
+        element: Rc<dyn ElementExt>,
+        elements: Vec<Element>,
+    },
+}
+
+impl Debug for Element {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Element { key, elements, .. } => {
+                f.write_str(&format!("Element {{ key: {:?} }}", key))?;
+                elements.fmt(f)
+            }
+            Self::Component { key, .. } => f.write_str(&format!("Component {{ key: {:?} }}", key)),
+        }
+    }
+}
+
+pub trait IntoElement {
+    fn into_element(self) -> Element;
+}
+
+impl<T: Into<Element>> IntoElement for T {
+    fn into_element(self) -> Element {
+        self.into()
+    }
+}
+
+/// [App] is a trait for root-level application components.
+/// Types implementing [App] automatically implement [Component] and have a
+/// blanket [PartialEq] implementation that always returns true.
+pub trait App: 'static {
+    fn render(&self) -> impl IntoElement;
+}
+
+/// [AppComponent] is a wrapper for [App] components that returns true in equality checks.
+#[derive(Clone)]
+pub struct AppComponent {
+    render: Rc<dyn Fn() -> Element + 'static>,
+}
+
+impl AppComponent {
+    pub fn new(render: impl App + 'static) -> Self {
+        Self {
+            render: Rc::new(move || render.render().into_element()),
+        }
+    }
+}
+
+impl PartialEq for AppComponent {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<F, E> From<F> for AppComponent
+where
+    F: Fn() -> E + 'static,
+    E: IntoElement,
+{
+    fn from(render: F) -> Self {
+        AppComponent {
+            render: Rc::new(move || render().into_element()),
+        }
+    }
+}
+
+impl Component for AppComponent {
+    fn render(&self) -> impl IntoElement {
+        (self.render)()
+    }
+}
+
+/// Encapsulate reusable pieces of UI by using the [Component] trait.
+/// Every [Component] creates a new layer of state in the app,
+/// meaning that implementors of [Component] can make use of hooks in their [Component::render] method.
+/// ```rust, no_run
+/// # use freya::prelude::*;
+/// #[derive(PartialEq)]
+/// struct ReusableCounter {
+///     pub init_number: u8,
+/// }
+///
+/// impl Component for ReusableCounter {
+///     fn render(&self) -> impl IntoElement {
+///         let mut number = use_state(|| self.init_number);
+///         label()
+///             .on_press(move |_| {
+///                 *number.write() += 1;
+///             })
+///             .text(number.read().to_string())
+///     }
+/// }
+/// ```
+pub trait Component: ComponentKey + PartialEq + 'static {
+    fn render(&self) -> impl IntoElement;
+
+    fn render_key(&self) -> DiffKey {
+        self.default_key()
+    }
+}
+
+pub trait ComponentOwned: ComponentKey + PartialEq + 'static {
+    fn render(self) -> impl IntoElement;
+
+    fn render_key(&self) -> DiffKey {
+        self.default_key()
+    }
+}
+
+pub trait ComponentKey {
+    fn default_key(&self) -> DiffKey;
+}
+
+impl<T> Component for T
+where
+    T: ComponentOwned + Clone + PartialEq,
+{
+    fn render(&self) -> impl IntoElement {
+        <Self as ComponentOwned>::render(self.clone())
+    }
+    fn render_key(&self) -> DiffKey {
+        <Self as ComponentOwned>::render_key(self)
+    }
+}
+
+impl<T> ComponentKey for T
+where
+    T: Component,
+{
+    fn default_key(&self) -> DiffKey {
+        DiffKey::U64(Self::render as *const () as u64)
+    }
+}
+
+impl<T> MaybeExt for T where T: Component {}
+
+impl<T: Component> From<T> for Element {
+    fn from(value: T) -> Self {
+        from_fn_standalone_borrowed_keyed(value.render_key(), value, |v| v.render().into_element())
+    }
+}
+
+impl PartialEq for Element {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Component {
+                    key: key1,
+                    props: props1,
+                    ..
+                },
+                Self::Component {
+                    key: key2,
+                    props: props2,
+                    ..
+                },
+            ) => key1 == key2 && !props1.changed(props2.as_ref()),
+            (
+                Self::Element {
+                    key: key1,
+                    element: element1,
+                    elements: elements1,
+                },
+                Self::Element {
+                    key: key2,
+                    element: element2,
+                    elements: elements2,
+                },
+            ) => key1 == key2 && !element1.changed(element2) && elements1 == elements2,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum EventHandlerType {
+    Mouse(EventHandler<Event<MouseEventData>>),
+    Keyboard(EventHandler<Event<KeyboardEventData>>),
+    Sized(EventHandler<Event<SizedEventData>>),
+    Wheel(EventHandler<Event<WheelEventData>>),
+    Touch(EventHandler<Event<TouchEventData>>),
+    Pointer(EventHandler<Event<PointerEventData>>),
+    ImePreedit(EventHandler<Event<ImePreeditEventData>>),
+    File(EventHandler<Event<FileEventData>>),
+}
