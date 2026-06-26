@@ -1,0 +1,351 @@
+use freya_engine::prelude::{
+    Canvas, ClipOp, FontCollection, FontMgr, SaveLayerRec, SkMatrix, SkPoint, blur,
+};
+#[cfg(feature = "cpu-renderer")]
+use freya_render_api::RenderCommands;
+
+#[cfg(feature = "cpu-renderer")]
+use crate::element::{CpuClipContext, CpuRenderContext};
+use crate::{
+    element::{ClipContext, RenderContext},
+    prelude::Color,
+    style::shadow::ShadowPosition,
+    tree::Tree,
+};
+
+pub struct RenderPipeline<'a> {
+    pub font_collection: &'a mut FontCollection,
+    pub font_manager: &'a FontMgr,
+    pub canvas: &'a Canvas,
+    pub tree: &'a Tree,
+    pub scale_factor: f64,
+    pub background: Color,
+}
+
+impl RenderPipeline<'_> {
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    pub fn render(self) {
+        self.canvas.clear(self.background);
+
+        // TODO: Use incremental rendering
+        for i16 in itertools::sorted(self.tree.layers.keys()) {
+            let nodes = self.tree.layers.get(i16).unwrap();
+            'rendering: for node_id in nodes {
+                let layer = self.canvas.save();
+
+                let element = self.tree.elements.get(node_id).unwrap();
+                let text_style_state = self.tree.text_style_state.get(node_id).unwrap();
+                let layout_node = self.tree.layout.get(node_id).unwrap();
+                let effect_state = self.tree.effect_state.get(node_id);
+
+                if let Some(effect_state) = effect_state {
+                    let mut visible_area = layout_node.visible_area();
+
+                    // Transform the element area given the scale effects
+                    for id in effect_state.scales.iter() {
+                        let layout_node = self.tree.layout.get(id).unwrap();
+                        let effect = self.tree.effect_state.get(id).unwrap();
+                        let area = layout_node.visible_area();
+                        let center = area.center();
+                        let scale = effect.scale.unwrap();
+
+                        visible_area = visible_area.translate(-center.to_vector());
+                        visible_area = visible_area.scale(scale.x, scale.y);
+                        visible_area = visible_area.translate(center.to_vector());
+                    }
+
+                    hotpath::measure_block!("Element Clipping", {
+                        for clip_node_id in effect_state.clips.iter() {
+                            let clip_element = self.tree.elements.get(clip_node_id).unwrap();
+                            let clip_layout_node = self.tree.layout.get(clip_node_id).unwrap();
+                            let clip_effect = self.tree.effect_state.get(clip_node_id).unwrap();
+
+                            let mut transformed_clip_area = clip_layout_node.visible_area();
+
+                            // For every clip area that his element gets we also need to apply the effects to each one so that
+                            // we can properly assume whether this element is actually visible or not
+                            for id in clip_effect.scales.iter() {
+                                let scale_layout_node = self.tree.layout.get(id).unwrap();
+                                let scale_effect = self.tree.effect_state.get(id).unwrap();
+                                let area = scale_layout_node.visible_area();
+                                let center = area.center();
+                                let scale = scale_effect.scale.unwrap();
+
+                                transformed_clip_area =
+                                    transformed_clip_area.translate(-center.to_vector());
+                                transformed_clip_area =
+                                    transformed_clip_area.scale(scale.x, scale.y);
+                                transformed_clip_area =
+                                    transformed_clip_area.translate(center.to_vector());
+                            }
+
+                            // No need to render this element as it is completely clipped
+                            if !visible_area.intersects(&transformed_clip_area) {
+                                self.canvas.restore_to_count(layer);
+                                continue 'rendering;
+                            }
+
+                            let clip_context = ClipContext {
+                                canvas: self.canvas,
+                                visible_area: &transformed_clip_area,
+                                scale_factor: self.scale_factor,
+                            };
+
+                            clip_element.clip(clip_context);
+                        }
+                    });
+
+                    // Pass rotate effect to children
+                    for id in effect_state.rotations.iter() {
+                        let layout_node = self.tree.layout.get(id).unwrap();
+                        let effect = self.tree.effect_state.get(id).unwrap();
+                        let area = layout_node.visible_area();
+                        let mut matrix = SkMatrix::new_identity();
+                        matrix.set_rotate(
+                            effect.rotation.unwrap(),
+                            Some(SkPoint {
+                                x: area.min_x() + area.width() / 2.0,
+                                y: area.min_y() + area.height() / 2.0,
+                            }),
+                        );
+                        self.canvas.concat(&matrix);
+                    }
+
+                    let render_rect = element.render_rect(&visible_area, self.scale_factor as f32);
+
+                    // Apply inherited opacity effects with bounds expanded
+                    // to accommodate outset shadows
+                    let mut layer_bounds = *render_rect.rect();
+                    let scale_factor = self.scale_factor as f32;
+
+                    for shadow in element.style().shadows.iter() {
+                        if shadow.position == ShadowPosition::Normal {
+                            let outset_x = shadow.x.abs() + shadow.spread + shadow.blur;
+                            let outset_y = shadow.y.abs() + shadow.spread + shadow.blur;
+                            layer_bounds = layer_bounds
+                                .with_outset((outset_x * scale_factor, outset_y * scale_factor));
+                        }
+                    }
+
+                    for opacity in effect_state.opacities.iter() {
+                        self.canvas.save_layer_alpha_f(layer_bounds, *opacity);
+                    }
+
+                    // Transform the canvas area given the scale effects
+                    for id in effect_state.scales.iter() {
+                        let layout_node = self.tree.layout.get(id).unwrap();
+                        let effect = self.tree.effect_state.get(id).unwrap();
+                        let area = layout_node.visible_area();
+                        let center = area.center();
+                        let scale = effect.scale.unwrap();
+
+                        self.canvas.translate((center.x, center.y));
+                        self.canvas.scale((scale.x, scale.y));
+                        self.canvas.translate((-center.x, -center.y));
+                    }
+                }
+
+                let render_context = RenderContext {
+                    font_collection: self.font_collection,
+                    canvas: self.canvas,
+                    layout_node,
+                    tree: self.tree,
+                    text_style_state,
+                    scale_factor: self.scale_factor,
+                };
+
+                hotpath::measure_block!("Element Render", {
+                    element.render(render_context);
+                });
+
+                if let Some(effect_state) = effect_state {
+                    let visible_area = layout_node.visible_area();
+                    let render_rect = element.render_rect(&visible_area, self.scale_factor as f32);
+                    // Apply blur effect
+                    if let Some(blur_radius) = effect_state.blur {
+                        let style = element.style();
+
+                        let image_filter = blur(
+                            (
+                                blur_radius * self.scale_factor as f32,
+                                blur_radius * self.scale_factor as f32,
+                            ),
+                            None,
+                            None,
+                            render_rect.rect(),
+                        );
+                        if let Some(image_filter) = image_filter {
+                            let rec = SaveLayerRec::default()
+                                .bounds(render_rect.rect())
+                                .backdrop(&image_filter);
+                            if style.corner_radius.is_round() {
+                                self.canvas.clip_rrect(render_rect, ClipOp::Intersect, true);
+                                self.canvas.save_layer(&rec);
+                            } else {
+                                self.canvas.save_layer(&rec);
+                            }
+                        }
+                    }
+                }
+
+                self.canvas.restore_to_count(layer);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "cpu-renderer")]
+pub struct CpuRenderPipeline<'a> {
+    pub cmds: &'a mut dyn RenderCommands,
+    pub tree: &'a Tree,
+    pub scale_factor: f64,
+    pub background: Color,
+}
+
+#[cfg(feature = "cpu-renderer")]
+impl CpuRenderPipeline<'_> {
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    pub fn render(self) {
+        self.cmds.clear(freya_render_api::Color::rgba(
+            self.background.r(),
+            self.background.g(),
+            self.background.b(),
+            self.background.a(),
+        ));
+
+        for i16 in itertools::sorted(self.tree.layers.keys()) {
+            let nodes = self.tree.layers.get(i16).unwrap();
+            'rendering: for node_id in nodes {
+                let layer = self.cmds.save();
+
+                let element = self.tree.elements.get(node_id).unwrap();
+                let text_style_state = self.tree.text_style_state.get(node_id).unwrap();
+                let layout_node = self.tree.layout.get(node_id).unwrap();
+
+                if let Some(effect_state) = self.tree.effect_state.get(node_id) {
+                    let mut visible_area = layout_node.visible_area();
+
+                    // Transform the element area given the scale effects
+                    for id in effect_state.scales.iter() {
+                        let layout_node = self.tree.layout.get(id).unwrap();
+                        let effect = self.tree.effect_state.get(id).unwrap();
+                        let area = layout_node.visible_area();
+                        let center = area.center();
+                        let scale = effect.scale.unwrap();
+
+                        visible_area = visible_area.translate(-center.to_vector());
+                        visible_area = visible_area.scale(scale.x, scale.y);
+                        visible_area = visible_area.translate(center.to_vector());
+                    }
+
+                    for clip_node_id in effect_state.clips.iter() {
+                        let clip_element = self.tree.elements.get(clip_node_id).unwrap();
+                        let clip_layout_node = self.tree.layout.get(clip_node_id).unwrap();
+                        let clip_effect = self.tree.effect_state.get(clip_node_id).unwrap();
+
+                        let mut transformed_clip_area = clip_layout_node.visible_area();
+
+                        // Apply clip area transforms for visibility check
+                        for id in clip_effect.scales.iter() {
+                            let scale_layout_node = self.tree.layout.get(id).unwrap();
+                            let scale_effect = self.tree.effect_state.get(id).unwrap();
+                            let area = scale_layout_node.visible_area();
+                            let center = area.center();
+                            let scale = scale_effect.scale.unwrap();
+
+                            transformed_clip_area =
+                                transformed_clip_area.translate(-center.to_vector());
+                            transformed_clip_area = transformed_clip_area.scale(scale.x, scale.y);
+                            transformed_clip_area =
+                                transformed_clip_area.translate(center.to_vector());
+                        }
+
+                        // No need to render this element as it is completely clipped
+                        if !visible_area.intersects(&transformed_clip_area) {
+                            self.cmds.restore_to(layer);
+                            continue 'rendering;
+                        }
+
+                        let visible_area = clip_layout_node.visible_area();
+                        clip_element.clip_cpu(CpuClipContext {
+                            cmds: self.cmds,
+                            visible_area: &visible_area,
+                            scale_factor: self.scale_factor,
+                        });
+                    }
+
+                    // Pass rotate effect to children
+                    for id in effect_state.rotations.iter() {
+                        let layout_node = self.tree.layout.get(id).unwrap();
+                        let effect = self.tree.effect_state.get(id).unwrap();
+                        let area = layout_node.visible_area();
+                        let cx = area.min_x() + area.width() / 2.0;
+                        let cy = area.min_y() + area.height() / 2.0;
+                        let angle_rad = effect.rotation.unwrap().to_radians();
+
+                        // Translate to center, rotate, translate back
+                        self.cmds
+                            .transform(freya_render_api::Affine2D::from_translate(cx, cy));
+                        self.cmds
+                            .transform(freya_render_api::Affine2D::from_rotate(angle_rad));
+                        self.cmds
+                            .transform(freya_render_api::Affine2D::from_translate(-cx, -cy));
+                    }
+
+                    // Apply opacity
+                    for opacity in effect_state.opacities.iter() {
+                        let mut l = visible_area.min_x();
+                        let mut t = visible_area.min_y();
+                        let mut r = visible_area.max_x();
+                        let mut b = visible_area.max_y();
+                        let scale_factor = self.scale_factor as f32;
+
+                        for shadow in element.style().shadows.iter() {
+                            if shadow.position == ShadowPosition::Normal {
+                                let outset =
+                                    (shadow.x.abs() + shadow.spread + shadow.blur) * scale_factor;
+                                l -= outset;
+                                t -= outset;
+                                r += outset;
+                                b += outset;
+                            }
+                        }
+
+                        self.cmds
+                            .push_opacity_layer(freya_render_api::Rect::new(l, t, r, b), *opacity);
+                    }
+
+                    // Transform the canvas area given the scale effects
+                    for id in effect_state.scales.iter() {
+                        let layout_node = self.tree.layout.get(id).unwrap();
+                        let effect = self.tree.effect_state.get(id).unwrap();
+                        let area = layout_node.visible_area();
+                        let center = area.center();
+                        let scale = effect.scale.unwrap();
+
+                        self.cmds
+                            .transform(freya_render_api::Affine2D::from_translate(
+                                center.x, center.y,
+                            ));
+                        self.cmds
+                            .transform(freya_render_api::Affine2D::from_scale(scale.x, scale.y));
+                        self.cmds
+                            .transform(freya_render_api::Affine2D::from_translate(
+                                -center.x, -center.y,
+                            ));
+                    }
+                }
+
+                element.render_cpu(CpuRenderContext {
+                    cmds: self.cmds,
+                    layout_node,
+                    tree: self.tree,
+                    text_style_state,
+                    scale_factor: self.scale_factor,
+                });
+
+                self.cmds.restore_to(layer);
+            }
+        }
+    }
+}

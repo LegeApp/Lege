@@ -1,0 +1,42 @@
+name: Deploy docs
+on:
+  push:
+    paths:
+      - 'crates/**/*'
+      - '.github/workflows/deploy_docs.yml'
+
+env:
+  RUSTDOCFLAGS: "-D warnings"
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: macos-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "docs"
+
+      - name: cargo doc
+        run: RUSTDOCFLAGS="--cfg docsrs" cargo +nightly-2026-03-15 doc --no-deps --workspace --features "all, docs"
+      - name: Ensure nightly rustfmt
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-09-25
+          components: rustfmt
+
+      - name: Upload to Deno Deploy
+        uses: denoland/deployctl@v1
+        with:
+          project: freya-docs
+          entrypoint: https://deno.land/std/http/file_server.ts
+          root: target/doc

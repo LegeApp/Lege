@@ -1,0 +1,17 @@
+[package]
+name = "freya-text-cosmic"
+version = "0.4.0-rc.17"
+description = "Cosmic Text adapter for Freya"
+edition = "2024"
+license = "MIT"
+authors = ["Marc Espín <mespinsanz@gmail.com>"]
+readme = "../../README.md"
+homepage = "https://freyaui.dev/"
+repository = "https://github.com/marc2332/freya"
+
+[lints]
+workspace = true
+
+[dependencies]
+cosmic-text = { workspace = true }
+freya-render-api = { workspace = true }

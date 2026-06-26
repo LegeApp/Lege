@@ -1,0 +1,110 @@
+[package]
+name = "freya-winit"
+version = "0.4.0-rc.17"
+description = "Winit renderer for Freya"
+edition = "2024"
+license = "MIT"
+authors = ["Marc Espín <mespinsanz@gmail.com>"]
+readme = "../../README.md"
+homepage = "https://freyaui.dev/"
+repository = "https://github.com/marc2332/freya"
+keywords = ["gui"]
+categories = ["gui", "asynchronous"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+features = ["freya-core/mocked-engine"]
+
+[dependencies]
+freya-core = { workspace = true }
+freya-components = { workspace = true }
+torin = { workspace = true }
+tracing = { workspace = true }
+
+# Rendering
+bytes = { workspace = true }
+
+# Window
+raw-window-handle = { workspace = true }
+winit = { workspace = true }
+freya-engine = { workspace = true }
+freya-render-api = { workspace = true, optional = true }
+freya-render-tiny-skia = { workspace = true, optional = true }
+freya-text-cosmic = { workspace = true, optional = true }
+softbuffer = { workspace = true, optional = true }
+
+# Events
+ragnarok = { workspace = true }
+keyboard-types = { workspace = true }
+
+# Accessibility
+accesskit_winit = { workspace = true }
+accesskit = { workspace = true }
+
+# Other
+futures-lite = { workspace = true }
+futures-channel = { workspace = true }
+futures-util = { workspace = true }
+rustc-hash = { workspace = true }
+
+# Performance
+hotpath = { workspace = true }
+
+# Images
+image = { workspace = true }
+
+# Tray
+tray-icon = { workspace = true, optional = true }
+
+# Clipboard
+freya-clipboard = { workspace = true }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Crash handler
+rfd = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18.2", optional = true }
+
+# Rendering OpenGL + Vulkan (Linux/Windows)
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+gl = { workspace = true }
+glutin = { workspace = true }
+glutin-winit = { workspace = true }
+ash = { workspace = true, optional = true }
+ash-window = { workspace = true, optional = true }
+
+# Rendering OpenGL (Android)
+[target.'cfg(target_os = "android")'.dependencies]
+gl = { workspace = true }
+glutin = { workspace = true }
+glutin-winit = { workspace = true }
+
+# Rendering Metal (macOS)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3.2" }
+objc2 = { version = "0.6" }
+objc2-metal = { version = "0.3" }
+objc2-quartz-core = { version = "0.3" }
+objc2-app-kit = { version = "0.3" }
+
+[dev-dependencies]
+freya = { path = "../freya" }
+
+[features]
+hotpath = ["hotpath/hotpath"]
+skia-engine = ["freya-engine/skia-engine"]
+cpu-renderer = [
+  "dep:freya-render-api",
+  "dep:freya-render-tiny-skia",
+  "dep:freya-text-cosmic",
+  "dep:softbuffer",
+  "freya-components/cpu-renderer",
+  "freya-core/cpu-renderer",
+  "freya-engine/cpu-renderer",
+]
+vulkan = ["dep:ash", "dep:ash-window", "freya-engine/vulkan"]
+tray = ["dep:tray-icon", "dep:gtk"]
+tracing = []

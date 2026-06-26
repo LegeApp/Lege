@@ -1,0 +1,15 @@
+[package]
+name = "freya-render-api"
+version = "0.4.0-rc.17"
+description = "Backend-neutral rendering API for Freya"
+edition = "2024"
+license = "MIT"
+authors = ["Marc Espín <mespinsanz@gmail.com>"]
+readme = "../../README.md"
+homepage = "https://freyaui.dev/"
+repository = "https://github.com/marc2332/freya"
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -885,6 +885,20 @@ pub fn runtime_search_directories() -> Vec<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    if let Ok(dyld_path) = std::env::var("DYLD_LIBRARY_PATH") {
+        for segment in dyld_path.split(':').filter(|s| !s.is_empty()) {
+            push_unique(PathBuf::from(segment));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Ok(dyld_fallback) = std::env::var("DYLD_FALLBACK_LIBRARY_PATH") {
+        for segment in dyld_fallback.split(':').filter(|s| !s.is_empty()) {
+            push_unique(PathBuf::from(segment));
+        }
+    }
+
     for fallback in [
         "/usr/lib/lege",
         "/usr/local/lib/lege",
@@ -917,30 +931,24 @@ pub fn locate_pdfium_in_runtime_dirs() -> Option<PathBuf> {
     runtime_search_directories()
         .into_iter()
         .map(|dir| PathBuf::from(Pdfium::pdfium_platform_library_name_at_path(&dir)))
-        .find(|candidate| candidate.exists())
+        .find(|candidate| candidate.is_file())
 }
 
-pub fn ensure_pdfium_available() -> Result<()> {
+/// Resolve the bundled Pdfium library path used for runtime binding on all platforms.
+pub fn resolve_pdfium_library_path() -> Option<PathBuf> {
     if let Some(env_path) = std::env::var_os("PDFIUM_PATH") {
-        let path = PathBuf::from(&env_path);
-        crate::info_log!("Checking PDFIUM_PATH: {:?}", path);
-        if path.exists() {
-            crate::info_log!("Found pdfium at PDFIUM_PATH");
-            return Ok(());
+        let path = PathBuf::from(env_path);
+        if path.is_file() {
+            return Some(path);
         }
     }
 
-    crate::dbglog!("Searching for pdfium in runtime directories...");
-    if let Some(found_path) = locate_pdfium_in_runtime_dirs() {
+    locate_pdfium_in_runtime_dirs()
+}
+
+pub fn ensure_pdfium_available() -> Result<()> {
+    if let Some(found_path) = resolve_pdfium_library_path() {
         crate::dbglog!("Found pdfium at: {:?}", found_path);
-        return Ok(());
-    }
-
-    crate::dbglog!("Trying to bind to system library...");
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(not(feature = "static"))]
-    if Pdfium::bind_to_system_library().is_ok() {
         return Ok(());
     }
 

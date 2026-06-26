@@ -14,8 +14,8 @@ default = []
 # Keep this feature set aligned with the published Windows Skia binary cache.
 # Slimmer sets such as only `skia-engine` request a non-existent Skia archive
 # and fall back to a local LLVM/clang Skia build.
-freya = { path = "../../../freya-main/crates/freya", default-features = false, features = ["cpu-renderer"] }
-rfd = { path = "../../../clones/rfd" }
+freya = { path = "../../freya-main/crates/freya", default-features = false, features = ["cpu-renderer"] }
+rfd = { path = "../rfd" }
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "fs", "time", "sync", "process", "io-util"] }
 anyhow = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }

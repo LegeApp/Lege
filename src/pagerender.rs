@@ -1,4 +1,4 @@
-use crate::{debug_println, pipeline::config::runtime_asset_path_if_exists};
+use crate::{debug_println, pipeline::config::resolve_pdfium_library_path};
 use anyhow::{Result, anyhow};
 use once_cell::sync::Lazy;
 use pdfium_render::prelude::*;
@@ -322,19 +322,11 @@ pub fn count_pdf_pages_from_bytes(pdf_bytes: &[u8]) -> Result<u16> {
     Ok(document.pages().len())
 }
 
-fn bind_pdfium_from_runtime_dirs() -> Result<Box<dyn PdfiumLibraryBindings>, anyhow::Error> {
-    // Only look in the runtime directory
-    let lib_name = Pdfium::pdfium_platform_library_name();
-    match runtime_asset_path_if_exists(lib_name.to_string_lossy().as_ref()) {
-        Some(path) if path.exists() => Pdfium::bind_to_library(path)
-            .map_err(|e| anyhow!("Failed to load PDFium library: {:?}", e)),
-        _ => Err(anyhow!("PDFium library not found in runtime directory")),
-    }
-}
-
 fn bind_pdfium_once() -> Result<Pdfium> {
-    // Try to bind to PDFium library from runtime directory
-    let bindings = bind_pdfium_from_runtime_dirs()?;
+    let path = resolve_pdfium_library_path()
+        .ok_or_else(|| anyhow!("PDFium library not found next to the executable"))?;
+    let bindings = Pdfium::bind_to_library(path)
+        .map_err(|e| anyhow!("Failed to load PDFium library: {:?}", e))?;
     let pdfium = Pdfium::new(bindings);
 
     // Verify we can create a document

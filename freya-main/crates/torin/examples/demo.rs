@@ -1,0 +1,166 @@
+use std::collections::HashMap;
+
+use torin::prelude::*;
+
+#[derive(Clone)]
+struct DemoNode {
+    parent: Option<usize>,
+    children: Vec<usize>,
+    height: u16,
+    node: Node,
+}
+
+#[derive(Default)]
+pub struct DemoTree {
+    nodes: HashMap<usize, DemoNode>,
+}
+
+impl DemoTree {
+    /// Add the Node to the Tree
+    pub fn add(&mut self, node_id: usize, parent: Option<usize>, children: Vec<usize>, node: Node) {
+        // Get the parent's height in the Tree
+        let parent_height = parent
+            .map(|p| self.nodes.get(&p).unwrap().height)
+            .unwrap_or(0);
+
+        // Assign the node a height just below its parent
+        let height = parent_height + 1;
+
+        self.nodes.insert(
+            node_id,
+            DemoNode {
+                parent,
+                children,
+                height,
+                node,
+            },
+        );
+    }
+
+    /// Update a Node
+    pub fn set_node(&mut self, node_id: usize, node: Node) {
+        self.nodes.get_mut(&node_id).unwrap().node = node;
+    }
+
+    // Recursively remove a Node from the Tree
+    pub fn remove(&mut self, node_id: usize) {
+        let node = self.nodes.remove(&node_id).unwrap();
+
+        if let Some(DemoNode { children, .. }) = node.parent.and_then(|p| self.nodes.get_mut(&p)) {
+            children.retain(|c| *c != node_id);
+        }
+
+        for child in node.children {
+            self.remove(child);
+        }
+    }
+}
+
+impl TreeAdapter<usize> for DemoTree {
+    fn children_of(&mut self, node_id: &usize) -> Vec<usize> {
+        self.nodes
+            .get(node_id)
+            .map(|c| c.children.clone())
+            .unwrap_or_default()
+    }
+
+    fn parent_of(&self, node_id: &usize) -> Option<usize> {
+        self.nodes.get(node_id).and_then(|c| c.parent)
+    }
+
+    fn height(&self, node_id: &usize) -> Option<u16> {
+        self.nodes.get(node_id).map(|c| c.height)
+    }
+
+    fn get_node(&self, node_id: &usize) -> Option<Node> {
+        self.nodes.get(node_id).map(|c| c.node.clone())
+    }
+
+    fn root_id(&self) -> usize {
+        0 // We assume 0 is the root ID of the Tree
+    }
+}
+
+fn main() {
+    let mut layout = Torin::<usize>::new();
+
+    let mut demo_tree = DemoTree::default();
+
+    // Node A: Root Node
+    demo_tree.add(
+        0,       // ID
+        None,    // Parent ID
+        vec![1], // Children IDs
+        Node::from_size_and_alignments_and_direction(
+            Size::Pixels(Length::new(200.0)),
+            Size::Pixels(Length::new(200.0)),
+            Alignment::Center,
+            Alignment::Center,
+            Direction::Horizontal,
+        ),
+    );
+
+    // Node B: Child of the Root Node
+    demo_tree.add(
+        1,       // ID
+        Some(0), // Parent ID
+        vec![2], // Children IDs
+        Node::from_size_and_direction(
+            Size::Pixels(Length::new(100.0)),
+            Size::Pixels(Length::new(100.0)),
+            Direction::Vertical,
+        ),
+    );
+
+    // Node C: Child of Node B
+    demo_tree.add(
+        2,       // ID
+        Some(1), // Parent ID
+        vec![],  // Children IDs
+        Node::from_size_and_direction(
+            Size::Percentage(Length::new(50.0)),
+            Size::Percentage(Length::new(50.0)),
+            Direction::Vertical,
+        ),
+    );
+
+    // Measure our Tree layout
+    layout.measure(
+        0,                                                              // Root ID
+        Rect::new(Point2D::new(0.0, 0.0), Size2D::new(1000.0, 1000.0)), // Available Area
+        &mut None::<NoopMeasurer>,
+        &mut demo_tree,
+    );
+
+    // Mutate the Node B
+    demo_tree.set_node(
+        1, // ID
+        Node::from_size_and_direction(
+            Size::Percentage(Length::new(80.0)), // We change this from 50% to 80%
+            Size::Percentage(Length::new(80.0)), // We change this from 50% to 80%
+            Direction::Vertical,
+        ),
+    );
+    layout.invalidate(1);
+
+    println!("Initial measurement");
+    for (id, node) in &layout.results {
+        println!("{id:?} -> {:?}", node.area);
+    }
+
+    // Make Torin calculate from what Node it is the most efficiente to start measuringg again
+    layout.find_best_root(&mut demo_tree);
+
+    // If Torin wasn't able to find a Root candidate, it will just use the ID we pass as fist argument
+    layout.measure(
+        0,                                                              // Fallback Root ID
+        Rect::new(Point2D::new(0.0, 0.0), Size2D::new(1000.0, 1000.0)), // Available Area
+        &mut None::<NoopMeasurer>,
+        &mut demo_tree,
+    );
+
+    println!("\nSecond measurement");
+    for (id, node) in &layout.results {
+        println!("{id:?} -> {:?}", node.area);
+    }
+}

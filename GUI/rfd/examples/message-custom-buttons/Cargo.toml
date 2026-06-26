@@ -1,0 +1,10 @@
+[package]
+name = "message-custom-buttons"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rfd = { path = "../..", features = ["common-controls-v6"] }
+
+[build-dependencies]
+embed-resource = "3"

@@ -38,21 +38,21 @@ num_cpus = "1.17"
 serde = { version = "1.0.228", features = ["derive"] }
 config = { version = "0.14.1", features = ["toml"] }
 thiserror = "1.0.69"
-serde_json = "1.0.149" 
-log = "0.4.29" 
-once_cell = "1.21.3" 
-rayon = "1.11.0"  
-image = { version = "0.25.9", features = ["png", "jpeg", "tiff"] }  
+serde_json = "1.0.149"
+log = "0.4.29"
+once_cell = "1.21.3"
+rayon = "1.11.0"
+image = { version = "0.25.9", features = ["png", "jpeg", "tiff"] }
 lopdf = "0.39.0"
-flume = "0.11" 
-pdfium-render = { version = "0.8.37", features = ["thread_safe", "sync"] }  
-tempfile = "3.24.0"  
+flume = "0.11"
+pdfium-render = { version = "0.8.37", features = ["thread_safe", "sync"] }
+tempfile = "3.24.0"
 flate2 = "1.1.8"
 zip = { version = "8.6.0", default-features = false }
 miniz_oxide = "0.8"
-lazy_static = "1.5.0"  
+lazy_static = "1.5.0"
 ndarray = { version = "0.17.2", features = ["rayon"] }
-bytemuck = { version = "1.25.0", features = ["derive", "extern_crate_alloc"] }  
+bytemuck = { version = "1.25.0", features = ["derive", "extern_crate_alloc"] }
 cfg-if = "1.0.4"
 html-escape = "0.2.13"
 itertools = "0.12.1"
@@ -73,22 +73,18 @@ windows-future = { version = "0.3.2", default-features = false }
 
 resolver = "2"
 
-# Local development override of LegeApp/freya fork.
-# CPU rendering, aspect-ratio constraint and Position::corner helper live in this checkout.
+# Vendored LegeApp/freya fork (freya-main/) and rfd (GUI/rfd/) live in this repo.
 [patch."https://github.com/LegeApp/freya.git"]
-freya = { path = "../freya-main/crates/freya" }
-freya-core = { path = "../freya-main/crates/freya-core" }
-freya-components = { path = "../freya-main/crates/freya-components" }
-freya-engine = { path = "../freya-main/crates/freya-engine" }
-freya-winit = { path = "../freya-main/crates/freya-winit" }
-freya-edit = { path = "../freya-main/crates/freya-edit" }
-freya-clipboard = { path = "../freya-main/crates/freya-clipboard" }
-freya-animation = { path = "../freya-main/crates/freya-animation" }
-freya-performance-plugin = { path = "../freya-main/crates/freya-performance-plugin" }
-torin = { path = "../freya-main/crates/torin" }
-
-[patch.crates-io]
-gpu-allocator = { path = "gpu-allocator" }
+freya = { path = "freya-main/crates/freya" }
+freya-core = { path = "freya-main/crates/freya-core" }
+freya-components = { path = "freya-main/crates/freya-components" }
+freya-engine = { path = "freya-main/crates/freya-engine" }
+freya-winit = { path = "freya-main/crates/freya-winit" }
+freya-edit = { path = "freya-main/crates/freya-edit" }
+freya-clipboard = { path = "freya-main/crates/freya-clipboard" }
+freya-animation = { path = "freya-main/crates/freya-animation" }
+freya-performance-plugin = { path = "freya-main/crates/freya-performance-plugin" }
+torin = { path = "freya-main/crates/torin" }
 
 [[bin]]
 name = "lege"
@@ -108,7 +104,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 fontdue = { version = "0.9.3", optional = true }
 png = "0.17.16"
-image = { workspace = true }  
+image = { workspace = true }
 # Enhanced CLI dependencies
 dialoguer = { workspace = true }
 config = { workspace = true }
@@ -137,7 +133,7 @@ sysinfo = "0.31.4"
 shlex = "1.3.0"
 cfg-if = { workspace = true }
 html-escape = { workspace = true }
-chrono = { version = "0.4.43", features = ["serde"] }  
+chrono = { version = "0.4.43", features = ["serde"] }
 memmap2 = "0.9.9"
 winres = "0.1.12"
 libloading = "0.8.9"
@@ -159,7 +155,6 @@ sha2 = { version = "0.10", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 flume = { workspace = true }
 zip = { workspace = true, features = ["deflate"] }
-# Native DJVU encoder (pure Rust, no external dependencies)
 djvu_encoder = { path = "djvulibrust" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
