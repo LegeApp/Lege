@@ -3,10 +3,10 @@ use anyhow::{Result, anyhow, bail};
 use lege::progress::{self, ProgressUpdate};
 use lege::text_loader::CLI_TEXT;
 use lege::{
-    AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PipelineConfig,
-    error_println, info_println, is_ocr_available, run_images_to_images_mode,
+    AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PageSelection,
+    PipelineConfig, error_println, info_println, is_ocr_available, run_images_to_images_mode,
     run_pdf_layout_crop_debug, run_pdf_to_images_mode, run_pdf_to_png_mode, run_png_mode,
-    run_png_mode_with_config, target_profiles,
+    run_png_mode_with_config,
 };
 
 mod version;
@@ -391,14 +391,15 @@ struct CliOptions {
     output_dir: Option<PathBuf>, // --output <dir>
 
     // --- Processing toggles ---
-    dither: bool,                  // --dither
-    no_layout: bool,               // --no-layout
-    ocr: Option<bool>,             // --ocr / --no-ocr
-    ocr_mode: Option<OcrMode>,     // --ocr-mode fast|best / --best-ocr
-    slow_ocr_scale: Option<f32>,   // --best-ocr-scale N
-    no_cover: bool,                // --no-cover
-    invert: bool,                  // --invert
-    jbig2_mode: Option<Jbig2Mode>, // --jbig2-mode generic|symbol|sym-unify
+    dither: bool,                           // --dither
+    no_layout: bool,                        // --no-layout
+    layout_exclusion_pages: Option<String>, // --exclude-layout 1,3,7-10
+    ocr: Option<bool>,                      // --ocr / --no-ocr
+    ocr_mode: Option<OcrMode>,              // --ocr-mode fast|best / --best-ocr
+    slow_ocr_scale: Option<f32>,            // --best-ocr-scale N
+    no_cover: bool,                         // --no-cover
+    invert: bool,                           // --invert
+    jbig2_mode: Option<Jbig2Mode>,          // --jbig2-mode generic|symbol|sym-unify
     halftone: bool, // --halftone (JBIG2 halftone segments via jbig2halftone.rs; overrides --dither)
     reflow: bool,   // --reflow (raster reflow; requires layout detection)
     jpeg_compat: bool, // --jpeg-compat
@@ -589,6 +590,15 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     );
                 }
                 opts.language = Some(normalized);
+                i += 2;
+            }
+            "--exclude-layout" | "--layout-exclude" => {
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after {}", arg))?;
+                PageSelection::parse(raw)
+                    .map_err(|e| anyhow!("Invalid {} '{}': {}", arg, raw, e))?;
+                opts.layout_exclusion_pages = Some(raw.clone());
                 i += 2;
             }
             "--ocr-mode" => {
@@ -994,7 +1004,35 @@ fn run_main() -> Result<()> {
         .iter()
         .any(|a| a == "--targets" || a == "--list-targets")
     {
-        print_target_profiles();
+        print_target_help();
+        return Ok(());
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--save-resolution-preset") {
+        let first = args
+            .get(idx + 1)
+            .ok_or_else(|| anyhow!("Missing target after --save-resolution-preset"))?;
+        let value = if let Some(second) = args.get(idx + 2) {
+            if looks_like_target_dimension_number(first)
+                && looks_like_target_dimension_number(second)
+            {
+                format!("{first} {second}")
+            } else {
+                first.clone()
+            }
+        } else {
+            first.clone()
+        };
+        let selection = parse_target_argument(&value)?
+            .ok_or_else(|| anyhow!("Cannot save the default target as a preset"))?;
+        lege::resolution_preset::save(lege::resolution_preset::ResolutionPreset {
+            height: selection.height,
+            width: selection.width,
+        })?;
+        println!(
+            "Saved resolution preset: {}",
+            describe_target_selection(selection)
+        );
         return Ok(());
     }
 
@@ -1236,6 +1274,22 @@ fn run_main() -> Result<()> {
         }
 
         // Trailing target (height/profile) takes precedence over page range so numeric targets aren't misread.
+        if positional.len() >= 2 {
+            let last_idx = positional.len() - 1;
+            let prev_idx = positional.len() - 2;
+            let prev = &positional[prev_idx];
+            let last = &positional[last_idx];
+            if !looks_like_input_arg(prev)
+                && !looks_like_input_arg(last)
+                && looks_like_target_dimension_number(prev)
+                && looks_like_target_dimension_number(last)
+            {
+                let width = positional.pop().unwrap();
+                let height = positional.pop().unwrap();
+                target_arg = Some(format!("{height} {width}"));
+            }
+        }
+
         if let Some(last) = positional.last() {
             if !looks_like_input_arg(last) {
                 if parse_target_argument(last).is_ok() {
@@ -1331,10 +1385,10 @@ fn print_debug_help() {
     println!("{}", CLI_TEXT.main.debug_help_block);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TargetSelection {
     width: Option<u32>,
     height: u32,
-    profile_label: Option<&'static str>,
 }
 
 fn interpret_page_range_arg(arg: String) -> Option<String> {
@@ -1364,6 +1418,12 @@ fn looks_like_page_range(input: &str) -> bool {
         .all(|ch| ch.is_ascii_digit() || ch == ',' || ch == '-' || ch.is_ascii_whitespace())
 }
 
+fn looks_like_target_dimension_number(input: &str) -> bool {
+    input
+        .parse::<u32>()
+        .is_ok_and(|value| (100..=20000).contains(&value))
+}
+
 fn looks_like_input_arg(input: &str) -> bool {
     let path = PathBuf::from(input);
     if path.exists() {
@@ -1387,16 +1447,17 @@ fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
         return Ok(None);
     }
 
-    if let Some(profile) = target_profiles::find_profile(trimmed) {
+    if trimmed.eq_ignore_ascii_case("preset") || trimmed.eq_ignore_ascii_case("load-preset") {
+        let preset = lege::resolution_preset::load()?
+            .ok_or_else(|| anyhow!("No saved resolution preset found"))?;
         return Ok(Some(TargetSelection {
-            width: Some(profile.width),
-            height: profile.height,
-            profile_label: Some(profile.name),
+            width: preset.width,
+            height: preset.height,
         }));
     }
 
-    // Allow "height width" input for disproportionate custom sizing in interactive CLI,
-    // e.g. "1600 1200" => height 1600, width 1200.
+    // Allow "height width" input for fixed custom sizing, e.g. "1600 1200"
+    // means height 1600, width 1200.
     let whitespace_parts: Vec<&str> = trimmed.split_whitespace().collect();
     if whitespace_parts.len() == 2 {
         let height: u32 = whitespace_parts[0].parse().map_err(|_| {
@@ -1417,7 +1478,6 @@ fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
         return Ok(Some(TargetSelection {
             width: Some(width),
             height,
-            profile_label: None,
         }));
     }
 
@@ -1446,7 +1506,6 @@ fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
         return Ok(Some(TargetSelection {
             width: Some(width),
             height,
-            profile_label: None,
         }));
     }
 
@@ -1457,46 +1516,34 @@ fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
         return Ok(Some(TargetSelection {
             width: None,
             height,
-            profile_label: None,
         }));
     }
 
     bail!("Unrecognized target specification: {}", spec);
 }
 
-fn slugify_profile_name(name: &str) -> String {
-    let mut slug = String::with_capacity(name.len());
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-        }
+fn describe_target_selection(selection: TargetSelection) -> String {
+    match selection.width {
+        Some(width) => format!("{}x{} px (height x width)", selection.height, width),
+        None => format!("{}px height (proportional width)", selection.height),
     }
-    slug
 }
 
-fn print_target_profiles() {
+fn print_target_help() {
     println!("{}", CLI_TEXT.main.target_profiles_header);
-    for profile in target_profiles::TARGET_DEVICE_PROFILES {
-        println!(
-            "{}",
-            fmt3(
-                &CLI_TEXT.main.target_profile_item,
-                profile.name,
-                profile.width,
-                profile.height
-            )
-        );
-    }
-    println!(
-        "{}",
-        fmt1(
-            &CLI_TEXT.main.target_profile_proportional,
-            target_profiles::PROPORTIONAL_OPTION_LABEL
-        )
-    );
-    println!();
     println!("{}", CLI_TEXT.main.target_profiles_custom_note);
     println!("{}", CLI_TEXT.main.target_profiles_page_range_note);
+    match lege::resolution_preset::load() {
+        Ok(Some(preset)) => {
+            let dimensions = match preset.width {
+                Some(width) => format!("{width}x{} px", preset.height),
+                None => format!("{}px height, proportional width", preset.height),
+            };
+            println!("Saved preset: {dimensions}");
+        }
+        Ok(None) => println!("Saved preset: none"),
+        Err(e) => println!("Saved preset: unavailable ({e})"),
+    }
 }
 
 fn handle_simple_processing(
@@ -1709,11 +1756,7 @@ fn handle_simple_processing(
             pipeline_config
                 .set_high_res_render_height(selection.height)
                 .map_err(|e| anyhow!("Failed to set render height: {}", e))?;
-            target_description = if let Some(label) = selection.profile_label {
-                format!("{label} ({}x{} px)", width, selection.height)
-            } else {
-                format!("{}x{} px", width, selection.height)
-            };
+            target_description = format!("{}x{} px", width, selection.height);
         } else {
             pipeline_config
                 .set_target_height(selection.height)
@@ -1734,6 +1777,12 @@ fn handle_simple_processing(
         validate_page_range(range)?;
         let page_range_obj = PageRange::parse(range)?;
         pipeline_config.set_page_range(Some(page_range_obj));
+    }
+    if let Some(ref pages) = cli_opts.layout_exclusion_pages {
+        pipeline_config.set_layout_exclusion_pages(Some(PageSelection::parse_with_page_range(
+            pages,
+            pipeline_config.page_range(),
+        )?));
     }
 
     // Determine output directory
@@ -3131,14 +3180,8 @@ fn parse_quoted_path(input: &str) -> String {
 fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
     use std::io::{self, Write};
 
-    let profile_entries: Vec<(usize, &'static target_profiles::TargetDeviceProfile, String)> =
-        target_profiles::TARGET_DEVICE_PROFILES
-            .iter()
-            .enumerate()
-            .map(|(idx, profile)| (idx + 1, profile, slugify_profile_name(profile.name)))
-            .collect();
-
     loop {
+        let saved_preset = lege::resolution_preset::load().ok().flatten();
         println!(
             "\n{}{}{}",
             cli_color(COLORS.info),
@@ -3154,15 +3197,16 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
                 config.target_height()
             )
         );
-        for (idx, profile, _slug) in &profile_entries {
+        if let Some(preset) = saved_preset {
+            let preset_label = match preset.width {
+                Some(width) => format!("{width}x{} px", preset.height),
+                None => format!("{}px height, proportional width", preset.height),
+            };
             println!(
-                "{}[{:>2}]{} {} ({}x{})",
+                "{}[1]{} Saved preset ({})",
                 cli_color(COLORS.prompt),
-                idx,
                 cli_reset(),
-                profile.name,
-                profile.width,
-                profile.height
+                preset_label
             );
         }
         println!(
@@ -3186,7 +3230,7 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
         if input.is_empty()
             || input.eq_ignore_ascii_case("default")
             || input.eq_ignore_ascii_case("auto")
-            || input.eq_ignore_ascii_case(target_profiles::PROPORTIONAL_OPTION_LABEL)
+            || input.eq_ignore_ascii_case("proportional")
         {
             let height = config.target_height();
             if let Err(e) = config.set_high_res_render_height(height) {
@@ -3201,30 +3245,77 @@ fn prompt_target_device(config: &mut PipelineConfig) -> Result<String> {
             return Ok(format!("{}px height (proportional width)", height));
         }
 
-        let normalized_spec = if let Ok(idx) = input.parse::<usize>() {
-            if idx == 0 {
-                None
-            } else if let Some((_, profile, _)) =
-                profile_entries.iter().find(|(number, _, _)| *number == idx)
-            {
-                Some(profile.name.to_string())
-            } else {
-                // If the numeric input is not a preset index, treat it as a custom height target.
-                // This keeps inputs like "1600" working in interactive mode.
-                Some(input.to_string())
+        let save_prefix = input
+            .strip_prefix("save ")
+            .or_else(|| input.strip_prefix("save-preset "));
+        if let Some(spec) = save_prefix {
+            match parse_target_argument(spec) {
+                Ok(Some(selection)) => {
+                    lege::resolution_preset::save(lege::resolution_preset::ResolutionPreset {
+                        height: selection.height,
+                        width: selection.width,
+                    })?;
+                    println!(
+                        "Saved resolution preset: {}",
+                        describe_target_selection(selection)
+                    );
+                    if let Some(width) = selection.width {
+                        if let Err(e) = config.set_target_dimensions(width, selection.height) {
+                            println!(
+                                "{}{}{}",
+                                cli_color(COLORS.highlight),
+                                fmt1(&CLI_TEXT.main.target_device_apply_dimensions_error, e),
+                                cli_reset()
+                            );
+                            continue;
+                        }
+                    } else if let Err(e) = config.set_target_height(selection.height) {
+                        println!(
+                            "{}{}{}",
+                            cli_color(COLORS.highlight),
+                            fmt1(&CLI_TEXT.main.target_device_set_target_height_error, e),
+                            cli_reset()
+                        );
+                        continue;
+                    }
+                    if let Err(e) = config.set_high_res_render_height(selection.height) {
+                        println!(
+                            "{}{}{}",
+                            cli_color(COLORS.highlight),
+                            fmt1(&CLI_TEXT.main.target_device_render_height_error, e),
+                            cli_reset()
+                        );
+                        continue;
+                    }
+                    return Ok(describe_target_selection(selection));
+                }
+                Ok(None) => {
+                    println!(
+                        "{}Cannot save the default target as a preset.{}",
+                        cli_color(COLORS.highlight),
+                        cli_reset()
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    println!(
+                        "{}{}{}",
+                        cli_color(COLORS.highlight),
+                        fmt2(&CLI_TEXT.main.target_device_invalid_spec_error, spec, e),
+                        cli_reset()
+                    );
+                    continue;
+                }
             }
+        }
+
+        let normalized_spec = if input == "1"
+            || input.eq_ignore_ascii_case("preset")
+            || input.eq_ignore_ascii_case("load-preset")
+        {
+            Some("preset".to_string())
         } else {
-            let slug = slugify_profile_name(input);
-            if let Some((_, profile, _)) = profile_entries
-                .iter()
-                .find(|(_, _, profile_slug)| *profile_slug == slug)
-            {
-                Some(profile.name.to_string())
-            } else if let Some(profile) = target_profiles::find_profile(input) {
-                Some(profile.name.to_string())
-            } else {
-                Some(input.to_string())
-            }
+            Some(input.to_string())
         };
 
         if let Some(spec) = normalized_spec {
@@ -3880,6 +3971,12 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
 
     if cli_opts.no_layout {
         pipeline_config.set_enable_layout_detection(false);
+    }
+    if let Some(ref pages) = cli_opts.layout_exclusion_pages {
+        pipeline_config.set_layout_exclusion_pages(Some(PageSelection::parse_with_page_range(
+            pages,
+            pipeline_config.page_range(),
+        )?));
     }
     apply_ocr_options(&mut pipeline_config, cli_opts);
     if let Some(scale) = cli_opts.slow_ocr_scale {

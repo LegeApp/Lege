@@ -16,7 +16,7 @@ use std::sync::{
 use anyhow::Result;
 
 use crate::models::{
-    CompressionType, CoverImageType, ImageProcessingType, OutputFormat, ProcessingOptions,
+    CompressionType, CoverImageType, ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions,
 };
 
 // ── Protocol types ────────────────────────────────────────────────────────────
@@ -341,174 +341,6 @@ impl WorkerProgressUpdate {
     }
 }
 
-// ── Target device profiles (copy of lege::target_profiles) ───────────────────
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TargetDeviceProfile {
-    pub name: &'static str,
-    pub width: u32,
-    pub height: u32,
-}
-
-pub const TARGET_DEVICE_PROFILES: &[TargetDeviceProfile] = &[
-    TargetDeviceProfile {
-        name: "Amazon Kindle (11th Gen, 2022)",
-        width: 1072,
-        height: 1448,
-    },
-    TargetDeviceProfile {
-        name: "Amazon Kindle Paperwhite (11th Gen, 2021)",
-        width: 1236,
-        height: 1648,
-    },
-    TargetDeviceProfile {
-        name: "Amazon Kindle Scribe (2022)",
-        width: 1860,
-        height: 2480,
-    },
-    TargetDeviceProfile {
-        name: "B&N Nook GlowLight 4 (2021)",
-        width: 1072,
-        height: 1448,
-    },
-    TargetDeviceProfile {
-        name: "B&N Nook GlowLight 4e (2022)",
-        width: 758,
-        height: 1024,
-    },
-    TargetDeviceProfile {
-        name: "Bigme InkNote Color (2022)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Boyue Likebook P10 (2021)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Huawei MatePad Paper (2022)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Kobo Clara 2E (2022)",
-        width: 1072,
-        height: 1448,
-    },
-    TargetDeviceProfile {
-        name: "Kobo Elipsa 2E (2023)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Kobo Libra 2 (2021)",
-        width: 1264,
-        height: 1680,
-    },
-    TargetDeviceProfile {
-        name: "Kobo Sage (2021)",
-        width: 1440,
-        height: 1920,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Leaf 2 (2022)",
-        width: 1264,
-        height: 1680,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Note Air (2020)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Nova Air 2 (2023)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Nova3 Color (2021)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Palma (2023)",
-        width: 824,
-        height: 1648,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Tab Ultra (2022)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Onyx Boox Tab X (2023)",
-        width: 1650,
-        height: 2200,
-    },
-    TargetDeviceProfile {
-        name: "PocketBook Color (2020)",
-        width: 1072,
-        height: 1448,
-    },
-    TargetDeviceProfile {
-        name: "PocketBook Era (2022)",
-        width: 1264,
-        height: 1680,
-    },
-    TargetDeviceProfile {
-        name: "PocketBook InkPad Color 2 (2023)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Ratta Supernote A5 X (2020)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Ratta Supernote A6 X (2020)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "reMarkable 2 (2020)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Tolino Epos 3 (2021)",
-        width: 1404,
-        height: 1872,
-    },
-    TargetDeviceProfile {
-        name: "Tolino Vision 6 (2021)",
-        width: 1264,
-        height: 1680,
-    },
-    TargetDeviceProfile {
-        name: "Xiaomi Mi Reader Pro (2020)",
-        width: 1404,
-        height: 1872,
-    },
-];
-
-pub const PROPORTIONAL_OPTION_LABEL: &str = "Set height, width proportional";
-
-pub fn find_profile(name: &str) -> Option<TargetDeviceProfile> {
-    let norm = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .map(|c| c.to_ascii_lowercase())
-            .collect()
-    };
-    let needle = norm(name);
-    TARGET_DEVICE_PROFILES
-        .iter()
-        .copied()
-        .find(|p| p.name.eq_ignore_ascii_case(name) || norm(p.name) == needle)
-}
-
 // ── CLI arg generation ────────────────────────────────────────────────────────
 
 /// Map GUI ProcessingOptions to CLI arguments.
@@ -530,18 +362,17 @@ pub fn gui_options_to_cli_args(
     args.push(output_path.as_os_str().into());
 
     // Text / output format
-    let text_format = if matches!(options.output_format, OutputFormat::Djvu) {
-        "djvu"
-    } else if options.layout_analysis {
-        match options.image_processing_type {
+    let text_format = match options.output_format {
+        OutputFormat::Djvu => "djvu",
+        OutputFormat::Epub => "epub",
+        OutputFormat::Pdf if options.layout_analysis => match options.image_processing_type {
             ImageProcessingType::Original => "ccitt4",
             ImageProcessingType::Dithered => "jbig2",
-        }
-    } else {
-        match options.compression_type {
+        },
+        OutputFormat::Pdf => match options.compression_type {
             CompressionType::Ccitt4 => "ccitt4",
             CompressionType::Jbig2 => "jbig2",
-        }
+        },
     };
     args.push("--text-format".into());
     args.push(text_format.into());
@@ -551,7 +382,7 @@ pub fn gui_options_to_cli_args(
         CoverImageType::None => "none",
         _ => "jpeg",
     };
-    if !matches!(options.output_format, OutputFormat::Djvu) {
+    if matches!(options.output_format, OutputFormat::Pdf) {
         args.push("--cover-format".into());
         args.push(cover_format.into());
     }
@@ -560,10 +391,25 @@ pub fn gui_options_to_cli_args(
     if !options.layout_analysis {
         args.push("--no-layout".into());
     }
+    if options.layout_analysis
+        && let Some(ref pages) = options.layout_exclusion_pages
+    {
+        if !pages.trim().is_empty() {
+            args.push("--exclude-layout".into());
+            args.push(pages.trim().into());
+        }
+    }
 
     // OCR
     if options.use_ocr {
-        args.push("--ocr".into());
+        args.push("--ocr-mode".into());
+        args.push(
+            match options.ocr_mode {
+                OcrMode::Fast => "fast",
+                OcrMode::Thorough => "best",
+            }
+            .into(),
+        );
     } else {
         args.push("--no-ocr".into());
     }
@@ -632,13 +478,13 @@ pub fn gui_options_to_cli_args(
         }
     }
 
-    // Target device / height (must be the final positional).
-    if let Some(ref device) = options.target_device {
-        if !device.is_empty() {
-            args.push(OsString::from(device.as_str()));
+    // Target dimensions / height (must be the final positional).
+    if let Some(height) = options.target_height {
+        if let Some(width) = options.target_width {
+            args.push(OsString::from(format!("{height}x{width}")));
+        } else {
+            args.push(OsString::from(height.to_string()));
         }
-    } else if let Some(height) = options.target_height {
-        args.push(OsString::from(height.to_string()));
     }
 
     args

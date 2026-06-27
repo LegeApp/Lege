@@ -303,15 +303,6 @@ def command_env(runtime_dir: Path) -> dict[str, str]:
     env["RUST_BACKTRACE"] = "0"
     env["LEGE_DATA_DIR"] = str(runtime_dir)
     env["LEGE_ASSET_DIR"] = str(runtime_dir)
-    pdfium_name = "pdfium.dll" if os.name == "nt" else "libpdfium.so"
-    pdfium = runtime_dir / pdfium_name
-    if pdfium.exists():
-        env["PDFIUM_PATH"] = str(pdfium)
-    if os.name == "nt":
-        path_key = "PATH"
-        env[path_key] = str(runtime_dir) + os.pathsep + env.get(path_key, "")
-    else:
-        env["LD_LIBRARY_PATH"] = str(runtime_dir) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     return env
 
 

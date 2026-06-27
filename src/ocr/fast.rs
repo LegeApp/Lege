@@ -299,7 +299,10 @@ fn reflow_output_text_blocks(page: &ReflowPage) -> Vec<PxRect> {
     let mut lines: Vec<PxRect> = Vec::new();
     for r in rects {
         if let Some(last) = lines.last_mut() {
-            let overlap = last.bottom().min(r.bottom()).saturating_sub(last.y.max(r.y));
+            let overlap = last
+                .bottom()
+                .min(r.bottom())
+                .saturating_sub(last.y.max(r.y));
             let h = r.h.max(1);
             if (overlap as f32) >= 0.5 * (h as f32) {
                 *last = last.union(&r);

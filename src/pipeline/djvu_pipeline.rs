@@ -615,6 +615,25 @@ fn build_djvu_inference_future(
     shared_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     rendered: RenderedPageData,
 ) -> BoxFuture<'static, Result<DjvuInferenceData>> {
+    if !rendered.layout_detection_enabled {
+        return Box::pin(async move {
+            let inference_result = InferenceResult {
+                index: rendered.index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: Vec::new(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: true,
+            };
+            Ok(DjvuInferenceData {
+                rendered,
+                inference_result,
+            })
+        });
+    }
+
     match shared_handle {
         Some(handle) => Box::pin(async move {
             let page_index = rendered.index;

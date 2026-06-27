@@ -208,9 +208,10 @@ pub async fn source_stage(
                 crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
 
                 let high_res_arc = Arc::new(image);
+                let page_layout_enabled = config.layout_detection_enabled_for_page(page_index);
                 // In no-layout mode the inference image is never used; share the
                 // high-res Arc instead of deep-cloning a full RGB page per file.
-                let inference_image = if config.enable_layout_detection() {
+                let inference_image = if page_layout_enabled {
                     let spec = config.inference_resize_spec();
                     let img = build_inference_image(high_res_arc.as_ref(), &spec)
                         .unwrap_or_else(|_| (*high_res_arc).clone());
@@ -223,6 +224,7 @@ pub async fn source_stage(
                     index: page_index,
                     high_res_image: high_res_arc,
                     inference_image,
+                    layout_detection_enabled: page_layout_enabled,
                     original_width_pts,
                     original_height_pts,
                 })

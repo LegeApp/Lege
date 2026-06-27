@@ -164,6 +164,7 @@ pub struct Input {
     mode: InputMode,
     auto_focus: bool,
     width: Size,
+    height: Option<Size>,
     enabled: bool,
     key: DiffKey,
     style_variant: InputStyleVariant,
@@ -172,6 +173,7 @@ pub struct Input {
     a11y_id: Option<AccessibilityId>,
     leading: Option<Element>,
     trailing: Option<Element>,
+    replace_on_focus: bool,
 }
 
 impl KeyExt for Input {
@@ -192,6 +194,7 @@ impl Input {
             mode: InputMode::default(),
             auto_focus: false,
             width: Size::px(150.),
+            height: None,
             enabled: true,
             key: DiffKey::default(),
             style_variant: InputStyleVariant::Normal,
@@ -200,6 +203,7 @@ impl Input {
             a11y_id: None,
             leading: None,
             trailing: None,
+            replace_on_focus: false,
         }
     }
 
@@ -233,8 +237,18 @@ impl Input {
         self
     }
 
+    pub fn replace_on_focus(mut self, replace_on_focus: impl Into<bool>) -> Self {
+        self.replace_on_focus = replace_on_focus.into();
+        self
+    }
+
     pub fn width(mut self, width: impl Into<Size>) -> Self {
         self.width = width.into();
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Size>) -> Self {
+        self.height = Some(height.into());
         self
     }
 
@@ -316,7 +330,7 @@ impl Component for Input {
         let mut status = use_state(InputStatus::default);
         let mut editable = use_editable(|| self.value.read().to_string(), EditableConfig::new);
         let mut is_dragging = use_state(|| false);
-        let mut value = self.value.clone();
+        let value = self.value.clone();
 
         let theme_colors = match self.style_variant {
             InputStyleVariant::Normal => {
@@ -382,6 +396,7 @@ impl Component for Input {
             }
         };
 
+        let mut key_value = value.clone();
         let on_key_down = move |e: Event<KeyboardEventData>| {
             match &e.key {
                 // On submit
@@ -424,7 +439,7 @@ impl Component for Input {
                         };
 
                         if apply_change {
-                            *value.write() = text;
+                            *key_value.write() = text;
                         }
                     }
                 }
@@ -436,12 +451,24 @@ impl Component for Input {
             editable.process_event(EditableEvent::KeyUp { key: &e.key });
         };
 
+        let replace_on_focus = self.replace_on_focus;
+        let mut input_value = value.clone();
+
         let on_input_pointer_down = move |e: Event<PointerEventData>| {
             e.stop_propagation();
             e.prevent_default();
             is_dragging.set(true);
             movement_timeout.reset();
-            if !display_placeholder {
+            let mut cleared_for_replacement = false;
+            if replace_on_focus && !input_value.read().is_empty() {
+                *input_value.write() = String::new();
+                let mut editor = editable.editor_mut().write();
+                editor.set("");
+                editor.clear_selection();
+                drop(editor);
+                cleared_for_replacement = true;
+            }
+            if !display_placeholder && !cleared_for_replacement {
                 let area = area.read().to_f64();
                 let global_location = e.global_location().clamp(area.min(), area.max());
                 let location = (global_location - area.min()).to_point();
@@ -454,12 +481,22 @@ impl Component for Input {
             focus.request_focus();
         };
 
+        let mut paragraph_value = value.clone();
         let on_pointer_down = move |e: Event<PointerEventData>| {
             e.stop_propagation();
             e.prevent_default();
             is_dragging.set(true);
             movement_timeout.reset();
-            if !display_placeholder {
+            let mut cleared_for_replacement = false;
+            if replace_on_focus && !paragraph_value.read().is_empty() {
+                *paragraph_value.write() = String::new();
+                let mut editor = editable.editor_mut().write();
+                editor.set("");
+                editor.clear_selection();
+                drop(editor);
+                cleared_for_replacement = true;
+            }
+            if !display_placeholder && !cleared_for_replacement {
                 editable.process_event(EditableEvent::Down {
                     location: e.element_location(),
                     editor_line: EditorLine::SingleParagraph,
@@ -584,6 +621,8 @@ impl Component for Input {
             _ => AccessibilityRole::TextInput,
         };
 
+        let input_height = self.height.clone();
+
         rect()
             .a11y_id(a11y_id)
             .a11y_focusable(self.enabled)
@@ -602,6 +641,9 @@ impl Component for Input {
             .on_pointer_enter(on_pointer_enter)
             .on_pointer_leave(on_pointer_leave)
             .width(self.width.clone())
+            .maybe(input_height.is_some(), move |el| {
+                el.height(input_height.unwrap())
+            })
             .background(background.mul_if(!self.enabled, 0.85))
             .border(border)
             .corner_radius(theme_layout.corner_radius)

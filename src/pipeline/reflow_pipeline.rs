@@ -417,7 +417,11 @@ pub(crate) async fn run_raster_reflow_pipeline(
             ));
         }
 
-        let canvas = Arc::new(compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg));
+        let canvas = Arc::new(compose_reflow_page_raster(
+            reflow_page,
+            &source_pages,
+            &reflow_cfg,
+        ));
 
         // Overlay a searchable text layer onto the reflowed page, reusing the
         // text rows / words reflow already detected. Slow OCR recognizes the

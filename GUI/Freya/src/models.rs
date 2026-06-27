@@ -9,6 +9,16 @@ pub enum OutputFormat {
     #[default]
     Pdf,
     Djvu,
+    Epub,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OcrMode {
+    #[default]
+    #[serde(alias = "Low")]
+    Fast,
+    #[serde(alias = "High")]
+    Thorough,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -47,6 +57,16 @@ impl std::fmt::Display for OutputFormat {
         match self {
             Self::Pdf => write!(f, "PDF"),
             Self::Djvu => write!(f, "DjVu"),
+            Self::Epub => write!(f, "EPUB"),
+        }
+    }
+}
+
+impl std::fmt::Display for OcrMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fast => write!(f, "Fast"),
+            Self::Thorough => write!(f, "Thorough"),
         }
     }
 }
@@ -76,12 +96,16 @@ pub struct ProcessingOptions {
     pub original_cover: bool,
 
     pub target_height: Option<u32>,
+    pub target_width: Option<u32>,
     pub target_device: Option<String>,
     pub page_range: Option<String>,
     pub no_front_cover: bool,
     pub png_folder_mode: bool,
     pub layout_analysis: bool,
+    pub layout_exclusion_pages: Option<String>,
     pub use_ocr: bool,
+    pub ocr_mode: OcrMode,
+    pub make_epub_also: bool,
     pub high_quality_output: bool,
     pub jpeg_compat: bool,
     pub invert_input: bool,
@@ -110,6 +134,21 @@ impl ProcessingOptions {
             k_factor: 0.2,
             threshold_value: 180,
             ..Default::default()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolutionPreset {
+    pub height: u32,
+    pub width: Option<u32>,
+}
+
+impl ResolutionPreset {
+    pub fn from_options(options: &ProcessingOptions) -> Self {
+        Self {
+            height: options.target_height.unwrap_or(1200),
+            width: options.target_width,
         }
     }
 }

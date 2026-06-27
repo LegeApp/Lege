@@ -9,18 +9,16 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::models::{ImageProcessingType, OutputFormat, ProcessingOptions};
+use crate::models::{ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions};
 use crate::worker_process::{
     WorkerHandle, WorkerProgressUpdate, probe_file_json, spawn_lege_worker,
 };
 
 use crate::models::DocumentItem;
-use std::collections::{BTreeSet, VecDeque};
-// Re-export settings helpers for convenience
 pub use crate::settings::{
-    clear_settings as remove_saved_settings, load_settings as load_saved_settings,
-    save_settings as persist_settings,
+    load_resolution_preset, load_settings as load_saved_settings, save_resolution_preset,
 };
+use std::collections::{BTreeSet, VecDeque};
 
 /// Information about a spawned processing task
 #[derive(Clone, Debug)]
@@ -76,6 +74,44 @@ pub async fn estimate_original_size_for_page_range(
     ((fallback_size as f64 / total_pages as f64) * selected_pages as f64).round() as u64
 }
 
+pub fn validate_page_range_for_totals(range: &str, known_page_counts: &[u32]) -> Result<(), ()> {
+    let trimmed = range.trim();
+    if trimmed.eq_ignore_ascii_case("all") || trimmed.eq_ignore_ascii_case("full") || trimmed == "*"
+    {
+        return Ok(());
+    }
+
+    if known_page_counts.is_empty() {
+        validate_page_range_syntax(trimmed)
+    } else {
+        known_page_counts
+            .iter()
+            .copied()
+            .all(|total| selected_page_count(trimmed, total).is_some())
+            .then_some(())
+            .ok_or(())
+    }
+}
+
+fn validate_page_range_syntax(range: &str) -> Result<(), ()> {
+    for part in range.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start.trim().parse::<u32>().map_err(|_| ())?;
+            let end = end.trim().parse::<u32>().map_err(|_| ())?;
+            if start == 0 || end == 0 || start > end {
+                return Err(());
+            }
+        } else {
+            let page = part.parse::<u32>().map_err(|_| ())?;
+            if page == 0 {
+                return Err(());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn selected_page_count(range: &str, total_pages: u32) -> Option<u32> {
     let trimmed = range.trim();
     if trimmed.eq_ignore_ascii_case("all") || trimmed.eq_ignore_ascii_case("full") || trimmed == "*"
@@ -91,19 +127,16 @@ fn selected_page_count(range: &str, total_pages: u32) -> Option<u32> {
             if start == 0 || end == 0 || start > end {
                 return None;
             }
-            let clamped_start = start.min(total_pages);
-            let clamped_end = end.min(total_pages);
-            if clamped_start <= clamped_end {
-                pages.extend(clamped_start..=clamped_end);
-            }
-        } else {
-            let page = part.parse::<u32>().ok()?;
-            if page == 0 {
+            if start > total_pages || end > total_pages {
                 return None;
             }
-            if page <= total_pages {
-                pages.insert(page);
+            pages.extend(start..=end);
+        } else {
+            let page = part.parse::<u32>().ok()?;
+            if page == 0 || page > total_pages {
+                return None;
             }
+            pages.insert(page);
         }
     }
 
@@ -221,11 +254,10 @@ pub fn generate_output_filename(
 ) -> PathBuf {
     let file_stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
     // Determine container extension and descriptive parts
-    let is_djvu = matches!(options.output_format, OutputFormat::Djvu);
-    let text_fmt = if is_djvu {
-        "djvu"
-    } else {
-        match &options.image_processing_type {
+    let text_fmt = match options.output_format {
+        OutputFormat::Djvu => "djvu",
+        OutputFormat::Epub => "epub",
+        OutputFormat::Pdf => match &options.image_processing_type {
             ImageProcessingType::Original => "ccitt4",
             ImageProcessingType::Dithered => {
                 if options.ccitt4_dithered_images {
@@ -234,15 +266,17 @@ pub fn generate_output_filename(
                     "jbig2"
                 }
             }
-        }
+        },
     };
     // Unix timestamp
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let filename = if is_djvu {
+    let filename = if matches!(options.output_format, OutputFormat::Djvu) {
         format!("{}_processed_{}_{}.djvu", file_stem, text_fmt, ts)
+    } else if matches!(options.output_format, OutputFormat::Epub) {
+        format!("{}_processed_{}_{}.epub", file_stem, text_fmt, ts)
     } else {
         // PDF format: just include the text format, no cover format suffix
         format!("{}_processed_{}_{}.pdf", file_stem, text_fmt, ts)
@@ -294,6 +328,23 @@ pub async fn start_async_processing(
             input_path,
             output_path: output_file_path,
         });
+
+        if options.make_epub_also {
+            let task_id = next_task_id;
+            next_task_id += 1;
+            let input_path = document.file_path.clone();
+            let mut epub_options = options.clone();
+            epub_options.output_format = OutputFormat::Epub;
+            epub_options.use_ocr = true;
+            epub_options.ocr_mode = OcrMode::Thorough;
+            let output_file_path =
+                generate_output_filename(&input_path, output_path, &epub_options);
+            tracker_infos.push(TrackerInfo {
+                id: task_id,
+                input_path,
+                output_path: output_file_path,
+            });
+        }
     }
 
     let (events_tx, events_rx) = flume::unbounded::<WorkerProgressUpdate>();
@@ -312,11 +363,23 @@ pub async fn start_async_processing(
 
             let (worker_events_tx, worker_events_rx) = flume::unbounded::<WorkerProgressUpdate>();
 
+            let mut worker_options = scheduler_options.clone();
+            if info
+                .output_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
+            {
+                worker_options.output_format = OutputFormat::Epub;
+                worker_options.use_ocr = true;
+                worker_options.ocr_mode = OcrMode::Thorough;
+            }
+
             let handle = match spawn_lege_worker(
                 info.id,
                 info.input_path.clone(),
                 info.output_path.clone(),
-                &scheduler_options,
+                &worker_options,
                 worker_events_tx,
                 None,
             ) {
