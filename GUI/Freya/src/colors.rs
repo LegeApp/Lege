@@ -12,9 +12,9 @@ pub const PANEL_BG: (u8, u8, u8) = (253, 249, 244);
 pub const PANEL_BG: (u8, u8, u8) = (255, 250, 245);
 
 #[cfg(target_os = "linux")]
-pub const SELECTED_BG: (u8, u8, u8) = (251, 247, 242);
+pub const SELECTED_BG: (u8, u8, u8) = (255, 241, 241);
 #[cfg(not(target_os = "linux"))]
-pub const SELECTED_BG: (u8, u8, u8) = (253, 248, 243);
+pub const SELECTED_BG: (u8, u8, u8) = (255, 243, 243);
 
 #[cfg(target_os = "linux")]
 pub const CARD_BG: (u8, u8, u8) = (253, 249, 244);

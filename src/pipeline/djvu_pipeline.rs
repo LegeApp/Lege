@@ -29,8 +29,8 @@ use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 /// Result from inference stage (after layout detection)
 #[derive(Debug, Clone)]
@@ -443,6 +443,9 @@ pub async fn create_and_run_djvu_source_pipeline(
         pipeline_config.channel_capacity,
     );
 
+    let epub_sidecar_output = config.epub_sidecar_output().cloned();
+    let epub_hocr_pages = Arc::new(Mutex::new(Vec::new()));
+
     // Spawn encoding stage (encodes pages concurrently, then forwards to writer actor)
     let mut encode_task: JoinHandle<Result<()>> = {
         let orchestrator = orchestrator.clone();
@@ -450,6 +453,8 @@ pub async fn create_and_run_djvu_source_pipeline(
         let djvu_doc = djvu_doc.clone();
         let mut binarize_rx = binarize_rx;
         let concurrency = pipeline_config.djvu_encode_workers;
+        let epub_sidecar_output = epub_sidecar_output.clone();
+        let epub_hocr_pages = epub_hocr_pages.clone();
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
             info_log!(
@@ -470,6 +475,21 @@ pub async fn create_and_run_djvu_source_pipeline(
                             .await?;
                     }
                     Some(binarized_data) = binarize_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
+                        if epub_sidecar_output.is_some()
+                            && let Some(hocr) = binarized_data.hocr_text.clone()
+                            && !hocr.trim().is_empty()
+                        {
+                            let width_px = binarized_data.adjusted_image.width();
+                            let height_px = binarized_data.adjusted_image.height();
+                            if let Ok(mut pages) = epub_hocr_pages.lock() {
+                                pages.push(crate::pipeline::epub_pipeline::HocrPage {
+                                    page_index: binarized_data.index,
+                                    width_px,
+                                    height_px,
+                                    hocr,
+                                });
+                            }
+                        }
                         let orchestrator = orchestrator.clone();
                         let djvu_doc = djvu_doc.clone();
                         in_flight.push(Box::pin(async move {
@@ -520,6 +540,37 @@ pub async fn create_and_run_djvu_source_pipeline(
             }
 
             djvu_writer.finalize().await?;
+
+            if let Some(epub_path) = epub_sidecar_output {
+                let hocr_pages = epub_hocr_pages
+                    .lock()
+                    .map(|pages| pages.clone())
+                    .unwrap_or_default();
+                if !hocr_pages.is_empty() {
+                    let title = epub_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Document")
+                        .to_string();
+                    info_log!(
+                        "[DJVU-Parallel] Assembling EPUB sidecar from existing OCR: {}",
+                        epub_path.display()
+                    );
+                    tokio::task::spawn_blocking(move || {
+                        crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
+                            &hocr_pages,
+                            &title,
+                            &epub_path,
+                        )
+                    })
+                    .await
+                    .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
+                } else {
+                    warn_log!(
+                        "[DJVU-Parallel] EPUB sidecar requested, but no OCR text was available"
+                    );
+                }
+            }
 
             #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Encode] Encoding stage complete");

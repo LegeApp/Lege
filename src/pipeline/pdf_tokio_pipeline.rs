@@ -2379,13 +2379,29 @@ pub async fn create_and_run_pdf_source_pipeline(
         pipeline_config.channel_capacity,
     );
 
+    let epub_sidecar_output = config.epub_sidecar_output().cloned();
+
     // Forward processed pages to PDF writer (mut for tokio::select!)
     let mut writer_forwarder = {
         let mut process_rx: mpsc::Receiver<ProcessedPage> = process_rx;
         let pdf_writer_handle = pdf_writer_handle.clone();
+        let epub_sidecar_output = epub_sidecar_output.clone();
 
         tokio::spawn(async move {
+            let mut hocr_pages = Vec::new();
             while let Some(processed_page) = process_rx.recv().await {
+                if epub_sidecar_output.is_some()
+                    && let Some(hocr) = processed_page.hocr_text.clone()
+                    && !hocr.trim().is_empty()
+                {
+                    hocr_pages.push(crate::pipeline::epub_pipeline::HocrPage {
+                        page_index: processed_page.index,
+                        width_px: processed_page.width,
+                        height_px: processed_page.height,
+                        hocr,
+                    });
+                }
+
                 // Convert ProcessedPage to accumulator::Page format
                 let page = crate::accumulator::Page {
                     width: processed_page.width as f32,
@@ -2407,6 +2423,33 @@ pub async fn create_and_run_pdf_source_pipeline(
             // CRITICAL: Finalize the PDF after all pages are sent
             info_log!("[PDF-Parallel] Finalizing PDF...");
             pdf_writer_handle.finalize().await?;
+
+            if let Some(epub_path) = epub_sidecar_output {
+                if !hocr_pages.is_empty() {
+                    let title = epub_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Document")
+                        .to_string();
+                    info_log!(
+                        "[PDF-Parallel] Assembling EPUB sidecar from existing OCR: {}",
+                        epub_path.display()
+                    );
+                    tokio::task::spawn_blocking(move || {
+                        crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
+                            &hocr_pages,
+                            &title,
+                            &epub_path,
+                        )
+                    })
+                    .await
+                    .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
+                } else {
+                    warn_log!(
+                        "[PDF-Parallel] EPUB sidecar requested, but no OCR text was available"
+                    );
+                }
+            }
 
             Ok::<(), anyhow::Error>(())
         })

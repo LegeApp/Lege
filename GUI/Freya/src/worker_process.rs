@@ -377,6 +377,11 @@ pub fn gui_options_to_cli_args(
     args.push("--text-format".into());
     args.push(text_format.into());
 
+    if options.make_epub_also && !matches!(options.output_format, OutputFormat::Epub) {
+        args.push("--epub-sidecar-output".into());
+        args.push(output_path.with_extension("epub").as_os_str().into());
+    }
+
     // Cover / image format
     let cover_format = match options.cover_image_type {
         CoverImageType::None => "none",

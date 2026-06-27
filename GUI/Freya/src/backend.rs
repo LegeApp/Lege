@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::models::{ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions};
+use crate::models::{ImageProcessingType, OutputFormat, ProcessingOptions};
 use crate::worker_process::{
     WorkerHandle, WorkerProgressUpdate, probe_file_json, spawn_lege_worker,
 };
@@ -328,23 +328,6 @@ pub async fn start_async_processing(
             input_path,
             output_path: output_file_path,
         });
-
-        if options.make_epub_also {
-            let task_id = next_task_id;
-            next_task_id += 1;
-            let input_path = document.file_path.clone();
-            let mut epub_options = options.clone();
-            epub_options.output_format = OutputFormat::Epub;
-            epub_options.use_ocr = true;
-            epub_options.ocr_mode = OcrMode::Thorough;
-            let output_file_path =
-                generate_output_filename(&input_path, output_path, &epub_options);
-            tracker_infos.push(TrackerInfo {
-                id: task_id,
-                input_path,
-                output_path: output_file_path,
-            });
-        }
     }
 
     let (events_tx, events_rx) = flume::unbounded::<WorkerProgressUpdate>();
@@ -363,23 +346,11 @@ pub async fn start_async_processing(
 
             let (worker_events_tx, worker_events_rx) = flume::unbounded::<WorkerProgressUpdate>();
 
-            let mut worker_options = scheduler_options.clone();
-            if info
-                .output_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
-            {
-                worker_options.output_format = OutputFormat::Epub;
-                worker_options.use_ocr = true;
-                worker_options.ocr_mode = OcrMode::Thorough;
-            }
-
             let handle = match spawn_lege_worker(
                 info.id,
                 info.input_path.clone(),
                 info.output_path.clone(),
-                &worker_options,
+                &scheduler_options,
                 worker_events_tx,
                 None,
             ) {
