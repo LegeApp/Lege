@@ -391,6 +391,7 @@ pub struct PipelineConfig {
     pub(crate) heavy_sauvola_concurrency: usize,
     pub(crate) page_range: Option<PageRange>,
     pub(crate) layout_exclusion_pages: Option<PageSelection>,
+    pub(crate) epub_sidecar_output: Option<PathBuf>,
     pub(crate) enable_cover_page: bool,
     pub(crate) no_cover_page: bool,
     pub(crate) high_quality_output: bool,
@@ -458,6 +459,7 @@ impl PipelineConfig {
             heavy_sauvola_concurrency: 4,
             page_range: None,
             layout_exclusion_pages: None,
+            epub_sidecar_output: None,
             enable_cover_page: true,
             no_cover_page: false,
             high_quality_output: false,
@@ -634,6 +636,9 @@ impl PipelineConfig {
     }
     pub fn layout_exclusion_pages(&self) -> Option<&PageSelection> {
         self.layout_exclusion_pages.as_ref()
+    }
+    pub fn epub_sidecar_output(&self) -> Option<&PathBuf> {
+        self.epub_sidecar_output.as_ref()
     }
     pub fn layout_detection_enabled_for_page(&self, page_index_0based: usize) -> bool {
         self.enable_layout_detection()
@@ -891,6 +896,9 @@ impl PipelineConfig {
     }
     pub fn set_layout_exclusion_pages(&mut self, pages: Option<PageSelection>) {
         self.layout_exclusion_pages = pages;
+    }
+    pub fn set_epub_sidecar_output(&mut self, output: Option<PathBuf>) {
+        self.epub_sidecar_output = output;
     }
     pub fn set_enable_cover_page(&mut self, enable: bool) {
         self.enable_cover_page = enable;

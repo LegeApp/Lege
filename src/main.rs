@@ -388,7 +388,8 @@ struct CliOptions {
     high_quality: bool,       // --high-quality
 
     // --- Output ---
-    output_dir: Option<PathBuf>, // --output <dir>
+    output_dir: Option<PathBuf>,          // --output <dir>
+    epub_sidecar_output: Option<PathBuf>, // internal GUI-only --epub-sidecar-output <file>
 
     // --- Processing toggles ---
     dither: bool,                           // --dither
@@ -570,6 +571,13 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     .get(i + 1)
                     .ok_or_else(|| anyhow!("Missing value after {}", arg))?;
                 opts.output_dir = Some(PathBuf::from(sanitize_path_arg(val)));
+                i += 2;
+            }
+            "--epub-sidecar-output" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after {}", arg))?;
+                opts.epub_sidecar_output = Some(PathBuf::from(sanitize_path_arg(val)));
                 i += 2;
             }
             "--language" => {
@@ -1784,6 +1792,7 @@ fn handle_simple_processing(
             pipeline_config.page_range(),
         )?));
     }
+    pipeline_config.set_epub_sidecar_output(cli_opts.epub_sidecar_output.clone());
 
     // Determine output directory
     let output_dir = determine_output_directory(cli_opts.output_dir, &display_inputs, &config)?;
@@ -3978,6 +3987,7 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
             pipeline_config.page_range(),
         )?));
     }
+    pipeline_config.set_epub_sidecar_output(cli_opts.epub_sidecar_output.clone());
     apply_ocr_options(&mut pipeline_config, cli_opts);
     if let Some(scale) = cli_opts.slow_ocr_scale {
         pipeline_config.set_slow_ocr_scale(scale);

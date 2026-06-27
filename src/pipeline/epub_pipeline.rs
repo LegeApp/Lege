@@ -35,6 +35,14 @@ use crate::progress::{ProcessingStatus, ProgressTracker};
 use crate::types::ContentCategory;
 use crate::{info_log, success_log, warn_log};
 
+#[derive(Debug, Clone)]
+pub struct HocrPage {
+    pub page_index: usize,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub hocr: String,
+}
+
 /// Run the full EPUB pipeline over a PDF byte buffer.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_and_run_epub_pipeline(
@@ -264,6 +272,104 @@ pub async fn create_and_run_epub_pipeline(
 
     success_log!("EPUB pipeline complete: {}", output_path.display());
     Ok(())
+}
+
+pub fn build_epub_from_hocr_pages(
+    hocr_pages: &[HocrPage],
+    title: &str,
+    output_path: &Path,
+) -> Result<()> {
+    let mut pages: Vec<PageText> = hocr_pages
+        .iter()
+        .filter_map(page_text_from_hocr)
+        .filter(|page| !page.blocks.is_empty())
+        .collect();
+    pages.sort_by_key(|page| page.page_index);
+    build_epub(&pages, title, output_path)
+}
+
+fn page_text_from_hocr(page: &HocrPage) -> Option<PageText> {
+    let hocr_lines = crate::accumulator::parse_hocr(&page.hocr).ok()?;
+    let mut lines = Vec::new();
+
+    for line in hocr_lines {
+        let words: Vec<lege_ocr::document::TextWord> = line
+            .words
+            .iter()
+            .filter_map(|word| {
+                let text = word.text.trim();
+                (!text.is_empty()).then(|| lege_ocr::document::TextWord {
+                    text: text.to_string(),
+                    bbox: bbox_from_xywh(word.x, word.y, word.width, word.height),
+                    confidence: None,
+                })
+            })
+            .collect();
+
+        if words.is_empty() && line.raw_text.as_deref().unwrap_or("").trim().is_empty() {
+            continue;
+        }
+
+        let text = line
+            .raw_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| {
+                words
+                    .iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
+
+        lines.push(lege_ocr::document::TextLine {
+            text,
+            bbox: bbox_from_xywh(line.x, line.y, line.width, line.height),
+            words,
+        });
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let block_bbox = union_line_bboxes(&lines).unwrap_or([0, 0, page.width_px, page.height_px]);
+    Some(PageText {
+        page_index: page.page_index,
+        width_px: page.width_px,
+        height_px: page.height_px,
+        blocks: vec![TextBlock {
+            kind: BlockKind::Paragraph,
+            bbox: block_bbox,
+            lines,
+            indent_px: 0,
+            spacing_before_px: 0,
+            spacing_after_px: 0,
+        }],
+    })
+}
+
+fn bbox_from_xywh(x: f32, y: f32, width: f32, height: f32) -> [u32; 4] {
+    [
+        x.max(0.0).round() as u32,
+        y.max(0.0).round() as u32,
+        (x + width).max(0.0).round() as u32,
+        (y + height).max(0.0).round() as u32,
+    ]
+}
+
+fn union_line_bboxes(lines: &[lege_ocr::document::TextLine]) -> Option<[u32; 4]> {
+    let first = lines.first()?.bbox;
+    let mut bbox = first;
+    for line in lines.iter().skip(1) {
+        bbox[0] = bbox[0].min(line.bbox[0]);
+        bbox[1] = bbox[1].min(line.bbox[1]);
+        bbox[2] = bbox[2].max(line.bbox[2]);
+        bbox[3] = bbox[3].max(line.bbox[3]);
+    }
+    Some(bbox)
 }
 
 /// Consume inferred pages, OCR each into a `PageText`, and collect them ordered
