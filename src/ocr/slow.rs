@@ -5,8 +5,10 @@ use anyhow::Result;
 use image::{GrayImage, RgbImage};
 
 use lege_ocr::{
-    OcrPipeline, SlowOcrConfig, coordinate::CoordinateMap, coordinate::scale_lines, hocr,
-    normalize,
+    OcrPipeline, SlowOcrConfig,
+    coordinate::CoordinateMap,
+    coordinate::scale_lines,
+    hocr, normalize,
     types::{OcrLineResult, OcrWord, TextRegion},
 };
 

@@ -1,6 +1,6 @@
 use freya::prelude::*;
 
-use crate::colors::{APP_BG, BORDER, CARD_BG, PANEL_BG, TEXT};
+use crate::colors::{APP_BG, BORDER, CARD_BG, PANEL_BG, SELECTED_BG, TEXT};
 
 pub fn lege_panel_card(
     title: impl Into<String>,
@@ -62,51 +62,129 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
         .into()
 }
 
+pub fn lege_grid_row(children: Vec<Element>, height: f32, spacing: f32) -> Element {
+    let cells: Vec<Element> = children
+        .into_iter()
+        .map(|child| {
+            rect()
+                .width(Size::flex(1.))
+                .height(Size::fill())
+                .child(child)
+                .into()
+        })
+        .collect();
+
+    rect()
+        .width(Size::fill())
+        .height(Size::px(height))
+        .direction(Direction::Horizontal)
+        .content(Content::Flex)
+        .spacing(spacing)
+        .children(cells)
+        .into()
+}
+
+pub fn lege_grid_column(children: Vec<Element>, spacing: f32) -> Element {
+    rect()
+        .width(Size::fill())
+        .height(Size::fill())
+        .vertical()
+        .spacing(spacing)
+        .children(children)
+        .into()
+}
+
+#[derive(Clone, PartialEq)]
+struct LegeCheckboxRow {
+    text: String,
+    selected: bool,
+    on_select: EventHandler<()>,
+}
+
+impl LegeCheckboxRow {
+    fn new(
+        text: impl Into<String>,
+        selected: bool,
+        on_select: impl Into<EventHandler<()>>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            selected,
+            on_select: on_select.into(),
+        }
+    }
+}
+
+impl Component for LegeCheckboxRow {
+    fn render(&self) -> impl IntoElement {
+        let mut hovering = use_state(|| false);
+        let selected = self.selected;
+        let on_select = self.on_select.clone();
+        let text = self.text.clone();
+
+        let box_background = if selected {
+            Color::from_rgb(SELECTED_BG.0, SELECTED_BG.1, SELECTED_BG.2)
+        } else if hovering() {
+            Color::from_rgb(236, 236, 236)
+        } else {
+            Color::from_rgb(255, 250, 250)
+        };
+
+        rect()
+            .direction(Direction::Horizontal)
+            .padding((0., 2., 0., 2.))
+            .spacing(8.)
+            .cross_align(Alignment::Center)
+            .on_pointer_enter(move |_| {
+                hovering.set(true);
+                Cursor::set(CursorIcon::Pointer);
+            })
+            .on_pointer_leave(move |_| {
+                hovering.set(false);
+                Cursor::set(CursorIcon::default());
+            })
+            .on_press(move |e: Event<PressEventData>| {
+                e.stop_propagation();
+                on_select.call(());
+            })
+            .child(
+                rect()
+                    .width(Size::px(14.))
+                    .height(Size::px(14.))
+                    .border(
+                        Border::new()
+                            .fill(Color::from_rgb(64, 64, 64))
+                            .width(1.)
+                            .alignment(BorderAlignment::Inner),
+                    )
+                    .background(box_background)
+                    .main_align(Alignment::Center)
+                    .cross_align(Alignment::Center)
+                    .maybe_child(if selected {
+                        Some(
+                            label()
+                                .text("X")
+                                .font_size(11.)
+                                .font_weight(700)
+                                .color(Color::from_rgb(30, 30, 30))
+                                .into(),
+                        )
+                    } else {
+                        None::<Element>
+                    }),
+            )
+            .child(label().text(text).font_size(13.).color(TEXT))
+    }
+}
+
 pub fn lege_checkbox_row(
     text: impl Into<String>,
     selected: bool,
-    mut on_select: impl FnMut(()) + 'static,
+    on_select: impl FnMut(()) + 'static,
 ) -> Element {
     // Freya's built-in `Tile` has a fixed padding of 8px, which makes rows feel too tall here.
     // This custom row keeps the same behavior but with tighter spacing.
-    rect()
-        .direction(Direction::Horizontal)
-        .padding((0., 2., 0., 2.))
-        .spacing(8.)
-        .cross_align(Alignment::Center)
-        .on_press(move |_| on_select(()))
-        .child(
-            rect()
-                .width(Size::px(14.))
-                .height(Size::px(14.))
-                .border(
-                    Border::new()
-                        .fill(Color::from_rgb(64, 64, 64))
-                        .width(1.)
-                        .alignment(BorderAlignment::Inner),
-                )
-                .background(if selected {
-                    Color::from_rgb(205, 205, 205)
-                } else {
-                    Color::from_rgb(255, 250, 250)
-                })
-                .main_align(Alignment::Center)
-                .cross_align(Alignment::Center)
-                .maybe_child(if selected {
-                    Some(
-                        label()
-                            .text("X")
-                            .font_size(11.)
-                            .font_weight(700)
-                            .color(Color::from_rgb(30, 30, 30))
-                            .into(),
-                    )
-                } else {
-                    None::<Element>
-                }),
-        )
-        .child(label().text(text.into()).font_size(13.).color(TEXT))
-        .into()
+    LegeCheckboxRow::new(text, selected, on_select).into()
 }
 
 pub fn lege_header_bar(left: Element, utilities: Element) -> Element {

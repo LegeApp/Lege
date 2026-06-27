@@ -5,9 +5,10 @@ use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::models::ProcessingOptions;
+use crate::models::{ProcessingOptions, ResolutionPreset};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const RESOLUTION_PRESET_FILE_NAME: &str = "resolution_preset.json";
 
 fn settings_directory() -> PathBuf {
     dirs::data_local_dir()
@@ -18,6 +19,14 @@ fn settings_directory() -> PathBuf {
 /// Get the path to the settings file in the user data directory
 pub fn get_settings_file_path() -> PathBuf {
     let path = settings_directory().join(SETTINGS_FILE_NAME);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    path
+}
+
+pub fn get_resolution_preset_file_path() -> PathBuf {
+    let path = settings_directory().join(RESOLUTION_PRESET_FILE_NAME);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -45,6 +54,28 @@ pub fn save_settings(options: &ProcessingOptions) -> Result<()> {
     }
     let content = serde_json::to_string_pretty(options)?;
     fs::write(&settings_path, content)?;
+    Ok(())
+}
+
+pub fn load_resolution_preset() -> Result<Option<ResolutionPreset>> {
+    let preset_path = get_resolution_preset_file_path();
+
+    if !preset_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&preset_path)?;
+    let preset: ResolutionPreset = serde_json::from_str(&content)?;
+    Ok(Some(preset))
+}
+
+pub fn save_resolution_preset(preset: &ResolutionPreset) -> Result<()> {
+    let preset_path = get_resolution_preset_file_path();
+    if let Some(parent) = preset_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(preset)?;
+    fs::write(&preset_path, content)?;
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow};
+use once_cell::sync::Lazy;
 
 // Import perf_log macro from the crate root
 #[allow(unused_imports)]
@@ -21,6 +22,9 @@ use Legencode::streamline::Jbig2Mode;
 use Legencode::types::BinarizationConfig;
 
 pub use Legencode::color::ImageRegionDitherMode;
+
+static RESOLVED_PDFIUM_LIBRARY_PATH: Lazy<Option<PathBuf>> =
+    Lazy::new(resolve_pdfium_library_path_uncached);
 
 #[derive(Debug)]
 pub struct PageTask {
@@ -60,8 +64,9 @@ pub struct RenderedPageData {
     pub index: usize,
     pub high_res_image: Arc<RgbImage>,
     pub inference_image: Arc<RgbImage>, // 1024×1024 letterboxed for YOLO
-    pub original_width_pts: f32,        // Original PDF page width in points
-    pub original_height_pts: f32,       // Original PDF page height in points
+    pub layout_detection_enabled: bool,
+    pub original_width_pts: f32,  // Original PDF page width in points
+    pub original_height_pts: f32, // Original PDF page height in points
 }
 impl Default for PipelineConfig {
     fn default() -> Self {
@@ -80,6 +85,11 @@ impl Default for PipelineConfig {
 pub struct PageRange {
     pub start: usize,
     pub end: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PageSelection {
+    ranges: Vec<PageRange>,
 }
 
 pub struct ProcessingPipeline {
@@ -247,6 +257,116 @@ impl PageRange {
     }
 }
 
+impl PageSelection {
+    pub fn parse(s: &str) -> Result<Self> {
+        Self::parse_with_page_range(s, None)
+    }
+
+    pub fn parse_with_page_range(s: &str, page_range: Option<&PageRange>) -> Result<Self> {
+        let mut ranges = Vec::new();
+        for part in s.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            let (start, end) = if let Some((start, end)) = part.split_once('-') {
+                let start: usize = start
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid start page number: {}", start.trim()))?;
+                let end: usize = end
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid end page number: {}", end.trim()))?;
+                (start, end)
+            } else {
+                let page: usize = part
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid page number: {}", part))?;
+                (page, page)
+            };
+            if start == 0 || end == 0 {
+                return Err(anyhow!("Page numbers must start from 1"));
+            }
+            if start > end {
+                return Err(anyhow!(
+                    "Start page ({}) cannot be greater than end page ({})",
+                    start,
+                    end
+                ));
+            }
+            let (start, end) = match page_range {
+                Some(selected) if !range_is_inside(start, end, selected) => {
+                    let shifted_start = selected.start.saturating_add(start);
+                    let shifted_end = selected.start.saturating_add(end);
+                    if shifted_start > selected.end || shifted_end > selected.end {
+                        return Err(anyhow!(
+                            "Layout exclusion pages {}-{} are outside selected page range {}-{}",
+                            start,
+                            end,
+                            selected.start,
+                            selected.end
+                        ));
+                    }
+                    (shifted_start, shifted_end)
+                }
+                _ => (start, end),
+            };
+            let range = PageRange::new(start, end)?;
+            ranges.push(range);
+        }
+
+        if ranges.is_empty() {
+            return Err(anyhow!("Page selection cannot be empty"));
+        }
+
+        Ok(Self { ranges })
+    }
+
+    pub fn contains(&self, page_index_0based: usize) -> bool {
+        self.ranges
+            .iter()
+            .any(|range| range.contains(page_index_0based))
+    }
+}
+
+fn range_is_inside(start: usize, end: usize, page_range: &PageRange) -> bool {
+    start >= page_range.start && end <= page_range.end
+}
+
+#[cfg(test)]
+mod page_selection_tests {
+    use super::{PageRange, PageSelection};
+
+    #[test]
+    fn layout_exclusion_accepts_relative_pages_for_selected_range() {
+        let selected = PageRange::new(300, 400).unwrap();
+        let exclusion = PageSelection::parse_with_page_range("30-50", Some(&selected)).unwrap();
+
+        assert!(exclusion.contains(329));
+        assert!(exclusion.contains(349));
+        assert!(!exclusion.contains(328));
+    }
+
+    #[test]
+    fn layout_exclusion_keeps_absolute_pages_inside_selected_range() {
+        let selected = PageRange::new(300, 400).unwrap();
+        let exclusion = PageSelection::parse_with_page_range("330-350", Some(&selected)).unwrap();
+
+        assert!(exclusion.contains(329));
+        assert!(exclusion.contains(349));
+        assert!(!exclusion.contains(328));
+    }
+
+    #[test]
+    fn layout_exclusion_rejects_relative_pages_outside_selected_range() {
+        let selected = PageRange::new(300, 400).unwrap();
+
+        assert!(PageSelection::parse_with_page_range("120-130", Some(&selected)).is_err());
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PipelineConfig {
     pub(crate) model_path: String,
@@ -270,6 +390,7 @@ pub struct PipelineConfig {
     pub(crate) enable_reflow: bool,
     pub(crate) heavy_sauvola_concurrency: usize,
     pub(crate) page_range: Option<PageRange>,
+    pub(crate) layout_exclusion_pages: Option<PageSelection>,
     pub(crate) enable_cover_page: bool,
     pub(crate) no_cover_page: bool,
     pub(crate) high_quality_output: bool,
@@ -336,6 +457,7 @@ impl PipelineConfig {
             enable_reflow: false,
             heavy_sauvola_concurrency: 4,
             page_range: None,
+            layout_exclusion_pages: None,
             enable_cover_page: true,
             no_cover_page: false,
             high_quality_output: false,
@@ -509,6 +631,16 @@ impl PipelineConfig {
     }
     pub fn page_range(&self) -> Option<&PageRange> {
         self.page_range.as_ref()
+    }
+    pub fn layout_exclusion_pages(&self) -> Option<&PageSelection> {
+        self.layout_exclusion_pages.as_ref()
+    }
+    pub fn layout_detection_enabled_for_page(&self, page_index_0based: usize) -> bool {
+        self.enable_layout_detection()
+            && !self
+                .layout_exclusion_pages
+                .as_ref()
+                .is_some_and(|selection| selection.contains(page_index_0based))
     }
     pub fn enable_cover_page(&self) -> bool {
         self.enable_cover_page
@@ -757,6 +889,9 @@ impl PipelineConfig {
     pub fn set_page_range(&mut self, range: Option<PageRange>) {
         self.page_range = range;
     }
+    pub fn set_layout_exclusion_pages(&mut self, pages: Option<PageSelection>) {
+        self.layout_exclusion_pages = pages;
+    }
     pub fn set_enable_cover_page(&mut self, enable: bool) {
         self.enable_cover_page = enable;
     }
@@ -862,6 +997,14 @@ pub fn runtime_search_directories() -> Vec<PathBuf> {
             push_unique(dir.join("installer"));
 
             if let Some(parent) = dir.parent() {
+                #[cfg(target_os = "macos")]
+                if parent.file_name().is_some_and(|name| name == "Contents") {
+                    push_unique(parent.join("Frameworks"));
+                    push_unique(parent.join("Resources"));
+                    push_unique(parent.join("Resources/models"));
+                    push_unique(parent.join("Resources/tessdata"));
+                }
+
                 push_unique(parent.to_path_buf());
                 push_unique(parent.join("share/lege"));
                 push_unique(parent.join("share/lege/models"));
@@ -879,23 +1022,23 @@ pub fn runtime_search_directories() -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(ld_path) = std::env::var("LD_LIBRARY_PATH") {
-        for segment in ld_path.split(':').filter(|s| !s.is_empty()) {
-            push_unique(PathBuf::from(segment));
+    if let Some(ld_path) = std::env::var_os("LD_LIBRARY_PATH") {
+        for segment in std::env::split_paths(&ld_path) {
+            push_unique(segment);
         }
     }
 
     #[cfg(target_os = "macos")]
-    if let Ok(dyld_path) = std::env::var("DYLD_LIBRARY_PATH") {
-        for segment in dyld_path.split(':').filter(|s| !s.is_empty()) {
-            push_unique(PathBuf::from(segment));
+    if let Some(dyld_path) = std::env::var_os("DYLD_LIBRARY_PATH") {
+        for segment in std::env::split_paths(&dyld_path) {
+            push_unique(segment);
         }
     }
 
     #[cfg(target_os = "macos")]
-    if let Ok(dyld_fallback) = std::env::var("DYLD_FALLBACK_LIBRARY_PATH") {
-        for segment in dyld_fallback.split(':').filter(|s| !s.is_empty()) {
-            push_unique(PathBuf::from(segment));
+    if let Some(dyld_fallback) = std::env::var_os("DYLD_FALLBACK_LIBRARY_PATH") {
+        for segment in std::env::split_paths(&dyld_fallback) {
+            push_unique(segment);
         }
     }
 
@@ -927,34 +1070,58 @@ pub fn runtime_asset_path(file_name: &str) -> PathBuf {
     runtime_asset_path_if_exists(file_name).unwrap_or_else(|| PathBuf::from(file_name))
 }
 
-pub fn locate_pdfium_in_runtime_dirs() -> Option<PathBuf> {
-    runtime_search_directories()
+pub fn locate_bundled_pdfium_library() -> Option<PathBuf> {
+    bundled_pdfium_search_directories()
         .into_iter()
         .map(|dir| PathBuf::from(Pdfium::pdfium_platform_library_name_at_path(&dir)))
         .find(|candidate| candidate.is_file())
 }
 
-/// Resolve the bundled Pdfium library path used for runtime binding on all platforms.
-pub fn resolve_pdfium_library_path() -> Option<PathBuf> {
-    if let Some(env_path) = std::env::var_os("PDFIUM_PATH") {
-        let path = PathBuf::from(env_path);
-        if path.is_file() {
-            return Some(path);
+fn bundled_pdfium_search_directories() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    let mut push_unique = |path: PathBuf| {
+        if !dirs.iter().any(|p| p == &path) {
+            dirs.push(path);
+        }
+    };
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            push_unique(dir.to_path_buf());
+
+            #[cfg(target_os = "macos")]
+            if let Some(contents_dir) = dir
+                .parent()
+                .filter(|parent| parent.file_name().is_some_and(|name| name == "Contents"))
+            {
+                push_unique(contents_dir.join("Frameworks"));
+                push_unique(contents_dir.join("Resources"));
+            }
         }
     }
 
-    locate_pdfium_in_runtime_dirs()
+    dirs
+}
+
+/// Resolve the bundled Pdfium library path used for runtime binding on all platforms.
+pub fn resolve_pdfium_library_path() -> Option<PathBuf> {
+    RESOLVED_PDFIUM_LIBRARY_PATH.clone()
+}
+
+fn resolve_pdfium_library_path_uncached() -> Option<PathBuf> {
+    locate_bundled_pdfium_library()
 }
 
 pub fn ensure_pdfium_available() -> Result<()> {
-    if let Some(found_path) = resolve_pdfium_library_path() {
-        crate::dbglog!("Found pdfium at: {:?}", found_path);
+    if let Some(_found_path) = resolve_pdfium_library_path() {
+        crate::dbglog!("Found pdfium at: {:?}", _found_path);
         return Ok(());
     }
 
     let library_name = Pdfium::pdfium_platform_library_name();
     Err(anyhow!(
-        "Missing Pdfium library ({}). Place it next to the Lege executable or set PDFIUM_PATH to its full path before starting.",
+        "Missing bundled Pdfium library ({}). Place it next to the Lege executable.",
         library_name.to_string_lossy()
     ))
 }

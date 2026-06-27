@@ -23,8 +23,8 @@ pub mod processing_log;
 pub mod progress;
 pub mod reflow; // RasterReflow: raster-first reflow for scanned books (scaffolding)
 pub mod resize;
+pub mod resolution_preset;
 // resize context is now merged into pipeline::policies
-pub mod target_profiles;
 pub mod text_loader;
 pub mod types;
 pub mod unicode_font;
@@ -47,6 +47,7 @@ pub use pipeline::{
     InferenceHandle,
     InferenceJob,
     PageRange,
+    PageSelection,
     PageTask,
     PipelineConfig,
     ProcessingPipeline,

@@ -15,7 +15,7 @@ pub mod source;
 
 // Re-export key types
 pub use config::{
-    ImageRegionDitherMode, PageRange, PageTask, PipelineConfig, ProcessingPipeline,
+    ImageRegionDitherMode, PageRange, PageSelection, PageTask, PipelineConfig, ProcessingPipeline,
     RenderedPageData, ensure_pdfium_available, runtime_asset_path, runtime_asset_path_if_exists,
 };
 pub use djvu_pipeline::{

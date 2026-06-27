@@ -1659,9 +1659,7 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
     // Pdfium heuristic: ensure we can locate the platform library using the same search path as runtime binding
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     {
-        let lib_name = pdfium_render::prelude::Pdfium::pdfium_platform_library_name();
-        let lib_name_str = lib_name.to_string_lossy();
-        if crate::runtime_asset_path_if_exists(lib_name_str.as_ref()).is_none() {
+        if crate::pipeline::config::resolve_pdfium_library_path().is_none() {
             missing.push("pdfium".to_string());
         }
     }

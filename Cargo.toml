@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.52"
+version = "1.4.53"
 edition = "2024"
 description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -65,6 +65,71 @@ wait-timeout = "0.2.1"
 byteorder = "1.5.0"
 bitvec = "1.0.1"
 chrono = "0.4.43"
+
+freya = { path = "freya-main/crates/freya", version = "0.4.0-rc.17" }
+freya-core = { path = "freya-main/crates/freya-core", version = "0.4.0-rc.17" }
+torin = { path = "freya-main/crates/torin", version = "0.4.0-rc.17" }
+ragnarok = { path = "freya-main/crates/ragnarok", version = "0.4.0-rc.17" }
+freya-clipboard = { path = "freya-main/crates/freya-clipboard", version = "0.4.0-rc.17" }
+freya-edit = { path = "freya-main/crates/freya-edit", version = "0.4.0-rc.17" }
+freya-winit = { path = "freya-main/crates/freya-winit", version = "0.4.0-rc.17" }
+freya-components = { path = "freya-main/crates/freya-components", version = "0.4.0-rc.17" }
+pathgraph = { path = "freya-main/crates/pathgraph", version = "0.4.0-rc.17" }
+freya-animation = { path = "freya-main/crates/freya-animation", version = "0.4.0-rc.17" }
+freya-router = { path = "freya-main/crates/freya-router", version = "0.4.0-rc.17" }
+freya-router-macro = { path = "freya-main/crates/freya-router-macro", version = "0.4.0-rc.17" }
+freya-testing = { path = "freya-main/crates/freya-testing", version = "0.4.0-rc.17" }
+freya-i18n = { path = "freya-main/crates/freya-i18n", version = "0.4.0-rc.17" }
+freya-performance-plugin = { path = "freya-main/crates/freya-performance-plugin", version = "0.4.0-rc.17" }
+freya-radio = { path = "freya-main/crates/freya-radio", version = "0.4.0-rc.17" }
+freya-render-api = { path = "freya-main/crates/freya-render-api", version = "0.4.0-rc.17" }
+freya-render-tiny-skia = { path = "freya-main/crates/freya-render-tiny-skia", version = "0.4.0-rc.17" }
+freya-engine = { path = "freya-main/crates/freya-engine", version = "0.4.0-rc.17" }
+freya-text-cosmic = { path = "freya-main/crates/freya-text-cosmic", version = "0.4.0-rc.17" }
+freya-devtools = { path = "freya-main/crates/freya-devtools", version = "0.4.0-rc.17" }
+freya-icons = { path = "freya-main/crates/freya-icons", features = ["all"], version = "0.4.0-rc.17" }
+freya-sdk = { path = "freya-main/crates/freya-sdk", features = ["all"], version = "0.4.0-rc.17" }
+freya-material-design = { path = "freya-main/crates/freya-material-design", version = "0.4.0-rc.17" }
+freya-plotters-backend = { path = "freya-main/crates/freya-plotters-backend", version = "0.4.0-rc.17" }
+freya-query = { path = "freya-main/crates/freya-query", version = "0.4.0-rc.17" }
+freya-webview = { path = "freya-main/crates/freya-webview", version = "0.4.0-rc.17" }
+freya-terminal = { path = "freya-main/crates/freya-terminal", version = "0.4.0-rc.17" }
+freya-code-editor = { path = "freya-main/crates/freya-code-editor", version = "0.4.0-rc.17", features = ["rust"] }
+freya-skia-safe = { version = "0.96.1", default-features = false }
+generational-box = "0.7"
+tracing = "0.1.41"
+bitflags = "2.9.3"
+futures-util = "0.3.31"
+futures-channel = "0.3.31"
+futures-lite = "2.6.1"
+async-io = "2.5.0"
+blocking = "1.6.2"
+ureq = "3.1.4"
+url = "2.5"
+open = "5.1"
+async-broadcast = "0.7.2"
+easer = "0.3.0"
+ropey = "1.6.1"
+keyboard-types = "0.8.0"
+euclid = "0.22.9"
+bytes = "1.10.1"
+rfd = "0.17"
+cosmic-text = "0.19.0"
+softbuffer = "0.4.8"
+tiny-skia = "0.12.0"
+raw-window-handle = "0.6.0"
+winit = "0.30.13"
+tray-icon = "0.21"
+gl = "0.14.0"
+glutin = "0.32.0"
+glutin-winit = "0.5.0"
+ash-window = "0.13.0"
+accesskit = "0.24.0"
+accesskit_winit = "0.32.0"
+hotpath = "0.14"
+tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+rustc-hash = "2.1.1"
 
 windows = { version = "0.62.2", default-features = false }
 windows-core = { version = "0.62.2", default-features = false }

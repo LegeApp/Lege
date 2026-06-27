@@ -193,6 +193,26 @@ fn build_inference_future(
         }
     }
 
+    if !rendered.layout_detection_enabled {
+        return Box::pin(async move {
+            let inference_result = InferenceResult {
+                index: page_index,
+                high_res_image: rendered.high_res_image.clone(),
+                inference_image: rendered.inference_image.clone(),
+                detections: Vec::new(),
+                text_layer: None,
+                original_width_pts: rendered.original_width_pts,
+                original_height_pts: rendered.original_height_pts,
+                has_no_detections: true,
+            };
+
+            Ok(PdfInferenceData {
+                rendered,
+                inference_result,
+            })
+        });
+    }
+
     match inference_handle {
         Some(handle) => Box::pin(async move {
             let detections = handle
@@ -2030,17 +2050,21 @@ fn build_margin_analysis_future(
             pixel_bounds,
         } = prepared;
 
-        let detections = if let Some(handle) = inference_handle {
-            let spec = config.inference_resize_spec();
-            let inference_img = build_inference_image(&analysis_image, &spec)
-                .unwrap_or_else(|_| analysis_image.clone());
+        let detections = if config.layout_detection_enabled_for_page(page_index) {
+            if let Some(handle) = inference_handle {
+                let spec = config.inference_resize_spec();
+                let inference_img = build_inference_image(&analysis_image, &spec)
+                    .unwrap_or_else(|_| analysis_image.clone());
 
-            handle
-                .submit(page_index, Arc::new(inference_img))
-                .await?
-                .await
-                .map_err(|_| anyhow!("Inference actor dropped margin-analysis response"))?
-                .unwrap_or_default()
+                handle
+                    .submit(page_index, Arc::new(inference_img))
+                    .await?
+                    .await
+                    .map_err(|_| anyhow!("Inference actor dropped margin-analysis response"))?
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
