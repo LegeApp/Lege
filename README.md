@@ -81,8 +81,7 @@ Lege requires several external files to be placed alongside the executables:
 #### Required for all platforms:
 
 **ONNX Models** (AI inference, loaded at runtime):
-- `yolo-layout.onnx` — Layout detection (Linux production model)
-- `paddle-layout.onnx` — Layout detection (Windows and macOS model)
+- `yolo-layout.onnx` — Layout detection
 - `sauvola.onnx` — Heavy neural binarization model (runs on CPU)
 
 **Platform libraries:**

@@ -8,9 +8,10 @@ use std::rc::Rc;
 use crate::backend;
 use crate::gui_text::GUI_TEXT;
 use crate::logging;
+use crate::logging::{LogEntry, ProcessingResult};
 use crate::models::{
-    CompressionType, DocumentItem, ImageProcessingType, LogEntry, OcrMode, OutputFormat,
-    ProcessingOptions, ProcessingResult, ResolutionPreset,
+    CompressionType, DocumentItem, ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions,
+    ResolutionPreset,
 };
 use crate::version::display_version;
 use crate::widgets;
@@ -166,6 +167,7 @@ impl Default for AppState {
         let defaults = ProcessingOptions::new();
         let saved = backend::load_saved_settings().ok().flatten();
         let options = saved.clone().unwrap_or_else(|| defaults.clone());
+        let _ = logging::reconcile_started_entries();
         let mut state = Self {
             queue: VecDeque::new(),
             options: options.clone(),
@@ -685,7 +687,6 @@ pub fn app() -> impl IntoElement {
                 }
             })
             .child(widgets::lege_main_shell(
-                HeaderUtilityBar(state),
                 FileActionRow(state),
                 SettingsDashboard(
                     state,
@@ -723,10 +724,10 @@ fn app_root(content: Rect) -> Rect {
     content
 }
 
-fn HeaderUtilityBar(mut state: State<AppState>) -> Element {
+fn ProcessUtilityButtons(mut state: State<AppState>) -> Element {
     let queue_len = state.read().queue.len();
 
-    let navigation: Element = rect()
+    rect()
         .direction(Direction::Horizontal)
         .spacing(6.)
         .cross_align(Alignment::Center)
@@ -748,9 +749,7 @@ fn HeaderUtilityBar(mut state: State<AppState>) -> Element {
                 .on_press(move |_| state.write().show_log_viewer = true)
                 .child(GUI_TEXT.interactive.queue.log_button.clone()),
         )
-        .into();
-
-    widgets::lege_header_bar(navigation, rect().into())
+        .into()
 }
 
 fn FileActionRow(state: State<AppState>) -> Element {
@@ -885,8 +884,6 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
     rect()
         .width(Size::fill())
         .height(Size::fill())
-        .vertical()
-        .spacing(4.)
         .main_align(Alignment::Center)
         .cross_align(Alignment::Center)
         .child(
@@ -896,6 +893,11 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
                 .on_press(move |_| start_or_cancel_processing(state, page_range_input))
                 .child(button_text),
         )
+        .child(
+            rect()
+                .position(Position::new_absolute().right(0.).top(8.))
+                .child(ProcessUtilityButtons(state)),
+        )
         .maybe_child(if item_rows.is_empty() {
             None::<Element>
         } else {
@@ -903,6 +905,7 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
                 rect()
                     .width(Size::fill())
                     .height(Size::px(42.))
+                    .position(Position::new_absolute().left(0.).bottom(0.))
                     .vertical()
                     .spacing(2.)
                     .children(item_rows)
@@ -1399,6 +1402,38 @@ fn PagesDeviceCard(
     page_range_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
+    let crop_free_aspect_control: Element = rect()
+        .width(Size::px(132.))
+        .maybe_child(if options.crop_margins {
+            Some(tooltip_wrap_at(
+                state,
+                TooltipArea::PagesDeviceCard,
+                GUI_TEXT.interactive.tooltips.crop_free_aspect.clone(),
+                AttachedPosition::Left,
+                bool_tile(
+                    GUI_TEXT.interactive.labels.crop_free_aspect.clone(),
+                    options.crop_free_aspect,
+                    {
+                        let mut state = state;
+                        let mut target_height_input = target_height_input;
+                        move |_| {
+                            let mut s = state.write();
+                            let enable = !s.options.crop_free_aspect;
+                            s.options.crop_free_aspect = enable;
+                            if enable {
+                                s.options.target_width = None;
+                                s.options.target_device = None;
+                                s.target_height_input = resolution_input_from_options(&s.options);
+                                target_height_input.set(s.target_height_input.clone());
+                            }
+                        }
+                    },
+                ),
+            ))
+        } else {
+            None::<Element>
+        })
+        .into();
 
     rect()
         .width(Size::fill())
@@ -1418,7 +1453,7 @@ fn PagesDeviceCard(
                             .spacing(10.)
                             .cross_align(Alignment::Center)
                             .child(
-                                rect().width(Size::percent(44.)).child(settings_row(
+                                rect().width(Size::percent(43.3)).child(settings_row(
                                     GUI_TEXT.interactive.labels.page_range.clone(),
                                     square_input(Input::new(page_range_input))
                                         .placeholder(
@@ -1434,7 +1469,7 @@ fn PagesDeviceCard(
                             )
                             .child(
                                 rect()
-                                    .width(Size::percent(56.))
+                                    .width(Size::percent(56.7))
                                     .padding((0., 2., 0., 0.))
                                     .spacing(3.)
                                     .child(tooltip_wrap_at(
@@ -1454,34 +1489,53 @@ fn PagesDeviceCard(
                                                     if enable {
                                                         s.options.crop_margins = false;
                                                         s.options.crop_footnotes = false;
+                                                        s.options.crop_free_aspect = false;
                                                         s.options.reflow = false;
                                                     }
                                                 }
                                             },
                                         ),
                                     ))
-                                    .child(rect().padding((0., 0., 0., 5.)).child(tooltip_wrap_at(
-                                        state,
-                                        TooltipArea::PagesDeviceCard,
-                                        GUI_TEXT.interactive.tooltips.margin_crop_resize.clone(),
-                                        AttachedPosition::Left,
-                                        bool_tile(
-                                            "Crop margins".to_string(),
-                                            options.crop_margins,
-                                            {
-                                                let mut state = state;
-                                                move |_| {
-                                                    let mut s = state.write();
-                                                    let enable = !s.options.crop_margins;
-                                                    s.options.crop_margins = enable;
-                                                    if enable {
-                                                        s.options.center_margins = false;
-                                                        s.options.reflow = false;
-                                                    }
-                                                }
-                                            },
-                                        ),
-                                    )))
+                                    .child(
+                                        rect()
+                                            .direction(Direction::Horizontal)
+                                            .spacing(6.)
+                                            .cross_align(Alignment::Center)
+                                            .child(rect().padding((0., 0., 0., 5.)).child(
+                                                tooltip_wrap_at(
+                                                    state,
+                                                    TooltipArea::PagesDeviceCard,
+                                                    GUI_TEXT
+                                                        .interactive
+                                                        .tooltips
+                                                        .margin_crop_resize
+                                                        .clone(),
+                                                    AttachedPosition::Left,
+                                                    bool_tile(
+                                                        "Crop margins".to_string(),
+                                                        options.crop_margins,
+                                                        {
+                                                            let mut state = state;
+                                                            move |_| {
+                                                                let mut s = state.write();
+                                                                let enable =
+                                                                    !s.options.crop_margins;
+                                                                s.options.crop_margins = enable;
+                                                                if enable {
+                                                                    s.options.center_margins =
+                                                                        false;
+                                                                    s.options.reflow = false;
+                                                                } else {
+                                                                    s.options.crop_free_aspect =
+                                                                        false;
+                                                                }
+                                                            }
+                                                        },
+                                                    ),
+                                                ),
+                                            ))
+                                            .child(crop_free_aspect_control),
+                                    )
                                     .child(rect().padding((0., 0., 0., 10.)).child(
                                         tooltip_wrap_at(
                                             state,
@@ -1501,6 +1555,7 @@ fn PagesDeviceCard(
                                                             s.options.center_margins = false;
                                                             s.options.crop_margins = false;
                                                             s.options.crop_footnotes = false;
+                                                            s.options.crop_free_aspect = false;
                                                         }
                                                     }
                                                 },
@@ -1532,14 +1587,32 @@ fn PagesDeviceCard(
                                                     if let Some((height, width)) =
                                                         parse_resolution_field(&text)
                                                     {
-                                                        let normalized = match width {
-                                                            Some(width) => {
-                                                                format!("{height}x{width}")
-                                                            }
-                                                            None => height.to_string(),
-                                                        };
+                                                        let normalized;
                                                         {
                                                             let mut s = state.write();
+                                                            let crop_free_aspect =
+                                                                s.options.crop_free_aspect;
+                                                            if crop_free_aspect && width.is_some()
+                                                            {
+                                                                schedule_popup(
+                                                                    state,
+                                                                    PopupKind::Warning,
+                                                                    "Free-aspect crop uses height only; fixed width was ignored."
+                                                                        .to_string(),
+                                                                    5,
+                                                                );
+                                                            }
+                                                            let width = if crop_free_aspect {
+                                                                None
+                                                            } else {
+                                                                width
+                                                            };
+                                                            normalized = match width {
+                                                                Some(width) => {
+                                                                    format!("{height}x{width}")
+                                                                }
+                                                                None => height.to_string(),
+                                                            };
                                                             s.options.target_device = None;
                                                             s.options.target_height = Some(height);
                                                             s.options.target_width = width;
@@ -1567,7 +1640,7 @@ fn PagesDeviceCard(
                                             .height(Size::px(22.))
                                             .on_press({
                                                 let mut state = state;
-                                                let target_height_input = target_height_input;
+                                                let mut target_height_input = target_height_input;
                                                 move |_| {
                                                     let field_value =
                                                         target_height_input.read().clone();
@@ -1588,8 +1661,26 @@ fn PagesDeviceCard(
                                                         );
                                                         return;
                                                     };
+                                                    let adjusted_width;
                                                     {
                                                         let mut s = state.write();
+                                                        let crop_free_aspect =
+                                                            s.options.crop_free_aspect;
+                                                        if crop_free_aspect && width.is_some() {
+                                                            schedule_popup(
+                                                                state,
+                                                                PopupKind::Warning,
+                                                                "Free-aspect crop uses height only; fixed width was ignored."
+                                                                    .to_string(),
+                                                                5,
+                                                            );
+                                                        }
+                                                        let width = if crop_free_aspect {
+                                                            None
+                                                        } else {
+                                                            width
+                                                        };
+                                                        adjusted_width = width;
                                                         s.options.target_device = None;
                                                         s.options.target_height = Some(height);
                                                         s.options.target_width = width;
@@ -1597,8 +1688,13 @@ fn PagesDeviceCard(
                                                             resolution_input_from_options(
                                                                 &s.options,
                                                             );
+                                                        target_height_input
+                                                            .set(s.target_height_input.clone());
                                                     }
-                                                    let preset = ResolutionPreset { height, width };
+                                                    let preset = ResolutionPreset {
+                                                        height,
+                                                        width: adjusted_width,
+                                                    };
                                                     match backend::save_resolution_preset(&preset) {
                                                         Ok(()) => schedule_popup(
                                                             state,
@@ -1649,10 +1745,24 @@ fn PagesDeviceCard(
                                                 move |_| match backend::load_resolution_preset() {
                                                     Ok(Some(preset)) => {
                                                         let mut s = state.write();
+                                                        let width = if s.options.crop_free_aspect {
+                                                            if preset.width.is_some() {
+                                                                schedule_popup(
+                                                                    state,
+                                                                    PopupKind::Warning,
+                                                                    "Free-aspect crop uses height only; preset width was ignored."
+                                                                        .to_string(),
+                                                                    5,
+                                                                );
+                                                            }
+                                                            None
+                                                        } else {
+                                                            preset.width
+                                                        };
                                                         s.options.target_device = None;
                                                         s.options.target_height =
                                                             Some(preset.height);
-                                                        s.options.target_width = preset.width;
+                                                        s.options.target_width = width;
                                                         s.target_height_input =
                                                             resolution_input_from_options(
                                                                 &s.options,
@@ -2101,69 +2211,42 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
     entries
         .iter()
         .map(|entry| {
+            let text = format_log_entry_text(entry);
             rect()
                 .width(Size::fill())
                 .padding((6., 4., 6., 4.))
                 .background(PANEL_BG)
                 .corner_radius(4.)
-                .spacing(4.)
                 .child(
-                    paragraph()
+                    SelectableText::new(text)
                         .width(Size::fill())
-                        .span(
-                            Span::new(entry.format_timestamp())
-                                .font_size(12.)
-                                .color(TEXT),
-                        )
-                        .line_height(1.25)
-                        .max_lines(1),
-                )
-                .child(
-                    paragraph()
-                        .width(Size::fill())
-                        .span(
-                            Span::new(fmt1(
-                                &GUI_TEXT.interactive.queue.input,
-                                &entry.input_filename,
-                            ))
-                            .font_size(11.)
-                            .color(TEXT),
-                        )
-                        .line_height(1.25)
-                        .max_lines(3),
-                )
-                .child(
-                    paragraph()
-                        .width(Size::fill())
-                        .span(
-                            Span::new(fmt1(
-                                &GUI_TEXT.interactive.queue.output,
-                                &entry.output_filename,
-                            ))
-                            .font_size(11.)
-                            .color(TEXT),
-                        )
-                        .line_height(1.25)
-                        .max_lines(3),
-                )
-                .child(
-                    paragraph()
-                        .width(Size::fill())
-                        .span(
-                            Span::new(format!(
-                                "{} -> {}",
-                                LogEntry::format_size(entry.original_size),
-                                LogEntry::format_size(entry.compressed_size)
-                            ))
-                            .font_size(11.)
-                            .color(MUTED),
-                        )
-                        .line_height(1.25)
-                        .max_lines(2),
+                        .font_size(11.)
+                        .color(TEXT)
+                        .line_height(1.25),
                 )
                 .into()
         })
         .collect()
+}
+
+fn format_log_entry_text(entry: &LogEntry) -> String {
+    let mut lines = vec![
+        format!("{}  |  {}", entry.format_timestamp(), entry.status),
+        fmt1(&GUI_TEXT.interactive.queue.input, &entry.input_path),
+        fmt1(&GUI_TEXT.interactive.queue.output, &entry.output_path),
+        format!(
+            "{} -> {}",
+            LogEntry::format_size(entry.original_size),
+            LogEntry::format_size(entry.compressed_size)
+        ),
+    ];
+
+    if let Some(message) = entry.error_message.as_ref() {
+        let kind = entry.error_kind.as_deref().unwrap_or("processing_error");
+        lines.push(format!("{kind}: {message}"));
+    }
+
+    lines.join("\n")
 }
 
 fn completion_message(result: &ProcessingResult, estimated_original_size: u64) -> String {
@@ -2340,6 +2423,21 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
         rect()
             .width(Size::fill())
             .height(Size::fill())
+            .spacing(8.)
+            .child(
+                Button::new()
+                    .on_press(move |_| {
+                        if logging::clear_log_entries().is_ok() {
+                            state.write().processing_log.clear();
+                        }
+                    })
+                    .child(
+                        label()
+                            .text(GUI_TEXT.interactive.popups.clear_log.clone())
+                            .font_size(13.)
+                            .color(TEXT),
+                    ),
+            )
             .child(
                 ScrollView::new()
                     .width(Size::fill())
@@ -2962,10 +3060,8 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                             options.page_range.is_some(),
                                         );
 
-                                        if let Ok(log_entry) =
-                                            logging::add_log_entry(&processing_result, &options)
-                                        {
-                                            state.write().processing_log.push(log_entry);
+                                        if let Ok(entries) = logging::load_log_entries() {
+                                            state.write().processing_log = entries;
                                         }
 
                                         let estimated_original_size =
@@ -3013,6 +3109,24 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                     if let Some(info) =
                                         tracker_infos.iter().find(|info| info.id == task_id)
                                     {
+                                        if error.contains("Failed to spawn worker")
+                                            || error.contains("Worker exited before completion")
+                                            || error.contains("Failed to wait for worker process")
+                                        {
+                                            let original_size =
+                                                backend::calculate_path_size(&info.input_path);
+                                            let _ = logging::add_failed_log_entry(
+                                                info.input_path.clone(),
+                                                info.output_path.clone(),
+                                                original_size,
+                                                &error,
+                                                &options,
+                                            );
+                                        }
+                                        if let Ok(entries) = logging::load_log_entries() {
+                                            state.write().processing_log = entries;
+                                        }
+
                                         state
                                             .write()
                                             .queue

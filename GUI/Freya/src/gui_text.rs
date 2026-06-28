@@ -81,6 +81,7 @@ pub struct GuiLabelsText {
     pub width_proportional: String,
     pub margin_centering: String,
     pub margin_crop_resize: String,
+    pub crop_free_aspect: String,
     pub reflow: String,
 }
 
@@ -126,6 +127,7 @@ pub struct GuiTooltipsText {
     pub threshold_value: String,
     pub margin_centering: String,
     pub margin_crop_resize: String,
+    pub crop_free_aspect: String,
     pub reflow: String,
     pub output_format: String,
 }
@@ -173,6 +175,7 @@ pub struct GuiQueueText {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GuiPopupsText {
     pub close: String,
+    pub clear_log: String,
     pub supported_inputs_filter: String,
     pub queue_items_title: String,
     pub processing_log_title: String,

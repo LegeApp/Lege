@@ -174,8 +174,8 @@ impl WorkerProcessingStatus {
             }
             Self::MarginPass1Analyzing => (
                 "[Margin Analysis - Pass 1]".into(),
-                "Rendering: complete".into(),
-                "Inference: complete | Analyzing document-wide margins...".into(),
+                "Preparing document-wide margin analysis...".into(),
+                "Progress will update as pages are analyzed.".into(),
             ),
             Self::MarginAnalysisSummary { summary } => (
                 "[Margin Analysis - Pass 1]".into(),
@@ -448,6 +448,9 @@ pub fn gui_options_to_cli_args(
     } else if options.crop_margins {
         args.push("--crop-margins".into());
     }
+    if options.crop_free_aspect {
+        args.push("--crop-free-aspect".into());
+    }
     if options.crop_footnotes {
         args.push("--force-crop".into());
     }
@@ -485,7 +488,7 @@ pub fn gui_options_to_cli_args(
 
     // Target dimensions / height (must be the final positional).
     if let Some(height) = options.target_height {
-        if let Some(width) = options.target_width {
+        if let Some(width) = options.target_width.filter(|_| !options.crop_free_aspect) {
             args.push(OsString::from(format!("{height}x{width}")));
         } else {
             args.push(OsString::from(height.to_string()));

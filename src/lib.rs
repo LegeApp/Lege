@@ -11,6 +11,7 @@ pub mod djvu; // Native Rust DJVU encoder
 #[cfg_attr(not(target_os = "linux"), path = "engine.rs")]
 pub mod engine;
 pub mod icon;
+pub mod layout_visualize;
 pub mod margin;
 pub mod nms;
 pub mod ocr;
@@ -29,6 +30,7 @@ pub mod text_loader;
 pub mod types;
 pub mod unicode_font;
 pub mod windows_dirs;
+pub use layout_visualize::run_layout_visualize_mode;
 pub use pdf_to_png::{run_pdf_to_jp2_debug_mode, run_pdf_to_png_mode};
 pub use pnginference::{
     DebugCropKind, run_images_to_images_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,

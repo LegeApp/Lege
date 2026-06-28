@@ -39,6 +39,7 @@
       "width_proportional": "proportional",
       "margin_centering": "Inhalt auf Standardseite zentrieren",
       "margin_crop_resize": "Auf Inhalt zuschneiden und skalieren",
+      "crop_free_aspect": "Freies Verhältnis",
       "reflow": "Reflow"
     },
     "tooltips": {
@@ -69,6 +70,7 @@
       "threshold_value": "Fester Schwellenwert (0-255), der nach der Linearisierung angewendet wird.",
       "margin_centering": "Zentriert den Inhaltsbereich innerhalb der Seitenmaße.",
       "margin_crop_resize": "Schneidet Ränder auf Inhaltsgrenzen zu und skaliert auf die angegebenen Maße.",
+      "crop_free_aspect": "Schneidet Layout-Seiten auf stabile Text-Begrenzungsrahmen zu. Eine feste Ausgabebreite wird ignoriert.",
       "reflow": "Setzt den Text in einem sauberen einspaltigen Layout für das Zielgerät neu, wobei Wörter und Zeilen der Originalseiten neu umbrochen werden.",
       "output_format": "PDF oder DjVu"
     },
@@ -133,6 +135,7 @@
     },
     "popups": {
       "close": "Schließen",
+      "clear_log": "Protokoll leeren",
       "supported_inputs_filter": "Unterstützte Eingaben",
       "queue_items_title": "Warteschlangeneinträge",
       "processing_log_title": "Verarbeitungsprotokoll",

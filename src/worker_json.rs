@@ -7,7 +7,14 @@ use std::io::Write;
 
 use crate::progress::ProgressUpdate;
 
-pub fn run_json_worker(rx: &flume::Receiver<ProgressUpdate>, task_id: u64) {
+pub fn run_json_worker_with_terminal_hook<F>(
+    rx: &flume::Receiver<ProgressUpdate>,
+    task_id: u64,
+    mut before_terminal: F,
+) -> Option<ProgressUpdate>
+where
+    F: FnMut(&ProgressUpdate),
+{
     loop {
         match rx.recv() {
             Ok(update) => {
@@ -23,6 +30,9 @@ pub fn run_json_worker(rx: &flume::Receiver<ProgressUpdate>, task_id: u64) {
                     &update,
                     ProgressUpdate::Completed { .. } | ProgressUpdate::Error { .. }
                 );
+                if is_terminal {
+                    before_terminal(&update);
+                }
                 match serde_json::to_string(&update) {
                     Ok(json) => {
                         println!("{}", json);
@@ -33,10 +43,11 @@ pub fn run_json_worker(rx: &flume::Receiver<ProgressUpdate>, task_id: u64) {
                     }
                 }
                 if is_terminal {
-                    break;
+                    return Some(update);
                 }
             }
             Err(_) => break,
         }
     }
+    None
 }

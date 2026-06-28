@@ -55,7 +55,11 @@ pub struct ProcessedPage {
 #[derive(Clone, Debug)]
 pub(crate) enum CachedDetections {
     Missing,
-    Present(Vec<crate::engine::Detection>),
+    Present {
+        detections: Vec<crate::engine::Detection>,
+        page_width: u32,
+        page_height: u32,
+    },
 }
 
 /// Inference stage with TRUE concurrency
@@ -163,13 +167,20 @@ fn build_inference_future(
 ) -> BoxFuture<'static, Result<PdfInferenceData>> {
     let page_index = rendered.index;
 
-    if let Some(CachedDetections::Present(cached)) = detection_cache.get(page_index) {
-        if analysis_width > 0 {
+    if let Some(CachedDetections::Present {
+        detections: cached,
+        page_width,
+        page_height,
+    }) = detection_cache.get(page_index)
+    {
+        if analysis_width > 0 && *page_width > 0 && *page_height > 0 {
             let high_res_width = rendered.high_res_image.width();
-            let scale_factor = high_res_width as f32 / analysis_width as f32;
+            let high_res_height = rendered.high_res_image.height();
+            let scale_x = high_res_width as f32 / *page_width as f32;
+            let scale_y = high_res_height as f32 / *page_height as f32;
             let mut scaled = cached.clone();
             for det in &mut scaled {
-                det.scale_bbox(scale_factor, scale_factor);
+                det.scale_bbox(scale_x, scale_y);
             }
 
             let has_no_detections = scaled.is_empty();
@@ -179,6 +190,7 @@ fn build_inference_future(
                 inference_image: rendered.inference_image.clone(),
                 detections: scaled,
                 text_layer: None,
+                detections_are_page_space: true,
                 original_width_pts: rendered.original_width_pts,
                 original_height_pts: rendered.original_height_pts,
                 has_no_detections,
@@ -201,6 +213,7 @@ fn build_inference_future(
                 inference_image: rendered.inference_image.clone(),
                 detections: Vec::new(),
                 text_layer: None,
+                detections_are_page_space: true,
                 original_width_pts: rendered.original_width_pts,
                 original_height_pts: rendered.original_height_pts,
                 has_no_detections: true,
@@ -231,6 +244,7 @@ fn build_inference_future(
                 inference_image: rendered.inference_image.clone(),
                 detections: detections.clone(),
                 text_layer: None,
+                detections_are_page_space: false,
                 original_width_pts: rendered.original_width_pts,
                 original_height_pts: rendered.original_height_pts,
                 has_no_detections: detections.is_empty(),
@@ -248,6 +262,7 @@ fn build_inference_future(
                 inference_image: rendered.inference_image.clone(),
                 detections: Vec::new(),
                 text_layer: None,
+                detections_are_page_space: true,
                 original_width_pts: rendered.original_width_pts,
                 original_height_pts: rendered.original_height_pts,
                 has_no_detections: true,
@@ -649,6 +664,67 @@ fn identity_margin_correction() -> MarginCorrection {
     MarginCorrection::new(0.0, 0.0, 1.0, 1.0)
 }
 
+fn bbox_is_effectively_full_page(
+    bbox: [f32; 4],
+    page_w: u32,
+    page_h: u32,
+    min_fraction: f32,
+) -> bool {
+    if page_w == 0 || page_h == 0 {
+        return false;
+    }
+    let (x1, y1, x2, y2) = rounded_clamped_bbox(bbox, page_w, page_h);
+    let area = (x2.saturating_sub(x1) as f32) * (y2.saturating_sub(y1) as f32);
+    let page_area = (page_w as f32) * (page_h as f32);
+    page_area > 0.0 && area / page_area >= min_fraction
+}
+
+fn normalize_crop_binarization_input(image: &RgbImage) -> RgbImage {
+    let raw = image.as_raw();
+    let pixel_count = (image.width() as usize).saturating_mul(image.height() as usize);
+    if pixel_count == 0 || raw.len() < pixel_count.saturating_mul(3) {
+        return image.clone();
+    }
+
+    let mut luma = Vec::with_capacity(pixel_count);
+    for rgb in raw.chunks_exact(3).take(pixel_count) {
+        let y = ((rgb[0] as u32 * 77 + rgb[1] as u32 * 150 + rgb[2] as u32 * 29) >> 8) as u8;
+        luma.push(y);
+    }
+
+    let mut sorted = luma.clone();
+    sorted.sort_unstable();
+    let low = percentile_from_sorted(&sorted, 0.02);
+    let high = percentile_from_sorted(&sorted, 0.98);
+    if high <= low.saturating_add(8) {
+        return image.clone();
+    }
+
+    let range = (high as u16).saturating_sub(low as u16).max(1);
+    let mut normalized = Vec::with_capacity(pixel_count * 3);
+    for y in luma {
+        let stretched = if y <= low {
+            0
+        } else if y >= high {
+            255
+        } else {
+            (((y as u16 - low as u16) * 255) / range) as u8
+        };
+        normalized.extend_from_slice(&[stretched, stretched, stretched]);
+    }
+
+    RgbImage::from_raw(image.width(), image.height(), normalized).unwrap_or_else(|| image.clone())
+}
+
+fn percentile_from_sorted(sorted: &[u8], percentile: f32) -> u8 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let max_index = sorted.len().saturating_sub(1);
+    let idx = ((max_index as f32) * percentile.clamp(0.0, 1.0)).round() as usize;
+    sorted[idx.min(max_index)]
+}
+
 /// Consolidated CPU-intensive work for a single page
 fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOutput> {
     let PageProcessingInput {
@@ -667,6 +743,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             apply_margin_analysis_to_page(
                 &rendered,
                 inference_result.detections,
+                inference_result.detections_are_page_space,
                 &config,
                 analysis,
                 page_index,
@@ -794,15 +871,33 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     }
 
     let classifier = &crate::types::LABEL_CLASSIFIER;
-    let force_blank_threshold = should_force_blank_page_threshold(
-        &config,
-        inference_result.has_no_detections,
-        is_visually_blank_page(&adjusted_image),
-        &adjusted_detections,
-        width as u32,
-        height as u32,
-        classifier,
-    );
+    let has_substantive_text_detection = adjusted_detections
+        .iter()
+        .any(|det| classifier.is_substantive_text(det));
+    let has_layout_image_detection = adjusted_detections
+        .iter()
+        .any(|det| classifier.is_image_label(det));
+    let layout_crop_has_no_text = config.enable_layout_detection()
+        && config.crop_free_aspect()
+        && !has_substantive_text_detection;
+    let force_blank_threshold = layout_crop_has_no_text
+        || should_force_blank_page_threshold(
+            &config,
+            adjusted_detections.is_empty(),
+            is_visually_blank_page(&adjusted_image),
+            &adjusted_detections,
+            width as u32,
+            height as u32,
+            classifier,
+        );
+
+    if force_blank_threshold {
+        if !has_layout_image_detection {
+            adjusted_detections.clear();
+            adjusted_image =
+                RgbImage::from_pixel(width as u32, height as u32, image::Rgb([255, 255, 255]));
+        }
+    }
 
     // 2b. Pre-mask image regions before binarization so Sauvola only sees text.
     // Image content would skew the adaptive threshold calculations.
@@ -816,13 +911,17 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             .iter()
             .any(|det| classifier.is_image_label(det));
 
-    let binarization_image: std::borrow::Cow<'_, RgbImage> = if has_image_regions {
+    let binarization_source: std::borrow::Cow<'_, RgbImage> = if has_image_regions {
         let mut masked_rgb = adjusted_image.as_raw().clone();
         let w = width as u32;
         let h = height as u32;
         const MASK_PAD: u32 = 3;
         for det in &adjusted_detections {
             if !classifier.is_image_label(det) {
+                continue;
+            }
+            if has_substantive_text_detection && bbox_is_effectively_full_page(det.bbox, w, h, 0.90)
+            {
                 continue;
             }
             let (ix1, iy1, ix2, iy2) = rounded_clamped_bbox(det.bbox, w, h);
@@ -842,6 +941,14 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     } else {
         std::borrow::Cow::Borrowed(&adjusted_image)
     };
+    let binarization_image: std::borrow::Cow<'_, RgbImage> =
+        if config.crop_free_aspect() && config.text_format() != "jpeg" && !force_blank_threshold {
+            std::borrow::Cow::Owned(normalize_crop_binarization_input(
+                binarization_source.as_ref(),
+            ))
+        } else {
+            binarization_source
+        };
 
     let is_cover_page = should_treat_as_cover_page(page_index, &config);
 
@@ -852,10 +959,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // not jpeg base mode (jpeg path uses different luma handling).
     let can_defer_binarize = !is_cover_page
         && !has_image_regions
+        && !config.crop_free_aspect()
         && !config.enable_ocr()
         && config.text_format() != "jpeg";
 
-    let (mut binarized, deferred_binarize) = if can_defer_binarize {
+    let (mut binarized, deferred_binarize) = if force_blank_threshold {
+        (vec![255; width * height], None)
+    } else if can_defer_binarize {
         (
             Vec::new(),
             Some(crate::pipeline::policies::binarize_options_for(
@@ -882,6 +992,14 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         (bin, None)
     };
     drop(binarization_image);
+
+    if config.crop_free_aspect() && has_image_regions && !binarized.is_empty() {
+        let dark_pixels = binarized.iter().filter(|&&px| px <= 128).count();
+        let dark_fraction = dark_pixels as f32 / binarized.len().max(1) as f32;
+        if dark_fraction >= 0.85 {
+            binarized.fill(255);
+        }
+    }
 
     // Cover page encoding must happen before region processing (it fills binarized with white).
     let cover_encoded_data =
@@ -910,6 +1028,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     for det in &adjusted_detections {
         if !classifier.is_image_label(det) {
+            continue;
+        }
+        if has_substantive_text_detection
+            && bbox_is_effectively_full_page(det.bbox, width as u32, height as u32, 0.90)
+        {
             continue;
         }
 
@@ -1163,21 +1286,20 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 fn apply_margin_analysis_to_page(
     page: &RenderedPageData,
     detections: Vec<crate::engine::Detection>,
+    detections_are_page_space: bool,
     cfg: &PipelineConfig,
     analysis: &DocumentMarginAnalysis,
     page_index: usize,
 ) -> Result<(RgbImage, Vec<crate::engine::Detection>, NativeTextTransform)> {
-    use crate::pipeline::policies::{is_in_inference_space, map_bbox_infer_to_page};
+    use crate::pipeline::policies::remap_detections_to_page;
 
-    // Remap detections from inference space to page space
+    // Remap detections from inference space to page space unless the analysis
+    // cache already scaled them into this rendered page's coordinate system.
     let mut dets = detections;
     let page_w = page.high_res_image.width();
     let page_h = page.high_res_image.height();
-    let spec = cfg.inference_resize_spec();
-    for d in dets.iter_mut() {
-        if is_in_inference_space(&d.bbox, &spec) {
-            d.bbox = map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
-        }
+    if !detections_are_page_space {
+        remap_detections_to_page(&mut dets, page_w, page_h, cfg);
     }
 
     // CRITICAL FIX: Scale baseline bounds from analysis resolution to processing resolution
@@ -1189,56 +1311,56 @@ fn apply_margin_analysis_to_page(
         page_w,
         page_h,
     );
+    let scaled_crop = analysis.crop_bounds.scale_to_resolution(
+        analysis.analysis_width,
+        analysis.analysis_height,
+        page_w,
+        page_h,
+    );
 
     // Get page-specific margin data from analysis
     let page_data = analysis.pages.get(&page_index);
 
-    // For consistent cropping, use document-wide baseline consistently across all pages
-    // - All pages use the same baseline to ensure consistency
-    // - This prevents pages with equal margins from being processed differently
+    let page_is_non_crop_content = page_data
+        .map(|pd| pd.is_blank || pd.is_full_page_image)
+        .unwrap_or(false);
+    let full_page_bounds = crate::margin::ContentBounds {
+        min_x: 0,
+        min_y: 0,
+        max_x: page_w,
+        max_y: page_h,
+    };
+
     let bounds = if analysis.effective_margin_setting
         == crate::margin::MarginSettings::CropAndResize
     {
-        // Calculate per-page bounds for content preservation but only use it to validate against baseline
-        let page_bounds = if !dets.is_empty() {
-            crate::margin::calculate_content_bounds(&dets, page_w, page_h, true)
+        Some(if page_is_non_crop_content {
+            full_page_bounds
+        } else if cfg.crop_free_aspect() {
+            let page_text_bounds = crate::margin::calculate_text_crop_bounds(&dets, page_w, page_h)
+                .or_else(|| {
+                    page_data.and_then(|pd| {
+                        pd.content_bounds.map(|cb| {
+                            cb.scale_to_resolution(
+                                analysis.analysis_width,
+                                analysis.analysis_height,
+                                page_w,
+                                page_h,
+                            )
+                        })
+                    })
+                })
+                .unwrap_or(scaled_crop);
+            crate::margin::fit_crop_window_to_content(
+                &page_text_bounds,
+                scaled_crop.width().max(1),
+                scaled_crop.height().max(1),
+                page_w,
+                page_h,
+            )
         } else {
-            compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
-        };
-
-        // For consistency across pages, always use the document-wide baseline
-        // Only expand if page content significantly exceeds baseline (e.g., page has extra content)
-        match page_bounds {
-            Some(pb) => {
-                // Check if page content significantly exceeds the baseline bounds
-                // Use a tolerance to avoid minor variations causing different processing
-                const BOUND_TOLERANCE: u32 = 10; // pixels tolerance
-
-                let exceeds_left = pb.min_x < scaled_baseline.min_x.saturating_sub(BOUND_TOLERANCE);
-                let exceeds_top = pb.min_y < scaled_baseline.min_y.saturating_sub(BOUND_TOLERANCE);
-                let exceeds_right =
-                    pb.max_x > scaled_baseline.max_x.saturating_add(BOUND_TOLERANCE);
-                let exceeds_bottom =
-                    pb.max_y > scaled_baseline.max_y.saturating_add(BOUND_TOLERANCE);
-
-                let final_bounds = if exceeds_left || exceeds_top || exceeds_right || exceeds_bottom
-                {
-                    // Expand baseline to accommodate content that genuinely exceeds it
-                    crate::margin::ContentBounds {
-                        min_x: pb.min_x.min(scaled_baseline.min_x),
-                        min_y: pb.min_y.min(scaled_baseline.min_y),
-                        max_x: pb.max_x.max(scaled_baseline.max_x),
-                        max_y: pb.max_y.max(scaled_baseline.max_y),
-                    }
-                } else {
-                    // Use consistent baseline for pages with similar content placement
-                    scaled_baseline
-                };
-
-                Some(final_bounds)
-            }
-            None => Some(scaled_baseline),
-        }
+            scaled_crop
+        })
     } else {
         // For StandardizeAndCenter and None, use the original per-page logic
         if !dets.is_empty() {
@@ -1259,17 +1381,32 @@ fn apply_margin_analysis_to_page(
     };
 
     if let Some(bounds) = bounds {
-        // CRITICAL: Use SCALED baseline for standard dimensions (processing resolution, not analysis resolution)
-        let standard_dims = crate::margin::StandardPageDimensions {
-            width: scaled_baseline.width(),
-            height: scaled_baseline.height(),
+        // Apply effective margin setting (may have been overridden due to footnotes)
+        let effective_setting = if analysis.effective_margin_setting
+            == crate::margin::MarginSettings::CropAndResize
+            && page_is_non_crop_content
+        {
+            crate::margin::MarginSettings::StandardizeAndCenter
+        } else {
+            analysis.effective_margin_setting
         };
 
-        // Apply effective margin setting (may have been overridden due to footnotes)
-        let effective_setting = analysis.effective_margin_setting;
+        let standard_dims =
+            if analysis.effective_margin_setting == crate::margin::MarginSettings::CropAndResize {
+                crate::margin::StandardPageDimensions {
+                    width: scaled_crop.width().max(1),
+                    height: scaled_crop.height().max(1),
+                }
+            } else {
+                // CRITICAL: Use SCALED baseline for standard dimensions (processing resolution, not analysis resolution)
+                crate::margin::StandardPageDimensions {
+                    width: scaled_baseline.width().max(1),
+                    height: scaled_baseline.height().max(1),
+                }
+            };
 
-        // For CropAndResize mode, use the calculated bounds but ensure more consistent processing
-        // This means each page will crop to its own content area but with uniform processing
+        // Crop mode uses a uniform document crop; center/no-margin modes keep
+        // their page-specific content bounds.
         let effective_bounds = bounds;
 
         // Process page with document-wide baseline
@@ -1364,13 +1501,12 @@ fn apply_region_policy(
     let page_h = rendered.high_res_image.height();
 
     let mut dets_for_bounds = inference_result.detections.clone();
-    let spec = config.inference_resize_spec();
-    for d in dets_for_bounds.iter_mut() {
-        if crate::pipeline::policies::is_in_inference_space(&d.bbox, &spec) {
-            d.bbox =
-                crate::pipeline::policies::map_bbox_infer_to_page(d.bbox, page_w, page_h, &spec);
-        }
-    }
+    crate::pipeline::policies::remap_detections_to_page(
+        &mut dets_for_bounds,
+        page_w,
+        page_h,
+        config,
+    );
 
     let transform = match config.margin_settings() {
         crate::margin::MarginSettings::StandardizeAndCenter
@@ -1823,6 +1959,17 @@ async fn encode_base_layer_fused(
             height,
             &bin_options,
             |binarized| {
+                if crate::bbox_trace::enabled() {
+                    let dark = binarized.iter().filter(|&&b| b <= 128).count();
+                    let light = binarized.len().saturating_sub(dark);
+                    eprintln!(
+                        "PAGE {} fused_binarized dark={} light={} total={}",
+                        page_index,
+                        dark,
+                        light,
+                        binarized.len()
+                    );
+                }
                 let buffer = LegeImageBuffer {
                     data: binarized,
                     width: width as u32,
@@ -2050,7 +2197,7 @@ fn build_margin_analysis_future(
             pixel_bounds,
         } = prepared;
 
-        let detections = if config.layout_detection_enabled_for_page(page_index) {
+        let mut detections = if config.layout_detection_enabled_for_page(page_index) {
             if let Some(handle) = inference_handle {
                 let spec = config.inference_resize_spec();
                 let inference_img = build_inference_image(&analysis_image, &spec)
@@ -2068,6 +2215,13 @@ fn build_margin_analysis_future(
         } else {
             Vec::new()
         };
+
+        crate::pipeline::policies::remap_detections_to_page(
+            &mut detections,
+            analysis_image.width(),
+            analysis_image.height(),
+            &config,
+        );
 
         Ok(AnalysisPageResult {
             page_index,
@@ -2112,7 +2266,11 @@ async fn perform_document_analysis(
         });
 
         if result.page_index < detection_cache.len() {
-            detection_cache[result.page_index] = CachedDetections::Present(result.detections);
+            detection_cache[result.page_index] = CachedDetections::Present {
+                detections: result.detections,
+                page_width: result.page_width,
+                page_height: result.page_height,
+            };
         }
     };
 
@@ -2136,6 +2294,12 @@ async fn perform_document_analysis(
                     detections: Vec::new(),
                     pixel_bounds: None,
                 });
+                progress_tracker.publish_margin_progress(
+                    margin_inputs.len().min(total_pages),
+                    margin_inputs.len().min(total_pages),
+                    0,
+                    total_pages,
+                );
                 continue;
             }
         };
@@ -2156,17 +2320,34 @@ async fn perform_document_analysis(
         while pending.len() >= analysis_infer_concurrency {
             if let Some(result) = pending.next().await {
                 push_completed(result?, &mut margin_inputs, &mut detection_cache);
+                progress_tracker.publish_margin_progress(
+                    margin_inputs.len().min(total_pages),
+                    margin_inputs.len().min(total_pages),
+                    0,
+                    total_pages,
+                );
             }
         }
 
-        // Update progress
-        if idx % 10 == 0 || idx == total_pages - 1 {
-            progress_tracker.update(crate::progress::ProcessingStatus::MarginPass1Analyzing);
+        if idx % 2 == 0 || idx == total_pages - 1 {
+            let analyzed = margin_inputs.len() + pending.len();
+            progress_tracker.publish_margin_progress(
+                analyzed.min(total_pages),
+                margin_inputs.len().min(total_pages),
+                0,
+                total_pages,
+            );
         }
     }
 
     while let Some(result) = pending.next().await {
         push_completed(result?, &mut margin_inputs, &mut detection_cache);
+        progress_tracker.publish_margin_progress(
+            margin_inputs.len().min(total_pages),
+            margin_inputs.len().min(total_pages),
+            0,
+            total_pages,
+        );
     }
 
     margin_inputs.sort_by_key(|input| input.page_index);
@@ -2180,7 +2361,7 @@ async fn perform_document_analysis(
         &margin_inputs,
         &config,
         config.margin_settings(),
-        false, // crop_footnotes
+        config.crop_footnotes(),
     );
 
     // Show summary

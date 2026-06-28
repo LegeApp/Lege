@@ -167,7 +167,7 @@ fax = { version = "0.2.6", default-features = false }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
-fontdue = { version = "0.9.3", optional = true }
+fontdue = "0.9.3"
 png = "0.17.16"
 image = { workspace = true }
 # Enhanced CLI dependencies
@@ -270,7 +270,7 @@ ndarray = "0.17.2"
 [features]
 default = ["jp2-lam", "tesseract-ocr"]
 static = ["pdfium-render/static"]
-debug-logging = ["Legencode/debug-logging", "lege-gpu/debug-logging", "dep:fontdue"]
+debug-logging = ["Legencode/debug-logging", "lege-gpu/debug-logging"]
 jp2-lam = ["Legencode/jp2-lam"]
 tesseract-ocr = ["dep:tesseract", "lege-ocr/tesseract-ocr"]
 # Feature for profiling with debug symbols - enables both debug logging and debug symbols

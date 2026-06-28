@@ -73,6 +73,13 @@ pub struct PageMarginData {
     pub margin_bottom: u32,
 }
 
+#[derive(Debug, Clone)]
+struct CropBoundsCandidate {
+    page_width: u32,
+    page_height: u32,
+    bounds: ContentBounds,
+}
+
 /// Analysis results for the entire document's margins
 #[derive(Debug, Clone)]
 pub struct DocumentMarginAnalysis {
@@ -80,6 +87,8 @@ pub struct DocumentMarginAnalysis {
     pub pages: HashMap<usize, PageMarginData>,
     /// The statistically robust baseline for content, calculated from stable pages.
     pub baseline_bounds: ContentBounds,
+    /// Uniform document crop rectangle, calculated from stable text pages.
+    pub crop_bounds: ContentBounds,
     /// The standard aspect ratio derived from the baseline bounds.
     pub standard_aspect_ratio: f32,
     /// The final, effective margin setting to be used for processing.
@@ -341,9 +350,13 @@ pub fn process_page_margins(
     target_width_for_resize: Option<u32>,
     target_height_for_resize: u32,
 ) -> Result<RgbImage> {
-    // Derive the standard aspect ratio from the first processed page dimensions
-    // These should always be set by the renderer when the first page is seen.
-    let standard_aspect_ratio: f32 = standard_dims.width as f32 / standard_dims.height as f32;
+    // Derive the target aspect ratio from explicit output dimensions when
+    // present, otherwise from the document-standard dimensions.
+    let standard_aspect_ratio = target_aspect_ratio(
+        standard_dims,
+        target_width_for_resize,
+        target_height_for_resize,
+    );
 
     #[cfg(feature = "debug-logging")]
     crate::debug_println!(
@@ -396,7 +409,11 @@ pub fn compute_margin_correction(
     target_height_for_resize: u32,
     orig_image_dims: Option<(u32, u32)>,
 ) -> MarginCorrection {
-    let standard_aspect_ratio: f32 = standard_dims.width as f32 / standard_dims.height as f32;
+    let standard_aspect_ratio = target_aspect_ratio(
+        standard_dims,
+        target_width_for_resize,
+        target_height_for_resize,
+    );
     let target_width = resolve_target_width(
         target_width_for_resize,
         target_height_for_resize,
@@ -486,8 +503,11 @@ pub fn transform_detections(
             let ch = original_bounds.height();
 
             // Target canvas from standard aspect ratio and target height
-            let standard_aspect_ratio: f32 =
-                standard_dims.width as f32 / standard_dims.height as f32;
+            let standard_aspect_ratio = target_aspect_ratio(
+                standard_dims,
+                target_width_for_resize,
+                target_height_for_resize,
+            );
             let target_h = target_height_for_resize;
             let target_w =
                 resolve_target_width(target_width_for_resize, target_h, standard_aspect_ratio);
@@ -521,8 +541,11 @@ pub fn transform_detections(
         }
         MarginSettings::CropAndResize => {
             // Adjust bounds to enforce the standard aspect ratio, mirroring image processing path
-            let standard_aspect_ratio: f32 =
-                standard_dims.width as f32 / standard_dims.height as f32;
+            let standard_aspect_ratio = target_aspect_ratio(
+                standard_dims,
+                target_width_for_resize,
+                target_height_for_resize,
+            );
 
             // We cannot clamp without image size here; assume processing used the same adjusted bounds
             let adjusted = adjust_bounds_to_standard_aspect_ratio(
@@ -588,21 +611,60 @@ pub fn analyze_document_margins(
 ) -> DocumentMarginAnalysis {
     let mut pages = HashMap::new();
     let mut baseline_candidates = Vec::new();
+    let mut fallback_baseline_candidates = Vec::new();
 
     // First pass: analyze each page individually
     for page_input in all_page_data {
         let page_margin_data = analyze_single_page_margins(page_input, config);
 
-        // Collect pages suitable for baseline calculation (after page 5, not blank, not full-page)
-        if page_input.page_index >= 5 && should_use_page_for_baseline(&page_margin_data) {
-            baseline_candidates.push(page_margin_data.clone());
+        // Prefer pages after the front matter, but keep an early-page fallback for
+        // short documents or selected page ranges.
+        if should_use_page_for_baseline(&page_margin_data) {
+            if page_input.page_index >= 5 {
+                baseline_candidates.push(page_margin_data.clone());
+            }
+            fallback_baseline_candidates.push(page_margin_data.clone());
         }
 
         pages.insert(page_input.page_index, page_margin_data);
     }
 
+    if baseline_candidates.is_empty() {
+        baseline_candidates = fallback_baseline_candidates;
+    }
+
     // Calculate baseline margins from running average
-    let baseline_bounds = calculate_robust_baseline_bounds(&baseline_candidates);
+    let mut baseline_bounds = calculate_robust_baseline_bounds(&baseline_candidates);
+    if baseline_bounds.width() == 0 || baseline_bounds.height() == 0 {
+        let mut widths: Vec<u32> = all_page_data
+            .iter()
+            .map(|p| p.page_width)
+            .filter(|&w| w > 0)
+            .collect();
+        let mut heights: Vec<u32> = all_page_data
+            .iter()
+            .map(|p| p.page_height)
+            .filter(|&h| h > 0)
+            .collect();
+        widths.sort();
+        heights.sort();
+        let fallback_width = widths
+            .get(widths.len().saturating_sub(1) / 2)
+            .copied()
+            .unwrap_or(640);
+        let fallback_height = heights
+            .get(heights.len().saturating_sub(1) / 2)
+            .copied()
+            .unwrap_or(800);
+        baseline_bounds = ContentBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: fallback_width,
+            max_y: fallback_height,
+        };
+    }
+
+    let crop_bounds = calculate_uniform_crop_bounds(all_page_data, config, &baseline_bounds);
 
     // Calculate standard aspect ratio for consistent cropping
     let standard_aspect_ratio =
@@ -627,11 +689,22 @@ pub fn analyze_document_margins(
     // Get median dimensions from all pages for resolution tracking
     // This captures the resolution at which analysis was performed
     let (analysis_width, analysis_height) = if !all_page_data.is_empty() {
-        let mut widths: Vec<u32> = all_page_data.iter().map(|p| p.page_width).collect();
-        let mut heights: Vec<u32> = all_page_data.iter().map(|p| p.page_height).collect();
+        let mut widths: Vec<u32> = all_page_data
+            .iter()
+            .map(|p| p.page_width)
+            .filter(|&w| w > 0)
+            .collect();
+        let mut heights: Vec<u32> = all_page_data
+            .iter()
+            .map(|p| p.page_height)
+            .filter(|&h| h > 0)
+            .collect();
         widths.sort();
         heights.sort();
-        (widths[widths.len() / 2], heights[heights.len() / 2])
+        (
+            widths.get(widths.len() / 2).copied().unwrap_or(640),
+            heights.get(heights.len() / 2).copied().unwrap_or(800),
+        )
     } else {
         (640, 800) // fallback default
     };
@@ -639,6 +712,7 @@ pub fn analyze_document_margins(
     DocumentMarginAnalysis {
         pages,
         baseline_bounds,
+        crop_bounds,
         standard_aspect_ratio,
         effective_margin_setting,
         setting_override_reason,
@@ -729,6 +803,318 @@ fn analyze_single_page_margins(
 
 fn should_use_page_for_baseline(page_data: &PageMarginData) -> bool {
     !page_data.is_blank && !page_data.is_full_page_image && page_data.content_bounds.is_some()
+}
+
+pub(crate) fn calculate_text_crop_bounds(
+    detections: &[Detection],
+    page_width: u32,
+    page_height: u32,
+) -> Option<ContentBounds> {
+    let classifier = &crate::types::LABEL_CLASSIFIER;
+    let text_detections: Vec<Detection> = detections
+        .iter()
+        .filter(|det| classifier.is_substantive_text(det))
+        .cloned()
+        .collect();
+    calculate_content_bounds(&text_detections, page_width, page_height, true)
+}
+
+fn calculate_uniform_crop_bounds(
+    all_page_data: &[PageMarginInput],
+    config: &crate::pipeline::config::PipelineConfig,
+    fallback_bounds: &ContentBounds,
+) -> ContentBounds {
+    let mut text_candidates: Vec<CropBoundsCandidate> = all_page_data
+        .iter()
+        .filter_map(|page| {
+            calculate_text_crop_bounds(&page.detections, page.page_width, page.page_height).map(
+                |bounds| CropBoundsCandidate {
+                    page_width: page.page_width,
+                    page_height: page.page_height,
+                    bounds,
+                },
+            )
+        })
+        .collect();
+
+    if text_candidates.is_empty() {
+        return *fallback_bounds;
+    }
+
+    let median_page_width = median_u32(text_candidates.iter().map(|c| c.page_width).collect());
+    let median_page_height = median_u32(text_candidates.iter().map(|c| c.page_height).collect());
+    if median_page_width == 0 || median_page_height == 0 {
+        return *fallback_bounds;
+    }
+
+    let dimension_stable: Vec<CropBoundsCandidate> = text_candidates
+        .iter()
+        .filter(|candidate| {
+            within_ratio(candidate.page_width, median_page_width, 0.05)
+                && within_ratio(candidate.page_height, median_page_height, 0.05)
+        })
+        .cloned()
+        .collect();
+    if !dimension_stable.is_empty() {
+        text_candidates = dimension_stable;
+    }
+
+    let edge_x = ((median_page_width as f32) * 0.005).round().max(2.0) as u32;
+    let edge_y = ((median_page_height as f32) * 0.005).round().max(2.0) as u32;
+    let edge_stable: Vec<CropBoundsCandidate> = text_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.bounds.min_x > edge_x
+                && candidate.bounds.min_y > edge_y
+                && candidate.page_width.saturating_sub(candidate.bounds.max_x) > edge_x
+                && candidate.page_height.saturating_sub(candidate.bounds.max_y) > edge_y
+        })
+        .cloned()
+        .collect();
+    if !edge_stable.is_empty() {
+        text_candidates = edge_stable;
+    }
+
+    let median_content_width =
+        median_u32(text_candidates.iter().map(|c| c.bounds.width()).collect());
+    let median_content_height =
+        median_u32(text_candidates.iter().map(|c| c.bounds.height()).collect());
+
+    let width_stable: Vec<CropBoundsCandidate> = text_candidates
+        .iter()
+        .filter(|candidate| {
+            within_ratio(candidate.bounds.width(), median_content_width, 0.25)
+                && within_ratio(candidate.bounds.height(), median_content_height, 0.35)
+        })
+        .cloned()
+        .collect();
+    if !width_stable.is_empty() {
+        text_candidates = width_stable;
+    }
+
+    let vertical_candidates: Vec<CropBoundsCandidate> = text_candidates
+        .iter()
+        .filter(|candidate| {
+            (candidate.bounds.height() as f32) >= (median_content_height as f32 * 0.75)
+        })
+        .cloned()
+        .collect();
+    let vertical_source = if vertical_candidates.is_empty() {
+        &text_candidates
+    } else {
+        &vertical_candidates
+    };
+
+    let safety_pad = ((median_page_width.min(median_page_height) as f32) * 0.008)
+        .round()
+        .max(4.0) as u32;
+    let safe_left = low_safe_margin(
+        text_candidates.iter().map(|c| c.bounds.min_x).collect(),
+        safety_pad,
+    );
+    let safe_right = low_safe_margin(
+        text_candidates
+            .iter()
+            .map(|c| c.page_width.saturating_sub(c.bounds.max_x))
+            .collect(),
+        safety_pad,
+    );
+    let safe_top = low_safe_margin(
+        vertical_source.iter().map(|c| c.bounds.min_y).collect(),
+        safety_pad,
+    );
+    let safe_bottom = low_safe_margin(
+        vertical_source
+            .iter()
+            .map(|c| c.page_height.saturating_sub(c.bounds.max_y))
+            .collect(),
+        safety_pad,
+    );
+
+    if config.crop_free_aspect() {
+        let crop_width =
+            max_stable_extent(text_candidates.iter().map(|c| c.bounds.width()).collect())
+                .min(median_page_width)
+                .max(1);
+        let crop_height =
+            max_stable_extent(vertical_source.iter().map(|c| c.bounds.height()).collect())
+                .min(median_page_height)
+                .max(1);
+
+        return ContentBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: crop_width,
+            max_y: crop_height,
+        };
+    }
+
+    let page_aspect = median_page_width as f32 / median_page_height.max(1) as f32;
+    let target_width = config.target_width().unwrap_or_else(|| {
+        ((config.target_height().max(1) as f32 * page_aspect)
+            .round()
+            .max(1.0)) as u32
+    });
+    let target_aspect = target_width as f32 / config.target_height().max(1) as f32;
+
+    solve_horizontal_first_crop_bounds(
+        median_page_width,
+        median_page_height,
+        safe_left,
+        safe_right,
+        safe_top,
+        safe_bottom,
+        target_aspect,
+    )
+}
+
+fn low_safe_margin(mut margins: Vec<u32>, safety_pad: u32) -> u32 {
+    percentile_u32(&mut margins, 0.20).saturating_sub(safety_pad)
+}
+
+fn max_stable_extent(extents: Vec<u32>) -> u32 {
+    filter_outliers_iqr(extents).into_iter().max().unwrap_or(0)
+}
+
+pub(crate) fn fit_crop_window_to_content(
+    content: &ContentBounds,
+    crop_width: u32,
+    crop_height: u32,
+    page_width: u32,
+    page_height: u32,
+) -> ContentBounds {
+    let crop_width = crop_width.max(1).min(page_width.max(1));
+    let crop_height = crop_height.max(1).min(page_height.max(1));
+
+    let center_x_twice = content.min_x as u64 + content.max_x as u64;
+    let center_y_twice = content.min_y as u64 + content.max_y as u64;
+
+    let min_x = place_axis_around_center(center_x_twice, crop_width, page_width);
+    let min_y = place_axis_around_center(center_y_twice, crop_height, page_height);
+
+    ContentBounds {
+        min_x,
+        min_y,
+        max_x: min_x.saturating_add(crop_width).min(page_width),
+        max_y: min_y.saturating_add(crop_height).min(page_height),
+    }
+}
+
+fn place_axis_around_center(center_twice: u64, length: u32, limit: u32) -> u32 {
+    if limit <= length {
+        return 0;
+    }
+    let length_u64 = length as u64;
+    let limit_u64 = limit as u64;
+    let max_min = limit_u64.saturating_sub(length_u64);
+    center_twice
+        .saturating_sub(length_u64)
+        .saturating_div(2)
+        .min(max_min) as u32
+}
+
+fn solve_horizontal_first_crop_bounds(
+    page_width: u32,
+    page_height: u32,
+    safe_left: u32,
+    safe_right: u32,
+    safe_top: u32,
+    safe_bottom: u32,
+    target_aspect: f32,
+) -> ContentBounds {
+    if page_width == 0 || page_height == 0 || !target_aspect.is_finite() || target_aspect <= 0.0 {
+        return ContentBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: page_width,
+            max_y: page_height,
+        };
+    }
+
+    let max_horizontal_crop = page_width.saturating_sub(1);
+    let mut left = safe_left.min(max_horizontal_crop);
+    let mut right = safe_right.min(max_horizontal_crop.saturating_sub(left));
+    let top_capacity = safe_top.min(page_height.saturating_sub(1));
+    let bottom_capacity =
+        safe_bottom.min(page_height.saturating_sub(1).saturating_sub(top_capacity));
+
+    let mut new_width = page_width.saturating_sub(left + right).max(1);
+    let mut vertical_needed =
+        page_height.saturating_sub((new_width as f32 / target_aspect).round().max(1.0) as u32);
+    let vertical_capacity = top_capacity.saturating_add(bottom_capacity);
+
+    if vertical_needed > vertical_capacity {
+        let min_height = page_height.saturating_sub(vertical_capacity).max(1);
+        let min_width_for_safe_vertical =
+            ((min_height as f32 * target_aspect).round().max(1.0) as u32).min(page_width);
+        let allowed_horizontal_crop = page_width.saturating_sub(min_width_for_safe_vertical);
+        let requested_horizontal_crop = left.saturating_add(right);
+        if requested_horizontal_crop > allowed_horizontal_crop {
+            let (scaled_left, scaled_right) =
+                split_crop_proportionally(allowed_horizontal_crop, left, right);
+            left = scaled_left;
+            right = scaled_right;
+            new_width = page_width.saturating_sub(left + right).max(1);
+            vertical_needed = page_height
+                .saturating_sub((new_width as f32 / target_aspect).round().max(1.0) as u32);
+        }
+    }
+
+    let vertical_needed = vertical_needed.min(vertical_capacity);
+    let (top, bottom) = split_crop_with_caps(
+        vertical_needed,
+        top_capacity,
+        bottom_capacity,
+        safe_top,
+        safe_bottom,
+    );
+
+    ContentBounds {
+        min_x: left,
+        min_y: top,
+        max_x: page_width.saturating_sub(right).max(left.saturating_add(1)),
+        max_y: page_height
+            .saturating_sub(bottom)
+            .max(top.saturating_add(1)),
+    }
+}
+
+fn split_crop_proportionally(total: u32, left_weight: u32, right_weight: u32) -> (u32, u32) {
+    let weight_sum = left_weight.saturating_add(right_weight);
+    if total == 0 || weight_sum == 0 {
+        return (0, 0);
+    }
+    let left = ((total as u64 * left_weight as u64) / weight_sum as u64) as u32;
+    (left, total.saturating_sub(left))
+}
+
+fn split_crop_with_caps(
+    total: u32,
+    top_cap: u32,
+    bottom_cap: u32,
+    top_weight: u32,
+    bottom_weight: u32,
+) -> (u32, u32) {
+    let (mut top, mut bottom) = split_crop_proportionally(total, top_weight, bottom_weight);
+    if top > top_cap {
+        let overflow = top - top_cap;
+        top = top_cap;
+        bottom = bottom.saturating_add(overflow).min(bottom_cap);
+    }
+    if bottom > bottom_cap {
+        let overflow = bottom - bottom_cap;
+        bottom = bottom_cap;
+        top = top.saturating_add(overflow).min(top_cap);
+    }
+    (top, bottom)
+}
+
+fn within_ratio(value: u32, reference: u32, tolerance: f32) -> bool {
+    if reference == 0 {
+        return value == 0;
+    }
+    let ratio = value as f32 / reference as f32;
+    ratio >= 1.0 - tolerance && ratio <= 1.0 + tolerance
 }
 
 /// Calculates a robust baseline using median and IQR to reject outliers.
@@ -833,26 +1219,48 @@ pub fn apply_margin_analysis_to_page(
         .get(&page_index)
         .ok_or_else(|| anyhow!("Margin data not found for page {}", page_index))?;
 
-    // Determine the effective bounds to use for processing this page.
-    let effective_bounds = if page_data.is_blank {
-        // For blank pages, use the document's baseline to give them standard margins.
-        analysis.baseline_bounds
-    } else if page_data.is_full_page_image {
-        // For full-page images, use the document's baseline to give them standard margins.
-        analysis.baseline_bounds
-    } else if let Some(bounds) = page_data.content_bounds {
-        bounds
-    } else {
-        // No content detected, use baseline.
-        analysis.baseline_bounds
+    let full_page_bounds = ContentBounds {
+        min_x: 0,
+        min_y: 0,
+        max_x: page_data.page_width,
+        max_y: page_data.page_height,
     };
+
+    // Determine the effective bounds to use for processing this page.
+    let (effective_bounds, effective_setting) =
+        if analysis.effective_margin_setting == MarginSettings::CropAndResize {
+            if page_data.is_blank || page_data.is_full_page_image {
+                (full_page_bounds, MarginSettings::StandardizeAndCenter)
+            } else {
+                (analysis.crop_bounds, MarginSettings::CropAndResize)
+            }
+        } else if page_data.is_blank || page_data.is_full_page_image {
+            // For blank/full-image pages, use the full page so they are not cropped.
+            (full_page_bounds, analysis.effective_margin_setting)
+        } else if let Some(bounds) = page_data.content_bounds {
+            (bounds, analysis.effective_margin_setting)
+        } else {
+            // No content detected, use baseline.
+            (analysis.baseline_bounds, analysis.effective_margin_setting)
+        };
+
+    let crop_standard_dims = StandardPageDimensions {
+        width: analysis.crop_bounds.width().max(1),
+        height: analysis.crop_bounds.height().max(1),
+    };
+    let effective_standard_dims =
+        if analysis.effective_margin_setting == MarginSettings::CropAndResize {
+            &crop_standard_dims
+        } else {
+            standard_dims
+        };
 
     // Dispatch to the core image processing functions.
     process_page_margins(
         original_image,
         &effective_bounds,
-        analysis.effective_margin_setting,
-        standard_dims,
+        effective_setting,
+        effective_standard_dims,
         target_width_for_resize,
         target_height_for_resize,
     )
@@ -929,7 +1337,7 @@ fn crop_and_resize_with_standard_aspect_ratio(
         target_height,
         method: crate::resize::ResizeMethod::Lanczos3,
         letterbox: false,
-        border_value: 0.0,
+        border_value: 255.0,
         swap_rb: false,
     };
 
@@ -964,8 +1372,41 @@ fn adjust_bounds_to_standard_aspect_ratio(
     }
     let current_aspect_ratio = crop_width as f32 / crop_height as f32;
 
-    // Adjust bounds to match standard aspect ratio while preserving content (prefer expansion)
-    let mut adjusted = if (current_aspect_ratio - standard_aspect_ratio).abs() < 0.01 {
+    // Adjust bounds to match standard aspect ratio while preserving content. Crop mode
+    // may expand one axis to avoid slicing text, but it should shift that expansion
+    // inside the source image instead of relying on a final clamp that makes the crop
+    // visibly lopsided on facing-page scans.
+    if let Some((img_w, img_h)) = image_dims {
+        return if (current_aspect_ratio - standard_aspect_ratio).abs() < 0.01 {
+            clamp_bounds_to_image(bounds, img_w, img_h)
+        } else if current_aspect_ratio > standard_aspect_ratio {
+            // Too wide -> increase height.
+            let needed_height = (crop_width as f32 / standard_aspect_ratio).round() as u32;
+            let (min_y, max_y) =
+                expand_axis_to_length(bounds.min_y, bounds.max_y, needed_height, img_h);
+            let (min_x, max_x) = clamp_axis_to_limit(bounds.min_x, bounds.max_x, img_w);
+            ContentBounds {
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            }
+        } else {
+            // Too tall -> increase width.
+            let needed_width = (crop_height as f32 * standard_aspect_ratio).round() as u32;
+            let (min_x, max_x) =
+                expand_axis_to_length(bounds.min_x, bounds.max_x, needed_width, img_w);
+            let (min_y, max_y) = clamp_axis_to_limit(bounds.min_y, bounds.max_y, img_h);
+            ContentBounds {
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            }
+        };
+    }
+
+    if (current_aspect_ratio - standard_aspect_ratio).abs() < 0.01 {
         *bounds
     } else if current_aspect_ratio > standard_aspect_ratio {
         // Too wide -> increase height
@@ -989,18 +1430,48 @@ fn adjust_bounds_to_standard_aspect_ratio(
             min_y: bounds.min_y,
             max_y: bounds.max_y,
         }
-    };
+    }
+}
 
-    if let Some((img_w, img_h)) = image_dims {
-        adjusted = ContentBounds {
-            min_x: adjusted.min_x.min(img_w.saturating_sub(1)),
-            max_x: adjusted.max_x.min(img_w),
-            min_y: adjusted.min_y.min(img_h.saturating_sub(1)),
-            max_y: adjusted.max_y.min(img_h),
-        };
+fn clamp_bounds_to_image(bounds: &ContentBounds, img_w: u32, img_h: u32) -> ContentBounds {
+    let (min_x, max_x) = clamp_axis_to_limit(bounds.min_x, bounds.max_x, img_w);
+    let (min_y, max_y) = clamp_axis_to_limit(bounds.min_y, bounds.max_y, img_h);
+    ContentBounds {
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    }
+}
+
+fn clamp_axis_to_limit(min: u32, max: u32, limit: u32) -> (u32, u32) {
+    if limit == 0 {
+        return (0, 0);
+    }
+    let clamped_min = min.min(limit.saturating_sub(1));
+    let clamped_max = max.min(limit).max(clamped_min.saturating_add(1).min(limit));
+    (clamped_min, clamped_max)
+}
+
+fn expand_axis_to_length(min: u32, max: u32, desired_len: u32, limit: u32) -> (u32, u32) {
+    if limit == 0 {
+        return (0, 0);
     }
 
-    adjusted
+    let current_len = max.saturating_sub(min).max(1);
+    let desired_len = desired_len.max(current_len).min(limit);
+    let center_twice = min as u64 + max as u64;
+    let desired_len_u64 = desired_len as u64;
+    let limit_u64 = limit as u64;
+
+    let mut new_min = center_twice.saturating_sub(desired_len_u64) / 2;
+    let mut new_max = new_min.saturating_add(desired_len_u64);
+    if new_max > limit_u64 {
+        new_max = limit_u64;
+        new_min = new_max.saturating_sub(desired_len_u64);
+    }
+
+    (new_min as u32, new_max as u32)
 }
 
 // --- Statistical Helper Functions ---
@@ -1025,6 +1496,16 @@ fn median_u32(mut data: Vec<u32>) -> u32 {
     } else {
         data[mid]
     }
+}
+
+fn percentile_u32(data: &mut [u32], percentile: f32) -> u32 {
+    if data.is_empty() {
+        return 0;
+    }
+    data.sort_unstable();
+    let p = percentile.clamp(0.0, 1.0);
+    let idx = ((data.len().saturating_sub(1) as f32) * p).round() as usize;
+    data[idx.min(data.len() - 1)]
 }
 
 /// A robust statistical outlier filter using the Interquartile Range (IQR) method.
@@ -1053,6 +1534,19 @@ fn resolve_target_width(target_width: Option<u32>, target_height: u32, aspect_ra
     match target_width {
         Some(width) if width > 0 => width,
         _ => ((target_height as f32 * aspect_ratio).round().max(1.0)) as u32,
+    }
+}
+
+#[inline]
+fn target_aspect_ratio(
+    standard_dims: &StandardPageDimensions,
+    target_width: Option<u32>,
+    target_height: u32,
+) -> f32 {
+    if let Some(width) = target_width.filter(|&w| w > 0) {
+        width as f32 / target_height.max(1) as f32
+    } else {
+        standard_dims.width.max(1) as f32 / standard_dims.height.max(1) as f32
     }
 }
 
@@ -1125,7 +1619,7 @@ fn standardize_and_center_page(
         target_height: resized_h,
         method: crate::resize::ResizeMethod::Lanczos3,
         letterbox: false,
-        border_value: 0.0,
+        border_value: 255.0,
         swap_rb: false,
     };
 
@@ -1215,5 +1709,187 @@ mod tests {
             MarginSettings::CropAndResize
         );
         assert!(analysis.setting_override_reason.is_none());
+    }
+
+    #[test]
+    fn early_pages_can_establish_nonzero_crop_baseline() {
+        let pages = vec![
+            PageMarginInput {
+                page_index: 0,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("plain_text", [90.0, 110.0, 520.0, 760.0])],
+                pixel_bounds: None,
+            },
+            PageMarginInput {
+                page_index: 1,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("plain_text", [95.0, 115.0, 515.0, 755.0])],
+                pixel_bounds: None,
+            },
+        ];
+
+        let analysis = analyze_document_margins(
+            &pages,
+            &crate::pipeline::config::PipelineConfig::default(),
+            MarginSettings::CropAndResize,
+            true,
+        );
+
+        assert!(analysis.baseline_bounds.width() > 0);
+        assert!(analysis.baseline_bounds.height() > 0);
+        assert_eq!(analysis.analysis_width, 640);
+        assert_eq!(analysis.analysis_height, 900);
+    }
+
+    #[test]
+    fn crop_bounds_are_uniform_for_alternating_facing_page_offsets() {
+        let pages = vec![
+            PageMarginInput {
+                page_index: 0,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("plain_text", [80.0, 100.0, 500.0, 760.0])],
+                pixel_bounds: None,
+            },
+            PageMarginInput {
+                page_index: 1,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("plain_text", [140.0, 100.0, 560.0, 760.0])],
+                pixel_bounds: None,
+            },
+            PageMarginInput {
+                page_index: 2,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("figure", [0.0, 0.0, 640.0, 900.0])],
+                pixel_bounds: None,
+            },
+        ];
+
+        let analysis = analyze_document_margins(
+            &pages,
+            &crate::pipeline::config::PipelineConfig::default(),
+            MarginSettings::CropAndResize,
+            true,
+        );
+
+        assert!(analysis.crop_bounds.min_x > 0);
+        assert!(analysis.crop_bounds.max_x < 640);
+        assert!(analysis.crop_bounds.min_y > 0);
+        assert!(analysis.crop_bounds.max_y < 900);
+        assert!(analysis.crop_bounds.width() < 640);
+        assert_eq!(analysis.crop_bounds.width(), 500);
+        assert_eq!(analysis.crop_bounds.height(), 703);
+    }
+
+    #[test]
+    fn free_aspect_crop_uses_uniform_stable_text_box_size() {
+        let pages = vec![
+            PageMarginInput {
+                page_index: 0,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("plain_text", [80.0, 100.0, 500.0, 760.0])],
+                pixel_bounds: None,
+            },
+            PageMarginInput {
+                page_index: 1,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("plain_text", [140.0, 100.0, 560.0, 760.0])],
+                pixel_bounds: None,
+            },
+            PageMarginInput {
+                page_index: 2,
+                page_width: 640,
+                page_height: 900,
+                detections: vec![detection("title", [200.0, 120.0, 440.0, 180.0])],
+                pixel_bounds: None,
+            },
+        ];
+        let mut config = crate::pipeline::config::PipelineConfig::default();
+        config.set_enable_layout_detection(true);
+        config.set_crop_free_aspect(true);
+
+        let analysis =
+            analyze_document_margins(&pages, &config, MarginSettings::CropAndResize, true);
+
+        assert_eq!(analysis.crop_bounds.min_x, 0);
+        assert_eq!(analysis.crop_bounds.max_x, 430);
+        assert_eq!(analysis.crop_bounds.min_y, 0);
+        assert_eq!(analysis.crop_bounds.max_y, 670);
+    }
+
+    #[test]
+    fn free_aspect_crop_window_follows_alternating_text_position() {
+        let crop_width = 430;
+        let crop_height = 670;
+        let left_page = ContentBounds {
+            min_x: 75,
+            min_y: 95,
+            max_x: 505,
+            max_y: 765,
+        };
+        let right_page = ContentBounds {
+            min_x: 135,
+            min_y: 95,
+            max_x: 565,
+            max_y: 765,
+        };
+
+        let left_window = fit_crop_window_to_content(&left_page, crop_width, crop_height, 640, 900);
+        let right_window =
+            fit_crop_window_to_content(&right_page, crop_width, crop_height, 640, 900);
+
+        assert_eq!(left_window.width(), right_window.width());
+        assert_eq!(left_window.height(), right_window.height());
+        assert_eq!(left_window.min_x, 75);
+        assert_eq!(right_window.min_x, 135);
+        assert!(left_window.min_x <= left_page.min_x && left_window.max_x >= left_page.max_x);
+        assert!(right_window.min_x <= right_page.min_x && right_window.max_x >= right_page.max_x);
+    }
+
+    #[test]
+    fn crop_bounds_fall_back_when_layout_has_no_text_pages() {
+        let pages = vec![PageMarginInput {
+            page_index: 0,
+            page_width: 640,
+            page_height: 900,
+            detections: vec![detection("figure", [0.0, 0.0, 640.0, 900.0])],
+            pixel_bounds: None,
+        }];
+
+        let analysis = analyze_document_margins(
+            &pages,
+            &crate::pipeline::config::PipelineConfig::default(),
+            MarginSettings::CropAndResize,
+            true,
+        );
+
+        assert_eq!(analysis.crop_bounds.min_x, analysis.baseline_bounds.min_x);
+        assert_eq!(analysis.crop_bounds.min_y, analysis.baseline_bounds.min_y);
+        assert_eq!(analysis.crop_bounds.max_x, analysis.baseline_bounds.max_x);
+        assert_eq!(analysis.crop_bounds.max_y, analysis.baseline_bounds.max_y);
+    }
+
+    #[test]
+    fn crop_aspect_expansion_shifts_inside_image_bounds() {
+        let bounds = ContentBounds {
+            min_x: 760,
+            min_y: 100,
+            max_x: 960,
+            max_y: 700,
+        };
+
+        let adjusted = adjust_bounds_to_standard_aspect_ratio(&bounds, 0.75, Some((1000, 1000)));
+
+        assert_eq!(adjusted.width(), 450);
+        assert_eq!(adjusted.height(), 600);
+        assert_eq!(adjusted.max_x, 1000);
+        assert!(adjusted.min_x <= bounds.min_x);
+        assert!(adjusted.max_x >= bounds.max_x);
     }
 }

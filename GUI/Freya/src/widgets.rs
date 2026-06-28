@@ -187,34 +187,12 @@ pub fn lege_checkbox_row(
     LegeCheckboxRow::new(text, selected, on_select).into()
 }
 
-pub fn lege_header_bar(left: Element, utilities: Element) -> Element {
-    rect()
-        .width(Size::fill())
-        .height(Size::fill())
-        .direction(Direction::Horizontal)
-        .main_align(Alignment::SpaceBetween)
-        .cross_align(Alignment::Center)
-        .spacing(8.)
-        .child(left)
-        .child(utilities)
-        .into()
-}
-
 pub fn lege_file_action_row(
     add_file: Element,
     add_folder: Element,
     output_directory: Element,
 ) -> Element {
     rect()
-        .background(CARD_BG)
-        .border(
-            Border::new()
-                .fill(BORDER)
-                .width(1.)
-                .alignment(BorderAlignment::Inner),
-        )
-        .corner_radius(6.)
-        .padding(5.)
         .width(Size::fill())
         .height(Size::fill())
         .direction(Direction::Horizontal)
@@ -298,7 +276,6 @@ pub fn lege_status_panel(
 }
 
 pub fn lege_main_shell(
-    header: Element,
     file_actions: Element,
     settings: Element,
     process_row: Element,
@@ -329,12 +306,6 @@ pub fn lege_main_shell(
                         .height(Size::fill())
                         .vertical()
                         .content(Content::Flex)
-                        .child(
-                            rect()
-                                .width(Size::fill())
-                                .height(Size::px(34.))
-                                .child(header),
-                        )
                         .child(
                             rect()
                                 .width(Size::fill())

@@ -7,18 +7,22 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG_FILE_NAME: &str = "log.json";
+const STATUS_STARTED: &str = "started";
+const STATUS_COMPLETED: &str = "completed";
+const STATUS_FAILED: &str = "failed";
 
-/// Output container format (PDF or DjVu)
+/// Output container format.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OutputFormat {
     #[default]
     Pdf,
     Djvu,
+    Epub,
 }
 
 impl OutputFormat {
     pub fn all() -> Vec<OutputFormat> {
-        vec![OutputFormat::Pdf, OutputFormat::Djvu]
+        vec![OutputFormat::Pdf, OutputFormat::Djvu, OutputFormat::Epub]
     }
 }
 
@@ -27,6 +31,7 @@ impl std::fmt::Display for OutputFormat {
         let label = match self {
             OutputFormat::Pdf => "PDF",
             OutputFormat::Djvu => "DJVU",
+            OutputFormat::Epub => "EPUB",
         };
         write!(f, "{label}")
     }
@@ -142,6 +147,7 @@ pub struct ProcessingOptions {
     pub center_margins: bool,
     pub crop_margins: bool,
     pub crop_footnotes: bool,
+    pub crop_free_aspect: bool,
 
     // Binarization options
     pub use_heavy_binarization: bool,
@@ -175,6 +181,7 @@ impl ProcessingOptions {
             center_margins: false,
             crop_margins: false,
             crop_footnotes: false,
+            crop_free_aspect: false,
             use_heavy_binarization: false,
             k_factor: 0.2,
             use_fixed_threshold: false,
@@ -187,6 +194,8 @@ impl ProcessingOptions {
 
         options.output_format = if matches!(config.text_format(), "djvu") {
             OutputFormat::Djvu
+        } else if matches!(config.text_format(), "epub") {
+            OutputFormat::Epub
         } else {
             OutputFormat::Pdf
         };
@@ -231,6 +240,7 @@ impl ProcessingOptions {
         );
         options.crop_margins = matches!(config.margin_settings(), MarginSettings::CropAndResize);
         options.crop_footnotes = config.crop_footnotes();
+        options.crop_free_aspect = config.crop_free_aspect();
 
         let bin = config.binarization();
         options.use_heavy_binarization = bin.use_heavy_duty;
@@ -302,6 +312,12 @@ impl ProcessingResult {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LogEntry {
     pub timestamp: u64, // Unix timestamp
+    #[serde(default = "default_log_status")]
+    pub status: String,
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
     pub input_filename: String,
     pub input_path: String,
     pub output_filename: String,
@@ -316,6 +332,9 @@ impl LogEntry {
     pub fn new(result: &ProcessingResult, options: &ProcessingOptions) -> Self {
         Self {
             timestamp: current_timestamp(),
+            status: STATUS_COMPLETED.to_string(),
+            error_kind: None,
+            error_message: None,
             input_filename: result.input_filename.clone(),
             input_path: result.input_path.to_string_lossy().to_string(),
             output_filename: result.output_filename.clone(),
@@ -325,6 +344,36 @@ impl LogEntry {
             compression_percentage: result.compression_percentage,
             options: options.clone(),
         }
+    }
+
+    pub fn failed(
+        input_path: PathBuf,
+        output_path: PathBuf,
+        original_size: u64,
+        error_kind: impl Into<String>,
+        error_message: impl Into<String>,
+        options: &ProcessingOptions,
+    ) -> Self {
+        let result = ProcessingResult::new(input_path, output_path, original_size, 0, false);
+        let mut entry = Self::new(&result, options);
+        entry.status = STATUS_FAILED.to_string();
+        entry.error_kind = Some(error_kind.into());
+        entry.error_message = Some(error_message.into());
+        entry.compressed_size = 0;
+        entry.compression_percentage = 0.0;
+        entry
+    }
+
+    pub fn started(
+        input_path: PathBuf,
+        output_path: PathBuf,
+        original_size: u64,
+        options: &ProcessingOptions,
+    ) -> Self {
+        let result = ProcessingResult::new(input_path, output_path, original_size, 0, false);
+        let mut entry = Self::new(&result, options);
+        entry.status = STATUS_STARTED.to_string();
+        entry
     }
 
     pub fn format_timestamp(&self) -> String {
@@ -348,6 +397,10 @@ impl LogEntry {
             _ => format!("{:.1} GiB", bytes as f64 / GIB),
         }
     }
+}
+
+fn default_log_status() -> String {
+    STATUS_COMPLETED.to_string()
 }
 
 fn current_timestamp() -> u64 {
@@ -401,7 +454,93 @@ pub fn add_log_entry(result: &ProcessingResult, options: &ProcessingOptions) -> 
     let mut entries = load_log_entries().unwrap_or_default();
     let mut entry = LogEntry::new(result, options);
 
-    // Ensure paths are recorded for diagnostics.
+    ensure_option_paths(&mut entry);
+
+    if let Some(index) = find_started_entry(&entries, &entry.input_path, &entry.output_path) {
+        entries[index] = entry.clone();
+    } else {
+        entries.push(entry.clone());
+    }
+
+    save_log_entries(&entries)?;
+    Ok(entry)
+}
+
+pub fn add_started_log_entry(
+    input_path: PathBuf,
+    output_path: PathBuf,
+    original_size: u64,
+    options: &ProcessingOptions,
+) -> Result<LogEntry> {
+    let mut entries = load_log_entries().unwrap_or_default();
+    let mut entry = LogEntry::started(input_path, output_path, original_size, options);
+
+    ensure_option_paths(&mut entry);
+
+    if let Some(index) = find_started_entry(&entries, &entry.input_path, &entry.output_path) {
+        entries[index] = entry.clone();
+    } else {
+        entries.push(entry.clone());
+    }
+
+    save_log_entries(&entries)?;
+    Ok(entry)
+}
+
+pub fn add_failed_log_entry(
+    input_path: PathBuf,
+    output_path: PathBuf,
+    original_size: u64,
+    error: &str,
+    options: &ProcessingOptions,
+) -> Result<LogEntry> {
+    let mut entries = load_log_entries().unwrap_or_default();
+    let mut entry = LogEntry::failed(
+        input_path,
+        output_path,
+        original_size,
+        classify_error(error),
+        error,
+        options,
+    );
+
+    ensure_option_paths(&mut entry);
+
+    if let Some(index) = find_started_entry(&entries, &entry.input_path, &entry.output_path) {
+        entries[index] = entry.clone();
+    } else {
+        entries.push(entry.clone());
+    }
+
+    save_log_entries(&entries)?;
+    Ok(entry)
+}
+
+pub fn reconcile_started_entries() -> Result<Vec<LogEntry>> {
+    let mut entries = load_log_entries().unwrap_or_default();
+    let mut reconciled = Vec::new();
+
+    for entry in entries.iter_mut() {
+        if entry.status == STATUS_STARTED {
+            entry.status = STATUS_FAILED.to_string();
+            entry.error_kind = Some("worker_exit".to_string());
+            entry.error_message = Some(
+                "Previous processing job was marked started but did not report completion before the application exited. The process may have been killed or interrupted.".to_string(),
+            );
+            entry.compressed_size = 0;
+            entry.compression_percentage = 0.0;
+            reconciled.push(entry.clone());
+        }
+    }
+
+    if !reconciled.is_empty() {
+        save_log_entries(&entries)?;
+    }
+
+    Ok(reconciled)
+}
+
+fn ensure_option_paths(entry: &mut LogEntry) {
     if entry.options.input_path.is_none() {
         entry.options.input_path = Some(PathBuf::from(&entry.input_path));
     }
@@ -411,10 +550,47 @@ pub fn add_log_entry(result: &ProcessingResult, options: &ProcessingOptions) -> 
             .output_path
             .replace(PathBuf::from(&entry.output_path));
     }
+}
 
-    entries.push(entry.clone());
-    save_log_entries(&entries)?;
-    Ok(entry)
+fn find_started_entry(entries: &[LogEntry], input_path: &str, output_path: &str) -> Option<usize> {
+    entries.iter().rposition(|entry| {
+        entry.status == STATUS_STARTED
+            && entry.input_path == input_path
+            && entry.output_path == output_path
+    })
+}
+
+fn classify_error(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("out of memory")
+        || lower.contains("memory")
+        || lower.contains("vram")
+        || lower.contains("wgpu")
+        || lower.contains("gpu")
+        || lower.contains("adapter")
+        || lower.contains("device")
+    {
+        "gpu_or_memory"
+    } else if lower.contains("worker exited before completion")
+        || lower.contains("exit status")
+        || lower.contains("signal")
+        || lower.contains("killed")
+        || lower.contains("process")
+        || lower.contains("status")
+    {
+        "worker_exit"
+    } else if lower.contains("pdfium")
+        || lower.contains("cannot read pdf")
+        || lower.contains("cannot open pdf")
+        || lower.contains("failed to render page")
+        || lower.contains("load_pdf")
+        || lower.contains("load pdf")
+        || lower.contains("page index")
+    {
+        "pdf_input"
+    } else {
+        "processing_error"
+    }
 }
 
 /// Get recent log entries (up to specified count).

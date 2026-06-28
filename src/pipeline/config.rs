@@ -40,6 +40,7 @@ pub struct InferenceResult {
     pub inference_image: Arc<RgbImage>,
     pub detections: Vec<crate::engine::Detection>,
     pub text_layer: Option<String>,
+    pub detections_are_page_space: bool,
     // Legacy fields still used by margin mode
     pub original_width_pts: f32,
     pub original_height_pts: f32,
@@ -411,6 +412,7 @@ pub struct PipelineConfig {
     pub(crate) max_inference_batch_size: Option<usize>,
     pub(crate) margin_settings: crate::margin::MarginSettings,
     pub(crate) crop_footnotes: bool,
+    pub(crate) crop_free_aspect: bool,
     // Rendering and inference sizes
     pub(crate) high_res_render_height: u32,
     pub(crate) inference_size: u32,
@@ -478,6 +480,7 @@ impl PipelineConfig {
             max_inference_batch_size: Some(16), // Dynamic batching: greedy up to 16 images
             margin_settings: crate::margin::MarginSettings::None,
             crop_footnotes: false,
+            crop_free_aspect: false,
             high_res_render_height: 1200,
             inference_size: 1024,
             keep_original_images: true,
@@ -587,6 +590,11 @@ impl PipelineConfig {
         self.target_height
     }
     pub fn target_width(&self) -> Option<u32> {
+        if self.crop_free_aspect
+            && self.margin_settings == crate::margin::MarginSettings::CropAndResize
+        {
+            return None;
+        }
         self.target_width
     }
     pub fn dither_images(&self) -> bool {
@@ -705,6 +713,9 @@ impl PipelineConfig {
     pub fn crop_footnotes(&self) -> bool {
         self.crop_footnotes
     }
+    pub fn crop_free_aspect(&self) -> bool {
+        self.crop_free_aspect
+    }
     pub fn high_res_render_height(&self) -> u32 {
         self.high_res_render_height
     }
@@ -803,6 +814,11 @@ impl PipelineConfig {
         Ok(())
     }
     pub fn set_target_dimensions(&mut self, width: u32, height: u32) -> Result<()> {
+        if self.crop_free_aspect {
+            return Err(anyhow!(
+                "fixed target width cannot be used with free-aspect margin crop"
+            ));
+        }
         if height == 0 {
             return Err(anyhow!("target_height must be greater than 0"));
         }
@@ -945,6 +961,12 @@ impl PipelineConfig {
     }
     pub fn set_crop_footnotes(&mut self, v: bool) {
         self.crop_footnotes = v;
+    }
+    pub fn set_crop_free_aspect(&mut self, v: bool) {
+        self.crop_free_aspect = v;
+        if v {
+            self.target_width = None;
+        }
     }
     pub fn set_high_res_render_height(&mut self, h: u32) -> Result<()> {
         if h == 0 {

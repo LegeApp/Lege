@@ -425,15 +425,12 @@ pub fn should_force_blank_page_threshold(
 
     let evidence = layout_blank_evidence(post_nms_detections, width, height, classifier);
 
-    const MAX_VISUAL_BLANK_SPOOF_FRACTION: f32 = 0.02;
     const MAX_LAYOUT_BLANK_TOTAL_FRACTION: f32 = 0.006;
     const MAX_LAYOUT_BLANK_TEXT_FRACTION: f32 = 0.002;
     const MAX_LAYOUT_BLANK_IMAGE_FRACTION: f32 = 0.001;
     const MAX_LAYOUT_BLANK_SINGLE_BOX_FRACTION: f32 = 0.004;
 
-    let visual_blank_with_no_real_layout = page_is_visually_blank
-        && (has_no_filtered_detections
-            || evidence.total_area_fraction <= MAX_VISUAL_BLANK_SPOOF_FRACTION);
+    let visual_blank_with_no_real_layout = page_is_visually_blank && has_no_filtered_detections;
 
     let tiny_post_nms_noise = !post_nms_detections.is_empty()
         && evidence.total_area_fraction <= MAX_LAYOUT_BLANK_TOTAL_FRACTION
