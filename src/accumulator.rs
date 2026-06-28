@@ -709,7 +709,7 @@ impl StreamingPdfBuilder {
                         params.set("Rows", Object::Integer(*pixel_height as i64));
                         params.set("BlackIs1", true); // CCITT4 encoded bits: 1=black, 0=white
                         dict.set("DecodeParms", Object::Dictionary(params));
-                        // Decode array to map: 0â†’white, 1â†’black
+                        // Keep paper white and ink black for this encoder's 1=black bitstream.
                         dict.set("Decode", vec![1.into(), 0.into()]);
                         // CCITT4 data is already compressed, store raw bytes without re-encoding
                         let stream = Stream::new(dict, data.to_vec());

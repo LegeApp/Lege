@@ -5,8 +5,8 @@ use lege::text_loader::CLI_TEXT;
 use lege::{
     AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PageSelection,
     PipelineConfig, error_println, info_println, is_ocr_available, run_images_to_images_mode,
-    run_pdf_layout_crop_debug, run_pdf_to_images_mode, run_pdf_to_png_mode, run_png_mode,
-    run_png_mode_with_config,
+    run_layout_visualize_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
+    run_pdf_to_png_mode, run_png_mode, run_png_mode_with_config,
 };
 
 mod version;
@@ -407,6 +407,7 @@ struct CliOptions {
     center_margins: bool, // --center-margins
     crop_margins: bool, // --crop-margins
     force_crop: bool, // --force-crop
+    crop_free_aspect: bool, // --crop-free-aspect / --no-preserve-crop-aspect
     image_only: bool, // --image-only
     original_images: bool, // --original-images (default is already original; explicit opt-in)
     fast_resize: bool, // --fast-resize (force CPU fast_image_resize backend)
@@ -415,16 +416,17 @@ struct CliOptions {
     language: Option<String>, // --language <code>
 
     // --- Debug / data-generation modes ---
-    pdf_to_png: Option<u32>,      // --pdf-to-png HEIGHT
-    png_folder: bool,             // --png-folder  (first positional arg is the folder)
-    crop_areas: Option<String>,   // --crop-areas text|image|both
-    debug_format: Option<String>, // --format png|jpg  (for --crop-areas)
-    pdf_to_images: bool,          // --pdf-to-images
-    images_to_images: bool,       // --images-to-images
-    png_quantize: bool,           // --png-quantize
-    png_colors: u16,              // --png-colors N
-    jp2_debug: Option<u32>,       // --jp2-debug HEIGHT  (render pages → JP2 + size log)
-    gray_jp2: bool,               // --gray-jp2  (image regions → grayscale JP2 overlay)
+    pdf_to_png: Option<u32>,       // --pdf-to-png HEIGHT
+    png_folder: bool,              // --png-folder  (first positional arg is the folder)
+    crop_areas: Option<String>,    // --crop-areas text|image|both
+    debug_format: Option<String>,  // --format png|jpg  (for --crop-areas)
+    pdf_to_images: bool,           // --pdf-to-images
+    images_to_images: bool,        // --images-to-images
+    png_quantize: bool,            // --png-quantize
+    png_colors: u16,               // --png-colors N
+    jp2_debug: Option<u32>,        // --jp2-debug HEIGHT  (render pages → JP2 + size log)
+    gray_jp2: bool,                // --gray-jp2  (image regions → grayscale JP2 overlay)
+    layout_visualize: Option<u32>, // --layout-visualize HEIGHT  (render pages with detection bbox overlays)
 
     // --- GUI integration modes ---
     /// Suppress human output and emit newline-delimited JSON progress events to stdout.
@@ -646,6 +648,24 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.jp2_debug = Some(height);
                 i += 2;
             }
+            "--layout-visualize" => {
+                let default_height: u32 = 1200;
+                if let Some(next) = args.get(i + 1) {
+                    if let Ok(height) = next.parse::<u32>() {
+                        if height < 100 || height > 10000 {
+                            bail!("--layout-visualize height must be between 100 and 10000 pixels");
+                        }
+                        opts.layout_visualize = Some(height);
+                        i += 2;
+                    } else {
+                        opts.layout_visualize = Some(default_height);
+                        i += 1;
+                    }
+                } else {
+                    opts.layout_visualize = Some(default_height);
+                    i += 1;
+                }
+            }
             "--crop-areas" => {
                 let val = args
                     .get(i + 1)
@@ -787,6 +807,11 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--force-crop" => {
                 opts.force_crop = true;
+                i += 1;
+            }
+            "--crop-free-aspect" | "--no-preserve-crop-aspect" => {
+                opts.crop_free_aspect = true;
+                opts.crop_margins = true;
                 i += 1;
             }
             "--image-only" => {
@@ -1060,6 +1085,10 @@ fn run_main() -> Result<()> {
         return Ok(());
     }
 
+    if let Err(err) = history_log::reconcile_started_entries() {
+        eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
+    }
+
     // Optional override for resize backend to help diagnose GPU shader regressions.
     if cli_opts.fast_resize {
         lege::resize::set_resize_backend_preference(lege::resize::ResizeBackendPreference::FastCpu);
@@ -1071,6 +1100,7 @@ fn run_main() -> Result<()> {
     if args.len() == 1
         && cli_opts.pdf_to_png.is_none()
         && cli_opts.jp2_debug.is_none()
+        && cli_opts.layout_visualize.is_none()
         && !cli_opts.png_folder
         && cli_opts.crop_areas.is_none()
         && !cli_opts.pdf_to_images
@@ -1137,6 +1167,27 @@ fn run_main() -> Result<()> {
             jp2_height,
             AppConfig::default(),
         );
+    }
+
+    // Layout visualize: lege <file.pdf> [page-range] --layout-visualize HEIGHT
+    if let Some(vis_height) = cli_opts.layout_visualize {
+        let pdf_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing PDF path for --layout-visualize"))?;
+        let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
+        validate_pdf_file(
+            pdf_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
+        )?;
+        let page_range = args.get(2).and_then(|c| {
+            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                Some(c.clone())
+            } else {
+                None
+            }
+        });
+        return run_layout_visualize_mode(pdf_path, page_range, vis_height, AppConfig::default());
     }
 
     // PNG-folder inference: lege <folder> --png-folder
@@ -1741,6 +1792,9 @@ fn handle_simple_processing(
         pipeline_config.set_margin_settings(lege::margin::MarginSettings::CropAndResize);
     } else if cli_opts.center_margins {
         pipeline_config.set_margin_settings(lege::margin::MarginSettings::StandardizeAndCenter);
+    }
+    if cli_opts.crop_free_aspect {
+        pipeline_config.set_crop_free_aspect(true);
     }
 
     // ----- Target sizing -----
@@ -2555,33 +2609,124 @@ fn process_input_job_json(
 ) -> Result<()> {
     use lege::progress;
 
+    let input_path = input.display_path().to_path_buf();
+    let original_size = fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
+    let mut log_options = LogProcessingOptions::from_pipeline_config(&pipeline_config);
+    log_options.input_path = Some(input_path.clone());
+    log_options.output_path = Some(output_path.clone());
+    if let Err(err) = history_log::add_started_log_entry(
+        input_path.clone(),
+        output_path.clone(),
+        original_size,
+        &log_options,
+    ) {
+        eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
+    }
+
     let manager = progress::get_progress_manager();
     let receiver = manager.subscribe();
 
-    match input {
+    let terminal = match input {
         SimpleInput::Pdf(path) => {
-            let task_id = progress::spawn_file_processing_task(path, output_path, pipeline_config);
-            worker_json::run_json_worker(&receiver, task_id);
+            let task_id = progress::spawn_file_processing_task(
+                path,
+                output_path.clone(),
+                pipeline_config.clone(),
+            );
+            worker_json::run_json_worker_with_terminal_hook(&receiver, task_id, |update| {
+                record_json_worker_terminal_event(
+                    update,
+                    &input_path,
+                    &output_path,
+                    original_size,
+                    &log_options,
+                );
+            })
         }
         SimpleInput::ImageFolder { source, .. } => {
             let tracker = manager.create_tracker();
             let task_id = tracker.task_id();
             let tracker_for_thread = tracker.clone();
+            let worker_output_path = output_path.clone();
+            let worker_pipeline_config = pipeline_config.clone();
             std::thread::spawn(move || {
                 match run_png_mode_with_config(
                     source,
-                    Some(output_path),
-                    pipeline_config,
+                    Some(worker_output_path),
+                    worker_pipeline_config,
                     Some(tracker_for_thread.clone()),
                 ) {
                     Ok(()) => tracker_for_thread.finish("Image folder processing completed"),
                     Err(e) => tracker_for_thread.finish_with_error(e),
                 }
             });
-            worker_json::run_json_worker(&receiver, task_id);
+            worker_json::run_json_worker_with_terminal_hook(&receiver, task_id, |update| {
+                record_json_worker_terminal_event(
+                    update,
+                    &input_path,
+                    &output_path,
+                    original_size,
+                    &log_options,
+                );
+            })
+        }
+    };
+
+    match terminal {
+        Some(progress::ProgressUpdate::Completed { .. })
+        | Some(progress::ProgressUpdate::Error { .. }) => {}
+        _ => {
+            let error = "Processing task disconnected before completion";
+            if let Err(err) = history_log::add_failed_log_entry(
+                input_path,
+                output_path,
+                original_size,
+                error,
+                &log_options,
+            ) {
+                eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
+            }
+            return Err(anyhow!(error));
         }
     }
+
     Ok(())
+}
+
+fn record_json_worker_terminal_event(
+    update: &progress::ProgressUpdate,
+    input_path: &Path,
+    output_path: &Path,
+    original_size: u64,
+    log_options: &LogProcessingOptions,
+) {
+    match update {
+        progress::ProgressUpdate::Completed { .. } => {
+            let compressed_size = fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
+            let processing_result = LogProcessingResult::new(
+                input_path.to_path_buf(),
+                output_path.to_path_buf(),
+                original_size,
+                compressed_size,
+                log_options.page_range.is_some(),
+            );
+            if let Err(err) = history_log::add_log_entry(&processing_result, log_options) {
+                eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
+            }
+        }
+        progress::ProgressUpdate::Error { error, .. } => {
+            if let Err(err) = history_log::add_failed_log_entry(
+                input_path.to_path_buf(),
+                output_path.to_path_buf(),
+                original_size,
+                error,
+                log_options,
+            ) {
+                eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
+            }
+        }
+        progress::ProgressUpdate::Status { .. } => {}
+    }
 }
 
 fn prepare_simple_input(path: &str) -> Result<(SimpleInput, Option<tempfile::TempDir>)> {
@@ -4291,6 +4436,18 @@ fn process_single_file(
 ) -> Result<()> {
     // Clone config so we can log settings after processing completes.
     let log_config = config.clone();
+    let original_size = fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
+    let mut log_options = LogProcessingOptions::from_pipeline_config(&log_config);
+    log_options.input_path = Some(input_path.clone());
+    log_options.output_path = Some(output_path.clone());
+    if let Err(err) = history_log::add_started_log_entry(
+        input_path.clone(),
+        output_path.clone(),
+        original_size,
+        &log_options,
+    ) {
+        eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));
+    }
 
     // Subscribe first, then spawn so we don't miss early events.
     let manager = progress::get_progress_manager();
@@ -4385,11 +4542,19 @@ fn process_single_file(
     };
 
     if let Err(err) = progress_result {
+        if let Err(log_err) = history_log::add_failed_log_entry(
+            input_path.clone(),
+            output_path.clone(),
+            original_size,
+            &err.to_string(),
+            &log_options,
+        ) {
+            eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, log_err));
+        }
         return Err(err);
     }
 
     // Record processing outcome in log history (best-effort, non-fatal on error).
-    let original_size = fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
     let compressed_size = fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
     let page_range_used = log_config.page_range().is_some();
 
@@ -4400,10 +4565,6 @@ fn process_single_file(
         compressed_size,
         page_range_used,
     );
-
-    let mut log_options = LogProcessingOptions::from_pipeline_config(&log_config);
-    log_options.input_path = Some(input_path);
-    log_options.output_path = Some(output_path);
 
     if let Err(err) = history_log::add_log_entry(&processing_result, &log_options) {
         eprintln!("{}", fmt1(&CLI_TEXT.main.history_log_warning, err));

@@ -406,6 +406,7 @@ impl DetectionProvider for NoOpDetectionProvider {
             inference_image: page.inference_image.clone(),
             detections: Vec::new(),
             text_layer: None,
+            detections_are_page_space: false,
             original_width_pts: page.original_width_pts,
             original_height_pts: page.original_height_pts,
             has_no_detections: true,
@@ -549,6 +550,7 @@ impl DetectionProvider for YoloDetectionProvider {
             inference_image: page.inference_image.clone(),
             detections: dets,
             text_layer: None,
+            detections_are_page_space: false,
             original_width_pts: page.original_width_pts,
             original_height_pts: page.original_height_pts,
             has_no_detections,
@@ -558,8 +560,8 @@ impl DetectionProvider for YoloDetectionProvider {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn remap_detections_to_page(
-    dets: &mut Vec<Detection>,
+pub(crate) fn remap_detections_to_page(
+    dets: &mut [Detection],
     page_w: u32,
     page_h: u32,
     cfg: &PipelineConfig,
@@ -609,7 +611,7 @@ pub fn binarize_options_for(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
-        disable_gpu: false,
+        disable_gpu: config.crop_free_aspect(),
     }
 }
 

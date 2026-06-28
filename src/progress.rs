@@ -151,8 +151,8 @@ impl ProcessingStatus {
             }
             Self::MarginPass1Analyzing => (
                 "[Margin Analysis - Pass 1]".to_string(),
-                "Rendering: complete".to_string(),
-                "Inference: complete | Analyzing document-wide margins...".to_string(),
+                "Preparing document-wide margin analysis...".to_string(),
+                "Progress will update as pages are analyzed.".to_string(),
             ),
             Self::MarginAnalysisSummary { summary } => (
                 "[Margin Analysis - Pass 1]".to_string(),
@@ -481,8 +481,8 @@ impl ProcessingStatus {
             }
             Self::MarginPass1Analyzing => (
                 "[Margin Analysis - Pass 1]".to_string(),
-                "Rendering: complete".to_string(),
-                "Inference: complete | Analyzing document-wide margins...".to_string(),
+                "Preparing document-wide margin analysis...".to_string(),
+                "Progress will update as pages are analyzed.".to_string(),
             ),
             Self::MarginAnalysisSummary { summary } => (
                 "[Margin Analysis - Pass 1]".to_string(),

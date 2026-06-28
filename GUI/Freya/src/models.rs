@@ -113,6 +113,7 @@ pub struct ProcessingOptions {
     pub center_margins: bool,
     pub crop_margins: bool,
     pub crop_footnotes: bool,
+    pub crop_free_aspect: bool,
     pub reflow: bool,
 
     pub use_heavy_binarization: bool,
@@ -149,111 +150,6 @@ impl ResolutionPreset {
         Self {
             height: options.target_height.unwrap_or(1200),
             width: options.target_width,
-        }
-    }
-}
-
-// ── ProcessingResult ─────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ProcessingResult {
-    pub input_filename: String,
-    pub input_path: PathBuf,
-    pub output_filename: String,
-    pub output_path: PathBuf,
-    pub original_size: u64,
-    pub compressed_size: u64,
-    pub compression_percentage: f64,
-    pub page_range_used: bool,
-}
-
-impl ProcessingResult {
-    pub fn new(
-        input_path: PathBuf,
-        output_path: PathBuf,
-        original_size: u64,
-        compressed_size: u64,
-        page_range_used: bool,
-    ) -> Self {
-        let input_filename = input_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let output_filename = output_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let compression_percentage = if original_size > 0 {
-            (compressed_size as f64 / original_size as f64) * 100.0
-        } else {
-            0.0
-        };
-        Self {
-            input_filename,
-            input_path,
-            output_filename,
-            output_path,
-            original_size,
-            compressed_size,
-            compression_percentage,
-            page_range_used,
-        }
-    }
-}
-
-// ── LogEntry ─────────────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LogEntry {
-    pub timestamp: u64,
-    pub input_filename: String,
-    pub input_path: String,
-    pub output_filename: String,
-    pub output_path: String,
-    pub original_size: u64,
-    pub compressed_size: u64,
-    pub compression_percentage: f64,
-    pub options: ProcessingOptions,
-}
-
-impl LogEntry {
-    pub fn new(result: &ProcessingResult, options: &ProcessingOptions) -> Self {
-        Self {
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            input_filename: result.input_filename.clone(),
-            input_path: result.input_path.to_string_lossy().to_string(),
-            output_filename: result.output_filename.clone(),
-            output_path: result.output_path.to_string_lossy().to_string(),
-            original_size: result.original_size,
-            compressed_size: result.compressed_size,
-            compression_percentage: result.compression_percentage,
-            options: options.clone(),
-        }
-    }
-
-    pub fn format_timestamp(&self) -> String {
-        use chrono::TimeZone;
-        chrono::Local
-            .timestamp_opt(self.timestamp as i64, 0)
-            .single()
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-            .unwrap_or_else(|| "unknown".to_string())
-    }
-
-    pub fn format_size(bytes: u64) -> String {
-        const KIB: f64 = 1024.0;
-        const MIB: f64 = KIB * 1024.0;
-        const GIB: f64 = MIB * 1024.0;
-        match bytes {
-            0..=1023 => format!("{bytes} B"),
-            1024..=1_048_575 => format!("{:.1} KiB", bytes as f64 / KIB),
-            1_048_576..=1_073_741_823 => format!("{:.1} MiB", bytes as f64 / MIB),
-            _ => format!("{:.1} GiB", bytes as f64 / GIB),
         }
     }
 }

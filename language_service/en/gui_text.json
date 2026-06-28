@@ -39,6 +39,7 @@
       "width_proportional": "proportional",
       "margin_centering": "Center content on standard page",
       "margin_crop_resize": "Crop to content and resize",
+      "crop_free_aspect": "Free aspect",
       "reflow": "Reflow"
     },
     "tooltips": {
@@ -69,6 +70,7 @@
       "threshold_value": "Fixed threshold value (0-255) applied after linearization.",
       "margin_centering": "Centers content area within page dimensions",
       "margin_crop_resize": "Crops margins to content bounds and resizes to specified dimensions",
+      "crop_free_aspect": "Does not preserve aspect ratio; crops to content bounds and resizes to specified dimensions",
       "reflow": "Re-paginates text into a clean single-column layout for the target device, reflowing words and lines from the original pages",
       "output_format": "PDF or DjVu"
     },
@@ -133,6 +135,7 @@
     },
     "popups": {
       "close": "Close",
+      "clear_log": "Clear Log",
       "supported_inputs_filter": "Supported inputs",
       "queue_items_title": "Queue Items",
       "processing_log_title": "Processing Log",
