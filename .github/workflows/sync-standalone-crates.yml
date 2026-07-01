@@ -76,18 +76,21 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.LEGEAPP_MIRROR_TOKEN }}
           FORCE_MIRROR: ${{ github.event.inputs.force_mirror || 'false' }}
         run: |
-          remote_url="https://x-access-token:${MIRROR_TOKEN}@github.com/${{ matrix.repository }}.git"
+          remote_url="https://github.com/${{ matrix.repository }}.git"
           refspec="${{ steps.split.outputs.sha }}:refs/heads/${{ matrix.branch }}"
+          clean_token="$(printf '%s' "$MIRROR_TOKEN" | tr -d '\r\n')"
+          auth_header="$(printf 'x-access-token:%s' "$clean_token" | base64 | tr -d '\n')"
+          git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth_header")
 
           echo "Checking write target ${{ matrix.repository }} ${{ matrix.branch }}"
-          git ls-remote --exit-code --heads "$remote_url" "refs/heads/${{ matrix.branch }}" || {
+          git "${git_auth[@]}" ls-remote --exit-code --heads "$remote_url" "refs/heads/${{ matrix.branch }}" || {
             echo "Could not read target branch. Check that LEGEAPP_MIRROR_TOKEN has Contents: Read and write on ${{ matrix.repository }}." >&2
             exit 1
           }
 
           if [ "$FORCE_MIRROR" = "true" ]; then
             echo "Force mirroring ${{ matrix.repository }}. This should be used only for the initial cutover or an intentional reset."
-            git push --force "$remote_url" "$refspec"
+            git "${git_auth[@]}" push --force "$remote_url" "$refspec"
           else
-            git push "$remote_url" "$refspec"
+            git "${git_auth[@]}" push "$remote_url" "$refspec"
           fi
