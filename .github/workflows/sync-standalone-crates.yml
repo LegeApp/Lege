@@ -79,8 +79,15 @@ jobs:
           remote_url="https://x-access-token:${MIRROR_TOKEN}@github.com/${{ matrix.repository }}.git"
           refspec="${{ steps.split.outputs.sha }}:refs/heads/${{ matrix.branch }}"
 
+          echo "Checking write target ${{ matrix.repository }} ${{ matrix.branch }}"
+          git ls-remote --exit-code --heads "$remote_url" "refs/heads/${{ matrix.branch }}" || {
+            echo "Could not read target branch. Check that LEGEAPP_MIRROR_TOKEN has Contents: Read and write on ${{ matrix.repository }}." >&2
+            exit 1
+          }
+
           if [ "$FORCE_MIRROR" = "true" ]; then
-            git push --force-with-lease "$remote_url" "$refspec"
+            echo "Force mirroring ${{ matrix.repository }}. This should be used only for the initial cutover or an intentional reset."
+            git push --force "$remote_url" "$refspec"
           else
             git push "$remote_url" "$refspec"
           fi
