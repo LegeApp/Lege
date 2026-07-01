@@ -15,6 +15,7 @@ members = [
     ".",  # The root crate
     "lege-gpu",
     "lege-ocr",
+    "djvulibrust",
     "legencode",
     "legencode/src/jbig2enc-rust",
     "legencode/src/TooJpeg-rust",
