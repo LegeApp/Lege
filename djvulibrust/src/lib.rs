@@ -1,6 +1,3 @@
-// portable_simd feature - only enable when the feature flag is set
-#![cfg_attr(feature = "portable_simd", feature(portable_simd))]
-
 //! A Rust library for encoding DjVu documents.
 //!
 //! This crate provides a high-level builder API for creating multi-page DjVu documents
@@ -50,6 +47,7 @@ pub mod doc;
 pub mod encode;
 pub mod iff;
 pub mod image;
+pub(crate) mod simd;
 pub mod utils;
 
 // Public builder API
@@ -63,6 +61,14 @@ pub use image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 
 // Error types
 pub use utils::error::{DjvuError, Result};
+
+/// Name of the active SIMD primitives backend ("scalar", "wide", or "avx2"),
+/// selected once at startup via the `DJVU_PRIMITIVES` env var. Diagnostic
+/// only — see `llm-docs/SIMD_AND_PARALLELISM_PLAN.md`.
+#[doc(hidden)]
+pub fn active_primitives_backend() -> &'static str {
+    simd::PRIMITIVES.backend
+}
 
 // Constants
 pub const DJVU_VERSION: &str = "0.10.0";

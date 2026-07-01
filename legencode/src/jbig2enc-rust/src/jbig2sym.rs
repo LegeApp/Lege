@@ -441,7 +441,7 @@ impl BitImage {
 
     /// Counts set bits (1s) in the bitmap.
     pub fn count_ones(&self) -> usize {
-        self.bits.count_ones()
+        crate::jbig2simd::count_packed_words_ones(self.packed_words(), self.width, self.height)
     }
 
     /// Counts unset bits (0s) in the bitmap.

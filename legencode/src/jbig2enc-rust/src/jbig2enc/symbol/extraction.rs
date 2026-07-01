@@ -1,7 +1,9 @@
 use super::types::SymbolCandidate;
 #[cfg(feature = "symboldict")]
 use crate::jbig2cc::analyze_page;
-use crate::jbig2sym::{BitImage, Rect};
+use crate::jbig2sym::BitImage;
+#[cfg(feature = "symboldict")]
+use crate::jbig2sym::Rect;
 use anyhow::Result;
 
 /// Segment a document image into symbol candidates.
@@ -34,7 +36,7 @@ pub fn segment_symbols(image: &BitImage, dpi: i32, losslevel: i32) -> Result<Vec
     }
     #[cfg(not(feature = "symboldict"))]
     {
-        Err(anyhow!(
+        Err(anyhow::anyhow!(
             "Symbol segmentation requires the symboldict feature"
         ))
     }

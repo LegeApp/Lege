@@ -127,6 +127,7 @@ pub mod jbig2cost;
 pub mod jbig2enc;
 pub mod jbig2halftone;
 pub mod jbig2shared;
+pub(crate) mod jbig2simd;
 pub mod jbig2structs;
 pub mod jbig2sym;
 pub mod jbig2unify;
