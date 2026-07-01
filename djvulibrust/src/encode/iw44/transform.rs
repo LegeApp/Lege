@@ -154,11 +154,15 @@ impl Encode {
 
     /// Forward wavelet transform using the streaming algorithm from DjVuLibre.
     /// Now operates on i16 throughout, matching C++'s short* buffer behavior.
+    ///
+    /// Dispatched through `crate::simd::PRIMITIVES.iw44` (see
+    /// `llm-docs/SIMD_AND_PARALLELISM_PLAN.md`) so SIMD backends can be
+    /// selected without touching this call site.
     pub fn forward(buf: &mut [i16], w: usize, h: usize, rowsize: usize, levels: usize) {
         let mut scale = 1;
         for _ in 0..levels {
-            filter_fh(buf, w, h, rowsize, scale);
-            filter_fv(buf, w, h, rowsize, scale);
+            (crate::simd::PRIMITIVES.iw44.filter_fh)(buf, w, h, rowsize, scale);
+            (crate::simd::PRIMITIVES.iw44.filter_fv)(buf, w, h, rowsize, scale);
             scale <<= 1;
         }
     }
@@ -185,7 +189,10 @@ impl Encode {
 }
 
 /// Streaming horizontal filter - operates on i16 like C++ (port of filter_fh from IW44EncodeCodec.cpp:514)
-fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usize) {
+///
+/// `pub(crate)` so `crate::simd` can register it as the default scalar
+/// primitive and use it as the correctness reference for SIMD kernels.
+pub(crate) fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usize) {
     let s = scale;
     let s3 = s + s + s;
     rowsize *= scale;
@@ -287,7 +294,10 @@ fn filter_fh(buf: &mut [i16], w: usize, h: usize, mut rowsize: usize, scale: usi
 }
 
 /// Streaming vertical filter (port of filter_fv from IW44EncodeCodec.cpp:404)
-fn filter_fv(buf: &mut [i16], w: usize, h: usize, rowsize: usize, scale: usize) {
+///
+/// `pub(crate)` so `crate::simd` can register it as the default scalar
+/// primitive and use it as the correctness reference for SIMD kernels.
+pub(crate) fn filter_fv(buf: &mut [i16], w: usize, h: usize, rowsize: usize, scale: usize) {
     let s = scale * rowsize;
     let s3 = s + s + s;
     let mut y = 1usize;

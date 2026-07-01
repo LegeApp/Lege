@@ -11,11 +11,8 @@
 //! structural mismatch from harmless edge noise.
 //! ==========================================================
 
+use crate::jbig2simd::{shift_xor_popcnt_u32_rows, xor_popcnt_u32_rows};
 use crate::jbig2sym::BitImage;
-use std::sync::OnceLock;
-
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
 
 /// Maximum absolute shift (in pixels) that we search in x/y.
 const SEARCH_RADIUS: i32 = 5;
@@ -316,8 +313,6 @@ impl Comparator {
         let mut best_err = max_err + 1;
         let mut best_dx = 0;
         let mut best_dy = 0;
-        let has_popcnt = popcnt_available();
-        let has_avx2 = avx2_popcnt_enabled();
 
         for &dy in &SEARCH_OFFSETS {
             if dy.abs() > max_dy {
@@ -351,24 +346,22 @@ impl Comparator {
                 let mut early_break = false;
 
                 for row in 0..overlap_height {
-                    let a_row = unsafe { a_words.as_ptr().add((top + row) * awpr) };
-                    let b_row = unsafe { b_words.as_ptr().add((b_row_start + row) * bwpr) };
+                    let a_start = (top + row) * awpr;
+                    let b_start = (b_row_start + row) * bwpr;
+                    let a_row = &a_words[a_start..a_start + awpr];
+                    let b_row = &b_words[b_start..b_start + bwpr];
 
-                    let (new_err, broke) = unsafe {
-                        if bit_shift == 0 {
-                            row_kernel_noshift(
-                                a_row, awpr, b_row, cols_words, word_shift, err, best_err, max_err,
-                                has_popcnt, has_avx2,
-                            )
-                        } else {
-                            row_kernel_shift(
-                                a_row, awpr, b_row, cols_words, word_shift, bit_shift, err,
-                                best_err, max_err, has_popcnt, has_avx2,
-                            )
-                        }
+                    let result = if bit_shift == 0 {
+                        row_kernel_noshift(
+                            a_row, b_row, cols_words, word_shift, err, best_err, max_err,
+                        )
+                    } else {
+                        row_kernel_shift(
+                            a_row, b_row, cols_words, word_shift, bit_shift, err, best_err, max_err,
+                        )
                     };
-                    err = new_err;
-                    if broke {
+                    err = result.0;
+                    if result.1 {
                         early_break = true;
                         break;
                     }
@@ -621,308 +614,71 @@ unsafe fn accumulate_row_columns(
     total
 }
 
-#[inline]
-fn popcnt_available() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        static HAS_POPCNT: OnceLock<bool> = OnceLock::new();
-        *HAS_POPCNT.get_or_init(|| is_x86_feature_detected!("popcnt"))
+#[inline(always)]
+fn row_kernel_noshift(
+    a_row: &[u32],
+    b_row: &[u32],
+    cols_words: usize,
+    word_shift: isize,
+    mut err: u32,
+    best_err: u32,
+    max_err: u32,
+) -> (u32, bool) {
+    if cols_words >= 8 && word_shift >= 0 {
+        let result =
+            xor_popcnt_u32_rows(a_row, b_row, word_shift, cols_words, err, best_err, max_err);
+        return (result.err, result.broke);
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
-}
 
-#[inline]
-fn avx2_popcnt_available() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        static HAS_AVX2_POPCNT: OnceLock<bool> = OnceLock::new();
-        *HAS_AVX2_POPCNT
-            .get_or_init(|| is_x86_feature_detected!("avx2") && is_x86_feature_detected!("popcnt"))
+    for w in 0..cols_words {
+        let a_idx = w as isize + word_shift;
+        let aw = load_word_or_zero(a_row, a_idx);
+        let bw = b_row[w];
+        err = err.saturating_add((aw ^ bw).count_ones());
+        if err >= best_err || err > max_err {
+            return (err, true);
+        }
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
-}
-
-#[inline]
-fn avx2_popcnt_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        avx2_popcnt_available() && std::env::var("JBIG2_USE_AVX2").is_ok_and(|v| v == "1")
-    })
+    (err, false)
 }
 
 #[inline(always)]
-unsafe fn load_word_or_zero(base: *const u32, idx: isize, len: usize) -> u32 {
-    if idx < 0 || (idx as usize) >= len {
+fn row_kernel_shift(
+    a_row: &[u32],
+    b_row: &[u32],
+    cols_words: usize,
+    word_shift: isize,
+    bit_shift: u32,
+    mut err: u32,
+    best_err: u32,
+    max_err: u32,
+) -> (u32, bool) {
+    if cols_words >= 8 && word_shift >= 0 {
+        let result = shift_xor_popcnt_u32_rows(
+            a_row, b_row, word_shift, bit_shift, cols_words, err, best_err, max_err,
+        );
+        return (result.err, result.broke);
+    }
+
+    let rshift = 32 - bit_shift;
+    for w in 0..cols_words {
+        let a_idx = w as isize + word_shift;
+        let aw = load_word_or_zero(a_row, a_idx);
+        let aw_next = load_word_or_zero(a_row, a_idx + 1);
+        let aligned_a = (aw << bit_shift) | (aw_next >> rshift);
+        let bw = b_row[w];
+        err = err.saturating_add((aligned_a ^ bw).count_ones());
+        if err >= best_err || err > max_err {
+            return (err, true);
+        }
+    }
+    (err, false)
+}
+
+fn load_word_or_zero(row: &[u32], idx: isize) -> u32 {
+    if idx < 0 {
         0
     } else {
-        unsafe { *base.add(idx as usize) }
-    }
-}
-
-#[inline(always)]
-unsafe fn row_kernel_noshift(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    err: u32,
-    best_err: u32,
-    max_err: u32,
-    has_popcnt: bool,
-    has_avx2: bool,
-) -> (u32, bool) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if has_avx2 && cols_words >= 16 && word_shift >= 0 {
-            return unsafe {
-                row_kernel_noshift_avx2(
-                    a_row, a_len, b_row, cols_words, word_shift, err, best_err, max_err,
-                )
-            };
-        }
-        if has_popcnt {
-            return unsafe {
-                row_kernel_noshift_scalar_popcnt(
-                    a_row, a_len, b_row, cols_words, word_shift, err, best_err, max_err,
-                )
-            };
-        }
-    }
-
-    unsafe {
-        row_kernel_noshift_scalar(
-            a_row, a_len, b_row, cols_words, word_shift, err, best_err, max_err,
-        )
-    }
-}
-
-#[inline(always)]
-unsafe fn row_kernel_shift(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    bit_shift: u32,
-    err: u32,
-    best_err: u32,
-    max_err: u32,
-    has_popcnt: bool,
-    has_avx2: bool,
-) -> (u32, bool) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if has_popcnt {
-            return unsafe {
-                row_kernel_shift_scalar_popcnt(
-                    a_row, a_len, b_row, cols_words, word_shift, bit_shift, err, best_err, max_err,
-                )
-            };
-        }
-    }
-
-    unsafe {
-        row_kernel_shift_scalar(
-            a_row, a_len, b_row, cols_words, word_shift, bit_shift, err, best_err, max_err,
-        )
-    }
-}
-
-#[inline(always)]
-unsafe fn row_kernel_noshift_scalar(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    mut err: u32,
-    best_err: u32,
-    max_err: u32,
-) -> (u32, bool) {
-    for w in 0..cols_words {
-        let a_idx = w as isize + word_shift;
-        let aw = unsafe { load_word_or_zero(a_row, a_idx, a_len) };
-        let bw = unsafe { *b_row.add(w) };
-        err += (aw ^ bw).count_ones();
-        if err >= best_err || err > max_err {
-            return (err, true);
-        }
-    }
-    (err, false)
-}
-
-#[inline(always)]
-unsafe fn row_kernel_shift_scalar(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    bit_shift: u32,
-    mut err: u32,
-    best_err: u32,
-    max_err: u32,
-) -> (u32, bool) {
-    let rshift = 32 - bit_shift;
-    for w in 0..cols_words {
-        let a_idx = w as isize + word_shift;
-        let aw = unsafe { load_word_or_zero(a_row, a_idx, a_len) };
-        let aw_next = unsafe { load_word_or_zero(a_row, a_idx + 1, a_len) };
-        let aligned_a = (aw << bit_shift) | (aw_next >> rshift);
-        let bw = unsafe { *b_row.add(w) };
-        err += (aligned_a ^ bw).count_ones();
-        if err >= best_err || err > max_err {
-            return (err, true);
-        }
-    }
-    (err, false)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "popcnt")]
-unsafe fn row_kernel_noshift_scalar_popcnt(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    err: u32,
-    best_err: u32,
-    max_err: u32,
-) -> (u32, bool) {
-    unsafe {
-        row_kernel_noshift_scalar(
-            a_row, a_len, b_row, cols_words, word_shift, err, best_err, max_err,
-        )
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "popcnt")]
-unsafe fn row_kernel_shift_scalar_popcnt(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    bit_shift: u32,
-    err: u32,
-    best_err: u32,
-    max_err: u32,
-) -> (u32, bool) {
-    unsafe {
-        row_kernel_shift_scalar(
-            a_row, a_len, b_row, cols_words, word_shift, bit_shift, err, best_err, max_err,
-        )
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-#[target_feature(enable = "popcnt")]
-unsafe fn row_kernel_noshift_avx2(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    mut err: u32,
-    best_err: u32,
-    max_err: u32,
-) -> (u32, bool) {
-    let mut w = 0usize;
-    while w < cols_words {
-        let a_idx = w as isize + word_shift;
-        if a_idx < 0 || (a_idx as usize + 8) > a_len || w + 8 > cols_words {
-            break;
-        }
-
-        let av = unsafe { _mm256_loadu_si256(a_row.add(a_idx as usize) as *const __m256i) };
-        let bv = unsafe { _mm256_loadu_si256(b_row.add(w) as *const __m256i) };
-        let xv = _mm256_xor_si256(av, bv);
-        let mut lanes = [0u64; 4];
-        unsafe { _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, xv) };
-        err = err.saturating_add(lanes.iter().map(|lane| lane.count_ones()).sum::<u32>());
-        if err >= best_err || err > max_err {
-            return (err, true);
-        }
-        w += 8;
-    }
-
-    unsafe {
-        row_kernel_noshift_scalar(
-            a_row,
-            a_len,
-            b_row.add(w),
-            cols_words - w,
-            word_shift + w as isize,
-            err,
-            best_err,
-            max_err,
-        )
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-#[target_feature(enable = "popcnt")]
-unsafe fn row_kernel_shift_avx2(
-    a_row: *const u32,
-    a_len: usize,
-    b_row: *const u32,
-    cols_words: usize,
-    word_shift: isize,
-    bit_shift: u32,
-    mut err: u32,
-    best_err: u32,
-    max_err: u32,
-) -> (u32, bool) {
-    let rshift = 32 - bit_shift;
-    let lshift_vec = _mm256_set1_epi32(bit_shift as i32);
-    let rshift_vec = _mm256_set1_epi32(rshift as i32);
-    let mut w = 0usize;
-    while w < cols_words {
-        let a_idx = w as isize + word_shift;
-        if a_idx < 0 || (a_idx as usize + 9) > a_len || w + 8 > cols_words {
-            break;
-        }
-
-        let av = unsafe { _mm256_loadu_si256(a_row.add(a_idx as usize) as *const __m256i) };
-        let av_next =
-            unsafe { _mm256_loadu_si256(a_row.add(a_idx as usize + 1) as *const __m256i) };
-        let aligned = _mm256_or_si256(
-            _mm256_sllv_epi32(av, lshift_vec),
-            _mm256_srlv_epi32(av_next, rshift_vec),
-        );
-        let bv = unsafe { _mm256_loadu_si256(b_row.add(w) as *const __m256i) };
-        let xv = _mm256_xor_si256(aligned, bv);
-        let mut lanes = [0u64; 4];
-        unsafe { _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, xv) };
-        err = err.saturating_add(lanes.iter().map(|lane| lane.count_ones()).sum::<u32>());
-        if err >= best_err || err > max_err {
-            return (err, true);
-        }
-        w += 8;
-    }
-
-    unsafe {
-        row_kernel_shift_scalar(
-            a_row,
-            a_len,
-            b_row.add(w),
-            cols_words - w,
-            word_shift + w as isize,
-            bit_shift,
-            err,
-            best_err,
-            max_err,
-        )
+        row.get(idx as usize).copied().unwrap_or(0)
     }
 }
