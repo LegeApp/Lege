@@ -232,9 +232,7 @@ impl CoeffMap {
         for block_y in 0..(map.bh / 32) {
             for block_x in 0..blocks_w {
                 let block_idx = block_y * blocks_w + block_x;
-                map.blocks[block_idx].read_from_transform_block(
-                    &data16, map.bw, block_x, block_y,
-                );
+                map.blocks[block_idx].read_from_transform_block(&data16, map.bw, block_x, block_y);
             }
         }
 

@@ -28,7 +28,7 @@ WIN_OUT.mkdir(parents=True, exist_ok=True)
 
 # WSL build/output dirs (inside Linux)
 WSL_PROJECT_ROOT = "/home/dk/Lege"  # your Linux project checkout (adjust)
-WSL_LINUX_RUN    = "/home/dk/Desktop/lege-run/installer/linux64"
+WSL_LINUX_RUN    = f"{WSL_PROJECT_ROOT}/packaging/linux64"
 WSL_OUT          = "/home/dk/Lege/out"  # will be bind-mounted or just copied to /mnt/… that Windows can see
 
 # Windows inputs for installer/MSIX

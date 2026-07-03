@@ -518,6 +518,10 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
     mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
 ) -> Result<()> {
     info_log!("[Reflow] Starting raster-reflow DJVU pipeline");
+    info_log!(
+        "[Reflow] Native DjVu encoder backend: {}",
+        crate::djvu::active_backend_info()
+    );
     crate::pipeline::reset_standard_dimensions();
 
     let runtime_limits = PipelineRuntimeLimits::djvu_from_config(&config);

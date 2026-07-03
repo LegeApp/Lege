@@ -16,7 +16,7 @@ use std::sync::{
 use anyhow::Result;
 
 use crate::models::{
-    CompressionType, CoverImageType, ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions,
+    CoverImageType, ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions,
 };
 
 // ── Protocol types ────────────────────────────────────────────────────────────
@@ -362,18 +362,7 @@ pub fn gui_options_to_cli_args(
     args.push(output_path.as_os_str().into());
 
     // Text / output format
-    let text_format = match options.output_format {
-        OutputFormat::Djvu => "djvu",
-        OutputFormat::Epub => "epub",
-        OutputFormat::Pdf if options.layout_analysis => match options.image_processing_type {
-            ImageProcessingType::Original => "ccitt4",
-            ImageProcessingType::Dithered => "jbig2",
-        },
-        OutputFormat::Pdf => match options.compression_type {
-            CompressionType::Ccitt4 => "ccitt4",
-            CompressionType::Jbig2 => "jbig2",
-        },
-    };
+    let text_format = options.effective_text_format();
     args.push("--text-format".into());
     args.push(text_format.into());
 
@@ -425,7 +414,13 @@ pub fn gui_options_to_cli_args(
     }
 
     // Image processing
-    if matches!(options.image_processing_type, ImageProcessingType::Dithered)
+    let use_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
+        && options.layout_analysis
+        && matches!(options.image_processing_type, ImageProcessingType::Dithered)
+        && options.use_jbig2_halftone;
+    if use_jbig2_halftone {
+        args.push("--halftone".into());
+    } else if matches!(options.image_processing_type, ImageProcessingType::Dithered)
         && options.layout_analysis
     {
         args.push("--dither".into());
@@ -448,7 +443,7 @@ pub fn gui_options_to_cli_args(
     } else if options.crop_margins {
         args.push("--crop-margins".into());
     }
-    if options.crop_free_aspect {
+    if options.crop_margins || options.crop_free_aspect {
         args.push("--crop-free-aspect".into());
     }
     if options.crop_footnotes {
@@ -749,4 +744,125 @@ pub async fn probe_file_json(path: &PathBuf) -> Result<serde_json::Value> {
         )
     })?;
     Ok(json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::CompressionType;
+    use std::ffi::OsStr;
+
+    fn cli_arg_after(args: &[OsString], flag: &str) -> Option<String> {
+        args.windows(2)
+            .find(|window| window[0] == OsStr::new(flag))
+            .map(|window| window[1].to_string_lossy().to_string())
+    }
+
+    #[test]
+    fn no_layout_cli_ignores_hidden_image_output_format() {
+        let mut options = ProcessingOptions::new();
+        options.layout_analysis = false;
+        options.compression_type = CompressionType::Ccitt4;
+        options.image_processing_type = ImageProcessingType::Dithered;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert_eq!(
+            cli_arg_after(&args, "--text-format").as_deref(),
+            Some("ccitt4")
+        );
+        assert!(args.iter().any(|arg| arg == OsStr::new("--no-layout")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--dither")));
+    }
+
+    #[test]
+    fn layout_cli_uses_image_output_format() {
+        let mut options = ProcessingOptions::new();
+        options.layout_analysis = true;
+        options.compression_type = CompressionType::Ccitt4;
+        options.image_processing_type = ImageProcessingType::Dithered;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert_eq!(
+            cli_arg_after(&args, "--text-format").as_deref(),
+            Some("jbig2")
+        );
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
+        assert!(args.iter().any(|arg| arg == OsStr::new("--dither")));
+    }
+
+    #[test]
+    fn layout_cli_uses_halftone_instead_of_standard_dither_when_enabled() {
+        let mut options = ProcessingOptions::new();
+        options.layout_analysis = true;
+        options.image_processing_type = ImageProcessingType::Dithered;
+        options.use_jbig2_halftone = true;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert_eq!(
+            cli_arg_after(&args, "--text-format").as_deref(),
+            Some("jbig2")
+        );
+        assert!(args.iter().any(|arg| arg == OsStr::new("--halftone")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--dither")));
+    }
+
+    #[test]
+    fn hidden_halftone_setting_is_ignored_for_djvu() {
+        let mut options = ProcessingOptions::new();
+        options.output_format = OutputFormat::Djvu;
+        options.layout_analysis = true;
+        options.image_processing_type = ImageProcessingType::Dithered;
+        options.use_jbig2_halftone = true;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.djvu"),
+            &options,
+            true,
+        );
+
+        assert_eq!(
+            cli_arg_after(&args, "--text-format").as_deref(),
+            Some("djvu")
+        );
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--halftone")));
+        assert!(args.iter().any(|arg| arg == OsStr::new("--dither")));
+    }
+
+    #[test]
+    fn crop_margins_cli_uses_free_aspect_crop() {
+        let mut options = ProcessingOptions::new();
+        options.crop_margins = true;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert!(args.iter().any(|arg| arg == OsStr::new("--crop-margins")));
+        assert!(
+            args.iter()
+                .any(|arg| arg == OsStr::new("--crop-free-aspect"))
+        );
+    }
 }

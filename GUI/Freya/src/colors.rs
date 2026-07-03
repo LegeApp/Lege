@@ -1,33 +1,83 @@
 // On Linux, Freya/Vulkan renders raw RGB without OS color management, so the
-// subtle (255,250,250) warm tint is indistinguishable from pure white. Use a
-// more distinct cream/parchment value that is visible without ICC profiles.
-// On Windows/macOS the OS pipeline adds warmth, making (255,250,250) correctly
-// paper-like, so leave it unchanged there.
+// subtle warm tint needs a slightly stronger base. The base colors live in
+// `appearance.rs`; this module stays as the app-facing color accessor layer.
 
-pub const APP_BG: (u8, u8, u8) = (226, 232, 235);
+use crate::appearance::{Rgb, active_palette};
 
-#[cfg(target_os = "linux")]
-pub const PANEL_BG: (u8, u8, u8) = (253, 249, 244);
-#[cfg(not(target_os = "linux"))]
-pub const PANEL_BG: (u8, u8, u8) = (255, 250, 245);
+pub fn app_bg() -> Rgb {
+    active_palette().app_bg
+}
 
-#[cfg(target_os = "linux")]
-pub const SELECTED_BG: (u8, u8, u8) = (255, 241, 241);
-#[cfg(not(target_os = "linux"))]
-pub const SELECTED_BG: (u8, u8, u8) = (255, 243, 243);
+pub fn panel_bg() -> Rgb {
+    active_palette().panel_bg
+}
 
-#[cfg(target_os = "linux")]
-pub const CARD_BG: (u8, u8, u8) = (253, 249, 244);
-#[cfg(not(target_os = "linux"))]
-pub const CARD_BG: (u8, u8, u8) = (255, 250, 245);
+pub fn selected_bg() -> Rgb {
+    active_palette().selected_bg
+}
 
-pub const TEXT: (u8, u8, u8) = (20, 20, 20);
-pub const MUTED: (u8, u8, u8) = (90, 90, 90);
-pub const BORDER: (u8, u8, u8) = (128, 128, 128);
-pub const INFO_BG: (u8, u8, u8) = (255, 255, 225);
+pub fn card_bg() -> Rgb {
+    active_palette().card_bg
+}
 
-pub fn job_accent_color(index: u32) -> (u8, u8, u8) {
-    const COLORS: [(u8, u8, u8); 15] = [
+pub fn text_fg() -> Rgb {
+    active_palette().text
+}
+
+pub fn muted_fg() -> Rgb {
+    active_palette().muted
+}
+
+pub fn border() -> Rgb {
+    active_palette().border
+}
+
+pub fn info_bg() -> Rgb {
+    active_palette().info_bg
+}
+
+pub fn control_bg() -> Rgb {
+    active_palette().control_bg
+}
+
+pub fn hover_bg() -> Rgb {
+    active_palette().hover_bg
+}
+
+pub fn focus_bg() -> Rgb {
+    active_palette().focus_bg
+}
+
+pub fn active_bg() -> Rgb {
+    active_palette().active_bg
+}
+
+pub fn inverse_surface() -> Rgb {
+    active_palette().inverse_surface
+}
+
+pub fn inverse_surface_secondary() -> Rgb {
+    active_palette().inverse_surface_secondary
+}
+
+pub fn inverse_surface_tertiary() -> Rgb {
+    active_palette().inverse_surface_tertiary
+}
+
+pub fn border_focus() -> Rgb {
+    active_palette().border_focus
+}
+
+pub fn check_mark() -> Rgb {
+    active_palette().check_mark
+}
+
+pub fn progress_track_bg() -> Rgb {
+    active_palette().progress_track_bg
+}
+
+pub fn job_accent_color(index: u32) -> Rgb {
+    const COLORS: [Rgb; 15] = [
         (180, 217, 232), // sky blue
         (232, 218, 166), // warm yellow
         (220, 192, 214), // rose

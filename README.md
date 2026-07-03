@@ -42,6 +42,36 @@ You'll get:
 * CLI: `target/release/lege`
 * GUI: `target/release/lege-gui`
 
+### Linux release packaging
+
+Lege has first-pass `.deb` and AppImage packaging metadata. Download the
+existing Linux `.tar.gz` from the
+[GitHub releases](https://github.com/LegeApp/Lege/releases), extract it to a
+folder of your choice, and point packaging at that folder's runtime assets
+(`libpdfium.so`, `yolo-layout.onnx`, `sauvola.onnx`, and `eng.traineddata`):
+
+```bash
+export LEGE_PACKAGE_INPUT_DIR=/path/to/extracted/linux64
+cargo appimage
+```
+
+`cargo appimage` needs `appimagetool` on your `PATH`. It is not in the Debian/
+Ubuntu repositories; download the official AppImage from
+[AppImageKit releases](https://github.com/AppImage/AppImageKit/releases),
+`chmod +x` it, and either place it on your `PATH` as `appimagetool` or point at
+it with `APPIMAGETOOL=/path/to/appimagetool cargo appimage`. You can also build
+a `.deb` with `cargo deb`.
+
+#### Bundled `eng.traineddata`
+
+Lege ships an `eng.traineddata` file even though Tesseract installs its own.
+This is the improved English model from the University of Freiburg, which gives
+better OCR accuracy on English text than the stock Tesseract data. If you prefer
+the stock model, replace this file with the one from your Tesseract install.
+
+See `docs/linux-packaging.md` for the full flow, including AppImage update
+metadata and the current Tesseract OCR self-containment limitation.
+
 ### Run
 
 ```bash

@@ -1,0 +1,4 @@
+[alias]
+appimage = "run --package xtask -- appimage"
+build-debug-logging = "build --profile debug-fast --features debug-logging"
+run-debug-logging = "run --profile debug-fast --features debug-logging --"

@@ -1,6 +1,14 @@
 use freya::prelude::*;
 
-use crate::colors::{APP_BG, BORDER, CARD_BG, PANEL_BG, SELECTED_BG, TEXT};
+use crate::appearance::Rgb;
+use crate::colors::{
+    app_bg, border, border_focus, card_bg, check_mark, control_bg, hover_bg, panel_bg, selected_bg,
+    text_fg,
+};
+
+fn rgb(color: Rgb) -> Color {
+    Color::from_rgb(color.0, color.1, color.2)
+}
 
 pub fn lege_panel_card(
     title: impl Into<String>,
@@ -9,10 +17,10 @@ pub fn lege_panel_card(
 ) -> Element {
     let title = title.into();
     let mut card = rect()
-        .background(CARD_BG)
+        .background(card_bg())
         .border(
             Border::new()
-                .fill(BORDER)
+                .fill(border())
                 .width(1.)
                 .alignment(BorderAlignment::Inner),
         )
@@ -32,7 +40,7 @@ pub fn lege_panel_card(
                 label()
                     .text(title)
                     .font_size(15.)
-                    .color(TEXT)
+                    .color(text_fg())
                     .font_weight(700),
             ),
         );
@@ -50,7 +58,7 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
             label()
                 .text(label_text.into())
                 .font_size(13.)
-                .color(TEXT)
+                .color(text_fg())
                 .font_weight(500),
         )
         .child(
@@ -123,11 +131,11 @@ impl Component for LegeCheckboxRow {
         let text = self.text.clone();
 
         let box_background = if selected {
-            Color::from_rgb(SELECTED_BG.0, SELECTED_BG.1, SELECTED_BG.2)
+            rgb(selected_bg())
         } else if hovering() {
-            Color::from_rgb(236, 236, 236)
+            rgb(hover_bg())
         } else {
-            Color::from_rgb(255, 250, 250)
+            rgb(control_bg())
         };
 
         rect()
@@ -153,7 +161,7 @@ impl Component for LegeCheckboxRow {
                     .height(Size::px(14.))
                     .border(
                         Border::new()
-                            .fill(Color::from_rgb(64, 64, 64))
+                            .fill(rgb(border_focus()))
                             .width(1.)
                             .alignment(BorderAlignment::Inner),
                     )
@@ -166,14 +174,14 @@ impl Component for LegeCheckboxRow {
                                 .text("X")
                                 .font_size(11.)
                                 .font_weight(700)
-                                .color(Color::from_rgb(30, 30, 30))
+                                .color(rgb(check_mark()))
                                 .into(),
                         )
                     } else {
                         None::<Element>
                     }),
             )
-            .child(label().text(text).font_size(13.).color(TEXT))
+            .child(label().text(text).font_size(13.).color(text_fg()))
     }
 }
 
@@ -228,10 +236,10 @@ pub fn lege_status_panel(
     bottom_right: Element,
 ) -> Element {
     rect()
-        .background(CARD_BG)
+        .background(card_bg())
         .border(
             Border::new()
-                .fill(BORDER)
+                .fill(border())
                 .width(1.)
                 .alignment(BorderAlignment::Inner),
         )
@@ -282,16 +290,16 @@ pub fn lege_main_shell(
     status_bar: Element,
 ) -> Element {
     rect()
-        .background(APP_BG)
+        .background(app_bg())
         .width(Size::fill())
         .height(Size::fill())
         .padding(6.)
         .child(
             rect()
-                .background(PANEL_BG)
+                .background(panel_bg())
                 .border(
                     Border::new()
-                        .fill(BORDER)
+                        .fill(border())
                         .width(1.)
                         .alignment(BorderAlignment::Inner),
                 )

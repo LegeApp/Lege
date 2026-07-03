@@ -198,6 +198,11 @@ impl From<anyhow::Error> for EncodingError {
 pub mod jbig2;
 pub use jbig2::*;
 
+/// Diagnostic string for the active JBIG2 encoder acceleration paths.
+pub fn active_jbig2_backend_info() -> String {
+    jbig2enc_rust::active_backend_info()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -106,6 +106,7 @@ pub struct ProcessingOptions {
     pub use_ocr: bool,
     pub ocr_mode: OcrMode,
     pub make_epub_also: bool,
+    pub use_jbig2_halftone: bool,
     pub high_quality_output: bool,
     pub jpeg_compat: bool,
     pub invert_input: bool,
@@ -135,6 +136,21 @@ impl ProcessingOptions {
             k_factor: 0.2,
             threshold_value: 180,
             ..Default::default()
+        }
+    }
+
+    pub fn effective_text_format(&self) -> &'static str {
+        match self.output_format {
+            OutputFormat::Djvu => "djvu",
+            OutputFormat::Epub => "epub",
+            OutputFormat::Pdf if self.layout_analysis => match self.image_processing_type {
+                ImageProcessingType::Original => "ccitt4",
+                ImageProcessingType::Dithered => "jbig2",
+            },
+            OutputFormat::Pdf => match self.compression_type {
+                CompressionType::Ccitt4 => "ccitt4",
+                CompressionType::Jbig2 => "jbig2",
+            },
         }
     }
 }
@@ -255,5 +271,36 @@ impl std::fmt::Display for DocumentStatus {
             DocumentStatus::Failed(err) => write!(f, "Failed: {}", err),
             DocumentStatus::Cancelled => write!(f, "Cancelled"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_layout_text_format_uses_base_compression_setting() {
+        let mut options = ProcessingOptions::new();
+        options.layout_analysis = false;
+        options.image_processing_type = ImageProcessingType::Dithered;
+
+        options.compression_type = CompressionType::Ccitt4;
+        assert_eq!(options.effective_text_format(), "ccitt4");
+
+        options.compression_type = CompressionType::Jbig2;
+        assert_eq!(options.effective_text_format(), "jbig2");
+    }
+
+    #[test]
+    fn layout_text_format_uses_image_processing_setting() {
+        let mut options = ProcessingOptions::new();
+        options.layout_analysis = true;
+        options.compression_type = CompressionType::Jbig2;
+
+        options.image_processing_type = ImageProcessingType::Original;
+        assert_eq!(options.effective_text_format(), "ccitt4");
+
+        options.image_processing_type = ImageProcessingType::Dithered;
+        assert_eq!(options.effective_text_format(), "jbig2");
     }
 }

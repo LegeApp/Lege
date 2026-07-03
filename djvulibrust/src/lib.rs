@@ -70,6 +70,16 @@ pub fn active_primitives_backend() -> &'static str {
     simd::PRIMITIVES.backend
 }
 
+/// Name of the active page-component parallelism backend.
+#[doc(hidden)]
+pub fn active_parallel_backend() -> &'static str {
+    if cfg!(feature = "rayon") {
+        "rayon"
+    } else {
+        "serial"
+    }
+}
+
 // Constants
 pub const DJVU_VERSION: &str = "0.10.0";
 

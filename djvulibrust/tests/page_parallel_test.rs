@@ -103,9 +103,7 @@ fn std_thread_scope_parallel_encode_produces_correct_document() {
                 let doc_ref = &doc;
                 scope.spawn(move || {
                     let encoded = doc_ref.encode_page(page).expect("encode_page");
-                    doc_ref
-                        .add_encoded_page(encoded)
-                        .expect("add_encoded_page");
+                    doc_ref.add_encoded_page(encoded).expect("add_encoded_page");
                 })
             })
             .collect();
@@ -195,9 +193,7 @@ fn parallel_and_sequential_encode_produce_identical_bytes() {
                 let doc_ref = &par_doc;
                 scope.spawn(move || {
                     let encoded = doc_ref.encode_page(page).expect("encode_page");
-                    doc_ref
-                        .add_encoded_page(encoded)
-                        .expect("add_encoded_page");
+                    doc_ref.add_encoded_page(encoded).expect("add_encoded_page");
                 })
             })
             .collect();

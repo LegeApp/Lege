@@ -593,11 +593,7 @@ mod tests {
                 .map(|i| {
                     let x = i % rowsize;
                     let y = i / rowsize;
-                    if (x + y) % 2 == 0 {
-                        1000i16
-                    } else {
-                        -1000i16
-                    }
+                    if (x + y) % 2 == 0 { 1000i16 } else { -1000i16 }
                 })
                 .collect(),
             "random_small" => {
@@ -608,9 +604,7 @@ mod tests {
             }
             "random_full" => {
                 let mut state = seed | 1;
-                (0..n)
-                    .map(|_| xorshift(&mut state) as i16)
-                    .collect()
+                (0..n).map(|_| xorshift(&mut state) as i16).collect()
             }
             "extremes" => {
                 let mut state = seed | 1;
@@ -628,9 +622,7 @@ mod tests {
         }
     }
 
-    const SIZES: &[usize] = &[
-        0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65,
-    ];
+    const SIZES: &[usize] = &[0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65];
     const PATTERNS: &[&str] = &[
         "zero",
         "one",
@@ -659,8 +651,9 @@ mod tests {
                         // trivial combinations are still valid inputs, so
                         // just run them all rather than filtering.
                         for &pattern in PATTERNS {
-                            let seed = (w * 7919 + h * 104729 + rowsize * 13 + scale * 5 + pattern.len())
-                                as u32;
+                            let seed =
+                                (w * 7919 + h * 104729 + rowsize * 13 + scale * 5 + pattern.len())
+                                    as u32;
                             let mut buf_a = make_buf(rowsize, h, pattern, seed);
                             let mut buf_b = buf_a.clone();
 
@@ -677,7 +670,10 @@ mod tests {
                 }
             }
         }
-        assert!(cases > 100, "expected a large exhaustive matrix, got {cases}");
+        assert!(
+            cases > 100,
+            "expected a large exhaustive matrix, got {cases}"
+        );
     }
 
     #[test]
@@ -693,8 +689,7 @@ mod tests {
                 for &rowsize_extra in &[0usize, 1, 7] {
                     let rowsize = w + rowsize_extra;
                     for &pattern in PATTERNS {
-                        let seed =
-                            (w * 7919 + h * 104729 + rowsize * 13 + pattern.len()) as u32;
+                        let seed = (w * 7919 + h * 104729 + rowsize * 13 + pattern.len()) as u32;
                         let mut buf_a = make_buf(rowsize, h, pattern, seed);
                         let mut buf_b = buf_a.clone();
 
@@ -710,7 +705,10 @@ mod tests {
                 }
             }
         }
-        assert!(cases > 100, "expected a large exhaustive matrix, got {cases}");
+        assert!(
+            cases > 100,
+            "expected a large exhaustive matrix, got {cases}"
+        );
     }
 
     #[test]
@@ -759,8 +757,9 @@ mod tests {
                     let rowsize = w + rowsize_extra;
                     for &scale in &[1usize, 2, 4, 8] {
                         for &pattern in PATTERNS {
-                            let seed = (w * 7919 + h * 104729 + rowsize * 13 + scale * 5 + pattern.len())
-                                as u32;
+                            let seed =
+                                (w * 7919 + h * 104729 + rowsize * 13 + scale * 5 + pattern.len())
+                                    as u32;
                             let mut buf_a = make_buf(rowsize, h, pattern, seed);
                             let mut buf_b = buf_a.clone();
 
@@ -777,7 +776,10 @@ mod tests {
                 }
             }
         }
-        assert!(cases > 100, "expected a large exhaustive matrix, got {cases}");
+        assert!(
+            cases > 100,
+            "expected a large exhaustive matrix, got {cases}"
+        );
     }
 
     #[test]

@@ -433,3 +433,17 @@ pub fn get_build_info() -> String {
     };
     format!("{} (built with {})", build_ts, build_type)
 }
+
+/// Human-readable diagnostics for the active JBIG2 acceleration paths.
+///
+/// The portable SIMD comparator is compiled in unconditionally through `wide`.
+/// Rayon-backed planner/serializer helpers are controlled by the `parallel`
+/// Cargo feature.
+pub fn active_backend_info() -> String {
+    let parallel = if cfg!(feature = "parallel") {
+        "rayon"
+    } else {
+        "serial"
+    };
+    format!("portable-simd=wide, parallel={parallel}")
+}

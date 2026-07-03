@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+dark-mode = []
 
 [dependencies]
 # Keep this feature set aligned with the published Windows Skia binary cache.

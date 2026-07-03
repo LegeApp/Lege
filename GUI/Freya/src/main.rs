@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
+mod appearance;
 mod backend;
 mod colors;
 mod gui_text;
@@ -54,13 +55,14 @@ fn main() {
     let _rt = runtime.enter();
 
     let (window_width, window_height) = (990.0, 726.0);
+    let (window_min_width, window_min_height) = (990.0, 726.0);
 
     launch(
         LaunchConfig::new().with_window(
             WindowConfig::new(app::app)
                 .with_title("Lege")
                 .with_size(window_width, window_height)
-                .with_min_size(841.5, 617.0)
+                .with_min_size(window_min_width, window_min_height)
                 .with_max_size(1980.0, 1452.0)
                 .with_aspect_ratio_range(1.30, 1.45)
                 .with_decorations(true)
@@ -68,6 +70,10 @@ fn main() {
                 .with_icon(LaunchConfig::window_icon(ICON))
                 .with_window_attributes(move |attributes, el| {
                     use freya::winit::dpi::PhysicalPosition;
+                    use freya::winit::window::WindowButtons;
+
+                    let attributes = attributes
+                        .with_enabled_buttons(WindowButtons::MINIMIZE | WindowButtons::CLOSE);
 
                     if let Some(monitor) = el
                         .primary_monitor()

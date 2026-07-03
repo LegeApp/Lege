@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::models::{ImageProcessingType, OutputFormat, ProcessingOptions};
+use crate::models::{OutputFormat, ProcessingOptions};
 use crate::worker_process::{
     WorkerHandle, WorkerProgressUpdate, probe_file_json, spawn_lege_worker,
 };
@@ -254,20 +254,7 @@ pub fn generate_output_filename(
 ) -> PathBuf {
     let file_stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
     // Determine container extension and descriptive parts
-    let text_fmt = match options.output_format {
-        OutputFormat::Djvu => "djvu",
-        OutputFormat::Epub => "epub",
-        OutputFormat::Pdf => match &options.image_processing_type {
-            ImageProcessingType::Original => "ccitt4",
-            ImageProcessingType::Dithered => {
-                if options.ccitt4_dithered_images {
-                    "ccitt4"
-                } else {
-                    "jbig2"
-                }
-            }
-        },
-    };
+    let text_fmt = options.effective_text_format();
     // Unix timestamp
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

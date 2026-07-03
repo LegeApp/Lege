@@ -17,36 +17,142 @@ use crate::version::display_version;
 use crate::widgets;
 use crate::worker_process::{WorkerProcessingStatus, WorkerProgressUpdate};
 
-use crate::colors::{BORDER, CARD_BG, INFO_BG, MUTED, PANEL_BG, SELECTED_BG, TEXT};
+use crate::appearance::{self, Rgb};
+use crate::colors::{
+    active_bg, app_bg, border, border_focus, card_bg, control_bg, focus_bg, hover_bg, info_bg,
+    inverse_surface, inverse_surface_secondary, inverse_surface_tertiary, muted_fg, panel_bg,
+    progress_track_bg, selected_bg, text_fg,
+};
+
+fn rgb(color: Rgb) -> Color {
+    Color::from_rgb(color.0, color.1, color.2)
+}
+
+fn rgb_shade(color: Rgb, scale: f32) -> Color {
+    Color::from_rgb(
+        (color.0 as f32 * scale).round().clamp(0.0, 255.0) as u8,
+        (color.1 as f32 * scale).round().clamp(0.0, 255.0) as u8,
+        (color.2 as f32 * scale).round().clamp(0.0, 255.0) as u8,
+    )
+}
 
 fn retro_theme() -> Theme {
     let mut theme = light_theme();
     theme.name = "lege-retro";
     theme.colors = ColorsSheet {
-        primary: Color::from_rgb(226, 232, 235),
-        secondary: Color::from_rgb(255, 255, 225),
-        tertiary: Color::from_rgb(220, 224, 226),
-        info: Color::from_rgb(255, 255, 225),
-        background: Color::from_rgb(226, 232, 235),
-        surface_primary: Color::from_rgb(226, 232, 235),
-        surface_secondary: Color::from_rgb(244, 244, 244),
-        surface_tertiary: Color::from_rgb(255, 250, 250),
-        surface_inverse: Color::from_rgb(128, 128, 128),
-        surface_inverse_secondary: Color::from_rgb(96, 96, 96),
-        surface_inverse_tertiary: Color::from_rgb(64, 64, 64),
-        border: Color::from_rgb(128, 128, 128),
-        border_focus: Color::from_rgb(64, 64, 64),
-        text_primary: Color::from_rgb(0, 0, 0),
-        text_secondary: Color::from_rgb(70, 70, 70),
-        text_placeholder: Color::from_rgb(110, 110, 110),
-        text_highlight: Color::from_rgb(40, 40, 40),
-        hover: Color::from_rgb(236, 236, 236),
-        focus: Color::from_rgb(232, 232, 232),
-        active: Color::from_rgb(210, 210, 210),
-        disabled: Color::from_rgb(210, 210, 210),
+        primary: rgb(selected_bg()),
+        secondary: rgb(focus_bg()),
+        tertiary: rgb_shade(selected_bg(), 0.88),
+        info: rgb(info_bg()),
+        background: rgb(app_bg()),
+        surface_primary: rgb(app_bg()),
+        surface_secondary: rgb(panel_bg()),
+        surface_tertiary: rgb(control_bg()),
+        surface_inverse: rgb(inverse_surface()),
+        surface_inverse_secondary: rgb(inverse_surface_secondary()),
+        surface_inverse_tertiary: rgb(inverse_surface_tertiary()),
+        border: rgb(border()),
+        border_focus: rgb(border_focus()),
+        text_primary: rgb(text_fg()),
+        text_secondary: rgb(muted_fg()),
+        text_placeholder: rgb(muted_fg()),
+        text_inverse: rgb(text_fg()),
+        text_highlight: rgb(text_fg()),
+        hover: rgb(hover_bg()),
+        focus: rgb(focus_bg()),
+        active: rgb(active_bg()),
+        disabled: rgb(active_bg()),
         ..LIGHT_COLORS
     };
     theme
+}
+
+fn refresh_appearance_theme(mut theme: State<Theme>) {
+    if appearance::refresh_runtime_checkpoint() {
+        theme.set(retro_theme());
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct AppearanceMenuButton {
+    theme: State<Theme>,
+    state: State<AppState>,
+}
+
+impl AppearanceMenuButton {
+    fn new(theme: State<Theme>, state: State<AppState>) -> Self {
+        Self { theme, state }
+    }
+}
+
+impl Component for AppearanceMenuButton {
+    fn render(&self) -> impl IntoElement {
+        let mut show_menu = use_state(|| false);
+        let active_mode = appearance::active_mode();
+
+        let modes = [
+            (appearance::AppearanceMode::AutoWarm, "Time of day"),
+            (appearance::AppearanceMode::Default, "Day"),
+            (appearance::AppearanceMode::Evening, "Evening"),
+            (appearance::AppearanceMode::Night, "Night"),
+            (appearance::AppearanceMode::LateNight, "Late night"),
+        ];
+
+        let menu_items: Vec<Element> = modes
+            .into_iter()
+            .map(|(mode, label_text)| {
+                let selected = active_mode == mode;
+                let mut show_menu = show_menu;
+                let mut theme = self.theme;
+                let state = self.state;
+                let item_text = if selected {
+                    format!("✓ {label_text}")
+                } else {
+                    format!("  {label_text}")
+                };
+
+                MenuItem::new()
+                    .selected(selected)
+                    .on_press(move |_| {
+                        if let Err(e) = appearance::set_appearance_mode(mode) {
+                            schedule_popup(
+                                state,
+                                PopupKind::Warning,
+                                format!("Failed to save appearance setting: {e}"),
+                                5,
+                            );
+                        }
+                        let _ = appearance::refresh_runtime_checkpoint();
+                        theme.set(retro_theme());
+                        show_menu.set(false);
+                    })
+                    .child(label().text(item_text).font_size(13.).color(text_fg()))
+                    .into()
+            })
+            .collect();
+
+        rect()
+            .width(Size::px(126.))
+            .height(Size::px(28.))
+            .child(
+                Button::new()
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .on_press(move |_| show_menu.toggle())
+                    .child("Appearance ▾"),
+            )
+            .maybe_child(show_menu().then(|| {
+                rect()
+                    .position(Position::new_absolute().left(0.).top(32.))
+                    .width(Size::px(0.))
+                    .height(Size::px(0.))
+                    .child(
+                        Menu::new()
+                            .on_close(move |_| show_menu.set(false))
+                            .children(menu_items),
+                    )
+            }))
+    }
 }
 
 fn format_eta_label(seconds: u32) -> String {
@@ -440,7 +546,7 @@ fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, 
         .background(background)
         .border(
             Border::new()
-                .fill(BORDER)
+                .fill(border())
                 .width(1.)
                 .alignment(BorderAlignment::Inner),
         )
@@ -451,7 +557,7 @@ fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, 
             rect().width(Size::fill()).child(
                 paragraph()
                     .width(Size::fill())
-                    .span(Span::new(text).font_size(font_size).color(TEXT))
+                    .span(Span::new(text).font_size(font_size).color(text_fg()))
                     .line_height(1.25)
                     .max_lines(5),
             ),
@@ -462,10 +568,10 @@ fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, 
 fn tooltip_note_card(text: impl Into<String>) -> Element {
     let text = text.into();
     rect()
-        .background(PANEL_BG)
+        .background(panel_bg())
         .border(
             Border::new()
-                .fill(BORDER)
+                .fill(border())
                 .width(1.)
                 .alignment(BorderAlignment::Inner),
         )
@@ -475,7 +581,7 @@ fn tooltip_note_card(text: impl Into<String>) -> Element {
         .child(
             paragraph()
                 .width(Size::fill())
-                .span(Span::new(text).font_size(13.).color(TEXT))
+                .span(Span::new(text).font_size(13.).color(text_fg()))
                 .line_height(1.3)
                 .max_lines(6),
         )
@@ -495,7 +601,7 @@ fn PopupRail(state: State<AppState>) -> Element {
                 .on_pointer_down(move |_: Event<PointerEventData>| {
                     hide_popup(state, kind);
                 })
-                .child(rail_note_card(msg, 13., INFO_BG))
+                .child(rail_note_card(msg, 13., info_bg()))
                 .into()
         })
         .collect();
@@ -643,7 +749,10 @@ fn sync_text_inputs(
 }
 
 pub fn app() -> impl IntoElement {
-    use_init_theme(retro_theme);
+    use_hook(|| {
+        appearance::initialize_runtime_appearance();
+    });
+    let theme = use_init_theme(retro_theme);
     let state = use_state(AppState::default);
 
     let target_height_input = use_state({
@@ -695,7 +804,7 @@ pub fn app() -> impl IntoElement {
                     k_factor_input,
                     threshold_input,
                 ),
-                ProcessDashboardRow(state, page_range_input),
+                ProcessDashboardRow(state, page_range_input, theme),
                 StatusBar(state),
             ))
             // Transient notifications float above ALL window content (high
@@ -709,7 +818,7 @@ pub fn app() -> impl IntoElement {
             )
             .child(QueueViewerPopup(state))
             .child(LogViewerPopup(state))
-            .child(AboutPopup(state))
+            .child(AboutPopup(state, theme))
             .child(DebugLogViewerPopup(state)),
     )
 }
@@ -848,7 +957,11 @@ fn SettingsDashboard(
         .into()
 }
 
-fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) -> Element {
+fn ProcessDashboardRow(
+    state: State<AppState>,
+    page_range_input: State<String>,
+    theme: State<Theme>,
+) -> Element {
     let read = state.read();
     let is_processing = read.is_processing;
     let processing_items = read.processing_items.clone();
@@ -890,7 +1003,7 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
             Button::new()
                 .width(Size::percent(45.))
                 .height(Size::px(36.))
-                .on_press(move |_| start_or_cancel_processing(state, page_range_input))
+                .on_press(move |_| start_or_cancel_processing(state, page_range_input, theme))
                 .child(button_text),
         )
         .child(
@@ -914,7 +1027,7 @@ fn ProcessDashboardRow(state: State<AppState>, page_range_input: State<String>) 
                             label()
                                 .text(format!("+{overflow_count} more"))
                                 .font_size(10.)
-                                .color(MUTED)
+                                .color(muted_fg())
                                 .into(),
                         )
                     } else {
@@ -937,12 +1050,15 @@ fn process_queue_row(status: &str, path: &str) -> Element {
                 .text(status.to_string())
                 .font_size(10.)
                 .font_weight(700)
-                .color(MUTED),
+                .color(muted_fg()),
         )
         .child(
-            rect()
-                .width(Size::fill())
-                .child(label().text(path.to_string()).font_size(10.).color(TEXT)),
+            rect().width(Size::fill()).child(
+                label()
+                    .text(path.to_string())
+                    .font_size(10.)
+                    .color(text_fg()),
+            ),
         )
         .into()
 }
@@ -1028,11 +1144,11 @@ impl Component for CompactChoiceButton {
         let text = self.text.clone();
 
         let background = if selected {
-            Color::from_rgb(SELECTED_BG.0, SELECTED_BG.1, SELECTED_BG.2)
+            rgb(selected_bg())
         } else if hovering() {
-            Color::from_rgb(236, 236, 236)
+            rgb(hover_bg())
         } else {
-            Color::from_rgb(255, 250, 250)
+            rgb(control_bg())
         };
 
         rect()
@@ -1041,7 +1157,7 @@ impl Component for CompactChoiceButton {
             .background(background)
             .border(
                 Border::new()
-                    .fill(BORDER)
+                    .fill(border())
                     .width(1.)
                     .alignment(BorderAlignment::Inner),
             )
@@ -1056,7 +1172,7 @@ impl Component for CompactChoiceButton {
                 Cursor::set(CursorIcon::default());
             })
             .on_press(move |e| on_press.call(e))
-            .child(label().text(text).font_size(12.).color(TEXT))
+            .child(label().text(text).font_size(12.).color(text_fg()))
     }
 }
 
@@ -1108,6 +1224,9 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
     let options = state.read().options.clone();
     let show_base_format =
         matches!(options.output_format, OutputFormat::Pdf) && !options.layout_analysis;
+    let show_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
+        && options.layout_analysis
+        && matches!(options.image_processing_type, ImageProcessingType::Dithered);
 
     let format_control = settings_row(
         GUI_TEXT.interactive.labels.output_format.clone(),
@@ -1226,76 +1345,106 @@ fn OutputSettingsCard(state: State<AppState>) -> Element {
 
     let mut output_rows = Vec::new();
     output_rows.push(widgets::lege_grid_row(vec![format_control], 45., 8.));
-    output_rows.push(widgets::lege_grid_row(vec![image_control], 45., 8.));
 
-    let mut row = vec![layout_control];
+    let mut layout_base_row = vec![layout_control];
     if let Some(control) = base_format_control {
-        row.push(control);
+        layout_base_row.push(control);
     }
-    output_rows.push(widgets::lege_grid_row(row, 45., 8.));
+    output_rows.push(
+        rect()
+            .key(if show_base_format {
+                "layout-base-split"
+            } else {
+                "layout-base-single"
+            })
+            .width(Size::fill())
+            .height(Size::px(45.))
+            .child(widgets::lege_grid_row(layout_base_row, 45., 8.))
+            .into(),
+    );
+    if options.layout_analysis {
+        output_rows.push(widgets::lege_grid_row(vec![image_control], 45., 8.));
+    }
 
     let mut option_columns = Vec::new();
-    option_columns.push(widgets::lege_grid_column(
-        vec![
-            tooltip_wrap_at(
-                state,
-                TooltipArea::OutputCard,
-                GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
-                AttachedPosition::Right,
-                compact_checkbox_row(
-                    GUI_TEXT.interactive.labels.inverted_colors.clone(),
-                    options.invert_input,
-                    {
-                        let mut state = state;
-                        move |_| {
-                            let mut s = state.write();
-                            s.options.invert_input = !s.options.invert_input;
-                        }
-                    },
-                ),
+    let mut left_options = vec![
+        tooltip_wrap_at(
+            state,
+            TooltipArea::OutputCard,
+            GUI_TEXT.interactive.tooltips.inverted_colors.clone(),
+            AttachedPosition::Right,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.inverted_colors.clone(),
+                options.invert_input,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        s.options.invert_input = !s.options.invert_input;
+                    }
+                },
             ),
-            tooltip_wrap_at(
-                state,
-                TooltipArea::OutputCard,
-                GUI_TEXT.interactive.tooltips.jpeg_compatibility.clone(),
-                AttachedPosition::Right,
-                compact_checkbox_row(
-                    GUI_TEXT.interactive.labels.jpeg_compatibility.clone(),
-                    options.jpeg_compat,
-                    {
-                        let mut state = state;
-                        move |_| {
-                            let mut s = state.write();
-                            s.options.jpeg_compat = !s.options.jpeg_compat;
-                        }
-                    },
-                ),
+        ),
+        tooltip_wrap_at(
+            state,
+            TooltipArea::OutputCard,
+            GUI_TEXT.interactive.tooltips.jpeg_compatibility.clone(),
+            AttachedPosition::Right,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.jpeg_compatibility.clone(),
+                options.jpeg_compat,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        s.options.jpeg_compat = !s.options.jpeg_compat;
+                    }
+                },
             ),
-            tooltip_wrap_at(
-                state,
-                TooltipArea::OutputCard,
-                GUI_TEXT.interactive.tooltips.make_epub_also.clone(),
-                AttachedPosition::Right,
-                compact_checkbox_row(
-                    GUI_TEXT.interactive.labels.make_epub_also.clone(),
-                    options.make_epub_also,
-                    {
-                        let mut state = state;
-                        move |_| {
-                            let mut s = state.write();
-                            let enable = !s.options.make_epub_also;
-                            s.options.make_epub_also = enable;
-                            if enable {
-                                s.options.use_ocr = true;
-                                s.options.ocr_mode = OcrMode::Thorough;
-                            }
+        ),
+        tooltip_wrap_at(
+            state,
+            TooltipArea::OutputCard,
+            GUI_TEXT.interactive.tooltips.make_epub_also.clone(),
+            AttachedPosition::Right,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.make_epub_also.clone(),
+                options.make_epub_also,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !s.options.make_epub_also;
+                        s.options.make_epub_also = enable;
+                        if enable {
+                            s.options.use_ocr = true;
+                            s.options.ocr_mode = OcrMode::Thorough;
                         }
-                    },
-                ),
+                    }
+                },
             ),
-        ],
-        3.,
-    ));
+        ),
+    ];
+    if show_jbig2_halftone {
+        left_options.push(tooltip_wrap_at(
+            state,
+            TooltipArea::OutputCard,
+            GUI_TEXT.interactive.tooltips.jbig2_halftone.clone(),
+            AttachedPosition::Right,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.jbig2_halftone.clone(),
+                options.use_jbig2_halftone,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        s.options.use_jbig2_halftone = !s.options.use_jbig2_halftone;
+                    }
+                },
+            ),
+        ));
+    }
+    option_columns.push(widgets::lege_grid_column(left_options, 3.));
 
     let mut right_options = Vec::new();
     right_options.push(tooltip_wrap_at(
@@ -1402,39 +1551,6 @@ fn PagesDeviceCard(
     page_range_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
-    let crop_free_aspect_control: Element = rect()
-        .width(Size::px(132.))
-        .maybe_child(if options.crop_margins {
-            Some(tooltip_wrap_at(
-                state,
-                TooltipArea::PagesDeviceCard,
-                GUI_TEXT.interactive.tooltips.crop_free_aspect.clone(),
-                AttachedPosition::Left,
-                bool_tile(
-                    GUI_TEXT.interactive.labels.crop_free_aspect.clone(),
-                    options.crop_free_aspect,
-                    {
-                        let mut state = state;
-                        let mut target_height_input = target_height_input;
-                        move |_| {
-                            let mut s = state.write();
-                            let enable = !s.options.crop_free_aspect;
-                            s.options.crop_free_aspect = enable;
-                            if enable {
-                                s.options.target_width = None;
-                                s.options.target_device = None;
-                                s.target_height_input = resolution_input_from_options(&s.options);
-                                target_height_input.set(s.target_height_input.clone());
-                            }
-                        }
-                    },
-                ),
-            ))
-        } else {
-            None::<Element>
-        })
-        .into();
-
     rect()
         .width(Size::fill())
         .height(Size::fill())
@@ -1516,6 +1632,8 @@ fn PagesDeviceCard(
                                                         options.crop_margins,
                                                         {
                                                             let mut state = state;
+                                                            let mut target_height_input =
+                                                                target_height_input;
                                                             move |_| {
                                                                 let mut s = state.write();
                                                                 let enable =
@@ -1525,6 +1643,18 @@ fn PagesDeviceCard(
                                                                     s.options.center_margins =
                                                                         false;
                                                                     s.options.reflow = false;
+                                                                    s.options.crop_free_aspect =
+                                                                        true;
+                                                                    s.options.target_width = None;
+                                                                    s.options.target_device = None;
+                                                                    s.target_height_input =
+                                                                        resolution_input_from_options(
+                                                                            &s.options,
+                                                                        );
+                                                                    target_height_input.set(
+                                                                        s.target_height_input
+                                                                            .clone(),
+                                                                    );
                                                                 } else {
                                                                     s.options.crop_free_aspect =
                                                                         false;
@@ -1534,7 +1664,6 @@ fn PagesDeviceCard(
                                                     ),
                                                 ),
                                             ))
-                                            .child(crop_free_aspect_control),
                                     )
                                     .child(rect().padding((0., 0., 0., 10.)).child(
                                         tooltip_wrap_at(
@@ -1732,7 +1861,7 @@ fn PagesDeviceCard(
                                                             .clone(),
                                                     )
                                                     .font_size(11.)
-                                                    .color(TEXT),
+                                                    .color(text_fg()),
                                             ),
                                     )
                                     .child(
@@ -1816,7 +1945,7 @@ fn PagesDeviceCard(
                                                             .clone(),
                                                     )
                                                     .font_size(11.)
-                                                    .color(TEXT),
+                                                    .color(text_fg()),
                                             ),
                                     ),
                             ),
@@ -1852,7 +1981,7 @@ fn BinarizationCard(
                                 .span(
                                     Span::new("EPUB uses the text extraction pipeline.")
                                         .font_size(13.)
-                                        .color(MUTED),
+                                        .color(muted_fg()),
                                 )
                                 .line_height(1.25)
                                 .max_lines(2),
@@ -1975,10 +2104,10 @@ fn progress_stage_card(
     rect()
         .width(Size::fill())
         .height(Size::px(48.))
-        .background(CARD_BG)
+        .background(card_bg())
         .border(
             Border::new()
-                .fill(BORDER)
+                .fill(border())
                 .width(1.)
                 .alignment(BorderAlignment::Inner),
         )
@@ -1997,23 +2126,23 @@ fn progress_stage_card(
                         .text(title)
                         .font_size(11.)
                         .font_weight(700)
-                        .color(TEXT),
+                        .color(text_fg()),
                 )
                 .child(
                     label()
                         .text(format!("{clamped}/{total}"))
                         .font_size(10.)
-                        .color(MUTED),
+                        .color(muted_fg()),
                 ),
         )
         .child(
             rect()
                 .width(Size::fill())
                 .height(Size::px(10.))
-                .background(Color::from_rgb(236, 236, 236))
+                .background(rgb(progress_track_bg()))
                 .border(
                     Border::new()
-                        .fill(BORDER)
+                        .fill(border())
                         .width(1.)
                         .alignment(BorderAlignment::Inner),
                 )
@@ -2158,9 +2287,9 @@ fn StatusBar(state: State<AppState>) -> Element {
             .height(Size::fill())
             .vertical()
             .spacing(6.)
-            .child(label().text(status.0).font_size(12.).color(TEXT))
+            .child(label().text(status.0).font_size(12.).color(text_fg()))
             .maybe_child(secondary_text.map(|detail| -> Element {
-                label().text(detail).font_size(11.).color(MUTED).into()
+                label().text(detail).font_size(11.).color(muted_fg()).into()
             }))
             .maybe_child(progress_section)
             .into()
@@ -2175,7 +2304,7 @@ fn StatusBar(state: State<AppState>) -> Element {
                 label()
                     .text(GUI_TEXT.interactive.queue.empty_message.clone())
                     .font_size(12.)
-                    .color(MUTED),
+                    .color(muted_fg()),
             )
             .into()
     } else {
@@ -2200,7 +2329,7 @@ fn StatusBar(state: State<AppState>) -> Element {
             .height(Size::fill())
             .main_align(Alignment::Center)
             .cross_align(Alignment::Center)
-            .child(label().text(summary_line).font_size(12.).color(MUTED))
+            .child(label().text(summary_line).font_size(12.).color(muted_fg()))
             .into()
     };
 
@@ -2215,13 +2344,13 @@ fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
             rect()
                 .width(Size::fill())
                 .padding((6., 4., 6., 4.))
-                .background(PANEL_BG)
+                .background(panel_bg())
                 .corner_radius(4.)
                 .child(
                     SelectableText::new(text)
                         .width(Size::fill())
                         .font_size(11.)
-                        .color(TEXT)
+                        .color(text_fg())
                         .line_height(1.25),
                 )
                 .into()
@@ -2315,7 +2444,7 @@ fn popup_shell(
                         label()
                             .text(GUI_TEXT.interactive.popups.close.clone())
                             .font_size(13.)
-                            .color(TEXT),
+                            .color(text_fg()),
                     ),
             ),
         )
@@ -2370,7 +2499,7 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
                     label()
                         .text(GUI_TEXT.interactive.queue.empty_short.clone())
                         .font_size(12.)
-                        .color(MUTED)
+                        .color(muted_fg())
                         .into(),
                 ]
             } else {
@@ -2379,7 +2508,7 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
                     .enumerate()
                     .map(|(idx, item)| {
                         rect()
-                            .background(PANEL_BG)
+                            .background(panel_bg())
                             .corner_radius(4.)
                             .padding(8.)
                             .spacing(4.)
@@ -2387,13 +2516,13 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
                                 label()
                                     .text(format!("{}. {}", idx + 1, item.file_name))
                                     .font_size(13.)
-                                    .color(TEXT),
+                                    .color(text_fg()),
                             )
                             .child(
                                 label()
                                     .text(item.file_path.display().to_string())
                                     .font_size(11.)
-                                    .color(MUTED),
+                                    .color(muted_fg()),
                             )
                             .into()
                     })
@@ -2435,7 +2564,7 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
                         label()
                             .text(GUI_TEXT.interactive.popups.clear_log.clone())
                             .font_size(13.)
-                            .color(TEXT),
+                            .color(text_fg()),
                     ),
             )
             .child(
@@ -2480,10 +2609,10 @@ fn DebugLogViewerPopup(mut state: State<AppState>) -> Element {
                         .iter()
                         .map(|msg| {
                             rect()
-                                .background(PANEL_BG)
+                                .background(panel_bg())
                                 .corner_radius(4.)
                                 .padding(6.)
-                                .child(label().text(msg.clone()).font_size(11.).color(TEXT))
+                                .child(label().text(msg.clone()).font_size(11.).color(text_fg()))
                                 .into()
                         })
                         .collect::<Vec<_>>(),
@@ -2499,7 +2628,7 @@ fn DebugLogViewerPopup(_state: State<AppState>) -> Element {
     rect().into()
 }
 
-fn AboutPopup(mut state: State<AppState>) -> Element {
+fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     let show_about = state.read().show_about;
 
     if !show_about {
@@ -2535,13 +2664,13 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                                     .text("Lege")
                                     .font_size(18.)
                                     .font_weight(700)
-                                    .color(TEXT),
+                                    .color(text_fg()),
                             )
                             .child(
                                 label()
                                     .text(format!("v{}", display_version()))
                                     .font_size(12.)
-                                    .color(MUTED),
+                                    .color(muted_fg()),
                             ),
                     )
                     .child(
@@ -2550,12 +2679,13 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             GUI_TEXT.interactive.popups.email, EMAIL
                         ))
                         .font_size(13.)
-                        .color(TEXT),
+                        .color(text_fg()),
                     ),
             ),
         )
         .child(
             PopupButtons::new()
+                .child(AppearanceMenuButton::new(theme, state))
                 .child(
                     Button::new()
                         .on_press(move |_| {
@@ -2604,7 +2734,7 @@ fn AboutPopup(mut state: State<AppState>) -> Element {
                             label()
                                 .text(GUI_TEXT.interactive.popups.close.clone())
                                 .font_size(13.)
-                                .color(TEXT),
+                                .color(text_fg()),
                         ),
                 ),
         )
@@ -2842,14 +2972,21 @@ fn choose_output_folder(mut state: State<AppState>) {
     });
 }
 
-fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: State<String>) {
+fn start_or_cancel_processing(
+    mut state: State<AppState>,
+    page_range_input: State<String>,
+    theme: State<Theme>,
+) {
     if state.read().is_processing {
         state.write().should_cancel = true;
         state
             .write()
             .set_status_message(GUI_TEXT.interactive.status.cancelling.clone());
+        refresh_appearance_theme(theme);
         return;
     }
+
+    refresh_appearance_theme(theme);
 
     let queue = state.read().queue.clone();
     let mut options = state.read().options.clone();
@@ -3042,6 +3179,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 metrics: _,
                             } => {
                                 if handled.insert(task_id) {
+                                    refresh_appearance_theme(theme);
                                     files_completed += 1;
                                     state.write().set_processing_item_status(task_id, "Completed");
                                     if let Some(info) =
@@ -3103,6 +3241,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 metrics: _,
                             } => {
                                 if handled.insert(task_id) {
+                                    refresh_appearance_theme(theme);
                                     files_completed += 1;
                                     files_errored += 1;
                                     state.write().set_processing_item_status(task_id, "Failed");
@@ -3173,6 +3312,8 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                                 s.active_eta = None;
                                 s.progress_metrics = None;
                                 s.set_status_message(GUI_TEXT.interactive.status.ready.clone());
+                                drop(s);
+                                refresh_appearance_theme(theme);
                                 break;
                             }
                         }
@@ -3184,6 +3325,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 }
 
                 {
+                    refresh_appearance_theme(theme);
                     let mut s = state.write();
                     s.is_processing = false;
                     s.active_task_ids.clear();
@@ -3215,6 +3357,7 @@ fn start_or_cancel_processing(mut state: State<AppState>, page_range_input: Stat
                 }
             }
             Err(e) => {
+                refresh_appearance_theme(theme);
                 let mut s = state.write();
                 s.is_processing = false;
                 s.active_task_ids.clear();

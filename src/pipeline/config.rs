@@ -1120,6 +1120,11 @@ fn bundled_pdfium_search_directories() -> Vec<PathBuf> {
         if let Some(dir) = exe_path.parent() {
             push_unique(dir.to_path_buf());
 
+            if let Some(parent) = dir.parent() {
+                push_unique(parent.join("lib/lege"));
+                push_unique(parent.join("lib"));
+            }
+
             #[cfg(target_os = "macos")]
             if let Some(contents_dir) = dir
                 .parent()

@@ -109,11 +109,12 @@ pub fn encode(
         (0u8, 0u8)
     };
     jbig2_debug_log_line(&format!(
-        "encode start: {}x{} ch={} mode={:?} norm_len={} norm_nz_in_first{}={} raw_in_min={} raw_in_max={}",
+        "encode start: {}x{} ch={} mode={:?} backend={} norm_len={} norm_nz_in_first{}={} raw_in_min={} raw_in_max={}",
         width,
         height,
         channels,
         settings.mode,
+        jbig2enc_rust::active_backend_info(),
         normalized.len(),
         sample,
         nz,

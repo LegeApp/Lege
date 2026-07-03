@@ -22,6 +22,15 @@ fn djvu_hidden_text_enabled() -> bool {
     std::env::var("LEGE_DJVU_HIDDEN_TEXT").ok().as_deref() != Some("0")
 }
 
+/// Diagnostic string for the active native DjVu encoder acceleration paths.
+pub fn active_backend_info() -> String {
+    format!(
+        "primitives={}, parallel={}",
+        djvu_encoder::active_primitives_backend(),
+        djvu_encoder::active_parallel_backend()
+    )
+}
+
 /// Configuration for native DJVU encoding
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DjvuConfig {
@@ -108,6 +117,8 @@ impl DjvuOrchestrator {
         // Create working directory for logs (no temp files needed)
         fs::create_dir_all(&config.work_dir)
             .with_context(|| format!("Failed to create work directory: {:?}", config.work_dir))?;
+
+        crate::info_log!("[DJVU-Native] Encoder backend: {}", active_backend_info());
 
         Ok(Self { config })
     }

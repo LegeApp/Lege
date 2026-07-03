@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.legeapp.Lege</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <name>Lege</name>
+  <summary>Prepare scanned documents for E-Ink readers</summary>
+  <description>
+    <p>Lege converts scanned PDFs and page-image workflows into reader-optimized PDF or DjVu output with selective binarization, layout-aware image preservation, and optional OCR text layers.</p>
+  </description>
+  <launchable type="desktop-id">lege.desktop</launchable>
+  <url type="homepage">https://www.legeapp.com</url>
+  <url type="bugtracker">https://github.com/LegeApp/Lege/issues</url>
+  <developer_name>Lege Apps</developer_name>
+  <categories>
+    <category>Office</category>
+    <category>Graphics</category>
+  </categories>
+  <provides>
+    <binary>lege</binary>
+    <binary>lege-gui</binary>
+  </provides>
+</component>

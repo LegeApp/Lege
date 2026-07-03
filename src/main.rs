@@ -405,9 +405,9 @@ struct CliOptions {
     reflow: bool,   // --reflow (raster reflow; requires layout detection)
     jpeg_compat: bool, // --jpeg-compat
     center_margins: bool, // --center-margins
-    crop_margins: bool, // --crop-margins
-    force_crop: bool, // --force-crop
-    crop_free_aspect: bool, // --crop-free-aspect / --no-preserve-crop-aspect
+    crop_margins: bool, // --crop-margins; always uses free-aspect crop
+    force_crop: bool, // --force-crop; crop plus footnote override, always free-aspect
+    crop_free_aspect: bool, // legacy alias: --crop-free-aspect / --no-preserve-crop-aspect
     image_only: bool, // --image-only
     original_images: bool, // --original-images (default is already original; explicit opt-in)
     fast_resize: bool, // --fast-resize (force CPU fast_image_resize backend)
@@ -803,10 +803,12 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--crop-margins" => {
                 opts.crop_margins = true;
+                opts.crop_free_aspect = true;
                 i += 1;
             }
             "--force-crop" => {
                 opts.force_crop = true;
+                opts.crop_free_aspect = true;
                 i += 1;
             }
             "--crop-free-aspect" | "--no-preserve-crop-aspect" => {
@@ -1753,6 +1755,9 @@ fn handle_simple_processing(
             pipeline_config.set_enable_layout_detection(false);
         }
     }
+    if cli_opts.halftone && !pipeline_config.enable_layout_detection() {
+        bail!("--halftone requires layout detection (do not combine with --no-layout/--invert)");
+    }
 
     if pipeline_config.text_format() == "jbig2" {
         let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or_else(|| {
@@ -1793,7 +1798,7 @@ fn handle_simple_processing(
     } else if cli_opts.center_margins {
         pipeline_config.set_margin_settings(lege::margin::MarginSettings::StandardizeAndCenter);
     }
-    if cli_opts.crop_free_aspect {
+    if cli_opts.crop_free_aspect || cli_opts.crop_margins || cli_opts.force_crop {
         pipeline_config.set_crop_free_aspect(true);
     }
 
@@ -2400,6 +2405,9 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
     config.set_margin_settings(margin_settings);
     // Force crop setting controls skipping footnote override logic in margin analysis
     config.set_crop_footnotes(effective_force_crop);
+    if effective_crop_margins {
+        config.set_crop_free_aspect(true);
+    }
 
     let target_summary = prompt_target_device(&mut config)?;
 
@@ -3160,6 +3168,32 @@ mod cli_parser_tests {
             err.to_string().contains("mutually exclusive"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cli_crop_margins_implies_free_aspect_crop() {
+        let (_remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "--crop-margins".to_string(),
+            "book.pdf".to_string(),
+        ])
+        .expect("crop args should parse");
+
+        assert!(opts.crop_margins);
+        assert!(opts.crop_free_aspect);
+    }
+
+    #[test]
+    fn cli_force_crop_implies_free_aspect_crop() {
+        let (_remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "--force-crop".to_string(),
+            "book.pdf".to_string(),
+        ])
+        .expect("force crop args should parse");
+
+        assert!(opts.force_crop);
+        assert!(opts.crop_free_aspect);
     }
 }
 
@@ -4142,6 +4176,9 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
         if pipeline_config.enable_layout_detection() {
             pipeline_config.set_enable_layout_detection(false);
         }
+    }
+    if cli_opts.halftone && !pipeline_config.enable_layout_detection() {
+        bail!("--halftone requires layout detection (do not combine with --no-layout/--invert)");
     }
 
     if pipeline_config.text_format() == "jbig2" {

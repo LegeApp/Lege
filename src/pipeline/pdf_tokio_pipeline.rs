@@ -2395,6 +2395,12 @@ pub async fn create_and_run_pdf_source_pipeline(
     _progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
     info_log!("[PDF-Parallel] Starting parallel PDF pipeline");
+    if config.text_format() == "jbig2" {
+        info_log!(
+            "[PDF-Parallel] JBIG2 encoder backend: {}",
+            Legencode::active_jbig2_backend_info()
+        );
+    }
 
     if config.enable_reflow() {
         return crate::pipeline::reflow_pipeline::run_raster_reflow_pipeline(

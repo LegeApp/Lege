@@ -573,7 +573,8 @@ mod bwt_tests {
         let expected = naive(block);
         let actual = bwt_via_suffix_array(block);
         assert_eq!(
-            expected, actual,
+            expected,
+            actual,
             "BWT mismatch for {label} (len={})",
             block.len()
         );
@@ -583,7 +584,9 @@ mod bwt_tests {
     fn matches_naive_small_and_boundary_sizes() {
         // Sentinel (0) is pushed by the caller before bwt() is ever called
         // in production, so every test block here ends with 0 too.
-        for &len in &[1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 257, 300] {
+        for &len in &[
+            1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 257, 300,
+        ] {
             let mut state = len as u32 | 1;
             let mut block: Vec<u8> = (0..len - 1)
                 .map(|_| (xorshift(&mut state) & 0xFF) as u8)

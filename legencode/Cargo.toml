@@ -42,7 +42,7 @@ log = { workspace = true }                 # For logging
 # Local path dependencies - these will pull in their own dependencies
 toojpeg = { path = "src/TooJpeg-rust" }  # Local JPEG encoder
 jp2lam = { git = "https://github.com/LegeApp/jp2lam.git", optional = true }  # Pure-Rust JPEG 2000 encoder
-jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features = ["symboldict"] }   # Local JBIG2 encoder (symbol dictionary mode)
+jbig2enc-rust = { path = "src/jbig2enc-rust", default-features = false, features = ["symboldict", "parallel"] }   # Local JBIG2 encoder (symbol dictionary mode)
 
 # Configuration management
 config = { workspace = true }

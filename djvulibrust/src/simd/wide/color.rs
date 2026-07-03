@@ -26,8 +26,8 @@
 //! output, not just internal scalar/SIMD self-consistency — out of scope
 //! for a drive-by SIMD change. Left as a real, scoped follow-up.
 
-use super::super::scalar::ycc_tables;
 use super::super::Primitives;
+use super::super::scalar::ycc_tables;
 use wide::i32x8;
 
 /// Installs this kernel unconditionally. Only called from `setup_all`
@@ -81,8 +81,7 @@ fn rgb_to_ycbcr(img_raw: &[u8], out_y: &mut [i8], out_cb: &mut [i8], out_cr: &mu
 
         // Y is intentionally NOT clamped — matches the scalar reference,
         // which truncates straight to i8 with no clamp on this channel.
-        let y_val =
-            ((i32x8::new(y0) + i32x8::new(y1) + i32x8::new(y2) + bias) >> 16i32) - y_offset;
+        let y_val = ((i32x8::new(y0) + i32x8::new(y1) + i32x8::new(y2) + bias) >> 16i32) - y_offset;
         let cb_val = ((i32x8::new(cb0) + i32x8::new(cb1) + i32x8::new(cb2) + bias) >> 16i32)
             .max(clamp_lo)
             .min(clamp_hi);

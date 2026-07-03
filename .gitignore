@@ -1,5 +1,6 @@
-# Cargo local config (machine-specific paths — see .cargo/config.example.toml)
-.cargo/config.toml
+# Cargo aliases live in .cargo/config.toml.
+# Put machine-specific overrides in environment variables instead of committing
+# local paths.
 
 # Rust
 target/

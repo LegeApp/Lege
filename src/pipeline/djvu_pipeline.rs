@@ -101,6 +101,10 @@ pub async fn create_and_run_djvu_source_pipeline(
     {
         info_log!("[DJVU-Parallel] Entering parallel tokio pipeline");
         info_log!(
+            "[DJVU-Parallel] Native encoder backend: {}",
+            crate::djvu::active_backend_info()
+        );
+        info_log!(
             "[DJVU-Parallel] Layout detection: {}",
             config.enable_layout_detection()
         );

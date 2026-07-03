@@ -184,8 +184,15 @@ mod tests {
 
     #[test]
     fn rewrites_runtime_yolo_model_when_available() {
-        let path =
-            std::path::Path::new("/home/dk/Desktop/lege-run/installer/linux64/yolo-layout.onnx");
+        let path = std::env::var_os("LEGE_PACKAGE_INPUT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("lege-gpu should live under the repository root")
+                    .join("packaging/linux64")
+            })
+            .join("yolo-layout.onnx");
         if !path.exists() {
             eprintln!(
                 "skipping runtime YOLO Winograd rewrite test: {} not found",
