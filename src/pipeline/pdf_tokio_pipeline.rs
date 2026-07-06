@@ -687,15 +687,17 @@ fn normalize_crop_binarization_input(image: &RgbImage) -> RgbImage {
     }
 
     let mut luma = Vec::with_capacity(pixel_count);
+    let mut hist = [0u32; 256];
     for rgb in raw.chunks_exact(3).take(pixel_count) {
         let y = ((rgb[0] as u32 * 77 + rgb[1] as u32 * 150 + rgb[2] as u32 * 29) >> 8) as u8;
+        hist[y as usize] += 1;
         luma.push(y);
     }
 
-    let mut sorted = luma.clone();
-    sorted.sort_unstable();
-    let low = percentile_from_sorted(&sorted, 0.02);
-    let high = percentile_from_sorted(&sorted, 0.98);
+    // O(n) percentiles via the 256-bin histogram instead of sorting the whole plane.
+    // Matches the previous `sorted[round((n-1)*p)]` rank semantics exactly.
+    let low = percentile_from_hist256(&hist, pixel_count, 0.02);
+    let high = percentile_from_hist256(&hist, pixel_count, 0.98);
     if high <= low.saturating_add(8) {
         return image.clone();
     }
@@ -716,13 +718,22 @@ fn normalize_crop_binarization_input(image: &RgbImage) -> RgbImage {
     RgbImage::from_raw(image.width(), image.height(), normalized).unwrap_or_else(|| image.clone())
 }
 
-fn percentile_from_sorted(sorted: &[u8], percentile: f32) -> u8 {
-    if sorted.is_empty() {
+/// Value at rank `round((n-1)*p)` in ascending order, read from a 256-bin
+/// histogram. Equivalent to `sorted[round((n-1)*p)]` but O(n) (no full sort).
+fn percentile_from_hist256(hist: &[u32; 256], n: usize, percentile: f32) -> u8 {
+    if n == 0 {
         return 0;
     }
-    let max_index = sorted.len().saturating_sub(1);
-    let idx = ((max_index as f32) * percentile.clamp(0.0, 1.0)).round() as usize;
-    sorted[idx.min(max_index)]
+    let max_index = n.saturating_sub(1);
+    let target = ((max_index as f32) * percentile.clamp(0.0, 1.0)).round() as usize;
+    let mut cum = 0usize;
+    for (v, &count) in hist.iter().enumerate() {
+        cum += count as usize;
+        if cum > target {
+            return v as u8;
+        }
+    }
+    255
 }
 
 /// Consolidated CPU-intensive work for a single page
@@ -993,13 +1004,9 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     };
     drop(binarization_image);
 
-    if config.crop_free_aspect() && has_image_regions && !binarized.is_empty() {
-        let dark_pixels = binarized.iter().filter(|&&px| px <= 128).count();
-        let dark_fraction = dark_pixels as f32 / binarized.len().max(1) as f32;
-        if dark_fraction >= 0.85 {
-            binarized.fill(255);
-        }
-    }
+    // (Removed the `dark_fraction >= 0.85 → fill white` bandaid: it masked the GPU
+    // black-page bug whose root cause — Otsu on the raw instead of bg-normalized
+    // histogram — is now fixed. A legitimately dark page must no longer be blanked.)
 
     // Cover page encoding must happen before region processing (it fills binarized with white).
     let cover_encoded_data =
@@ -1112,7 +1119,9 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     height: region_h,
                     channels: 1,
                 };
-                let q: u8 = if config.high_quality_output() { 80 } else { 68 };
+                let q = crate::pipeline::quality_policy::region_gray_jp2(
+                    config.high_quality_output(),
+                );
                 match EncodingManager::encode(&buffer, &EncodingSettings::Jp2Lam { quality: q }) {
                     Ok(EncodingResult::Standard(data)) => {
                         encoded_data = Some((data, "jp2-gray".to_string()));
@@ -1131,7 +1140,16 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 // dots from paper texture / scan noise.
                 let inverted_gray: Vec<u8> = grayscale_data
                     .iter()
-                    .map(|&g| if g >= 245 { 0u8 } else { 255u8 - g })
+                    .map(|&g| {
+                        if g >= Legencode::color::color_processing::PAPER_WHITE_FLOOR {
+                            0u8
+                        } else {
+                            // Linearize before inverting so halftone dot coverage tracks
+                            // perceived tone (bilevel tone == linear reflectance).
+                            255u8
+                                - Legencode::color::linearize::SRGB_GRAY_TO_LINEAR_U8[g as usize]
+                        }
+                    })
                     .collect();
 
                 match Legencode::streamline::encode_halftone_region_grayscale(
@@ -1794,7 +1812,9 @@ async fn encode_base_layer(
         "ccitt4" => (EncodingSettings::Ccitt4, "ccitt"),
         "jpeg" => (
             EncodingSettings::Jpeg(JpegSettings {
-                quality: if config.high_quality_output() { 95 } else { 40 },
+                quality: crate::pipeline::quality_policy::full_page_jpeg_text(
+                    config.high_quality_output(),
+                ),
                 baseline: true,
                 optimized: true,
                 downsample: false,
@@ -2074,7 +2094,7 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
         let (settings, fmt) = if jpeg_compat {
             (
                 EncodingSettings::Jpeg(JpegSettings {
-                    quality: if high_quality { 95 } else { 60 },
+                    quality: crate::pipeline::quality_policy::full_page_jpeg_compat(high_quality),
                     baseline: true,
                     optimized: true,
                     downsample: false,

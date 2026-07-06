@@ -133,6 +133,12 @@ pub struct PageEncodeParams {
     /// Lower = more coefficients = better quality but larger files
     /// Higher = fewer coefficients = smaller files but lower quality
     pub quant_multiplier: Option<f32>,
+    /// Background subsample factor for the IW44 (BG44) layer, like `c44 -bgsubsample`.
+    /// The background is encoded at 1/N resolution and DjVu viewers upsample it by N
+    /// (the ratio is derived from page-info-width ÷ BG44-width). For a mostly-white
+    /// page holding a few figure crops this is the biggest size-per-quality lever.
+    /// `1` = no subsampling (default, unchanged behavior); `3` matches the c44 default.
+    pub bg_subsample: u8,
 }
 
 impl Default for PageEncodeParams {
@@ -149,8 +155,48 @@ impl Default for PageEncodeParams {
             db_frac: 0.35,
             lossless: false,
             quant_multiplier: None, // Use C++ default
+            bg_subsample: 1,        // No subsampling by default (unchanged behavior)
         }
     }
+}
+
+/// Box-average downsample of an RGB pixmap by an integer factor. Output dims are
+/// `ceil(w/factor) x ceil(h/factor)`; edge blocks average only their covered
+/// source pixels. Used for `bg_subsample` (c44-style BG44 reduction).
+fn downsample_pixmap(img: &Pixmap, factor: u32) -> Pixmap {
+    let (w, h) = img.dimensions();
+    let rw = w.div_ceil(factor);
+    let rh = h.div_ceil(factor);
+    let mut out = Pixmap::new(rw, rh);
+    for ry in 0..rh {
+        for rx in 0..rw {
+            let (mut sr, mut sg, mut sb, mut n) = (0u32, 0u32, 0u32, 0u32);
+            for dy in 0..factor {
+                let sy = ry * factor + dy;
+                if sy >= h {
+                    break;
+                }
+                for dx in 0..factor {
+                    let sx = rx * factor + dx;
+                    if sx >= w {
+                        break;
+                    }
+                    let p = img.get_pixel(sx, sy);
+                    sr += p.r as u32;
+                    sg += p.g as u32;
+                    sb += p.b as u32;
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            out.put_pixel(
+                rx,
+                ry,
+                Pixel::new((sr / n) as u8, (sg / n) as u8, (sb / n) as u8),
+            );
+        }
+    }
+    out
 }
 
 /// Represents a single page's components for encoding.
@@ -761,6 +807,18 @@ impl PageComponents {
             crate::encode::iw44::encoder::CrcbMode::None
         };
 
+        // Background subsampling (c44 -bgsubsample): encode the BG44 layer at 1/N
+        // resolution. The IW44 header records the reduced dimensions; the page INFO
+        // chunk keeps full dimensions, so viewers derive the upsample ratio and
+        // scale the background back up. factor==1 is a no-op (uses `img` directly).
+        let factor = params.bg_subsample.max(1) as u32;
+        let bg_owned: Option<Pixmap> = if factor > 1 {
+            Some(downsample_pixmap(img, factor))
+        } else {
+            None
+        };
+        let img: &Pixmap = bg_owned.as_ref().unwrap_or(img);
+
         // Debug: Check input image properties
         let (w, h) = img.dimensions();
         let raw_data = img.as_raw();
@@ -792,19 +850,44 @@ impl PageComponents {
             quant_multiplier: params.quant_multiplier.unwrap_or(1.0),
         };
 
-        // If a mask is present, convert it to Bitmap and pass to IWEncoder for mask-aware encoding
+        // If a mask is present, convert it to Bitmap and pass to IWEncoder for mask-aware encoding.
+        // When subsampling, the mask must be reduced to the same resolution as the background.
+        // A reduced pixel is treated as fully masked (1) only if *every* covered full-res mask
+        // pixel is masked — so any reduced pixel with visible background is still encoded.
         let mask_gray = if let Some(mask_bitimg) = &self.mask {
-            // Convert BitImage to Bitmap (1=masked, 0=unmasked)
-            let (mw, mh) = (mask_bitimg.width as u32, mask_bitimg.height as u32);
+            let (fw, fh) = (mask_bitimg.width as u32, mask_bitimg.height as u32);
+            let (mw, mh) = if factor > 1 {
+                (w, h) // match the reduced background dimensions
+            } else {
+                (fw, fh)
+            };
             let mut mask_pixels = Vec::with_capacity((mw * mh) as usize);
-            for y in 0..mh {
-                for x in 0..mw {
-                    let pixel_value = if mask_bitimg.get_pixel_unchecked(x as usize, y as usize) {
-                        1
+            for ry in 0..mh {
+                for rx in 0..mw {
+                    let masked = if factor > 1 {
+                        // AND-reduction over the covered full-res block.
+                        let mut all_masked = true;
+                        'blk: for dy in 0..factor {
+                            let sy = ry * factor + dy;
+                            if sy >= fh {
+                                break;
+                            }
+                            for dx in 0..factor {
+                                let sx = rx * factor + dx;
+                                if sx >= fw {
+                                    break;
+                                }
+                                if !mask_bitimg.get_pixel_unchecked(sx as usize, sy as usize) {
+                                    all_masked = false;
+                                    break 'blk;
+                                }
+                            }
+                        }
+                        all_masked
                     } else {
-                        0
+                        mask_bitimg.get_pixel_unchecked(rx as usize, ry as usize)
                     };
-                    mask_pixels.push(GrayPixel::new(pixel_value));
+                    mask_pixels.push(GrayPixel::new(if masked { 1 } else { 0 }));
                 }
             }
             Some(Bitmap::from_vec(mw, mh, mask_pixels))

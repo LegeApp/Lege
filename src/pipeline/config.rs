@@ -501,7 +501,7 @@ impl PipelineConfig {
         cfg.set_target_height(1200)?;
         cfg.set_high_res_render_height(1200)?;
         let bin = BinarizationConfig {
-            k_factor: 0.2,
+            k_factor: Legencode::DEFAULT_K_FACTOR,
             invert: false,
             invert_input: false,
             use_heavy_duty: false,

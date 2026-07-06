@@ -30,6 +30,7 @@ pub mod color;
 
 // Shared types
 pub mod types;
+pub use types::DEFAULT_K_FACTOR;
 
 // Custom image types (replaces image crate dependency)
 pub mod image_types;

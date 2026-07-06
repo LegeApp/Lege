@@ -11,7 +11,7 @@ const MAX_OVERLAY_PIXELS: u64 = 8192u64 * 8192u64; // 67Mpx upper cap for region
 /// Grayscale values at or above this floor are treated as pure paper white and
 /// forced to 255 before dithering.  Prevents sparse dots in near-white regions
 /// (paper texture, scan noise) that create a visible secondary pattern.
-const PAPER_WHITE_FLOOR: u8 = 245;
+pub const PAPER_WHITE_FLOOR: u8 = 245;
 
 /// How to reduce detected **image** regions to 1-bit before merging into the page mask.
 /// Body text / full-page binarization is separate (Sauvola etc.); this applies only where
@@ -102,7 +102,9 @@ fn dither_clustered_4x4(grayscale_data: &[u8], width: u32, height: u32) -> Vec<u
             }
             let rank = screen[(y & (TILE - 1)) * TILE + (x & (TILE - 1))];
             let thr = threshold_from_cluster_rank(rank, TILE_PIXELS);
-            out[idx] = if g > thr { 255 } else { 0 };
+            // Screen in linear-reflectance space so dot coverage tracks perceived tone.
+            let gl = crate::color::linearize::SRGB_GRAY_TO_LINEAR_U8[g as usize];
+            out[idx] = if gl > thr { 255 } else { 0 };
         }
     }
     out
@@ -574,8 +576,13 @@ fn rgb_to_grayscale_simd_direct(
     let mut grayscale = Vec::with_capacity((region_width * region_height) as usize);
     let source_width = source_width as usize;
 
-    // Defensive check: ensure the last accessed byte is in-bounds
-    let last_row_end = ((bounds.y_end as usize * source_width) + bounds.x_end as usize) * 3;
+    // Defensive check: ensure the last accessed byte is in-bounds.
+    // `y_end` is exclusive (`for y in y_start..y_end`), so the last row index is `y_end - 1`.
+    // Using `y_end` here would address one row past the crop (and fail for full-page crops,
+    // e.g. bottom-anchored figures where `y_end == page_height`), returning an empty buffer
+    // that downstream dither/GrayJp2 paths treat as an all-white hole.
+    let last_row = (bounds.y_end - 1) as usize;
+    let last_row_end = (last_row * source_width + bounds.x_end as usize) * 3;
     if last_row_end > source_rgb.len() {
         // Return empty buffer; caller will treat as failure downstream
         return Vec::new();
@@ -651,12 +658,15 @@ pub fn dither_stucki_error_diffusion(grayscale_data: &[u8], width: u32, height: 
 
     // Create a mutable buffer of length width*height; copy available pixels and default the rest to white.
     // Clamp near-white pixels to pure white so paper/scan noise doesn't produce sparse dots.
+    // Diffuse in linear-reflectance space: on a bilevel output the perceived tone is dot
+    // coverage (linear reflectance), so an sRGB midtone must be linearized first or it
+    // renders far too light. The near-white clamp is applied on the original sRGB value.
     let mut working_image: Vec<f32> = vec![255.0; expected];
     for (i, &v) in grayscale_data.iter().take(expected).enumerate() {
         working_image[i] = if v >= PAPER_WHITE_FLOOR {
             255.0
         } else {
-            v as f32
+            crate::color::linearize::SRGB_GRAY_TO_LINEAR_U8[v as usize] as f32
         };
     }
     let mut output = Vec::with_capacity(expected);
@@ -734,11 +744,14 @@ pub fn create_inversion_mask(mask: &mut [bool], page_width: u32, bbox: [f32; 4])
         return;
     }
 
+    // Round (not truncate) bbox floats to match `rounded_clamped_bbox` placement
+    // and `merge_dithered_region` — truncation here previously re-introduced the
+    // half-pixel misalignment / halo bug through this call site.
     let (mut x1, mut y1, mut x2, mut y2) = (
-        bbox[0].max(0.0) as u32,
-        bbox[1].max(0.0) as u32,
-        bbox[2].max(0.0) as u32,
-        bbox[3].max(0.0) as u32,
+        bbox[0].round().max(0.0) as u32,
+        bbox[1].round().max(0.0) as u32,
+        bbox[2].round().max(0.0) as u32,
+        bbox[3].round().max(0.0) as u32,
     );
 
     if x1 >= x2 || y1 >= y2 {
@@ -768,11 +781,14 @@ pub fn mask_region(binarized: &mut [u8], page_width: u32, bbox: [f32; 4]) {
         return;
     }
 
+    // Round (not truncate) bbox floats to match `rounded_clamped_bbox` placement
+    // and `merge_dithered_region` — truncation here previously re-introduced the
+    // half-pixel misalignment / halo bug through this call site.
     let (mut x1, mut y1, mut x2, mut y2) = (
-        bbox[0].max(0.0) as u32,
-        bbox[1].max(0.0) as u32,
-        bbox[2].max(0.0) as u32,
-        bbox[3].max(0.0) as u32,
+        bbox[0].round().max(0.0) as u32,
+        bbox[1].round().max(0.0) as u32,
+        bbox[2].round().max(0.0) as u32,
+        bbox[3].round().max(0.0) as u32,
     );
 
     if x1 >= x2 || y1 >= y2 {

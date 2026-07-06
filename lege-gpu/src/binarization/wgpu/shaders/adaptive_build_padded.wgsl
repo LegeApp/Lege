@@ -8,7 +8,7 @@ struct BinarizeParams {
 @group(0) @binding(0) var<uniform> params: BinarizeParams;
 @group(0) @binding(1) var<storage, read> gray_src: array<u32>; // 1 u32 per pixel (sRGB gray from linearize pass)
 @group(0) @binding(2) var<storage, read_write> padded_gray: array<u32>;
-@group(0) @binding(3) var<storage, read_write> padded_sq: array<f32>;
+@group(0) @binding(3) var<storage, read_write> padded_sq: array<u32>;
 
 fn reflect_101(idx: i32, len: i32) -> i32 {
     if len <= 1 { return 0; }
@@ -33,5 +33,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let g = gray_src[src_idx] & 255u;
     let out_idx = py * params.padded_width + px;
     padded_gray[out_idx] = g;
-    padded_sq[out_idx] = f32(g) * f32(g);
+    // Second moment as exact u32. Max window sum-of-squares is
+    // 101^2 * 255^2 ~= 6.6e8 < 2^32, so a wrapping-u32 SAT gives exact window
+    // sums at any image size (an f32 prefix sum loses ULP precision at page scale).
+    padded_sq[out_idx] = g * g;
 }

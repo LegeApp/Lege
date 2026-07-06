@@ -39,6 +39,7 @@ pub use pnginference::{
 
 // Re-export TooJPEG functionality for image encoding
 pub use Legencode::toojpeg::{EncodeOptions, ImageFormat, encode_jpeg};
+pub use Legencode::DEFAULT_K_FACTOR;
 
 // Re-export key types from pipeline submodules for convenience
 pub use pipeline::{

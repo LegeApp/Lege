@@ -24,7 +24,7 @@ struct BinarizeParams {
 @group(0) @binding(0) var<uniform> params: BinarizeParams;
 @group(0) @binding(1) var<storage, read> gray_src: array<u32>; // 1 u32 per pixel (sRGB gray from linearize pass)
 @group(0) @binding(2) var<storage, read> integral_buf: array<u32>;
-@group(0) @binding(3) var<storage, read> integral_sq_buf: array<f32>;
+@group(0) @binding(3) var<storage, read> integral_sq_buf: array<u32>;
 @group(0) @binding(4) var<storage, read> bg_buf: array<u32>;
 @group(0) @binding(5) var<storage, read_write> dst: array<u32>;
 
@@ -44,7 +44,10 @@ fn integral_rect_u32(x0: u32, y0: u32, x1: u32, y1: u32) -> u32 {
     return d + a - b - c;
 }
 
-fn integral_rect_f32(x0: u32, y0: u32, x1: u32, y1: u32) -> f32 {
+// SAT box-sum for the u32 sum-of-squares integral. Same wrapping-arithmetic
+// trick as integral_rect_u32: the true window sum-of-squares is < 2^32, so the
+// wrapping difference recovers it exactly regardless of image size.
+fn integral_rect_sq_u32(x0: u32, y0: u32, x1: u32, y1: u32) -> u32 {
     let iw = params.integral_width;
     let d = integral_sq_buf[(y1 + 1u) * iw + (x1 + 1u)];
     let b = integral_sq_buf[(y1 + 1u) * iw + x0];
@@ -78,10 +81,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let y1 = y + 2u * r;
 
     let sum_u = integral_rect_u32(x, y, x1, y1);
-    let sum_sq = integral_rect_f32(x, y, x1, y1);
+    let sum_sq = integral_rect_sq_u32(x, y, x1, y1);
     let area = f32(params.sauvola_window * params.sauvola_window);
     let mean = f32(sum_u) / area;
-    let variance = (sum_sq / area) - mean * mean;
+    let variance = (f32(sum_sq) / area) - mean * mean;
     let stddev = sqrt(max(variance, 0.0));
     let sauvola_thr = mean * (1.0 + params.k_factor * (stddev / 127.0 - 1.0));
     let sauvola_bin = select(0u, 255u, g > sauvola_thr);

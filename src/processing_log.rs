@@ -183,7 +183,7 @@ impl ProcessingOptions {
             crop_footnotes: false,
             crop_free_aspect: false,
             use_heavy_binarization: false,
-            k_factor: 0.2,
+            k_factor: Legencode::DEFAULT_K_FACTOR,
             use_fixed_threshold: false,
             threshold_value: 200,
         }

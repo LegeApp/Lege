@@ -730,6 +730,12 @@ pub fn spawn_djvu_writer_actor(
     // starts draining.
     let mut params = PageEncodeParams::default();
     params.slices = Some(slices);
+    // Encode the IW44 background at 1/3 resolution (c44's default). Lege pages are
+    // mostly a bilevel JB2 text layer with a few figure crops in the background; the
+    // background tolerates subsampling well and viewers upsample it, so this is a
+    // large size win for negligible quality loss. Validated against ddjvu/djvudump
+    // (examples/bg_subsample_check.rs): BG44 dims reduce ×3, page still renders full-size.
+    params.bg_subsample = 3;
     let doc = Arc::new(
         DjvuBuilder::new(total_pages)
             .with_dpi(dpi)

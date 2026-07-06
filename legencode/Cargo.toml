@@ -15,6 +15,16 @@ categories = ["multimedia::encoding"]
 name = "Legencode"
 path = "src/lib.rs"
 
+# Per-arm CPU-vs-GPU binarization dump (revived; wired to the GPU debug modes).
+[[bin]]
+name = "binarize_compare"
+path = "src/color/bin/binarize_compare.rs"
+
+# k-factor / parameter sweep for Sauvola-Otsu fusion.
+[[bin]]
+name = "binarize_sweep"
+path = "src/color/bin/binarize_sweep.rs"
+
 [dependencies]
 # Direct dependencies used by streamline.rs
 fax = { version = "0.2.6", default-features = false }  # External dependency for CCITT4 encoding

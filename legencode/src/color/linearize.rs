@@ -32,6 +32,19 @@ lazy_static::lazy_static! {
         }
         table
     };
+
+    /// sRGB-encoded gray (0..255) → linear-reflectance-coded gray (0..255).
+    /// On a bilevel output, perceived tone is dot *coverage*, which is linear
+    /// reflectance — so dithering must diffuse/threshold linear values, else an
+    /// sRGB 128 (~21% luminance) renders as ~50% coverage and midtones come out
+    /// far too light. Mapping the input through this LUT first fixes that.
+    pub static ref SRGB_GRAY_TO_LINEAR_U8: [u8; 256] = {
+        let mut table = [0u8; 256];
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = (SRGB_TO_LINEAR[i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        }
+        table
+    };
 }
 
 // Convert sRGB value to linear RGB (LUT version)

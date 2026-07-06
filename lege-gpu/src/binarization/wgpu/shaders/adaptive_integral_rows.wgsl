@@ -12,9 +12,9 @@ struct BinarizeParams {
 
 @group(0) @binding(0) var<uniform> params: BinarizeParams;
 @group(0) @binding(1) var<storage, read> padded_gray_in: array<u32>;
-@group(0) @binding(2) var<storage, read> padded_sq_in: array<f32>;
+@group(0) @binding(2) var<storage, read> padded_sq_in: array<u32>;
 @group(0) @binding(3) var<storage, read_write> row_prefix: array<u32>;
-@group(0) @binding(4) var<storage, read_write> row_prefix_sq: array<f32>;
+@group(0) @binding(4) var<storage, read_write> row_prefix_sq: array<u32>;
 
 @compute @workgroup_size(1, 64, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -23,10 +23,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let row_base = y * params.integral_width;
     row_prefix[row_base] = 0u;
-    row_prefix_sq[row_base] = 0.0;
+    row_prefix_sq[row_base] = 0u;
 
     var running_u: u32 = 0u;
-    var running_sq: f32 = 0.0;
+    var running_sq: u32 = 0u;
     for (var x: u32 = 0u; x < params.padded_width; x = x + 1u) {
         let src_idx = y * params.padded_width + x;
         running_u = running_u + (padded_gray_in[src_idx] & 255u);

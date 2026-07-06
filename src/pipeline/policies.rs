@@ -611,7 +611,11 @@ pub fn binarize_options_for(
         no_patch: config.binarization().no_patch,
         use_fixed_threshold,
         fixed_threshold,
-        disable_gpu: config.crop_free_aspect(),
+        // GPU binarization is safe in crop mode again: the black-page cause (Otsu
+        // computed on the raw rather than bg-normalized histogram) is fixed, and the
+        // GPU fused output is now bit-exact to the CPU path in the interior (see
+        // gpu_fused_parity_debug0). Previously forced CPU via `config.crop_free_aspect()`.
+        disable_gpu: false,
     }
 }
 

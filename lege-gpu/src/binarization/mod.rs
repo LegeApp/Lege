@@ -21,6 +21,10 @@ pub struct AdaptiveBinarizeGpuConstants {
     pub otsu_threshold: u8,
 }
 
+/// Default Sauvola k-factor. Must match `Legencode::DEFAULT_K_FACTOR` (the canonical
+/// source). Duplicated here because `lege-gpu` cannot depend on `Legencode` (circular).
+pub const DEFAULT_K_FACTOR: f32 = 0.05;
+
 #[derive(Debug, Clone, Copy)]
 pub struct BinarizationParams {
     pub width: u32,
@@ -331,7 +335,7 @@ mod tests {
             height: 2,
             mode: BinarizationMode::FixedThreshold,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: DEFAULT_K_FACTOR,
             fixed_threshold: 50,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: 31,
@@ -363,7 +367,7 @@ mod tests {
             height: h,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: 31,
@@ -420,7 +424,7 @@ mod tests {
             height: h as u32,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: 31,
@@ -457,7 +461,7 @@ mod tests {
             height: h as u32,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: 31,
@@ -494,7 +498,7 @@ mod tests {
             height: 1,
             mode: BinarizationMode::FixedThreshold,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: DEFAULT_K_FACTOR,
             fixed_threshold: 100,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: 31,
@@ -526,7 +530,7 @@ mod tests {
             height: h as u32,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: 31,

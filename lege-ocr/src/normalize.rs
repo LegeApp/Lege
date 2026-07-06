@@ -257,7 +257,7 @@ fn sauvola_params(width: u32, height: u32) -> BinarizationParams {
         height,
         mode: BinarizationMode::Adaptive,
         invert_output: false,
-        k_factor: 0.2,
+        k_factor: Legencode::DEFAULT_K_FACTOR,
         fixed_threshold: 128,
         adaptive: AdaptiveBinarizeGpuConstants {
             sauvola_window: 31,

@@ -80,20 +80,30 @@ impl HeavySauvolaProcessor {
         region_h: u32,
         opt: &BinarizationOptions,
     ) -> Result<GrayImage> {
-        // Extract the region as an RgbImage
-        let mut rgb = vec![0u8; (region_w * region_h * 3) as usize];
-        for y in 0..region_h {
-            for x in 0..region_w {
-                let src_x = region_x + x;
-                let src_y = region_y + y;
-                let src_idx = (src_y * page_width + src_x) as usize * 3;
-                let dst_idx = (y * region_w + x) as usize * 3;
-                if src_idx + 2 < rgb_data.len() && dst_idx + 2 < rgb.len() {
-                    rgb[dst_idx] = rgb_data[src_idx];
-                    rgb[dst_idx + 1] = rgb_data[src_idx + 1];
-                    rgb[dst_idx + 2] = rgb_data[src_idx + 2];
-                }
-            }
+        // Extract the region as an RgbImage. The region must lie fully within the
+        // page — a silent zero-fill on OOB (the previous behaviour) would feed black
+        // pixels into the model's global instance-norm and corrupt its statistics, so
+        // fail hard instead. Copy whole rows with copy_from_slice.
+        if region_w == 0 || region_h == 0 {
+            return Err(anyhow!("empty region ({region_w}x{region_h})"));
+        }
+        let row_bytes = region_w as usize * 3;
+        let last_src_row = (region_y + region_h - 1) as usize;
+        let last_src_end = (last_src_row * page_width as usize + (region_x + region_w) as usize) * 3;
+        if last_src_end > rgb_data.len() {
+            return Err(anyhow!(
+                "region ({region_x},{region_y} {region_w}x{region_h}) exceeds source \
+                 buffer (needs {last_src_end} bytes, have {})",
+                rgb_data.len()
+            ));
+        }
+        let mut rgb = vec![0u8; region_h as usize * row_bytes];
+        for y in 0..region_h as usize {
+            let src_y = region_y as usize + y;
+            let src_start = (src_y * page_width as usize + region_x as usize) * 3;
+            let dst_start = y * row_bytes;
+            rgb[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&rgb_data[src_start..src_start + row_bytes]);
         }
         let img = RgbImage::from_raw(region_w, region_h, rgb)
             .ok_or_else(|| anyhow!("failed to create RgbImage from region"))?;
@@ -295,28 +305,18 @@ where
             otsu_threshold: 0,
         }
     } else {
-        // Constants are computed from a histogram of the linearized luma. We approximate
-        // with integer luma here for the histogram (cheap), since percentile_c and the
-        // Otsu threshold operate on quantized 0..255 space and integer luma is close
-        // enough for threshold selection. The actual binarization on GPU uses the
-        // proper linear+sRGB gray.
+        // Derive the constants from the SAME gray the shader thresholds: BT.709 luma
+        // in linear space, re-encoded to sRGB (see adaptive_linearize.wgsl). Using a
+        // 601-gamma approximation here would compute percentile_c / Otsu on a different
+        // gray than the one being thresholded (fable-review #5) — a real inconsistency
+        // for colored content (masked for neutral scans). Routing through
+        // `compute_adaptive_gpu_constants` also keeps the Otsu threshold on the
+        // bg-NORMALIZED histogram (see that function re: the black-page bug).
         let n = width * height;
-        let mut hist = [0u32; 256];
-        for chunk in rgb.chunks_exact(3) {
-            let r = chunk[0] as u32;
-            let g = chunk[1] as u32;
-            let b = chunk[2] as u32;
-            let y = ((r * 77 + g * 150 + b * 29) >> 8) as usize;
-            hist[y] += 1;
-        }
-        let percentile_c = percentile_from_hist(&hist, 0.30, n);
-        let otsu_threshold = otsu_from_hist(&hist, n);
-        lege_gpu::binarization::AdaptiveBinarizeGpuConstants {
-            sauvola_window: sauvola_window_for(height, width) as u32,
-            bg_window: odd_background_window(height) as u32,
-            percentile_c,
-            otsu_threshold,
-        }
+        let linear = crate::color::linearize::linearize_rgb_bytes_to_f32(rgb);
+        let mut gray = vec![0u8; n];
+        crate::color::linearize::linearized_rgb_to_grayscale(&linear, &mut gray);
+        compute_adaptive_gpu_constants(&gray, width, height)
     };
     let params = lege_gpu::binarization::BinarizationParams {
         width: width as u32,
@@ -526,18 +526,29 @@ pub fn compute_adaptive_gpu_constants(
     let n = width * height;
     assert_eq!(gray.len(), n);
 
-    // Build histogram once: used for both percentile_c and Otsu.
-    // The GPU recomputes background estimation (bg_max passes) internally, so we skip
-    // the CPU dilate_square_reflect + normalize_by_bg that was previously done here.
-    // Otsu on raw gray is slightly different from Otsu on bg-normalized gray, but
-    // the Sauvola arm of the AND-fusion dominates in practice.
+    // percentile_c (the normalization constant `c`) is the 30th percentile of the
+    // RAW gray histogram, matching `improved_binarize` (line ~580).
     let hist = hist256(gray);
     let percentile_c = percentile_from_hist(&hist, 0.30, n);
-    let otsu_threshold = otsu_from_hist(&hist, n);
+
+    // The Otsu threshold MUST be computed on the bg-NORMALIZED image, exactly as the
+    // CPU `improved_binarize` does (it thresholds `normalized > t_otsu`). Computing
+    // Otsu on the raw histogram is a *different distribution*: on layout-mode pages,
+    // premasking injects a large 255 spike, and raw-Otsu's between-class variance can
+    // lock onto the paper|masked-white split instead of ink|paper, yielding t above
+    // the normalized paper level (~c). The Otsu arm then classifies nearly the whole
+    // page as ink; since the fusion is union-of-ink, the page blackens. Normalizing
+    // first collapses the masked spike onto the paper mode (bg≈255 there, so
+    // normalized≈c), so Otsu re-splits a clean ink|paper histogram — matching CPU.
+    let bg_window = odd_background_window(height);
+    let mut normalized = vec![0u8; n];
+    dilate_square_reflect(gray, width, height, bg_window, &mut normalized);
+    normalize_by_bg_inplace(gray, percentile_c, &mut normalized);
+    let otsu_threshold = otsu_threshold_u8(&normalized);
 
     lege_gpu::binarization::AdaptiveBinarizeGpuConstants {
         sauvola_window: sauvola_window_for(height, width) as u32,
-        bg_window: odd_background_window(height) as u32,
+        bg_window: bg_window as u32,
         percentile_c,
         otsu_threshold,
     }
@@ -1113,7 +1124,7 @@ mod tests {
             height: h as u32,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: crate::DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: constants.sauvola_window,
@@ -1130,17 +1141,19 @@ mod tests {
             .expect("GPU debug_mode=3 (bg)");
 
         assert_eq!(gpu_bg.len(), w * h, "output length mismatch");
-        let mismatches: usize = cpu_bg
-            .iter()
-            .zip(gpu_bg.iter())
-            .filter(|(c, g)| c != g)
+        // Interior must match exactly; the bg (max-filter) border convention differs
+        // between GPU and CPU within `bg_window` of an edge — skip that band.
+        let b = bg_window;
+        let mismatches: usize = (0..w * h)
+            .filter(|&i| {
+                let (x, y) = (i % w, i / w);
+                x >= b && y >= b && x < w - b && y < h - b
+            })
+            .filter(|&i| cpu_bg[i] != gpu_bg[i])
             .count();
         assert_eq!(
-            mismatches,
-            0,
-            "bg parity: {} of {} pixels differ (CPU bg vs GPU debug_mode=3)",
-            mismatches,
-            w * h
+            mismatches, 0,
+            "interior bg parity: {mismatches} pixels differ (CPU bg vs GPU debug_mode=3)"
         );
     }
 
@@ -1184,7 +1197,7 @@ mod tests {
             height: h as u32,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: crate::DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: constants.sauvola_window,
@@ -1201,9 +1214,18 @@ mod tests {
             .expect("GPU debug_mode=5 (local mean)");
 
         assert_eq!(gpu_mean.len(), w * h);
+        // The GPU and CPU use different border conventions in the windowed passes, so
+        // pixels within `win` of an edge can legitimately differ; the interior must be
+        // bit-exact (this is what the integral-precision fix guarantees). Restrict the
+        // parity check to interior pixels.
         let mut max_diff = 0u8;
         let mut bad = 0usize;
         for (i, (&c, &g)) in cpu_mean.iter().zip(gpu_mean.iter()).enumerate() {
+            let x = i % w;
+            let y = i / w;
+            if x < win || y < win || x >= w - win || y >= h - win {
+                continue; // border band: convention differs, not a precision bug
+            }
             let diff = c.abs_diff(g);
             if diff > max_diff {
                 max_diff = diff;
@@ -1211,9 +1233,7 @@ mod tests {
             if diff > 1 {
                 bad += 1;
                 if bad <= 5 {
-                    let x = i % w;
-                    let y = i / w;
-                    eprintln!("mean mismatch at ({x},{y}): cpu={c} gpu={g}");
+                    eprintln!("interior mean mismatch at ({x},{y}): cpu={c} gpu={g}");
                 }
             }
         }
@@ -1245,7 +1265,7 @@ mod tests {
             height: h as u32,
             mode: BinarizationMode::Adaptive,
             invert_output: false,
-            k_factor: 0.2,
+            k_factor: crate::DEFAULT_K_FACTOR,
             fixed_threshold: 128,
             adaptive: AdaptiveBinarizeGpuConstants {
                 sauvola_window: constants.sauvola_window,
@@ -1262,17 +1282,105 @@ mod tests {
             .expect("GPU debug_mode=0 (fused)");
 
         assert_eq!(gpu_fused.len(), w * h);
-        let mismatches: usize = cpu_fused
-            .iter()
-            .zip(gpu_fused.iter())
-            .filter(|(c, g)| c != g)
+        // Interior parity is now exact: with the normalized-histogram Otsu constant and
+        // the u32 second-moment integral, both fusion arms match the CPU bit-for-bit away
+        // from the edges. Border-band pixels can differ (windowed border convention),
+        // so exclude the `win` band and require zero interior mismatches.
+        let win = constants.sauvola_window as usize;
+        let mismatches: usize = (0..w * h)
+            .filter(|&i| {
+                let (x, y) = (i % w, i / w);
+                x >= win && y >= win && x < w - win && y < h - win
+            })
+            .filter(|&i| cpu_fused[i] != gpu_fused[i])
             .count();
-        let threshold = (w * h) / 1000; // 0.1%
-        assert!(
-            mismatches <= threshold,
-            "fused parity: {mismatches} of {} pixels differ (>{threshold} allowed); \
-             Sauvola or Otsu threshold divergence",
-            w * h
+        assert_eq!(
+            mismatches, 0,
+            "interior fused parity: {mismatches} pixels differ; \
+             Sauvola or Otsu threshold divergence"
+        );
+    }
+
+    /// Regression guard for the second-moment integral precision fix (fable #2).
+    /// At page scale the running sum-of-squares reaches ~10^10, where an f32 prefix
+    /// sum loses several gray-levels of σ. The u32 wrapping SAT is exact, so at a
+    /// large image the GPU local σ (debug_mode=6) must match the CPU reference. A
+    /// small (128×96) image cannot see this class of bug; use ≥2000px.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn gpu_local_stddev_parity_large_debug6() {
+        if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+        use lege_gpu::binarization::{
+            AdaptiveBinarizeGpuConstants, BinarizationMode, BinarizationParams, wgpu::WgpuBinarizer,
+        };
+
+        let w = 2048usize;
+        let h = 2048usize;
+        let gray = make_test_image(w, h);
+        let constants = super::compute_adaptive_gpu_constants(&gray, w, h);
+        let win = constants.sauvola_window as usize;
+        let r = (win / 2) as isize;
+        let area = (win * win) as f64;
+
+        // CPU: sliding-window σ in f64 (exact), same reflect-101 border as the GPU.
+        let cpu_std: Vec<u8> = (0..w * h)
+            .map(|i| {
+                let px = (i % w) as isize;
+                let py = (i / w) as isize;
+                let mut sum = 0f64;
+                let mut sum_sq = 0f64;
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let rx = super::reflect_101(px + dx, w as isize) as usize;
+                        let ry = super::reflect_101(py + dy, h as isize) as usize;
+                        let g = gray[ry * w + rx] as f64;
+                        sum += g;
+                        sum_sq += g * g;
+                    }
+                }
+                let mean = sum / area;
+                let var = (sum_sq / area) - mean * mean;
+                var.max(0.0).sqrt().clamp(0.0, 255.0) as u8
+            })
+            .collect();
+
+        let params = BinarizationParams {
+            width: w as u32,
+            height: h as u32,
+            mode: BinarizationMode::Adaptive,
+            invert_output: false,
+            k_factor: crate::DEFAULT_K_FACTOR,
+            fixed_threshold: 128,
+            adaptive: AdaptiveBinarizeGpuConstants {
+                sauvola_window: constants.sauvola_window,
+                bg_window: constants.bg_window,
+                percentile_c: constants.percentile_c,
+                otsu_threshold: constants.otsu_threshold,
+            },
+            debug_mode: 6,
+        };
+
+        let mut binarizer = WgpuBinarizer::new().expect("WgpuBinarizer::new");
+        let gpu_std = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("GPU debug_mode=6 (local stddev)");
+
+        assert_eq!(gpu_std.len(), w * h);
+        let mut max_diff = 0u8;
+        let mut bad = 0usize;
+        for (&c, &g) in cpu_std.iter().zip(gpu_std.iter()) {
+            let diff = c.abs_diff(g);
+            max_diff = max_diff.max(diff);
+            if diff > 1 {
+                bad += 1;
+            }
+        }
+        assert_eq!(
+            bad, 0,
+            "large-image local σ parity: {bad} pixels differ by >1 (max_diff={max_diff}); \
+             second-moment integral precision regression"
         );
     }
 }

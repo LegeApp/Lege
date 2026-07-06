@@ -110,14 +110,14 @@ struct WgpuBuffers {
 
     // Padded-sized (padded_width × padded_height × element)
     padded_gray: wgpu::Buffer, // u32
-    padded_sq: wgpu::Buffer,   // f32
+    padded_sq: wgpu::Buffer,   // u32 (wrapping second-moment SAT; exact < 2^32)
 
     // Integral-sized (integral_width × integral_height × element).
     // row_prefix is one row shorter but uses the same allocation.
     row_prefix: wgpu::Buffer,    // u32
-    row_prefix_sq: wgpu::Buffer, // f32
+    row_prefix_sq: wgpu::Buffer, // u32
     integral: wgpu::Buffer,      // u32
-    integral_sq: wgpu::Buffer,   // f32
+    integral_sq: wgpu::Buffer,   // u32
 
     img_bytes: usize, // capacity: gpu_src / gray_buf / gpu_dst / bg_tmp / bg (all 1 u32/px)
     padded_bytes: usize, // capacity: padded_gray / padded_sq

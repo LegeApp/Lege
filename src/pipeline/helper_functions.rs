@@ -34,7 +34,7 @@ pub fn get_encode_semaphore() -> Option<std::sync::Arc<Semaphore>> {
 }
 
 pub(crate) fn jp2_quality(high_quality: bool) -> u8 {
-    if high_quality { 55 } else { 45 }
+    crate::pipeline::quality_policy::full_page_jp2(high_quality)
 }
 
 /// Enum to differentiate between user cancellation and worker abort signals
@@ -272,13 +272,7 @@ pub fn region_encoding_settings(
                 let q = jp2_quality(high_quality);
                 (EncodingSettings::Jp2Lam { quality: q }, "jp2")
             } else {
-                let q: u8 = if high_quality {
-                    95
-                } else if is_cover {
-                    50
-                } else {
-                    45
-                };
+                let q = crate::pipeline::quality_policy::region_jpeg(high_quality, is_cover);
                 (
                     EncodingSettings::Jpeg(JpegSettings {
                         quality: q,
@@ -300,13 +294,7 @@ pub fn region_encoding_settings(
             "jbig2",
         ),
         CoverFormat::Jp2 => {
-            let q: u8 = if high_quality {
-                88
-            } else if is_cover {
-                80
-            } else {
-                72
-            };
+            let q = crate::pipeline::quality_policy::region_jp2(high_quality, is_cover);
             (EncodingSettings::Jp2Lam { quality: q }, "jp2")
         }
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),

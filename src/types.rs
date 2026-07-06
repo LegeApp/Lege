@@ -784,7 +784,7 @@ impl CliConfigBuilder {
             (
                 CLI_TEXT.interactive.binarization_methods[0].clone(),
                 BinarizationConfig {
-                    k_factor: 0.2,
+                    k_factor: Legencode::DEFAULT_K_FACTOR,
                     use_heavy_duty: false,
                     use_fixed_threshold: false,
                     ..Default::default()
@@ -801,7 +801,7 @@ impl CliConfigBuilder {
             (
                 CLI_TEXT.interactive.binarization_methods[2].clone(),
                 BinarizationConfig {
-                    k_factor: 0.2,
+                    k_factor: Legencode::DEFAULT_K_FACTOR,
                     use_heavy_duty: true,
                     ..Default::default()
                 },

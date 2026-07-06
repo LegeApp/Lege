@@ -133,7 +133,7 @@ impl ProcessingOptions {
             original_cover: true,
             target_height: Some(1200),
             layout_analysis: true,
-            k_factor: 0.2,
+            k_factor: lege::DEFAULT_K_FACTOR,
             threshold_value: 180,
             ..Default::default()
         }

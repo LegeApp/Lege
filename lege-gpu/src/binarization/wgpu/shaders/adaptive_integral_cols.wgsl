@@ -12,9 +12,9 @@ struct BinarizeParams {
 
 @group(0) @binding(0) var<uniform> params: BinarizeParams;
 @group(0) @binding(1) var<storage, read> row_prefix_in: array<u32>;
-@group(0) @binding(2) var<storage, read> row_prefix_sq_in: array<f32>;
+@group(0) @binding(2) var<storage, read> row_prefix_sq_in: array<u32>;
 @group(0) @binding(3) var<storage, read_write> integral_out: array<u32>;
-@group(0) @binding(4) var<storage, read_write> integral_sq_out: array<f32>;
+@group(0) @binding(4) var<storage, read_write> integral_sq_out: array<u32>;
 
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -23,10 +23,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Zero the sentinel row 0 for this column.
     integral_out[x] = 0u;
-    integral_sq_out[x] = 0.0;
+    integral_sq_out[x] = 0u;
 
     var running_u: u32 = 0u;
-    var running_sq: f32 = 0.0;
+    var running_sq: u32 = 0u;
     for (var y: u32 = 0u; y < params.padded_height; y = y + 1u) {
         let src_idx = y * params.integral_width + x;
         running_u = running_u + row_prefix_in[src_idx];
