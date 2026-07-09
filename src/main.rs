@@ -1147,6 +1147,7 @@ fn run_main() -> Result<()> {
             AppConfig::default(),
             cli_opts.png_quantize,
             cli_opts.png_colors,
+            cli_opts.output_dir,
         );
     }
 
@@ -1352,6 +1353,7 @@ fn run_main() -> Result<()> {
         // "all" / "full" / "*" -> every page (None), same as the other debug modes.
         .and_then(interpret_page_range_arg);
 
+        let binarization = cli_binarization_config(&cli_opts);
         return run_pdf_to_images_mode(
             pdf_path,
             page_range,
@@ -1361,6 +1363,7 @@ fn run_main() -> Result<()> {
             cli_opts.image_only,
             cli_opts.png_quantize,
             cli_opts.png_colors,
+            binarization,
         );
     }
 
@@ -1370,6 +1373,7 @@ fn run_main() -> Result<()> {
             .get(1)
             .ok_or_else(|| anyhow!("Missing folder path for --images-to-images"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
+        let binarization = cli_binarization_config(&cli_opts);
         return run_images_to_images_mode(
             folder_path,
             cli_opts.output_dir,
@@ -1378,6 +1382,7 @@ fn run_main() -> Result<()> {
             cli_opts.image_only,
             cli_opts.png_quantize,
             cli_opts.png_colors,
+            binarization,
         );
     }
 
@@ -1419,7 +1424,15 @@ fn run_main() -> Result<()> {
 
         if let Some(last) = positional.last() {
             if !looks_like_input_arg(last) {
-                if parse_target_argument(last).is_ok() {
+                // A lone small number (e.g. "215") is a page, not a target height.
+                // Normalize it to a single-page range ("215" -> "215-215") so it passes
+                // the start-end page-range validation and processes just that page.
+                if lone_number_is_page_like(last) {
+                    let candidate = positional.pop().unwrap();
+                    let range = format!("{c}-{c}", c = candidate.trim());
+                    validate_page_range(&range)?;
+                    page_range = Some(range);
+                } else if parse_target_argument(last).is_ok() {
                     target_arg = positional.pop();
                 } else if looks_like_page_range(last) {
                     let candidate = positional.pop().unwrap();
@@ -1549,6 +1562,56 @@ fn looks_like_target_dimension_number(input: &str) -> bool {
     input
         .parse::<u32>()
         .is_ok_and(|value| (100..=20000).contains(&value))
+}
+
+/// A lone positional integer is ambiguous: it could be a target height or a page number.
+/// Anything below a usable page height can't be a target (no device renders a sub-500px
+/// page), so treat it as a page. This makes `lege book.pdf 215` mean "page 215" instead of
+/// silently processing the whole book at a 215px target. Larger bare numbers (e.g. 1200,
+/// 1600) stay target heights. Explicit ranges/lists ("1-10", "5,7") are handled elsewhere.
+const LONE_NUMBER_MIN_TARGET_HEIGHT: u32 = 500;
+
+fn lone_number_is_page_like(input: &str) -> bool {
+    input
+        .trim()
+        .parse::<u32>()
+        .is_ok_and(|value| (1..LONE_NUMBER_MIN_TARGET_HEIGHT).contains(&value))
+}
+
+/// Build a `BinarizationConfig` from the CLI `--binarization` / `--threshold` /
+/// `--sauvola-k` flags, or `None` if none were given. Shared by the normal pipeline and
+/// the `--pdf-to-images` / `--images-to-images` debug modes so those honor the requested
+/// method (e.g. `heavy`) instead of silently defaulting to adaptive.
+fn cli_binarization_config(cli_opts: &CliOptions) -> Option<Legencode::types::BinarizationConfig> {
+    let method_str = if let Some(ref method) = cli_opts.binarization {
+        let mut s = match method.as_str() {
+            "adaptive" => "1".to_string(),
+            "fixed" => "2".to_string(),
+            "heavy" => "3".to_string(),
+            _ => method.clone(),
+        };
+        if let Some(k) = cli_opts.sauvola_k {
+            s.push_str(&format!(" k={}", k));
+        }
+        if let Some(thr) = cli_opts.threshold {
+            s.push_str(&format!(" thr={}", thr));
+        }
+        s
+    } else if cli_opts.threshold.is_some() || cli_opts.sauvola_k.is_some() {
+        // Standalone --threshold / --sauvola-k without an explicit method.
+        let mut s = "2".to_string();
+        if let Some(k) = cli_opts.sauvola_k {
+            s = "1".to_string();
+            s.push_str(&format!(" k={}", k));
+        }
+        if let Some(thr) = cli_opts.threshold {
+            s.push_str(&format!(" thr={}", thr));
+        }
+        s
+    } else {
+        return None;
+    };
+    Some(lege::CliConfigBuilder::parse_binarization_method(&method_str))
 }
 
 fn looks_like_input_arg(input: &str) -> bool {
@@ -1739,37 +1802,9 @@ fn handle_simple_processing(
         pipeline_config.set_image_format(cover);
     }
 
-    // Binarization
-    if let Some(ref method) = cli_opts.binarization {
-        // Build method string compatible with CliConfigBuilder::parse_binarization_method
-        let mut method_str = match method.as_str() {
-            "adaptive" => "1".to_string(),
-            "fixed" => "2".to_string(),
-            "heavy" => "3".to_string(),
-            _ => method.clone(),
-        };
-        if let Some(k) = cli_opts.sauvola_k {
-            method_str.push_str(&format!(" k={}", k));
-        }
-        if let Some(thr) = cli_opts.threshold {
-            method_str.push_str(&format!(" thr={}", thr));
-        }
-        let bin_config = lege::CliConfigBuilder::parse_binarization_method(&method_str);
+    // Binarization (--binarization / --threshold / --sauvola-k)
+    if let Some(bin_config) = cli_binarization_config(&cli_opts) {
         pipeline_config.set_binarization(bin_config);
-    } else {
-        // Even without --binarization, allow standalone --threshold and --sauvola-k
-        if cli_opts.threshold.is_some() || cli_opts.sauvola_k.is_some() {
-            let mut method_str = "2".to_string(); // fixed threshold as default base
-            if let Some(k) = cli_opts.sauvola_k {
-                method_str = "1".to_string(); // adaptive if k is given
-                method_str.push_str(&format!(" k={}", k));
-            }
-            if let Some(thr) = cli_opts.threshold {
-                method_str.push_str(&format!(" thr={}", thr));
-            }
-            let bin_config = lege::CliConfigBuilder::parse_binarization_method(&method_str);
-            pipeline_config.set_binarization(bin_config);
-        }
     }
 
     // DjVu quality
@@ -3743,6 +3778,7 @@ fn handle_pdf_to_png(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>> {
         AppConfig::default(),
         false,
         256,
+        None,
     )?;
 
     // Return None to indicate PDF-to-PNG mode was handled
@@ -3799,6 +3835,7 @@ fn handle_pdf_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfig)>
         false, // image_only - default to false in interactive mode
         false,
         256,
+        None, // default binarization
     )?;
 
     // Return None to indicate PDF-to-Images mode was handled
@@ -3856,6 +3893,7 @@ fn handle_images_to_images(input: &str) -> Result<Option<(PathBuf, PipelineConfi
         false, // image_only - default to false in interactive mode
         false,
         256,
+        None, // default binarization
     )?;
 
     // Return None to indicate Images-to-Images mode was handled
@@ -4111,7 +4149,10 @@ fn generate_output_path(
 ) -> Result<PathBuf> {
     // If the caller supplied a full file path (has extension), use it as-is.
     // This is the --gui-worker path where the GUI already generated the filename.
-    if output_dir.extension().is_some() {
+    // An existing directory is always a directory even if its name contains a dot
+    // (e.g. `mktemp -d` yields `tmp.XXXXXX`) — otherwise we'd try to write the output
+    // file onto the directory and fail at finalize with "Is a directory".
+    if output_dir.extension().is_some() && !output_dir.is_dir() {
         return Ok(output_dir.clone());
     }
 

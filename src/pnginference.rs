@@ -501,6 +501,7 @@ pub fn run_pdf_to_images_mode(
     image_only: bool,
     png_quantize: bool,
     png_colors: u16,
+    binarization: Option<Legencode::types::BinarizationConfig>,
 ) -> Result<()> {
     let output_dir = output_dir.unwrap_or_else(|| {
         pdf_path
@@ -588,6 +589,9 @@ pub fn run_pdf_to_images_mode(
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(enable_layout_detection);
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
+    if let Some(cfg) = binarization {
+        pipeline_config.set_binarization(cfg);
+    }
 
     let target_height = pipeline_config.high_res_render_height();
 
@@ -708,6 +712,7 @@ pub fn run_images_to_images_mode(
     image_only: bool,
     png_quantize: bool,
     png_colors: u16,
+    binarization: Option<Legencode::types::BinarizationConfig>,
 ) -> Result<()> {
     if !input_folder.is_dir() {
         return Err(anyhow!(
@@ -743,6 +748,9 @@ pub fn run_images_to_images_mode(
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(enable_layout_detection);
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
+    if let Some(cfg) = binarization {
+        pipeline_config.set_binarization(cfg);
+    }
 
     for (idx, image_path) in image_files.iter().enumerate() {
         println!(

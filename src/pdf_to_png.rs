@@ -13,18 +13,22 @@ pub fn run_pdf_to_png_mode(
     _config: crate::types::AppConfig,
     png_quantize: bool,
     png_colors: u16,
+    output_dir: Option<std::path::PathBuf>,
 ) -> Result<()> {
     // Simple prints for progress in this utility mode
     use std::fs;
 
-    // Create output directory
-    let output_dir = pdf_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join(format!(
-            "{}_png_output",
-            pdf_path.file_stem().unwrap().to_string_lossy()
-        ));
+    // Honor an explicit --output directory; otherwise default to `<pdf>_png_output/`
+    // next to the input PDF.
+    let output_dir = output_dir.unwrap_or_else(|| {
+        pdf_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(format!(
+                "{}_png_output",
+                pdf_path.file_stem().unwrap().to_string_lossy()
+            ))
+    });
 
     fs::create_dir_all(&output_dir)?;
 
