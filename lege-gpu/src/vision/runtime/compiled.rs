@@ -234,9 +234,12 @@ impl CompiledGraph {
         );
 
         // ── Pre-compile pipelines (one per unique WGSL source) ────────────
-        let mut pipeline_cache: HashMap<usize, Arc<crate::vision::wgpu::ComputePipeline>> =
+        // Keyed by shader source value, not pointer: `const &str` addresses
+        // are not guaranteed stable across reference sites, and a missed hit
+        // would compile (and pay naga validation for) the same WGSL twice.
+        let mut pipeline_cache: HashMap<&'static str, Arc<crate::vision::wgpu::ComputePipeline>> =
             HashMap::new();
-        let mut bgl_cache: HashMap<usize, Arc<crate::vision::wgpu::BindGroupLayout>> =
+        let mut bgl_cache: HashMap<&'static str, Arc<crate::vision::wgpu::BindGroupLayout>> =
             HashMap::new();
 
         // ── Build compiled steps ──────────────────────────────────────────
@@ -267,6 +270,18 @@ impl CompiledGraph {
             }
 
             for spec in step_specs {
+                // Fail loudly at build time: an over-limit dispatch would
+                // otherwise surface as a cryptic wgpu validation error (or,
+                // for flat kernels without the 2D-grid recovery, silently
+                // wrong indices).
+                if spec.dispatch.iter().any(|&d| d > 65535) {
+                    bail!(
+                        "compiled: op {} ({}) dispatch {:?} exceeds the 65535 per-dimension workgroup limit",
+                        op_idx,
+                        op.name,
+                        spec.dispatch
+                    );
+                }
                 let op_kind = step_profile_kind(&op.kind, spec.wgsl);
                 if dump_conv_shapes {
                     if let PlannedOpKind::Conv2d(_) = &op.kind {
@@ -282,8 +297,7 @@ impl CompiledGraph {
                         );
                     }
                 }
-                // Get or create pipeline keyed by WGSL pointer (unique per op type)
-                let wgsl_key = spec.wgsl.as_ptr() as usize;
+                let wgsl_key = spec.wgsl;
                 let (pipeline, bgl) = if let (Some(p), Some(b)) =
                     (pipeline_cache.get(&wgsl_key), bgl_cache.get(&wgsl_key))
                 {
@@ -605,10 +619,11 @@ impl CompiledGraph {
                     self.output_bytes[i]
                 );
             }
-            let raw = mapped.to_vec();
+            // Single copy: mapped ranges are at least 8-byte aligned, so the
+            // f32 view is valid and we can skip the intermediate Vec<u8>.
+            let data: Vec<f32> = bytemuck::cast_slice(&mapped).to_vec();
             drop(mapped);
             self.output_readback_bufs[i].unmap();
-            let data: Vec<f32> = bytemuck::cast_slice(&raw).to_vec();
             result.insert(
                 name.clone(),
                 reference::Tensor::new(self.output_shapes[i].clone(), data)?,

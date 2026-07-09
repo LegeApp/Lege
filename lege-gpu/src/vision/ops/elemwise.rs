@@ -1,9 +1,4 @@
-use anyhow::{Result, bail};
 
-use super::common::{broadcast_strides_u32, c_strides_u32, f32_from_bytes, linear_grid};
-use crate::vision::onnx::types::ElementwiseKind;
-use crate::vision::reference::{self, Tensor};
-use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 // params layout (22 x u32):
 //   [0] num_elems  [1] rank  [2] op(0=add,1=mul,2=sub,3=div)  [3] _pad
@@ -74,54 +69,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
 }
 "#;
 
-pub(crate) async fn run_elementwise(
-    ctx: &GpuContext,
-    kind: &ElementwiseKind,
-    inputs: &[Tensor],
-) -> Result<Tensor> {
-    if inputs.len() != 2 {
-        bail!("elementwise expects 2 inputs, got {}", inputs.len());
-    }
-    let out_shape = reference::broadcast_shape(&inputs[0].shape, &inputs[1].shape)?;
-    let num_elems = out_shape.iter().product::<usize>();
-    let rank = out_shape.len();
-    if rank > 6 {
-        bail!("elementwise GPU: rank {rank} exceeds maximum 6");
-    }
-
-    let op_code: u32 = match kind {
-        ElementwiseKind::Add => 0,
-        ElementwiseKind::Mul => 1,
-        ElementwiseKind::Sub => 2,
-        ElementwiseKind::Div => 3,
-        ElementwiseKind::Max => 4,
-    };
-
-    let out_s = c_strides_u32(&out_shape);
-    let in0_s = broadcast_strides_u32(&out_shape, &inputs[0].shape);
-    let in1_s = broadcast_strides_u32(&out_shape, &inputs[1].shape);
-
-    let mut params = [0u32; 22];
-    params[0] = num_elems as u32;
-    params[1] = rank as u32;
-    params[2] = op_code;
-    params[3] = 0;
-    params[4..10].copy_from_slice(&out_s);
-    params[10..16].copy_from_slice(&in0_s);
-    params[16..22].copy_from_slice(&in1_s);
-
-    let raw = dispatch_compute(
-        ctx,
-        ELEMENTWISE_WGSL,
-        &[
-            bytemuck::cast_slice(&inputs[0].data),
-            bytemuck::cast_slice(&inputs[1].data),
-        ],
-        num_elems * 4,
-        bytemuck::cast_slice(&params),
-        linear_grid(num_elems.div_ceil(256)),
-    )
-    .await?;
-
-    Tensor::new(out_shape, f32_from_bytes(&raw))
-}

@@ -1,8 +1,12 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
-use super::common::f32_from_bytes;
 use crate::vision::onnx::types::Conv2dPlan;
+
+#[cfg(test)]
+use super::common::f32_from_bytes;
+#[cfg(test)]
 use crate::vision::reference::Tensor;
+#[cfg(test)]
 use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 // params (19 x u32):
@@ -78,102 +82,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     out[i] = sum;
 }
 "#;
-
-pub(crate) async fn run_conv2d(
-    ctx: &GpuContext,
-    plan: &Conv2dPlan,
-    inputs: &[Tensor],
-) -> Result<Tensor> {
-    if inputs.len() < 2 || inputs.len() > 3 {
-        bail!("Conv2d expects 2-3 inputs (input, weight, optional bias)");
-    }
-    let x = &inputs[0];
-    let w = &inputs[1];
-    let bias_opt = inputs.get(2);
-
-    if x.shape.len() != 4 || w.shape.len() != 4 {
-        bail!("Conv2d: input and weight must be rank-4");
-    }
-    let n = x.shape[0];
-    let cin = x.shape[1];
-    let hin = x.shape[2];
-    let win = x.shape[3];
-    let cout = w.shape[0];
-    let cin_per_group = w.shape[1];
-    let kh = w.shape[2];
-    let kw = w.shape[3];
-    let group = plan.group as usize;
-    if cin != cin_per_group * group || cout % group != 0 {
-        bail!("Conv2d grouped channel mismatch");
-    }
-    let cout_per_group = cout / group;
-    if let Some(b) = bias_opt {
-        if b.shape != [cout] {
-            bail!("Conv2d bias shape mismatch: {:?} vs [{cout}]", b.shape);
-        }
-    }
-
-    let hout = conv_out_usize(
-        hin,
-        plan.pads[0],
-        plan.pads[2],
-        plan.dilations[0],
-        kh,
-        plan.strides[0],
-    )?;
-    let wout = conv_out_usize(
-        win,
-        plan.pads[1],
-        plan.pads[3],
-        plan.dilations[1],
-        kw,
-        plan.strides[1],
-    )?;
-    let num_out = n * cout * hout * wout;
-
-    let bias_data: Vec<f32> = match bias_opt {
-        Some(b) => b.data.clone(),
-        None => vec![0.0f32; 1],
-    };
-
-    let params = [
-        num_out as u32,
-        cin as u32,
-        hin as u32,
-        win as u32,
-        cout as u32,
-        cin_per_group as u32,
-        kh as u32,
-        kw as u32,
-        hout as u32,
-        wout as u32,
-        plan.strides[0] as u32,
-        plan.strides[1] as u32,
-        plan.pads[0] as u32,
-        plan.pads[1] as u32,
-        plan.dilations[0] as u32,
-        plan.dilations[1] as u32,
-        bias_opt.is_some() as u32,
-        cout_per_group as u32,
-        n as u32,
-    ];
-
-    let raw = dispatch_compute(
-        ctx,
-        CONV2D_WGSL,
-        &[
-            bytemuck::cast_slice(&x.data),
-            bytemuck::cast_slice(&w.data),
-            bytemuck::cast_slice(&bias_data),
-        ],
-        num_out * 4,
-        bytemuck::cast_slice(&params),
-        super::common::linear_grid(num_out.div_ceil(256)),
-    )
-    .await?;
-
-    Tensor::new(vec![n, cout, hout, wout], f32_from_bytes(&raw))
-}
 
 // ── Tiled 1×1 conv as GEMM ────────────────────────────────────────────────────
 //
@@ -3137,18 +3045,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-pub(crate) fn is_conv1x1_gemm(plan: &Conv2dPlan, w_shape: &[usize]) -> bool {
-    w_shape[2] == 1
-        && w_shape[3] == 1
-        && plan.group == 1
-        && plan.pads == [0, 0, 0, 0]
-        && plan.dilations == [1, 1]
-}
-
-pub(crate) fn is_conv3x3_tiled(plan: &Conv2dPlan, w_shape: &[usize]) -> bool {
-    w_shape[2] == 3 && w_shape[3] == 3 && conv3x3_tile_patch_fits(plan)
-}
-
 pub(crate) fn conv3x3_tile_patch_fits(plan: &Conv2dPlan) -> bool {
     let patch_h = 16usize * plan.strides[0] as usize + 2usize * plan.dilations[0] as usize;
     let patch_w = 16usize * plan.strides[1] as usize + 2usize * plan.dilations[1] as usize;
@@ -3156,7 +3052,9 @@ pub(crate) fn conv3x3_tile_patch_fits(plan: &Conv2dPlan) -> bool {
 }
 
 /// 3×3 stride-1 dilation-1 conv via the 2×2-spatial × 8-channel register tile.
-/// Mirrors the compiled-executor selection so gpu-diff can validate it.
+/// Test harness: mirrors the compiled-executor selection so the shader can be
+/// validated against the CPU reference.
+#[cfg(test)]
 pub(crate) async fn run_conv3x3_co8_sp2x2_s1d1(
     ctx: &GpuContext,
     plan: &Conv2dPlan,
@@ -3207,85 +3105,10 @@ pub(crate) async fn run_conv3x3_co8_sp2x2_s1d1(
     Tensor::new(vec![1, cout, hout, wout], f32_from_bytes(&raw))
 }
 
-pub(crate) async fn run_conv3x3_tiled(
-    ctx: &GpuContext,
-    plan: &Conv2dPlan,
-    inputs: &[Tensor],
-) -> Result<Tensor> {
-    let x = &inputs[0];
-    let w = &inputs[1];
-    let bias_opt = inputs.get(2);
-    let cin = x.shape[1];
-    let hin = x.shape[2];
-    let win = x.shape[3];
-    let cout = w.shape[0];
-    let cin_per_group = w.shape[1];
-    let kh = 3usize;
-    let kw = 3usize;
-    let group = plan.group as usize;
-    let hout = conv_out_usize(
-        hin,
-        plan.pads[0],
-        plan.pads[2],
-        plan.dilations[0],
-        kh,
-        plan.strides[0],
-    )?;
-    let wout = conv_out_usize(
-        win,
-        plan.pads[1],
-        plan.pads[3],
-        plan.dilations[1],
-        kw,
-        plan.strides[1],
-    )?;
-    let num_out = cout * hout * wout;
-    let has_bias = bias_opt.is_some();
-    let bias_data: Vec<f32> = match bias_opt {
-        Some(b) => b.data.clone(),
-        None => vec![0.0f32; 1],
-    };
-    let cout_per_group = cout / group;
-    let _ = cout_per_group;
-    let p = [
-        cout as u32,
-        cin as u32,
-        hin as u32,
-        win as u32,
-        hout as u32,
-        wout as u32,
-        kh as u32,
-        kw as u32,
-        plan.strides[0] as u32,
-        plan.strides[1] as u32,
-        plan.pads[0] as u32,
-        plan.pads[1] as u32,
-        plan.dilations[0] as u32,
-        plan.dilations[1] as u32,
-        has_bias as u32,
-        cin_per_group as u32,
-    ];
-    let wg_x = wout.div_ceil(16) as u32;
-    let wg_y = hout.div_ceil(16) as u32;
-    let wg_z = cout as u32;
-    let raw = dispatch_compute(
-        ctx,
-        CONV3X3_TILED_WGSL,
-        &[
-            bytemuck::cast_slice(&x.data),
-            bytemuck::cast_slice(&w.data),
-            bytemuck::cast_slice(&bias_data),
-        ],
-        num_out * 4,
-        bytemuck::cast_slice(&p),
-        (wg_x, wg_y, wg_z),
-    )
-    .await?;
-    Tensor::new(vec![1, cout, hout, wout], f32_from_bytes(&raw))
-}
-
 /// Stride-1 same-size 1×1 conv via the register-blocked GEMM kernel.
-/// Mirrors the compiled-executor selection so gpu-diff can validate it.
+/// Test harness: mirrors the compiled-executor selection so the shader can be
+/// validated against the CPU reference.
+#[cfg(test)]
 pub(crate) async fn run_conv1x1_gemm_s1(
     ctx: &GpuContext,
     plan: &Conv2dPlan,
@@ -3327,55 +3150,6 @@ pub(crate) async fn run_conv1x1_gemm_s1(
     Tensor::new(vec![1, cout, hin, win], f32_from_bytes(&raw))
 }
 
-pub(crate) async fn run_conv1x1(
-    ctx: &GpuContext,
-    plan: &Conv2dPlan,
-    inputs: &[Tensor],
-) -> Result<Tensor> {
-    let x = &inputs[0];
-    let w = &inputs[1];
-    let bias_opt = inputs.get(2);
-    let cin = x.shape[1];
-    let hin = x.shape[2];
-    let win = x.shape[3];
-    let cout = w.shape[0];
-    let hout = conv_out_usize(hin, 0, 0, 1, 1, plan.strides[0])?;
-    let wout = conv_out_usize(win, 0, 0, 1, 1, plan.strides[1])?;
-    let num_out = cout * hout * wout;
-    let has_bias = bias_opt.is_some();
-    let bias_data: Vec<f32> = match bias_opt {
-        Some(b) => b.data.clone(),
-        None => vec![0.0f32; 1],
-    };
-    let p = [
-        cout as u32,
-        cin as u32,
-        hout as u32,
-        wout as u32,
-        hin as u32,
-        win as u32,
-        plan.strides[0] as u32,
-        plan.strides[1] as u32,
-        has_bias as u32,
-    ];
-    let wg_x = cout.div_ceil(16) as u32;
-    let wg_y = (hout * wout).div_ceil(16) as u32;
-    let raw = dispatch_compute(
-        ctx,
-        CONV1X1_WGSL,
-        &[
-            bytemuck::cast_slice(&x.data),
-            bytemuck::cast_slice(&w.data),
-            bytemuck::cast_slice(&bias_data),
-        ],
-        num_out * 4,
-        bytemuck::cast_slice(&p),
-        (wg_x, wg_y, 1),
-    )
-    .await?;
-    Tensor::new(vec![1, cout, hout, wout], f32_from_bytes(&raw))
-}
-
 pub(crate) fn conv_out_usize(
     inp: usize,
     pad0: i64,
@@ -3389,8 +3163,9 @@ pub(crate) fn conv_out_usize(
 }
 
 /// 5×5 stride-1, dilation 1..3, group-1 conv via the 2×2-spatial × 8-channel
-/// register tile. Mirrors the compiled-executor routing so gpu-diff / tests can
-/// validate `CONV5X5_CO8_SP2X2_DIL_WGSL` against the CPU reference.
+/// register tile. Test harness: mirrors the compiled-executor routing so tests
+/// can validate `CONV5X5_CO8_SP2X2_DIL_WGSL` against the CPU reference.
+#[cfg(test)]
 pub(crate) async fn run_conv5x5_co8_sp2x2_dil(
     ctx: &GpuContext,
     plan: &Conv2dPlan,
@@ -3444,7 +3219,9 @@ pub(crate) async fn run_conv5x5_co8_sp2x2_dil(
 }
 
 /// 3×3 stride-1, dilation 1..5, group-1 conv via the 2×2-spatial × 8-channel
-/// register tile. Mirrors the compiled-executor routing for validation.
+/// register tile. Test harness: mirrors the compiled-executor routing for
+/// validation against the CPU reference.
+#[cfg(test)]
 pub(crate) async fn run_conv3x3_co8_sp2x2_dil(
     ctx: &GpuContext,
     plan: &Conv2dPlan,
@@ -3590,6 +3367,88 @@ mod tests {
             "3x3 dil={dil} max abs diff {max_diff} exceeds tolerance"
         );
         Ok(())
+    }
+
+    async fn check_3x3_s1d1() -> Result<()> {
+        let ctx = match GpuContext::new().await {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let (cin, cout, h, w) = (12usize, 20usize, 40usize, 37usize);
+        let plan = Conv2dPlan {
+            group: 1,
+            pads: [1, 1, 1, 1],
+            strides: [1, 1],
+            dilations: [1, 1],
+            kernel_shape: [3, 3],
+        };
+        let x = Tensor::new(vec![1, cin, h, w], fill(cin * h * w, 7))?;
+        let wt = Tensor::new(vec![cout, cin, 3, 3], fill(cout * cin * 9, 8))?;
+        let bias = Tensor::new(vec![cout], fill(cout, 9))?;
+        let inputs = [x.clone(), wt.clone(), bias.clone()];
+
+        let gpu = run_conv3x3_co8_sp2x2_s1d1(&ctx, &plan, &inputs).await?;
+        let cpu =
+            reference::run_op(&PlannedOpKind::Conv2d(plan.clone()), &[&x, &wt, &bias])?.remove(0);
+
+        assert_eq!(gpu.shape, cpu.shape, "3x3 s1d1 shape mismatch");
+        let max_diff = gpu
+            .data
+            .iter()
+            .zip(&cpu.data)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_diff < 1e-3, "3x3 s1d1 max abs diff {max_diff}");
+        Ok(())
+    }
+
+    async fn check_1x1_gemm(cin: usize, h: usize, w: usize) -> Result<()> {
+        let ctx = match GpuContext::new().await {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let cout = 24usize;
+        let plan = Conv2dPlan {
+            group: 1,
+            pads: [0, 0, 0, 0],
+            strides: [1, 1],
+            dilations: [1, 1],
+            kernel_shape: [1, 1],
+        };
+        let x = Tensor::new(vec![1, cin, h, w], fill(cin * h * w, 10))?;
+        let wt = Tensor::new(vec![cout, cin, 1, 1], fill(cout * cin, 11))?;
+        let bias = Tensor::new(vec![cout], fill(cout, 12))?;
+        let inputs = [x.clone(), wt.clone(), bias.clone()];
+
+        let gpu = run_conv1x1_gemm_s1(&ctx, &plan, &inputs).await?;
+        let cpu =
+            reference::run_op(&PlannedOpKind::Conv2d(plan.clone()), &[&x, &wt, &bias])?.remove(0);
+
+        assert_eq!(gpu.shape, cpu.shape, "1x1 gemm shape mismatch");
+        let max_diff = gpu
+            .data
+            .iter()
+            .zip(&cpu.data)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_diff < 1e-3, "1x1 gemm cin={cin} max abs diff {max_diff}");
+        Ok(())
+    }
+
+    #[test]
+    fn conv3x3_s1d1_matches_reference() {
+        pollster::block_on(async {
+            check_3x3_s1d1().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn conv1x1_gemm_matches_reference() {
+        pollster::block_on(async {
+            // Vec4 path (cin and plane 4-aligned) and scalar path.
+            check_1x1_gemm(16, 40, 40).await.unwrap();
+            check_1x1_gemm(13, 39, 37).await.unwrap();
+        });
     }
 
     #[test]

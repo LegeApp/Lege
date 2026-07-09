@@ -194,6 +194,7 @@ impl GpuContext {
 //   N        : read_write storage (output)
 //   N+1      : read-only storage (params)
 
+#[cfg(test)]
 pub(crate) async fn dispatch_compute(
     ctx: &GpuContext,
     wgsl: &str,

@@ -37,6 +37,7 @@ pub(crate) fn broadcast_strides_u32(out_shape: &[usize], in_shape: &[usize]) -> 
     out
 }
 
+#[cfg(test)]
 pub(crate) fn f32_from_bytes(bytes: &[u8]) -> Vec<f32> {
     bytemuck::cast_slice(bytes).to_vec()
 }

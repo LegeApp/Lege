@@ -1,10 +1,4 @@
-use anyhow::{Result, bail};
 
-use super::common::f32_from_bytes;
-use super::conv::conv_out_usize;
-use crate::vision::onnx::types::Pool2dPlan;
-use crate::vision::reference::Tensor;
-use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 // params (14 x u32):
 //   [0] num_elems  [1] channels  [2] hin  [3] win
@@ -56,65 +50,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-pub(crate) async fn run_maxpool2d(
-    ctx: &GpuContext,
-    plan: &Pool2dPlan,
-    input: &Tensor,
-) -> Result<Tensor> {
-    if input.shape.len() != 4 {
-        bail!("MaxPool2d: expected rank-4 input");
-    }
-    let n = input.shape[0];
-    if n != 1 {
-        bail!("MaxPool2d GPU: batch must be 1 (got {n})");
-    }
-    let channels = input.shape[1];
-    let hin = input.shape[2];
-    let win = input.shape[3];
-    let kh = plan.kernel_shape[0] as usize;
-    let kw = plan.kernel_shape[1] as usize;
-    let hout = conv_out_usize(
-        hin,
-        plan.pads[0],
-        plan.pads[2],
-        plan.dilations[0],
-        kh,
-        plan.strides[0],
-    )?;
-    let wout = conv_out_usize(
-        win,
-        plan.pads[1],
-        plan.pads[3],
-        plan.dilations[1],
-        kw,
-        plan.strides[1],
-    )?;
-    let num_out = channels * hout * wout;
-
-    let params = [
-        num_out as u32,
-        channels as u32,
-        hin as u32,
-        win as u32,
-        hout as u32,
-        wout as u32,
-        kh as u32,
-        kw as u32,
-        plan.strides[0] as u32,
-        plan.strides[1] as u32,
-        plan.pads[0] as u32,
-        plan.pads[1] as u32,
-        plan.dilations[0] as u32,
-        plan.dilations[1] as u32,
-    ];
-    let raw = dispatch_compute(
-        ctx,
-        MAXPOOL2D_WGSL,
-        &[bytemuck::cast_slice(&input.data)],
-        num_out * 4,
-        bytemuck::cast_slice(&params),
-        (num_out.div_ceil(256) as u32, 1, 1),
-    )
-    .await?;
-    Tensor::new(vec![1, channels, hout, wout], f32_from_bytes(&raw))
-}

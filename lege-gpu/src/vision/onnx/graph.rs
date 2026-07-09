@@ -479,8 +479,10 @@ impl PreparedGraph {
             }
         }
 
-        let mut tensors = self.constants.clone();
-        tensors.insert(input_name, input.clone());
+        // Computed values only; constants are borrowed from `self.constants`
+        // at lookup so the (potentially large) weight set is never cloned.
+        let mut computed = HashMap::<String, Tensor>::new();
+        computed.insert(input_name, input.clone());
 
         for (index, op) in self.planned_ops.iter().enumerate() {
             // Borrow inputs by reference (no clone) and drop the borrow before
@@ -490,8 +492,9 @@ impl PreparedGraph {
                     .inputs
                     .iter()
                     .map(|name| {
-                        tensors
+                        computed
                             .get(name)
+                            .or_else(|| self.constants.get(name))
                             .with_context(|| format!("missing CPU tensor `{name}` for {}", op.name))
                     })
                     .collect::<Result<Vec<&Tensor>>>()?;
@@ -499,15 +502,15 @@ impl PreparedGraph {
                     .with_context(|| format!("CPU reference failed at {}", op.name))?
             };
             for (name, tensor) in op.outputs.iter().zip(outputs) {
-                tensors.insert(name.clone(), tensor);
+                computed.insert(name.clone(), tensor);
             }
-            // Free inputs whose last use was this op and that are not outputs.
+            // Free computed inputs whose last use was this op and that are not
+            // graph outputs.
             for name in &op.inputs {
                 if last_use.get(name.as_str()) == Some(&index)
                     && !self.outputs.iter().any(|o| o == name)
-                    && !self.constants.contains_key(name)
                 {
-                    tensors.remove(name);
+                    computed.remove(name);
                 }
             }
         }
@@ -515,7 +518,7 @@ impl PreparedGraph {
         Ok(self
             .outputs
             .iter()
-            .filter_map(|name| tensors.remove(name).map(|t| (name.clone(), t)))
+            .filter_map(|name| computed.remove(name).map(|t| (name.clone(), t)))
             .collect())
     }
 

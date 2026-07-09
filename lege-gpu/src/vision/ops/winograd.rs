@@ -20,10 +20,14 @@
 //! [`weight_transform_f23`] at graph-prep time, and the input/output transform
 //! WGSL must match [`input_transform_f23`] / [`output_transform_f23`].
 
+#[cfg(test)]
 use anyhow::Result;
 
+#[cfg(test)]
 use super::common::f32_from_bytes;
+#[cfg(test)]
 use crate::vision::reference::Tensor;
+#[cfg(test)]
 use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 // ── GPU input transform: x[1,Cin,H,W] → V[16, Cin, P] ───────────────────────
@@ -284,6 +288,7 @@ fn main(
 
 /// Run the batched 16-GEMM: `u` flat `[16*Cout*Cin]`, `v` flat `[16*Cin*P]`
 /// → M flat `[16*Cout*P]`.
+#[cfg(test)]
 pub(crate) async fn run_batched_gemm(
     ctx: &GpuContext,
     u: &[f32],
@@ -306,6 +311,7 @@ pub(crate) async fn run_batched_gemm(
 }
 
 /// Run the GPU input transform, returning V flat `[16*Cin*P]` (ξ-major).
+#[cfg(test)]
 pub(crate) async fn run_input_transform(
     ctx: &GpuContext,
     x: &Tensor,
@@ -331,6 +337,7 @@ pub(crate) async fn run_input_transform(
 }
 
 /// Run the GPU output transform on `m` flat `[16*Cout*P]` → y `[1,Cout,H,W]`.
+#[cfg(test)]
 pub(crate) async fn run_output_transform(
     ctx: &GpuContext,
     m: &[f32],

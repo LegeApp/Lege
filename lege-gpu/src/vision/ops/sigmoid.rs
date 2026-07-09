@@ -1,8 +1,4 @@
-use anyhow::Result;
 
-use super::common::f32_from_bytes;
-use crate::vision::reference::Tensor;
-use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 pub(crate) const SIGMOID_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       inp    : array<f32>;
@@ -64,17 +60,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-pub(crate) async fn run_sigmoid(ctx: &GpuContext, input: &Tensor) -> Result<Tensor> {
-    let len = input.data.len();
-    let params = [len as u32];
-    let raw = dispatch_compute(
-        ctx,
-        SIGMOID_WGSL,
-        &[bytemuck::cast_slice(&input.data)],
-        len * 4,
-        bytemuck::cast_slice(&params),
-        (len.div_ceil(256) as u32, 1, 1),
-    )
-    .await?;
-    Tensor::new(input.shape.clone(), f32_from_bytes(&raw))
-}

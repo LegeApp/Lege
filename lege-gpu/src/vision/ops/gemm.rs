@@ -3,11 +3,7 @@
 //! C is unidirectionally broadcastable to [M,N] (we support len N, M*N, or 1).
 //! 2D only — the fused MatMul+Add classifier heads these models use.
 
-use anyhow::{Result, bail};
 
-use super::common::f32_from_bytes;
-use crate::vision::reference::Tensor;
-use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 // params: [M, N, K, transA, transB, has_bias, bias_len, alpha_bits, beta_bits]
 pub(crate) const GEMM_WGSL: &str = r#"
@@ -49,59 +45,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out[i] = y;
 }
 "#;
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_gemm(
-    ctx: &GpuContext,
-    a: &Tensor,
-    b: &Tensor,
-    bias: Option<&Tensor>,
-    alpha: f32,
-    beta: f32,
-    trans_a: bool,
-    trans_b: bool,
-) -> Result<Tensor> {
-    if a.shape.len() != 2 || b.shape.len() != 2 {
-        bail!("Gemm expects 2D A and B, got {:?} {:?}", a.shape, b.shape);
-    }
-    let (m, ka) = if trans_a {
-        (a.shape[1], a.shape[0])
-    } else {
-        (a.shape[0], a.shape[1])
-    };
-    let (kb, n) = if trans_b {
-        (b.shape[1], b.shape[0])
-    } else {
-        (b.shape[0], b.shape[1])
-    };
-    if ka != kb {
-        bail!("Gemm contracting dims mismatch: {ka} vs {kb}");
-    }
-    let dummy = [0.0f32];
-    let bias_data = bias.map(|t| t.data.as_slice()).unwrap_or(&dummy);
-    let params = [
-        m as u32,
-        n as u32,
-        ka as u32,
-        trans_a as u32,
-        trans_b as u32,
-        bias.is_some() as u32,
-        bias.map(|t| t.data.len()).unwrap_or(0) as u32,
-        alpha.to_bits(),
-        beta.to_bits(),
-    ];
-    let raw = dispatch_compute(
-        ctx,
-        GEMM_WGSL,
-        &[
-            bytemuck::cast_slice(&a.data),
-            bytemuck::cast_slice(&b.data),
-            bytemuck::cast_slice(bias_data),
-        ],
-        m * n * 4,
-        bytemuck::cast_slice(&params),
-        ((m * n).div_ceil(256) as u32, 1, 1),
-    )
-    .await?;
-    Tensor::new(vec![m, n], f32_from_bytes(&raw))
-}

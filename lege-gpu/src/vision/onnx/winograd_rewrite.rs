@@ -201,7 +201,7 @@ mod tests {
             return;
         }
 
-        let model = load_model(path).expect("load runtime YOLO model");
+        let model = load_model(&path).expect("load runtime YOLO model");
         let graph = PreparedGraph::from_model(&model).expect("prepare runtime YOLO graph");
         let input_count = graph
             .planned_ops

@@ -1,8 +1,4 @@
-use anyhow::{Result, bail};
 
-use super::common::f32_from_bytes;
-use crate::vision::reference::Tensor;
-use crate::vision::runtime::device::{GpuContext, dispatch_compute};
 
 // params: [0] row_count [1] dim [2] inner
 pub(crate) const SOFTMAX_WGSL: &str = r#"
@@ -38,27 +34,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-pub(crate) async fn run_softmax(ctx: &GpuContext, axis: usize, input: &Tensor) -> Result<Tensor> {
-    if axis >= input.shape.len() {
-        bail!(
-            "Softmax axis {axis} out of range for rank {}",
-            input.shape.len()
-        );
-    }
-    let outer = input.shape[..axis].iter().product::<usize>();
-    let dim = input.shape[axis];
-    let inner = input.shape[axis + 1..].iter().product::<usize>();
-    let row_count = outer * inner;
-    let params = [row_count as u32, dim as u32, inner as u32, 0];
-
-    let raw = dispatch_compute(
-        ctx,
-        SOFTMAX_WGSL,
-        &[bytemuck::cast_slice(&input.data)],
-        input.data.len() * 4,
-        bytemuck::cast_slice(&params),
-        (row_count.div_ceil(256) as u32, 1, 1),
-    )
-    .await?;
-    Tensor::new(input.shape.clone(), f32_from_bytes(&raw))
-}

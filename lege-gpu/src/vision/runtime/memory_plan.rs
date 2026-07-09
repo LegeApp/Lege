@@ -351,15 +351,23 @@ fn assign_reuse_slots(entries: &mut [BufferPlanEntry]) -> Vec<ReuseSlot> {
         let last_use = entry.last_use.unwrap_or(first_use);
         let bytes = entry.bytes;
 
+        // Any expired slot is a candidate: a smaller one can be grown, since
+        // physical buffers are sized to the max of their slot's tenants.
+        // Prefer the slot needing the least growth, then the tightest fit.
         let best_slot = slots
             .iter()
             .enumerate()
-            .filter(|(_, slot)| slot.last_use.saturating_add(1) < first_use && slot.bytes >= bytes)
-            .min_by_key(|(_, slot)| (slot.bytes, slot.last_use))
+            .filter(|(_, slot)| slot.last_use.saturating_add(1) < first_use)
+            .min_by_key(|(_, slot)| {
+                let growth = bytes.saturating_sub(slot.bytes);
+                let waste = slot.bytes.saturating_sub(bytes);
+                (growth, waste, slot.last_use)
+            })
             .map(|(index, _)| index);
 
         let slot_index = if let Some(slot_index) = best_slot {
             slots[slot_index].last_use = last_use;
+            slots[slot_index].bytes = slots[slot_index].bytes.max(bytes);
             slot_index
         } else {
             slots.push(ReuseSlot { bytes, last_use });
