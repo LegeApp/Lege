@@ -4,9 +4,9 @@ use lege::progress::{self, ProgressUpdate};
 use lege::text_loader::CLI_TEXT;
 use lege::{
     AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PageSelection,
-    PipelineConfig, error_println, info_println, is_ocr_available, run_images_to_images_mode,
-    run_layout_visualize_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
-    run_pdf_to_png_mode, run_png_mode, run_png_mode_with_config,
+    PipelineConfig, error_println, info_println, is_ocr_available, run_folder_layout_crop_debug,
+    run_images_to_images_mode, run_layout_visualize_mode, run_pdf_layout_crop_debug,
+    run_pdf_to_images_mode, run_pdf_to_png_mode, run_png_mode, run_png_mode_with_config,
 };
 
 mod version;
@@ -1128,13 +1128,18 @@ fn run_main() -> Result<()> {
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid PDF path"))?,
         )?;
-        let page_range = args.get(2).and_then(|c| {
-            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
-                Some(c.clone())
-            } else {
-                None
-            }
-        });
+        let page_range = args
+            .get(2)
+            .and_then(|c| {
+                if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            })
+            // "all" / "full" / "*" mean "every page" (None), consistent with the main
+            // pipeline and the documented `book.pdf all --crop-areas` example.
+            .and_then(interpret_page_range_arg);
         return run_pdf_to_png_mode(
             pdf_path,
             page_range,
@@ -1156,13 +1161,18 @@ fn run_main() -> Result<()> {
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid PDF path"))?,
         )?;
-        let page_range = args.get(2).and_then(|c| {
-            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
-                Some(c.clone())
-            } else {
-                None
-            }
-        });
+        let page_range = args
+            .get(2)
+            .and_then(|c| {
+                if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            })
+            // "all" / "full" / "*" mean "every page" (None), consistent with the main
+            // pipeline and the documented `book.pdf all --crop-areas` example.
+            .and_then(interpret_page_range_arg);
         return lege::pdf_to_png::run_pdf_to_jp2_debug_mode(
             pdf_path,
             page_range,
@@ -1182,13 +1192,18 @@ fn run_main() -> Result<()> {
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid PDF path"))?,
         )?;
-        let page_range = args.get(2).and_then(|c| {
-            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
-                Some(c.clone())
-            } else {
-                None
-            }
-        });
+        let page_range = args
+            .get(2)
+            .and_then(|c| {
+                if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            })
+            // "all" / "full" / "*" mean "every page" (None), consistent with the main
+            // pipeline and the documented `book.pdf all --crop-areas` example.
+            .and_then(interpret_page_range_arg);
         return run_layout_visualize_mode(pdf_path, page_range, vis_height, AppConfig::default());
     }
 
@@ -1198,6 +1213,31 @@ fn run_main() -> Result<()> {
             .get(1)
             .ok_or_else(|| anyhow!("Missing folder path for --png-folder"))?;
         let folder_path = PathBuf::from(sanitize_path_arg(folder_arg));
+
+        // `--png-folder --crop-areas` extracts regions from the folder's images rather
+        // than running the normal image->PDF pipeline. (Previously --crop-areas was
+        // silently dropped here and a PDF was produced.) Handled inside the crop-areas
+        // dispatch below via the folder path, so route there instead of falling through.
+        if let Some(ref crop_mode) = cli_opts.crop_areas {
+            let crop_kind = match crop_mode.as_str() {
+                "text" => DebugCropKind::Text,
+                "image" => DebugCropKind::Image,
+                "both" | _ => DebugCropKind::Both,
+            };
+            return tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(run_folder_layout_crop_debug(
+                    folder_path,
+                    cli_opts.output_dir,
+                    crop_kind,
+                    AppConfig::default(),
+                    cli_opts.debug_format.as_deref(),
+                    cli_opts.png_quantize,
+                    cli_opts.png_colors,
+                ));
+        }
+
         let pipeline_config = build_png_folder_pipeline_config(&cli_opts)?;
         let output_path = resolve_png_folder_output_path(
             cli_opts.output_dir.clone(),
@@ -1207,29 +1247,53 @@ fn run_main() -> Result<()> {
         return run_png_mode_with_config(folder_path, Some(output_path), pipeline_config, None);
     }
 
-    // Crop-areas debug: lege <file.pdf> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg]
+    // Crop-areas debug: lege <file.pdf|folder> [page-range] --crop-areas text|image|both [--out DIR] [--format png|jpg]
     if let Some(ref crop_mode) = cli_opts.crop_areas {
-        let pdf_arg = args
+        let input_arg = args
             .get(1)
-            .ok_or_else(|| anyhow!("Missing PDF path for --crop-areas"))?;
-        let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
-        validate_pdf_file(
-            pdf_path
-                .to_str()
-                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
-        )?;
+            .ok_or_else(|| anyhow!("Missing PDF or folder path for --crop-areas"))?;
+        let input_path = PathBuf::from(sanitize_path_arg(input_arg));
         let crop_kind = match crop_mode.as_str() {
             "text" => DebugCropKind::Text,
             "image" => DebugCropKind::Image,
             "both" | _ => DebugCropKind::Both,
         };
-        let page_range = args.get(2).and_then(|c| {
-            if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
-                Some(c.clone())
-            } else {
-                None
-            }
-        });
+
+        // A directory input crops every image in the folder; a file input is treated
+        // as a PDF and rendered page-by-page.
+        if input_path.is_dir() {
+            return tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(run_folder_layout_crop_debug(
+                    input_path,
+                    cli_opts.output_dir,
+                    crop_kind,
+                    AppConfig::default(),
+                    cli_opts.debug_format.as_deref(),
+                    cli_opts.png_quantize,
+                    cli_opts.png_colors,
+                ));
+        }
+
+        let pdf_path = input_path;
+        validate_pdf_file(
+            pdf_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid PDF path"))?,
+        )?;
+        let page_range = args
+            .get(2)
+            .and_then(|c| {
+                if !c.starts_with('-') && !c.to_lowercase().ends_with(".pdf") {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            })
+            // "all" / "full" / "*" mean "every page" (None), consistent with the main
+            // pipeline and the documented `book.pdf all --crop-areas` example.
+            .and_then(interpret_page_range_arg);
         return tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
@@ -1284,7 +1348,9 @@ fn run_main() -> Result<()> {
             Some(args[1].clone())
         } else {
             None
-        };
+        }
+        // "all" / "full" / "*" -> every page (None), same as the other debug modes.
+        .and_then(interpret_page_range_arg);
 
         return run_pdf_to_images_mode(
             pdf_path,

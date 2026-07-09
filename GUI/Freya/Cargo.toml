@@ -10,6 +10,10 @@ path = "src/main.rs"
 [features]
 default = []
 dark-mode = []
+# Enables in-app debug tooling (debug-log viewer, Sanzo Wada theme browser) and
+# turns on the core crate's debug logging. Build via the workspace alias
+# `cargo build-debug-logging` / `cargo run-debug-logging`.
+debug-logging = ["lege/debug-logging"]
 
 [dependencies]
 # Keep this feature set aligned with the published Windows Skia binary cache.

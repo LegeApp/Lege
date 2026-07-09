@@ -93,6 +93,7 @@ pub struct GuiControlsText {
     pub binarization: String,
     pub threshold: String,
     pub k_factor: String,
+    pub custom_adaptive: String,
     pub fixed_threshold: String,
     pub heavy_model: String,
     pub target_device: String,

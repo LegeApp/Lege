@@ -193,6 +193,7 @@ fn is_supported_image(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Clone, Copy)]
 pub enum DebugCropKind {
     Text,
     Image,
@@ -254,7 +255,6 @@ pub async fn run_pdf_layout_crop_debug(
     )?;
 
     let target_height = pipeline_config.high_res_render_height();
-    let classifier = &crate::types::LABEL_CLASSIFIER;
     let ext = match save_format.map(|s| s.to_ascii_lowercase()) {
         Some(ref s) if s == "jpg" || s == "jpeg" => ".jpg",
         _ => ".png",
@@ -313,51 +313,177 @@ pub async fn run_pdf_layout_crop_debug(
             .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_num))?;
         let img: RgbImage = img_buf;
 
-        let detections = engine.detect_single_async(&img).await?;
-        let filtered: Vec<Detection> = match crop_kind {
-            DebugCropKind::Text => detections
-                .into_iter()
-                .filter(|d| classifier.is_text_label(d))
-                .collect(),
-            DebugCropKind::Image => detections
-                .into_iter()
-                .filter(|d| classifier.is_image_label(d))
-                .collect(),
-            DebugCropKind::Both => detections,
-        };
+        let saved = detect_and_save_regions(
+            &mut engine,
+            &img,
+            crop_kind,
+            &output_dir,
+            *page_num,
+            ext,
+            png_quantize,
+            png_colors,
+        )
+        .await?;
+        info_println!("Saved {} regions from page {}", saved, page_num);
+    }
 
-        if filtered.is_empty() {
-            debug_println!("No regions on page {}", page_num);
+    info_println!("Region cropping complete: {}", output_dir.display());
+    Ok(())
+}
+
+/// Run YOLO layout detection on a single full-resolution page image, crop the
+/// detected regions (filtered by `crop_kind`), and write each as an image file.
+/// Returns the number of regions saved. Shared by the PDF and image-folder crop
+/// paths so both behave identically.
+#[allow(clippy::too_many_arguments)]
+async fn detect_and_save_regions(
+    engine: &mut YoloEngine,
+    img: &RgbImage,
+    crop_kind: DebugCropKind,
+    output_dir: &Path,
+    page_num: usize,
+    ext: &str,
+    png_quantize: bool,
+    png_colors: u16,
+) -> Result<usize> {
+    let classifier = &crate::types::LABEL_CLASSIFIER;
+    let detections = engine.detect_single_async(img).await?;
+    let filtered: Vec<Detection> = match crop_kind {
+        DebugCropKind::Text => detections
+            .into_iter()
+            .filter(|d| classifier.is_text_label(d))
+            .collect(),
+        DebugCropKind::Image => detections
+            .into_iter()
+            .filter(|d| classifier.is_image_label(d))
+            .collect(),
+        DebugCropKind::Both => detections,
+    };
+
+    if filtered.is_empty() {
+        debug_println!("No regions on page {}", page_num);
+        return Ok(0);
+    }
+
+    let mut saved = 0usize;
+    let pw = img.width() as f32;
+    let ph = img.height() as f32;
+    for (area_idx, det) in filtered.iter().enumerate() {
+        let x1 = det.bbox[0].floor().clamp(0.0, pw) as u32;
+        let y1 = det.bbox[1].floor().clamp(0.0, ph) as u32;
+        let x2 = det.bbox[2].ceil().clamp(0.0, pw) as u32;
+        let y2 = det.bbox[3].ceil().clamp(0.0, ph) as u32;
+        if x2 <= x1 || y2 <= y1 {
             continue;
         }
-
-        let mut saved = 0usize;
-        let pw = img.width() as f32;
-        let ph = img.height() as f32;
-        for (area_idx, det) in filtered.iter().enumerate() {
-            let x1 = det.bbox[0].floor().clamp(0.0, pw) as u32;
-            let y1 = det.bbox[1].floor().clamp(0.0, ph) as u32;
-            let x2 = det.bbox[2].ceil().clamp(0.0, pw) as u32;
-            let y2 = det.bbox[3].ceil().clamp(0.0, ph) as u32;
-            if x2 <= x1 || y2 <= y1 {
-                continue;
-            }
-            let w = x2 - x1;
-            let h = y2 - y1;
-            let crop = image::imageops::crop_imm(&img, x1, y1, w, h).to_image();
-            let filename = format!("page_{:04}_area_{:03}{}", page_num, area_idx + 1, ext);
-            let output_path = output_dir.join(filename);
-            if ext == ".png" && png_quantize {
-                crate::colorquant::write_quantized_rgb_png(
-                    &crop,
-                    &output_path,
-                    crate::colorquant::PngQuantizationOptions { colors: png_colors },
-                )?;
-            } else {
-                crop.save(&output_path).map_err(anyhow::Error::msg)?;
-            }
-            saved += 1;
+        let w = x2 - x1;
+        let h = y2 - y1;
+        let crop = image::imageops::crop_imm(img, x1, y1, w, h).to_image();
+        let filename = format!("page_{:04}_area_{:03}{}", page_num, area_idx + 1, ext);
+        let output_path = output_dir.join(filename);
+        if ext == ".png" && png_quantize {
+            crate::colorquant::write_quantized_rgb_png(
+                &crop,
+                &output_path,
+                crate::colorquant::PngQuantizationOptions { colors: png_colors },
+            )?;
+        } else {
+            crop.save(&output_path).map_err(anyhow::Error::msg)?;
         }
+        saved += 1;
+    }
+    Ok(saved)
+}
+
+/// Image-folder counterpart to [`run_pdf_layout_crop_debug`]: read every supported
+/// image in `folder` at its native resolution, run layout detection, and write the
+/// cropped regions. Unlike the production folder pipeline this takes ALL images (no
+/// sequential-run heuristic) since region extraction should never silently drop pages.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_folder_layout_crop_debug(
+    folder: PathBuf,
+    output: Option<PathBuf>,
+    crop_kind: DebugCropKind,
+    _config: AppConfig,
+    save_format: Option<&str>,
+    png_quantize: bool,
+    png_colors: u16,
+) -> Result<()> {
+    if !folder.is_dir() {
+        return Err(anyhow!("Path is not a directory: {}", folder.display()));
+    }
+
+    let output_dir = output.unwrap_or_else(|| {
+        let stem = folder
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "output".to_string());
+        folder.join(format!("{}_areas", stem))
+    });
+    std::fs::create_dir_all(&output_dir)?;
+
+    let image_files = collect_supported_images(&folder)?;
+    if image_files.is_empty() {
+        return Err(anyhow!(
+            "No supported image files found in {}",
+            folder.display()
+        ));
+    }
+    let total_pages = image_files.len();
+
+    info_println!(
+        "Folder Layout Crop Debug\n  Input: {}\n  Output: {}\n  Mode: {}\n  Pages: {}",
+        folder.display(),
+        output_dir.display(),
+        match crop_kind {
+            DebugCropKind::Text => "text",
+            DebugCropKind::Image => "image",
+            DebugCropKind::Both => "both",
+        },
+        total_pages
+    );
+
+    let mut pipeline_config = PipelineConfig::default();
+    pipeline_config.set_enable_layout_detection(true);
+
+    let mut engine = YoloEngine::new(
+        pipeline_config.model_path(),
+        YoloConfig::new(
+            pipeline_config.confidence_threshold(),
+            pipeline_config.nms_threshold(),
+            pipeline_config.nms_threshold(),
+            1,
+        ),
+    )?;
+
+    let ext = match save_format.map(|s| s.to_ascii_lowercase()) {
+        Some(ref s) if s == "jpg" || s == "jpeg" => ".jpg",
+        _ => ".png",
+    };
+
+    for (page_idx, path) in image_files.iter().enumerate() {
+        let page_num = page_idx + 1;
+        println!(
+            "Processing page {} of {} ({})",
+            page_num,
+            total_pages,
+            path.display()
+        );
+        let img = image::open(path)
+            .with_context(|| format!("Failed to open image: {}", path.display()))?
+            .to_rgb8();
+
+        let saved = detect_and_save_regions(
+            &mut engine,
+            &img,
+            crop_kind,
+            &output_dir,
+            page_num,
+            ext,
+            png_quantize,
+            png_colors,
+        )
+        .await?;
         info_println!("Saved {} regions from page {}", saved, page_num);
     }
 

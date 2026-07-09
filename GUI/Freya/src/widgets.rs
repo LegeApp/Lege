@@ -323,7 +323,7 @@ pub fn lege_main_shell(
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(336.))
+                                .height(Size::px(272.))
                                 .child(settings),
                         )
                         .child(

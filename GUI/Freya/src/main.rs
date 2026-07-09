@@ -7,6 +7,7 @@ mod colors;
 mod gui_text;
 mod logging;
 mod models;
+mod sanzowada;
 mod settings;
 mod version;
 mod widgets;

@@ -119,6 +119,9 @@ pub struct ProcessingOptions {
 
     pub use_heavy_binarization: bool,
     pub k_factor: f32,
+    /// When set, adaptive binarization uses the user-supplied `k_factor` and the
+    /// K-factor input is revealed; otherwise the default `k_factor` is used and hidden.
+    pub use_custom_adaptive: bool,
     pub use_fixed_threshold: bool,
     pub threshold_value: u8,
 }

@@ -116,6 +116,7 @@
       "binarization": "Binarisierung",
       "threshold": "Schwellenwert",
       "k_factor": "K-Faktor",
+      "custom_adaptive": "Adaptiv anpassen",
       "fixed_threshold": "Fester Schwellenwert",
       "heavy_model": "Schweres Modell",
       "target_device": "Zielauflösung",

@@ -261,6 +261,8 @@ pub fn collect_largest_sequential_image_run(folder: &Path) -> Result<Vec<PathBuf
         return Ok(all_files);
     }
 
+    let total_found = all_files.len();
+
     let mut by_ext: std::collections::HashMap<String, Vec<PathBuf>> =
         std::collections::HashMap::new();
     for file in all_files {
@@ -298,6 +300,22 @@ pub fn collect_largest_sequential_image_run(folder: &Path) -> Result<Vec<PathBuf
         if run.len() > best_run.len() {
             best_run = run;
         }
+    }
+
+    if best_run.len() < total_found {
+        // The production folder pipeline intentionally keeps only the longest run of
+        // consecutively-numbered pages so cover/ad/junk images in scan dumps (e.g.
+        // Internet Archive) don't leak into the book. That heuristic can drop pages
+        // silently when filenames aren't consecutive, so make the drop visible rather
+        // than losing data without a word.
+        crate::error_println!(
+            "Warning: {} of {} image files in {} were skipped (kept the longest run of \
+consecutively-numbered pages). Set LEGE_FOLDER_SOURCE_DEBUG=1 to list the selected files, \
+or rename the files so their trailing numbers are consecutive to include them all.",
+            total_found - best_run.len(),
+            total_found,
+            folder.display()
+        );
     }
 
     if folder_source_debug_enabled() {
@@ -509,4 +527,70 @@ fn longest_consecutive_run(sorted: &[(u64, PathBuf)]) -> Vec<PathBuf> {
         .iter()
         .map(|(_, path)| path.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir_with(names: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lege_source_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        dir
+    }
+
+    fn stems(paths: &[PathBuf]) -> Vec<String> {
+        let mut out: Vec<String> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
+    // The heuristic keeps only the longest run of consecutively-numbered pages, so a
+    // folder of non-consecutive scans (28/50/100) collapses to a single file. This is
+    // the documented Bug 2 behavior — we assert the heuristic, not "collect everything"
+    // (the drop is surfaced to the user via a warning at the call site).
+    #[test]
+    fn non_consecutive_numbering_keeps_single_longest_run() {
+        let dir = temp_dir_with(&["page_28.png", "page_50.png", "page_100.png"]);
+        let run = collect_largest_sequential_image_run(&dir).unwrap();
+        assert_eq!(run.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn consecutive_numbering_keeps_all_pages() {
+        let dir = temp_dir_with(&["page_1.png", "page_2.png", "page_3.png"]);
+        let run = collect_largest_sequential_image_run(&dir).unwrap();
+        assert_eq!(
+            stems(&run),
+            vec!["page_1.png", "page_2.png", "page_3.png"]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // A broken cover/junk file among an otherwise consecutive scan run is dropped in
+    // favor of the longer run — the case the heuristic exists for.
+    #[test]
+    fn junk_prefix_dropped_for_longer_run() {
+        let dir = temp_dir_with(&["cover.png", "page_10.png", "page_11.png", "page_12.png"]);
+        let run = collect_largest_sequential_image_run(&dir).unwrap();
+        assert_eq!(
+            stems(&run),
+            vec!["page_10.png", "page_11.png", "page_12.png"]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

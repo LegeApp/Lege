@@ -116,6 +116,7 @@
       "binarization": "Binarization",
       "threshold": "Threshold",
       "k_factor": "K factor",
+      "custom_adaptive": "Custom adaptive",
       "fixed_threshold": "Fixed threshold",
       "heavy_model": "Heavy model",
       "target_device": "Target resolution",

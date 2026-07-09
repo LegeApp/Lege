@@ -68,92 +68,261 @@ fn retro_theme() -> Theme {
 }
 
 fn refresh_appearance_theme(mut theme: State<Theme>) {
-    if appearance::refresh_runtime_checkpoint() {
-        theme.set(retro_theme());
+    // The theme is fixed by the user's committed choice; re-apply it so any external
+    // change (settings load / reset) is reflected in the live Freya theme.
+    theme.set(retro_theme());
+}
+
+// ---- Theme picker -----------------------------------------------------------
+// Opened from the About popup ("Theme" button, which leaves About open). Selection is a
+// single wrapped index over two rows so browsing never flips mode mid-row:
+//   0                 = Default
+//   1 ..= N           = the light row  (Sanzo Light 1..N)
+//   N+1 ..= 2N        = the dark row   (Sanzo Dark 1..N)
+// ←/→ walk this ring (all lights, then all darks; the seam wraps last-dark -> Default ->
+// first-light and first-light <- Default <- last-dark). ↑/↓ jump a combo between its
+// light and dark counterpart (same colors, different usage). Enter accepts (persists) and
+// closes; Esc cancels (reverts) and closes. Every selection is previewed live.
+
+fn theme_total() -> usize {
+    2 * crate::sanzowada::THEME_COUNT + 1
+}
+
+/// The persisted choice for selection index `i`.
+fn theme_choice_at(i: usize) -> appearance::ThemeChoice {
+    let n = crate::sanzowada::THEME_COUNT;
+    if i == 0 {
+        appearance::ThemeChoice::Default
+    } else if i <= n {
+        appearance::ThemeChoice::Sanzo {
+            index: i - 1,
+            dark: false,
+        }
+    } else {
+        appearance::ThemeChoice::Sanzo {
+            index: i - n - 1,
+            dark: true,
+        }
     }
+}
+
+/// The curated-combo index for selection `i` (None for Default).
+fn theme_combo_index(i: usize) -> Option<usize> {
+    let n = crate::sanzowada::THEME_COUNT;
+    if i == 0 {
+        None
+    } else if i <= n {
+        Some(i - 1)
+    } else {
+        Some(i - n - 1)
+    }
+}
+
+fn theme_name(i: usize) -> String {
+    let n = crate::sanzowada::THEME_COUNT;
+    if i == 0 {
+        "Default".to_string()
+    } else if i <= n {
+        format!("Sanzo Light {}", i)
+    } else {
+        format!("Sanzo Dark {}", i - n)
+    }
+}
+
+/// The selection index for a committed choice (used to open the picker where it left off).
+fn index_for_choice(choice: appearance::ThemeChoice) -> usize {
+    let n = crate::sanzowada::THEME_COUNT;
+    match choice {
+        appearance::ThemeChoice::Default => 0,
+        appearance::ThemeChoice::Sanzo { index, dark } => {
+            if dark {
+                n + 1 + index
+            } else {
+                index + 1
+            }
+        }
+    }
+}
+
+/// Preview selection `i` live (not persisted) and repaint.
+fn preview_theme_at(mut theme: State<Theme>, i: usize) {
+    appearance::set_theme_preview(Some(theme_choice_at(i)));
+    theme.set(retro_theme());
+}
+
+/// Wrapped move by `delta` along the selection ring.
+fn ring_step(i: usize, delta: isize) -> usize {
+    let total = theme_total() as isize;
+    (i as isize + delta).rem_euclid(total) as usize
+}
+
+/// The light (`dark=false`) or dark (`dark=true`) counterpart of selection `i`. Returns
+/// `i` unchanged on Default (no dark) or when already in that row.
+fn row_index(i: usize, dark: bool) -> usize {
+    let n = crate::sanzowada::THEME_COUNT;
+    if dark {
+        if (1..=n).contains(&i) { i + n } else { i } // light -> dark
+    } else if i > n {
+        i - n // dark -> light
+    } else {
+        i
+    }
+}
+
+/// Move by `delta` along the wrapped selection ring.
+fn step_theme(mut sel: State<usize>, theme: State<Theme>, delta: isize) {
+    let ni = ring_step(sel(), delta);
+    sel.set(ni);
+    preview_theme_at(theme, ni);
+}
+
+/// Jump to the light/dark counterpart of the current combo (no-op on Default).
+fn set_theme_row(mut sel: State<usize>, theme: State<Theme>, dark: bool) {
+    let i = sel();
+    let ni = row_index(i, dark);
+    if ni != i {
+        sel.set(ni);
+        preview_theme_at(theme, ni);
+    }
+}
+
+#[allow(non_snake_case)]
+fn ThemeChooser(state: State<AppState>, theme: State<Theme>) -> Element {
+    ThemeChooserInner {
+        state,
+        theme,
+        init: index_for_choice(appearance::committed_theme_choice()),
+    }
+    .into()
 }
 
 #[derive(Clone, Copy, PartialEq)]
-struct AppearanceMenuButton {
-    theme: State<Theme>,
+struct ThemeChooserInner {
     state: State<AppState>,
+    theme: State<Theme>,
+    init: usize,
 }
 
-impl AppearanceMenuButton {
-    fn new(theme: State<Theme>, state: State<AppState>) -> Self {
-        Self { theme, state }
-    }
-}
-
-impl Component for AppearanceMenuButton {
+impl Component for ThemeChooserInner {
     fn render(&self) -> impl IntoElement {
-        let mut show_menu = use_state(|| false);
-        let active_mode = appearance::active_mode();
+        let state = self.state;
+        let theme = self.theme;
+        let n = crate::sanzowada::THEME_COUNT;
+        let sel = use_state(|| self.init.min(theme_total() - 1));
 
-        let modes = [
-            (appearance::AppearanceMode::AutoWarm, "Time of day"),
-            (appearance::AppearanceMode::Default, "Day"),
-            (appearance::AppearanceMode::Evening, "Evening"),
-            (appearance::AppearanceMode::Night, "Night"),
-            (appearance::AppearanceMode::LateNight, "Late night"),
-        ];
+        let i = sel();
+        let is_light = (1..=n).contains(&i);
+        let is_dark = i > n;
+        let colors = match theme_combo_index(i) {
+            Some(c) => crate::sanzowada::theme_at(c)
+                .map(|t| t.colors.join("  ·  "))
+                .unwrap_or_default(),
+            None => "The original Lege daytime theme.".to_string(),
+        };
 
-        let menu_items: Vec<Element> = modes
-            .into_iter()
-            .map(|(mode, label_text)| {
-                let selected = active_mode == mode;
-                let mut show_menu = show_menu;
-                let mut theme = self.theme;
-                let state = self.state;
-                let item_text = if selected {
-                    format!("✓ {label_text}")
-                } else {
-                    format!("  {label_text}")
-                };
+        let accept = move |_: Event<PressEventData>| {
+            let mut state = state;
+            let mut theme = theme;
+            let _ = appearance::commit_theme_choice(theme_choice_at(sel()));
+            theme.set(retro_theme());
+            state.write().show_theme_chooser = false;
+        };
+        let cancel = move |_: Event<PressEventData>| {
+            let mut state = state;
+            let mut theme = theme;
+            appearance::set_theme_preview(None);
+            theme.set(retro_theme());
+            state.write().show_theme_chooser = false;
+        };
 
-                MenuItem::new()
-                    .selected(selected)
-                    .on_press(move |_| {
-                        if let Err(e) = appearance::set_appearance_mode(mode) {
-                            schedule_popup(
-                                state,
-                                PopupKind::Warning,
-                                format!("Failed to save appearance setting: {e}"),
-                                5,
-                            );
-                        }
-                        let _ = appearance::refresh_runtime_checkpoint();
-                        theme.set(retro_theme());
-                        show_menu.set(false);
-                    })
-                    .child(label().text(item_text).font_size(13.).color(text_fg()))
-                    .into()
-            })
-            .collect();
+        // A compact button-styled clickable cell (plain rect so Space/Enter don't also
+        // trigger it via focus).
+        let cell = |text: &'static str, width: f32, active: bool| {
+            rect()
+                .width(Size::px(width))
+                .height(Size::px(28.))
+                .background(if active { selected_bg() } else { control_bg() })
+                .border(
+                    Border::new()
+                        .fill(border())
+                        .width(1.)
+                        .alignment(BorderAlignment::Inner),
+                )
+                .corner_radius(4.)
+                .main_align(Alignment::Center)
+                .cross_align(Alignment::Center)
+                .child(label().text(text).font_size(13.).color(text_fg()))
+        };
 
         rect()
-            .width(Size::px(126.))
-            .height(Size::px(28.))
+            .width(Size::fill())
+            .spacing(8.)
+            .on_global_key_down(move |e: Event<KeyboardEventData>| {
+                let mut state = state;
+                let mut theme = theme;
+                match &e.key {
+                    Key::Named(NamedKey::ArrowLeft) => step_theme(sel, theme, -1),
+                    Key::Named(NamedKey::ArrowRight) => step_theme(sel, theme, 1),
+                    Key::Named(NamedKey::ArrowUp) => set_theme_row(sel, theme, false),
+                    Key::Named(NamedKey::ArrowDown) => set_theme_row(sel, theme, true),
+                    Key::Named(NamedKey::Enter) => {
+                        let _ = appearance::commit_theme_choice(theme_choice_at(sel()));
+                        theme.set(retro_theme());
+                        state.write().show_theme_chooser = false;
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        appearance::set_theme_preview(None);
+                        theme.set(retro_theme());
+                        state.write().show_theme_chooser = false;
+                    }
+                    _ => {}
+                }
+            })
             .child(
-                Button::new()
-                    .width(Size::fill())
-                    .height(Size::fill())
-                    .on_press(move |_| show_menu.toggle())
-                    .child("Appearance ▾"),
+                label()
+                    .text(theme_name(i))
+                    .font_size(18.)
+                    .font_weight(700)
+                    .color(text_fg()),
             )
-            .maybe_child(show_menu().then(|| {
+            .child(label().text(colors).font_size(12.).color(muted_fg()))
+            .child(
                 rect()
-                    .position(Position::new_absolute().left(0.).top(32.))
-                    .width(Size::px(0.))
-                    .height(Size::px(0.))
+                    .direction(Direction::Horizontal)
+                    .spacing(6.)
+                    .cross_align(Alignment::Center)
                     .child(
-                        Menu::new()
-                            .on_close(move |_| show_menu.set(false))
-                            .children(menu_items),
+                        rect()
+                            .on_press(move |_: Event<PressEventData>| step_theme(sel, theme, -1))
+                            .child(cell("◀", 40., false)),
                     )
-            }))
+                    .child(
+                        rect()
+                            .on_press(move |_: Event<PressEventData>| step_theme(sel, theme, 1))
+                            .child(cell("▶", 40., false)),
+                    )
+                    .child(
+                        rect()
+                            .on_press(move |_: Event<PressEventData>| set_theme_row(sel, theme, false))
+                            .child(cell("Light", 58., is_light)),
+                    )
+                    .child(
+                        rect()
+                            .on_press(move |_: Event<PressEventData>| set_theme_row(sel, theme, true))
+                            .child(cell("Dark", 58., is_dark)),
+                    )
+                    .child(rect().on_press(accept).child(cell("Accept", 72., false)))
+                    .child(rect().on_press(cancel).child(cell("Cancel", 66., false))),
+            )
+            .child(
+                label()
+                    .text("←/→ theme   ·   ↑/↓ light-dark   ·   Enter accept   ·   Esc cancel")
+                    .font_size(11.)
+                    .color(muted_fg()),
+            )
     }
 }
+
 
 fn format_eta_label(seconds: u32) -> String {
     let hours = seconds / 3600;
@@ -260,6 +429,7 @@ pub struct AppState {
     pub show_log_viewer: bool,
     pub processing_log: Vec<LogEntry>,
     pub show_about: bool,
+    pub show_theme_chooser: bool,
     pub show_queue_viewer: bool,
 
     #[cfg(feature = "debug-logging")]
@@ -319,11 +489,12 @@ impl Default for AppState {
             show_log_viewer: false,
             processing_log: logging::load_log_entries().unwrap_or_default(),
             show_about: false,
+            show_theme_chooser: false,
             show_queue_viewer: false,
             #[cfg(feature = "debug-logging")]
             show_debug_log: false,
             #[cfg(feature = "debug-logging")]
-            debug_log_messages: load_debug_log_file(),
+            debug_log_messages: Vec::new(),
         };
 
         if let Some(saved) = saved {
@@ -753,6 +924,12 @@ pub fn app() -> impl IntoElement {
         appearance::initialize_runtime_appearance();
     });
     let theme = use_init_theme(retro_theme);
+    // Subscribe the root to theme changes. The main shell paints its background from
+    // the global palette (`app_bg()`), not the theme context, so without this read the
+    // root would not re-render on a theme swap and the window background would stay
+    // stale while the themed widgets (which consume the theme context) updated. Reading
+    // the signal here makes a theme change repaint the whole tree, background included.
+    let _ = theme.read();
     let state = use_state(AppState::default);
 
     let target_height_input = use_state({
@@ -923,29 +1100,17 @@ fn SettingsDashboard(
         .direction(Direction::Horizontal)
         .spacing(8.)
         .child(
-            // Left column: Pages / Device on top, Binarization below
+            // Left column: Pages / Device card (now also hosts the Binarization sub-card)
             rect()
                 .width(Size::percent(50.))
                 .height(Size::fill())
-                .vertical()
-                .content(Content::Flex)
-                .spacing(8.)
-                .child(
-                    rect()
-                        .width(Size::fill())
-                        .height(Size::flex(1.))
-                        .child(PagesDeviceCard(
-                            state,
-                            target_height_input,
-                            page_range_input,
-                        )),
-                )
-                .child(
-                    rect()
-                        .width(Size::fill())
-                        .height(Size::px(110.))
-                        .child(BinarizationCard(state, k_factor_input, threshold_input)),
-                ),
+                .child(PagesDeviceCard(
+                    state,
+                    target_height_input,
+                    page_range_input,
+                    k_factor_input,
+                    threshold_input,
+                )),
         )
         .child(
             // Right column: Output spans the full height of both rows
@@ -997,8 +1162,12 @@ fn ProcessDashboardRow(
     rect()
         .width(Size::fill())
         .height(Size::fill())
-        .main_align(Alignment::Center)
+        // Top-align the Process button so the absolutely bottom-anchored file-status
+        // rows below it have clearance and no longer overlap it when a long path is
+        // shown. A small spacer keeps the button off the very top edge / utility row.
+        .main_align(Alignment::Start)
         .cross_align(Alignment::Center)
+        .child(rect().width(Size::fill()).height(Size::px(10.)))
         .child(
             Button::new()
                 .width(Size::percent(45.))
@@ -1549,6 +1718,8 @@ fn PagesDeviceCard(
     state: State<AppState>,
     target_height_input: State<String>,
     page_range_input: State<String>,
+    k_factor_input: State<String>,
+    threshold_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
     rect()
@@ -1693,6 +1864,13 @@ fn PagesDeviceCard(
                                     )),
                             ),
                     )
+                    // Binarization sub-card sits between the page/device controls and
+                    // the target-resolution row.
+                    .child(binarization_subcard(
+                        state,
+                        k_factor_input,
+                        threshold_input,
+                    ))
                     .child(
                         rect()
                             .direction(Direction::Horizontal)
@@ -1761,7 +1939,9 @@ fn PagesDeviceCard(
                                 rect()
                                     .width(Size::percent(56.))
                                     .vertical()
-                                    .padding((31., 2., 0., 0.))
+                                    // Top pad aligns the preset buttons with the resolution
+                                    // input box.
+                                    .padding((15., 2., 0., 0.))
                                     .spacing(6.)
                                     .child(
                                         Button::new()
@@ -1956,134 +2136,189 @@ fn PagesDeviceCard(
         .into()
 }
 
-fn BinarizationCard(
+fn binarization_subcard(
     state: State<AppState>,
     k_factor_input: State<String>,
     threshold_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
-    if matches!(options.output_format, OutputFormat::Epub) {
-        return rect()
+
+    // Column width shared by the checkbox row and the input row below it, so each
+    // input lines up under its own checkbox.
+    const COL_W: f32 = 160.;
+    // Fixed height reserved for the input row. It is always present (empty for Heavy
+    // model / default adaptive) so the section never changes height between modes.
+    const INPUT_ROW_H: f32 = 30.;
+
+    // Plain titled section — NOT a bordered sub-card.
+    let section = |children: Vec<Element>| -> Element {
+        rect()
             .width(Size::fill())
-            .height(Size::fill())
-            .child(panel_card(
-                GUI_TEXT.interactive.controls.binarization.as_str(),
-                true,
-                vec![
-                    rect()
-                        .width(Size::fill())
-                        .height(Size::fill())
-                        .center()
-                        .padding((8., 10., 8., 10.))
-                        .child(
-                            paragraph()
-                                .width(Size::fill())
-                                .span(
-                                    Span::new("EPUB uses the text extraction pipeline.")
-                                        .font_size(13.)
-                                        .color(muted_fg()),
-                                )
-                                .line_height(1.25)
-                                .max_lines(2),
-                        )
-                        .into(),
-                ],
-            ))
-            .into();
-    }
-    let fixed_threshold_enabled = options.use_fixed_threshold;
-    let numeric_label = if fixed_threshold_enabled {
-        GUI_TEXT.interactive.controls.threshold.as_str()
-    } else {
-        GUI_TEXT.interactive.controls.k_factor.as_str()
+            .spacing(4.)
+            .vertical()
+            .child(
+                label()
+                    .text(GUI_TEXT.interactive.controls.binarization.as_str())
+                    .font_size(13.)
+                    .font_weight(700)
+                    .color(text_fg()),
+            )
+            .children(children)
+            .into()
     };
 
-    rect()
+    // EPUB uses the text-extraction pipeline; binarization does not apply.
+    if matches!(options.output_format, OutputFormat::Epub) {
+        return section(vec![
+            label()
+                .text("EPUB uses the text extraction pipeline.")
+                .font_size(12.)
+                .color(muted_fg())
+                .into(),
+        ]);
+    }
+
+    // Exactly one mode is active at a time. "Custom adaptive" only counts when
+    // neither other mode is selected; with all three off the pipeline uses default
+    // adaptive (hidden K factor = DEFAULT_K_FACTOR).
+    let custom_adaptive = options.use_custom_adaptive
+        && !options.use_fixed_threshold
+        && !options.use_heavy_binarization;
+    let fixed_enabled = options.use_fixed_threshold;
+    let heavy_enabled = options.use_heavy_binarization;
+
+    let checkbox_cell = |child: Element| -> Element {
+        rect().width(Size::px(COL_W)).child(child).into()
+    };
+
+    // Row 1 — the three mutually-exclusive mode checkboxes.
+    let checkbox_row = rect()
         .width(Size::fill())
-        .height(Size::fill())
-        .child(panel_card(
-            GUI_TEXT.interactive.controls.binarization.as_str(),
-            true,
-            vec![
-                rect()
-                    .width(Size::fill())
-                    .height(Size::flex(1.))
-                    .direction(Direction::Horizontal)
-                    .cross_align(Alignment::Center)
-                    .spacing(8.)
-                    .child(rect().width(Size::px(176.)).child(tooltip_wrap(
-                        state,
-                        TooltipArea::BinarizationCard,
-                        if fixed_threshold_enabled {
-                            GUI_TEXT.interactive.tooltips.threshold_value.clone()
+        .direction(Direction::Horizontal)
+        .cross_align(Alignment::Center)
+        .spacing(8.)
+        .child(checkbox_cell(tooltip_wrap(
+            state,
+            TooltipArea::BinarizationCard,
+            GUI_TEXT.interactive.tooltips.sauvola_k_factor.clone(),
+            compact_checkbox_row(
+                GUI_TEXT.interactive.controls.custom_adaptive.as_str(),
+                custom_adaptive,
+                {
+                    let mut state = state;
+                    let mut k_factor_input = k_factor_input;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !(s.options.use_custom_adaptive
+                            && !s.options.use_fixed_threshold
+                            && !s.options.use_heavy_binarization);
+                        if enable {
+                            s.options.use_custom_adaptive = true;
+                            s.options.use_fixed_threshold = false;
+                            s.options.use_heavy_binarization = false;
                         } else {
-                            GUI_TEXT.interactive.tooltips.sauvola_k_factor.clone()
-                        },
-                        settings_row(
-                            numeric_label.to_string(),
-                            if fixed_threshold_enabled {
-                                square_input(Input::new(threshold_input))
-                                    .placeholder("200")
-                                    .width(Size::px(96.))
-                                    .into()
-                            } else {
-                                square_input(Input::new(k_factor_input))
-                                    .placeholder("0.2")
-                                    .width(Size::px(96.))
-                                    .into()
-                            },
-                        ),
-                    )))
-                    .child(
-                        rect()
-                            .direction(Direction::Horizontal)
-                            .spacing(12.)
-                            .cross_align(Alignment::Center)
-                            .child(tooltip_wrap(
-                                state,
-                                TooltipArea::BinarizationCard,
-                                GUI_TEXT.interactive.tooltips.threshold_value.clone(),
-                                compact_checkbox_row(
-                                    GUI_TEXT.interactive.controls.fixed_threshold.as_str(),
-                                    fixed_threshold_enabled,
-                                    {
-                                        let mut state = state;
-                                        move |_| {
-                                            let mut s = state.write();
-                                            let enable = !s.options.use_fixed_threshold;
-                                            s.options.use_fixed_threshold = enable;
-                                            if enable {
-                                                s.options.use_heavy_binarization = false;
-                                            }
-                                        }
-                                    },
-                                ),
-                            ))
-                            .child(tooltip_wrap(
-                                state,
-                                TooltipArea::BinarizationCard,
-                                GUI_TEXT.interactive.tooltips.heavy_model.clone(),
-                                compact_checkbox_row(
-                                    GUI_TEXT.interactive.controls.heavy_model.as_str(),
-                                    options.use_heavy_binarization,
-                                    {
-                                        let mut state = state;
-                                        move |_| {
-                                            let mut s = state.write();
-                                            if !s.options.use_fixed_threshold {
-                                                s.options.use_heavy_binarization =
-                                                    !s.options.use_heavy_binarization;
-                                            }
-                                        }
-                                    },
-                                )
-                                .into(),
-                            )),
+                            // Back to default adaptive: restore the built-in K factor.
+                            s.options.use_custom_adaptive = false;
+                            s.options.k_factor = lege::DEFAULT_K_FACTOR;
+                            s.k_factor_input = lege::DEFAULT_K_FACTOR.to_string();
+                            k_factor_input.set(lege::DEFAULT_K_FACTOR.to_string());
+                        }
+                    }
+                },
+            ),
+        )))
+        .child(checkbox_cell(tooltip_wrap(
+            state,
+            TooltipArea::BinarizationCard,
+            GUI_TEXT.interactive.tooltips.threshold_value.clone(),
+            compact_checkbox_row(
+                GUI_TEXT.interactive.controls.fixed_threshold.as_str(),
+                fixed_enabled,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !s.options.use_fixed_threshold;
+                        s.options.use_fixed_threshold = enable;
+                        if enable {
+                            s.options.use_custom_adaptive = false;
+                            s.options.use_heavy_binarization = false;
+                        }
+                    }
+                },
+            ),
+        )))
+        .child(checkbox_cell(tooltip_wrap(
+            state,
+            TooltipArea::BinarizationCard,
+            GUI_TEXT.interactive.tooltips.heavy_model.clone(),
+            compact_checkbox_row(
+                GUI_TEXT.interactive.controls.heavy_model.as_str(),
+                heavy_enabled,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !s.options.use_heavy_binarization;
+                        s.options.use_heavy_binarization = enable;
+                        if enable {
+                            s.options.use_custom_adaptive = false;
+                            s.options.use_fixed_threshold = false;
+                        }
+                    }
+                },
+            ),
+        )));
+
+    // Row 2 — numeric inputs under their respective checkboxes. Fixed height so the
+    // section keeps the same size regardless of which mode is selected.
+    let input_row = rect()
+        .width(Size::fill())
+        .height(Size::px(INPUT_ROW_H))
+        .direction(Direction::Horizontal)
+        // Top-align with a small offset so the revealed input sits just below the
+        // checkbox label instead of almost touching it. 4px = the ~3px it had when
+        // vertically centered + a 1px nudge downward.
+        .cross_align(Alignment::Start)
+        .padding((4., 0., 0., 0.))
+        .spacing(8.)
+        .child(
+            rect()
+                .width(Size::px(COL_W))
+                // Smaller font than the other numeric fields; the Input's text inherits
+                // this font size (it sets no font size of its own).
+                .font_size(10.)
+                .maybe_child(if custom_adaptive {
+                    Some(
+                        square_input(Input::new(k_factor_input))
+                            .compact()
+                            .placeholder("0.05")
+                            .width(Size::px(64.))
+                            .into(),
                     )
-                    .into(),
-            ],
-        ))
-        .into()
+                } else {
+                    None::<Element>
+                }),
+        )
+        .child(
+            rect()
+                .width(Size::px(COL_W))
+                .font_size(10.)
+                .maybe_child(if fixed_enabled {
+                    Some(
+                        square_input(Input::new(threshold_input))
+                            .compact()
+                            .placeholder("180")
+                            .width(Size::px(64.))
+                            .into(),
+                    )
+                } else {
+                    None::<Element>
+                }),
+        )
+        .child(rect().width(Size::px(COL_W)));
+
+    section(vec![checkbox_row.into(), input_row.into()])
 }
 
 fn bool_tile(text: String, selected: bool, mut on_select: impl FnMut(()) + 'static) -> Element {
@@ -2489,11 +2724,38 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
     }
 
     let queue_items = state.read().queue.iter().cloned().collect::<Vec<_>>();
+    let is_processing = state.read().is_processing;
+    let queue_empty = queue_items.is_empty();
     popup_shell(
         GUI_TEXT.interactive.popups.queue_items_title.clone(),
+        rect()
+        .width(Size::px(520.))
+        .spacing(8.)
+        .child(
+            Button::new()
+                .on_press(move |_| {
+                    // Don't clear while a job is running; the active queue snapshot
+                    // is what's being processed.
+                    let mut s = state.write();
+                    if !s.is_processing {
+                        s.queue.clear();
+                    }
+                })
+                .child(
+                    label()
+                        .text(GUI_TEXT.interactive.buttons.clear_queue.clone())
+                        .font_size(13.)
+                        .color(if is_processing || queue_empty {
+                            muted_fg()
+                        } else {
+                            text_fg()
+                        }),
+                ),
+        )
+        .child(
         ScrollView::new()
             .width(Size::px(520.))
-            .height(Size::px(360.))
+            .height(Size::px(320.))
             .child(rect().spacing(8.).children(if queue_items.is_empty() {
                 vec![
                     label()
@@ -2527,8 +2789,9 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
                             .into()
                     })
                     .collect()
-            }))
-            .into(),
+            })),
+        )
+        .into(),
         move || state.write().show_queue_viewer = false,
     )
 }
@@ -2635,9 +2898,21 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
         return rect().into();
     }
 
+    let show_chooser = state.read().show_theme_chooser;
+
     const EMAIL: &str = "read@legeapp.com";
 
-    let on_close = Rc::new(RefCell::new(move || state.write().show_about = false));
+    let on_close = Rc::new(RefCell::new(move || {
+        // Closing the About window also cancels any in-progress theme preview so an
+        // un-accepted browse doesn't leave the app on a theme that isn't persisted.
+        appearance::set_theme_preview(None);
+        let mut theme = theme;
+        theme.set(retro_theme());
+        let mut state = state;
+        let mut s = state.write();
+        s.show_about = false;
+        s.show_theme_chooser = false;
+    }));
     let on_close_request = on_close.clone();
     let on_close_button = on_close.clone();
     let documentation_button = on_close.clone();
@@ -2645,13 +2920,22 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     let state_for_docs = state;
     let state_for_licenses = state;
 
+    let body: Element = if show_chooser {
+        ThemeChooser(state, theme)
+    } else {
+        SelectableText::new(format!("{}: {}", GUI_TEXT.interactive.popups.email, EMAIL))
+            .font_size(13.)
+            .color(text_fg())
+            .into()
+    };
+
     Popup::new()
         .show(true)
         .on_close_request(move |_| (on_close_request.borrow_mut())())
         .child(
             PopupContent::new().child(
                 rect()
-                    .width(Size::px(300.))
+                    .width(Size::px(if show_chooser { 480. } else { 300. }))
                     .padding(10.)
                     .spacing(6.)
                     .child(
@@ -2673,19 +2957,19 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                                     .color(muted_fg()),
                             ),
                     )
-                    .child(
-                        SelectableText::new(format!(
-                            "{}: {}",
-                            GUI_TEXT.interactive.popups.email, EMAIL
-                        ))
-                        .font_size(13.)
-                        .color(text_fg()),
-                    ),
+                    .child(body),
             ),
         )
         .child(
             PopupButtons::new()
-                .child(AppearanceMenuButton::new(theme, state))
+                .child(
+                    Button::new()
+                        .on_press(move |_| {
+                            // Opens the theme chooser in place; About stays open.
+                            state.write().show_theme_chooser = true;
+                        })
+                        .child("Theme"),
+                )
                 .child(
                     Button::new()
                         .on_press(move |_| {
@@ -3371,4 +3655,62 @@ fn start_or_cancel_processing(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod theme_picker_tests {
+    use super::*;
+    use crate::appearance::ThemeChoice;
+
+    // The selection ring is [Default, Light 1..N, Dark 1..N]; these lock down the
+    // exact adjacencies the two-row model promises.
+    #[test]
+    fn ring_walks_lights_then_darks() {
+        let n = crate::sanzowada::THEME_COUNT;
+        // Right from the last light lands on the first dark.
+        assert_eq!(ring_step(n, 1), n + 1);
+        // Left from the first light lands on Default.
+        assert_eq!(ring_step(1, -1), 0);
+        // Left from Default wraps to the last dark (furthest-right dark).
+        assert_eq!(ring_step(0, -1), 2 * n);
+        // Right from the last dark wraps back to Default.
+        assert_eq!(ring_step(2 * n, 1), 0);
+    }
+
+    #[test]
+    fn up_down_toggle_same_combo() {
+        let n = crate::sanzowada::THEME_COUNT;
+        // Up from the first dark -> the first light (same combo).
+        assert_eq!(row_index(n + 1, false), 1);
+        // Down from the first light -> the first dark.
+        assert_eq!(row_index(1, true), n + 1);
+        // Default has no dark; up/down are no-ops.
+        assert_eq!(row_index(0, true), 0);
+        assert_eq!(row_index(0, false), 0);
+        // Already-light stays light on up; already-dark stays dark on down.
+        assert_eq!(row_index(1, false), 1);
+        assert_eq!(row_index(n + 1, true), n + 1);
+    }
+
+    #[test]
+    fn choice_index_names_are_consistent() {
+        let n = crate::sanzowada::THEME_COUNT;
+        for i in 0..theme_total() {
+            // Index -> choice -> index round-trips.
+            assert_eq!(index_for_choice(theme_choice_at(i)), i, "roundtrip at {i}");
+        }
+        assert_eq!(theme_choice_at(0), ThemeChoice::Default);
+        assert_eq!(
+            theme_choice_at(1),
+            ThemeChoice::Sanzo { index: 0, dark: false }
+        );
+        assert_eq!(
+            theme_choice_at(n + 1),
+            ThemeChoice::Sanzo { index: 0, dark: true }
+        );
+        assert_eq!(theme_name(0), "Default");
+        assert_eq!(theme_name(1), "Sanzo Light 1");
+        assert_eq!(theme_name(n + 1), "Sanzo Dark 1");
+        assert_eq!(theme_name(2 * n), format!("Sanzo Dark {n}"));
+    }
 }
