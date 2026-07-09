@@ -186,6 +186,29 @@ fn set_theme_row(mut sel: State<usize>, theme: State<Theme>, dark: bool) {
     }
 }
 
+/// Accept selection `i`: persist it, repaint and close the chooser. A failed
+/// settings write still applies the theme for this session but is surfaced,
+/// since it would silently revert on the next launch.
+fn accept_theme_choice(mut state: State<AppState>, mut theme: State<Theme>, i: usize) {
+    if let Err(err) = appearance::commit_theme_choice(theme_choice_at(i)) {
+        schedule_popup(
+            state,
+            PopupKind::Warning,
+            format!("Could not save the theme choice: {err}"),
+            6,
+        );
+    }
+    theme.set(retro_theme());
+    state.write().show_theme_chooser = false;
+}
+
+/// Cancel any live preview, revert to the committed theme and close the chooser.
+fn cancel_theme_preview(mut state: State<AppState>, mut theme: State<Theme>) {
+    appearance::set_theme_preview(None);
+    theme.set(retro_theme());
+    state.write().show_theme_chooser = false;
+}
+
 #[allow(non_snake_case)]
 fn ThemeChooser(state: State<AppState>, theme: State<Theme>) -> Element {
     ThemeChooserInner {
@@ -220,20 +243,8 @@ impl Component for ThemeChooserInner {
             None => "The original Lege daytime theme.".to_string(),
         };
 
-        let accept = move |_: Event<PressEventData>| {
-            let mut state = state;
-            let mut theme = theme;
-            let _ = appearance::commit_theme_choice(theme_choice_at(sel()));
-            theme.set(retro_theme());
-            state.write().show_theme_chooser = false;
-        };
-        let cancel = move |_: Event<PressEventData>| {
-            let mut state = state;
-            let mut theme = theme;
-            appearance::set_theme_preview(None);
-            theme.set(retro_theme());
-            state.write().show_theme_chooser = false;
-        };
+        let accept = move |_: Event<PressEventData>| accept_theme_choice(state, theme, sel());
+        let cancel = move |_: Event<PressEventData>| cancel_theme_preview(state, theme);
 
         // A compact button-styled clickable cell (plain rect so Space/Enter don't also
         // trigger it via focus).
@@ -257,26 +268,14 @@ impl Component for ThemeChooserInner {
         rect()
             .width(Size::fill())
             .spacing(8.)
-            .on_global_key_down(move |e: Event<KeyboardEventData>| {
-                let mut state = state;
-                let mut theme = theme;
-                match &e.key {
-                    Key::Named(NamedKey::ArrowLeft) => step_theme(sel, theme, -1),
-                    Key::Named(NamedKey::ArrowRight) => step_theme(sel, theme, 1),
-                    Key::Named(NamedKey::ArrowUp) => set_theme_row(sel, theme, false),
-                    Key::Named(NamedKey::ArrowDown) => set_theme_row(sel, theme, true),
-                    Key::Named(NamedKey::Enter) => {
-                        let _ = appearance::commit_theme_choice(theme_choice_at(sel()));
-                        theme.set(retro_theme());
-                        state.write().show_theme_chooser = false;
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        appearance::set_theme_preview(None);
-                        theme.set(retro_theme());
-                        state.write().show_theme_chooser = false;
-                    }
-                    _ => {}
-                }
+            .on_global_key_down(move |e: Event<KeyboardEventData>| match &e.key {
+                Key::Named(NamedKey::ArrowLeft) => step_theme(sel, theme, -1),
+                Key::Named(NamedKey::ArrowRight) => step_theme(sel, theme, 1),
+                Key::Named(NamedKey::ArrowUp) => set_theme_row(sel, theme, false),
+                Key::Named(NamedKey::ArrowDown) => set_theme_row(sel, theme, true),
+                Key::Named(NamedKey::Enter) => accept_theme_choice(state, theme, sel()),
+                Key::Named(NamedKey::Escape) => cancel_theme_preview(state, theme),
+                _ => {}
             })
             .child(
                 label()

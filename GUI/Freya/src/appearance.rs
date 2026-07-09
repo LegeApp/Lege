@@ -8,8 +8,7 @@ pub type Rgb = (u8, u8, u8);
 
 /// The app's active theme: either the built-in Default (day) palette or one of the
 /// curated Sanzo Wada combos in light or dark mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeChoice {
     Default,
     /// `index` is the 0-based position in `sanzowada::SANZO_THEMES`.
@@ -22,8 +21,7 @@ impl Default for ThemeChoice {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppearanceSettings {
     pub theme: ThemeChoice,
 }
@@ -32,6 +30,68 @@ impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::Default,
+        }
+    }
+}
+
+/// On-disk form of [`ThemeChoice`]. Sanzo themes are identified by their
+/// source color names, which are stable across reorders or removals in
+/// `SANZO_THEMES`; `index` is written too so older builds can still read the
+/// file, and doubles as a fallback when the names fail to resolve.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StoredThemeChoice {
+    Default,
+    Sanzo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        colors: Option<Vec<String>>,
+        #[serde(default)]
+        index: Option<usize>,
+        dark: bool,
+    },
+}
+
+impl Default for StoredThemeChoice {
+    fn default() -> Self {
+        StoredThemeChoice::Default
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct StoredAppearanceSettings {
+    theme: StoredThemeChoice,
+}
+
+fn to_stored(choice: ThemeChoice) -> StoredThemeChoice {
+    match choice {
+        ThemeChoice::Default => StoredThemeChoice::Default,
+        ThemeChoice::Sanzo { index, dark } => StoredThemeChoice::Sanzo {
+            colors: crate::sanzowada::theme_at(index)
+                .map(|t| t.colors.iter().map(|c| c.to_string()).collect()),
+            index: Some(index),
+            dark,
+        },
+    }
+}
+
+fn from_stored(stored: StoredThemeChoice) -> ThemeChoice {
+    match stored {
+        StoredThemeChoice::Default => ThemeChoice::Default,
+        StoredThemeChoice::Sanzo {
+            colors,
+            index,
+            dark,
+        } => {
+            let resolved = colors
+                .as_deref()
+                .and_then(crate::sanzowada::theme_index_by_colors)
+                .or(index)
+                .filter(|&i| i < crate::sanzowada::THEME_COUNT);
+            match resolved {
+                Some(index) => ThemeChoice::Sanzo { index, dark },
+                None => ThemeChoice::Default,
+            }
         }
     }
 }
@@ -205,7 +265,10 @@ pub fn load_appearance_settings() -> anyhow::Result<AppearanceSettings> {
     }
 
     let content = fs::read_to_string(&settings_path)?;
-    Ok(serde_json::from_str(&content)?)
+    let stored: StoredAppearanceSettings = serde_json::from_str(&content)?;
+    Ok(AppearanceSettings {
+        theme: from_stored(stored.theme),
+    })
 }
 
 pub fn save_appearance_settings(settings: &AppearanceSettings) -> anyhow::Result<()> {
@@ -213,7 +276,10 @@ pub fn save_appearance_settings(settings: &AppearanceSettings) -> anyhow::Result
     if let Some(parent) = settings_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let content = serde_json::to_string_pretty(settings)?;
+    let stored = StoredAppearanceSettings {
+        theme: to_stored(settings.theme),
+    };
+    let content = serde_json::to_string_pretty(&stored)?;
     fs::write(&settings_path, content)?;
     Ok(())
 }
@@ -277,14 +343,67 @@ mod tests {
     }
 
     #[test]
-    fn theme_choice_round_trips_through_json() {
+    fn theme_choice_round_trips_through_stored_form() {
         let choice = ThemeChoice::Sanzo {
             index: 7,
             dark: true,
         };
-        let s = AppearanceSettings { theme: choice };
-        let json = serde_json::to_string(&s).unwrap();
-        let back: AppearanceSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.theme, choice);
+        let stored = StoredAppearanceSettings {
+            theme: to_stored(choice),
+        };
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(
+            json.contains("colors"),
+            "stable color names must be persisted: {json}"
+        );
+        let back: StoredAppearanceSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(from_stored(back.theme), choice);
+    }
+
+    #[test]
+    fn legacy_index_only_settings_still_load() {
+        let json = r#"{"theme":{"kind":"sanzo","index":3,"dark":false}}"#;
+        let stored: StoredAppearanceSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            from_stored(stored.theme),
+            ThemeChoice::Sanzo {
+                index: 3,
+                dark: false
+            }
+        );
+    }
+
+    #[test]
+    fn color_names_win_over_a_stale_index() {
+        // Simulates SANZO_THEMES having been reordered since the file was
+        // written: the persisted names identify theme 2, the stale index says 0.
+        let names: Vec<String> = crate::sanzowada::theme_at(2)
+            .unwrap()
+            .colors
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        let stored = StoredThemeChoice::Sanzo {
+            colors: Some(names),
+            index: Some(0),
+            dark: true,
+        };
+        assert_eq!(
+            from_stored(stored),
+            ThemeChoice::Sanzo {
+                index: 2,
+                dark: true
+            }
+        );
+    }
+
+    #[test]
+    fn unresolvable_stored_theme_falls_back_to_default() {
+        let stored = StoredThemeChoice::Sanzo {
+            colors: Some(vec!["Not A Real Color".to_string()]),
+            index: Some(usize::MAX),
+            dark: false,
+        };
+        assert_eq!(from_stored(stored), ThemeChoice::Default);
     }
 }

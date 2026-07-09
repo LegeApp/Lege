@@ -26,6 +26,16 @@ pub fn theme_at(index: usize) -> Option<&'static SanzoTheme> {
     SANZO_THEMES.get(index)
 }
 
+/// Index of the theme whose source color names match `colors` exactly.
+/// Used to resolve persisted themes by their stable identity, so saved
+/// choices survive reordering or removal of other entries.
+pub fn theme_index_by_colors(colors: &[String]) -> Option<usize> {
+    SANZO_THEMES.iter().position(|theme| {
+        theme.colors.len() == colors.len()
+            && theme.colors.iter().zip(colors).all(|(a, b)| a == b)
+    })
+}
+
 pub const SANZO_THEMES: [SanzoTheme; 28] = [
     SanzoTheme {
         colors: &["Slate Color", "Antwarp Blue", "Golden Yellow"],
