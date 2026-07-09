@@ -266,10 +266,11 @@ impl CpuRenderPipeline<'_> {
                             continue 'rendering;
                         }
 
-                        let visible_area = clip_layout_node.visible_area();
+                        // Clip with the transformed area, matching the Skia
+                        // pipeline, so scale effects move the clip too.
                         clip_element.clip_cpu(CpuClipContext {
                             cmds: self.cmds,
-                            visible_area: &visible_area,
+                            visible_area: &transformed_clip_area,
                             scale_factor: self.scale_factor,
                         });
                     }

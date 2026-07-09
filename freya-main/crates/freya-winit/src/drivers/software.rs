@@ -6,6 +6,9 @@ use winit::{dpi::PhysicalSize, window::Window};
 pub struct SoftwareDriver {
     context: Option<softbuffer::Context<&'static Window>>,
     surface: Option<softbuffer::Surface<&'static Window, &'static Window>>,
+    /// Reused across frames; `begin_frame` only reallocates the pixmap when
+    /// the window size changes.
+    renderer: Option<TinySkiaRenderer>,
     last_size: PhysicalSize<u32>,
 }
 
@@ -14,6 +17,7 @@ impl SoftwareDriver {
         Self {
             context: None,
             surface: None,
+            renderer: None,
             last_size: PhysicalSize::new(0, 0),
         }
     }
@@ -49,10 +53,21 @@ impl SoftwareDriver {
             self.last_size = size;
         }
 
-        let mut renderer = TinySkiaRenderer::new(size.width, size.height)
-            .map_err(SoftwarePresentError::Renderer)?;
+        let renderer = match self.renderer.as_mut() {
+            Some(renderer) => {
+                renderer
+                    .begin_frame(size.width, size.height)
+                    .map_err(SoftwarePresentError::Renderer)?;
+                renderer
+            }
+            None => {
+                let renderer = TinySkiaRenderer::new(size.width, size.height)
+                    .map_err(SoftwarePresentError::Renderer)?;
+                self.renderer.insert(renderer)
+            }
+        };
 
-        render(&mut renderer);
+        render(renderer);
 
         let mut buffer = surf_ref
             .buffer_mut()
