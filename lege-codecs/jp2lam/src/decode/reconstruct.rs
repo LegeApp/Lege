@@ -37,6 +37,97 @@ pub(crate) fn reconstruct_image_profiled(
 /// grayscale component; if the stream signals MCT, the inverse color transform
 /// is applied to the first three components (K passes through), matching
 /// OpenJPEG. The consumer interleaves the four planes as C/M/Y/K.
+/// Reconstruct the MCT colour components (the leading `tiles`, contiguous from
+/// component 0) to finalized, precision-clamped `i32` output planes: inverse DWT
+/// under the shared COD transform, then the inverse colour transform (RCT/ICT)
+/// when signalled. A COC transform override on a colour component is rejected at
+/// parse time, so these components always share a transform and a single
+/// dispatch is correct.
+fn reconstruct_color_planes_finalized(
+    header: &CodestreamHeader,
+    tiles: Vec<DecodedTileCoefficients>,
+    stats: &mut StatsSink<'_>,
+) -> Result<Vec<Vec<i32>>> {
+    let apply_mct = header.cod.use_mct && tiles.len() == 3;
+    Ok(match header.cod.transform {
+        WaveletTransform::Reversible53 => {
+            let mut planes = Vec::with_capacity(tiles.len());
+            for tile in tiles {
+                let component = tile.component;
+                planes.push(reconstruct_reversible_53_centered(
+                    header,
+                    tile.into_integer()?,
+                    component,
+                    stats,
+                )?);
+            }
+            if apply_mct {
+                let start = stats.start();
+                inverse_rct_centered(&mut planes)?;
+                record_mct_time(stats, start);
+            }
+            let start = stats.start();
+            let output = planes
+                .into_iter()
+                .enumerate()
+                .map(|(index, plane)| {
+                    finalize_i32_samples(plane, header.siz.components[index].precision)
+                })
+                .collect();
+            record_finalize_time(stats, start);
+            output
+        }
+        WaveletTransform::Irreversible97 => {
+            let mut planes = Vec::with_capacity(tiles.len());
+            for tile in tiles {
+                planes.push(reconstruct_irreversible_97_centered(
+                    header,
+                    tile.into_real()?,
+                    stats,
+                )?);
+            }
+            if apply_mct {
+                let start = stats.start();
+                inverse_ict_centered(&mut planes)?;
+                record_mct_time(stats, start);
+            }
+            let start = stats.start();
+            let output = planes
+                .into_iter()
+                .enumerate()
+                .map(|(index, plane)| {
+                    finalize_f32_samples(plane, header.siz.components[index].precision)
+                })
+                .collect();
+            record_finalize_time(stats, start);
+            output
+        }
+    })
+}
+
+/// Reconstruct one auxiliary (non-MCT) component to a finalized `i32` output
+/// plane under its own, possibly COC-overridden, transform — e.g. a CMYK K
+/// channel that a COC codes with 5/3 while the colour components stay 9/7.
+fn reconstruct_aux_component_finalized(
+    header: &CodestreamHeader,
+    tile: DecodedTileCoefficients,
+    stats: &mut StatsSink<'_>,
+) -> Result<Vec<i32>> {
+    let component = tile.component;
+    let precision = header.siz.components[component].precision;
+    Ok(match header.transform_for(component) {
+        WaveletTransform::Irreversible97 => {
+            let centered = reconstruct_irreversible_97_centered(header, tile.into_real()?, stats)?;
+            finalize_f32_samples(centered, precision)
+        }
+        WaveletTransform::Reversible53 => {
+            let centered =
+                reconstruct_reversible_53_centered(header, tile.into_integer()?, component, stats)?;
+            finalize_i32_samples(centered, precision)
+        }
+    })
+}
+
 fn reconstruct_cmyk_image(
     header: &CodestreamHeader,
     mut tiles: Vec<DecodedTileCoefficients>,
@@ -56,60 +147,14 @@ fn reconstruct_cmyk_image(
     // signals MCT, the color transform applies to the first three components
     // (K passes through), exactly as for a 3-component image — so it must run
     // before finalize, like `reconstruct_srgb_image`.
-    let planes: Vec<Vec<i32>> = match header.cod.transform {
-        WaveletTransform::Reversible53 => {
-            let mut centered: Vec<Vec<i32>> = Vec::with_capacity(4);
-            for tile in tiles {
-                let component = tile.component;
-                centered.push(reconstruct_reversible_53_centered(
-                    header,
-                    tile.into_integer()?,
-                    component,
-                    stats,
-                )?);
-            }
-            if header.cod.use_mct {
-                let start = stats.start();
-                inverse_rct_centered(&mut centered[0..3])?;
-                record_mct_time(stats, start);
-            }
-            let start = stats.start();
-            let output: Vec<Vec<i32>> = centered
-                .into_iter()
-                .enumerate()
-                .map(|(idx, plane)| {
-                    finalize_i32_samples(plane, header.siz.components[idx].precision)
-                })
-                .collect();
-            record_finalize_time(stats, start);
-            output
-        }
-        WaveletTransform::Irreversible97 => {
-            let mut centered: Vec<Vec<f32>> = Vec::with_capacity(4);
-            for tile in tiles {
-                centered.push(reconstruct_irreversible_97_centered(
-                    header,
-                    tile.into_real()?,
-                    stats,
-                )?);
-            }
-            if header.cod.use_mct {
-                let start = stats.start();
-                inverse_ict_centered(&mut centered[0..3])?;
-                record_mct_time(stats, start);
-            }
-            let start = stats.start();
-            let output: Vec<Vec<i32>> = centered
-                .into_iter()
-                .enumerate()
-                .map(|(idx, plane)| {
-                    finalize_f32_samples(plane, header.siz.components[idx].precision)
-                })
-                .collect();
-            record_finalize_time(stats, start);
-            output
-        }
-    };
+    // Components 0-2 are the MCT colour planes (uniform transform); component 3
+    // (K) is auxiliary and may carry a COC transform override, so reconstruct it
+    // independently. `tiles` is sorted ascending, so the last is component 3.
+    let k_tile = tiles
+        .pop()
+        .ok_or_else(|| invalid("CMYK JP2 must decode exactly four components"))?;
+    let mut planes = reconstruct_color_planes_finalized(header, tiles, stats)?;
+    planes.push(reconstruct_aux_component_finalized(header, k_tile, stats)?);
 
     let width = header.siz.width;
     let height = header.siz.height;
@@ -161,7 +206,7 @@ pub(crate) fn reconstruct_grayscale_image(
         ));
     }
 
-    let samples = match header.cod.transform {
+    let samples = match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
             let centered =
                 reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, stats)?;
@@ -237,7 +282,7 @@ fn reconstruct_grayscale_u8_profiled(
         ));
     }
 
-    let output = match header.cod.transform {
+    let output = match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
             let centered =
                 reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, stats)?;
@@ -305,9 +350,73 @@ fn reconstruct_interleaved_u8_profiled(
     }
     let pixel_count = header.siz.width as usize * header.siz.height as usize;
 
-    let output = match header.cod.transform {
+    // Components 0..min(3,channels) are the MCT colour set (uniform transform);
+    // any further component (a CMYK K plane) is auxiliary and may carry a COC
+    // transform override, so scale it from its own transform. Per-component u8
+    // planes are then interleaved. For a uniform stream this is byte-identical
+    // to a single-transform pass.
+    let colour_count = channels.min(3);
+    let mut tiles_iter = tiles.into_iter();
+    let colour_tiles: Vec<DecodedTileCoefficients> = tiles_iter.by_ref().take(colour_count).collect();
+    let mut component_u8 = reconstruct_colour_u8(header, colour_tiles, stats)?;
+    for tile in tiles_iter {
+        component_u8.push(reconstruct_aux_component_u8(header, tile, stats)?);
+    }
+
+    let start = stats.start();
+    let mut output = Vec::with_capacity(pixel_count * channels);
+    for index in 0..pixel_count {
+        for plane in &component_u8 {
+            output.push(plane[index]);
+        }
+    }
+    record_finalize_time(stats, start);
+    stats.update(|stats| {
+        stats.output_pixels = stats.output_pixels.saturating_add(pixel_count as u64);
+    });
+    Ok(output)
+}
+
+/// Scale one centered `i32` (reversible 5/3) component to unsigned u8 samples.
+fn centered_i32_to_u8(centered: Vec<i32>, precision: u8) -> Vec<u8> {
+    let shift = 1i32 << (precision - 1);
+    let max_sample = (1i32 << precision) - 1;
+    centered
+        .into_iter()
+        .map(|sample| {
+            scale_unsigned_to_u8(
+                sample.saturating_add(shift).clamp(0, max_sample) as u32,
+                max_sample as u32,
+            )
+        })
+        .collect()
+}
+
+/// Scale one centered `f32` (irreversible 9/7) component to unsigned u8 samples.
+fn centered_f32_to_u8(centered: Vec<f32>, precision: u8) -> Vec<u8> {
+    let shift = (1u32 << (precision - 1)) as f32;
+    let max_sample = (1u32 << precision) - 1;
+    centered
+        .into_iter()
+        .map(|sample| {
+            let value = (sample + shift + 0.5).clamp(0.0, max_sample as f32) as u32;
+            scale_unsigned_to_u8(value, max_sample)
+        })
+        .collect()
+}
+
+/// Reconstruct the MCT colour components to per-component u8 planes: inverse DWT
+/// under the shared COD transform, inverse colour transform when signalled (only
+/// for a full three-component set), then per-component scaling.
+fn reconstruct_colour_u8(
+    header: &CodestreamHeader,
+    tiles: Vec<DecodedTileCoefficients>,
+    stats: &mut StatsSink<'_>,
+) -> Result<Vec<Vec<u8>>> {
+    let apply_mct = header.cod.use_mct && tiles.len() == 3;
+    Ok(match header.cod.transform {
         WaveletTransform::Reversible53 => {
-            let mut planes = Vec::with_capacity(channels);
+            let mut planes = Vec::with_capacity(tiles.len());
             for tile in tiles {
                 let component = tile.component;
                 planes.push(reconstruct_reversible_53_centered(
@@ -317,26 +426,21 @@ fn reconstruct_interleaved_u8_profiled(
                     stats,
                 )?);
             }
-            if header.cod.use_mct {
+            if apply_mct {
                 let start = stats.start();
-                inverse_rct_centered(&mut planes[..3])?;
+                inverse_rct_centered(&mut planes)?;
                 record_mct_time(stats, start);
             }
-            let start = stats.start();
-            let mut output = Vec::with_capacity(pixel_count * channels);
-            for index in 0..pixel_count {
-                for (component, plane) in header.siz.components.iter().zip(&planes) {
-                    let shift = 1i32 << (component.precision - 1);
-                    let max_sample = (1i32 << component.precision) - 1;
-                    let sample = plane[index].saturating_add(shift).clamp(0, max_sample);
-                    output.push(scale_unsigned_to_u8(sample as u32, max_sample as u32));
-                }
-            }
-            record_finalize_time(stats, start);
-            output
+            planes
+                .into_iter()
+                .enumerate()
+                .map(|(index, plane)| {
+                    centered_i32_to_u8(plane, header.siz.components[index].precision)
+                })
+                .collect()
         }
         WaveletTransform::Irreversible97 => {
-            let mut planes = Vec::with_capacity(channels);
+            let mut planes = Vec::with_capacity(tiles.len());
             for tile in tiles {
                 planes.push(reconstruct_irreversible_97_centered(
                     header,
@@ -344,29 +448,41 @@ fn reconstruct_interleaved_u8_profiled(
                     stats,
                 )?);
             }
-            if header.cod.use_mct {
+            if apply_mct {
                 let start = stats.start();
-                inverse_ict_centered(&mut planes[..3])?;
+                inverse_ict_centered(&mut planes)?;
                 record_mct_time(stats, start);
             }
-            let start = stats.start();
-            let mut output = Vec::with_capacity(pixel_count * channels);
-            for index in 0..pixel_count {
-                for (component, plane) in header.siz.components.iter().zip(&planes) {
-                    let shift = (1u32 << (component.precision - 1)) as f32;
-                    let max_sample = (1u32 << component.precision) - 1;
-                    let sample = (plane[index] + shift + 0.5).clamp(0.0, max_sample as f32) as u32;
-                    output.push(scale_unsigned_to_u8(sample, max_sample));
-                }
-            }
-            record_finalize_time(stats, start);
-            output
+            planes
+                .into_iter()
+                .enumerate()
+                .map(|(index, plane)| {
+                    centered_f32_to_u8(plane, header.siz.components[index].precision)
+                })
+                .collect()
         }
-    };
-    stats.update(|stats| {
-        stats.output_pixels = stats.output_pixels.saturating_add(pixel_count as u64);
-    });
-    Ok(output)
+    })
+}
+
+/// Reconstruct one auxiliary (non-MCT) component to u8 under its own transform.
+fn reconstruct_aux_component_u8(
+    header: &CodestreamHeader,
+    tile: DecodedTileCoefficients,
+    stats: &mut StatsSink<'_>,
+) -> Result<Vec<u8>> {
+    let component = tile.component;
+    let precision = header.siz.components[component].precision;
+    Ok(match header.transform_for(component) {
+        WaveletTransform::Irreversible97 => {
+            let centered = reconstruct_irreversible_97_centered(header, tile.into_real()?, stats)?;
+            centered_f32_to_u8(centered, precision)
+        }
+        WaveletTransform::Reversible53 => {
+            let centered =
+                reconstruct_reversible_53_centered(header, tile.into_integer()?, component, stats)?;
+            centered_i32_to_u8(centered, precision)
+        }
+    })
 }
 
 fn scale_unsigned_to_u8(sample: u32, max_sample: u32) -> u8 {
@@ -393,60 +509,7 @@ fn reconstruct_srgb_image(
         }
     }
 
-    let planes: Vec<Vec<i32>> = match header.cod.transform {
-        WaveletTransform::Reversible53 => {
-            let mut planes = Vec::with_capacity(3);
-            for tile in tiles {
-                let component = tile.component;
-                planes.push(reconstruct_reversible_53_centered(
-                    header,
-                    tile.into_integer()?,
-                    component,
-                    stats,
-                )?);
-            }
-            if header.cod.use_mct {
-                let start = stats.start();
-                inverse_rct_centered(&mut planes)?;
-                record_mct_time(stats, start);
-            }
-            let start = stats.start();
-            let output = planes
-                .into_iter()
-                .enumerate()
-                .map(|(index, plane)| {
-                    finalize_i32_samples(plane, header.siz.components[index].precision)
-                })
-                .collect();
-            record_finalize_time(stats, start);
-            output
-        }
-        WaveletTransform::Irreversible97 => {
-            let mut planes = Vec::with_capacity(3);
-            for tile in tiles {
-                planes.push(reconstruct_irreversible_97_centered(
-                    header,
-                    tile.into_real()?,
-                    stats,
-                )?);
-            }
-            if header.cod.use_mct {
-                let start = stats.start();
-                inverse_ict_centered(&mut planes)?;
-                record_mct_time(stats, start);
-            }
-            let start = stats.start();
-            let output = planes
-                .into_iter()
-                .enumerate()
-                .map(|(index, plane)| {
-                    finalize_f32_samples(plane, header.siz.components[index].precision)
-                })
-                .collect();
-            record_finalize_time(stats, start);
-            output
-        }
-    };
+    let planes = reconstruct_color_planes_finalized(header, tiles, stats)?;
 
     let width = header.siz.width;
     let height = header.siz.height;

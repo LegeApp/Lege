@@ -125,16 +125,21 @@ pub(crate) fn decode_tile_components_with_scratch(
     // Irreversible 9/7 code blocks are dequantized as they are written, so the
     // tile plane is the final `f32` subband image. Reversible 5/3 has no
     // quantization and keeps integer magnitudes for the inverse 5/3 lifting.
-    let irreversible = matches!(header.cod.transform, WaveletTransform::Irreversible97);
+    // The transform is per-component: a COC override (Annex A.6.2) can make one
+    // component reversible while the rest are 9/7, so each plane's storage type
+    // follows `transform_for(component)`, not a single tile-wide flag.
     let mut components = (0..component_count)
         .map(|component| DecodedTileCoefficients {
             component,
             width,
             height,
-            plane: if irreversible {
-                CoefficientPlane::Real(vec![0.0f32; width * height])
-            } else {
-                CoefficientPlane::Integer(vec![0i32; width * height])
+            plane: match header.transform_for(component) {
+                WaveletTransform::Irreversible97 => {
+                    CoefficientPlane::Real(vec![0.0f32; width * height])
+                }
+                WaveletTransform::Reversible53 => {
+                    CoefficientPlane::Integer(vec![0i32; width * height])
+                }
             },
         })
         .collect::<Vec<_>>();
@@ -203,7 +208,10 @@ fn block_params(header: &CodestreamHeader, block: &super::t2::DecodedCodeBlock<'
         .get(block.band_index % comp_quant.steps.len())
         .ok_or_else(|| invalid("missing quantization step for decoded subband"))?;
     let max_bitplanes = comp_quant.guard_bits.saturating_sub(1) + quant.exponent;
-    let step = if matches!(header.cod.transform, WaveletTransform::Irreversible97) {
+    let step = if matches!(
+        header.transform_for(block.component),
+        WaveletTransform::Irreversible97
+    ) {
         let precision = header
             .siz
             .components

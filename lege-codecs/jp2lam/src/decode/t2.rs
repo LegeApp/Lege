@@ -1765,6 +1765,7 @@ mod tests {
                 }],
             },
             qcc: Vec::new(),
+            coc: Vec::new(),
             comment_count: 0,
         }
     }

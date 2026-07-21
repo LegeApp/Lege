@@ -18,6 +18,14 @@ pub struct CodestreamHeader {
     /// (Annex A.6.5): `(component_index, quant)`. Empty when every component
     /// uses the default QCD. Selected via [`Self::quant_for`].
     pub qcc: Vec<(usize, QcdSegment)>,
+    /// Per-component wavelet-transform overrides from main-header COC markers
+    /// (Annex A.6.2): `(component_index, transform)`. A COC may in principle
+    /// override the whole coding style, but the decoder only accepts one that
+    /// changes the transform (the common CMYK "lossless K" pattern — colour
+    /// components 9/7, the K channel 5/3); any other override is rejected at
+    /// parse time. Empty when every component uses the default COD. Selected via
+    /// [`Self::transform_for`].
+    pub coc: Vec<(usize, WaveletTransform)>,
     pub comment_count: usize,
 }
 
@@ -30,6 +38,16 @@ impl CodestreamHeader {
             .find(|(index, _)| *index == component)
             .map(|(_, quant)| quant)
             .unwrap_or(&self.qcd)
+    }
+
+    /// The effective wavelet transform for `component`: its COC override if one
+    /// was signalled, otherwise the default COD (ISO/IEC 15444-1 Annex A.6.2).
+    pub(crate) fn transform_for(&self, component: usize) -> WaveletTransform {
+        self.coc
+            .iter()
+            .find(|(index, _)| *index == component)
+            .map(|(_, transform)| *transform)
+            .unwrap_or(self.cod.transform)
     }
 }
 
@@ -166,6 +184,7 @@ impl CodestreamHeader {
         let mut cod = None;
         let mut qcd = None;
         let mut qcc_segments: Vec<&[u8]> = Vec::new();
+        let mut coc_segments: Vec<&[u8]> = Vec::new();
         let mut comment_count = 0;
 
         for segment in main_header_segments {
@@ -175,9 +194,11 @@ impl CodestreamHeader {
                 MARKER_SIZ => siz = Some(parse_siz(segment)?),
                 MARKER_COD => cod = Some(parse_cod(segment)?),
                 MARKER_QCD => qcd = Some(parse_qcd(segment)?),
-                // QCC carries a component index; parse after SIZ fixes the
-                // component count (which selects the 1- vs 2-byte Cqcc field).
+                // QCC/COC carry a component index; parse after SIZ fixes the
+                // component count (which selects the 1- vs 2-byte index field)
+                // and after COD (COC is reconciled against the default coding).
                 MARKER_QCC => qcc_segments.push(segment),
+                MARKER_COC => coc_segments.push(segment),
                 MARKER_COM => comment_count += 1,
                 // TLM/PLM/PLT length hints are accepted and ignored.
                 MARKER_TLM | MARKER_PLM | MARKER_PLT => {}
@@ -217,12 +238,41 @@ impl CodestreamHeader {
             }
         }
 
+        let mut coc = Vec::with_capacity(coc_segments.len());
+        for segment in coc_segments {
+            let (component, transform) = parse_coc(segment, component_count, &cod)?;
+            if component >= component_count {
+                return Err(invalid(format!(
+                    "COC references component {component}, but SIZ defines {component_count}"
+                )));
+            }
+            // A transform override that actually differs from COD is only
+            // supported outside the multi-component (MCT) colour set: a lone
+            // grayscale component, or an auxiliary channel (component >= 3, e.g.
+            // a CMYK K plane). Overriding one of the three colour components
+            // would break the shared inverse colour transform, so reject it
+            // cleanly rather than mis-decode.
+            if transform != cod.transform && component_count > 1 && component < 3 {
+                unsupported_marker(
+                    MARKER_COC,
+                    "COC transform override on an MCT colour component",
+                )?;
+            }
+            // Last occurrence wins if a component is overridden twice.
+            if let Some(slot) = coc.iter_mut().find(|(c, _)| *c == component) {
+                *slot = (component, transform);
+            } else {
+                coc.push((component, transform));
+            }
+        }
+
         validate_decoder_scope(first_tile_header, tile_part_count, &siz, &cod, &qcd, &qcc)?;
         Ok(Self {
             siz,
             cod,
             qcd,
             qcc,
+            coc,
             comment_count,
         })
     }
@@ -304,11 +354,7 @@ fn parse_cod(segment: &[u8]) -> Result<CodSegment> {
     if style & !0x3f != 0 {
         return Err(invalid("COD code-block style has reserved bits set"));
     }
-    let transform = match body[9] {
-        0 => WaveletTransform::Irreversible97,
-        1 => WaveletTransform::Reversible53,
-        value => return Err(invalid(format!("unsupported wavelet transform {value}"))),
-    };
+    let transform = wavelet_transform_from_byte(body[9])?;
     let precinct_sizes = body[10..]
         .iter()
         .map(|value| PrecinctSize {
@@ -327,20 +373,104 @@ fn parse_cod(segment: &[u8]) -> Result<CodSegment> {
         decomposition_levels,
         code_block_width,
         code_block_height,
-        code_block_style: CodeBlockStyle {
-            bypass: style & 0x01 != 0,
-            reset_contexts: style & 0x02 != 0,
-            terminate_each_pass: style & 0x04 != 0,
-            vertical_causal: style & 0x08 != 0,
-            predictable_termination: style & 0x10 != 0,
-            segmentation_symbols: style & 0x20 != 0,
-        },
+        code_block_style: code_block_style_from_byte(style),
         transform,
         uses_precincts,
         sop_markers: scod & 0x02 != 0,
         eph_markers: scod & 0x04 != 0,
         precinct_sizes,
     })
+}
+
+/// Decode the 1-byte code-block style field shared by COD/COC (T.88 §A.6.1).
+fn code_block_style_from_byte(style: u8) -> CodeBlockStyle {
+    CodeBlockStyle {
+        bypass: style & 0x01 != 0,
+        reset_contexts: style & 0x02 != 0,
+        terminate_each_pass: style & 0x04 != 0,
+        vertical_causal: style & 0x08 != 0,
+        predictable_termination: style & 0x10 != 0,
+        segmentation_symbols: style & 0x20 != 0,
+    }
+}
+
+fn wavelet_transform_from_byte(value: u8) -> Result<WaveletTransform> {
+    match value {
+        0 => Ok(WaveletTransform::Irreversible97),
+        1 => Ok(WaveletTransform::Reversible53),
+        value => Err(invalid(format!("unsupported wavelet transform {value}"))),
+    }
+}
+
+/// Parse a COC marker (Annex A.6.2) and reconcile it against the default COD,
+/// returning `(component, transform)`.
+///
+/// A COC overrides the whole per-component coding style, but this decoder only
+/// implements a transform override (colour components 9/7, an auxiliary channel
+/// 5/3 — the CMYK "lossless K" pattern). A COC that changes the decomposition
+/// depth, code-block geometry/style, or precinct partition would require the
+/// Tier-2 packet iterator and reconstruction to run per-component structure and
+/// is rejected cleanly rather than mis-decoded.
+fn parse_coc(segment: &[u8], component_count: usize, cod: &CodSegment) -> Result<(usize, WaveletTransform)> {
+    let body = body(segment)?;
+    // Ccoc is 1 byte for <257 components, 2 bytes otherwise (mirrors Cqcc).
+    let (component, rest) = if component_count < 257 {
+        let component = *body
+            .first()
+            .ok_or_else(|| invalid("COC marker body is too short"))?;
+        (usize::from(component), &body[1..])
+    } else {
+        if body.len() < 2 {
+            return Err(invalid("COC marker body is too short"));
+        }
+        (usize::from(read_u16(body, 0)?), &body[2..])
+    };
+    // Scoc (1 byte) + SPcoc: levels, cblk w/h, style, transform (5 bytes),
+    // plus one precinct byte per resolution when Scoc signals precincts.
+    if rest.len() < 6 {
+        return Err(invalid("COC marker body is too short"));
+    }
+    let scoc = rest[0];
+    let uses_precincts = scoc & 0x01 != 0;
+    let sp = &rest[1..];
+    let decomposition_levels = sp[0];
+    let code_block_width = code_block_dimension(sp[1], "width")?;
+    let code_block_height = code_block_dimension(sp[2], "height")?;
+    let style_byte = sp[3];
+    if style_byte & !0x3f != 0 {
+        return Err(invalid("COC code-block style has reserved bits set"));
+    }
+    let transform = wavelet_transform_from_byte(sp[4])?;
+    let expected_len = if uses_precincts {
+        6usize + usize::from(decomposition_levels) + 1
+    } else {
+        6
+    };
+    if rest.len() != expected_len {
+        return Err(invalid(
+            "COC marker length does not match Scoc precinct flag",
+        ));
+    }
+    let precinct_sizes: Vec<PrecinctSize> = sp[5..]
+        .iter()
+        .map(|value| PrecinctSize {
+            pp_x: value & 0x0f,
+            pp_y: value >> 4,
+        })
+        .collect();
+
+    // Accept only a transform-only override; anything that reshapes the Tier-2
+    // packet structure is out of scope and must fail cleanly (see the doc note).
+    if decomposition_levels != cod.decomposition_levels
+        || code_block_width != cod.code_block_width
+        || code_block_height != cod.code_block_height
+        || code_block_style_from_byte(style_byte) != cod.code_block_style
+        || uses_precincts != cod.uses_precincts
+        || precinct_sizes != cod.precinct_sizes
+    {
+        unsupported_marker(MARKER_COC, "COC that overrides more than the wavelet transform")?;
+    }
+    Ok((component, transform))
 }
 
 fn parse_qcd(segment: &[u8]) -> Result<QcdSegment> {
@@ -602,14 +732,13 @@ fn max_dwt_decompositions(width: u32, height: u32) -> u8 {
 
 fn reject_unsupported_main_marker(marker: u16) -> Result<()> {
     match marker {
-        MARKER_SIZ | MARKER_COD | MARKER_QCD | MARKER_QCC | MARKER_COM => Ok(()),
+        MARKER_SIZ | MARKER_COD | MARKER_COC | MARKER_QCD | MARKER_QCC | MARKER_COM => Ok(()),
         // TLM/PLM/PLT are packet/tile-part *length* markers — random-access
         // hints. Sequential decoding derives the same lengths from SOT `Psot`
         // and the packet headers, so they are safely ignored (as OpenJPEG does
         // when not indexing).
         MARKER_TLM | MARKER_PLM | MARKER_PLT => Ok(()),
         MARKER_CAP => unsupported_marker(marker, "CAP capabilities marker"),
-        MARKER_COC => unsupported_marker(marker, "COC component coding-style override"),
         MARKER_RGN => unsupported_marker(marker, "RGN region-of-interest marker"),
         MARKER_POC => unsupported_marker(marker, "POC progression-order change marker"),
         MARKER_PPM => unsupported_marker(marker, "PPM packed packet headers"),
@@ -708,18 +837,18 @@ mod tests {
     #[test]
     fn unsupported_main_marker_fails_fast_with_feature_name() {
         let mut segments = supported_segments();
-        segments.push(segment(MARKER_COC, &[0x00, 0x00]));
+        segments.push(segment(MARKER_RGN, &[0x00, 0x00, 0x00]));
 
         let err = CodestreamHeader::from_marker_segments(
             segments.iter().map(Vec::as_slice),
             tile_header(0),
             1,
         )
-        .expect_err("COC should be rejected");
+        .expect_err("RGN should be rejected");
 
         assert!(matches!(err, Jp2LamError::UnsupportedFeature(_)), "{err:?}");
         let err = err.to_string();
-        assert!(err.contains("COC component coding-style override"), "{err}");
+        assert!(err.contains("RGN region-of-interest marker"), "{err}");
     }
 
     #[test]
@@ -728,7 +857,6 @@ mod tests {
         // deliberately absent from this rejection matrix.
         for (marker, expected) in [
             (MARKER_CAP, "CAP capabilities marker"),
-            (MARKER_COC, "COC component coding-style override"),
             (MARKER_RGN, "RGN region-of-interest marker"),
             (MARKER_POC, "POC progression-order change marker"),
             (MARKER_PPM, "PPM packed packet headers"),
@@ -880,6 +1008,64 @@ mod tests {
         .to_string();
 
         assert!(err.contains("POC progression-order change marker"), "{err}");
+    }
+
+    /// A transform-only COC: same coding style as `cod_segment(1, 0)` (levels 5,
+    /// code-block exponents 4/4, style 0, no precincts) but a chosen transform.
+    fn coc_segment(component: u8, transform: u8) -> Vec<u8> {
+        segment(MARKER_COC, &[component, 0, 5, 4, 4, 0, transform])
+    }
+
+    #[test]
+    fn coc_transform_override_on_grayscale_is_accepted() {
+        // supported_segments() is a single-component (grayscale) 9/7 stream; a COC
+        // that only flips component 0 to 5/3 is honoured.
+        let mut segments = supported_segments();
+        segments.push(coc_segment(0, 1));
+        let header = CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect("transform-only COC should decode");
+        assert_eq!(header.transform_for(0), WaveletTransform::Reversible53);
+    }
+
+    #[test]
+    fn coc_structural_override_is_rejected() {
+        // A COC that changes the code-block width (exponent 3, not COD's 4) would
+        // reshape the Tier-2 packet structure and is refused cleanly.
+        let mut segments = supported_segments();
+        segments.push(segment(MARKER_COC, &[0, 0, 5, 3, 4, 0, 1]));
+        let err = CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect_err("structural COC should be rejected")
+        .to_string();
+        assert!(err.contains("more than the wavelet transform"), "{err}");
+    }
+
+    #[test]
+    fn coc_transform_override_on_colour_component_is_rejected() {
+        // In a three-component image, components 0-2 form the MCT colour set; a
+        // transform override on one of them would break the shared colour
+        // transform and is refused.
+        let segments = vec![
+            siz_segment(8, false, 3),
+            cod_segment(1, 0),
+            qcd_segment(),
+            coc_segment(1, 1),
+        ];
+        let err = CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect_err("colour-component COC override should be rejected")
+        .to_string();
+        assert!(err.contains("MCT colour component"), "{err}");
     }
 
     #[test]
