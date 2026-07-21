@@ -1490,12 +1490,29 @@ fn validate_jp2_decode_scope(
             header.component_count
         )));
     }
+    if header.colorspace == ColorSpace::YCbCr {
+        // sYCC (EnumCS 18) carries three Y/Cb/Cr planes with no MCT; the decoder
+        // applies the inverse sYCC→sRGB matrix. An MCT-decorrelated stream can't
+        // simultaneously be sYCC, so a signalled MCT is contradictory.
+        if header.component_count != 3 {
+            return Err(crate::Jp2LamError::UnsupportedFeature(format!(
+                "unsupported JP2 component count: sYCC requires three components, found {} components",
+                header.component_count
+            )));
+        }
+        if codestream.cod.use_mct {
+            return Err(crate::Jp2LamError::UnsupportedFeature(
+                "unsupported JP2 feature: sYCC combined with the multiple-component transform".into(),
+            ));
+        }
+    }
     if header.colorspace != ColorSpace::Gray
         && header.colorspace != ColorSpace::Srgb
         && header.colorspace != ColorSpace::Cmyk
+        && header.colorspace != ColorSpace::YCbCr
     {
         return Err(crate::Jp2LamError::UnsupportedFeature(format!(
-            "unsupported JP2 colorspace: decoder currently supports EnumCS=17 grayscale, EnumCS=16 sRGB, and EnumCS=12 CMYK, found {:?}",
+            "unsupported JP2 colorspace: decoder currently supports EnumCS=17 grayscale, EnumCS=16 sRGB, EnumCS=18 sYCC, and EnumCS=12 CMYK, found {:?}",
             header.colorspace
         )));
     }

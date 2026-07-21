@@ -23,6 +23,7 @@ const JP2_COMPRESSION_TYPE_J2K: u8 = 7;
 const ENUM_CMYK: u32 = 12;
 const ENUM_SRGB: u32 = 16;
 const ENUM_GRAY: u32 = 17;
+const ENUM_SYCC: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedJp2<'a> {
@@ -302,6 +303,10 @@ fn parse_color_spec(payload: &[u8]) -> Result<(ColorSpace, ColorEncoding)> {
             match read_u32(payload, 3)? {
                 ENUM_GRAY => Ok((ColorSpace::Gray, ColorEncoding::Gray)),
                 ENUM_SRGB => Ok((ColorSpace::Srgb, ColorEncoding::Srgb)),
+                // sYCC (EnumCS 18): three Y/Cb/Cr planes carried without MCT;
+                // the decoder applies the inverse sYCC→sRGB matrix and outputs
+                // sRGB, so the container encoding is sRGB.
+                ENUM_SYCC => Ok((ColorSpace::YCbCr, ColorEncoding::Srgb)),
                 ENUM_CMYK => Ok((ColorSpace::Cmyk, ColorEncoding::Cmyk)),
                 value => Err(unsupported(format!("unsupported JP2 EnumCS value {value}"))),
             }

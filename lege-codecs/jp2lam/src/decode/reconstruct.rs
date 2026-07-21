@@ -26,10 +26,87 @@ pub(crate) fn reconstruct_image_profiled(
             reconstruct_grayscale_image(header, tiles.into_iter().next().unwrap(), stats)
         }
         ColorSpace::Srgb => reconstruct_srgb_image(header, tiles, stats),
+        ColorSpace::YCbCr => reconstruct_ycbcr_image(header, tiles, stats),
         ColorSpace::Cmyk => reconstruct_cmyk_image(header, tiles, stats),
         _ => Err(invalid(format!(
             "unsupported JP2 colorspace for reconstruction: {colorspace:?}"
         ))),
+    }
+}
+
+/// Reconstruct an sYCC image (EnumCS 18): three Y/Cb/Cr planes coded without
+/// MCT, converted to sRGB by the inverse sYCC matrix (ITU-R BT.601 full range,
+/// the transform OpenJPEG's `sycc_to_rgb` applies). The result is a DeviceRGB
+/// image.
+fn reconstruct_ycbcr_image(
+    header: &CodestreamHeader,
+    mut tiles: Vec<DecodedTileCoefficients>,
+    stats: &mut StatsSink<'_>,
+) -> Result<Image> {
+    if tiles.len() != 3 || header.siz.components.len() != 3 {
+        return Err(invalid("sYCC JP2 must decode exactly three components"));
+    }
+    tiles.sort_by_key(|tile| tile.component);
+    for (idx, tile) in tiles.iter().enumerate() {
+        if tile.component != idx {
+            return Err(invalid("decoded sYCC components are not contiguous"));
+        }
+    }
+    // `use_mct` is validated false for sYCC, so these are the raw, level-shifted
+    // Y/Cb/Cr planes (no colour transform applied).
+    let mut planes = reconstruct_color_planes_finalized(header, tiles, stats)?;
+    let start = stats.start();
+    sycc_to_rgb_in_place(&mut planes, header.siz.components[0].precision);
+    record_finalize_time(stats, start);
+
+    let width = header.siz.width;
+    let height = header.siz.height;
+    stats.update(|stats| {
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add(planes.iter().map(|plane| plane.len() as u64).sum::<u64>());
+    });
+    Ok(Image {
+        width,
+        height,
+        colorspace: ColorSpace::Srgb,
+        components: planes
+            .into_iter()
+            .enumerate()
+            .map(|(idx, data)| {
+                let component = header.siz.components[idx];
+                Component {
+                    data,
+                    width,
+                    height,
+                    precision: u32::from(component.precision),
+                    signed: component.signed,
+                    dx: u32::from(component.dx),
+                    dy: u32::from(component.dy),
+                }
+            })
+            .collect(),
+    })
+}
+
+/// In-place inverse sYCC→sRGB on three level-shifted planes (Y, Cb, Cr →
+/// R, G, B), ITU-R BT.601 full range with the chroma centred at `2^(prec-1)`.
+fn sycc_to_rgb_in_place(planes: &mut [Vec<i32>], precision: u8) {
+    let offset = 1i32 << (precision.saturating_sub(1));
+    let max_sample = (1i32 << precision) - 1;
+    let (y_plane, rest) = planes.split_first_mut().expect("three sYCC planes");
+    let (cb_plane, cr_plane) = rest.split_first_mut().expect("three sYCC planes");
+    let cr_plane = &mut cr_plane[0];
+    for i in 0..y_plane.len() {
+        let y = y_plane[i] as f32;
+        let cb = (cb_plane[i] - offset) as f32;
+        let cr = (cr_plane[i] - offset) as f32;
+        let r = y + 1.402 * cr;
+        let g = y - 0.344_136 * cb - 0.714_136 * cr;
+        let b = y + 1.772 * cb;
+        y_plane[i] = (r + 0.5).clamp(0.0, max_sample as f32) as i32;
+        cb_plane[i] = (g + 0.5).clamp(0.0, max_sample as f32) as i32;
+        cr_plane[i] = (b + 0.5).clamp(0.0, max_sample as f32) as i32;
     }
 }
 
@@ -743,6 +820,31 @@ fn invalid(message: impl Into<String>) -> Jp2LamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sycc_to_rgb_matches_bt601_full_range() {
+        // Neutral chroma (Cb=Cr=128) is a pure grayscale ramp: R=G=B=Y exactly
+        // (the transform OpenJPEG's sycc_to_rgb applies). The BT.601 primaries
+        // round-trip to a dominant channel with the others near zero.
+        let mut planes = vec![
+            vec![0, 128, 255, 76, 150, 29],    // Y
+            vec![128, 128, 128, 85, 44, 255],  // Cb
+            vec![128, 128, 128, 255, 21, 107], // Cr
+        ];
+        sycc_to_rgb_in_place(&mut planes, 8);
+        let px = |i: usize| (planes[0][i], planes[1][i], planes[2][i]);
+        assert_eq!(px(0), (0, 0, 0));
+        assert_eq!(px(1), (128, 128, 128));
+        assert_eq!(px(2), (255, 255, 255));
+        // Red / green / blue primaries: the named channel saturates, the others
+        // stay ≤ 1 (sub-LSB from the forward Y quantization).
+        let (r, g, b) = px(3);
+        assert!(r >= 254 && g <= 1 && b <= 1, "red primary: {:?}", px(3));
+        let (r, g, b) = px(4);
+        assert!(g >= 254 && r <= 1 && b <= 1, "green primary: {:?}", px(4));
+        let (r, g, b) = px(5);
+        assert!(b >= 254 && r <= 1 && g <= 1, "blue primary: {:?}", px(5));
+    }
 
     #[test]
     fn inverse_ict_uses_centered_unclipped_chroma() {
