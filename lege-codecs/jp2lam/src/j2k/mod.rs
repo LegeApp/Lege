@@ -6,6 +6,7 @@ mod write;
 
 use crate::error::Result;
 use crate::plan::EncodingPlan;
+pub(crate) use markers::{MARKER_COD, MARKER_QCD};
 pub(crate) use types::{CodestreamParts, TilePart, TilePartHeader};
 
 pub(crate) const MARKER_SOC: u16 = 0xff4f;

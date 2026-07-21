@@ -801,7 +801,16 @@ fn decode_tile_components(
     scratch: &mut DecodeScratch,
 ) -> Result<(CodestreamHeader, Vec<t1::DecodedTileCoefficients>)> {
     let (x0, y0, width, height) = tile_rect(&core.codestream, tile_index)?;
-    let full_tile_header = tile_local_header(&core.codestream, x0, y0, width, height);
+    // Fold this tile's tile-part header overrides (QCD/QCC/COC, or a redundant
+    // COD restatement) onto the main-header defaults before deriving the
+    // tile-local geometry. Gathering across all of the tile's parts is safe:
+    // the markers only appear in the TPsot==0 part (Annex A.4.2).
+    let overridden = core.codestream.with_tile_overrides(
+        part_indices
+            .iter()
+            .flat_map(|&i| core.parts.tile_parts[i].header_segments.iter().copied()),
+    )?;
+    let full_tile_header = tile_local_header(&overridden, x0, y0, width, height);
     let highest_resolution = full_tile_header
         .cod
         .decomposition_levels
@@ -949,12 +958,24 @@ fn parse_jp2_core<'a>(bytes: &'a [u8], stats: &mut StatsSink<'_>) -> Result<Pars
         .first()
         .ok_or_else(|| crate::Jp2LamError::DecodeFailed("codestream has no tile-part".into()))?;
     let tile_count = parts.tile_parts.len();
-    let codestream = CodestreamHeader::from_marker_segments_with_tile_headers(
+    // The base header carries only main-header defaults; each tile applies its
+    // own COD/COC/QCD/QCC overrides during decode (`with_tile_overrides`), so a
+    // first tile that legitimately carries overrides no longer fails here.
+    let mut codestream = CodestreamHeader::from_marker_segments(
         parts.main_header_segments.iter().copied(),
-        first_tile.header_segments.iter().copied(),
         first_tile.header,
         tile_count,
     )?;
+    // Fold the first tile-part's COM markers back into the count so
+    // DecodeMetadata still reports every comment in the codestream.
+    codestream.comment_count += first_tile
+        .header_segments
+        .iter()
+        .filter(|seg| {
+            seg.get(0..2)
+                .is_some_and(|m| u16::from_be_bytes([m[0], m[1]]) == crate::j2k::MARKER_COM)
+        })
+        .count();
 
     // For a bare codestream there is no JP2 header to cross-check; synthesize
     // one from SIZ (color space inferred from the component count, as OpenJPEG
@@ -1059,19 +1080,28 @@ fn tile_part_indices_by_tile(
                 next_part_index[tile_index], tile_part.header.part_index
             )));
         }
-        // Coding-style/quantization override markers (COD/COC/QCD/QCC/RGN/POC)
-        // in a tile-part header change how that tile decodes and are not
-        // supported. PLT (packet-length) and COM (comment) are inert hints and
-        // are allowed through — a marker the first-tile path already accepts.
+        // Quantization/coding overrides (COD/COC/QCD/QCC) are honored per tile
+        // during decode by `CodestreamHeader::with_tile_overrides` (the
+        // authoritative semantic gate). Permit them here and reject up front
+        // only markers that would reshape Tier-2 packet iteration per tile
+        // (RGN/POC/PPT/PPM). PLT/COM are inert hints.
         for segment in &tile_part.header_segments {
             let marker = segment
                 .get(0..2)
                 .map(|m| u16::from_be_bytes([m[0], m[1]]))
                 .unwrap_or(0);
-            if !matches!(marker, crate::j2k::MARKER_PLT | crate::j2k::MARKER_COM) {
-                return Err(crate::Jp2LamError::UnsupportedFeature(
-                    "per-tile coding-style/quantization overrides are not supported".to_string(),
-                ));
+            if !matches!(
+                marker,
+                crate::j2k::MARKER_PLT
+                    | crate::j2k::MARKER_COM
+                    | crate::j2k::MARKER_COD
+                    | crate::j2k::MARKER_COC
+                    | crate::j2k::MARKER_QCD
+                    | crate::j2k::MARKER_QCC
+            ) {
+                return Err(crate::Jp2LamError::UnsupportedFeature(format!(
+                    "unsupported per-tile marker 0x{marker:04x} in tile-part header"
+                )));
             }
         }
         next_part_index[tile_index] += 1;
@@ -2455,6 +2485,112 @@ mod tests {
         output.push(total_parts);
         output.extend_from_slice(&[0xff, 0x93]);
         output.extend_from_slice(payload);
+    }
+
+    /// Like [`append_tile_part`] but injects `header_segments` (e.g. a QCD/QCC
+    /// override) between the SOT and SOD markers, recomputing Psot.
+    fn append_tile_part_with_header(
+        output: &mut Vec<u8>,
+        tile_index: u16,
+        part_index: u8,
+        total_parts: u8,
+        header_segments: &[Vec<u8>],
+        payload: &[u8],
+    ) {
+        let header_len: usize = header_segments.iter().map(Vec::len).sum();
+        let psot = u32::try_from(14usize + header_len + payload.len()).expect("tile-part length");
+        output.extend_from_slice(&[0xff, 0x90]);
+        output.extend_from_slice(&10u16.to_be_bytes());
+        output.extend_from_slice(&tile_index.to_be_bytes());
+        output.extend_from_slice(&psot.to_be_bytes());
+        output.push(part_index);
+        output.push(total_parts);
+        for segment in header_segments {
+            output.extend_from_slice(segment);
+        }
+        output.extend_from_slice(&[0xff, 0x93]);
+        output.extend_from_slice(payload);
+    }
+
+    /// Re-emit a single-tile native JP2 with `header_segments` placed in the
+    /// tile-part header, preserving the main header, payload, and container.
+    fn rebuild_with_tile_header_segments(bytes: &[u8], header_segments: &[Vec<u8>]) -> Vec<u8> {
+        let (codestream_start, codestream_end) = top_level_box_range(bytes, b"jp2c");
+        let codestream = &bytes[codestream_start..codestream_end];
+        let parts = codestream::parse_codestream_view(codestream).expect("parse native codestream");
+        assert_eq!(parts.tile_parts.len(), 1, "native fixture has one tile-part");
+        let payload = parts.tile_parts[0].payload;
+
+        let sot_start = codestream
+            .windows(2)
+            .position(|marker| marker == [0xff, 0x90])
+            .expect("native SOT marker");
+
+        let mut split_codestream = Vec::with_capacity(codestream.len() + 64);
+        split_codestream.extend_from_slice(&codestream[..sot_start]);
+        append_tile_part_with_header(&mut split_codestream, 0, 0, 1, header_segments, payload);
+        split_codestream.extend_from_slice(&[0xff, 0xd9]);
+
+        let mut output = Vec::with_capacity(bytes.len() + 64);
+        output.extend_from_slice(&bytes[..codestream_start - 8]);
+        let box_len = u32::try_from(split_codestream.len() + 8).expect("jp2c box length");
+        output.extend_from_slice(&box_len.to_be_bytes());
+        output.extend_from_slice(b"jp2c");
+        output.extend_from_slice(&split_codestream);
+        output.extend_from_slice(&bytes[codestream_end..]);
+        output
+    }
+
+    /// A scalar-expounded QCD marker (0xff5c) with `step_count` steps all at
+    /// `exponent` (mantissa 0), for injecting a tile-part quantization override.
+    fn qcd_override_segment(step_count: usize, exponent: u16) -> Vec<u8> {
+        let packed = exponent << 11;
+        let mut body = vec![0x22u8]; // 1 guard bit, scalar-expounded
+        for _ in 0..step_count {
+            body.extend_from_slice(&packed.to_be_bytes());
+        }
+        let mut segment = vec![0xff, 0x5c];
+        let len = u16::try_from(body.len() + 2).expect("qcd length");
+        segment.extend_from_slice(&len.to_be_bytes());
+        segment.extend_from_slice(&body);
+        segment
+    }
+
+    #[test]
+    fn tile_part_qcd_override_is_applied_end_to_end() {
+        // Encode a single-tile 9/7 gray image, then re-emit the codestream with a
+        // QCD override in the tile-part header. It must decode (this marker was
+        // previously a hard reject) and produce different samples than the same
+        // stream without the override — proving the tile QCD is parsed and
+        // applied through the whole dequant pipeline, not silently ignored.
+        let width = 64u32;
+        let height = 64u32;
+        let image = Image::from_gray_bytes(width, height, &gray_fixture(width, height))
+            .expect("source image");
+        let encoded = crate::encode(&image, &region_opts(75)).expect("encode 9/7 jp2");
+
+        let meta = inspect_jp2(&encoded).expect("inspect encoded");
+        assert_eq!(meta.codestream.cod.transform, WaveletTransform::Irreversible97);
+        let step_count = 1 + usize::from(meta.codestream.cod.decomposition_levels) * 3;
+        let base_exp = meta.codestream.qcd.steps[0].exponent;
+        let new_exp = u16::from(if base_exp >= 3 { base_exp - 2 } else { base_exp + 2 });
+
+        let base = rebuild_with_tile_header_segments(&encoded, &[]);
+        let overridden =
+            rebuild_with_tile_header_segments(&encoded, &[qcd_override_segment(step_count, new_exp)]);
+
+        let base_px = decode_jp2(&base).expect("decode without override").components[0]
+            .data
+            .clone();
+        let over_px = decode_jp2(&overridden).expect("decode with tile QCD override").components[0]
+            .data
+            .clone();
+
+        assert_eq!(base_px.len(), over_px.len());
+        assert_ne!(
+            base_px, over_px,
+            "tile-part QCD override must change the decoded samples"
+        );
     }
 
     fn top_level_box_range(bytes: &[u8], box_type: &[u8; 4]) -> (usize, usize) {

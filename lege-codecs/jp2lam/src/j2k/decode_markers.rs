@@ -266,7 +266,7 @@ impl CodestreamHeader {
             }
         }
 
-        validate_decoder_scope(first_tile_header, tile_part_count, &siz, &cod, &qcd, &qcc)?;
+        validate_decoder_scope(first_tile_header, tile_part_count, &siz, &cod, &qcd, &qcc, &coc)?;
         Ok(Self {
             siz,
             cod,
@@ -275,6 +275,138 @@ impl CodestreamHeader {
             coc,
             comment_count,
         })
+    }
+
+    /// Apply a tile-part header's override markers onto a copy of these
+    /// main-header defaults, producing the effective header for one tile
+    /// (ISO/IEC 15444-1 Annex A.4.2). QCD/QCC override the tile's quantization
+    /// and COC a per-component wavelet transform — all consumed downstream via
+    /// [`Self::quant_for`]/[`Self::transform_for`] with no other plumbing.
+    ///
+    /// A COD in a tile header is accepted only when it restates the main coding
+    /// structure (a common redundant emission); a structurally different COD, or
+    /// RGN/POC/PPT/PPM, would reshape the Tier-2 packet iteration per tile and is
+    /// rejected cleanly rather than mis-decoded. Segments may be gathered across
+    /// all of a tile's tile-parts; per A.4.2 the markers only appear in the
+    /// `TPsot == 0` part, so later parts contribute nothing.
+    pub(crate) fn with_tile_overrides<'a, J>(&self, tile_header_segments: J) -> Result<Self>
+    where
+        J: IntoIterator<Item = &'a [u8]>,
+    {
+        let mut local = self.clone();
+        let component_count = self.siz.components.len();
+
+        let mut tile_qcd: Option<QcdSegment> = None;
+        let mut qcc_segments: Vec<&[u8]> = Vec::new();
+        let mut coc_segments: Vec<&[u8]> = Vec::new();
+        let mut saw_override = false;
+
+        for segment in tile_header_segments {
+            let marker = marker(segment)?;
+            match marker {
+                MARKER_COD => {
+                    // The effective COD must match the main header so the tile's
+                    // decomposition depth, code-block geometry, precincts, and
+                    // progression stay uniform (Tier-2 and reduce-level logic
+                    // read one global structure). A restatement is a no-op; a
+                    // real change is out of scope.
+                    if parse_cod(segment)? != self.cod {
+                        unsupported_marker(
+                            MARKER_COD,
+                            "per-tile COD override that changes the coding structure",
+                        )?;
+                    }
+                    saw_override = true;
+                }
+                MARKER_QCD => {
+                    tile_qcd = Some(parse_qcd(segment)?);
+                    saw_override = true;
+                }
+                MARKER_QCC => {
+                    qcc_segments.push(segment);
+                    saw_override = true;
+                }
+                MARKER_COC => {
+                    coc_segments.push(segment);
+                    saw_override = true;
+                }
+                MARKER_PLT | MARKER_COM => {}
+                _ => reject_unsupported_tile_marker(marker)?,
+            }
+        }
+
+        if !saw_override {
+            return Ok(local);
+        }
+
+        // Quantization steps and reconciliation depend on the decomposition
+        // depth; a tile COD is required to equal the main COD, so use it.
+        let effective_cod = &self.cod;
+
+        if let Some(mut qcd) = tile_qcd {
+            expand_derived_steps(&mut qcd, effective_cod.decomposition_levels);
+            local.qcd = qcd;
+        }
+
+        for segment in qcc_segments {
+            let (component, mut quant) = parse_qcc(segment, component_count)?;
+            expand_derived_steps(&mut quant, effective_cod.decomposition_levels);
+            if component >= component_count {
+                return Err(invalid(format!(
+                    "tile QCC references component {component}, but SIZ defines {component_count}"
+                )));
+            }
+            if let Some(slot) = local.qcc.iter_mut().find(|(c, _)| *c == component) {
+                *slot = (component, quant);
+            } else {
+                local.qcc.push((component, quant));
+            }
+        }
+
+        for segment in coc_segments {
+            let (component, transform) = parse_coc(segment, component_count, effective_cod)?;
+            if component >= component_count {
+                return Err(invalid(format!(
+                    "tile COC references component {component}, but SIZ defines {component_count}"
+                )));
+            }
+            // Same MCT guard as the main-header path: a transform override on one
+            // of the three colour components would break the shared inverse
+            // colour transform.
+            if transform != effective_cod.transform && component_count > 1 && component < 3 {
+                unsupported_marker(
+                    MARKER_COC,
+                    "tile COC transform override on an MCT colour component",
+                )?;
+            }
+            if let Some(slot) = local.coc.iter_mut().find(|(c, _)| *c == component) {
+                *slot = (component, transform);
+            } else {
+                local.coc.push((component, transform));
+            }
+        }
+
+        // Re-validate: the tile's quantization must be a supported (transform,
+        // style) pair carrying one step per subband, so a 5/3 + scalar override
+        // can't reach the reversible reconstruct's `NoQuantization` assert. Each
+        // QCC is checked against its component's effective (post-COC) transform.
+        validate_quant(
+            effective_cod.transform,
+            effective_cod.decomposition_levels,
+            &local.qcd,
+            "tile QCD",
+        )?;
+        for (component, quant) in &local.qcc {
+            let transform = effective_transform(effective_cod, &local.coc, *component);
+            validate_quant(
+                transform,
+                effective_cod.decomposition_levels,
+                quant,
+                &format!("tile QCC component {component}"),
+            )?;
+        }
+
+        Ok(local)
     }
 }
 
@@ -579,6 +711,7 @@ fn validate_decoder_scope(
     cod: &CodSegment,
     qcd: &QcdSegment,
     qcc: &[(usize, QcdSegment)],
+    coc: &[(usize, WaveletTransform)],
 ) -> Result<()> {
     if tile_part_count == 0 {
         return Err(invalid("codestream has no tile-parts"));
@@ -652,20 +785,36 @@ fn validate_decoder_scope(
     }
     // The default QCD and every per-component QCC override must each be a
     // quantization style the reconstruction path supports and carry the step
-    // count the decomposition depth implies.
-    validate_quant(cod, qcd, "QCD")?;
+    // count the decomposition depth implies. Each QCC is checked against its
+    // component's effective transform so a COC-overridden 5/3 channel accepts
+    // its no-quantization steps.
+    validate_quant(cod.transform, cod.decomposition_levels, qcd, "QCD")?;
     for (component, quant) in qcc {
-        validate_quant(cod, quant, &format!("QCC component {component}"))?;
+        let transform = effective_transform(cod, coc, *component);
+        validate_quant(
+            transform,
+            cod.decomposition_levels,
+            quant,
+            &format!("QCC component {component}"),
+        )?;
     }
     Ok(())
 }
 
 /// Validate one quantization segment (a QCD or a per-component QCC) against the
-/// coding style: only the (transform, style) pairs the reconstruction path
-/// implements are accepted, and the step count must match the decomposition
-/// depth for the expounded/no-quantization styles.
-fn validate_quant(cod: &CodSegment, quant: &QcdSegment, label: &str) -> Result<()> {
-    match (cod.transform, quant.style) {
+/// *effective* transform for the component it governs: only the (transform,
+/// style) pairs the reconstruction path implements are accepted, and the step
+/// count must match the decomposition depth. The transform is passed in
+/// explicitly because a per-component COC override can make one component 5/3
+/// while the default COD is 9/7 (the CMYK "lossless K" pattern) — validating a
+/// K-plane QCC against the global 9/7 would wrongly reject its no-quantization.
+fn validate_quant(
+    transform: WaveletTransform,
+    decomposition_levels: u8,
+    quant: &QcdSegment,
+    label: &str,
+) -> Result<()> {
+    match (transform, quant.style) {
         (WaveletTransform::Reversible53, QuantizationStyle::NoQuantization) => {}
         // Derived steps are expanded to the expounded form before validation
         // (see `expand_derived_steps`), so both irreversible scalar styles take
@@ -693,18 +842,30 @@ fn validate_quant(cod: &CodSegment, quant: &QcdSegment, label: &str) -> Result<(
             "{label} must provide at least one quantization step"
         )));
     }
-    let expected_steps = 1usize + usize::from(cod.decomposition_levels) * 3;
+    let expected_steps = 1usize + usize::from(decomposition_levels) * 3;
     // Every accepted style now carries one step per subband (derived segments
     // were expanded upstream), so the count must match the decomposition depth.
     if quant.steps.len() != expected_steps {
         return Err(invalid(format!(
-            "{label} step count {} does not match decomposition levels {}; expected {} steps",
+            "{label} step count {} does not match decomposition levels {decomposition_levels}; expected {expected_steps} steps",
             quant.steps.len(),
-            cod.decomposition_levels,
-            expected_steps
         )));
     }
     Ok(())
+}
+
+/// The effective wavelet transform for `component`: its COC override if one was
+/// signalled, otherwise the default COD transform. Mirrors
+/// [`CodestreamHeader::transform_for`] for the pre-construction validation path.
+fn effective_transform(
+    cod: &CodSegment,
+    coc: &[(usize, WaveletTransform)],
+    component: usize,
+) -> WaveletTransform {
+    coc.iter()
+        .find(|(index, _)| *index == component)
+        .map(|(_, transform)| *transform)
+        .unwrap_or(cod.transform)
 }
 
 fn code_block_dimension(encoded: u8, axis: &str) -> Result<u32> {
@@ -1066,6 +1227,149 @@ mod tests {
         .expect_err("colour-component COC override should be rejected")
         .to_string();
         assert!(err.contains("MCT colour component"), "{err}");
+    }
+
+    /// A QCC marker: component prefix + `SQcc` + `step_count` scalar-expounded
+    /// steps all sharing `exponent` (mantissa 0).
+    fn qcc_segment(component: u8, sqcd: u8, exponent: u16, step_count: usize) -> Vec<u8> {
+        let packed = exponent << 11;
+        let mut body = vec![component, sqcd];
+        for _ in 0..step_count {
+            body.extend_from_slice(&packed.to_be_bytes());
+        }
+        segment(MARKER_QCC, &body)
+    }
+
+    fn base_header(segments: &[Vec<u8>]) -> CodestreamHeader {
+        CodestreamHeader::from_marker_segments(segments.iter().map(Vec::as_slice), tile_header(0), 1)
+            .expect("base header")
+    }
+
+    #[test]
+    fn tile_qcc_overrides_steps() {
+        // Grayscale 9/7 base (QCD exponent 8); a tile-part QCC for component 0
+        // with exponent 6 changes that tile's quantization, leaving the base
+        // header untouched.
+        let base = base_header(&supported_segments());
+        let base_steps = base.quant_for(0).steps.clone();
+
+        let qcc = qcc_segment(0, 0x22, 6, 16);
+        let tile = base
+            .with_tile_overrides(std::iter::once(qcc.as_slice()))
+            .expect("tile QCC override");
+
+        assert_eq!(tile.quant_for(0).steps[0].exponent, 6);
+        assert_ne!(tile.quant_for(0).steps, base_steps);
+        assert_eq!(base.quant_for(0).steps, base_steps);
+    }
+
+    #[test]
+    fn tile_qcd_overrides_default() {
+        // A tile QCD (0xff5c) replaces the default for every component.
+        let base = base_header(&supported_segments());
+        let mut body = vec![0x22u8];
+        let packed: u16 = 4 << 11;
+        for _ in 0..16 {
+            body.extend_from_slice(&packed.to_be_bytes());
+        }
+        let qcd = segment(MARKER_QCD, &body);
+
+        let tile = base
+            .with_tile_overrides(std::iter::once(qcd.as_slice()))
+            .expect("tile QCD override");
+
+        assert_eq!(tile.quant_for(0).steps[0].exponent, 4);
+        assert_ne!(
+            tile.quant_for(0).steps[0].exponent,
+            base.quant_for(0).steps[0].exponent
+        );
+    }
+
+    #[test]
+    fn tile_cod_identical_restatement_is_noop() {
+        // Encoders routinely restate the main COD in the tile header; an
+        // identical restatement must be accepted without changing anything.
+        let base = base_header(&supported_segments());
+        let cod = cod_segment(1, 0);
+        let tile = base
+            .with_tile_overrides(std::iter::once(cod.as_slice()))
+            .expect("identical COD restatement is a no-op");
+        assert_eq!(tile.cod, base.cod);
+    }
+
+    #[test]
+    fn tile_cod_structural_change_rejected() {
+        // cod_segment(_, 0) declares 5 decomposition levels; a tile COD with 4
+        // reshapes the coding structure and is refused cleanly.
+        let base = base_header(&supported_segments());
+        let cod = segment(MARKER_COD, &[0, 0, 0, 1, 0, 4, 4, 4, 0, 0]);
+        let err = base
+            .with_tile_overrides(std::iter::once(cod.as_slice()))
+            .expect_err("structural per-tile COD should be rejected")
+            .to_string();
+        assert!(err.contains("changes the coding structure"), "{err}");
+    }
+
+    #[test]
+    fn tile_coc_transform_override_on_aux_channel() {
+        // 4-component (CMYK) base; a tile COC flips the K plane (component 3) to
+        // 5/3 while the colour trio stays 9/7 — the per-tile "lossless K" case.
+        let base = base_header(&[siz_segment(8, false, 4), cod_segment(1, 0), qcd_segment()]);
+        let coc = coc_segment(3, 1);
+        let tile = base
+            .with_tile_overrides(std::iter::once(coc.as_slice()))
+            .expect("aux-channel tile COC override");
+        assert_eq!(tile.transform_for(3), WaveletTransform::Reversible53);
+        assert_eq!(tile.transform_for(0), WaveletTransform::Irreversible97);
+    }
+
+    #[test]
+    fn tile_coc_transform_on_colour_component_rejected() {
+        // In a three-component image, a transform override on a colour component
+        // (0-2) would break the shared inverse colour transform.
+        let base = base_header(&[siz_segment(8, false, 3), cod_segment(1, 0), qcd_segment()]);
+        let coc = coc_segment(1, 1);
+        let err = base
+            .with_tile_overrides(std::iter::once(coc.as_slice()))
+            .expect_err("colour-component tile COC should be rejected")
+            .to_string();
+        assert!(err.contains("MCT colour component"), "{err}");
+    }
+
+    #[test]
+    fn tile_scalar_qcc_on_reversible_base_rejected() {
+        // A 5/3 base must stay no-quantization; a scalar-expounded tile QCC is
+        // caught by re-validation before it can reach the reversible
+        // reconstruct's NoQuantization assertion.
+        let cod = segment(MARKER_COD, &[0, 0, 0, 1, 0, 5, 4, 4, 0, 1]);
+        let mut qcd_body = vec![0x20u8];
+        qcd_body.extend(std::iter::repeat_n(0x08u8, 16));
+        let qcd = segment(MARKER_QCD, &qcd_body);
+        let base = base_header(&[siz_segment(8, false, 1), cod, qcd]);
+
+        let qcc = qcc_segment(0, 0x22, 6, 16);
+        let err = base
+            .with_tile_overrides(std::iter::once(qcc.as_slice()))
+            .expect_err("scalar QCC on a 5/3 tile should be rejected")
+            .to_string();
+        assert!(err.contains("no-quantization only"), "{err}");
+    }
+
+    #[test]
+    fn tile_structural_markers_are_rejected() {
+        let base = base_header(&supported_segments());
+        for (marker, expected) in [
+            (MARKER_RGN, "RGN"),
+            (MARKER_POC, "POC"),
+            (MARKER_PPT, "PPT"),
+        ] {
+            let seg = segment(marker, &[0x00, 0x00]);
+            let err = base
+                .with_tile_overrides(std::iter::once(seg.as_slice()))
+                .expect_err("structural tile marker should be rejected")
+                .to_string();
+            assert!(err.contains(expected), "marker 0x{marker:04x}: {err}");
+        }
     }
 
     #[test]
