@@ -3295,7 +3295,7 @@ mod tests {
     }
 
     async fn check_5x5_dil(dil: i64) -> Result<()> {
-        let ctx = match GpuContext::new().await {
+        let ctx = match GpuContext::shared().await {
             Ok(c) => c,
             Err(_) => return Ok(()), // no GPU adapter (e.g. CI) — skip
         };
@@ -3333,7 +3333,7 @@ mod tests {
     }
 
     async fn check_3x3_dil(dil: i64) -> Result<()> {
-        let ctx = match GpuContext::new().await {
+        let ctx = match GpuContext::shared().await {
             Ok(c) => c,
             Err(_) => return Ok(()),
         };
@@ -3370,7 +3370,7 @@ mod tests {
     }
 
     async fn check_3x3_s1d1() -> Result<()> {
-        let ctx = match GpuContext::new().await {
+        let ctx = match GpuContext::shared().await {
             Ok(c) => c,
             Err(_) => return Ok(()),
         };
@@ -3403,7 +3403,7 @@ mod tests {
     }
 
     async fn check_1x1_gemm(cin: usize, h: usize, w: usize) -> Result<()> {
-        let ctx = match GpuContext::new().await {
+        let ctx = match GpuContext::shared().await {
             Ok(c) => c,
             Err(_) => return Ok(()),
         };
@@ -3431,7 +3431,10 @@ mod tests {
             .zip(&cpu.data)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(max_diff < 1e-3, "1x1 gemm cin={cin} max abs diff {max_diff}");
+        assert!(
+            max_diff < 1e-3,
+            "1x1 gemm cin={cin} max abs diff {max_diff}"
+        );
         Ok(())
     }
 

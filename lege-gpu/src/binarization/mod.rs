@@ -21,8 +21,7 @@ pub struct AdaptiveBinarizeGpuConstants {
     pub otsu_threshold: u8,
 }
 
-/// Default Sauvola k-factor. Must match `Legencode::DEFAULT_K_FACTOR` (the canonical
-/// source). Duplicated here because `lege-gpu` cannot depend on `Legencode` (circular).
+/// Canonical default Sauvola k-factor shared by Lege's binarization callers.
 pub const DEFAULT_K_FACTOR: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy)]

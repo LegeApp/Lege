@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+Cargo.lock
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.claude/
+
+# Development and analysis
+*.md
+!README.md
+!CHANGELOG.md
+!jp2lam-photo-hdr-readiness-plan.md
+!real-estate-hdr-format-recommendations.md
+*.pdf
+*.txt
+perf.data*
+flamegraph*.svg
+flamegraph_analysis.md
+
+# Test/build artifacts
+*.jp2
+*.j2k
+*.png

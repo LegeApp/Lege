@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lege Licenses</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f1f1;
+      --panel: #fffafa;
+      --text: #1a1a1a;
+      --muted: #5a5a5a;
+      --border: #b5adad;
+      --link: #0b5fad;
+      --table-alt: #f3eded;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 20px;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 "Segoe UI", Tahoma, sans-serif;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 28px 32px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    h1, h2, h3 { line-height: 1.25; margin: 0 0 12px; }
+    h1 { font-size: 2rem; }
+    h2 {
+      font-size: 1.35rem;
+      margin-top: 28px;
+      padding-top: 22px;
+      border-top: 1px solid #d9d3d3;
+    }
+    h3 { font-size: 1.08rem; margin-top: 22px; }
+    p { margin: 0 0 14px; }
+    ul { margin: 0 0 16px 22px; padding: 0; }
+    li { margin: 0 0 8px; }
+    a { color: var(--link); }
+    code {
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: #f0eaea;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 20px;
+    }
+    th, td {
+      padding: 10px 12px;
+      border: 1px solid #d7cfcf;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: #ece4e4;
+      font-weight: 600;
+    }
+    tbody tr:nth-child(even) {
+      background: var(--table-alt);
+    }
+    .lede {
+      color: var(--muted);
+      font-size: 1.05rem;
+      margin-bottom: 22px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lege License and Third-Party Notices</h1>
+    <p class="lede">This file summarizes the current license position of Lege and the main third-party components that are distributed with, linked by, or required by the program.</p>
+    <p>Lege itself is released under a strong copyleft license, but third-party components still retain their own licenses and notices.</p>
+
+    <h2>Lege License</h2>
+    <p>The Lege project itself is licensed under the GNU Affero General Public License, version 3. See the top-level <a href="../LICENSE">LICENSE</a> file for the full text.</p>
+    <p>This means:</p>
+    <ul>
+      <li>Lege is not an MIT- or Apache-licensed application.</li>
+      <li>More permissive licenses used by dependencies do not change Lege&rsquo;s own license.</li>
+      <li>Third-party notices still matter and are preserved below.</li>
+    </ul>
+
+    <h2>Main Third-Party Components</h2>
+    <p>The entries below reflect the current codebase and packaging layout.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Role in Lege</th>
+          <th>Current license</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Freya</td><td>Desktop GUI framework</td><td>MIT</td><td>Current GUI frontend used by <code>lege-gui</code>.</td></tr>
+        <tr><td>toojpeg</td><td>Integrated JPEG encoder module</td><td>MIT</td><td>Local Rust port of TooJpeg under <code>src/encoding/</code>.</td></tr>
+        <tr><td>jbig2enc-rust</td><td>JBIG2 codec dependency</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project.</td></tr>
+        <tr><td>ort</td><td>ONNX Runtime Rust binding</td><td>MIT OR Apache-2.0</td><td>Local fork/configured copy used for inference runtime integration.</td></tr>
+        <tr><td>pdfium-render</td><td>PDF rendering wrapper</td><td>MIT OR Apache-2.0</td><td>Rust wrapper around PDFium.</td></tr>
+        <tr><td>fast_image_resize</td><td>Image resize library</td><td>MIT OR Apache-2.0</td><td>Used in image processing paths.</td></tr>
+        <tr><td>lopdf</td><td>PDF parsing and writing support</td><td>MIT</td><td>Used in PDF processing and output code.</td></tr>
+        <tr><td>rayon</td><td>Parallel CPU work helper</td><td>MIT OR Apache-2.0</td><td>Used in CPU-heavy processing paths.</td></tr>
+        <tr><td>rfd</td><td>Native file dialogs</td><td>MIT</td><td>Used by the GUI.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>OCR Components</h2>
+    <p>Current OCR usage:</p>
+    <ul>
+      <li>Linux and macOS:
+        <ul>
+          <li>Rust crate: <code>tesseract</code></li>
+          <li>Runtime engine: system Tesseract installation</li>
+        </ul>
+      </li>
+      <li>Windows:
+        <ul>
+          <li>Windows OCR / WinRT APIs</li>
+          <li>No Tesseract runtime is required on Windows</li>
+        </ul>
+      </li>
+    </ul>
+    <p>Notes:</p>
+    <ul>
+      <li>The Rust <code>tesseract</code> crate is MIT-licensed.</li>
+      <li>The Linux package configuration currently depends on <code>tesseract-ocr</code>.</li>
+      <li><code>eng.traineddata</code> may be distributed with packaged builds for convenience.</li>
+    </ul>
+
+    <h2>Bundled Runtime Libraries and Assets</h2>
+    <p>Depending on platform and packaging target, Lege may distribute or expect these runtime assets alongside the binaries:</p>
+    <ul>
+      <li>PDFium shared library</li>
+      <li>ONNX Runtime shared libraries</li>
+      <li>ONNX model files used for layout detection, deskew/orientation, and heavy binarization</li>
+      <li>Tesseract language data such as <code>eng.traineddata</code></li>
+    </ul>
+    <p>These assets should be treated separately from ordinary Rust crate dependencies. They may have their own upstream licenses, notices, attribution requirements, or redistribution conditions.</p>
+
+    <h2>Models and Data</h2>
+    <p>Current packaged model and data assets referenced by the build configuration include:</p>
+    <ul>
+      <li><code>yolo-layout.onnx</code></li>
+      <li><code>sauvola.onnx</code></li>
+      <li><code>eng.traineddata</code></li>
+    </ul>
+    <p>This document intentionally does not claim a single uniform license for all models or data files. Their provenance and license terms can differ and should be tracked based on the exact upstream source used for each distributed asset.</p>
+    <p>For release packaging, verify and preserve the relevant notices for:</p>
+    <ul>
+      <li>model source repository or paper release</li>
+      <li>converted ONNX artifact provenance</li>
+      <li>Tesseract traineddata source</li>
+      <li>any bundled native shared libraries</li>
+    </ul>
+
+    <h2>Research Citations and Good-Faith Attribution</h2>
+    <p>The items below are kept as acknowledgements and citations in good faith. They are not included because Lege is legally required to paste them in full, but because the project intentionally wants to credit the work that influenced or powers parts of the binarization pipeline.</p>
+
+    <h3>Heavy Sauvola Model</h3>
+    <p>The <code>sauvola.onnx</code> heavy binarization model is attributed to:</p>
+    <p>Li, Deng and Wu, Yue and Zhou, Yicong.<br>&ldquo;SauvolaNet: Learning Adaptive Sauvola Network for Degraded Document Binarization.&rdquo;<br>In: The 16th International Conference on Document Analysis and Recognition (ICDAR), 2021, pp. 538-553.<br>DOI: <a href="https://doi.org/10.1007/978-3-030-86337-1_36">https://doi.org/10.1007/978-3-030-86337-1_36</a></p>
+
+    <h3>Adaptive Binarization Inspiration</h3>
+    <p>Lege&rsquo;s lighter adaptive binarization path also keeps a good-faith citation to the project that influenced the earlier binarization approach:</p>
+    <ul>
+      <li><a href="https://github.com/rahimnathwani/binarize-pdf">https://github.com/rahimnathwani/binarize-pdf</a></li>
+    </ul>
+    <p>This is an acknowledgement of inspiration and prior work, not a statement that Lege is currently shipping that project as a direct dependency.</p>
+
+    <h2>Additional Verification Items</h2>
+    <p>The following areas should be kept under review as the release process evolves:</p>
+    <ul>
+      <li>the exact license and provenance of each bundled ONNX model</li>
+      <li>the exact redistribution basis for bundled PDFium binaries</li>
+      <li>the exact redistribution basis for bundled ONNX Runtime binaries</li>
+      <li>whether <code>eng.traineddata</code> is bundled or required from the host system</li>
+      <li>the local <code>djvu_encoder</code> crate metadata, which should declare its own license explicitly</li>
+    </ul>
+  </main>
+</body>
+</html>

@@ -1,5 +1,3 @@
-
-
 pub(crate) const SPLIT_SLICE_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       src    : array<f32>;
 @group(0) @binding(1) var<storage, read_write> dst    : array<f32>;
@@ -25,4 +23,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     dst[i] = src[src_idx];
 }
 "#;
-

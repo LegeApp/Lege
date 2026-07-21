@@ -1,0 +1,15 @@
+[package]
+name = "lege-pdf-write"
+version = "0.1.0"
+edition = "2024"
+description = "Typed, append-only, image-oriented PDF emitter for Lege"
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+# Dev-only (differential oracle, removed at M5):
+#   lopdf, qpdf-driven fixtures via test scripts
+
+[lints]
+workspace = true

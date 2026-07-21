@@ -1,5 +1,3 @@
-
-
 // params:
 // [0] len [1] rank
 // [4..9] out_strides [10..15] input_strides [16..21] slope_strides
@@ -191,4 +189,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     out[i] = top * (1.0 - wy) + bot * wy;
 }
 "#;
-

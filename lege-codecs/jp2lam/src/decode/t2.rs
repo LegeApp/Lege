@@ -1,0 +1,1801 @@
+//! Tier-2 packet-header decoding primitives.
+//!
+//! This is the inverse side of ISO/IEC 15444-1 Annex B.10, including Annex
+//! B.6 precinct routing and all Annex B.12 progression orders.
+
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::time::Instant;
+
+use crate::error::{Jp2LamError, Result};
+use crate::j2k::decode_markers::{CodestreamHeader, ProgressionOrder};
+use crate::plan::BandOrientation;
+
+const TGT_NO_PARENT: u32 = u32::MAX;
+const MARKER_SOP: [u8; 2] = [0xff, 0x91];
+const MARKER_EPH: [u8; 2] = [0xff, 0x92];
+const SOP_SEGMENT_LEN: usize = 6;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedTilePackets<'a> {
+    pub(crate) packets: Vec<DecodedPacket>,
+    pub(crate) codeblocks: Vec<DecodedCodeBlock<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedPacket {
+    pub(crate) layer: u16,
+    pub(crate) resolution: u8,
+    pub(crate) component: usize,
+    pub(crate) precinct: usize,
+    pub(crate) header_len: usize,
+    pub(crate) body_len: usize,
+    pub(crate) contribution_count: usize,
+}
+
+/// One code-block, with every quality layer's contribution merged.
+///
+/// A code-block may be included in several layers; each inclusion appends
+/// coding passes to the *same* block. Unterminated contributions concatenate
+/// into one MQ codeword segment across layers; TERMALL contributions retain
+/// the per-pass segments signalled by Annex B.10.7.2.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedCodeBlock<'a> {
+    pub(crate) component: usize,
+    pub(crate) band_index: usize,
+    pub(crate) block_index: usize,
+    pub(crate) resolution: u8,
+    pub(crate) band: BandOrientation,
+    pub(crate) x0: u32,
+    pub(crate) y0: u32,
+    pub(crate) x1: u32,
+    pub(crate) y1: u32,
+    pub(crate) zero_bitplanes: u32,
+    pub(crate) passes: u32,
+    pub(crate) segments: Vec<DecodedCodewordSegment<'a>>,
+}
+
+/// A packed-coordinate coefficient rectangle that a region decode must retain
+/// for one subband so the inverse DWT reproduces the region's pixels exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RegionBandWindow {
+    pub(crate) resolution: u8,
+    pub(crate) band: BandOrientation,
+    pub(crate) x0: u32,
+    pub(crate) y0: u32,
+    pub(crate) x1: u32,
+    pub(crate) y1: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedCodewordSegment<'a> {
+    pub(crate) passes: u32,
+    pub(crate) data: Cow<'a, [u8]>,
+}
+
+#[derive(Debug, Clone)]
+struct BandState {
+    component: usize,
+    resolution: u8,
+    band: BandOrientation,
+    blocks: Vec<BlockState>,
+    precincts: Vec<BandPrecinctState>,
+}
+
+#[derive(Debug, Clone)]
+struct BandPrecinctState {
+    block_indices: Vec<usize>,
+    inclusion: TagTreeReader,
+    zero_bitplanes: TagTreeReader,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rect {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PrecinctGrid {
+    resolution_bounds: Rect,
+    pp_x: u8,
+    pp_y: u8,
+    start_x: u32,
+    start_y: u32,
+    width: usize,
+    height: usize,
+    explicit: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BandGeometry {
+    resolution: u8,
+    band: BandOrientation,
+    bounds: Rect,
+    packed_x0: u32,
+    packed_y0: u32,
+}
+
+#[derive(Debug, Clone)]
+struct BlockState {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    included: bool,
+    numlenbits: u32,
+    zero_bitplanes: Option<u32>,
+}
+#[derive(Debug, Clone)]
+struct Contribution {
+    band_index: usize,
+    block_index: usize,
+    zero_bitplanes: u32,
+    passes: u32,
+    segment_passes: Vec<u32>,
+    segment_lengths: Vec<usize>,
+}
+
+impl Contribution {
+    fn length(&self) -> usize {
+        self.segment_lengths.iter().sum()
+    }
+}
+
+/// Stateful Annex B.10 packet reader for one tile.
+///
+/// Annex B.11 permits a tile's ordered packet sequence to be split over
+/// several tile-parts, which may be interleaved with tile-parts from other
+/// tiles. The inclusion trees, zero-bit-plane trees, code-block Lblock state,
+/// and packet-progression position consequently belong to the tile, not to an individual
+/// tile-part. Feed every part for this tile to [`Self::push_tile_part`] in its
+/// `TPsot` order, then consume the result with [`Self::finish`].
+pub(crate) struct TilePacketDecoder<'a> {
+    bands: Vec<BandState>,
+    band_lookup: Vec<Vec<Vec<usize>>>,
+    sop_markers: bool,
+    eph_markers: bool,
+    terminate_each_pass: bool,
+    next_sop_sequence: u16,
+    packet_positions: Vec<PacketPosition>,
+    next_packet_index: usize,
+    packets: Vec<DecodedPacket>,
+    // Contributions accumulate per code-block across layers. `order` keeps
+    // first-inclusion order so output is deterministic regardless of how the
+    // layers or tile-parts are distributed.
+    merged: HashMap<(usize, usize), MergedBlock<'a>>,
+    order: Vec<(usize, usize)>,
+    contribution_scratch: Vec<Contribution>,
+    profile: bool,
+    merge_ns: u64,
+    highest_resolution: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PacketPosition {
+    layer: u16,
+    resolution: u8,
+    component: usize,
+    precinct: usize,
+}
+
+/// One axis of the packet-progression odometer.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketAxis {
+    Layer,
+    Resolution,
+    Component,
+}
+
+/// The packet iteration order as axes from innermost (fastest-varying) to
+/// outermost for the single-precinct test case. With P=1, Annex B.12's
+/// resolution/position-ordered progressions reduce to permutations of
+/// (layer, resolution, component), and PCRL and CPRL coincide.
+#[cfg(test)]
+fn packet_axis_order(order: ProgressionOrder) -> [PacketAxis; 3] {
+    use PacketAxis::{Component, Layer, Resolution};
+    match order {
+        ProgressionOrder::Lrcp => [Component, Resolution, Layer],
+        ProgressionOrder::Rlcp => [Component, Layer, Resolution],
+        ProgressionOrder::Rpcl => [Layer, Component, Resolution],
+        ProgressionOrder::Pcrl | ProgressionOrder::Cprl => [Layer, Resolution, Component],
+    }
+}
+
+impl<'a> TilePacketDecoder<'a> {
+    pub(crate) fn new(header: &CodestreamHeader) -> Result<Self> {
+        Self::new_with_options(header, false, header.cod.decomposition_levels)
+    }
+
+    pub(crate) fn new_with_options(
+        header: &CodestreamHeader,
+        profile: bool,
+        highest_resolution: u8,
+    ) -> Result<Self> {
+        validate_packet_scope(header)?;
+        if highest_resolution > header.cod.decomposition_levels {
+            return Err(invalid(
+                "requested resolution exceeds COD decomposition levels",
+            ));
+        }
+        let precinct_grids = build_precinct_grids(header)?;
+        let bands = build_band_states(header, &precinct_grids)?;
+        let component_count = header.siz.components.len();
+        let levels = header.cod.decomposition_levels;
+        Ok(Self {
+            band_lookup: build_band_lookup(&bands, component_count, levels),
+            bands,
+            sop_markers: header.cod.sop_markers,
+            eph_markers: header.cod.eph_markers,
+            terminate_each_pass: header.cod.code_block_style.terminate_each_pass,
+            next_sop_sequence: 0,
+            packet_positions: build_packet_positions(header, &precinct_grids)?,
+            next_packet_index: 0,
+            packets: Vec::new(),
+            merged: HashMap::new(),
+            order: Vec::new(),
+            contribution_scratch: Vec::new(),
+            profile,
+            merge_ns: 0,
+            highest_resolution,
+        })
+    }
+
+    pub(crate) fn merge_ns(&self) -> u64 {
+        self.merge_ns
+    }
+
+    /// Decode the complete compressed-data portion of one tile-part.
+    ///
+    /// Tile-part boundaries are packet boundaries (ISO/IEC 15444-1 B.11), so
+    /// any non-empty trailing fragment is malformed rather than padding.
+    ///
+    /// NOTE: simply ignoring the tail is NOT safe. On the `TPsot==TNsot`
+    /// non-conformant class (which OpenJPEG decodes with a warning) the tail is
+    /// a genuine tile-part chunk that our assembly misplaces; dropping it
+    /// corrupts a code-block band (measured: a 256-row garbage stripe). We keep
+    /// the strict failure — a clean, B3-flagged blank beats a silent partial
+    /// mis-decode. Correct handling needs the non-conformant tile-part boundary
+    /// fix (tracked in DEFERRED.md), not tail tolerance here.
+    pub(crate) fn push_tile_part(&mut self, payload: &'a [u8]) -> Result<()> {
+        let mut pos = 0usize;
+        while pos < payload.len() {
+            let Some(&packet) = self.packet_positions.get(self.next_packet_index) else {
+                return Err(invalid(format!(
+                    "tile-part contains {} bytes after the tile's {}-packet sequence",
+                    payload.len() - pos,
+                    self.next_packet_index
+                )));
+            };
+            let packet_start = pos;
+            let sop_len = self.consume_sop(payload, packet_start)?;
+            let header_start = packet_start
+                .checked_add(sop_len)
+                .ok_or_else(|| invalid("SOP-adjusted packet offset overflow"))?;
+            let mut bio = PacketBioReader::new(
+                payload
+                    .get(header_start..)
+                    .ok_or_else(|| invalid("packet offset past tile-part payload"))?,
+            );
+            let packet_present = bio.read_bit()? != 0;
+            let mut contributions = std::mem::take(&mut self.contribution_scratch);
+            contributions.clear();
+
+            if packet_present {
+                for &band_index in &self.band_lookup[packet.component][packet.resolution as usize] {
+                    read_band_contributions(
+                        &mut bio,
+                        packet.layer,
+                        packet.precinct,
+                        band_index,
+                        self.terminate_each_pass,
+                        &mut self.bands,
+                        &mut contributions,
+                    )?;
+                }
+            }
+
+            let packet_header_bytes = bio.bytes_consumed();
+            pos = header_start
+                .checked_add(packet_header_bytes)
+                .ok_or_else(|| invalid("packet header offset overflow"))?;
+            let eph_len = self.consume_eph(payload, pos)?;
+            pos = pos
+                .checked_add(eph_len)
+                .ok_or_else(|| invalid("EPH-adjusted packet offset overflow"))?;
+            let header_len = sop_len
+                .checked_add(packet_header_bytes)
+                .and_then(|len| len.checked_add(eph_len))
+                .ok_or_else(|| invalid("packet header length overflow"))?;
+            let body_len = contributions
+                .iter()
+                .map(Contribution::length)
+                .sum::<usize>();
+            let body_end = pos
+                .checked_add(body_len)
+                .ok_or_else(|| invalid("packet body offset overflow"))?;
+            let body = payload
+                .get(pos..body_end)
+                .ok_or_else(|| invalid("packet body extends past tile-part payload"))?;
+            let contribution_count = contributions.len();
+            if std::env::var_os("JP2LAM_TRACE_T2").is_some() {
+                eprintln!(
+                    "t2 packet={} L={} R={} C={} P={} start={} header={} body={} contributions={} payload={}",
+                    self.next_packet_index,
+                    packet.layer,
+                    packet.resolution,
+                    packet.component,
+                    packet.precinct,
+                    packet_start,
+                    header_len,
+                    body_len,
+                    contribution_count,
+                    payload.len()
+                );
+            }
+            let merge_start = self.profile.then(Instant::now);
+            self.merge_contributions(packet, &mut contributions, body)?;
+            if let Some(start) = merge_start {
+                self.merge_ns = self
+                    .merge_ns
+                    .saturating_add(u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            }
+            self.contribution_scratch = contributions;
+            pos = body_end;
+            self.packets.push(DecodedPacket {
+                layer: packet.layer,
+                resolution: packet.resolution,
+                component: packet.component,
+                precinct: packet.precinct,
+                header_len,
+                body_len,
+                contribution_count,
+            });
+            if self.sop_markers {
+                // Nsop counts every packet in the coded tile, including a
+                // packet whose optional SOP segment is omitted (Annex A.8.1).
+                self.next_sop_sequence = self.next_sop_sequence.wrapping_add(1);
+            }
+            self.next_packet_index += 1;
+        }
+        Ok(())
+    }
+
+    /// Consume an SOP marker segment when COD permits it and one is present.
+    ///
+    /// Annex A.8.1 defines SOP as `FF91 Lsop Nsop`, with `Lsop=4`. The COD bit
+    /// means SOP segments may be used, so absence remains valid; a marker that
+    /// is present is validated and its packet sequence number must advance
+    /// modulo 65536.
+    fn consume_sop(&mut self, payload: &[u8], pos: usize) -> Result<usize> {
+        let marker_end = pos
+            .checked_add(MARKER_SOP.len())
+            .ok_or_else(|| invalid("SOP marker offset overflow"))?;
+        if !self.sop_markers || payload.get(pos..marker_end) != Some(MARKER_SOP.as_slice()) {
+            return Ok(0);
+        }
+        let segment_end = pos
+            .checked_add(SOP_SEGMENT_LEN)
+            .ok_or_else(|| invalid("SOP segment offset overflow"))?;
+        let segment = payload
+            .get(pos..segment_end)
+            .ok_or_else(|| invalid("truncated SOP marker segment"))?;
+        let lsop = u16::from_be_bytes([segment[2], segment[3]]);
+        if lsop != 4 {
+            return Err(invalid(format!(
+                "invalid SOP marker length {lsop}; expected 4"
+            )));
+        }
+        let nsop = u16::from_be_bytes([segment[4], segment[5]]);
+        if nsop != self.next_sop_sequence {
+            return Err(invalid(format!(
+                "SOP packet sequence mismatch: expected {}, found {nsop}",
+                self.next_sop_sequence
+            )));
+        }
+        Ok(SOP_SEGMENT_LEN)
+    }
+
+    /// Consume the fixed two-byte EPH marker immediately following a packet
+    /// header when COD requires EPH markers (Annex A.8.2 / B.11).
+    fn consume_eph(&self, payload: &[u8], pos: usize) -> Result<usize> {
+        if !self.eph_markers {
+            return Ok(0);
+        }
+        let marker_end = pos
+            .checked_add(MARKER_EPH.len())
+            .ok_or_else(|| invalid("EPH marker offset overflow"))?;
+        if payload.get(pos..marker_end) == Some(MARKER_EPH.as_slice()) {
+            Ok(MARKER_EPH.len())
+        } else {
+            Err(invalid(
+                "COD requires an EPH marker after every packet header",
+            ))
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Result<DecodedTilePackets<'a>> {
+        if let Some(next) = self.packet_positions.get(self.next_packet_index) {
+            return Err(invalid(format!(
+                "tile packet sequence ended early at layer {} resolution {} component {} precinct {}",
+                next.layer, next.resolution, next.component, next.precinct
+            )));
+        }
+
+        let codeblocks = self
+            .order
+            .into_iter()
+            .map(|key| {
+                let block = self
+                    .merged
+                    .remove(&key)
+                    .expect("merged entry present for ordered key");
+                let segments = block
+                    .segments
+                    .into_iter()
+                    .map(|segment| {
+                        let data = match segment.chunks.len() {
+                            1 => Cow::Borrowed(segment.chunks[0]),
+                            _ => Cow::Owned(segment.chunks.concat()),
+                        };
+                        DecodedCodewordSegment {
+                            passes: segment.passes,
+                            data,
+                        }
+                    })
+                    .collect();
+                DecodedCodeBlock {
+                    component: block.component,
+                    band_index: block.band_index,
+                    block_index: block.block_index,
+                    resolution: block.resolution,
+                    band: block.band,
+                    x0: block.x0,
+                    y0: block.y0,
+                    x1: block.x1,
+                    y1: block.y1,
+                    zero_bitplanes: block.zero_bitplanes,
+                    passes: block.passes,
+                    segments,
+                }
+            })
+            .collect();
+
+        Ok(DecodedTilePackets {
+            packets: self.packets,
+            codeblocks,
+        })
+    }
+
+    fn merge_contributions(
+        &mut self,
+        packet: PacketPosition,
+        contributions: &mut Vec<Contribution>,
+        body: &'a [u8],
+    ) -> Result<()> {
+        let mut body_pos = 0usize;
+        for contribution in contributions.drain(..) {
+            let retain = packet.resolution <= self.highest_resolution;
+            let mut new_segments =
+                retain.then(|| Vec::with_capacity(contribution.segment_lengths.len()));
+            for (&passes, &length) in contribution
+                .segment_passes
+                .iter()
+                .zip(&contribution.segment_lengths)
+            {
+                let end = body_pos
+                    .checked_add(length)
+                    .ok_or_else(|| invalid("codeword-segment length overflow"))?;
+                let data = body
+                    .get(body_pos..end)
+                    .ok_or_else(|| invalid("codeword segment exceeds packet body"))?;
+                body_pos = end;
+                if let Some(new_segments) = &mut new_segments {
+                    new_segments.push(MergedSegment {
+                        passes,
+                        chunks: vec![data],
+                    });
+                }
+            }
+            if !retain {
+                continue;
+            }
+            let new_segments = new_segments.expect("retained contribution has segment storage");
+            let band_state = &self.bands[contribution.band_index];
+            let block = &band_state.blocks[contribution.block_index];
+            let key = (contribution.band_index, contribution.block_index);
+            match self.merged.entry(key) {
+                Entry::Occupied(mut slot) => {
+                    let existing = slot.get_mut();
+                    existing.passes += contribution.passes;
+                    if self.terminate_each_pass {
+                        existing.segments.extend(new_segments);
+                    } else {
+                        let segment = existing
+                            .segments
+                            .last_mut()
+                            .expect("included code-block has one MQ segment");
+                        segment.passes += contribution.passes;
+                        segment
+                            .chunks
+                            .extend(new_segments.into_iter().flat_map(|segment| segment.chunks));
+                    }
+                }
+                Entry::Vacant(slot) => {
+                    self.order.push(key);
+                    slot.insert(MergedBlock {
+                        component: band_state.component,
+                        band_index: contribution.band_index,
+                        block_index: contribution.block_index,
+                        resolution: packet.resolution,
+                        band: band_state.band,
+                        x0: block.x0,
+                        y0: block.y0,
+                        x1: block.x1,
+                        y1: block.y1,
+                        // Signalled once, on first inclusion.
+                        zero_bitplanes: contribution.zero_bitplanes,
+                        passes: contribution.passes,
+                        segments: new_segments,
+                    });
+                }
+            }
+        }
+        debug_assert_eq!(body_pos, body.len());
+        Ok(())
+    }
+}
+
+/// Decode a single tile-part containing the complete packet sequence for one
+/// tile. Multi-tile-part decoding uses [`TilePacketDecoder`] directly.
+#[allow(dead_code)]
+pub(crate) fn parse_tile_part_payload<'a>(
+    header: &CodestreamHeader,
+    payload: &'a [u8],
+) -> Result<DecodedTilePackets<'a>> {
+    let mut decoder = TilePacketDecoder::new(header)?;
+    decoder.push_tile_part(payload)?;
+    decoder.finish()
+}
+
+/// A code-block's contributions gathered across quality layers, before the
+/// segments are concatenated into a single MQ codeword segment.
+#[derive(Debug, Clone)]
+struct MergedBlock<'a> {
+    component: usize,
+    band_index: usize,
+    block_index: usize,
+    resolution: u8,
+    band: BandOrientation,
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    zero_bitplanes: u32,
+    passes: u32,
+    segments: Vec<MergedSegment<'a>>,
+}
+
+#[derive(Debug, Clone)]
+struct MergedSegment<'a> {
+    passes: u32,
+    chunks: Vec<&'a [u8]>,
+}
+
+fn validate_packet_scope(header: &CodestreamHeader) -> Result<()> {
+    // All five Annex B.12 progression orders are materialized into an explicit
+    // packet plan, including the precinct-position axis.
+    if !matches!(header.siz.components.len(), 1 | 3 | 4) {
+        return Err(invalid(
+            "only 1-, 3-, and 4-component packet decoding is implemented",
+        ));
+    }
+    if header.cod.uses_precincts {
+        let expected = usize::from(header.cod.decomposition_levels) + 1;
+        if header.cod.precinct_sizes.len() != expected {
+            return Err(invalid(format!(
+                "COD has {} precinct sizes, expected {expected}",
+                header.cod.precinct_sizes.len()
+            )));
+        }
+        for (resolution, precinct) in header.cod.precinct_sizes.iter().enumerate() {
+            if resolution > 0 && (precinct.pp_x == 0 || precinct.pp_y == 0) {
+                return Err(invalid(
+                    "COD precinct exponents must be at least one above resolution zero",
+                ));
+            }
+        }
+    }
+    // Segmentation symbols are handled entirely inside Tier-1 (they add four
+    // UNIFORM-context symbols at each cleanup pass) and leave packet
+    // segmentation untouched, so they are permitted here. The remaining
+    // styles do change how passes are segmented into codeword segments,
+    // which this concatenating parser does not model.
+    if header.cod.code_block_style.bypass {
+        return Err(invalid(
+            "selective arithmetic bypass packet segmentation is unsupported",
+        ));
+    }
+    Ok(())
+}
+
+fn read_band_contributions(
+    bio: &mut PacketBioReader<'_>,
+    layer: u16,
+    precinct_index: usize,
+    band_index: usize,
+    terminate_each_pass: bool,
+    bands: &mut [BandState],
+    contributions: &mut Vec<Contribution>,
+) -> Result<()> {
+    let band = bands
+        .get_mut(band_index)
+        .ok_or_else(|| invalid("packet references an invalid subband"))?;
+    let precinct = band
+        .precincts
+        .get_mut(precinct_index)
+        .ok_or_else(|| invalid("packet references an invalid precinct"))?;
+    for (leaf_index, &block_index) in precinct.block_indices.iter().enumerate() {
+        let was_included = band.blocks[block_index].included;
+        let included = if was_included {
+            bio.read_bit()? != 0
+        } else {
+            precinct
+                .inclusion
+                .decode(bio, leaf_index, i32::from(layer) + 1)?
+        };
+
+        if !included {
+            continue;
+        }
+
+        let zero_bitplanes = if let Some(value) = band.blocks[block_index].zero_bitplanes {
+            value
+        } else {
+            let tree = &mut precinct.zero_bitplanes;
+            tree.decode(bio, leaf_index, 999)?;
+            let value = tree
+                .value(leaf_index)
+                .ok_or_else(|| invalid("zero-bitplane tag tree did not terminate"))?;
+            let value = u32::try_from(value)
+                .map_err(|_| invalid("negative zero-bitplane tag-tree value"))?;
+            band.blocks[block_index].zero_bitplanes = Some(value);
+            value
+        };
+
+        let passes = read_numpasses(bio)?;
+        let increment = read_commacode(bio)?;
+        band.blocks[block_index].numlenbits += increment;
+        let segment_passes = if terminate_each_pass {
+            vec![
+                1;
+                usize::try_from(passes).map_err(|_| invalid("coding-pass count exceeds usize"))?
+            ]
+        } else {
+            vec![passes]
+        };
+        let mut segment_lengths = Vec::with_capacity(segment_passes.len());
+        for &passes_in_segment in &segment_passes {
+            let len_bits = band.blocks[block_index].numlenbits + floor_log2(passes_in_segment);
+            let length = bio.read_bits(len_bits)?;
+            let length = usize::try_from(length)
+                .map_err(|_| invalid("codeword-segment length exceeds usize"))?;
+            segment_lengths.push(length);
+        }
+        band.blocks[block_index].included = true;
+        contributions.push(Contribution {
+            band_index,
+            block_index,
+            zero_bitplanes,
+            passes,
+            segment_passes,
+            segment_lengths,
+        });
+    }
+    Ok(())
+}
+
+fn build_band_lookup(
+    bands: &[BandState],
+    component_count: usize,
+    levels: u8,
+) -> Vec<Vec<Vec<usize>>> {
+    let res_count = usize::from(levels) + 1;
+    let mut lookup = vec![vec![Vec::new(); res_count]; component_count];
+    for (index, band) in bands.iter().enumerate() {
+        lookup[band.component][band.resolution as usize].push(index);
+    }
+    lookup
+}
+
+fn build_precinct_grids(header: &CodestreamHeader) -> Result<Vec<Vec<PrecinctGrid>>> {
+    let resolution_bounds = resolution_bounds(header)?;
+    let mut grids = Vec::with_capacity(header.siz.components.len());
+    for _component in &header.siz.components {
+        let mut component_grids = Vec::with_capacity(resolution_bounds.len());
+        for (resolution, &bounds) in resolution_bounds.iter().enumerate() {
+            let (pp_x, pp_y, explicit) = if header.cod.uses_precincts {
+                let precinct = header.cod.precinct_sizes[resolution];
+                (precinct.pp_x, precinct.pp_y, true)
+            } else {
+                // Scod=0 supplies the Part 1 default PPx=PPy=15 rather than
+                // removing the precinct partition altogether.
+                (15, 15, false)
+            };
+            let precinct_width = 1u32 << pp_x;
+            let precinct_height = 1u32 << pp_y;
+            let start_x = bounds.x0 / precinct_width;
+            let start_y = bounds.y0 / precinct_height;
+            let end_x = bounds.x1.div_ceil(precinct_width);
+            let end_y = bounds.y1.div_ceil(precinct_height);
+            component_grids.push(PrecinctGrid {
+                resolution_bounds: bounds,
+                pp_x,
+                pp_y,
+                start_x,
+                start_y,
+                width: usize::try_from(end_x - start_x)
+                    .map_err(|_| invalid("precinct-grid width exceeds usize"))?,
+                height: usize::try_from(end_y - start_y)
+                    .map_err(|_| invalid("precinct-grid height exceeds usize"))?,
+                explicit,
+            });
+        }
+        grids.push(component_grids);
+    }
+    Ok(grids)
+}
+
+fn build_packet_positions(
+    header: &CodestreamHeader,
+    precinct_grids: &[Vec<PrecinctGrid>],
+) -> Result<Vec<PacketPosition>> {
+    let mut keyed = Vec::new();
+    for layer in 0..header.cod.layers {
+        for resolution in 0..=header.cod.decomposition_levels {
+            for component in 0..header.siz.components.len() {
+                let grid = precinct_grids
+                    .get(component)
+                    .and_then(|grids| grids.get(usize::from(resolution)))
+                    .ok_or_else(|| invalid("packet plan references a missing precinct grid"))?;
+                let precinct_count = grid
+                    .width
+                    .checked_mul(grid.height)
+                    .ok_or_else(|| invalid("precinct count overflow"))?;
+                for precinct in 0..precinct_count {
+                    let packet = PacketPosition {
+                        layer,
+                        resolution,
+                        component,
+                        precinct,
+                    };
+                    let (position_x, position_y) =
+                        precinct_reference_position(header, *grid, resolution, precinct)?;
+                    let key = match header.cod.progression_order {
+                        ProgressionOrder::Lrcp => [
+                            u64::from(layer),
+                            u64::from(resolution),
+                            component as u64,
+                            precinct as u64,
+                            0,
+                        ],
+                        ProgressionOrder::Rlcp => [
+                            u64::from(resolution),
+                            u64::from(layer),
+                            component as u64,
+                            precinct as u64,
+                            0,
+                        ],
+                        ProgressionOrder::Rpcl => [
+                            u64::from(resolution),
+                            position_y,
+                            position_x,
+                            component as u64,
+                            u64::from(layer),
+                        ],
+                        ProgressionOrder::Pcrl => [
+                            position_y,
+                            position_x,
+                            component as u64,
+                            u64::from(resolution),
+                            u64::from(layer),
+                        ],
+                        ProgressionOrder::Cprl => [
+                            component as u64,
+                            position_y,
+                            position_x,
+                            u64::from(resolution),
+                            u64::from(layer),
+                        ],
+                    };
+                    keyed.push((key, packet));
+                }
+            }
+        }
+    }
+    keyed.sort_by_key(|(key, _)| *key);
+    Ok(keyed.into_iter().map(|(_, packet)| packet).collect())
+}
+
+fn precinct_reference_position(
+    header: &CodestreamHeader,
+    grid: PrecinctGrid,
+    resolution: u8,
+    precinct: usize,
+) -> Result<(u64, u64)> {
+    if !grid.explicit {
+        return Ok((
+            u64::from(header.siz.x_origin),
+            u64::from(header.siz.y_origin),
+        ));
+    }
+    let x = precinct % grid.width;
+    let y = precinct / grid.width;
+    let precinct_x = u64::from(grid.start_x)
+        .checked_add(x as u64)
+        .and_then(|value| value.checked_shl(u32::from(grid.pp_x)))
+        .ok_or_else(|| invalid("precinct reference x coordinate overflow"))?;
+    let precinct_y = u64::from(grid.start_y)
+        .checked_add(y as u64)
+        .and_then(|value| value.checked_shl(u32::from(grid.pp_y)))
+        .ok_or_else(|| invalid("precinct reference y coordinate overflow"))?;
+    let scale = u32::from(header.cod.decomposition_levels - resolution);
+    let reference_x = if precinct_x < u64::from(grid.resolution_bounds.x0) {
+        u64::from(header.siz.x_origin)
+    } else {
+        precinct_x
+            .checked_shl(scale)
+            .ok_or_else(|| invalid("precinct reference x scaling overflow"))?
+    };
+    let reference_y = if precinct_y < u64::from(grid.resolution_bounds.y0) {
+        u64::from(header.siz.y_origin)
+    } else {
+        precinct_y
+            .checked_shl(scale)
+            .ok_or_else(|| invalid("precinct reference y scaling overflow"))?
+    };
+    Ok((reference_x, reference_y))
+}
+
+fn build_band_states(
+    header: &CodestreamHeader,
+    precinct_grids: &[Vec<PrecinctGrid>],
+) -> Result<Vec<BandState>> {
+    build_precinct_band_states(header, precinct_grids)
+}
+
+fn build_precinct_band_states(
+    header: &CodestreamHeader,
+    precinct_grids: &[Vec<PrecinctGrid>],
+) -> Result<Vec<BandState>> {
+    let geometries = band_geometries(header)?;
+    let mut bands =
+        Vec::with_capacity(header.siz.components.len().saturating_mul(geometries.len()));
+    for component in 0..header.siz.components.len() {
+        for &geometry in &geometries {
+            let grid = *precinct_grids
+                .get(component)
+                .and_then(|grids| grids.get(usize::from(geometry.resolution)))
+                .ok_or_else(|| invalid("subband references a missing precinct grid"))?;
+            bands.push(build_precinct_band(header, component, geometry, grid)?);
+        }
+    }
+    Ok(bands)
+}
+
+fn build_precinct_band(
+    header: &CodestreamHeader,
+    component: usize,
+    geometry: BandGeometry,
+    grid: PrecinctGrid,
+) -> Result<BandState> {
+    let band_pp_x = if geometry.resolution == 0 {
+        grid.pp_x
+    } else {
+        grid.pp_x - 1
+    };
+    let band_pp_y = if geometry.resolution == 0 {
+        grid.pp_y
+    } else {
+        grid.pp_y - 1
+    };
+    let precinct_width = 1u32 << band_pp_x;
+    let precinct_height = 1u32 << band_pp_y;
+    let code_block_width = header.cod.code_block_width.min(precinct_width);
+    let code_block_height = header.cod.code_block_height.min(precinct_height);
+    let precinct_count = grid
+        .width
+        .checked_mul(grid.height)
+        .ok_or_else(|| invalid("subband precinct count overflow"))?;
+    let mut blocks = Vec::new();
+    let mut precincts = Vec::with_capacity(precinct_count);
+
+    for precinct_index in 0..precinct_count {
+        let precinct_x = precinct_index % grid.width;
+        let precinct_y = precinct_index / grid.width;
+        let cell_x0 = (u64::from(grid.start_x) + precinct_x as u64)
+            .checked_shl(u32::from(band_pp_x))
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| invalid("subband precinct x coordinate overflow"))?;
+        let cell_y0 = (u64::from(grid.start_y) + precinct_y as u64)
+            .checked_shl(u32::from(band_pp_y))
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| invalid("subband precinct y coordinate overflow"))?;
+        let cell = Rect {
+            x0: cell_x0.max(geometry.bounds.x0),
+            y0: cell_y0.max(geometry.bounds.y0),
+            x1: cell_x0
+                .saturating_add(precinct_width)
+                .min(geometry.bounds.x1),
+            y1: cell_y0
+                .saturating_add(precinct_height)
+                .min(geometry.bounds.y1),
+        };
+        let first_block = blocks.len();
+        let mut columns = 0usize;
+        let mut rows = 0usize;
+        if cell.x0 < cell.x1 && cell.y0 < cell.y1 {
+            let block_grid_x0 = cell.x0 / code_block_width;
+            let block_grid_x1 = cell.x1.div_ceil(code_block_width);
+            let block_grid_y0 = cell.y0 / code_block_height;
+            let block_grid_y1 = cell.y1.div_ceil(code_block_height);
+            columns = usize::try_from(block_grid_x1 - block_grid_x0)
+                .map_err(|_| invalid("code-block column count exceeds usize"))?;
+            rows = usize::try_from(block_grid_y1 - block_grid_y0)
+                .map_err(|_| invalid("code-block row count exceeds usize"))?;
+            for block_y in block_grid_y0..block_grid_y1 {
+                let nominal_y0 = block_y * code_block_height;
+                let y0 = nominal_y0.max(cell.y0).max(geometry.bounds.y0);
+                let y1 = nominal_y0
+                    .saturating_add(code_block_height)
+                    .min(cell.y1)
+                    .min(geometry.bounds.y1);
+                for block_x in block_grid_x0..block_grid_x1 {
+                    let nominal_x0 = block_x * code_block_width;
+                    let x0 = nominal_x0.max(cell.x0).max(geometry.bounds.x0);
+                    let x1 = nominal_x0
+                        .saturating_add(code_block_width)
+                        .min(cell.x1)
+                        .min(geometry.bounds.x1);
+                    blocks.push(BlockState {
+                        x0: geometry.packed_x0 + (x0 - geometry.bounds.x0),
+                        y0: geometry.packed_y0 + (y0 - geometry.bounds.y0),
+                        x1: geometry.packed_x0 + (x1 - geometry.bounds.x0),
+                        y1: geometry.packed_y0 + (y1 - geometry.bounds.y0),
+                        included: false,
+                        numlenbits: 3,
+                        zero_bitplanes: None,
+                    });
+                }
+            }
+        }
+        let block_indices = (first_block..blocks.len()).collect();
+        precincts.push(BandPrecinctState {
+            block_indices,
+            inclusion: TagTreeReader::new(columns.max(1), rows.max(1)),
+            zero_bitplanes: TagTreeReader::new(columns.max(1), rows.max(1)),
+        });
+    }
+
+    Ok(BandState {
+        component,
+        resolution: geometry.resolution,
+        band: geometry.band,
+        blocks,
+        precincts,
+    })
+}
+
+fn resolution_bounds(header: &CodestreamHeader) -> Result<Vec<Rect>> {
+    let levels = header.cod.decomposition_levels;
+    let x1 = header
+        .siz
+        .x_origin
+        .checked_add(header.siz.width)
+        .ok_or_else(|| invalid("tile-component x bound overflow"))?;
+    let y1 = header
+        .siz
+        .y_origin
+        .checked_add(header.siz.height)
+        .ok_or_else(|| invalid("tile-component y bound overflow"))?;
+    let mut bounds = Vec::with_capacity(usize::from(levels) + 1);
+    for resolution in 0..=levels {
+        let scale = 1u32 << (levels - resolution);
+        bounds.push(Rect {
+            x0: header.siz.x_origin.div_ceil(scale),
+            y0: header.siz.y_origin.div_ceil(scale),
+            x1: x1.div_ceil(scale),
+            y1: y1.div_ceil(scale),
+        });
+    }
+    Ok(bounds)
+}
+
+fn band_geometries(header: &CodestreamHeader) -> Result<Vec<BandGeometry>> {
+    let levels = header.cod.decomposition_levels;
+    let bounds = resolution_bounds(header)?;
+    let sizes = resolution_ladder(
+        header.siz.x_origin,
+        header.siz.y_origin,
+        header.siz.width,
+        header.siz.height,
+        levels,
+    );
+    let mut bands = Vec::with_capacity(1 + usize::from(levels) * 3);
+    bands.push(BandGeometry {
+        resolution: 0,
+        band: BandOrientation::Ll,
+        bounds: bounds[0],
+        packed_x0: 0,
+        packed_y0: 0,
+    });
+
+    let tile_x1 = header
+        .siz
+        .x_origin
+        .checked_add(header.siz.width)
+        .ok_or_else(|| invalid("tile-component x bound overflow"))?;
+    let tile_y1 = header
+        .siz
+        .y_origin
+        .checked_add(header.siz.height)
+        .ok_or_else(|| invalid("tile-component y bound overflow"))?;
+    for resolution in 1..=levels {
+        let decomposition = levels - resolution + 1;
+        let scale = 1i64 << decomposition;
+        let high_offset = 1i64 << (decomposition - 1);
+        let low_x = subband_axis_bounds(header.siz.x_origin, tile_x1, scale, 0)?;
+        let high_x = subband_axis_bounds(header.siz.x_origin, tile_x1, scale, high_offset)?;
+        let low_y = subband_axis_bounds(header.siz.y_origin, tile_y1, scale, 0)?;
+        let high_y = subband_axis_bounds(header.siz.y_origin, tile_y1, scale, high_offset)?;
+        let low_size = sizes[usize::from(resolution - 1)];
+        bands.push(BandGeometry {
+            resolution,
+            band: BandOrientation::Hl,
+            bounds: Rect {
+                x0: high_x.0,
+                y0: low_y.0,
+                x1: high_x.1,
+                y1: low_y.1,
+            },
+            packed_x0: low_size.0,
+            packed_y0: 0,
+        });
+        bands.push(BandGeometry {
+            resolution,
+            band: BandOrientation::Lh,
+            bounds: Rect {
+                x0: low_x.0,
+                y0: high_y.0,
+                x1: low_x.1,
+                y1: high_y.1,
+            },
+            packed_x0: 0,
+            packed_y0: low_size.1,
+        });
+        bands.push(BandGeometry {
+            resolution,
+            band: BandOrientation::Hh,
+            bounds: Rect {
+                x0: high_x.0,
+                y0: high_y.0,
+                x1: high_x.1,
+                y1: high_y.1,
+            },
+            packed_x0: low_size.0,
+            packed_y0: low_size.1,
+        });
+    }
+    Ok(bands)
+}
+
+/// Compute, per subband, the packed-coordinate coefficient window a region
+/// decode must retain so the multi-level inverse DWT reproduces the region's
+/// output pixels bit-exactly.
+///
+/// `region_*` is the requested region as an absolute rectangle in the reduced
+/// tile-component reference grid (i.e. resolution `L' = header.cod.
+/// decomposition_levels`, the reconstructed sample grid). Starting from that
+/// finest-resolution window, the window is projected down one synthesis level
+/// at a time (`x -> x / 2`) and grown by `margin` samples on every side per
+/// level. `margin` must cover the inverse-lifting filter support (5/3: 1, 9/7:
+/// 2 per lifting step) plus the half-sample offset between a resolution's
+/// low-pass and high-pass coordinate systems; callers pass a conservative
+/// value. Over-approximating only ever retains extra (correctly decoded) code
+/// blocks, never fewer than the true support, so the region output stays
+/// identical to the same pixels from a full decode.
+pub(crate) fn region_band_windows(
+    header: &CodestreamHeader,
+    region_x0: u32,
+    region_y0: u32,
+    region_x1: u32,
+    region_y1: u32,
+    margin: u32,
+) -> Result<Vec<RegionBandWindow>> {
+    let geometries = band_geometries(header)?;
+    let levels = header.cod.decomposition_levels;
+    let margin = i64::from(margin);
+
+    // Per-resolution coefficient windows, each in that resolution's own
+    // (absolute) low-coordinate space. `res_window[L']` is the requested region
+    // on the reconstructed grid; each coarser level halves it (with margin).
+    let mut res_window = vec![(0i64, 0i64, 0i64, 0i64); usize::from(levels) + 1];
+    res_window[usize::from(levels)] = (
+        i64::from(region_x0),
+        i64::from(region_y0),
+        i64::from(region_x1),
+        i64::from(region_y1),
+    );
+    for r in (1..=levels).rev() {
+        let cur = res_window[usize::from(r)];
+        let low = (
+            cur.0.div_euclid(2) - margin,
+            cur.1.div_euclid(2) - margin,
+            ceil_div_i64(cur.2, 2) + margin,
+            ceil_div_i64(cur.3, 2) + margin,
+        );
+        res_window[usize::from(r) - 1] = low;
+    }
+
+    let mut windows = Vec::with_capacity(geometries.len());
+    for geom in &geometries {
+        // The LL band lives at resolution 0; every detail band at resolution `r`
+        // shares the coordinate scale of resolution `r - 1` (both feed the `r`
+        // synthesis), so it uses that window.
+        let win = if geom.resolution == 0 {
+            res_window[0]
+        } else {
+            res_window[usize::from(geom.resolution) - 1]
+        };
+        let bx0 = i64::from(geom.bounds.x0);
+        let by0 = i64::from(geom.bounds.y0);
+        let bx1 = i64::from(geom.bounds.x1);
+        let by1 = i64::from(geom.bounds.y1);
+        let cx0 = win.0.clamp(bx0, bx1);
+        let cy0 = win.1.clamp(by0, by1);
+        let cx1 = win.2.clamp(bx0, bx1);
+        let cy1 = win.3.clamp(by0, by1);
+        if cx0 < cx1 && cy0 < cy1 {
+            windows.push(RegionBandWindow {
+                resolution: geom.resolution,
+                band: geom.band,
+                x0: geom.packed_x0 + (cx0 - bx0) as u32,
+                y0: geom.packed_y0 + (cy0 - by0) as u32,
+                x1: geom.packed_x0 + (cx1 - bx0) as u32,
+                y1: geom.packed_y0 + (cy1 - by0) as u32,
+            });
+        }
+    }
+    Ok(windows)
+}
+
+fn subband_axis_bounds(start: u32, end: u32, scale: i64, offset: i64) -> Result<(u32, u32)> {
+    let start = ceil_div_i64(i64::from(start) - offset, scale);
+    let end = ceil_div_i64(i64::from(end) - offset, scale);
+    Ok((
+        u32::try_from(start).map_err(|_| invalid("negative subband start coordinate"))?,
+        u32::try_from(end).map_err(|_| invalid("negative subband end coordinate"))?,
+    ))
+}
+
+fn ceil_div_i64(value: i64, divisor: i64) -> i64 {
+    -(-value).div_euclid(divisor)
+}
+
+fn resolution_ladder(x0: u32, y0: u32, width: u32, height: u32, levels: u8) -> Vec<(u32, u32)> {
+    crate::tiling::phase_resolution_sizes(
+        x0 as usize,
+        y0 as usize,
+        width as usize,
+        height as usize,
+        levels,
+    )
+    .into_iter()
+    .map(|(w, h)| (w as u32, h as u32))
+    .collect()
+}
+
+fn floor_log2(v: u32) -> u32 {
+    if v == 0 { 0 } else { 31 - v.leading_zeros() }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PacketBioReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    reg: u8,
+    ct: u8,
+    previous_was_ff: bool,
+}
+
+impl<'a> PacketBioReader<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            pos: 0,
+            reg: 0,
+            ct: 0,
+            previous_was_ff: false,
+        }
+    }
+
+    pub(crate) fn read_bit(&mut self) -> Result<u32> {
+        if self.ct == 0 {
+            self.bytein()?;
+        }
+        self.ct -= 1;
+        Ok(u32::from((self.reg >> self.ct) & 1))
+    }
+
+    pub(crate) fn read_bits(&mut self, count: u32) -> Result<u32> {
+        let mut value = 0u32;
+        for _ in 0..count {
+            value = (value << 1) | self.read_bit()?;
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn bytes_consumed(&self) -> usize {
+        self.pos
+    }
+
+    fn bytein(&mut self) -> Result<()> {
+        let byte = *self
+            .bytes
+            .get(self.pos)
+            .ok_or_else(|| invalid("packet header ended before requested bit"))?;
+        self.pos += 1;
+        self.reg = byte;
+        self.ct = if self.previous_was_ff { 7 } else { 8 };
+        self.previous_was_ff = byte == 0xff;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TagTreeReader {
+    nodes: Vec<TgtNode>,
+}
+
+#[derive(Debug, Clone)]
+struct TgtNode {
+    parent: u32,
+    value: i32,
+    low: i32,
+    known: bool,
+}
+
+impl TagTreeReader {
+    pub(crate) fn new(numleafsh: usize, numleafsv: usize) -> Self {
+        let mut nplh = [0i32; 32];
+        let mut nplv = [0i32; 32];
+        let mut numlvls = 0usize;
+        let mut numnodes = 0usize;
+        nplh[0] = numleafsh as i32;
+        nplv[0] = numleafsv as i32;
+        loop {
+            let n = (nplh[numlvls] * nplv[numlvls]) as usize;
+            nplh[numlvls + 1] = (nplh[numlvls] + 1) / 2;
+            nplv[numlvls + 1] = (nplv[numlvls] + 1) / 2;
+            numnodes += n;
+            numlvls += 1;
+            if n <= 1 {
+                break;
+            }
+        }
+
+        let mut nodes = vec![
+            TgtNode {
+                parent: TGT_NO_PARENT,
+                value: i32::MAX,
+                low: 0,
+                known: false,
+            };
+            numnodes
+        ];
+        link_parents(&mut nodes, numleafsh, numleafsv, numlvls, &nplh, &nplv);
+        Self { nodes }
+    }
+
+    /// Decode whether `leafno` is included below `threshold`.
+    ///
+    /// Returns `true` when the decoded tag-tree value is less than the supplied
+    /// threshold. The decoded value remains stored in the tree so later packets
+    /// can continue from the Annex B.10.2 `low` state.
+    pub(crate) fn decode(
+        &mut self,
+        bio: &mut PacketBioReader<'_>,
+        leafno: usize,
+        threshold: i32,
+    ) -> Result<bool> {
+        if leafno >= self.nodes.len() {
+            return Err(invalid("tag-tree leaf index out of range"));
+        }
+
+        let mut stack = [0usize; 32];
+        let mut depth = 0usize;
+        let mut node_idx = leafno;
+        while self.nodes[node_idx].parent != TGT_NO_PARENT {
+            stack[depth] = node_idx;
+            depth += 1;
+            node_idx = self.nodes[node_idx].parent as usize;
+        }
+
+        let mut low = 0i32;
+        loop {
+            {
+                let node = &mut self.nodes[node_idx];
+                if low > node.low {
+                    node.low = low;
+                } else {
+                    low = node.low;
+                }
+                while low < threshold && !node.known {
+                    if bio.read_bit()? == 1 {
+                        node.value = low;
+                        node.known = true;
+                    } else {
+                        low += 1;
+                    }
+                }
+                if node.known && node.value > low {
+                    low = node.value;
+                }
+                node.low = low;
+            }
+
+            if depth == 0 {
+                break;
+            }
+            depth -= 1;
+            node_idx = stack[depth];
+        }
+
+        Ok(self.nodes[leafno].known && self.nodes[leafno].value < threshold)
+    }
+
+    pub(crate) fn value(&self, leafno: usize) -> Option<i32> {
+        self.nodes
+            .get(leafno)
+            .and_then(|node| node.known.then_some(node.value))
+    }
+}
+
+pub(crate) fn read_commacode(bio: &mut PacketBioReader<'_>) -> Result<u32> {
+    let mut count = 0u32;
+    while bio.read_bit()? == 1 {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("comma-code length overflow"))?;
+    }
+    Ok(count)
+}
+
+pub(crate) fn read_numpasses(bio: &mut PacketBioReader<'_>) -> Result<u32> {
+    // ISO/IEC 15444-1 Annex B.10.6, Table B-4.
+    if bio.read_bit()? == 0 {
+        return Ok(1);
+    }
+    if bio.read_bit()? == 0 {
+        return Ok(2);
+    }
+    let next = bio.read_bits(2)?;
+    if next != 0b11 {
+        return Ok(3 + next);
+    }
+    let next = bio.read_bits(5)?;
+    if next != 0b1_1111 {
+        return Ok(6 + next);
+    }
+    Ok(37 + bio.read_bits(7)?)
+}
+
+fn link_parents(
+    nodes: &mut [TgtNode],
+    numleafsh: usize,
+    numleafsv: usize,
+    numlvls: usize,
+    nplh: &[i32; 32],
+    nplv: &[i32; 32],
+) {
+    let mut node_idx = 0usize;
+    let mut l_parent_idx = numleafsh * numleafsv;
+    let mut l_parent_idx0 = l_parent_idx;
+    for i in 0..numlvls.saturating_sub(1) {
+        let mut j = 0i32;
+        while j < nplv[i] {
+            let mut k = nplh[i];
+            loop {
+                k -= 1;
+                if k < 0 {
+                    break;
+                }
+                nodes[node_idx].parent = l_parent_idx as u32;
+                node_idx += 1;
+                k -= 1;
+                if k >= 0 {
+                    nodes[node_idx].parent = l_parent_idx as u32;
+                    node_idx += 1;
+                }
+                l_parent_idx += 1;
+            }
+            if j & 1 != 0 || j == nplv[i] - 1 {
+                l_parent_idx0 = l_parent_idx;
+            } else {
+                l_parent_idx = l_parent_idx0;
+                l_parent_idx0 += nplh[i] as usize;
+            }
+            j += 1;
+        }
+    }
+    if node_idx < nodes.len() {
+        nodes[node_idx].parent = TGT_NO_PARENT;
+    }
+}
+
+fn invalid(message: impl Into<String>) -> Jp2LamError {
+    Jp2LamError::DecodeFailed(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PacketAxis, PacketBioReader, TagTreeReader, band_geometries, build_band_states,
+        build_packet_positions, build_precinct_grids, packet_axis_order, parse_tile_part_payload,
+        read_commacode, read_numpasses,
+    };
+    use crate::decode::{
+        CodSegment, CodeBlockStyle, CodestreamHeader, ComponentSiz, PrecinctSize, ProgressionOrder,
+        QcdSegment, QuantizationStep, QuantizationStyle, SizSegment, WaveletTransform,
+    };
+
+    #[test]
+    fn packet_axis_order_matches_annex_b12_under_single_precinct() {
+        use PacketAxis::{Component, Layer, Resolution};
+        // Axes are innermost (fastest) first; with one precinct per resolution
+        // the progressions reduce to permutations of (L, R, C). PCRL and CPRL
+        // coincide. See ISO/IEC 15444-1 Annex B.12.
+        assert_eq!(
+            packet_axis_order(ProgressionOrder::Lrcp),
+            [Component, Resolution, Layer]
+        );
+        assert_eq!(
+            packet_axis_order(ProgressionOrder::Rlcp),
+            [Component, Layer, Resolution]
+        );
+        assert_eq!(
+            packet_axis_order(ProgressionOrder::Rpcl),
+            [Layer, Component, Resolution]
+        );
+        assert_eq!(
+            packet_axis_order(ProgressionOrder::Pcrl),
+            [Layer, Resolution, Component]
+        );
+        assert_eq!(
+            packet_axis_order(ProgressionOrder::Cprl),
+            [Layer, Resolution, Component]
+        );
+    }
+
+    #[test]
+    fn b6_b12_explicit_precinct_packet_plans_cover_every_position() {
+        for order in [
+            ProgressionOrder::Lrcp,
+            ProgressionOrder::Rlcp,
+            ProgressionOrder::Rpcl,
+            ProgressionOrder::Pcrl,
+            ProgressionOrder::Cprl,
+        ] {
+            let header = precinct_header(order);
+            let grids = build_precinct_grids(&header).unwrap();
+            assert!(
+                grids
+                    .iter()
+                    .flatten()
+                    .all(|grid| grid.width == 5 && grid.height == 4)
+            );
+            let packets = build_packet_positions(&header, &grids).unwrap();
+            assert_eq!(packets.len(), 2 * 3 * 3 * 20);
+
+            let mut unique = packets
+                .iter()
+                .map(|packet| {
+                    (
+                        packet.layer,
+                        packet.resolution,
+                        packet.component,
+                        packet.precinct,
+                    )
+                })
+                .collect::<Vec<_>>();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), packets.len(), "{order:?}");
+
+            match order {
+                ProgressionOrder::Lrcp => {
+                    assert!(
+                        packets[..20]
+                            .iter()
+                            .enumerate()
+                            .all(|(p, packet)| packet.layer == 0
+                                && packet.resolution == 0
+                                && packet.component == 0
+                                && packet.precinct == p)
+                    );
+                }
+                ProgressionOrder::Rlcp => {
+                    assert!(
+                        packets[..20]
+                            .iter()
+                            .enumerate()
+                            .all(|(p, packet)| packet.resolution == 0
+                                && packet.layer == 0
+                                && packet.component == 0
+                                && packet.precinct == p)
+                    );
+                }
+                ProgressionOrder::Rpcl => {
+                    assert!(
+                        packets[..6]
+                            .iter()
+                            .all(|packet| packet.resolution == 0 && packet.precinct == 0)
+                    );
+                }
+                ProgressionOrder::Pcrl => {
+                    assert_eq!(packets[0].component, 0);
+                    assert_eq!(packets[6].component, 1);
+                    assert_eq!(packets[6].precinct, 0);
+                }
+                ProgressionOrder::Cprl => {
+                    assert!(packets[..120].iter().all(|packet| packet.component == 0));
+                    assert_eq!(packets[120].component, 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn b6_b7_precinct_partition_covers_each_subband_once() {
+        let header = precinct_header(ProgressionOrder::Lrcp);
+        let grids = build_precinct_grids(&header).unwrap();
+        let bands = build_band_states(&header, &grids).unwrap();
+        let geometries = band_geometries(&header).unwrap();
+
+        for (band, geometry) in bands[..geometries.len()].iter().zip(&geometries) {
+            let expected_area = u64::from(geometry.bounds.x1 - geometry.bounds.x0)
+                * u64::from(geometry.bounds.y1 - geometry.bounds.y0);
+            let block_area = band
+                .blocks
+                .iter()
+                .map(|block| u64::from(block.x1 - block.x0) * u64::from(block.y1 - block.y0))
+                .sum::<u64>();
+            assert_eq!(block_area, expected_area, "{:?}", geometry.band);
+            assert_eq!(
+                band.precincts
+                    .iter()
+                    .map(|precinct| precinct.block_indices.len())
+                    .sum::<usize>(),
+                band.blocks.len()
+            );
+        }
+    }
+
+    #[test]
+    fn packet_bio_reads_msb_first() {
+        let mut bio = PacketBioReader::new(&[0b1010_0000]);
+        assert_eq!(bio.read_bit().unwrap(), 1);
+        assert_eq!(bio.read_bit().unwrap(), 0);
+        assert_eq!(bio.read_bit().unwrap(), 1);
+        assert_eq!(bio.read_bit().unwrap(), 0);
+        assert_eq!(bio.bytes_consumed(), 1);
+    }
+
+    #[test]
+    fn packet_bio_skips_ff_stuffed_bit() {
+        let mut bio = PacketBioReader::new(&[0xff, 0b1010_1010]);
+        for _ in 0..8 {
+            assert_eq!(bio.read_bit().unwrap(), 1);
+        }
+        // The MSB after an 0xff byte is a stuffed bit. The next data bits are
+        // read from bit 6 downwards.
+        assert_eq!(bio.read_bit().unwrap(), 0);
+        assert_eq!(bio.read_bit().unwrap(), 1);
+    }
+
+    #[test]
+    fn b107_commacode_reads_unary_one_bits_then_zero() {
+        let mut bio = PacketBioReader::new(&[0b1110_0000]);
+        assert_eq!(read_commacode(&mut bio).unwrap(), 3);
+    }
+
+    #[test]
+    fn b106_numpasses_reads_table_b4_boundaries() {
+        let cases = [
+            (&[0b0000_0000][..], 1),
+            (&[0b1000_0000][..], 2),
+            (&[0b1100_0000][..], 3),
+            (&[0b1110_0000][..], 5),
+            (&[0b1111_0000, 0][..], 6),
+            (&[0b1111_1111, 0b0100_0000, 0][..], 37),
+            (&[0b1111_1111, 0b0111_1111, 0b1000_0000][..], 164),
+        ];
+        for (bytes, expected) in cases {
+            let mut bio = PacketBioReader::new(bytes);
+            assert_eq!(read_numpasses(&mut bio).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn b102_tagtree_single_leaf_decodes_value_zero() {
+        let mut tree = TagTreeReader::new(1, 1);
+        let mut bio = PacketBioReader::new(&[0b1000_0000]);
+        assert!(tree.decode(&mut bio, 0, 1).unwrap());
+        assert_eq!(tree.value(0), Some(0));
+    }
+
+    #[test]
+    fn b102_tagtree_single_leaf_decodes_later_threshold() {
+        let mut tree = TagTreeReader::new(1, 1);
+        let mut bio = PacketBioReader::new(&[0b0010_0000]);
+        assert!(!tree.decode(&mut bio, 0, 1).unwrap());
+        assert!(!tree.decode(&mut bio, 0, 2).unwrap());
+        assert!(tree.decode(&mut bio, 0, 3).unwrap());
+        assert_eq!(tree.value(0), Some(2));
+    }
+
+    #[test]
+    fn b107_zero_length_contribution_is_preserved_for_mq_synthesis() {
+        let header = tiny_header();
+        let payload = [0b1110_0000];
+
+        let decoded =
+            parse_tile_part_payload(&header, &payload).expect("zero-byte contribution is valid");
+        assert_eq!(decoded.codeblocks.len(), 1);
+        assert_eq!(decoded.codeblocks[0].passes, 1);
+        assert_eq!(decoded.codeblocks[0].segments.len(), 1);
+        assert!(decoded.codeblocks[0].segments[0].data.is_empty());
+    }
+
+    #[test]
+    fn b1072_termall_signals_one_length_per_terminated_pass() {
+        let mut header = tiny_header();
+        header.cod.code_block_style.terminate_each_pass = true;
+        // Present, first inclusion, zero missing planes, two passes, unchanged
+        // Lblock, then 3-bit segment lengths 1 and 2.
+        let payload = [0b1111_0000, 0b1010_0000, 0xaa, 0xbb, 0xcc];
+
+        let decoded = parse_tile_part_payload(&header, &payload).expect("TERMALL packet");
+        assert_eq!(decoded.codeblocks.len(), 1);
+        let block = &decoded.codeblocks[0];
+        assert_eq!(block.passes, 2);
+        assert_eq!(block.segments.len(), 2);
+        assert_eq!(block.segments[0].passes, 1);
+        assert_eq!(block.segments[0].data.as_ref(), &[0xaa]);
+        assert_eq!(block.segments[1].passes, 1);
+        assert_eq!(block.segments[1].data.as_ref(), &[0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn a81_a82_sop_and_eph_delimit_an_empty_packet() {
+        let mut header = tiny_header();
+        header.cod.sop_markers = true;
+        header.cod.eph_markers = true;
+        let payload = [
+            0xff, 0x91, 0x00, 0x04, 0x00, 0x00, // SOP, Lsop=4, Nsop=0
+            0x00, // empty packet header
+            0xff, 0x92, // EPH
+        ];
+
+        let decoded = parse_tile_part_payload(&header, &payload).expect("SOP/EPH packet");
+        assert_eq!(decoded.packets.len(), 1);
+        assert_eq!(decoded.packets[0].header_len, payload.len());
+        assert_eq!(decoded.packets[0].body_len, 0);
+    }
+
+    #[test]
+    fn a81_nsop_counts_packets_whose_optional_sop_is_omitted() {
+        let mut header = tiny_header();
+        header.cod.layers = 2;
+        header.cod.sop_markers = true;
+        header.cod.eph_markers = true;
+        let payload = [
+            0x00, 0xff, 0x92, // packet 0 omits its optional SOP
+            0xff, 0x91, 0x00, 0x04, 0x00, 0x01, // packet 1 uses Nsop=1
+            0x00, 0xff, 0x92,
+        ];
+
+        let decoded = parse_tile_part_payload(&header, &payload).expect("mixed SOP usage");
+        assert_eq!(decoded.packets.len(), 2);
+    }
+
+    #[test]
+    fn a82_missing_required_eph_is_rejected() {
+        let mut header = tiny_header();
+        header.cod.eph_markers = true;
+        let err = parse_tile_part_payload(&header, &[0x00])
+            .expect_err("EPH is mandatory when COD requests it")
+            .to_string();
+        assert!(err.contains("requires an EPH"), "{err}");
+    }
+
+    fn tiny_header() -> CodestreamHeader {
+        CodestreamHeader {
+            siz: SizSegment {
+                rsiz: 0,
+                width: 1,
+                height: 1,
+                x_origin: 0,
+                y_origin: 0,
+                tile_width: 1,
+                tile_height: 1,
+                tile_x_origin: 0,
+                tile_y_origin: 0,
+                components: vec![ComponentSiz {
+                    precision: 8,
+                    signed: false,
+                    dx: 1,
+                    dy: 1,
+                }],
+            },
+            cod: CodSegment {
+                progression_order: ProgressionOrder::Lrcp,
+                layers: 1,
+                use_mct: false,
+                decomposition_levels: 0,
+                code_block_width: 64,
+                code_block_height: 64,
+                code_block_style: CodeBlockStyle::default(),
+                transform: WaveletTransform::Irreversible97,
+                uses_precincts: false,
+                sop_markers: false,
+                eph_markers: false,
+                precinct_sizes: Vec::new(),
+            },
+            qcd: QcdSegment {
+                style: QuantizationStyle::ScalarExpounded,
+                guard_bits: 1,
+                steps: vec![QuantizationStep {
+                    exponent: 8,
+                    mantissa: 0,
+                }],
+            },
+            qcc: Vec::new(),
+            comment_count: 0,
+        }
+    }
+
+    fn precinct_header(order: ProgressionOrder) -> CodestreamHeader {
+        let mut header = tiny_header();
+        header.siz.width = 130;
+        header.siz.height = 98;
+        header.siz.tile_width = 130;
+        header.siz.tile_height = 98;
+        header.siz.components = vec![header.siz.components[0]; 3];
+        header.cod.progression_order = order;
+        header.cod.layers = 2;
+        header.cod.decomposition_levels = 2;
+        header.cod.code_block_width = 16;
+        header.cod.code_block_height = 16;
+        header.cod.uses_precincts = true;
+        // COD stores precinct sizes from resolution zero (coarsest) to the
+        // full-resolution precinct grid.
+        header.cod.precinct_sizes = vec![
+            PrecinctSize { pp_x: 3, pp_y: 3 },
+            PrecinctSize { pp_x: 4, pp_y: 4 },
+            PrecinctSize { pp_x: 5, pp_y: 5 },
+        ];
+        header.qcd.steps = vec![
+            QuantizationStep {
+                exponent: 8,
+                mantissa: 0,
+            };
+            7
+        ];
+        header
+    }
+}

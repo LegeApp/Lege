@@ -895,8 +895,13 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
             }])
         }
 
-        // ── MaxPool2d ─────────────────────────────────────────────────────
-        PlannedOpKind::MaxPool2d(plan) => {
+        // ── MaxPool2d / AvgPool2d ─────────────────────────────────────────
+        PlannedOpKind::MaxPool2d(plan) | PlannedOpKind::AvgPool2d(plan) => {
+            let wgsl = if matches!(op.kind, PlannedOpKind::AvgPool2d(_)) {
+                super::maxpool::AVGPOOL2D_WGSL
+            } else {
+                super::maxpool::MAXPOOL2D_WGSL
+            };
             let s = &in_shapes[0];
             let channels = s[1];
             let hin = s[2];
@@ -919,7 +924,10 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 kw,
                 plan.strides[1],
             )?;
-            let num_out = channels * hout * wout;
+            // Include N as well as C/H/W. The shader treats N*C as one flat
+            // channel axis, so this also makes the supported batched rec graphs
+            // compute every sample instead of only batch zero.
+            let num_out = s[0] * channels * hout * wout;
             let p = [
                 num_out as u32,
                 channels as u32,
@@ -937,12 +945,12 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 plan.dilations[1] as u32,
             ];
             Ok(vec![StepSpec {
-                wgsl: super::maxpool::MAXPOOL2D_WGSL,
+                wgsl,
                 n_read_inputs: 1,
                 input_buf_names: vec![op.inputs[0].clone()],
                 output_buf_name: op.outputs[0].clone(),
                 params: bytemuck::cast_slice(&p).to_vec(),
-                dispatch: [num_out.div_ceil(256) as u32, 1, 1],
+                dispatch: grid(num_out.div_ceil(256)),
             }])
         }
 
@@ -975,8 +983,26 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
 
         // ── MatMul ────────────────────────────────────────────────────────
         PlannedOpKind::MatMul => {
-            let lhs = &in_shapes[0];
-            let rhs = &in_shapes[1];
+            // ONNX 1-D operand promotion (lhs [k]->[1,k], rhs [k]->[k,1]). The
+            // squeezed output has the same contiguous element layout as the
+            // promoted [.,m,n], so the kernel writes the right buffer either way.
+            let (lhs, rhs) = {
+                let l = &in_shapes[0];
+                let r = &in_shapes[1];
+                let lv = if l.len() == 1 {
+                    vec![1, l[0]]
+                } else {
+                    l.clone()
+                };
+                let rv = if r.len() == 1 {
+                    vec![r[0], 1]
+                } else {
+                    r.clone()
+                };
+                (lv, rv)
+            };
+            let lhs = &lhs;
+            let rhs = &rhs;
             let m = lhs[lhs.len() - 2];
             let k = lhs[lhs.len() - 1];
             let n = rhs[rhs.len() - 1];
@@ -1146,19 +1172,25 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 dispatch: grid(lines.div_ceil(256)),
             }])
         }
-        PlannedOpKind::ReduceSum { axis, .. } => {
+        PlannedOpKind::ReduceSum { axis, mean, .. } => {
             let shape = &in_shapes[0];
             let outer = shape[..*axis].iter().product::<usize>();
             let axis_dim = shape[*axis];
             let inner = shape[*axis + 1..].iter().product::<usize>();
             let num_out = outer * inner;
+            let is_mean = u32::from(*mean);
             Ok(vec![StepSpec {
                 wgsl: super::sauvola::REDUCESUM_WGSL,
                 n_read_inputs: 1,
                 input_buf_names: vec![op.inputs[0].clone()],
                 output_buf_name: op.outputs[0].clone(),
-                params: bytemuck::cast_slice(&[num_out as u32, axis_dim as u32, inner as u32])
-                    .to_vec(),
+                params: bytemuck::cast_slice(&[
+                    num_out as u32,
+                    axis_dim as u32,
+                    inner as u32,
+                    is_mean,
+                ])
+                .to_vec(),
                 dispatch: grid(num_out.div_ceil(256)),
             }])
         }
@@ -1222,4 +1254,33 @@ fn matmul_batch_strides(
         };
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vision::onnx::types::Pool2dPlan;
+
+    #[test]
+    fn pool_dispatch_covers_every_batch() {
+        let op = PlannedOp {
+            name: "pool".to_string(),
+            inputs: vec!["input".to_string()],
+            outputs: vec!["output".to_string()],
+            input_shapes: vec![vec![2, 3, 8, 8]],
+            output_shapes: vec![vec![2, 3, 4, 4]],
+            kind: PlannedOpKind::AvgPool2d(Pool2dPlan {
+                pads: [0; 4],
+                strides: [2; 2],
+                dilations: [1; 2],
+                kernel_shape: [2; 2],
+            }),
+        };
+        let steps = op_steps(&op, "zero").unwrap();
+        assert_eq!(steps.len(), 1);
+        let num_out = u32::from_le_bytes(steps[0].params[..4].try_into().unwrap());
+        assert_eq!(num_out, 2 * 3 * 4 * 4);
+        assert_eq!(steps[0].dispatch, [1, 1, 1]);
+        assert!(steps[0].wgsl.contains("num_workgroups"));
+    }
 }

@@ -2,13 +2,13 @@
 //! Pure functions over proto types — no graph state.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
 use crate::vision::onnx_pb::{
-    AttributeProto, ModelProto, NodeProto, TensorProto, TensorShapeProto_Dimension,
-    TensorShapeProto_Dimension_oneof_value, TypeProto_oneof_value, ValueInfoProto,
+    AttributeProto, ModelProto, NodeProto, TensorProto, TensorShapeProto_Dimension, ValueInfoProto,
+    tensor_shape_proto::dimension::Value as DimensionValue, type_proto::Value as TypeValue,
 };
 
 use super::types::TensorConst;
@@ -227,7 +227,7 @@ pub(crate) fn normalize_index(index: i64, dim: i64) -> i64 {
 
 pub(crate) fn static_value_shape(value: &ValueInfoProto) -> Option<Vec<i64>> {
     let tensor = match &value.get_field_type().value {
-        Some(TypeProto_oneof_value::tensor_type(tensor)) => tensor,
+        Some(TypeValue::TensorType(tensor)) => tensor,
         _ => return None,
     };
     let mut shape = Vec::new();
@@ -251,10 +251,8 @@ pub(crate) fn producer(model: &ModelProto) -> String {
 
 pub(crate) fn dim_report(dim: &TensorShapeProto_Dimension) -> DimReport {
     match &dim.value {
-        Some(TensorShapeProto_Dimension_oneof_value::dim_value(value)) => DimReport::Static(*value),
-        Some(TensorShapeProto_Dimension_oneof_value::dim_param(value)) => {
-            DimReport::Symbol(value.clone())
-        }
+        Some(DimensionValue::DimValue(value)) => DimReport::Static(*value),
+        Some(DimensionValue::DimParam(value)) => DimReport::Symbol(value.clone()),
         None => DimReport::Unknown,
     }
 }
@@ -356,9 +354,15 @@ pub(crate) fn input_shape(
 // ── Model loading ─────────────────────────────────────────────────────────────
 
 pub(crate) fn load_model(path: &Path) -> Result<ModelProto> {
-    use protobuf::Message;
     let bytes = std::fs::read(path)
         .with_context(|| format!("failed to read ONNX model {}", path.display()))?;
-    ModelProto::parse_from_bytes(&bytes)
+    load_model_from_bytes(&bytes)
         .with_context(|| format!("failed to parse ONNX protobuf {}", path.display()))
+}
+
+/// Parse an ONNX model from an in-memory protobuf buffer (e.g. an embedded
+/// payload). Same result as [`load_model`] without touching the filesystem.
+pub(crate) fn load_model_from_bytes(bytes: &[u8]) -> Result<ModelProto> {
+    use protobuf::Message;
+    ModelProto::parse_from_bytes(bytes).context("failed to parse ONNX protobuf from memory")
 }

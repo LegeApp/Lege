@@ -1,5 +1,3 @@
-
-
 // params layout (22 x u32):
 //   [0] num_elems  [1] rank  [2] op(0=add,1=mul,2=sub,3=div)  [3] _pad
 //   [4..9]  out_strides[0..5]
@@ -68,4 +66,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     }
 }
 "#;
-

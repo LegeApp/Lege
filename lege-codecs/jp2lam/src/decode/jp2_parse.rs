@@ -1,0 +1,624 @@
+//! JP2 box parsing for the decoder.
+//!
+//! Implements the small Annex I subset needed by the current decoder plan:
+//! signature, file type, JP2 header with `ihdr` and enumerated `colr`, and the
+//! first contiguous codestream box (`jp2c`, I.5.4).
+
+use crate::error::{Jp2LamError, Result};
+use crate::model::{ColorEncoding, ColorSpace, IccComponentModel};
+
+const BOX_SIGNATURE: [u8; 4] = *b"jP  ";
+const BOX_FILE_TYPE: [u8; 4] = *b"ftyp";
+const BOX_JP2_HEADER: [u8; 4] = *b"jp2h";
+const BOX_IMAGE_HEADER: [u8; 4] = *b"ihdr";
+const BOX_BITS_PER_COMPONENT: [u8; 4] = *b"bpcc";
+const BOX_COLOR_SPEC: [u8; 4] = *b"colr";
+const BOX_PALETTE: [u8; 4] = *b"pclr";
+const BOX_COMPONENT_MAPPING: [u8; 4] = *b"cmap";
+const BOX_CHANNEL_DEFINITION: [u8; 4] = *b"cdef";
+const BOX_CODESTREAM: [u8; 4] = *b"jp2c";
+
+const JP2_SIGNATURE_PAYLOAD: [u8; 4] = [0x0d, 0x0a, 0x87, 0x0a];
+const JP2_COMPRESSION_TYPE_J2K: u8 = 7;
+const ENUM_CMYK: u32 = 12;
+const ENUM_SRGB: u32 = 16;
+const ENUM_GRAY: u32 = 17;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedJp2<'a> {
+    pub(crate) header: Jp2Header,
+    pub(crate) codestream: &'a [u8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Jp2Header {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) component_count: u16,
+    pub(crate) bits_per_component: u8,
+    pub(crate) colorspace: ColorSpace,
+    pub(crate) color_encoding: ColorEncoding,
+    pub(crate) has_ipr_metadata: bool,
+    /// A resolved `pclr`+`cmap` palette, when the single decoded index
+    /// component must be expanded into the container's output channels.
+    pub(crate) palette: Option<Palette>,
+}
+
+/// A JP2 palette (`pclr`) resolved against its component mapping (`cmap`): the
+/// output channels, each an 8-bit lookup indexed by the single decoded index
+/// sample. Only the common case is modeled — one index component, every output
+/// channel palette-mapped, 8-bit palette entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Palette {
+    /// Output channels in container order; `output_columns[j][index]` is the
+    /// value of channel `j` for a decoded sample `index`.
+    pub(crate) output_columns: Vec<Vec<u8>>,
+}
+
+impl Palette {
+    pub(crate) fn channel_count(&self) -> usize {
+        self.output_columns.len()
+    }
+}
+
+pub(crate) fn parse_jp2(bytes: &[u8]) -> Result<ParsedJp2<'_>> {
+    let mut cursor = BoxCursor::new(bytes);
+    let signature = cursor
+        .next_box()?
+        .ok_or_else(|| invalid("missing JP2 signature box"))?;
+    if signature.box_type != BOX_SIGNATURE || signature.payload != JP2_SIGNATURE_PAYLOAD {
+        return Err(invalid("invalid JP2 signature box"));
+    }
+
+    let file_type = cursor
+        .next_box()?
+        .ok_or_else(|| invalid("missing JP2 file type box"))?;
+    if file_type.box_type != BOX_FILE_TYPE {
+        return Err(invalid("JP2 file type box must follow signature box"));
+    }
+    validate_file_type(file_type.payload)?;
+
+    let mut header = None;
+    let mut codestream = None;
+    let mut pclr_payload = None;
+    // cmap may appear inside jp2h (spec) or as a top-level box (some encoders);
+    // a top-level cmap wins only if jp2h did not carry one.
+    let mut top_level_cmap = None;
+    while let Some(box_) = cursor.next_box()? {
+        match box_.box_type {
+            BOX_JP2_HEADER => {
+                let (parsed, pclr, cmap) = parse_jp2_header(box_.payload)?;
+                header = Some(parsed);
+                pclr_payload = pclr;
+                if cmap.is_some() {
+                    top_level_cmap = cmap;
+                }
+            }
+            BOX_COMPONENT_MAPPING if top_level_cmap.is_none() => {
+                top_level_cmap = Some(box_.payload)
+            }
+            BOX_CODESTREAM if codestream.is_none() => codestream = Some(box_.payload),
+            BOX_CODESTREAM => {
+                return Err(invalid(
+                    "unsupported JP2 layout: multiple contiguous codestream boxes",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let mut header = header.ok_or_else(|| invalid("missing JP2 header box"))?;
+    let codestream = codestream.ok_or_else(|| invalid("missing contiguous codestream box"))?;
+    header.palette = match (pclr_payload, top_level_cmap) {
+        (Some(pclr), Some(cmap)) => Some(resolve_palette(pclr, cmap)?),
+        (Some(_), None) => return Err(invalid("JP2 pclr box without a cmap box")),
+        _ => None,
+    };
+    Ok(ParsedJp2 { header, codestream })
+}
+
+fn validate_file_type(payload: &[u8]) -> Result<()> {
+    if payload.len() < 12 {
+        return Err(invalid("JP2 file type box is too short"));
+    }
+    // ISO/IEC 15444-1 §I.5.2: conformance is decided by the *compatibility*
+    // list (the 4-byte brands from payload[8..]), NOT the major brand at
+    // payload[0..4]. A file is readable as JP2 whenever `jp2\040` appears in
+    // that list, even if its major brand is `jpx ` (ISO 15444-2) or another
+    // superset — Kakadu and many archive.org scans do exactly this while
+    // staying JP2 Part-1 conformant.
+    //
+    // We also accept a `jpx ` compatibility brand with no `jp2 ` entry: such
+    // files still carry a standard `jp2h`+`jp2c` structure (confirmed against
+    // the corpus and OpenJPEG, which decodes them via its JP2 path), and any
+    // genuinely JPX-only construct the codestream then uses is rejected
+    // downstream with a specific error — never a silent mis-decode.
+    let accepted = |b: &[u8]| b == b"jp2 " || b == b"jpx ";
+    if payload[8..].chunks_exact(4).any(accepted) {
+        Ok(())
+    } else {
+        Err(invalid("JP2 file type lacks a jp2/jpx compatibility brand"))
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<&[u8]>)> {
+    let mut cursor = BoxCursor::new(payload);
+    let mut image_header = None;
+    let mut color_description = None;
+    let mut pclr_payload = None;
+    let mut cmap_payload = None;
+    while let Some(box_) = cursor.next_box()? {
+        match box_.box_type {
+            BOX_IMAGE_HEADER => image_header = Some(parse_image_header(box_.payload)?),
+            BOX_BITS_PER_COMPONENT => {
+                return Err(unsupported(
+                    "unsupported JP2 feature: per-component bit-depth box (bpcc)",
+                ));
+            }
+            BOX_COLOR_SPEC if color_description.is_none() => {
+                color_description = Some(parse_color_spec(box_.payload)?)
+            }
+            // pclr and cmap are captured raw and resolved together after the
+            // box loop (either order is legal, and cmap references pclr).
+            BOX_PALETTE => pclr_payload = Some(box_.payload),
+            BOX_COMPONENT_MAPPING => cmap_payload = Some(box_.payload),
+            // cdef only names/reorders channels; the palettized scans we handle
+            // present channels already in container order, so an absent cdef is
+            // the norm. A present one is ignored (its default is identity).
+            BOX_CHANNEL_DEFINITION => {}
+            _ => {}
+        }
+    }
+
+    let mut header = image_header.ok_or_else(|| invalid("JP2 header lacks ihdr box"))?;
+    let (colorspace, color_encoding) =
+        color_description.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
+    header.colorspace = colorspace;
+    header.color_encoding = color_encoding;
+    // pclr/cmap resolution happens in `parse_jp2`: cmap may sit inside jp2h
+    // (per spec) OR as a top-level box (as some encoders emit), so both raw
+    // payloads are handed back for the caller to combine.
+    Ok((header, pclr_payload, cmap_payload))
+}
+
+/// Resolve a `pclr` palette against a `cmap` component mapping into per-output
+/// channel lookup tables. Only 8-bit unsigned palette entries and
+/// palette-mapped channels sourced from component 0 are supported; anything
+/// else is rejected loudly (never a silent wrong color).
+fn resolve_palette(pclr: &[u8], cmap: &[u8]) -> Result<Palette> {
+    if pclr.len() < 3 {
+        return Err(invalid("JP2 pclr box is too short"));
+    }
+    let num_entries = u16::from_be_bytes([pclr[0], pclr[1]]) as usize;
+    let num_columns = pclr[2] as usize;
+    if num_columns == 0 {
+        return Err(invalid("JP2 pclr declares zero palette columns"));
+    }
+    let bit_depths = pclr
+        .get(3..3 + num_columns)
+        .ok_or_else(|| invalid("JP2 pclr bit-depth table is truncated"))?;
+    if bit_depths.iter().any(|&b| b != 7) {
+        return Err(unsupported(
+            "unsupported JP2 feature: non-8-bit or signed palette entries",
+        ));
+    }
+    // Column-major lookup tables: columns[col][entry].
+    let mut columns = vec![Vec::with_capacity(num_entries); num_columns];
+    let mut offset = 3 + num_columns;
+    for _ in 0..num_entries {
+        for column in columns.iter_mut() {
+            let value = *pclr
+                .get(offset)
+                .ok_or_else(|| invalid("JP2 pclr entry table is truncated"))?;
+            column.push(value);
+            offset += 1;
+        }
+    }
+
+    // cmap: one 4-byte record per output channel: CMP(2) MTYP(1) PCOL(1). A
+    // well-formed palette cmap has every channel palette-mapped (MTYP=1) from
+    // the single index component (CMP=0) selecting a distinct column. Some real
+    // encoders emit a broken cmap (e.g. MTYP=0 on channels that should be
+    // palette-mapped); OpenJPEG detects this and "corrects" it by mapping each
+    // output channel to the palette column of the same index. We do the same:
+    // build from the cmap when it is valid, else fall back to column order.
+    let mut output_columns = Vec::with_capacity(columns.len());
+    let mut cmap_valid = !cmap.is_empty() && cmap.len() % 4 == 0;
+    if cmap_valid {
+        for record in cmap.chunks_exact(4) {
+            let component = u16::from_be_bytes([record[0], record[1]]);
+            let mapping_type = record[2];
+            let palette_column = record[3] as usize;
+            if component != 0 || mapping_type != 1 || palette_column >= columns.len() {
+                cmap_valid = false;
+                break;
+            }
+            output_columns.push(columns[palette_column].clone());
+        }
+    }
+    if !cmap_valid {
+        // OpenJPEG's fallback: use the palette columns in their natural order.
+        output_columns = columns;
+    }
+    Ok(Palette { output_columns })
+}
+
+fn parse_image_header(payload: &[u8]) -> Result<Jp2Header> {
+    if payload.len() != 14 {
+        return Err(invalid("JP2 ihdr box must be 14 bytes"));
+    }
+    let height = read_u32(payload, 0)?;
+    let width = read_u32(payload, 4)?;
+    let component_count = read_u16(payload, 8)?;
+    let bpc = payload[10];
+    let compression_type = payload[11];
+    if compression_type != JP2_COMPRESSION_TYPE_J2K {
+        return Err(invalid("JP2 ihdr compression type is not JPEG 2000"));
+    }
+    if bpc == 0xff {
+        return Err(unsupported(
+            "unsupported JP2 feature: per-component bit depths require bpcc",
+        ));
+    }
+    Ok(Jp2Header {
+        width,
+        height,
+        component_count,
+        bits_per_component: (bpc & 0x7f) + 1,
+        colorspace: ColorSpace::Gray,
+        color_encoding: ColorEncoding::Gray,
+        has_ipr_metadata: payload[13] != 0,
+        palette: None,
+    })
+}
+
+fn parse_color_spec(payload: &[u8]) -> Result<(ColorSpace, ColorEncoding)> {
+    if payload.len() < 3 {
+        return Err(invalid("JP2 colr box is too short"));
+    }
+    let method = payload[0];
+    match method {
+        1 => {
+            if payload.len() != 7 {
+                return Err(invalid("enumerated JP2 colr box must be 7 bytes"));
+            }
+            match read_u32(payload, 3)? {
+                ENUM_GRAY => Ok((ColorSpace::Gray, ColorEncoding::Gray)),
+                ENUM_SRGB => Ok((ColorSpace::Srgb, ColorEncoding::Srgb)),
+                ENUM_CMYK => Ok((ColorSpace::Cmyk, ColorEncoding::Cmyk)),
+                value => Err(unsupported(format!("unsupported JP2 EnumCS value {value}"))),
+            }
+        }
+        2 => {
+            let profile = payload
+                .get(3..)
+                .ok_or_else(|| invalid("restricted ICC colr box is too short"))?;
+            let data_space = profile
+                .get(16..20)
+                .ok_or_else(|| invalid("restricted ICC profile header is too short"))?;
+            let (colorspace, component_model) = match data_space {
+                b"GRAY" => (ColorSpace::Gray, IccComponentModel::Gray),
+                b"RGB " => (ColorSpace::Srgb, IccComponentModel::Rgb),
+                _ => {
+                    return Err(unsupported(
+                        "restricted ICC component model is not Gray/RGB",
+                    ));
+                }
+            };
+            let encoding = ColorEncoding::restricted_icc(profile.to_vec(), component_model)
+                .map_err(|error| invalid(error.to_string()))?;
+            Ok((colorspace, encoding))
+        }
+        _ => Err(unsupported("unsupported JP2 color specification method")),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BoxRecord<'a> {
+    box_type: [u8; 4],
+    payload: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BoxCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BoxCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn next_box(&mut self) -> Result<Option<BoxRecord<'a>>> {
+        if self.pos == self.bytes.len() {
+            return Ok(None);
+        }
+        if self.bytes.len().saturating_sub(self.pos) < 8 {
+            return Err(invalid("truncated JP2 box header"));
+        }
+
+        let start = self.pos;
+        let lbox = read_u32(self.bytes, start)? as u64;
+        let box_type = read_box_type(self.bytes, start + 4)?;
+        self.pos += 8;
+
+        let end = match lbox {
+            0 => self.bytes.len(),
+            1 => {
+                let xlbox = read_u64(self.bytes, self.pos)?;
+                self.pos += 8;
+                let end = start
+                    .checked_add(
+                        usize::try_from(xlbox).map_err(|_| invalid("JP2 XLBox exceeds usize"))?,
+                    )
+                    .ok_or_else(|| invalid("JP2 XLBox overflow"))?;
+                if xlbox < 16 {
+                    return Err(invalid("invalid extended JP2 box length"));
+                }
+                end
+            }
+            2..=7 => return Err(invalid("invalid JP2 box length below header size")),
+            len => start
+                .checked_add(
+                    usize::try_from(len).map_err(|_| invalid("JP2 box length exceeds usize"))?,
+                )
+                .ok_or_else(|| invalid("JP2 box length overflow"))?,
+        };
+        if end > self.bytes.len() || end < self.pos {
+            return Err(invalid("JP2 box extends past input"));
+        }
+        let payload = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(Some(BoxRecord { box_type, payload }))
+    }
+}
+
+fn read_box_type(bytes: &[u8], offset: usize) -> Result<[u8; 4]> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| invalid("unexpected end of JP2 box type"))?;
+    Ok([slice[0], slice[1], slice[2], slice[3]])
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16> {
+    let slice = bytes
+        .get(offset..offset + 2)
+        .ok_or_else(|| invalid("unexpected end of JP2 u16"))?;
+    Ok(u16::from_be_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| invalid("unexpected end of JP2 u32"))?;
+    Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64> {
+    let slice = bytes
+        .get(offset..offset + 8)
+        .ok_or_else(|| invalid("unexpected end of JP2 u64"))?;
+    Ok(u64::from_be_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
+}
+
+fn invalid(message: impl Into<String>) -> Jp2LamError {
+    Jp2LamError::DecodeFailed(message.into())
+}
+
+fn unsupported(message: impl Into<String>) -> Jp2LamError {
+    Jp2LamError::UnsupportedFeature(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_type_accepts_jpx_major_brand_with_jp2_compat() {
+        // Major brand `jpx `, minor version 0, compatibility list [`jpx `,`jp2 `]
+        // — the layout real Kakadu/archive.org scans use. Must be accepted
+        // (ISO/IEC 15444-1 §I.5.2: conformance is by the compatibility list).
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"jpx ");
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(b"jpx ");
+        payload.extend_from_slice(b"jp2 ");
+        assert!(validate_file_type(&payload).is_ok());
+    }
+
+    #[test]
+    fn file_type_accepts_jpx_only_compat_brand() {
+        // Major+compat `jpx ` with no `jp2 ` entry: real JPX-branded scans that
+        // still carry a standard jp2h/jp2c structure and decode correctly
+        // (verified bit-close to OpenJPEG). Accepted; JPX-only constructs fail
+        // downstream, never silently.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"jpx ");
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(b"jpx ");
+        assert!(validate_file_type(&payload).is_ok());
+    }
+
+    #[test]
+    fn file_type_rejects_when_no_known_compat_brand() {
+        // A brand that is neither jp2 nor jpx is genuinely unreadable.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"mjp2");
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(b"mjp2");
+        let err = validate_file_type(&payload)
+            .expect_err("no jp2/jpx compat brand")
+            .to_string();
+        assert!(err.contains("compatibility brand"), "{err}");
+    }
+
+    #[test]
+    fn bpcc_box_fails_fast_with_feature_name() {
+        let bytes = jp2_with_extra_header_box(BOX_BITS_PER_COMPONENT, &[7]);
+
+        let err = parse_jp2(&bytes)
+            .expect_err("bpcc should be rejected")
+            .to_string();
+
+        assert!(err.contains("per-component bit-depth box (bpcc)"), "{err}");
+    }
+
+    #[test]
+    fn palette_without_cmap_is_rejected() {
+        // A pclr box needs a cmap to map the index component to output channels;
+        // pclr alone is incomplete (palettes are otherwise now supported).
+        let bytes = jp2_with_extra_header_box(BOX_PALETTE, &[0, 0, 0, 0]);
+
+        let err = parse_jp2(&bytes)
+            .expect_err("pclr without cmap should be rejected")
+            .to_string();
+
+        assert!(err.contains("pclr box without a cmap box"), "{err}");
+    }
+
+    #[test]
+    fn component_mapping_box_without_palette_is_ignored() {
+        // A cmap with no pclr has nothing to map; it is ignored, not fatal.
+        let bytes = jp2_with_extra_header_box(BOX_COMPONENT_MAPPING, &[0, 0, 0, 0]);
+        let parsed = parse_jp2(&bytes).expect("cmap without pclr should parse");
+        assert!(parsed.header.palette.is_none());
+    }
+
+    #[test]
+    fn channel_definition_box_is_ignored() {
+        // cdef only names/reorders channels; its absence is the default, so a
+        // present cdef is accepted and ignored rather than rejected.
+        let bytes = jp2_with_extra_header_box(BOX_CHANNEL_DEFINITION, &[0, 0, 0, 0]);
+        assert!(parse_jp2(&bytes).is_ok());
+    }
+
+    #[test]
+    fn malformed_icc_profile_colr_fails_fast() {
+        let bytes = jp2_with_colr_payload(&[2, 0, 0, 0]);
+
+        let err = parse_jp2(&bytes)
+            .expect_err("malformed ICC colr should be rejected")
+            .to_string();
+
+        assert!(
+            err.contains("restricted ICC profile header is too short"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn multiple_codestream_boxes_fail_fast() {
+        let mut bytes = minimal_jp2_header();
+        push_box(&mut bytes, BOX_CODESTREAM, &[0xff, 0x4f]);
+        push_box(&mut bytes, BOX_CODESTREAM, &[0xff, 0x4f]);
+
+        let err = parse_jp2(&bytes)
+            .expect_err("multiple jp2c boxes should be rejected")
+            .to_string();
+
+        assert!(
+            err.contains("multiple contiguous codestream boxes"),
+            "{err}"
+        );
+    }
+
+    fn jp2_with_extra_header_box(box_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut header = Vec::new();
+        push_box(&mut header, BOX_IMAGE_HEADER, &ihdr_payload());
+        push_box(&mut header, box_type, payload);
+        push_box(
+            &mut header,
+            BOX_COLOR_SPEC,
+            &enumerated_colr_payload(ENUM_GRAY),
+        );
+        wrap_with_header_and_codestream(header)
+    }
+
+    fn jp2_with_colr_payload(colr: &[u8]) -> Vec<u8> {
+        let mut header = Vec::new();
+        push_box(&mut header, BOX_IMAGE_HEADER, &ihdr_payload());
+        push_box(&mut header, BOX_COLOR_SPEC, colr);
+        wrap_with_header_and_codestream(header)
+    }
+
+    fn wrap_with_header_and_codestream(header_payload: Vec<u8>) -> Vec<u8> {
+        let mut bytes = minimal_jp2_header();
+        push_box(&mut bytes, BOX_JP2_HEADER, &header_payload);
+        push_box(&mut bytes, BOX_CODESTREAM, &[0xff, 0x4f]);
+        bytes
+    }
+
+    fn minimal_jp2_header() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_box(&mut bytes, BOX_SIGNATURE, &JP2_SIGNATURE_PAYLOAD);
+        let mut ftyp = Vec::new();
+        ftyp.extend_from_slice(b"jp2 ");
+        ftyp.extend_from_slice(&0u32.to_be_bytes());
+        ftyp.extend_from_slice(b"jp2 ");
+        push_box(&mut bytes, BOX_FILE_TYPE, &ftyp);
+        bytes
+    }
+
+    fn ihdr_payload() -> [u8; 14] {
+        let mut payload = [0u8; 14];
+        payload[0..4].copy_from_slice(&8u32.to_be_bytes());
+        payload[4..8].copy_from_slice(&8u32.to_be_bytes());
+        payload[8..10].copy_from_slice(&1u16.to_be_bytes());
+        payload[10] = 7;
+        payload[11] = JP2_COMPRESSION_TYPE_J2K;
+        payload
+    }
+
+    fn enumerated_colr_payload(enum_cs: u32) -> [u8; 7] {
+        let mut payload = [0u8; 7];
+        payload[0] = 1;
+        payload[3..7].copy_from_slice(&enum_cs.to_be_bytes());
+        payload
+    }
+
+    #[test]
+    fn enum_cs_12_is_cmyk() {
+        let (space, encoding) = parse_color_spec(&enumerated_colr_payload(ENUM_CMYK)).unwrap();
+        assert_eq!(space, ColorSpace::Cmyk);
+        assert_eq!(encoding, ColorEncoding::Cmyk);
+    }
+
+    #[test]
+    fn resolve_palette_maps_index_through_columns() {
+        // 2-entry, 3-column palette; a valid cmap sends output channel j to
+        // palette column j.
+        let mut pclr = vec![0, 2, 3, 7, 7, 7]; // NE=2, NPC=3, Bi=[7,7,7]
+        pclr.extend_from_slice(&[10, 11, 12]); // entry 0
+        pclr.extend_from_slice(&[20, 21, 22]); // entry 1
+        let cmap = [0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2]; // 3 palette-mapped channels
+        let palette = resolve_palette(&pclr, &cmap).unwrap();
+        assert_eq!(palette.channel_count(), 3);
+        assert_eq!(palette.output_columns[0], vec![10, 20]);
+        assert_eq!(palette.output_columns[1], vec![11, 21]);
+        assert_eq!(palette.output_columns[2], vec![12, 22]);
+    }
+
+    #[test]
+    fn resolve_palette_falls_back_on_malformed_cmap() {
+        // Channels 1 and 2 have MTYP=0 (direct) — a broken cmap. Match
+        // OpenJPEG: fall back to using the palette columns in order.
+        let mut pclr = vec![0, 2, 3, 7, 7, 7];
+        pclr.extend_from_slice(&[10, 11, 12]);
+        pclr.extend_from_slice(&[20, 21, 22]);
+        let cmap = [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let palette = resolve_palette(&pclr, &cmap).unwrap();
+        assert_eq!(palette.channel_count(), 3);
+        assert_eq!(palette.output_columns[2], vec![12, 22]);
+    }
+
+    fn push_box(out: &mut Vec<u8>, box_type: [u8; 4], payload: &[u8]) {
+        let len = u32::try_from(payload.len() + 8).expect("box length");
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&box_type);
+        out.extend_from_slice(payload);
+    }
+}

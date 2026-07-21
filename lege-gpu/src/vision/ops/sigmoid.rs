@@ -1,5 +1,3 @@
-
-
 pub(crate) const SIGMOID_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       inp    : array<f32>;
 @group(0) @binding(1) var<storage, read_write> out    : array<f32>;
@@ -59,4 +57,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out[i] = x / (vec4<f32>(1.0) + exp(-x));
 }
 "#;
-

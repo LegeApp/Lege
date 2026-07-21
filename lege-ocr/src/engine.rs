@@ -50,10 +50,26 @@ pub trait OcrEngine: Send + Sync {
 // ── Platform engine constructors ─────────────────────────────────────────────
 
 /// Return the platform default engine.
+///
+/// Precedence: Windows → WinRT OCR. Linux/macOS → PP-OCR (`paddle-ocr`) when
+/// available (GPU, pure-Rust, cross-compiles cleanly), else Tesseract
+/// (`tesseract-ocr`), else the unavailable stub.
 #[allow(unreachable_code)]
 pub fn default_engine() -> Box<dyn OcrEngine> {
     #[cfg(target_os = "windows")]
     return Box::new(WinOcrEngine);
+
+    // Prefer PP-OCR on Linux/macOS: it replaces the native Tesseract dependency
+    // that blocks the macOS cross-compile.
+    #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))]
+    {
+        match crate::engine_paddle::PaddleOcrEngine::shared_embedded() {
+            Ok(engine) => return Box::new(engine),
+            Err(err) => {
+                log::warn!("PP-OCR engine unavailable, falling back: {err:#}");
+            }
+        }
+    }
 
     #[cfg(all(
         any(target_os = "linux", target_os = "macos"),

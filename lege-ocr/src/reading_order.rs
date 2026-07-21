@@ -22,40 +22,49 @@ const COLUMN_OVERLAP_FRACTION: f32 = 0.30;
 /// order they should be read. Handles single-column, multi-column, and mixed
 /// (full-width header over columns) layouts.
 pub fn order_regions(regions: &[TextRegion], page_width: u32) -> Vec<usize> {
-    if regions.len() <= 1 {
-        return (0..regions.len()).collect();
+    let bboxes: Vec<_> = regions.iter().map(|region| region.bbox_highres).collect();
+    order_bboxes(&bboxes, page_width)
+}
+
+/// Compute reading order directly from page-global bounding boxes.
+///
+/// This is shared by region-driven slow OCR and detector-driven PP-OCR so both
+/// paths handle columns and full-width separators consistently.
+pub fn order_bboxes(bboxes: &[[u32; 4]], page_width: u32) -> Vec<usize> {
+    if bboxes.len() <= 1 {
+        return (0..bboxes.len()).collect();
     }
 
     let full_width_threshold = page_width as f32 * FULL_WIDTH_FRACTION;
 
     // Sort top-to-bottom (ties broken left-to-right) so full-width bands are
     // encountered in vertical order and partition the page cleanly.
-    let mut by_y: Vec<usize> = (0..regions.len()).collect();
-    by_y.sort_by_key(|&i| (regions[i].bbox_highres[1], regions[i].bbox_highres[0]));
+    let mut by_y: Vec<usize> = (0..bboxes.len()).collect();
+    by_y.sort_by_key(|&i| (bboxes[i][1], bboxes[i][0]));
 
-    let mut order = Vec::with_capacity(regions.len());
+    let mut order = Vec::with_capacity(bboxes.len());
     let mut band: Vec<usize> = Vec::new();
 
     for &idx in &by_y {
-        let bbox = regions[idx].bbox_highres;
+        let bbox = bboxes[idx];
         let width = bbox[2].saturating_sub(bbox[0]) as f32;
         if width >= full_width_threshold {
             // Flush the accumulated column group before the separator, then
             // emit the full-width region itself.
-            flush_band(&mut band, regions, &mut order);
+            flush_band(&mut band, bboxes, &mut order);
             order.push(idx);
         } else {
             band.push(idx);
         }
     }
-    flush_band(&mut band, regions, &mut order);
+    flush_band(&mut band, bboxes, &mut order);
 
     order
 }
 
 /// Order one band of (non-full-width) regions into columns and append the
 /// result to `order`, clearing `band`.
-fn flush_band(band: &mut Vec<usize>, regions: &[TextRegion], order: &mut Vec<usize>) {
+fn flush_band(band: &mut Vec<usize>, bboxes: &[[u32; 4]], order: &mut Vec<usize>) {
     if band.is_empty() {
         return;
     }
@@ -66,7 +75,7 @@ fn flush_band(band: &mut Vec<usize>, regions: &[TextRegion], order: &mut Vec<usi
 
     // Greedily cluster into columns by horizontal overlap. Process left-to-right
     // so a column's x-range grows from its leftmost member outward.
-    band.sort_by_key(|&i| (regions[i].bbox_highres[0], regions[i].bbox_highres[1]));
+    band.sort_by_key(|&i| (bboxes[i][0], bboxes[i][1]));
 
     struct Column {
         x_min: u32,
@@ -76,7 +85,7 @@ fn flush_band(band: &mut Vec<usize>, regions: &[TextRegion], order: &mut Vec<usi
     let mut columns: Vec<Column> = Vec::new();
 
     for &idx in band.iter() {
-        let bbox = regions[idx].bbox_highres;
+        let bbox = bboxes[idx];
         let (x1, x2) = (bbox[0], bbox[2]);
         let mut placed = false;
         for col in columns.iter_mut() {
@@ -100,8 +109,7 @@ fn flush_band(band: &mut Vec<usize>, regions: &[TextRegion], order: &mut Vec<usi
     // Columns left-to-right; members within a column top-to-bottom.
     columns.sort_by_key(|c| c.x_min);
     for mut col in columns {
-        col.members
-            .sort_by_key(|&i| (regions[i].bbox_highres[1], regions[i].bbox_highres[0]));
+        col.members.sort_by_key(|&i| (bboxes[i][1], bboxes[i][0]));
         order.extend(col.members);
     }
     band.clear();

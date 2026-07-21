@@ -1,4 +1,34 @@
 [alias]
 appimage = "run --package xtask -- appimage"
-build-debug-logging = "build --profile debug-fast --features debug-logging"
-run-debug-logging = "run --profile debug-fast --features debug-logging --"
+
+# Main sub-programs
+process = "build --package lege --bin lege"
+process-check = "check --package lege --bin lege"
+process-run = "run --package lege --bin lege --"
+gui = "build --package lege-gui"
+gui-check = "check --package lege-gui"
+music-gui = "build --package lege-music-gui"
+music-gui-check = "check --package lege-music-gui"
+
+# Shared libraries / development utilities
+gpu = "build --package lege-gpu"
+gpu-check = "check --package lege-gpu"
+ocr = "build --package lege-ocr"
+ocr-check = "check --package lege-ocr"
+pdf-write = "build --package lege-pdf-write"
+pdf-write-check = "check --package lege-pdf-write"
+ipc = "build --package lege-ipc"
+xtask-help = "run --package xtask -- help"
+
+# Standalone codec projects. These intentionally keep their own build graphs,
+# so the aliases enter them through --manifest-path instead of workspace -p.
+jbig2 = "build --manifest-path lege-codecs/jbig2enc-rust/Cargo.toml"
+jp2 = "build --manifest-path lege-codecs/jp2lam/Cargo.toml"
+djvu = "build --manifest-path lege-codecs/djvulibrust/Cargo.toml --features cli --bin djvu-encoder"
+
+# Workspace-wide verification and common editions
+ecosystem-check = "check --workspace"
+build-debug-logging = "build --package lege --bin lege --profile debug-fast --features debug-logging"
+run-debug-logging = "run --package lege --bin lege --profile debug-fast --features debug-logging --"
+music-sheet = "build --release --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"
+music-sheet-check = "check --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"

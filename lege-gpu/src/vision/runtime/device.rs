@@ -3,6 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail};
+use async_lock::Mutex;
 
 #[derive(Clone)]
 pub(crate) struct GpuContext {
@@ -66,6 +67,7 @@ impl GpuContext {
                         power_preference: crate::vision::wgpu::PowerPreference::HighPerformance,
                         compatible_surface: None,
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     })
                     .await
                 {
@@ -130,7 +132,7 @@ impl GpuContext {
 
             match adapter
                 .request_device(&crate::vision::wgpu::DeviceDescriptor {
-                    label: Some("wgpu-yolo-layout"),
+                    label: Some("wgpu-layout"),
                     required_features,
                     required_limits: adapter.limits(),
                     memory_hints: crate::vision::wgpu::MemoryHints::Performance,
@@ -173,13 +175,24 @@ impl GpuContext {
 
     pub(crate) async fn shared() -> Result<Self> {
         static SHARED: OnceLock<GpuContext> = OnceLock::new();
+        static INITIALIZING: Mutex<()> = Mutex::new(());
 
         if let Some(ctx) = SHARED.get() {
             return Ok(ctx.clone());
         }
 
+        // OnceLock::set alone is not an initializer: concurrent first callers
+        // would each create a device, then immediately drop every device but the
+        // winner. Besides wasting substantial work, concurrent Vulkan device
+        // creation/destruction has proven unstable on software adapters. Hold a
+        // narrow process-wide initialization lock and check again after waiting.
+        let _initializing = INITIALIZING.lock().await;
+        if let Some(ctx) = SHARED.get() {
+            return Ok(ctx.clone());
+        }
+
         let ctx = Self::new().await?;
-        let _ = SHARED.set(ctx);
+        let _ = SHARED.set(ctx.clone());
         Ok(SHARED
             .get()
             .expect("shared GPU context was just initialized")
@@ -356,7 +369,9 @@ pub(crate) async fn map_readback(
         .recv()
         .context("readback callback was not called")?
         .context("failed to map readback buffer")?;
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .context("failed to access mapped readback buffer")?;
     if mapped.len() != bytes {
         bail!(
             "readback size mismatch: got {} expected {}",

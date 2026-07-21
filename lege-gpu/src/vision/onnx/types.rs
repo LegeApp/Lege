@@ -52,6 +52,7 @@ pub(crate) enum PlannedOpKind {
         perm: Vec<usize>,
     },
     MaxPool2d(Pool2dPlan),
+    AvgPool2d(Pool2dPlan),
     ResizeNearest {
         scales: Vec<f32>,
     },
@@ -90,9 +91,11 @@ pub(crate) enum PlannedOpKind {
         axis: usize,
     },
     /// Sum-reduce a single axis. `keepdims` retains it as a size-1 dim.
+    /// When `mean` is set, the sum is divided by the axis length (ReduceMean).
     ReduceSum {
         axis: usize,
         keepdims: bool,
+        mean: bool,
     },
     /// SpaceToDepth (DCR mode): [N,C,H,W] -> [N,C*b*b,H/b,W/b].
     SpaceToDepth {
@@ -129,6 +132,7 @@ impl PlannedOpKind {
             PlannedOpKind::Reshape { .. } => "Reshape",
             PlannedOpKind::Transpose { .. } => "Transpose",
             PlannedOpKind::MaxPool2d(_) => "MaxPool2d",
+            PlannedOpKind::AvgPool2d(_) => "AvgPool2d",
             PlannedOpKind::ResizeNearest { .. } => "ResizeNearest",
             PlannedOpKind::ResizeLinear { .. } => "ResizeLinear",
             PlannedOpKind::Pad { .. } => "Pad",

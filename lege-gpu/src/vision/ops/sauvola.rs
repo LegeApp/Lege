@@ -6,8 +6,6 @@
 //! they are rank- and layout-agnostic; correctness, not speed, is the goal
 //! (the production ORT path is 1-3 s/page).
 
-
-
 // One thread per (outer, inner) line; each scans the axis sequentially.
 // params: [num_lines = outer*inner, axis_dim, inner].
 pub(crate) const CUMSUM_WGSL: &str = r#"
@@ -53,7 +51,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     for (var k: u32 = 0u; k < axis_dim; k = k + 1u) {
         acc = acc + inp[(o * axis_dim + k) * inner + i];
     }
-    out[t] = acc;
+    // params[3] == 1 -> ReduceMean (divide the sum by the axis length).
+    if params[3] == 1u {
+        out[t] = acc / f32(axis_dim);
+    } else {
+        out[t] = acc;
+    }
 }
 "#;
 
@@ -130,4 +133,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     out[t] = inp[((n * c_in + ic) * h_in + h) * w_in + w];
 }
 "#;
-

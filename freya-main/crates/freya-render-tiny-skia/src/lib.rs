@@ -904,7 +904,11 @@ mod tests {
             Rect::new(0.0, 0.0, 50.0, 50.0),
             Color::rgb(255, 0, 0),
         );
-        assert_eq!(red_at(&renderer, 40, 40), 255, "clip must not survive restore");
+        assert_eq!(
+            red_at(&renderer, 40, 40),
+            255,
+            "clip must not survive restore"
+        );
     }
 
     #[test]

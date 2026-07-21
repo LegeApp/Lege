@@ -1,0 +1,5 @@
+label,width,height,megapixels,color,components,precision,quality,elapsed_ms,rss_start_bytes,rss_end_bytes,peak_rss_bytes,output_bytes,caller_owned_source_bytes,estimated_encoder_transient_peak,estimated_total_owned_peak,encode_context_prepared_clone,source_load_scratch_one_component,dwt_coefficients_one_component,dwt_scratch_one_component,quantized_one_component,codeblock_coefficient_copies_all_components,tier1_analysis_coefficient_copies_all_components,final_output_buffer
+12MP,4242,2828,11.996,gray,1,8,100,334.667,2539520,32505856,110764032,11739396,11996376,110657180,122653556,0,47985504,47985504,2946776,0,0,0,11739396
+12MP,4242,2828,11.996,rgb,3,8,100,354.878,32505856,40607744,339689472,5864500,35989128,302617852,338606980,0,47985504,47985504,2946776,0,0,0,5864500
+24MP,6000,4000,24.000,gray,1,8,100,601.034,40607744,78155776,339689472,23699525,24000000,219867525,243867525,0,96000000,96000000,4168000,0,0,0,23699525
+24MP,6000,4000,24.000,rgb,3,8,100,696.674,54452224,72798208,682348544,11596877,72000000,600100877,672100877,0,96000000,96000000,4168000,0,0,0,11596877

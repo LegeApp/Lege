@@ -2,10 +2,11 @@
 appimage = "run --package xtask -- appimage"
 build-debug-logging = "build --profile debug-fast --features debug-logging"
 run-debug-logging = "run --profile debug-fast --features debug-logging --"
+music-sheet = "build --release --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"
+music-sheet-check = "check --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"
 
-# If you have local checkouts of these crates, copy this file to config.toml and fill in your paths:
-# [patch."https://github.com/LegeApp/jp2lam.git"]
-# jp2lam = { path = "/your/path/to/jp2lam" }
+# Use scripts/cargo-local.sh when developing against the sibling jp2lam and
+# jbig2enc-rust checkouts. Normal Cargo commands use the Git dependencies.
 #
 # [patch."https://github.com/LegeApp/freya.git"]
 # freya = { path = "/your/path/to/freya/crates/freya" }

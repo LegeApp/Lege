@@ -24,11 +24,10 @@ once_cell = { workspace = true }
 html-escape = { workspace = true }
 regex = "1.12.2"
 lege-gpu = { path = "../lege-gpu" }
-Legencode = { path = "../legencode" }
-env_logger = "0.10"
+env_logger = "0.11.11"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-tesseract = { version = "0.14", optional = true }
+tesseract = { version = "0.15.2", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [
@@ -45,4 +44,5 @@ windows-core = { workspace = true }
 [features]
 default = []
 tesseract-ocr = ["dep:tesseract"]
+paddle-ocr = []
 trocr = []

@@ -1,8 +1,6 @@
 //! Pointwise activation kernels: Relu, HardSwish, HardSigmoid.
 //! Same binding layout as `sigmoid.rs`: one input, one output, a params buffer.
 
-
-
 pub(crate) const RELU_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       inp    : array<f32>;
 @group(0) @binding(1) var<storage, read_write> out    : array<f32>;
@@ -92,4 +90,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     }
 }
 "#;
-

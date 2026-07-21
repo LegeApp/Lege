@@ -64,6 +64,7 @@ pub(crate) fn run_op(kind: &PlannedOpKind, inputs: &[&Tensor]) -> Result<Vec<Ten
         PlannedOpKind::Reshape { target } => Ok(vec![reshape(inputs[0], target)?]),
         PlannedOpKind::Transpose { perm } => Ok(vec![transpose(inputs[0], perm)?]),
         PlannedOpKind::MaxPool2d(plan) => Ok(vec![maxpool2d(plan, inputs[0])?]),
+        PlannedOpKind::AvgPool2d(plan) => Ok(vec![avgpool2d(plan, inputs[0])?]),
         PlannedOpKind::ResizeNearest { scales } => Ok(vec![resize_nearest(inputs[0], scales)?]),
         PlannedOpKind::MatMul => Ok(vec![matmul(inputs[0], inputs[1])?]),
         PlannedOpKind::Gemm {
@@ -75,9 +76,11 @@ pub(crate) fn run_op(kind: &PlannedOpKind, inputs: &[&Tensor]) -> Result<Vec<Ten
         PlannedOpKind::Softmax { axis } => Ok(vec![softmax(inputs[0], *axis)?]),
         PlannedOpKind::GlobalAveragePool => Ok(vec![global_avg_pool(inputs[0])?]),
         PlannedOpKind::CumSum { axis } => Ok(vec![cumsum(inputs[0], *axis)?]),
-        PlannedOpKind::ReduceSum { axis, keepdims } => {
-            Ok(vec![reduce_sum(inputs[0], *axis, *keepdims)?])
-        }
+        PlannedOpKind::ReduceSum {
+            axis,
+            keepdims,
+            mean,
+        } => Ok(vec![reduce_sum(inputs[0], *axis, *keepdims, *mean)?]),
         PlannedOpKind::SpaceToDepth { blocksize } => {
             Ok(vec![space_to_depth(inputs[0], *blocksize)?])
         }
@@ -243,7 +246,7 @@ fn cumsum(input: &Tensor, axis: usize) -> Result<Tensor> {
     Tensor::new(input.shape.clone(), data)
 }
 
-fn reduce_sum(input: &Tensor, axis: usize, keepdims: bool) -> Result<Tensor> {
+fn reduce_sum(input: &Tensor, axis: usize, keepdims: bool, mean: bool) -> Result<Tensor> {
     if axis >= input.rank() {
         bail!(
             "ReduceSum axis {axis} out of range for rank {}",
@@ -251,6 +254,11 @@ fn reduce_sum(input: &Tensor, axis: usize, keepdims: bool) -> Result<Tensor> {
         );
     }
     let (outer, axis_dim, inner) = axis_split(&input.shape, axis);
+    let scale = if mean && axis_dim > 0 {
+        1.0 / axis_dim as f32
+    } else {
+        1.0
+    };
     let mut data = vec![0.0f32; outer * inner];
     for o in 0..outer {
         for i in 0..inner {
@@ -258,7 +266,7 @@ fn reduce_sum(input: &Tensor, axis: usize, keepdims: bool) -> Result<Tensor> {
             for k in 0..axis_dim {
                 acc += input.data[(o * axis_dim + k) * inner + i];
             }
-            data[o * inner + i] = acc;
+            data[o * inner + i] = acc * scale;
         }
     }
     let mut shape = input.shape.clone();
@@ -959,6 +967,68 @@ fn maxpool2d(plan: &Pool2dPlan, input: &Tensor) -> Result<Tensor> {
     Ok(output)
 }
 
+fn avgpool2d(plan: &Pool2dPlan, input: &Tensor) -> Result<Tensor> {
+    require_rank(input, 4, "AveragePool input")?;
+    let n = input.shape[0];
+    let c = input.shape[1];
+    let hin = input.shape[2];
+    let win = input.shape[3];
+    let kh =
+        usize::try_from(plan.kernel_shape[0]).context("AveragePool kernel must be non-negative")?;
+    let kw =
+        usize::try_from(plan.kernel_shape[1]).context("AveragePool kernel must be non-negative")?;
+    let hout = conv_out_dim(
+        hin,
+        plan.pads[0],
+        plan.pads[2],
+        plan.dilations[0],
+        kh,
+        plan.strides[0],
+    )?;
+    let wout = conv_out_dim(
+        win,
+        plan.pads[1],
+        plan.pads[3],
+        plan.dilations[1],
+        kw,
+        plan.strides[1],
+    )?;
+    let mut output = Tensor::zeros(vec![n, c, hout, wout]);
+    for b in 0..n {
+        for ch in 0..c {
+            for oh in 0..hout {
+                for ow in 0..wout {
+                    // count_include_pad=0: average over valid (in-bounds) elements.
+                    let mut sum = 0.0f32;
+                    let mut count = 0u32;
+                    for ky in 0..kh {
+                        let ih = oh as isize * plan.strides[0] as isize
+                            + ky as isize * plan.dilations[0] as isize
+                            - plan.pads[0] as isize;
+                        if ih < 0 || ih >= hin as isize {
+                            continue;
+                        }
+                        for kx in 0..kw {
+                            let iw = ow as isize * plan.strides[1] as isize
+                                + kx as isize * plan.dilations[1] as isize
+                                - plan.pads[1] as isize;
+                            if iw < 0 || iw >= win as isize {
+                                continue;
+                            }
+                            sum +=
+                                input.data[ravel(&[b, ch, ih as usize, iw as usize], &input.shape)];
+                            count += 1;
+                        }
+                    }
+                    let index = ravel(&[b, ch, oh, ow], &output.shape);
+                    output.data[index] = if count > 0 { sum / count as f32 } else { 0.0 };
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
 fn resize_nearest(input: &Tensor, scales: &[f32]) -> Result<Tensor> {
     require_rank(input, 4, "Resize input")?;
     if scales.len() != 4 {
@@ -1164,17 +1234,34 @@ fn reflect_index(mut index: i64, dim: usize) -> Result<usize> {
 }
 
 fn matmul(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
-    if lhs.rank() < 2 || rhs.rank() < 2 {
-        bail!("MatMul expects rank >= 2");
+    if lhs.shape.is_empty() || rhs.shape.is_empty() {
+        bail!("MatMul operands must be rank >= 1");
     }
-    let m = lhs.shape[lhs.rank() - 2];
-    let k = lhs.shape[lhs.rank() - 1];
-    let rhs_k = rhs.shape[rhs.rank() - 2];
-    let n = rhs.shape[rhs.rank() - 1];
+    // ONNX 1-D operand promotion: a 1-D lhs `[k]`->`[1,k]` (drop m afterwards),
+    // a 1-D rhs `[k]`->`[k,1]` (drop n afterwards). Reshape is free — the data
+    // is contiguous, so the added unit dim does not move any element.
+    let drop_m = lhs.shape.len() == 1;
+    let drop_n = rhs.shape.len() == 1;
+    let lhs_shape: Vec<usize> = if drop_m {
+        vec![1, lhs.shape[0]]
+    } else {
+        lhs.shape.clone()
+    };
+    let rhs_shape: Vec<usize> = if drop_n {
+        vec![rhs.shape[0], 1]
+    } else {
+        rhs.shape.clone()
+    };
+    let lr = lhs_shape.len();
+    let rr = rhs_shape.len();
+    let m = lhs_shape[lr - 2];
+    let k = lhs_shape[lr - 1];
+    let rhs_k = rhs_shape[rr - 2];
+    let n = rhs_shape[rr - 1];
     if k != rhs_k {
         bail!("MatMul contracting dimensions mismatch");
     }
-    let batch_shape = broadcast_shape(&lhs.shape[..lhs.rank() - 2], &rhs.shape[..rhs.rank() - 2])?;
+    let batch_shape = broadcast_shape(&lhs_shape[..lr - 2], &rhs_shape[..rr - 2])?;
     let mut shape = batch_shape.clone();
     shape.push(m);
     shape.push(n);
@@ -1185,20 +1272,29 @@ fn matmul(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
         let batch = &out[..batch_shape.len()];
         let row = out[batch_shape.len()];
         let col = out[batch_shape.len() + 1];
-        let mut lhs_coords = broadcast_coords(batch, &batch_shape, &lhs.shape[..lhs.rank() - 2]);
+        let mut lhs_coords = broadcast_coords(batch, &batch_shape, &lhs_shape[..lr - 2]);
         lhs_coords.push(row);
         lhs_coords.push(0);
-        let mut rhs_coords = broadcast_coords(batch, &batch_shape, &rhs.shape[..rhs.rank() - 2]);
+        let mut rhs_coords = broadcast_coords(batch, &batch_shape, &rhs_shape[..rr - 2]);
         rhs_coords.push(0);
         rhs_coords.push(col);
         let mut sum = 0.0;
         for kk in 0..k {
-            lhs_coords[lhs.rank() - 1] = kk;
-            rhs_coords[rhs.rank() - 2] = kk;
+            lhs_coords[lr - 1] = kk;
+            rhs_coords[rr - 2] = kk;
             sum +=
-                lhs.data[ravel(&lhs_coords, &lhs.shape)] * rhs.data[ravel(&rhs_coords, &rhs.shape)];
+                lhs.data[ravel(&lhs_coords, &lhs_shape)] * rhs.data[ravel(&rhs_coords, &rhs_shape)];
         }
         output.data[out_index] = sum;
+    }
+
+    // Undo the promotion on the output shape (data layout is unchanged).
+    if drop_n {
+        output.shape.pop();
+    }
+    if drop_m {
+        let idx = output.shape.len() - if drop_n { 1 } else { 2 };
+        output.shape.remove(idx);
     }
     Ok(output)
 }
@@ -1397,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn maxpool_and_resize_nearest_are_nchw() {
+    fn pooling_and_resize_nearest_are_nchw_and_batched() {
         let x = t(&[1, 1, 2, 2], &[1., 2., 3., 4.]);
         let pool = Pool2dPlan {
             pads: [0, 0, 0, 0],
@@ -1406,6 +1502,10 @@ mod tests {
             kernel_shape: [2, 2],
         };
         assert_eq!(maxpool2d(&pool, &x).unwrap().data, vec![4.]);
+        let batched = t(&[2, 1, 2, 2], &[1., 2., 3., 4., 10., 20., 30., 40.]);
+        let averaged = avgpool2d(&pool, &batched).unwrap();
+        assert_eq!(averaged.shape, vec![2, 1, 1, 1]);
+        assert_eq!(averaged.data, vec![2.5, 25.]);
         let resized = resize_nearest(&x, &[1., 1., 2., 2.]).unwrap();
         assert_eq!(resized.shape, vec![1, 1, 4, 4]);
         assert_eq!(
@@ -1414,6 +1514,14 @@ mod tests {
                 1., 1., 2., 2., 1., 1., 2., 2., 3., 3., 4., 4., 3., 3., 4., 4.
             ]
         );
+    }
+
+    #[test]
+    fn reduce_mean_uses_the_reduced_axis_length() {
+        let x = t(&[1, 2, 2], &[1., 2., 3., 4.]);
+        let y = reduce_sum(&x, 1, true, true).unwrap();
+        assert_eq!(y.shape, vec![1, 1, 2]);
+        assert_eq!(y.data, vec![2., 3.]);
     }
 
     #[test]

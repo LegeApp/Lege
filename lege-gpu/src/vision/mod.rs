@@ -16,6 +16,11 @@ pub(crate) mod runtime;
 mod api;
 
 pub use api::{
-    LayoutConfig, LayoutDetection, LayoutDetector, SauvolaConfig, SauvolaCpuProcessor,
-    SauvolaProcessor, is_layout_gpu_device_error, is_layout_software_adapter_error,
+    Detector, RecLine, RecRecognizer, RecWord, SauvolaConfig, SauvolaCpuProcessor,
+    SauvolaProcessor, TextBox,
+};
+#[cfg(feature = "layout-detection")]
+pub use api::{
+    LayoutConfig, LayoutDetection, LayoutDetector, is_layout_gpu_device_error,
+    is_layout_software_adapter_error,
 };

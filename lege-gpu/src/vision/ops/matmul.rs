@@ -1,5 +1,3 @@
-
-
 // params (30 x u32):
 //   [0] total_out [1] out_rank [2] lhs_rank [3] rhs_rank
 //   [4] batch_rank [5] m [6] k [7] n
@@ -51,4 +49,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out[i] = sum;
 }
 "#;
-

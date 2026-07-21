@@ -4,12 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 
-use crate::vision::onnx_pb::{ModelProto, TypeProto_oneof_value};
+use crate::vision::onnx_pb::{ModelProto, type_proto::Value as TypeValue};
 
 use super::attrs::{DimReport, dim_report, format_shape, producer, tensor_dtype_name};
 use super::graph::PreparedGraph;
-
-pub(crate) const TARGET_INPUT: [i64; 4] = [1, 3, 1024, 1024];
 
 /// Tensor layout of a model's image input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,14 +28,16 @@ pub(crate) struct ModelTarget {
     pub(crate) dims: [Option<i64>; 4],
 }
 
-/// Registry of model inputs the bridge accepts. The first entry is the original
-/// static YOLO target; the rest are the paddle/sauvola models.
+/// Registry of model inputs the bridge accepts: the PP-DocLayout layout model
+/// plus the paddle/sauvola models.
 pub(crate) const TARGETS: &[ModelTarget] = &[
+    // PP-DocLayout-M (PicoDet/GFL), static 640×640; raw boxes+scores heads
+    // (NMS stripped, Conv+BN fused). See doclayout-m/onnx-work/provenance.json.
     ModelTarget {
-        input_name: "images",
+        input_name: "pp_image",
         dtype: "FLOAT",
         layout: Layout::Nchw,
-        dims: [Some(1), Some(3), Some(1024), Some(1024)],
+        dims: [Some(1), Some(3), Some(640), Some(640)],
     },
     // paddle-rotate (MobileNetV3 classifier); batch fixed to 1 in prep.
     ModelTarget {
@@ -59,6 +59,22 @@ pub(crate) const TARGETS: &[ModelTarget] = &[
         dtype: "FLOAT",
         layout: Layout::Nhwc,
         dims: [None, None, None, Some(1)],
+    },
+    // PP-OCRv5 mobile text detection (DBNet); ConvTranspose rewritten to
+    // Conv1x1+DepthToSpace + BN folded in prep. Batch + H/W stamped at prep time.
+    ModelTarget {
+        input_name: "pp_det_image",
+        dtype: "FLOAT",
+        layout: Layout::Nchw,
+        dims: [None, Some(3), None, None],
+    },
+    // PP-OCRv5 mobile text recognition (SVTR); fixed height 48, width stamped
+    // per bucket at prep time; batch stamped at prep time.
+    ModelTarget {
+        input_name: "pp_rec_image",
+        dtype: "FLOAT",
+        layout: Layout::Nchw,
+        dims: [None, Some(3), Some(48), None],
     },
 ];
 
@@ -115,7 +131,7 @@ impl ModelReport {
             .iter()
             .map(|value| {
                 let tensor = match &value.get_field_type().value {
-                    Some(TypeProto_oneof_value::tensor_type(tensor)) => tensor,
+                    Some(TypeValue::TensorType(tensor)) => tensor,
                     _ => bail!("input {} is not a tensor", value.get_name()),
                 };
                 Ok(ValueReport {
@@ -136,7 +152,7 @@ impl ModelReport {
             .iter()
             .map(|value| {
                 let tensor = match &value.get_field_type().value {
-                    Some(TypeProto_oneof_value::tensor_type(tensor)) => tensor,
+                    Some(TypeValue::TensorType(tensor)) => tensor,
                     _ => bail!("output {} is not a tensor", value.get_name()),
                 };
                 Ok(ValueReport {
@@ -297,11 +313,10 @@ fn validate_target_input(
 }
 
 fn validate_op_set(
-    target: Option<&'static ModelTarget>,
+    _target: Option<&'static ModelTarget>,
     op_histogram: &BTreeMap<String, usize>,
     rejection_reasons: &mut Vec<String>,
 ) {
-    let input_name = target.map(|target| target.input_name);
     let hard_reject = [
         "QuantizeLinear",
         "DequantizeLinear",
@@ -319,26 +334,8 @@ fn validate_op_set(
         }
     }
 
-    // The YOLO `images` target is a fully static export; any residual
-    // shape-plumbing there is a real defect. Dynamic-resolution targets
-    // (paddle-deskew, sauvola) legitimately carry a small Shape/Cast/Gather
-    // subgraph that the bridge folds to constants at preparation time once the
-    // concrete input dims are injected, so they are accepted here.
-    if input_name == Some("images") {
-        let shape_plumbing = ["Shape", "Gather", "Cast"];
-        let present = shape_plumbing
-            .iter()
-            .filter_map(|op| op_histogram.get(*op).map(|count| format!("{op}={count}")))
-            .collect::<Vec<_>>();
-        if !present.is_empty() {
-            rejection_reasons.push(format!(
-                "shape-plumbing ops remain ({}) and must be constant-folded or absent in the prepared graph",
-                present.join(", ")
-            ));
-        }
-    }
-
     let supported = BTreeSet::from([
+        "AveragePool",
         "Add",
         "Concat",
         "Constant",
@@ -360,6 +357,7 @@ fn validate_op_set(
         "PRelu",
         "Pad",
         "Pow",
+        "ReduceMean",
         "ReduceSum",
         "Relu",
         "Resize",
@@ -400,16 +398,6 @@ fn validate_op_set(
             .contains(&op)
         {
             rejection_reasons.push(format!("unsupported op `{op}` for v1"));
-        }
-    }
-
-    if input_name == Some("images") {
-        for op in ["GridSample", "PRelu", "Pad", "Unsqueeze", "Squeeze"] {
-            if let Some(count) = op_histogram.get(op) {
-                rejection_reasons.push(format!(
-                    "`{op}` appears {count} time(s); this op is only expected in paddle/sauvola prepared artifacts"
-                ));
-            }
         }
     }
 }

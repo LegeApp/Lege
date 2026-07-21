@@ -1,0 +1,45 @@
+[workspace]
+
+[package]
+name = "jp2lam"
+version = "0.3.0"
+edition = "2024"
+description = "Safe, native Rust JPEG 2000 encoder for document and photographic workloads"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "jp2lam"
+path = "src/bin/jp2lam.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "compare_encodings"
+path = "src/bin/compare_encodings.rs"
+required-features = ["cli"]
+
+[features]
+default = ["simd"]
+cli          = ["dep:chrono", "dep:image", "dep:zip"]
+profile = []
+counters = []
+simd = ["dep:wide"]
+
+[dependencies]
+chrono = { version = "0.4", optional = true, default-features = false, features = ["clock"] }
+image = { version = "0.25.9", optional = true, default-features = false, features = ["png"] }
+rayon = { version = "1.10" }
+tempfile = "3"
+wide = { version = "=0.7.33", optional = true }
+zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+
+[profile.release]
+debug = true
+lto = "fat"
+codegen-units = 1

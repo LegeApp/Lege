@@ -1,5 +1,3 @@
-
-
 // params layout (8 x u32):
 //   [0] num_elems (this slice)
 //   [1] inner_stride  [2] local_axis_size  [3] axis_offset  [4] total_axis_size
@@ -29,4 +27,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     dst[dst_idx] = src[i];
 }
 "#;
-

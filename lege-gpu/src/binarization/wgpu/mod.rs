@@ -29,6 +29,7 @@ impl WgpuContext {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
         {
@@ -716,7 +717,9 @@ impl WgpuBinarizer {
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?
             .map_err(|e| GpuBinarizationError::Execution(format!("map_async failed: {e:?}")))?;
 
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().map_err(|e| {
+            GpuBinarizationError::Execution(format!("mapped range access failed: {e:?}"))
+        })?;
         let results: Vec<Vec<u8>> = pages
             .iter()
             .enumerate()
@@ -1229,7 +1232,9 @@ impl WgpuBinarizer {
         rx.recv()
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?
             .map_err(|e| GpuBinarizationError::Execution(format!("map_async failed: {e:?}")))?;
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().map_err(|e| {
+            GpuBinarizationError::Execution(format!("mapped range access failed: {e:?}"))
+        })?;
         let result = f(&data[..pixel_count.min(data.len())]);
         drop(data);
         rb.unmap();

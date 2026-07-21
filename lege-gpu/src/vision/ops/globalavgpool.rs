@@ -2,8 +2,6 @@
 //! NCHW input [N, C, d0, d1, ...] -> [N, C, 1, 1, ...]. One invocation per (n, c)
 //! averages the contiguous spatial plane that follows it in row-major layout.
 
-
-
 // params[0] = num_planes (N*C), params[1] = plane size (product of spatial dims).
 pub(crate) const GLOBALAVGPOOL_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       inp    : array<f32>;
@@ -23,4 +21,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out[i] = acc / f32(plane);
 }
 "#;
-

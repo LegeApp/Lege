@@ -1,5 +1,3 @@
-
-
 // params (6 x u32):
 //   [0] num_out  [1] channels  [2] hin  [3] win  [4] hout  [5] wout
 pub(crate) const RESIZE_NEAREST_WGSL: &str = r#"
@@ -28,4 +26,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out[i] = inp[ch * hin * win + ih * win + iw];
 }
 "#;
-

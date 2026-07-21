@@ -1,0 +1,87 @@
+[package]
+name = "jbig2-decode-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Own workspace root so the fuzz crate is isolated from the parent package and
+# never built by an ordinary `cargo build` in the repo root.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.jbig2enc-rust]
+path = ".."
+default-features = false
+features = ["decode"]
+
+# Prevent this crate from being picked up as a normal build target.
+[[bin]]
+name = "parse_segment_header"
+path = "fuzz_targets/parse_segment_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "generic_region"
+path = "fuzz_targets/generic_region.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "symbol_dictionary"
+path = "fuzz_targets/symbol_dictionary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_region"
+path = "fuzz_targets/text_region.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "refinement_region"
+path = "fuzz_targets/refinement_region.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mmr_generic"
+path = "fuzz_targets/mmr_generic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "halftone_region"
+path = "fuzz_targets/halftone_region.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "embedded_document"
+path = "fuzz_targets/embedded_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "huffman_table"
+path = "fuzz_targets/huffman_table.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

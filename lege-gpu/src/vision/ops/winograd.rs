@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn winograd_gpu_input_transform_matches_cpu() {
         pollster::block_on(async {
-            let ctx = match GpuContext::new().await {
+            let ctx = match GpuContext::shared().await {
                 Ok(c) => c,
                 Err(_) => return,
             };
@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn winograd_gpu_output_transform_matches_cpu() {
         pollster::block_on(async {
-            let ctx = match GpuContext::new().await {
+            let ctx = match GpuContext::shared().await {
                 Ok(c) => c,
                 Err(_) => return,
             };
@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn winograd_gpu_end_to_end_matches_direct_conv() {
         pollster::block_on(async {
-            let ctx = match GpuContext::new().await {
+            let ctx = match GpuContext::shared().await {
                 Ok(c) => c,
                 Err(_) => return,
             };

@@ -177,10 +177,17 @@ fn infer_node_shapes(
                 broadcast_shape(&lhs, &rhs)?,
             );
         }
-        "ReduceSum" => {
+        "ReduceSum" | "ReduceMean" => {
             let mut shape = input_shape(node, known_shapes, 0)?;
-            let axes = const_i64(tensor_consts, &node.get_input()[1])
-                .context("ReduceSum axes must be constant")?;
+            // ReduceSum (opset 13+) takes axes as input[1]; ReduceMean (opset 11)
+            // and older ReduceSum take an `axes` attribute.
+            let axes = if node.get_op_type() == "ReduceSum" && node.get_input().len() > 1 {
+                const_i64(tensor_consts, &node.get_input()[1])
+                    .context("ReduceSum axes must be constant")?
+                    .to_vec()
+            } else {
+                attr_i64s(node, "axes").context("Reduce axes attribute is required")?
+            };
             let keepdims = attr_i64(node, "keepdims").unwrap_or(1) != 0;
             let mut axes = axes
                 .iter()
@@ -228,7 +235,7 @@ fn infer_node_shapes(
                 infer_conv(node, &inp, &weight)?,
             );
         }
-        "MaxPool" => {
+        "MaxPool" | "AveragePool" => {
             let inp = input_shape(node, known_shapes, 0)?;
             outputs.insert(node.get_output()[0].to_owned(), infer_pool(node, &inp)?);
         }
@@ -535,21 +542,49 @@ fn infer_reshape(input: &[i64], target: &[i64]) -> Result<Vec<i64>> {
 }
 
 fn infer_matmul(lhs: &[i64], rhs: &[i64]) -> Result<Vec<i64>> {
-    if lhs.len() < 2 || rhs.len() < 2 {
-        bail!("MatMul expects rank >= 2");
-    }
-    let m = lhs[lhs.len() - 2];
-    let k = lhs[lhs.len() - 1];
-    let rhs_k = rhs[rhs.len() - 2];
-    let n = rhs[rhs.len() - 1];
+    let (lhs2, rhs2, drop_m, drop_n) = promote_matmul(lhs, rhs)?;
+    let m = lhs2[lhs2.len() - 2];
+    let k = lhs2[lhs2.len() - 1];
+    let rhs_k = rhs2[rhs2.len() - 2];
+    let n = rhs2[rhs2.len() - 1];
     if k != rhs_k {
         bail!("MatMul contracting dims mismatch: {k} vs {rhs_k}");
     }
-    let batch = broadcast_shape(&lhs[..lhs.len() - 2], &rhs[..rhs.len() - 2])?;
+    let batch = broadcast_shape(&lhs2[..lhs2.len() - 2], &rhs2[..rhs2.len() - 2])?;
     let mut output = batch;
     output.push(m);
     output.push(n);
+    // Undo the 1-D promotion: ONNX removes the dim it appended/prepended.
+    if drop_n {
+        output.pop();
+    }
+    if drop_m {
+        output.remove(output.len() - if drop_n { 1 } else { 2 });
+    }
     Ok(output)
+}
+
+/// ONNX MatMul 1-D operand promotion. A 1-D `lhs` `[k]` becomes `[1,k]`
+/// (its `m` dim is later removed); a 1-D `rhs` `[k]` becomes `[k,1]` (its `n`
+/// dim is later removed). Returns the promoted shapes and which output dims to
+/// drop. Both ranks are >= 2 after promotion.
+pub(crate) fn promote_matmul(lhs: &[i64], rhs: &[i64]) -> Result<(Vec<i64>, Vec<i64>, bool, bool)> {
+    if lhs.is_empty() || rhs.is_empty() {
+        bail!("MatMul operands must be rank >= 1");
+    }
+    let drop_m = lhs.len() == 1;
+    let drop_n = rhs.len() == 1;
+    let lhs2 = if drop_m {
+        vec![1, lhs[0]]
+    } else {
+        lhs.to_vec()
+    };
+    let rhs2 = if drop_n {
+        vec![rhs[0], 1]
+    } else {
+        rhs.to_vec()
+    };
+    Ok((lhs2, rhs2, drop_m, drop_n))
 }
 
 pub(crate) fn broadcast_shape(lhs: &[i64], rhs: &[i64]) -> Result<Vec<i64>> {

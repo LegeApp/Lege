@@ -192,10 +192,10 @@ mod tests {
                     .expect("lege-gpu should live under the repository root")
                     .join("packaging/linux64")
             })
-            .join("yolo-layout.onnx");
+            .join("doclayout.onnx");
         if !path.exists() {
             eprintln!(
-                "skipping runtime YOLO Winograd rewrite test: {} not found",
+                "skipping runtime Winograd rewrite test: {} not found",
                 path.display()
             );
             return;

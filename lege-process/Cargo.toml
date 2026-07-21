@@ -1,0 +1,190 @@
+[package]
+build = "build.rs"
+name = "lege"
+version = "1.4.64"
+edition = "2024"
+description = "Document binarization and re-encoding especially for E-Ink ebook readers"
+authors = ["Lege Apps"]
+homepage = "https://www.legeapp.com"
+repository = "https://github.com/LegeApp/Lege/"
+keywords = ["pdf", "ocr", "ebook", "e-ink", "image-processing"]
+categories = ["multimedia::images", "text-processing"]
+
+[lib]
+path = "core/lib.rs"
+
+[[bin]]
+name = "lege"
+path = "core/main.rs"
+
+
+[build-dependencies]
+winres = "0.1.12"  # Updated
+chrono = "0.4"
+
+[dependencies]
+app_dirs2 = "2.5.5"
+directories = "6.0.0"
+fax = { version = "0.3.0", default-features = false }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+fontdue = "0.9.3"
+png = "0.18.1"
+image = { workspace = true }
+# Enhanced CLI dependencies
+dialoguer = { workspace = true }
+config = { workspace = true }
+dirs = "6.0.0"
+toml = "1.1.2"
+pdfium-render = { workspace = true }
+rayon = { workspace = true }
+once_cell = { workspace = true }
+tempfile = { workspace = true }
+colored = "3.1.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+fast_image_resize = { version = "6.0.0" }
+bytemuck = { workspace = true }
+lazy_static = { workspace = true }
+ndarray = { workspace = true }
+lege-gpu = { path = "../lege-gpu" }
+lege-ocr = { path = "../lege-ocr", optional = true }
+lege-ipc = { path = "lege-ipc" }
+lege-pdf-write = { path = "../lege-pdf/write" }
+jbig2enc-rust = { git = "https://github.com/LegeApp/jbig2enc-rust.git", default-features = false, features = ["symboldict", "parallel"] }
+jp2lam = { git = "https://github.com/LegeApp/jp2lam.git", optional = true }
+epub-builder = { version = "0.8", optional = true }
+quick-xml = "0.41.0"
+# mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
+sysinfo = "0.39.6"
+shlex = "2.0.1"
+cfg-if = { workspace = true }
+html-escape = { workspace = true }
+chrono = { version = "0.4.45", features = ["serde"] }
+memmap2 = "0.9.9"
+winres = "0.1.12"
+libloading = "0.9.0"
+num_cpus = { workspace = true }
+ttf-parser = { workspace = true }
+encoding_rs = { workspace = true }
+wait-timeout = { workspace = true }
+bytes = { workspace = true }
+console = { workspace = true }
+rustc-hash = { workspace = true }
+env_logger = "0.11.11"
+tokio = { workspace = true }
+futures = "0.3.32"
+async-trait = "0.1"
+regex = "1.12.2"
+unicode-normalization = "0.1"
+indicatif = { version = "0.18.6", features = ["tokio"] }
+sha2 = { version = "0.11.0", default-features = false }
+parking_lot = "0.12"
+flume = { workspace = true }
+zip = { workspace = true, features = ["deflate"] }
+# DjVu encoding is done by the separate AGPL `djvu-encoder` program invoked over
+# the command line (see src/djvu.rs). Lege deliberately does NOT link the encoder
+# as a library, so it is not a dependency here.
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+tesseract = { version = "0.15.2", optional = true }
+wgpu = "30.0.0"
+pollster = "1.0.1"
+libc = "0.2"
+
+# macOS-specific dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+tesseract = { version = "0.15.2", optional = true }
+wgpu = "30.0.0"
+pollster = "1.0.1"
+libc = "0.2"
+
+# Windows-specific dependencies
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
+windows = { workspace = true, features = [
+    "Foundation",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_Graphics",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_WinRT",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Console",
+] }
+windows-core = { workspace = true }
+windows-future = { workspace = true }
+
+ndarray = "0.17.2"
+
+[features]
+default = ["jp2-lam", "paddle-ocr", "layout-detection"]
+static = ["pdfium-render/static"]
+debug-logging = ["lege-gpu/debug-logging"]
+jp2-lam = ["dep:jp2lam"]
+layout-detection = ["lege-gpu/layout-detection"]
+# Minimal worker feature set used by the Sheet Music Edition. Layout and the
+# optional OCR backends remain disabled; JP2 stays available for Archive.org scans.
+music-sheet = ["jp2-lam"]
+# OCR and reflowable EPUB support share lege-ocr's document model. Keep both
+# out of no-OCR editions unless an OCR backend explicitly enables them.
+ocr = ["dep:lege-ocr", "dep:epub-builder"]
+# PP-OCR (GPU, pure-Rust) OCR backend for Linux/macOS — the default. Replaces
+# the native Tesseract dependency that blocked the macOS cross-compile.
+paddle-ocr = ["ocr", "lege-ocr/paddle-ocr"]
+# Legacy Tesseract backend, kept opt-in for one release before removal.
+tesseract-ocr = ["ocr", "dep:tesseract", "lege-ocr/tesseract-ocr"]
+# Feature for profiling with debug symbols - enables both debug logging and debug symbols
+profiling = ["debug-logging"]
+debug-layers = []
+no-include-shaders = []
+djvu_debug = []
+german = []
+# Static linking features for pdfium-render
+libstdcpp = ["pdfium-render/libstdc++"]
+libcpp = ["pdfium-render/libc++"]
+
+[dev-dependencies]
+flamegraph = "0.6.13"
+
+[package.metadata.deb]
+maintainer = "Lege Apps <read@legeapp.com>"
+copyright = "2025, Lege Apps"
+extended-description = """\
+Lege helps you prepare a scanned book PDF for pleasant reading on E-ink readers. Automatic selective text binarization and optimal per-page re-encoding. """
+# OCR is now the embedded PP-OCR backend (paddle-ocr) — no system Tesseract
+# package is required at runtime.
+section = "graphics"
+priority = "optional"
+features = ["jp2-lam", "paddle-ocr", "layout-detection"]
+default-features = false
+profile = "release"
+assets = [
+    # Install CLI and GUI binaries directly into PATH
+    ["target/release/lege", "usr/bin/lege", "755"],
+    ["target/release/lege-gui", "usr/bin/lege-gui", "755"],
+    # Required shared libraries
+    ["/home/dk/Desktop/lege-run/installer/linux64/libpdfium.so", "usr/lib/lege/", "644"],
+    # Heavy binarization remains a runtime model. Layout and PaddleOCR are embedded.
+    ["/home/dk/Desktop/lege-run/installer/linux64/sauvola.onnx", "usr/share/lege/models/", "644"],
+    # Desktop integration
+    ["lege.desktop", "usr/share/applications/", "644"],
+    ["../lege-misc/assets/icon.png", "usr/share/icons/hicolor/256x256/apps/lege.png", "644"],
+]
+
+# Point cargo-deb to the directory that contains maintainer scripts (postinst, postrm, etc.)
+# No maintainer scripts; rely on Debian triggers to update desktop/icon caches

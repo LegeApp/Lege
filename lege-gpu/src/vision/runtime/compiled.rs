@@ -68,6 +68,7 @@ pub(crate) struct SubmittedRun<'a> {
 }
 
 impl CompiledGraph {
+    #[cfg(feature = "layout-detection")]
     pub(crate) const LAYOUT_SOFTWARE_ADAPTER_ERROR: &'static str =
         "software WGPU adapter selected; continuing without layout detection";
 
@@ -82,6 +83,7 @@ impl CompiledGraph {
         Self::build_from_context(graph, ctx, t0)
     }
 
+    #[cfg(feature = "layout-detection")]
     pub(crate) async fn build_layout(graph: &PreparedGraph) -> Result<Self> {
         let t0 = std::time::Instant::now();
         let ctx = GpuContext::shared().await?;
@@ -96,6 +98,7 @@ impl CompiledGraph {
         Self::build_from_context(graph, ctx, t0)
     }
 
+    #[cfg(feature = "layout-detection")]
     pub(crate) fn layout_software_adapter_error() -> &'static str {
         Self::LAYOUT_SOFTWARE_ADAPTER_ERROR
     }
@@ -611,7 +614,9 @@ impl CompiledGraph {
                 .context("readback callback was not called")?
                 .context("failed to map readback buffer")?;
             let slice = self.output_readback_bufs[i].slice(..);
-            let mapped = slice.get_mapped_range();
+            let mapped = slice
+                .get_mapped_range()
+                .context("failed to access mapped output buffer")?;
             if mapped.len() != self.output_bytes[i] {
                 bail!(
                     "readback size mismatch for `{name}`: got {} expected {}",

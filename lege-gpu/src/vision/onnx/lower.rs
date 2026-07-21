@@ -227,6 +227,25 @@ fn lower_node(
                 kernel_shape: attr_i64_array::<2>(node, "kernel_shape", [1, 1])?,
             })
         }
+        "AveragePool" => {
+            if attr_string(node, "auto_pad").as_deref().unwrap_or("NOTSET") != "NOTSET" {
+                bail!("AveragePool only supports auto_pad=NOTSET");
+            }
+            if attr_i64(node, "ceil_mode").unwrap_or(0) != 0 {
+                bail!("AveragePool only supports ceil_mode=0");
+            }
+            // count_include_pad=0 (default): divide by the count of valid (in-bounds)
+            // window elements. We only implement that mode.
+            if attr_i64(node, "count_include_pad").unwrap_or(0) != 0 {
+                bail!("AveragePool only supports count_include_pad=0");
+            }
+            PlannedOpKind::AvgPool2d(Pool2dPlan {
+                pads: attr_i64_array::<4>(node, "pads", [0, 0, 0, 0])?,
+                strides: attr_i64_array::<2>(node, "strides", [1, 1])?,
+                dilations: attr_i64_array::<2>(node, "dilations", [1, 1])?,
+                kernel_shape: attr_i64_array::<2>(node, "kernel_shape", [1, 1])?,
+            })
+        }
         "Pad" => {
             let mode = match attr_string(node, "mode").as_deref().unwrap_or("constant") {
                 "constant" => PadMode::Constant,
@@ -319,6 +338,20 @@ fn lower_node(
             PlannedOpKind::ReduceSum {
                 axis: normalize_axis(axes[0], input_shapes[0].len())?,
                 keepdims: attr_i64(node, "keepdims").unwrap_or(1) != 0,
+                mean: false,
+            }
+        }
+        "ReduceMean" => {
+            // opset-11 form: axes as an attribute; single axis supported.
+            let axes = attr_i64s(node, "axes")
+                .context("ReduceMean axes attribute is required for lowering")?;
+            if axes.len() != 1 {
+                bail!("ReduceMean only supports a single reduction axis");
+            }
+            PlannedOpKind::ReduceSum {
+                axis: normalize_axis(axes[0], input_shapes[0].len())?,
+                keepdims: attr_i64(node, "keepdims").unwrap_or(1) != 0,
+                mean: true,
             }
         }
         "SpaceToDepth" => PlannedOpKind::SpaceToDepth {

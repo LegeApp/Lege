@@ -7,6 +7,6 @@ pub(crate) mod shape;
 pub(crate) mod types;
 pub(crate) mod winograd_rewrite;
 
-pub(crate) use attrs::load_model;
+pub(crate) use attrs::{load_model, load_model_from_bytes};
 pub(crate) use graph::PreparedGraph;
-pub(crate) use load::{ModelReport, TARGET_INPUT};
+pub(crate) use load::ModelReport;

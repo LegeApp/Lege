@@ -2,6 +2,8 @@ pub mod coordinate;
 pub mod debug;
 pub mod document;
 pub mod engine;
+#[cfg(feature = "paddle-ocr")]
+pub mod engine_paddle;
 pub mod fast;
 pub mod hocr;
 pub mod normalize;

@@ -1,0 +1,14 @@
+# Build artifacts
+/target/
+
+# Local scratch/dev outputs
+*.djvu
+*.pbm
+*.jpg
+*.jpeg
+
+# Locally assembled experimental ZP codec object
+src/asm/*.o
+
+# Local helper workspace
+/cargo-checker/target/

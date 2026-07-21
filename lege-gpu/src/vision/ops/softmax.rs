@@ -1,5 +1,3 @@
-
-
 // params: [0] row_count [1] dim [2] inner
 pub(crate) const SOFTMAX_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       inp    : array<f32>;
@@ -33,4 +31,3 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 "#;
-

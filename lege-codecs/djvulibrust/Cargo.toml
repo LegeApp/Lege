@@ -1,0 +1,59 @@
+#> On our 50-page IW44 s100 benchmark, DJVULibRust is slightly faster than djvu-rs while producing a smaller file and dramatically better reconstruction quality. The PSNR gap is about 14.7 dB, roughly 29x lower MSE, and the visual output is much more faithful on the yellowed page test set.
+
+[package]
+name = "djvu_encoder"
+version = "0.11.0"
+edition = "2024"
+# This standalone encoder is distributed under the same fixed AGPLv3 license
+# historically used by Lege. Front-ends invoke `djvu-encoder` over the CLI and
+# do not link this crate as a library.
+license = "AGPL-3.0-only"
+autotests = true
+autoexamples = true
+
+[features]
+simd = ["dep:wide"]
+asm_zp = []        # Use assembly ZP arithmetic coder (currently bit-incorrect and experimental).
+dev_asm_cmp = []   # Enable assembly vs Rust ZP comparison tests
+rayon = ["dep:rayon"]
+iw44-trace = []    # Enable IW44 debug tracing (verbose)
+debug-logging = []
+# Standalone `djvu-encoder` command-line program. Off by default so the library
+# build stays lean. `cli` preserves the full set of input formats and parallel
+# encoding. Size-sensitive distributions can instead select only the required
+# `format-*` features; those features also enable the CLI target.
+cli-base = ["dep:clap", "dep:serde", "dep:serde_json", "dep:image"]
+cli = ["cli-base", "rayon", "format-png", "format-jpeg", "format-tiff", "format-pnm", "format-bmp"]
+format-png = ["cli-base", "image/png"]
+format-jpeg = ["cli-base", "image/jpeg"]
+format-tiff = ["cli-base", "image/tiff"]
+format-pnm = ["cli-base", "image/pnm"]
+format-bmp = ["cli-base", "image/bmp"]
+
+[dependencies]
+byteorder = "1.5"
+thiserror = "1.0"
+bytemuck = { version = "1.25", features = ["derive"] }
+log = "0.4"
+rayon = { version = "1.11", optional = true }
+wide = { version = "=0.7.33", optional = true }
+# CLI-only dependencies (pulled in by the `cli` feature).
+clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+image = { version = "0.25.9", default-features = false, optional = true }
+
+[[bin]]
+name = "djvu-encoder"
+path = "src/bin/djvu-encoder.rs"
+required-features = ["cli-base"]
+
+# The encoder is distributed as a standalone executable, so optimize the
+# release artifact for size and do not retain link symbols. These settings
+# must live here now that the crate is no longer built from a workspace root.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

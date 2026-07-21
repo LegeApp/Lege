@@ -1,59 +1,64 @@
-# Cargo aliases live in .cargo/config.toml.
-# Put machine-specific overrides in environment variables instead of committing
-# local paths.
+# Rust and generated build output
+/target/
+**/target/
+**/dist/
 
-# Rust
-target/
-**/*.rs.bk
-Cargo.lock
+# Local editor, assistant, and indexing state
+/.vs/
+/.vscode/
+/.claude/
+/.codegraph/
+**/.vs/
+**/.vscode/
+**/.idea/
+**/.claude/
+**/.codegraph/
+**/.codex
 
-# OS-specific
+# Local caches, logs, and databases
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.tmp
+*.temp
+
+# OS metadata
 .DS_Store
 Thumbs.db
 
-# Binary artifacts
-*.so
-*.a
-*.dll
-*.exe
-*.bin
-*.o
-*.d
-
-# Logs
-*.log
-
-# Misc
+# Backups and packaged source snapshots
+*.bk
+*.old
+*.orig
 *.zip
+*.tar
 *.tar.gz
-.idea/
-.vscode/
-.codegraph/
 
-# Dev / large binary files
+# Non-source documents and one-off local migration helpers
 *.pdf
-*.onnx
-*.pt
-*.pth
-*.safetensors
-*.gguf
-*.weights
-*.npz
-*.npy
-model_weights/
-models/
+/cargo-checker
+/cargo-checker.exe
+**/cargo-checker
+**/cargo-checker.exe
+/wipe-github-remote.sh
+/wipe.ps1
 
-# .NET/VS
-bin/
-obj/
-*.user
-*.suo
-*.userprefs
-*.rsuser
-*.cache
-*.ide
-*.nupkg
-*.snupkg
-/*.vs/
-**/*.wpftmp.csproj
-**/*_wpftmp.csproj
+# Screenshots and scratch captures (dev artifacts; some names are invalid on Windows)
+Screenshot*.png
+Screenshot*.PNG
+
+# Downloaded third-party build tools (re-fetched by packaging scripts)
+*.AppImage
+
+# Codec test corpora and generated visual outputs (dev artifacts)
+lege-codecs/jp2lam/test-set/
+lege-codecs/jp2lam/visual-output/
+lege-codecs/jp2lam/lear.png
+
+# Generated codec output samples
+*.jp2
+*.j2k
+*.jb2
+*.pbm

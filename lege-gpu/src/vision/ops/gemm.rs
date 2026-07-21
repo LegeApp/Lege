@@ -3,8 +3,6 @@
 //! C is unidirectionally broadcastable to [M,N] (we support len N, M*N, or 1).
 //! 2D only — the fused MatMul+Add classifier heads these models use.
 
-
-
 // params: [M, N, K, transA, transB, has_bias, bias_len, alpha_bits, beta_bits]
 pub(crate) const GEMM_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read>       a      : array<f32>;

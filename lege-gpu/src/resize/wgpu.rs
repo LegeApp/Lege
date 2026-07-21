@@ -311,6 +311,7 @@ impl WgpuContext {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .map_err(|e| {
@@ -961,7 +962,9 @@ impl WgpuResizer {
             .map_err(|_| WgpuResizeError::Execution("map_async channel failed".to_string()))?
             .map_err(|e| WgpuResizeError::Execution(format!("map_async failed: {e:?}")))?;
 
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().map_err(|e| {
+            WgpuResizeError::Execution(format!("mapped range access failed: {e:?}"))
+        })?;
         let mut out = vec![0u8; size];
         out.copy_from_slice(&data[..size]);
         drop(data);

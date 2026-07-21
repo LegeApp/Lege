@@ -1,0 +1,89 @@
+[package]
+name = "jbig2enc-rust"
+version = "0.5.3"
+edition = "2024"
+description = "JBIG2 encoder implementation in Rust with PDF fragment support"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/jbig2enc-rust"
+homepage = "https://github.com/LegeApp/jbig2enc-rust"
+repository = "https://github.com/LegeApp/jbig2enc-rust"
+keywords = ["jbig2", "encoder", "compression", "image", "pdf"]
+categories = ["multimedia::encoding", "multimedia::images"]
+include = ["Cargo.toml", "Cargo.lock", "README.md", "build.rs", "src/**"]
+
+[lib]
+name = "jbig2enc_rust"
+path = "src/lib.rs"
+
+[dependencies]
+tracing = { version = "0.1", features = ["std"], optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry", "std"], optional = true }
+clap = { version = "4.5.41", features = ["derive"] }
+ndarray = "0.17.2"
+anyhow = "1.0"
+thiserror = "2.0.18"
+log = "0.4"
+env_logger = "0.11.11"
+byteorder = "1.4"
+bitvec = "1.0"
+once_cell = "1.19"
+rustc-hash = "2.1.3"
+fax = { version = "0.3.0", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"], optional = true }
+rayon = { version = "1.10", optional = true }
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
+wide = "1.5.0"
+
+[features]
+# `symboldict` gates the symbol-dictionary path: connected-component analysis
+# (jbig2cc.rs) -> symbol extraction -> symbol dictionary + text regions. It is on
+# by default because it is the encoder's primary mode; disable it (or build with
+# --no-default-features) to get the generic-region-only encoder.
+# The crate is split into an `encode` half and a `decode` half over a shared
+# protocol core (Gap A). The PDF renderer depends on
+# `default-features = false, features = ["decode"]`.
+default = ["encode", "decode", "symboldict"]
+encode = []
+decode = []
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
+trace_encoder = ["dep:tracing", "dep:tracing-subscriber"]
+trace_arith = []
+line_verify = []
+# The symbol-dictionary path is part of the encoder half.
+symboldict = ["encode"]
+refine = []
+halftone_bin = ["dep:image"]
+parallel = ["dep:rayon"]
+profiling = ["dep:pprof"]
+# Opt-in benchmark that links the C jbig2enc bridge (tests/headsup_c_vs_rust.rs).
+# Empty because the bridge is provided via build-script/linker flags at bench
+# time; the feature just gates compilation of that test target.
+c-encoder-bench = []
+
+[[bin]]
+name = "tester"
+path = "src/bin/tester.rs"
+required-features = ["encode"]
+
+[[bin]]
+name = "halftone_tester"
+path = "src/bin/halftone_tester.rs"
+required-features = ["halftone_bin", "encode"]
+
+[[bench]]
+name = "decode"
+harness = false
+required-features = ["encode", "decode"]
+
+[dev-dependencies]
+tracing = { version = "0.1", features = ["std"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry", "std"] }
+which = "8.0.0"
+tempfile = "3.27.0"
+hex-literal = "1.0.0"
+criterion = "0.7"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
