@@ -243,16 +243,20 @@ pub(crate) fn reconstruct_grayscale_image(
     })
 }
 
+/// `channels` is the number of interleaved output planes, taken from the output
+/// format rather than `colorspace.component_count()` — an sRGB image with an
+/// in-data alpha channel is `Srgb` but produces 4 interleaved planes (RGBA).
 pub(crate) fn reconstruct_packed_u8_profiled(
     header: &CodestreamHeader,
     colorspace: ColorSpace,
+    channels: usize,
     tiles: Vec<DecodedTileCoefficients>,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
     match colorspace {
         ColorSpace::Gray => reconstruct_grayscale_u8_profiled(header, tiles, stats),
         ColorSpace::Srgb | ColorSpace::Cmyk => {
-            reconstruct_interleaved_u8_profiled(header, colorspace, tiles, stats)
+            reconstruct_interleaved_u8_profiled(header, colorspace, channels, tiles, stats)
         }
         other => Err(invalid(format!(
             "unsupported packed output colorspace: {other:?}"
@@ -326,16 +330,14 @@ fn reconstruct_grayscale_u8_profiled(
 fn reconstruct_interleaved_u8_profiled(
     header: &CodestreamHeader,
     colorspace: ColorSpace,
+    channels: usize,
     mut tiles: Vec<DecodedTileCoefficients>,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
-    let channels = colorspace.component_count();
-    if !matches!(channels, 3 | 4)
-        || tiles.len() != channels
-        || header.siz.components.len() != channels
-    {
+    let decoded = header.siz.components.len();
+    if !matches!(channels, 3 | 4) || tiles.len() != decoded || decoded < channels {
         return Err(invalid(format!(
-            "{colorspace:?} packed output requires {channels} decoded components"
+            "{colorspace:?} packed output requires {channels} of {decoded} decoded components"
         )));
     }
     tiles.sort_by_key(|tile| tile.component);
@@ -348,13 +350,16 @@ fn reconstruct_interleaved_u8_profiled(
             "decoded packed-output components are not contiguous",
         ));
     }
+    // Keep exactly the requested output planes: an sRGB image with an in-data
+    // alpha decodes 4 components but yields 3 (Rgb8, alpha dropped) or 4 (Rgba8).
+    tiles.truncate(channels);
     let pixel_count = header.siz.width as usize * header.siz.height as usize;
 
     // Components 0..min(3,channels) are the MCT colour set (uniform transform);
-    // any further component (a CMYK K plane) is auxiliary and may carry a COC
-    // transform override, so scale it from its own transform. Per-component u8
-    // planes are then interleaved. For a uniform stream this is byte-identical
-    // to a single-transform pass.
+    // any further component (a CMYK K plane, or an sRGB alpha plane) is
+    // auxiliary and may carry a COC transform override, so scale it from its own
+    // transform. Per-component u8 planes are then interleaved. For a uniform
+    // stream this is byte-identical to a single-transform pass.
     let colour_count = channels.min(3);
     let mut tiles_iter = tiles.into_iter();
     let colour_tiles: Vec<DecodedTileCoefficients> = tiles_iter.by_ref().take(colour_count).collect();
@@ -499,8 +504,15 @@ fn reconstruct_srgb_image(
     mut tiles: Vec<DecodedTileCoefficients>,
     stats: &mut StatsSink<'_>,
 ) -> Result<Image> {
-    if tiles.len() != 3 || header.siz.components.len() != 3 {
-        return Err(invalid("sRGB JP2 must decode exactly three components"));
+    // An sRGB stream may carry a 4th `cdef` opacity plane (an RGBA image): the
+    // three colour planes take the inverse ICT/RCT, and the alpha plane is
+    // reconstructed independently (no colour transform) and appended, exactly
+    // like a CMYK K plane.
+    let ncomp = header.siz.components.len();
+    if !matches!(ncomp, 3 | 4) || tiles.len() != ncomp {
+        return Err(invalid(
+            "sRGB JP2 must decode three colour components (plus an optional alpha)",
+        ));
     }
     tiles.sort_by_key(|tile| tile.component);
     for (idx, tile) in tiles.iter().enumerate() {
@@ -509,7 +521,11 @@ fn reconstruct_srgb_image(
         }
     }
 
-    let planes = reconstruct_color_planes_finalized(header, tiles, stats)?;
+    let alpha_tile = if ncomp == 4 { tiles.pop() } else { None };
+    let mut planes = reconstruct_color_planes_finalized(header, tiles, stats)?;
+    if let Some(alpha) = alpha_tile {
+        planes.push(reconstruct_aux_component_finalized(header, alpha, stats)?);
+    }
 
     let width = header.siz.width;
     let height = header.siz.height;

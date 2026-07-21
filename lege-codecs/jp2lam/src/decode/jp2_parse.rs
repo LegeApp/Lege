@@ -42,6 +42,19 @@ pub(crate) struct Jp2Header {
     /// A resolved `pclr`+`cmap` palette, when the single decoded index
     /// component must be expanded into the container's output channels.
     pub(crate) palette: Option<Palette>,
+    /// An in-data opacity channel declared by a `cdef` box (I.5.3.6), when the
+    /// codestream carries an alpha plane the PDF layer surfaces via
+    /// `/SMaskInData`. `None` when every channel is colour.
+    pub(crate) alpha: Option<AlphaChannel>,
+}
+
+/// A `cdef`-declared opacity channel: the codestream component that carries
+/// opacity and whether it is premultiplied (ISO/IEC 15444-1 I.5.3.6 — channel
+/// type `Typ` 1 = opacity, 2 = premultiplied opacity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AlphaChannel {
+    pub(crate) component: usize,
+    pub(crate) premultiplied: bool,
 }
 
 /// A JP2 palette (`pclr`) resolved against its component mapping (`cmap`): the
@@ -148,6 +161,7 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
     let mut color_description = None;
     let mut pclr_payload = None;
     let mut cmap_payload = None;
+    let mut alpha = None;
     while let Some(box_) = cursor.next_box()? {
         match box_.box_type {
             BOX_IMAGE_HEADER => image_header = Some(parse_image_header(box_.payload)?),
@@ -163,10 +177,10 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
             // box loop (either order is legal, and cmap references pclr).
             BOX_PALETTE => pclr_payload = Some(box_.payload),
             BOX_COMPONENT_MAPPING => cmap_payload = Some(box_.payload),
-            // cdef only names/reorders channels; the palettized scans we handle
-            // present channels already in container order, so an absent cdef is
-            // the norm. A present one is ignored (its default is identity).
-            BOX_CHANNEL_DEFINITION => {}
+            // cdef names channel types; a colour-only cdef is the identity
+            // default (harmless), but a declared opacity channel is the in-data
+            // alpha the PDF layer applies as a soft mask (`/SMaskInData`).
+            BOX_CHANNEL_DEFINITION => alpha = parse_channel_definitions(box_.payload)?,
             _ => {}
         }
     }
@@ -176,6 +190,7 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
         color_description.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
     header.colorspace = colorspace;
     header.color_encoding = color_encoding;
+    header.alpha = alpha;
     // pclr/cmap resolution happens in `parse_jp2`: cmap may sit inside jp2h
     // (per spec) OR as a top-level box (as some encoders emit), so both raw
     // payloads are handed back for the caller to combine.
@@ -270,6 +285,7 @@ fn parse_image_header(payload: &[u8]) -> Result<Jp2Header> {
         color_encoding: ColorEncoding::Gray,
         has_ipr_metadata: payload[13] != 0,
         palette: None,
+        alpha: None,
     })
 }
 
@@ -312,6 +328,49 @@ fn parse_color_spec(payload: &[u8]) -> Result<(ColorSpace, ColorEncoding)> {
         }
         _ => Err(unsupported("unsupported JP2 color specification method")),
     }
+}
+
+/// Parse a `cdef` channel-definition box (ISO/IEC 15444-1 I.5.3.6): a `u16`
+/// count `N` followed by `N` records of `(Cn, Typ, Asoc)` `u16`s. `Typ` 0 is a
+/// colour channel, 1 opacity, 2 premultiplied opacity, 65535 unspecified.
+/// Returns the single opacity channel, if any — `Cn` is the codestream
+/// component it maps to (identity when no `cmap` reorders channels, which is the
+/// layout these archival scans use).
+fn parse_channel_definitions(payload: &[u8]) -> Result<Option<AlphaChannel>> {
+    if payload.len() < 2 {
+        return Err(invalid("JP2 cdef box is too short"));
+    }
+    let count = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+    let records = payload
+        .get(2..2 + count * 6)
+        .ok_or_else(|| invalid("JP2 cdef channel records are truncated"))?;
+    let mut alpha: Option<AlphaChannel> = None;
+    for record in records.chunks_exact(6) {
+        let channel = u16::from_be_bytes([record[0], record[1]]);
+        let typ = u16::from_be_bytes([record[2], record[3]]);
+        // record[4..6] is Asoc (the colour component this channel is associated
+        // with); with the identity mapping these scans use it is not needed.
+        let premultiplied = match typ {
+            0 | 65535 => continue, // colour or unspecified
+            1 => false,            // opacity
+            2 => true,             // premultiplied opacity
+            other => {
+                return Err(unsupported(format!(
+                    "unsupported JP2 cdef channel type {other}"
+                )));
+            }
+        };
+        if alpha.is_some() {
+            return Err(unsupported(
+                "unsupported JP2 feature: more than one cdef opacity channel",
+            ));
+        }
+        alpha = Some(AlphaChannel {
+            component: usize::from(channel),
+            premultiplied,
+        });
+    }
+    Ok(alpha)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -489,11 +548,31 @@ mod tests {
     }
 
     #[test]
-    fn channel_definition_box_is_ignored() {
-        // cdef only names/reorders channels; its absence is the default, so a
-        // present cdef is accepted and ignored rather than rejected.
-        let bytes = jp2_with_extra_header_box(BOX_CHANNEL_DEFINITION, &[0, 0, 0, 0]);
-        assert!(parse_jp2(&bytes).is_ok());
+    fn colour_only_channel_definition_declares_no_alpha() {
+        // A cdef whose single channel is colour (Typ=0) is the identity default:
+        // parsed, with no opacity channel surfaced.
+        let cdef = [0, 1, /*Cn*/ 0, 0, /*Typ*/ 0, 0, /*Asoc*/ 0, 1];
+        let bytes = jp2_with_extra_header_box(BOX_CHANNEL_DEFINITION, &cdef);
+        let parsed = parse_jp2(&bytes).expect("colour-only cdef should parse");
+        assert!(parsed.header.alpha.is_none());
+    }
+
+    #[test]
+    fn channel_definition_opacity_channel_is_parsed() {
+        // A cdef marking channel 3 as opacity (Typ=1) surfaces the in-data alpha
+        // channel for `/SMaskInData` handling.
+        let cdef = [
+            0, 4, // N = 4 channels
+            0, 0, 0, 0, 0, 1, // Cn0 colour
+            0, 1, 0, 0, 0, 2, // Cn1 colour
+            0, 2, 0, 0, 0, 3, // Cn2 colour
+            0, 3, 0, 1, 0, 0, // Cn3 opacity (Typ=1), whole image
+        ];
+        let bytes = jp2_with_extra_header_box(BOX_CHANNEL_DEFINITION, &cdef);
+        let parsed = parse_jp2(&bytes).expect("opacity cdef should parse");
+        let alpha = parsed.header.alpha.expect("alpha channel");
+        assert_eq!(alpha.component, 3);
+        assert!(!alpha.premultiplied);
     }
 
     #[test]

@@ -33,6 +33,19 @@ pub struct DecodeMetadata {
     pub codestream: CodestreamHeader,
     pub tile_part_count: usize,
     pub first_tile_payload_len: usize,
+    /// An in-codestream opacity channel declared by a `cdef` box, when present.
+    /// The consumer surfaces it as a soft mask (PDF `/SMaskInData`); request
+    /// [`DecodeOutputFormat::Rgba8`] to receive the interleaved alpha plane.
+    pub in_data_alpha: Option<InDataAlpha>,
+}
+
+/// A JPEG 2000 in-codestream opacity channel (from a `cdef` box).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InDataAlpha {
+    /// The codestream component carrying opacity.
+    pub component: u16,
+    /// Whether the colour channels are premultiplied by this opacity.
+    pub premultiplied: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,6 +71,9 @@ pub enum DecodeOutputFormat {
     Gray8,
     /// Write packed 8-bit red, green, and blue samples.
     Rgb8,
+    /// Write packed 8-bit red, green, blue, and opacity samples (the codestream
+    /// must carry a `cdef` opacity channel).
+    Rgba8,
     /// Write packed 8-bit cyan, magenta, yellow, and black samples.
     Cmyk8,
 }
@@ -69,7 +85,7 @@ impl DecodeOutputFormat {
         match self {
             DecodeOutputFormat::NativePlanarI32 | DecodeOutputFormat::Gray8 => 1,
             DecodeOutputFormat::Rgb8 => 3,
-            DecodeOutputFormat::Cmyk8 => 4,
+            DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 4,
         }
     }
 }
@@ -202,6 +218,10 @@ pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
         has_ipr_metadata: core.header.has_ipr_metadata,
         first_tile_payload_len: first_payload.len(),
         tile_part_count: core.parts.tile_parts.len(),
+        in_data_alpha: core.header.alpha.map(|alpha| InDataAlpha {
+            component: alpha.component as u16,
+            premultiplied: alpha.premultiplied,
+        }),
         codestream: core.codestream,
     })
 }
@@ -358,15 +378,20 @@ fn decode_packed_direct(
     let core = parse_jp2_core(bytes, &mut stats)?;
     let expected_space = match format {
         DecodeOutputFormat::Gray8 => ColorSpace::Gray,
-        DecodeOutputFormat::Rgb8 => ColorSpace::Srgb,
+        DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 => ColorSpace::Srgb,
         DecodeOutputFormat::Cmyk8 => ColorSpace::Cmyk,
         DecodeOutputFormat::NativePlanarI32 => return Ok(None),
     };
     if core.header.palette.is_some() || core.header.colorspace != expected_space {
         return Ok(None);
     }
+    // Rgba8 interleaves a 4th (opacity) plane; without an in-data alpha channel
+    // there is nothing to fill it, so fall back to the planar path.
+    if matches!(format, DecodeOutputFormat::Rgba8) && core.header.alpha.is_none() {
+        return Ok(None);
+    }
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
-    let channels = expected_space.component_count();
+    let channels = format.component_count();
 
     // Single tile: reconstruct straight into the packed raster (no intermediate
     // planar image), the phase-1/2 fast path.
@@ -383,6 +408,7 @@ fn decode_packed_direct(
         let data = reconstruct::reconstruct_packed_u8_profiled(
             &header,
             expected_space,
+            channels,
             components,
             &mut stats,
         )?;
@@ -446,6 +472,7 @@ fn decode_packed_direct(
         let tile_data = reconstruct::reconstruct_packed_u8_profiled(
             &header,
             expected_space,
+            channels,
             components,
             &mut stats,
         )?;
@@ -1033,6 +1060,7 @@ fn synthesize_header_from_codestream(
         color_encoding,
         has_ipr_metadata: false,
         palette: None,
+        alpha: None,
     })
 }
 
@@ -1227,7 +1255,7 @@ fn pack_image_8bit(image: &Image, format: DecodeOutputFormat) -> Result<DecodedR
     let expected_components = match format {
         DecodeOutputFormat::Gray8 => 1,
         DecodeOutputFormat::Rgb8 => 3,
-        DecodeOutputFormat::Cmyk8 => 4,
+        DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 4,
         DecodeOutputFormat::NativePlanarI32 => {
             return Err(crate::Jp2LamError::InvalidInput(
                 "native planar output is not a packed raster format".into(),
@@ -1444,10 +1472,17 @@ fn validate_jp2_decode_scope(
         )));
     }
     if header.colorspace == ColorSpace::Srgb && header.component_count != 3 {
-        return Err(crate::Jp2LamError::UnsupportedFeature(format!(
-            "unsupported JP2 component count: decoder currently supports three sRGB components, found {} components",
-            header.component_count
-        )));
+        // sRGB + a single `cdef` opacity channel on component 3 is an RGBA image
+        // whose alpha the PDF layer applies as an in-data soft mask; accept it.
+        // Any other sRGB + N is still unsupported.
+        let is_rgba = header.component_count == 4
+            && header.alpha.is_some_and(|alpha| alpha.component == 3);
+        if !is_rgba {
+            return Err(crate::Jp2LamError::UnsupportedFeature(format!(
+                "unsupported JP2 component count: decoder currently supports three sRGB components, found {} components",
+                header.component_count
+            )));
+        }
     }
     if header.colorspace == ColorSpace::Cmyk && header.component_count != 4 {
         return Err(crate::Jp2LamError::UnsupportedFeature(format!(
@@ -2337,6 +2372,78 @@ mod tests {
 
     fn read_archive_org_rgb_sample() -> Vec<u8> {
         maybe_read_archive_org_rgb_sample().expect("read rgb sample jp2")
+    }
+
+    fn maybe_read_rgba_alpha_sample() -> Option<Vec<u8>> {
+        read_optional_fixture(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("rgba_gradient_alpha_sample.jp2"),
+            "sRGB+alpha JP2",
+        )
+    }
+
+    /// An sRGB image with an in-data (`cdef`) opacity channel decodes to packed
+    /// RGBA8: the three colour planes take the inverse ICT, the 4th (alpha) plane
+    /// is reconstructed straight and interleaved. The fixture's alpha is a
+    /// horizontal 0..255 gradient (losslessly coded), so it reconstructs exactly.
+    #[test]
+    fn srgb_alpha_decodes_to_rgba_with_gradient_mask() {
+        let Some(bytes) = maybe_read_rgba_alpha_sample() else {
+            return;
+        };
+        let meta = inspect_jp2(&bytes).expect("inspect rgba");
+        assert_eq!(meta.colorspace, ColorSpace::Srgb);
+        let alpha = meta.in_data_alpha.expect("in-data alpha channel");
+        assert_eq!(alpha.component, 3);
+        assert!(!alpha.premultiplied);
+
+        let mut decoder = Jp2Decoder::new();
+        let rgba = match decoder
+            .decode(
+                &bytes,
+                &DecodeRequest {
+                    resolution: DecodeResolution::Full,
+                    output: DecodeOutputFormat::Rgba8,
+                    region: None,
+                    concurrency: DecodeConcurrency::Serial,
+                },
+            )
+            .expect("rgba decode")
+        {
+            DecodeResult::Raster(raster) => raster,
+            other => panic!("expected packed raster, got {other:?}"),
+        };
+        let w = rgba.width as usize;
+        let h = rgba.height as usize;
+        assert_eq!(rgba.stride, w * 4);
+        for y in 0..h {
+            let mut prev = 0u8;
+            for x in 0..w {
+                let a = rgba.data[(y * w + x) * 4 + 3];
+                assert!(a >= prev, "alpha must be non-decreasing across x at row {y}");
+                prev = a;
+            }
+            assert_eq!(rgba.data[y * w * 4 + 3], 0, "left column transparent");
+            assert_eq!(rgba.data[(y * w + w - 1) * 4 + 3], 255, "right column opaque");
+        }
+
+        // Rgb8 on the same stream drops the alpha (three interleaved planes).
+        let rgb = match decoder
+            .decode(
+                &bytes,
+                &DecodeRequest {
+                    resolution: DecodeResolution::Full,
+                    output: DecodeOutputFormat::Rgb8,
+                    region: None,
+                    concurrency: DecodeConcurrency::Serial,
+                },
+            )
+            .expect("rgb decode")
+        {
+            DecodeResult::Raster(raster) => raster,
+            other => panic!("expected packed raster, got {other:?}"),
+        };
+        assert_eq!(rgb.stride, w * 3);
     }
 
     fn read_optional_fixture(path: &std::path::Path, label: &str) -> Option<Vec<u8>> {
