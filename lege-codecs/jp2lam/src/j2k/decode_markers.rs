@@ -194,12 +194,16 @@ impl CodestreamHeader {
 
         let siz = siz.ok_or_else(|| invalid("codestream main header lacks SIZ"))?;
         let cod = cod.ok_or_else(|| invalid("codestream main header lacks COD"))?;
-        let qcd = qcd.ok_or_else(|| invalid("codestream main header lacks QCD"))?;
+        let mut qcd = qcd.ok_or_else(|| invalid("codestream main header lacks QCD"))?;
+        // Derived quantization signals only the NLLL step; materialize the full
+        // per-subband list so downstream dequant is style-agnostic (Annex E.1.1).
+        expand_derived_steps(&mut qcd, cod.decomposition_levels);
 
         let component_count = siz.components.len();
         let mut qcc = Vec::with_capacity(qcc_segments.len());
         for segment in qcc_segments {
-            let (component, quant) = parse_qcc(segment, component_count)?;
+            let (component, mut quant) = parse_qcc(segment, component_count)?;
+            expand_derived_steps(&mut quant, cod.decomposition_levels);
             if component >= component_count {
                 return Err(invalid(format!(
                     "QCC references component {component}, but SIZ defines {component_count}"
@@ -342,6 +346,35 @@ fn parse_cod(segment: &[u8]) -> Result<CodSegment> {
 fn parse_qcd(segment: &[u8]) -> Result<QcdSegment> {
     let body = body(segment)?;
     parse_quant_fields(body, "QCD")
+}
+
+/// Expand a scalar-*derived* quantization segment (Annex E.1.1) into the full
+/// per-subband step list an *expounded* segment would carry, so the rest of the
+/// pipeline (which indexes `steps` by subband) needs no derived-specific path.
+///
+/// A derived segment signals only the `NLLL` step `(ε0, μ0)`; every other
+/// subband reuses `μ0` and takes `εb = max(0, ε0 − (b−1)/3)` where `b` is the
+/// 0-based subband index (0 = `NLLL`, then three bands — `HL`, `LH`, `HH` — per
+/// resolution). This mirrors OpenJPEG's derivation in `opj_j2k_read_SQcd_SQcc`.
+fn expand_derived_steps(quant: &mut QcdSegment, decomposition_levels: u8) {
+    if quant.style != QuantizationStyle::ScalarDerived {
+        return;
+    }
+    let Some(&base) = quant.steps.first() else {
+        return;
+    };
+    let count = 1 + usize::from(decomposition_levels) * 3;
+    let mut steps = Vec::with_capacity(count);
+    steps.push(base);
+    for band_no in 1..count {
+        let decrement = ((band_no - 1) / 3) as i32;
+        let exponent = (i32::from(base.exponent) - decrement).max(0) as u8;
+        steps.push(QuantizationStep {
+            exponent,
+            mantissa: base.mantissa,
+        });
+    }
+    quant.steps = steps;
 }
 
 /// Parse a QCC marker (Annex A.6.5): a component index (`Cqcc`, 1 byte when the
@@ -504,12 +537,13 @@ fn validate_decoder_scope(
 fn validate_quant(cod: &CodSegment, quant: &QcdSegment, label: &str) -> Result<()> {
     match (cod.transform, quant.style) {
         (WaveletTransform::Reversible53, QuantizationStyle::NoQuantization) => {}
-        (WaveletTransform::Irreversible97, QuantizationStyle::ScalarExpounded) => {}
-        (WaveletTransform::Irreversible97, QuantizationStyle::ScalarDerived) => {
-            return Err(invalid(format!(
-                "unsupported quantization: scalar-derived {label} is not implemented"
-            )));
-        }
+        // Derived steps are expanded to the expounded form before validation
+        // (see `expand_derived_steps`), so both irreversible scalar styles take
+        // the same path here.
+        (
+            WaveletTransform::Irreversible97,
+            QuantizationStyle::ScalarExpounded | QuantizationStyle::ScalarDerived,
+        ) => {}
         (WaveletTransform::Irreversible97, QuantizationStyle::NoQuantization) => {
             return Err(invalid(format!(
                 "unsupported quantization: irreversible 9/7 requires scalar quantization ({label})"
@@ -530,18 +564,15 @@ fn validate_quant(cod: &CodSegment, quant: &QcdSegment, label: &str) -> Result<(
         )));
     }
     let expected_steps = 1usize + usize::from(cod.decomposition_levels) * 3;
-    match quant.style {
-        QuantizationStyle::NoQuantization | QuantizationStyle::ScalarExpounded => {
-            if quant.steps.len() != expected_steps {
-                return Err(invalid(format!(
-                    "{label} step count {} does not match decomposition levels {}; expected {} steps",
-                    quant.steps.len(),
-                    cod.decomposition_levels,
-                    expected_steps
-                )));
-            }
-        }
-        QuantizationStyle::ScalarDerived => {}
+    // Every accepted style now carries one step per subband (derived segments
+    // were expanded upstream), so the count must match the decomposition depth.
+    if quant.steps.len() != expected_steps {
+        return Err(invalid(format!(
+            "{label} step count {} does not match decomposition levels {}; expected {} steps",
+            quant.steps.len(),
+            cod.decomposition_levels,
+            expected_steps
+        )));
     }
     Ok(())
 }
@@ -852,19 +883,30 @@ mod tests {
     }
 
     #[test]
-    fn scalar_derived_quantization_fails_before_packet_decode() {
+    fn scalar_derived_quantization_expands_to_per_subband_steps() {
+        // A derived QCD signals only the NLLL step (exponent 8); the header must
+        // materialize the full per-subband list, halving-per-resolution the
+        // exponent per Annex E.1.1 (bands are grouped three-per-resolution).
         let mut segments = supported_segments();
-        segments[2] = qcd_segment_with_style(0x21);
+        segments[2] = qcd_segment_with_step_count(0x21, 1);
 
-        let err = CodestreamHeader::from_marker_segments(
+        let header = CodestreamHeader::from_marker_segments(
             segments.iter().map(Vec::as_slice),
             tile_header(0),
             1,
         )
-        .expect_err("scalar-derived QCD should be rejected")
-        .to_string();
+        .expect("scalar-derived QCD should now decode");
 
-        assert!(err.contains("scalar-derived QCD"), "{err}");
+        let steps = &header.qcd.steps;
+        // supported_segments() declares 5 decomposition levels → 1 + 5*3 steps.
+        assert_eq!(steps.len(), 16);
+        assert_eq!(header.qcd.style, QuantizationStyle::ScalarDerived);
+        // εb = max(0, ε0 - (b-1)/3), μb = μ0; ε0 = 8, μ0 = 0.
+        let expected: [u8; 16] = [8, 8, 8, 8, 7, 7, 7, 6, 6, 6, 5, 5, 5, 4, 4, 4];
+        for (band, &exp) in expected.iter().enumerate() {
+            assert_eq!(steps[band].exponent, exp, "band {band}");
+            assert_eq!(steps[band].mantissa, 0, "band {band}");
+        }
     }
 
     #[test]
