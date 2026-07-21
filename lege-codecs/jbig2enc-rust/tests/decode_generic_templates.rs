@@ -105,6 +105,45 @@ fn check(bm: &TestBitmap, template: u8, tpgdon: bool, label: &str) {
     assert_oracle_matches(&stream, bm, label);
 }
 
+fn check_at(bm: &TestBitmap, template: u8, at: &[(i8, i8); 4], tpgdon: bool, label: &str) {
+    let stream = single_generic_page(bm, template, at, tpgdon);
+    assert_native_matches(&stream, bm, label);
+    assert_oracle_matches(&stream, bm, label);
+}
+
+/// Regression for the two template-0/3 AT+TPGDON bugs surfaced by the pdf.js
+/// `bitmap-customat*`/`bitmap-tpgdon` fixtures (sweep 6):
+///   * the generic decoder's AT sampler ignored any AT pixel reaching past row
+///     `y-2` (and template 3 could not read `y-2` at all), turning custom-AT
+///     regions into noise; and
+///   * template 0's SLTP context used a non-spec value, corrupting TPGDON.
+/// Custom AT positions that reach beyond the fixed template window, oracle-
+/// checked against jbig2dec so a self-consistent-but-wrong scheme cannot pass.
+#[test]
+fn custom_at_deep_rows() {
+    // Template 0: four AT pixels, several reaching well past y-2 (as pdf.js's
+    // bitmap-customat does). Template 1/2/3: a single far AT pixel, template 3's
+    // at y-2 (a row its fixed pixels never touch).
+    let cases: [(u8, [(i8, i8); 4]); 4] = [
+        (0, [(-4, -5), (6, -7), (-8, -9), (10, -11)]),
+        (1, [(17, -2), (0, 0), (0, 0), (0, 0)]),
+        (2, [(-9, -3), (0, 0), (0, 0), (0, 0)]),
+        (3, [(17, -2), (0, 0), (0, 0), (0, 0)]),
+    ];
+    for (template, at) in cases {
+        for &tpgdon in &[false, true] {
+            let bm = banded_bitmap(48, 36, 700 + template as u32 * 3 + tpgdon as u32);
+            check_at(
+                &bm,
+                template,
+                &at,
+                tpgdon,
+                &format!("custom-at t{template} tpgdon={tpgdon}"),
+            );
+        }
+    }
+}
+
 #[test]
 fn all_templates_random() {
     for template in 0u8..=3 {

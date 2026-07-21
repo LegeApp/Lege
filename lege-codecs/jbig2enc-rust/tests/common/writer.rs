@@ -60,22 +60,19 @@ impl TestBitmap {
     fn causal(&self, x: i64, y: i64, dx: i64, dy: i64) -> u32 {
         let xx = x + dx;
         let yy = y + dy;
-        match dy {
-            0 => {
-                if xx < 0 || xx >= x {
-                    0
-                } else {
-                    self.get(xx as u32, yy as u32) as u32
-                }
+        if xx < 0 || xx >= self.width as i64 || yy < 0 || dy > 0 {
+            return 0;
+        }
+        if dy == 0 {
+            // Current row: only already-encoded columns (x' < x) are visible.
+            if xx >= x {
+                0
+            } else {
+                self.get(xx as u32, yy as u32) as u32
             }
-            -1 | -2 => {
-                if xx < 0 || yy < 0 {
-                    0
-                } else {
-                    self.get(xx as u32, yy as u32) as u32
-                }
-            }
-            _ => 0,
+        } else {
+            // Any earlier row — AT pixels may reference further than y-2.
+            self.get(xx as u32, yy as u32) as u32
         }
     }
 
@@ -93,7 +90,7 @@ impl TestBitmap {
 }
 
 /// SLTP contexts, mirroring `src/decode/generic.rs`.
-const SLTP_CTX_T0: usize = 0xB325;
+const SLTP_CTX_T0: usize = 0x9B25;
 const SLTP_CTX_T1: usize = 0x0795;
 const SLTP_CTX_T2: usize = 0x00E5;
 const SLTP_CTX_T3: usize = 0x0195;

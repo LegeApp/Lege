@@ -53,14 +53,11 @@ impl GenericScratch {
 /// uses (3,-1); templates 2 and 3 use (2,-1).
 pub const NOMINAL_AT1: [(i8, i8); 3] = [(3, -1), (2, -1), (2, -1)];
 
-// SLTP pseudo-pixel contexts for TPGDON (T.88 §6.2.5.7, Figure 8). These are the
-// canonical spec/jbig2dec context values *except* for template 0, whose value is
-// re-expressed in this crate's template-0 context numbering (the 0x9B25 spec
-// pattern mapped through `decode_template0_general`'s bit layout gives 0xB325 —
-// verified against jbig2dec by the TPGDON round-trip tests). Templates 1–3 use
-// this crate's spec-matching numbering, so their values are the literal spec
-// constants.
-const SLTP_CTX_T0: usize = 0xB325;
+// SLTP pseudo-pixel contexts for TPGDON (T.88 §6.2.5.7, Figure 8), the literal
+// spec/jbig2dec values. `decode_template0_general`'s bit layout is the pdf.js/
+// jbig2dec sorted-template order, so template 0's SLTP context is the spec's
+// 0x9B25 (not a re-expressed value). Templates 1–3 likewise use spec numbering.
+const SLTP_CTX_T0: usize = 0x9B25;
 const SLTP_CTX_T1: usize = 0x0795;
 const SLTP_CTX_T2: usize = 0x00E5;
 const SLTP_CTX_T3: usize = 0x0195;
@@ -291,7 +288,8 @@ pub fn decode_generic_bitmap_skip(
             if skip.get(x, y) {
                 continue; // implicitly 0, no arithmetic bit consumed
             }
-            let ctx = pixel_context(template, &*cur, prev1, prev2, width, x as i64, &at);
+            let ctx =
+                pixel_context(template, &bitmap, &*cur, prev1, prev2, width, y, x as i64, &at);
             let bit = decoder.decode_bit(&mut contexts[ctx]);
             if bit {
                 let xu = x as usize;
@@ -305,42 +303,61 @@ pub fn decode_generic_bitmap_skip(
 
 /// Per-pixel context for any template, matching the per-template decoders'
 /// bit layouts. Used by the skip-aware path.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn pixel_context(
     template: u8,
+    bitmap: &MonoBitmap,
     cur: &[u32],
     prev1: &[u32],
     prev2: &[u32],
     width: u32,
+    y: u32,
     xi: i64,
     at: &[(i8, i8); 4],
 ) -> usize {
     let a1 = (at[0].0 as i64, at[0].1 as i64);
+    // AT slots read the bitmap directly so they can reference any earlier row;
+    // fixed pixels stay on the cached `prev1`/`prev2` rows.
+    let a = |ax: i64, ay: i64| at_pixel(bitmap, cur, width, y, xi, ax, ay);
     match template {
         0 => {
             let a2 = (at[1].0 as i64, at[1].1 as i64);
             let a3 = (at[2].0 as i64, at[2].1 as i64);
             let a4 = (at[3].0 as i64, at[3].1 as i64);
-            let p = |dx: i64, dy: i64| at_pixel(cur, prev1, prev2, width, xi, dx, dy);
-            ((p(a4.0, a4.1) << 15)
+            let p = |dx: i64, dy: i64| -> u32 {
+                let xx = xi + dx;
+                match dy {
+                    0 => {
+                        if xx < 0 || xx >= xi || xx >= width as i64 {
+                            0
+                        } else {
+                            sample(cur, width, xx)
+                        }
+                    }
+                    -1 => sample(prev1, width, xx),
+                    _ => sample(prev2, width, xx),
+                }
+            };
+            ((a(a4.0, a4.1) << 15)
                 | (p(-1, -2) << 14)
                 | (p(0, -2) << 13)
                 | (p(1, -2) << 12)
-                | (p(a3.0, a3.1) << 11)
-                | (p(a2.0, a2.1) << 10)
+                | (a(a3.0, a3.1) << 11)
+                | (a(a2.0, a2.1) << 10)
                 | (p(-2, -1) << 9)
                 | (p(-1, -1) << 8)
                 | (p(0, -1) << 7)
                 | (p(1, -1) << 6)
                 | (p(2, -1) << 5)
-                | (p(a1.0, a1.1) << 4)
+                | (a(a1.0, a1.1) << 4)
                 | (p(-4, 0) << 3)
                 | (p(-3, 0) << 2)
                 | (p(-2, 0) << 1)
                 | p(-1, 0)) as usize
         }
         1 => {
-            let a = at_pixel(cur, prev1, prev2, width, xi, a1.0, a1.1);
+            let a = a(a1.0, a1.1);
             (sample(cur, width, xi - 1)
                 | (sample(cur, width, xi - 2) << 1)
                 | (sample(cur, width, xi - 3) << 2)
@@ -356,7 +373,7 @@ fn pixel_context(
                 | (sample(prev2, width, xi - 1) << 12)) as usize
         }
         2 => {
-            let a = at_pixel(cur, prev1, prev2, width, xi, a1.0, a1.1);
+            let a = a(a1.0, a1.1);
             (sample(cur, width, xi - 1)
                 | (sample(cur, width, xi - 2) << 1)
                 | (a << 2)
@@ -369,7 +386,7 @@ fn pixel_context(
                 | (sample(prev2, width, xi - 1) << 9)) as usize
         }
         _ => {
-            let a = at_pixel(cur, prev1, prev2, width, xi, a1.0, a1.1);
+            let a = a(a1.0, a1.1);
             (sample(cur, width, xi - 1)
                 | (sample(cur, width, xi - 2) << 1)
                 | (sample(cur, width, xi - 3) << 2)
@@ -536,7 +553,9 @@ fn decode_template0_general(
         let prev1: &[u32] = if y >= 1 { bitmap.row(y - 1) } else { zero_row };
         let prev2: &[u32] = if y >= 2 { bitmap.row(y - 2) } else { zero_row };
 
-        // Read a pixel at (x+dx, y+dy) from already-decoded data.
+        // Read a fixed template pixel (dy in {-2,-1,0}) from already-decoded
+        // data. The four AT slots use `at_pixel`, which reads the bitmap so an
+        // AT pixel may reference any earlier row, not just `y-1`/`y-2`.
         let px = |cur: &[u32], x: i64, dx: i64, dy: i64| -> u32 {
             let xx = x + dx;
             match dy {
@@ -549,26 +568,25 @@ fn decode_template0_general(
                     }
                 }
                 -1 => sample(prev1, width, xx),
-                -2 => sample(prev2, width, xx),
-                _ => 0,
+                _ => sample(prev2, width, xx),
             }
         };
 
         for x in 0..width {
             let x = x as i64;
             let mut t = 0u32;
-            t |= px(&*cur, x, a4x, a4y) << 15;
+            t |= at_pixel(bitmap, &*cur, width, y, x, a4x, a4y) << 15;
             t |= px(&*cur, x, -1, -2) << 14;
             t |= px(&*cur, x, 0, -2) << 13;
             t |= px(&*cur, x, 1, -2) << 12;
-            t |= px(&*cur, x, a3x, a3y) << 11;
-            t |= px(&*cur, x, a2x, a2y) << 10;
+            t |= at_pixel(bitmap, &*cur, width, y, x, a3x, a3y) << 11;
+            t |= at_pixel(bitmap, &*cur, width, y, x, a2x, a2y) << 10;
             t |= px(&*cur, x, -2, -1) << 9;
             t |= px(&*cur, x, -1, -1) << 8;
             t |= px(&*cur, x, 0, -1) << 7;
             t |= px(&*cur, x, 1, -1) << 6;
             t |= px(&*cur, x, 2, -1) << 5;
-            t |= px(&*cur, x, a1x, a1y) << 4;
+            t |= at_pixel(bitmap, &*cur, width, y, x, a1x, a1y) << 4;
             t |= px(&*cur, x, -4, 0) << 3;
             t |= px(&*cur, x, -3, 0) << 2;
             t |= px(&*cur, x, -2, 0) << 1;
@@ -585,32 +603,41 @@ fn decode_template0_general(
 }
 
 /// Sample an adaptive-template pixel at `(x+dx, y+dy)` relative to the pixel
-/// being decoded, reading only causal (already-decoded) data. `dy` in
-/// `{0, -1, -2}` covers every position a valid generic-region AT pixel can
-/// reference; anything further out returns 0 (matches the causal-window
-/// convention used by the fixed template pixels).
+/// being decoded at row `y`, reading only causal (already-decoded) data.
+///
+/// A generic-region AT pixel may reference any earlier row (`Ay` down to −128,
+/// T.88 §7.4.6.3), so — unlike the fixed template pixels, which never reach past
+/// `y−2` — this reads the destination bitmap directly rather than a pair of
+/// cached `prev` rows. `dy == 0` is the current row (only columns `< x` are
+/// decoded); `dy < 0` reads row `y+dy` (all-zero above the top edge); `dy > 0`
+/// (never emitted for a valid AT pixel) reads nothing.
 #[inline(always)]
 fn at_pixel(
+    bitmap: &MonoBitmap,
     cur: &[u32],
-    prev1: &[u32],
-    prev2: &[u32],
     width: u32,
+    y: u32,
     x: i64,
     dx: i64,
     dy: i64,
 ) -> u32 {
     let xx = x + dx;
-    match dy {
-        0 => {
-            if xx < 0 || xx >= x {
-                0
-            } else {
-                sample(cur, width, xx)
-            }
+    if xx < 0 || xx >= width as i64 {
+        return 0;
+    }
+    if dy == 0 {
+        if xx >= x {
+            0
+        } else {
+            sample(cur, width, xx)
         }
-        -1 => sample(prev1, width, xx),
-        -2 => sample(prev2, width, xx),
-        _ => 0,
+    } else {
+        let yy = y as i64 + dy;
+        if yy < 0 || dy > 0 {
+            0
+        } else {
+            sample(bitmap.row(yy as u32), width, xx)
+        }
     }
 }
 
@@ -653,7 +680,7 @@ fn decode_template1(
             t |= sample(&*cur, width, xi - 1);
             t |= sample(&*cur, width, xi - 2) << 1;
             t |= sample(&*cur, width, xi - 3) << 2;
-            t |= at_pixel(&*cur, prev1, prev2, width, xi, a1x, a1y) << 3;
+            t |= at_pixel(bitmap, &*cur, width, y, xi, a1x, a1y) << 3;
             t |= sample(prev1, width, xi + 2) << 4;
             t |= sample(prev1, width, xi + 1) << 5;
             t |= sample(prev1, width, xi) << 6;
@@ -710,7 +737,7 @@ fn decode_template2(
             let mut t = 0u32;
             t |= sample(&*cur, width, xi - 1);
             t |= sample(&*cur, width, xi - 2) << 1;
-            t |= at_pixel(&*cur, prev1, prev2, width, xi, a1x, a1y) << 2;
+            t |= at_pixel(bitmap, &*cur, width, y, xi, a1x, a1y) << 2;
             t |= sample(prev1, width, xi + 1) << 3;
             t |= sample(prev1, width, xi) << 4;
             t |= sample(prev1, width, xi - 1) << 5;
@@ -759,8 +786,8 @@ fn decode_template3(
             *w = 0;
         }
         let prev1: &[u32] = if y >= 1 { bitmap.row(y - 1) } else { zero_row };
-        // Template 3 uses only rows y and y-1; prev2 is never referenced but the
-        // shared AT sampler expects a slice, so pass the zero row.
+        // Template 3's fixed pixels use only rows y and y-1. Its AT pixel may
+        // still reference an earlier row, so `at_pixel` reads the bitmap.
 
         for x in 0..width {
             let xi = x as i64;
@@ -769,7 +796,7 @@ fn decode_template3(
             t |= sample(&*cur, width, xi - 2) << 1;
             t |= sample(&*cur, width, xi - 3) << 2;
             t |= sample(&*cur, width, xi - 4) << 3;
-            t |= at_pixel(&*cur, prev1, zero_row, width, xi, a1x, a1y) << 4;
+            t |= at_pixel(bitmap, &*cur, width, y, xi, a1x, a1y) << 4;
             t |= sample(prev1, width, xi + 1) << 5;
             t |= sample(prev1, width, xi) << 6;
             t |= sample(prev1, width, xi - 1) << 7;
