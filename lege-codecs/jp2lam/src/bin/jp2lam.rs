@@ -435,6 +435,22 @@ fn default_decode_dir_output_dir(input_dir: &Path) -> PathBuf {
     PathBuf::from("output").join(format!("{stem}_decoded_{timestamp}"))
 }
 
+/// Scale one decoded sample to an 8-bit PNG value. `Image` components carry
+/// raw samples at their coded precision, so a 1-bit bitonal scan arrives as
+/// 0/1 and a 16-bit component as 0..65535; clamping either to 0..255 would
+/// write a black page or a blown-out one. Same rounding as the library's
+/// packed-u8 path (`scale_unsigned_to_u8`), so the two outputs agree.
+fn sample_to_u8(sample: i32, precision: u32) -> u8 {
+    let max_sample = (1u32 << precision.clamp(1, 31)) - 1;
+    let sample = sample.clamp(0, max_sample as i32) as u32;
+    if max_sample == 255 {
+        sample as u8
+    } else {
+        ((u64::from(sample) * 255 + u64::from(max_sample) / 2) / u64::from(max_sample.max(1)))
+            .min(255) as u8
+    }
+}
+
 fn write_image_png(image: &Image, output_path: &Path) -> Result<(), String> {
     match image.colorspace {
         ColorSpace::Gray => write_gray_png(image, output_path),
@@ -470,9 +486,9 @@ fn write_cmyk_png(image: &Image, output_path: &Path) -> Result<(), String> {
     }
     let mut bytes = Vec::with_capacity(pixel_count * 3);
     for i in 0..pixel_count {
-        let kk = 255 - k[i].clamp(0, 255);
-        for ch in [c, m, y] {
-            let inv = 255 - ch[i].clamp(0, 255);
+        let kk = 255 - i32::from(sample_to_u8(k[i], image.components[3].precision));
+        for (index, ch) in [c, m, y].into_iter().enumerate() {
+            let inv = 255 - i32::from(sample_to_u8(ch[i], image.components[index].precision));
             bytes.push(((inv * kk) / 255) as u8);
         }
     }
@@ -490,7 +506,7 @@ fn write_gray_png(image: &Image, output_path: &Path) -> Result<(), String> {
     let bytes = component
         .data
         .iter()
-        .map(|&sample| sample.clamp(0, 255) as u8)
+        .map(|&sample| sample_to_u8(sample, component.precision))
         .collect::<Vec<_>>();
     let png = GrayImage::from_raw(image.width, image.height, bytes).ok_or_else(|| {
         "decoded grayscale component length does not match image dimensions".to_string()
@@ -516,9 +532,9 @@ fn write_rgb_png(image: &Image, output_path: &Path) -> Result<(), String> {
     }
     let mut bytes = Vec::with_capacity(pixel_count * 3);
     for i in 0..pixel_count {
-        bytes.push(r[i].clamp(0, 255) as u8);
-        bytes.push(g[i].clamp(0, 255) as u8);
-        bytes.push(b[i].clamp(0, 255) as u8);
+        for (plane, component) in [r, g, b].into_iter().zip(&image.components) {
+            bytes.push(sample_to_u8(plane[i], component.precision));
+        }
     }
     let png = RgbImage::from_raw(image.width, image.height, bytes).ok_or_else(|| {
         "decoded RGB component length does not match image dimensions".to_string()

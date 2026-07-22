@@ -1423,9 +1423,9 @@ fn validate_jp2_decode_scope(
             header.width, header.height, codestream.siz.width, codestream.siz.height
         )));
     }
-    if !(8..=16).contains(&header.bits_per_component) {
+    if !(1..=16).contains(&header.bits_per_component) {
         return Err(crate::Jp2LamError::UnsupportedFeature(format!(
-            "unsupported JP2 bit depth: decoder supports 8..=16-bit components, found {} bits",
+            "unsupported JP2 bit depth: decoder supports 1..=16-bit components, found {} bits",
             header.bits_per_component
         )));
     }

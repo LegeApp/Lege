@@ -777,9 +777,15 @@ fn validate_decoder_scope(
     // 15444-1 Annex G / OpenJPEG's `opj_mct_decode`). The single-component
     // rejection below still stands.
     for (idx, component) in siz.components.iter().enumerate() {
-        if !(8..=16).contains(&component.precision) || component.signed {
+        // Sub-8-bit components (bitonal scans are 1-bit, and 2/4-bit palette
+        // images occur) need nothing special from the pipeline: the DC level
+        // shift is 2^(precision-1) and the final scaling to 8-bit output is
+        // `round(sample * 255 / (2^precision - 1))` for any precision, which is
+        // what OpenJPEG's writers do. Only precision 0 and signed samples are
+        // out of scope.
+        if !(1..=16).contains(&component.precision) || component.signed {
             return Err(invalid(format!(
-                "unsupported sample precision: decoder supports unsigned 8..=16-bit samples, component {idx} is {}-bit {}",
+                "unsupported sample precision: decoder supports unsigned 1..=16-bit samples, component {idx} is {}-bit {}",
                 component.precision,
                 if component.signed {
                     "signed"
@@ -1224,6 +1230,40 @@ mod tests {
             1,
         )
         .expect_err("HDR precision should be rejected")
+        .to_string();
+
+        assert!(err.contains("unsupported sample precision"), "{err}");
+    }
+
+    #[test]
+    fn bitonal_precision_is_accepted() {
+        // 1-bit bitonal scans are the largest sub-8-bit class in the corpus.
+        // Nothing downstream needs a special case: the DC level shift is
+        // 2^(precision-1) and the output scaling divides by 2^precision - 1.
+        let mut segments = supported_segments();
+        segments[0] = siz_segment(1, false, 1);
+
+        let header = CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect("1-bit unsigned samples should be accepted");
+
+        assert_eq!(header.siz.components[0].precision, 1);
+    }
+
+    #[test]
+    fn signed_precision_is_still_rejected() {
+        let mut segments = supported_segments();
+        segments[0] = siz_segment(8, true, 1);
+
+        let err = CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect_err("signed samples should be rejected")
         .to_string();
 
         assert!(err.contains("unsupported sample precision"), "{err}");
