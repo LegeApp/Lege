@@ -128,6 +128,22 @@ pub(crate) fn parse_jp2(bytes: &[u8]) -> Result<ParsedJp2<'_>> {
         (Some(_), None) => return Err(invalid("JP2 pclr box without a cmap box")),
         _ => None,
     };
+    // A `pclr` box is authoritative for the number of output channels: OpenJPEG's
+    // `opj_jp2_apply_pclr` expands the index component to the palette's channel
+    // count regardless of the enumerated `colr`, which some encoders leave
+    // inconsistent (e.g. a greyscale `colr` in front of a 4-column palette, with
+    // a second vendor `colr`). Align the container colour space to the palette
+    // channel count so the expanded channels pass through and match OpenJPEG,
+    // instead of rejecting the stream on the colr/pclr disagreement. A count with
+    // no standard enumerated space is left for the decode-scope check to reject.
+    if let Some(palette) = &header.palette {
+        header.colorspace = match palette.channel_count() {
+            1 => ColorSpace::Gray,
+            3 => ColorSpace::Srgb,
+            4 => ColorSpace::Cmyk,
+            _ => header.colorspace,
+        };
+    }
     Ok(ParsedJp2 { header, codestream })
 }
 
@@ -159,7 +175,7 @@ fn validate_file_type(payload: &[u8]) -> Result<()> {
 fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<&[u8]>)> {
     let mut cursor = BoxCursor::new(payload);
     let mut image_header = None;
-    let mut color_description = None;
+    let mut colr_payload = None;
     let mut pclr_payload = None;
     let mut cmap_payload = None;
     let mut alpha = None;
@@ -171,9 +187,11 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
                     "unsupported JP2 feature: per-component bit-depth box (bpcc)",
                 ));
             }
-            BOX_COLOR_SPEC if color_description.is_none() => {
-                color_description = Some(parse_color_spec(box_.payload)?)
-            }
+            // The colr box is captured raw and resolved after the loop: methods
+            // 3 (any-ICC fallback) and 4 (vendor colour) infer the colour space
+            // from the component count and channel definitions, which are not
+            // fully known until every jp2h box has been seen.
+            BOX_COLOR_SPEC if colr_payload.is_none() => colr_payload = Some(box_.payload),
             // pclr and cmap are captured raw and resolved together after the
             // box loop (either order is legal, and cmap references pclr).
             BOX_PALETTE => pclr_payload = Some(box_.payload),
@@ -187,11 +205,12 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
     }
 
     let mut header = image_header.ok_or_else(|| invalid("JP2 header lacks ihdr box"))?;
+    header.alpha = alpha;
+    let colr = colr_payload.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
     let (colorspace, color_encoding) =
-        color_description.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
+        parse_color_spec(colr, header.component_count, header.alpha.as_ref())?;
     header.colorspace = colorspace;
     header.color_encoding = color_encoding;
-    header.alpha = alpha;
     // pclr/cmap resolution happens in `parse_jp2`: cmap may sit inside jp2h
     // (per spec) OR as a top-level box (as some encoders emit), so both raw
     // payloads are handed back for the caller to combine.
@@ -290,7 +309,23 @@ fn parse_image_header(payload: &[u8]) -> Result<Jp2Header> {
     })
 }
 
-fn parse_color_spec(payload: &[u8]) -> Result<(ColorSpace, ColorEncoding)> {
+/// Resolve a `colr` colour-specification box (ISO/IEC 15444-1 I.5.3.3) to a
+/// decoder colour space plus its container encoding.
+///
+/// METH 1 (enumerated) and METH 2 (restricted ICC) are self-describing. METH 3
+/// (any-ICC) reuses the METH 2 profile-header layout, and METH 4 (vendor
+/// colour) carries no usable profile; for both, when the profile does not name a
+/// Gray/RGB space, the colour space is inferred from the SIZ component count —
+/// the same 1→Gray / 3→sRGB / 4→CMYK mapping the raw-codestream path uses, which
+/// is how OpenJPEG behaves when it ignores a non-regular colr method
+/// (`opj_jp2_read_colr` warns "meth value is not a regular value" and falls back
+/// to the component layout). A 2-component stream has no unambiguous colour
+/// interpretation and is rejected rather than guessed.
+fn parse_color_spec(
+    payload: &[u8],
+    component_count: u16,
+    alpha: Option<&AlphaChannel>,
+) -> Result<(ColorSpace, ColorEncoding)> {
     if payload.len() < 3 {
         return Err(invalid("JP2 colr box is too short"));
     }
@@ -331,7 +366,75 @@ fn parse_color_spec(payload: &[u8]) -> Result<(ColorSpace, ColorEncoding)> {
                 .map_err(|error| invalid(error.to_string()))?;
             Ok((colorspace, encoding))
         }
-        _ => Err(unsupported("unsupported JP2 color specification method")),
+        // METH 3 (any ICC): the payload after method/prec/approx is a full ICC
+        // profile with the same header layout METH 2 reads. Use the profile's
+        // data colour space when it is Gray or RGB (embedding the profile as
+        // METH 2 does); otherwise fall back to component-count inference, the
+        // behaviour OpenJPEG lands on for profiles it cannot map to an
+        // enumerated space.
+        3 => {
+            let profile = payload
+                .get(3..)
+                .ok_or_else(|| invalid("any-ICC colr box is too short"))?;
+            match profile.get(16..20) {
+                // An any-ICC profile need not satisfy the restricted-profile
+                // constraints (XYZ PCS, etc.), so embed it when it happens to
+                // validate as one — preserving the profile like METH 2 — but
+                // fall back to the plain enumerated encoding otherwise. Either
+                // way the decoded colour space (and thus the pixels) is the same;
+                // never reject a decodable stream over profile validation.
+                Some(b"GRAY") => Ok((
+                    ColorSpace::Gray,
+                    ColorEncoding::restricted_icc(profile.to_vec(), IccComponentModel::Gray)
+                        .unwrap_or(ColorEncoding::Gray),
+                )),
+                Some(b"RGB ") => Ok((
+                    ColorSpace::Srgb,
+                    ColorEncoding::restricted_icc(profile.to_vec(), IccComponentModel::Rgb)
+                        .unwrap_or(ColorEncoding::Srgb),
+                )),
+                // Profile too short to name a space, or a non-Gray/RGB model
+                // (e.g. CMYK): defer to the component count.
+                _ => infer_colorspace_from_components(component_count, alpha, "any-ICC (colr METH 3)"),
+            }
+        }
+        // METH 4 (vendor colour): no interoperable profile, so the only signal
+        // is the component layout.
+        4 => infer_colorspace_from_components(component_count, alpha, "vendor colour (colr METH 4)"),
+        other => Err(unsupported(format!(
+            "unsupported JP2 colour specification method {other}"
+        ))),
+    }
+}
+
+/// Infer a colour space from the SIZ component count for colr methods that do
+/// not name one (METH 4, and the METH 3 non-Gray/RGB fallback), mirroring the
+/// raw-codestream default (1→Gray, 3→sRGB, 4→CMYK). Two components are
+/// genuinely ambiguous — gray+alpha vs two colour channels — and grayscale
+/// plus in-data alpha is not reconstructable here, so it is rejected cleanly
+/// rather than guessed; a clean blank beats a wrong colour interpretation.
+fn infer_colorspace_from_components(
+    component_count: u16,
+    alpha: Option<&AlphaChannel>,
+    context: &str,
+) -> Result<(ColorSpace, ColorEncoding)> {
+    match component_count {
+        1 => Ok((ColorSpace::Gray, ColorEncoding::Gray)),
+        3 => Ok((ColorSpace::Srgb, ColorEncoding::Srgb)),
+        4 => Ok((ColorSpace::Cmyk, ColorEncoding::Cmyk)),
+        2 => {
+            let detail = if alpha.is_some() {
+                "grayscale + in-data alpha reconstruction is unsupported"
+            } else {
+                "no enumerated colour space maps to two channels"
+            };
+            Err(unsupported(format!(
+                "ambiguous 2-component JP2 colour ({context}): {detail}"
+            )))
+        }
+        n => Err(unsupported(format!(
+            "{context}: {n}-component JP2 has no default colour space"
+        ))),
     }
 }
 
@@ -666,9 +769,49 @@ mod tests {
 
     #[test]
     fn enum_cs_12_is_cmyk() {
-        let (space, encoding) = parse_color_spec(&enumerated_colr_payload(ENUM_CMYK)).unwrap();
+        let (space, encoding) =
+            parse_color_spec(&enumerated_colr_payload(ENUM_CMYK), 4, None).unwrap();
         assert_eq!(space, ColorSpace::Cmyk);
         assert_eq!(encoding, ColorEncoding::Cmyk);
+    }
+
+    #[test]
+    fn colr_meth4_vendor_infers_space_from_component_count() {
+        // METH 4 carries no usable profile: 1/3/4 components map to Gray/sRGB/
+        // CMYK exactly like a raw codestream, and 2 is rejected as ambiguous.
+        let vendor = |ncomp: u16| parse_color_spec(&[4, 0, 0], ncomp, None);
+        assert_eq!(vendor(1).unwrap().0, ColorSpace::Gray);
+        assert_eq!(vendor(3).unwrap().0, ColorSpace::Srgb);
+        assert_eq!(vendor(4).unwrap().0, ColorSpace::Cmyk);
+        let err = vendor(2).expect_err("2-component is ambiguous").to_string();
+        assert!(err.contains("ambiguous 2-component"), "{err}");
+    }
+
+    #[test]
+    fn colr_meth3_any_icc_uses_gray_rgb_else_component_count() {
+        // METH 3 reuses the restricted-ICC header layout. A profile naming GRAY
+        // or RGB is honoured; a profile that names neither falls back to the
+        // component count (here a 3-component stream → sRGB).
+        let mut gray = vec![3u8, 0, 0];
+        gray.extend_from_slice(&[0u8; 16]);
+        gray.extend_from_slice(b"GRAY");
+        gray.extend_from_slice(&[0u8; 108]);
+        assert_eq!(parse_color_spec(&gray, 1, None).unwrap().0, ColorSpace::Gray);
+
+        let mut rgb = vec![3u8, 0, 0];
+        rgb.extend_from_slice(&[0u8; 16]);
+        rgb.extend_from_slice(b"RGB ");
+        rgb.extend_from_slice(&[0u8; 108]);
+        assert_eq!(parse_color_spec(&rgb, 3, None).unwrap().0, ColorSpace::Srgb);
+
+        let mut cmyk_profile = vec![3u8, 0, 0];
+        cmyk_profile.extend_from_slice(&[0u8; 16]);
+        cmyk_profile.extend_from_slice(b"CMYK");
+        cmyk_profile.extend_from_slice(&[0u8; 108]);
+        assert_eq!(
+            parse_color_spec(&cmyk_profile, 4, None).unwrap().0,
+            ColorSpace::Cmyk
+        );
     }
 
     #[test]
@@ -697,6 +840,38 @@ mod tests {
         let palette = resolve_palette(&pclr, &cmap).unwrap();
         assert_eq!(palette.channel_count(), 3);
         assert_eq!(palette.output_columns[2], vec![12, 22]);
+    }
+
+    #[test]
+    fn palette_channel_count_overrides_inconsistent_colr_space() {
+        // A real-world malformed layout: a greyscale enumerated colr (EnumCS 17)
+        // in front of a 4-column palette. OpenJPEG's opj_jp2_apply_pclr expands
+        // the index to the palette's 4 channels regardless, so the container
+        // colour space must follow the palette (4 → CMYK) rather than the
+        // inconsistent greyscale colr — otherwise the stream is wrongly rejected.
+        let mut jp2h = Vec::new();
+        push_box(&mut jp2h, BOX_IMAGE_HEADER, &ihdr_payload()); // ihdr nc = 1
+        push_box(&mut jp2h, BOX_COLOR_SPEC, &enumerated_colr_payload(ENUM_GRAY));
+        // pclr: NE = 2 entries, NPC = 4 columns, all 8-bit, then 2×4 samples.
+        let mut pclr = vec![0u8, 2, 4, 7, 7, 7, 7];
+        pclr.extend_from_slice(&[10, 11, 12, 13]); // entry 0
+        pclr.extend_from_slice(&[20, 21, 22, 23]); // entry 1
+        push_box(&mut jp2h, BOX_PALETTE, &pclr);
+        // cmap: four channels, each palette-mapped (MTYP = 1) from index comp 0
+        // to columns 0..=3.
+        let cmap = [0u8, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2, 0, 0, 1, 3];
+        push_box(&mut jp2h, BOX_COMPONENT_MAPPING, &cmap);
+
+        let mut bytes = minimal_jp2_header();
+        push_box(&mut bytes, BOX_JP2_HEADER, &jp2h);
+        push_box(&mut bytes, BOX_CODESTREAM, &[0xff, 0x4f]);
+
+        let parsed = parse_jp2(&bytes).expect("palette/colr mismatch must not be rejected");
+        assert_eq!(parsed.header.colorspace, ColorSpace::Cmyk);
+        assert_eq!(
+            parsed.header.palette.as_ref().map(|p| p.channel_count()),
+            Some(4)
+        );
     }
 
     fn push_box(out: &mut Vec<u8>, box_type: [u8; 4], payload: &[u8]) {
