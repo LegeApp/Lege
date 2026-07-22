@@ -318,9 +318,11 @@ fn forward_97_vertical_in_place(
         return;
     }
     if active_height < 2 {
-        for value in &mut data[..active_width] {
-            *value *= INV_K;
-        }
+        // Identity, mirroring the inverse below and OpenJPEG's
+        // `opj_dwt_encode_and_deinterleave_v_real`, which returns on
+        // `height == 1` without scaling. The old INV_K/K pair round-tripped
+        // through our own encoder but did not match streams from conformant
+        // encoders, which leave a one-row resolution untouched.
         return;
     }
 
@@ -896,9 +898,15 @@ fn inverse_97_vertical_in_place(
         return;
     }
     if active_height < 2 {
-        for value in &mut data[..active_width] {
-            *value *= K;
-        }
+        // A one-row resolution is an even-origin low-pass-only interval
+        // (sn == 1, dn == 0): Annex F makes the synthesis an identity, and
+        // OpenJPEG's `opj_v8dwt_decode` returns before any scaling for exactly
+        // this case. Applying K here would compound once per degenerate level —
+        // a stream that signals more decomposition levels than its dimensions
+        // need (17 resolutions on 884x1344) passes through five 1x1 levels and
+        // came out with its DC multiplied by K^5 = 2.8158, a washed-out page
+        // with pixel-perfect AC. The horizontal 1-D path already treats this
+        // case as an identity; the two must agree.
         return;
     }
 
@@ -977,8 +985,9 @@ fn interleave_rows(data: &mut [f32], stride: usize, active_width: usize, active_
 mod tests {
     use super::{
         forward_97_1d_in_place, forward_97_1d_with_scratch_phase, forward_97_2d_in_place,
-        forward_97_2d_in_place_at, inverse_97_1d_in_place, inverse_97_1d_with_scratch_phase,
-        inverse_97_2d_in_place, inverse_97_2d_in_place_at,
+        forward_97_2d_in_place_at, forward_97_vertical_in_place, inverse_97_1d_in_place,
+        inverse_97_1d_with_scratch_phase, inverse_97_2d_in_place, inverse_97_2d_in_place_at,
+        inverse_97_vertical_in_place,
     };
 
     const ROUNDTRIP_TOL: f32 = 1e-3;
@@ -1124,6 +1133,24 @@ mod tests {
         assert_ne!(row, [100.0]);
         inverse_97_1d_with_scratch_phase(&mut row, &mut scratch, false, false);
         assert!((row[0] - 100.0).abs() < ROUNDTRIP_TOL);
+    }
+
+    #[test]
+    fn one_row_resolution_is_an_identity_in_both_directions() {
+        // Annex F: an even-origin one-sample interval is already the low-pass
+        // signal, so the split and its synthesis are identities. OpenJPEG's
+        // `opj_dwt_encode_and_deinterleave_v_real` / `opj_v8dwt_decode` both
+        // return on height 1 without scaling. Scaling by K/INV_K here still
+        // round-trips through our own encoder but compounds once per degenerate
+        // level against a conformant stream: a codestream signalling more
+        // resolutions than its dimensions need passes through several 1x1
+        // levels and its DC comes out multiplied by K^n.
+        let original = vec![7.5f32, -3.25, 11.0, 0.0];
+        let mut data = original.clone();
+        forward_97_vertical_in_place(&mut data, 4, 4, 1, false);
+        assert_eq!(data, original, "forward one-row pass must not scale");
+        inverse_97_vertical_in_place(&mut data, 4, 4, 1, false);
+        assert_eq!(data, original, "inverse one-row pass must not scale");
     }
 
     #[test]

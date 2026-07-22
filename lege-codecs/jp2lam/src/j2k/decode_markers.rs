@@ -839,11 +839,10 @@ fn validate_decoder_scope(
     }
     // Tier-2 materializes all five Annex B.12 progression orders, including
     // explicit precinct-position traversal.
-    let max_decompositions = max_dwt_decompositions(siz.width, siz.height);
-    if cod.decomposition_levels > max_decompositions {
+    if cod.decomposition_levels > MAX_DECOMPOSITION_LEVELS {
         return Err(invalid(format!(
-            "COD decomposition levels {} exceed DWT limit {} for image dimensions {}x{}",
-            cod.decomposition_levels, max_decompositions, siz.width, siz.height
+            "COD decomposition levels {} exceed the Annex A maximum of {MAX_DECOMPOSITION_LEVELS}",
+            cod.decomposition_levels
         )));
     }
     if cod.layers == 0 {
@@ -957,19 +956,15 @@ fn code_block_dimension(encoded: u8, axis: &str) -> Result<u32> {
     Ok(1u32 << (u32::from(encoded) + 2))
 }
 
-fn max_dwt_decompositions(width: u32, height: u32) -> u8 {
-    let max_dim = width.max(height);
-    if max_dim <= 1 {
-        return 0;
-    }
-    // Annex F applies the separable transform independently on both axes. Once
-    // one axis reaches a one-sample low-pass interval, later even-origin
-    // decomposition steps on that axis are identities while the longer axis
-    // continues to split. Therefore the usable level count is bounded by the
-    // larger dimension, not the smaller one. `ceil(log2(max_dim))` is the
-    // number of levels needed for both axes to reach one sample.
-    (u32::BITS - (max_dim - 1).leading_zeros()) as u8
-}
+/// The spec's ceiling on `NL` (ISO/IEC 15444-1 Annex A.6.1, `SPcod` byte 0).
+///
+/// There is no *dimension*-derived bound to enforce: a codestream may signal
+/// more decomposition levels than its dimensions need, and those extra levels
+/// are legal degenerate identities — both axes are already one sample, their
+/// HL/LH/HH subbands are empty, and the DWT and Tier-2 pass straight through.
+/// OpenJPEG decodes such streams (17 resolutions on an 884x1344 image occurs in
+/// the corpus), so the only real limit is the syntactic one.
+const MAX_DECOMPOSITION_LEVELS: u8 = 32;
 
 fn reject_unsupported_main_marker(marker: u16) -> Result<()> {
     match marker {
@@ -1063,17 +1058,6 @@ mod tests {
         MARKER_PPT, MARKER_QCC, MARKER_RGN, MARKER_TLM,
     };
 
-    #[test]
-    fn max_dwt_decompositions_uses_ceil_log2() {
-        // `ceil(log2(max_dim))`: the shorter axis may already be a one-sample
-        // identity while the longer axis continues decomposing.
-        assert_eq!(max_dwt_decompositions(256, 256), 8); // 2^8
-        assert_eq!(max_dwt_decompositions(176, 18), 8);
-        assert_eq!(max_dwt_decompositions(176, 16), 8);
-        assert_eq!(max_dwt_decompositions(100, 100), 7); // ceil(log2(100)) = 7
-        assert_eq!(max_dwt_decompositions(1, 512), 9);
-        assert_eq!(max_dwt_decompositions(1, 1), 0);
-    }
 
     #[test]
     fn unsupported_main_marker_fails_fast_with_feature_name() {
@@ -1598,19 +1582,38 @@ mod tests {
     }
 
     #[test]
-    fn excessive_decomposition_levels_fail_before_packet_decode() {
+    fn decomposition_levels_past_the_spec_cap_fail_before_packet_decode() {
         let mut segments = supported_segments();
-        segments[0] = siz_segment_with_size(8, false, 1, 8, 8);
+        segments[1] = cod_segment_with_levels(1, 0, MAX_DECOMPOSITION_LEVELS + 1);
 
         let err = CodestreamHeader::from_marker_segments(
             segments.iter().map(Vec::as_slice),
             tile_header(0),
             1,
         )
-        .expect_err("excessive decomposition levels should fail")
+        .expect_err("decomposition levels past the Annex A cap should fail")
         .to_string();
 
         assert!(err.contains("decomposition levels"), "{err}");
+    }
+
+    #[test]
+    fn degenerate_extra_decomposition_levels_are_accepted() {
+        // More levels than an 8x8 image needs: every level past 3 is an
+        // identity on both axes. OpenJPEG decodes these; so do we.
+        let mut segments = supported_segments();
+        segments[0] = siz_segment_with_size(8, false, 1, 8, 8);
+        segments[1] = cod_segment_with_levels(1, 0, 8);
+        segments[2] = qcd_segment_with_step_count(0x22, 25);
+
+        let header = CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect("degenerate extra decomposition levels should be accepted");
+
+        assert_eq!(header.cod.decomposition_levels, 8);
     }
 
     fn supported_segments() -> Vec<Vec<u8>> {
@@ -1653,6 +1656,20 @@ mod tests {
             body.push(1);
         }
         segment(MARKER_SIZ, &body)
+    }
+
+    fn cod_segment_with_levels(layers: u16, style: u8, levels: u8) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(0);
+        body.push(0);
+        body.extend_from_slice(&layers.to_be_bytes());
+        body.push(0);
+        body.push(levels);
+        body.push(4);
+        body.push(4);
+        body.push(style);
+        body.push(0);
+        segment(MARKER_COD, &body)
     }
 
     fn cod_segment(layers: u16, style: u8) -> Vec<u8> {
