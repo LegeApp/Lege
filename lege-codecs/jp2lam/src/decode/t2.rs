@@ -252,15 +252,18 @@ impl<'a> TilePacketDecoder<'a> {
     /// Decode the complete compressed-data portion of one tile-part.
     ///
     /// Tile-part boundaries are packet boundaries (ISO/IEC 15444-1 B.11), so
-    /// any non-empty trailing fragment is malformed rather than padding.
+    /// any non-empty trailing fragment is malformed rather than padding, and the
+    /// strict "bytes after the packet sequence" error below stands.
     ///
-    /// NOTE: simply ignoring the tail is NOT safe. On the `TPsot==TNsot`
-    /// non-conformant class (which OpenJPEG decodes with a warning) the tail is
-    /// a genuine tile-part chunk that our assembly misplaces; dropping it
-    /// corrupts a code-block band (measured: a 256-row garbage stripe). We keep
-    /// the strict failure — a clean, B3-flagged blank beats a silent partial
-    /// mis-decode. Correct handling needs the non-conformant tile-part boundary
-    /// fix (tracked in DEFERRED.md), not tail tolerance here.
+    /// HISTORY: a `TPsot==TNsot` book scan (Prussian-Line-Infantry) once tripped
+    /// this error on exactly one of its 35 tiles, and simply tolerating the tail
+    /// left a 256-row garbage stripe. The real cause was NOT tile-part assembly
+    /// (every tile is structured identically) but a missing packet-header
+    /// byte-realignment: a packet header ending on 0xFF must consume the
+    /// following bit-stuff byte ([`PacketBioReader::inalign`], Annex B.10.1).
+    /// Without it that one header counted a byte short, sliced its body early,
+    /// and desynchronised the tile — surfacing as a spurious trailing byte here.
+    /// With `inalign` in place the whole stream decodes bit-close to OpenJPEG.
     pub(crate) fn push_tile_part(&mut self, payload: &'a [u8]) -> Result<()> {
         let mut pos = 0usize;
         while pos < payload.len() {
@@ -299,6 +302,11 @@ impl<'a> TilePacketDecoder<'a> {
                 }
             }
 
+            // Realign to the byte boundary that closes the bit-stuffed packet
+            // header (Annex B.10.1), consuming the trailing stuff byte when the
+            // header ends on 0xFF. Done for present and empty packets alike, as
+            // OpenJPEG does.
+            bio.inalign()?;
             let packet_header_bytes = bio.bytes_consumed();
             pos = header_start
                 .checked_add(packet_header_bytes)
@@ -1231,6 +1239,26 @@ impl<'a> PacketBioReader<'a> {
         self.pos
     }
 
+    /// Byte-align the reader at the end of a packet header (ISO/IEC 15444-1
+    /// Annex B.10.1), mirroring OpenJPEG's `opj_bio_inalign`.
+    ///
+    /// The packet header is a bit-stuffed segment: the encoder inserts a stuff
+    /// bit (a leading 0) after every 0xFF so a 0xFF byte is always followed by a
+    /// byte whose top bit is clear. When the *last byte consumed* by the header
+    /// is 0xFF, that trailing stuff byte belongs to the header and must be
+    /// consumed before the packet body begins. Skipping it counts the header one
+    /// byte short and slices the body one byte early, desynchronising every later
+    /// packet of the tile (and leaving a spurious trailing byte). For headers not
+    /// ending on 0xFF this is a no-op, which is why it only bites the rare packet
+    /// whose header happens to terminate on 0xFF.
+    fn inalign(&mut self) -> Result<()> {
+        if self.reg == 0xff {
+            self.bytein()?;
+        }
+        self.ct = 0;
+        Ok(())
+    }
+
     fn bytein(&mut self) -> Result<()> {
         let byte = *self
             .bytes
@@ -1593,6 +1621,35 @@ mod tests {
         // read from bit 6 downwards.
         assert_eq!(bio.read_bit().unwrap(), 0);
         assert_eq!(bio.read_bit().unwrap(), 1);
+    }
+
+    #[test]
+    fn b1010_inalign_consumes_stuff_byte_after_trailing_ff() {
+        // A packet header whose last consumed byte is 0xFF is followed by a
+        // stuff byte (top bit clear) that the header realignment must consume
+        // before the body (Annex B.10.1 / OpenJPEG opj_bio_inalign). Without
+        // this, a header ending on 0xFF is one byte short and the body is
+        // sliced a byte early, desynchronising the tile's remaining packets.
+        let mut bio = PacketBioReader::new(&[0xff, 0x00, 0xab]);
+        assert_eq!(bio.read_bit().unwrap(), 1); // fetches the 0xff byte
+        assert_eq!(bio.bytes_consumed(), 1);
+        bio.inalign().unwrap();
+        assert_eq!(
+            bio.bytes_consumed(),
+            2,
+            "the 0x00 stuff byte after 0xff must be consumed by the header"
+        );
+    }
+
+    #[test]
+    fn b1010_inalign_is_noop_when_header_does_not_end_on_ff() {
+        // The common case: the final header byte is not 0xFF, so realignment
+        // consumes nothing and the byte count is unchanged.
+        let mut bio = PacketBioReader::new(&[0x80, 0xab]);
+        assert_eq!(bio.read_bit().unwrap(), 1);
+        assert_eq!(bio.bytes_consumed(), 1);
+        bio.inalign().unwrap();
+        assert_eq!(bio.bytes_consumed(), 1);
     }
 
     #[test]
