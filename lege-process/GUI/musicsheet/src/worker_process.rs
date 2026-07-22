@@ -372,6 +372,17 @@ pub fn gui_options_to_cli_args(
     args.push("--text-format".into());
     args.push(text_format.into());
 
+    // Sheet music: pin JBIG2 Generic (bitplane) mode for all binarized output.
+    // Symbol substitution is unsafe for music notation — staff lines, noteheads,
+    // beams, and slurs are not cleanly reusable glyphs, so lossy symbol matching
+    // can corrupt the score. The core CLI otherwise defaults to Symbol whenever
+    // layout detection is on (which the music preset keeps enabled), so emit the
+    // flag explicitly whenever text is JBIG2.
+    if text_format == "jbig2" {
+        args.push("--jbig2-mode".into());
+        args.push("generic".into());
+    }
+
     // Cover / image format: always the default photo-cover handling —
     // songbook covers are frequently photographs.
     if matches!(options.output_format, OutputFormat::Pdf) {

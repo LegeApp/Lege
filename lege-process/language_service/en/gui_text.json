@@ -45,6 +45,8 @@
     },
     "tooltips": {
       "add_file_or_folder": "Accepts PDF files, image folders, or image ZIPs.",
+      "add_file": "Opens PDFs or JP2/JPEG image ZIPs.",
+      "add_folder": "Loads a book from a folder of page images.",
       "output_directory": "Choose where processed files are saved. Outputs default to this folder.",
       "base_format": "1bit encoding - JBIG2 or CCITT4",
       "image_output_type": "Original color with CCITT4 encoding, or dithered with JBIG2 encoding",

@@ -102,7 +102,8 @@ pub struct GuiControlsText {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GuiTooltipsText {
-    pub add_file_or_folder: String,
+    pub add_file: String,
+    pub add_folder: String,
     pub output_directory: String,
     pub base_format: String,
     pub image_output_type: String,

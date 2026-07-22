@@ -20,8 +20,10 @@ pub enum ThemeChoice {
 
 impl Default for ThemeChoice {
     fn default() -> Self {
+        // "Sanzo Dark 17" — the picker numbers themes 1-based, so this is the
+        // 0-based index 16 in `sanzowada::SANZO_THEMES`.
         ThemeChoice::Sanzo {
-            index: 0,
+            index: 16,
             dark: true,
         }
     }
@@ -295,11 +297,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn music_sheet_defaults_to_sanzo_dark_one() {
+    fn music_sheet_defaults_to_sanzo_dark_seventeen() {
         assert_eq!(
             AppearanceSettings::default().theme,
             ThemeChoice::Sanzo {
-                index: 0,
+                index: 16,
                 dark: true
             }
         );

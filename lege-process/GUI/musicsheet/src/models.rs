@@ -162,8 +162,11 @@ impl ProcessingOptions {
         match self.output_format {
             OutputFormat::Djvu => "djvu",
             OutputFormat::Epub => "epub",
+            // All binarized output uses JBIG2 (Generic mode is pinned in
+            // worker_process.rs); CCITT4 stays reachable only via the
+            // layout-analysis-off Compatibility path below.
             OutputFormat::Pdf if self.layout_analysis => match self.image_processing_type {
-                ImageProcessingType::Original => "ccitt4",
+                ImageProcessingType::Original => "jbig2",
                 ImageProcessingType::Dithered => "jbig2",
             },
             OutputFormat::Pdf => match self.compression_type {

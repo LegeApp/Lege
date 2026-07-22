@@ -45,6 +45,8 @@
     },
     "tooltips": {
       "add_file_or_folder": "Akzeptiert PDF-Dateien, Bildordner oder ZIP-Dateien mit Bildern.",
+      "add_file": "Öffnet PDFs oder JP2/JPEG-Bild-ZIPs.",
+      "add_folder": "Lädt ein Buch aus einem Ordner mit Seitenbildern.",
       "output_directory": "Wählen Sie, wo verarbeitete Dateien gespeichert werden. Ausgaben werden standardmäßig in diesem Ordner abgelegt.",
       "base_format": "1-Bit-Kodierung – JBIG2 oder CCITT4",
       "image_output_type": "Originalfarbe mit CCITT4-Kodierung oder gerastert mit JBIG2-Kodierung.",

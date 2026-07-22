@@ -27,30 +27,30 @@
 # installed. The equivalent manual container invocation is:
 #
 #   sudo docker run --platform=linux/amd64 \
-#     -v /mnt/Samsung980_1TB/Rust-projects/Lege:/workspace \
-#     -v /mnt/Samsung980_1TB/Rust-projects/djvulibrust:/djvulibrust \
+#     -v /mnt/Samsung980_1TB/Rust-projects/Lege-ecosystem:/workspace \
 #     --rm ghcr.io/shepherdjerred/macos-cross-compiler:latest \
 #     /bin/bash -lc 'rustup toolchain install 1.97.0 --profile minimal \
 #       --target aarch64-apple-darwin --no-self-update && \
-#       RUSTUP_TOOLCHAIN=1.97.0 bash -lc "cd /workspace && scripts/build-macos-app-silicon.sh"'
+#       RUSTUP_TOOLCHAIN=1.97.0 bash -lc "cd /workspace && lege-process/scripts/build-macos-app-silicon.sh"'
 #
 # Inputs / env:
 #   PDFIUM_DYLIB  path to libpdfium.dylib matching the selected architecture
 #                 (Apple Silicon default:
-#                    packaging/macos/silicon/libpdfium.dylib
+#                    lege-process/packaging/macos/silicon/libpdfium.dylib
 #                  Intel default:
-#                    packaging/macos/pdfium-mac-x64/lib/libpdfium.dylib)
+#                    lege-process/packaging/macos/pdfium-mac-x64/lib/libpdfium.dylib)
 #                 Download mac-arm64 or mac-x64 from
 #                 https://github.com/bblanchon/pdfium-binaries/releases
-#   SAUVOLA_ONNX  path to sauvola.onnx      (default: packaging/macos/sauvola.onnx;
-#                 required — the --binarization heavy mode loads it at runtime)
-#   OUT_DIR       output directory (defaults to target/macos-silicon or
-#                 target/macos-intel according to the selected architecture)
+#   SAUVOLA_ONNX  path to sauvola.onnx      (default:
+#                 lege-process/packaging/macos/sauvola.onnx; required — the
+#                 --binarization heavy mode loads it at runtime)
+#   OUT_DIR       output directory (defaults to <workspace>/target/macos-silicon
+#                 or <workspace>/target/macos-intel according to architecture)
 #   CODESIGN_ID   codesign identity — macOS only (default: "-" = ad-hoc)
 #   SKIP_BUILD    set to 1 to repackage already-built target artifacts
 #   SKIP_CLI_BUILD set to 1 to reuse an existing lege CLI binary
 #   DJVU_ENCODER_MANIFEST path to the standalone AGPL encoder's Cargo.toml
-#                 (default: ../djvulibrust/Cargo.toml)
+#                 (default: <workspace>/lege-codecs/djvulibrust/Cargo.toml)
 #   DJVU_ENCODER_LICENSE path to its AGPLv3 license text
 #                 (default: LICENSE next to that Cargo.toml)
 #   AUTO_CONTAINER set to 0 to disable automatic Docker/Podman use on Linux
@@ -77,7 +77,15 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout of the Lege ecosystem workspace:
+#   ROOT         — workspace root (virtual Cargo.toml and cargo target/)
+#   PROCESS_DIR  — the `lege` crate (packaging/ and package Cargo.toml)
+#   MISC_DIR     — shared docs/ and assets/ used by the app bundle
+# This script lives in $PROCESS_DIR/scripts, so ROOT is two levels up.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROCESS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT="$(cd "$PROCESS_DIR/.." && pwd)"
+MISC_DIR="${MISC_DIR:-$ROOT/lege-misc}"
 
 usage() {
   cat <<EOF
@@ -140,13 +148,13 @@ case "$TARGET" in
     EXPECTED_PDFIUM_ARCH="arm64"
     ARCH_LABEL="arm64"
     DEFAULT_OUT_DIR="$ROOT/target/macos-silicon"
-    DEFAULT_PDFIUM_DYLIB="$ROOT/packaging/macos/silicon/libpdfium.dylib"
+    DEFAULT_PDFIUM_DYLIB="$PROCESS_DIR/packaging/macos/silicon/libpdfium.dylib"
     ;;
   x86_64-apple-darwin)
     EXPECTED_PDFIUM_ARCH="x86_64"
     ARCH_LABEL="x86_64"
     DEFAULT_OUT_DIR="$ROOT/target/macos-intel"
-    DEFAULT_PDFIUM_DYLIB="$ROOT/packaging/macos/pdfium-mac-x64/lib/libpdfium.dylib"
+    DEFAULT_PDFIUM_DYLIB="$PROCESS_DIR/packaging/macos/pdfium-mac-x64/lib/libpdfium.dylib"
     ;;
   *)
     echo "Unsupported TARGET: $TARGET" >&2
@@ -157,11 +165,11 @@ esac
 
 OUT_DIR="${OUT_DIR:-$DEFAULT_OUT_DIR}"
 PDFIUM_DYLIB="${PDFIUM_DYLIB:-$DEFAULT_PDFIUM_DYLIB}"
-SAUVOLA_ONNX="${SAUVOLA_ONNX:-$ROOT/packaging/macos/sauvola.onnx}"
+SAUVOLA_ONNX="${SAUVOLA_ONNX:-$PROCESS_DIR/packaging/macos/sauvola.onnx}"
 CODESIGN_ID="${CODESIGN_ID:--}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_CLI_BUILD="${SKIP_CLI_BUILD:-0}"
-DJVU_ENCODER_MANIFEST="${DJVU_ENCODER_MANIFEST:-$ROOT/../djvulibrust/Cargo.toml}"
+DJVU_ENCODER_MANIFEST="${DJVU_ENCODER_MANIFEST:-$ROOT/lege-codecs/djvulibrust/Cargo.toml}"
 DJVU_ENCODER_DIR="$(dirname "$DJVU_ENCODER_MANIFEST")"
 DJVU_ENCODER_TARGET_DIR="${DJVU_ENCODER_TARGET_DIR:-$ROOT/target/djvu-encoder}"
 DJVU_ENCODER_LICENSE="${DJVU_ENCODER_LICENSE:-$(dirname "$DJVU_ENCODER_MANIFEST")/LICENSE}"
@@ -169,7 +177,7 @@ AUTO_CONTAINER="${AUTO_CONTAINER:-1}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}"
 MACOS_CROSS_IMAGE="${MACOS_CROSS_IMAGE:-ghcr.io/shepherdjerred/macos-cross-compiler:latest}"
 MACOS_RUST_TOOLCHAIN="${MACOS_RUST_TOOLCHAIN:-1.97.0}"
-VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/Cargo.toml")"
+VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$PROCESS_DIR/Cargo.toml")"
 APP_NAME="Lege"
 BUNDLE_ID="com.legeapp.lege"
 ARCH_PREFIX="${TARGET%%-*}"
@@ -213,9 +221,8 @@ if [[ "$(uname -s)" != "Darwin" \
     -e CARGO_HOME=/workspace/target/macos-cross-cache/cargo \
     -e RUSTUP_HOME=/workspace/target/macos-cross-cache/rustup \
     -v "$ROOT:/workspace" \
-    -v "$DJVU_ENCODER_DIR:/djvulibrust" \
     "$MACOS_CROSS_IMAGE" \
-    /bin/bash -lc 'rustup toolchain install "$MACOS_RUST_TOOLCHAIN" --profile minimal --target "$TARGET" --no-self-update && export RUSTUP_TOOLCHAIN="$MACOS_RUST_TOOLCHAIN" && cd /workspace && scripts/build-macos-app-silicon.sh'
+    /bin/bash -lc 'rustup toolchain install "$MACOS_RUST_TOOLCHAIN" --profile minimal --target "$TARGET" --no-self-update && export RUSTUP_TOOLCHAIN="$MACOS_RUST_TOOLCHAIN" && cd /workspace && lege-process/scripts/build-macos-app-silicon.sh'
 
   # The cross image does not currently ship rcodesign. Once it returns, use a
   # host installation when available and replace the container's deliberately
@@ -272,7 +279,7 @@ if [[ "$PDFIUM_FILE_INFO" != *"$EXPECTED_PDFIUM_ARCH"* ]]; then
 fi
 
 if [[ -z "$SAUVOLA_ONNX" || ! -f "$SAUVOLA_ONNX" ]]; then
-  echo "Set SAUVOLA_ONNX to the sauvola.onnx model (or place it at packaging/macos/sauvola.onnx)." >&2
+  echo "Set SAUVOLA_ONNX to the sauvola.onnx model (or place it at lege-process/packaging/macos/sauvola.onnx)." >&2
   echo "The --binarization heavy mode loads it at runtime from Contents/Resources." >&2
   exit 1
 fi
@@ -373,30 +380,30 @@ install -m644 "$DJVU_ENCODER_LICENSE" "$RES_DIR/licenses/djvu-encoder-AGPL-3.0.t
 # Store documentation as bundle resources. The relative symlink preserves the
 # same executable-adjacent `docs/` lookup used by the Linux installer without
 # placing non-executable payloads directly in Contents/MacOS.
-install -m644 "$ROOT/docs/documentation.html" \
+install -m644 "$MISC_DIR/docs/documentation.html" \
   "$RES_DIR/docs/documentation.html"
-install -m644 "$ROOT/docs/licenses.html" "$RES_DIR/docs/licenses.html"
+install -m644 "$MISC_DIR/docs/licenses.html" "$RES_DIR/docs/licenses.html"
 ln -s ../Resources/docs "$MACOS_DIR/docs"
 # Lege's macOS runtime search explicitly checks Contents/Frameworks and
 # Contents/Resources, keeping code and data in their conventional locations.
 install -m644 "$PDFIUM_DYLIB" "$FRAMEWORKS_DIR/libpdfium.dylib"
 install -m644 "$SAUVOLA_ONNX" "$RES_DIR/sauvola.onnx"
 
-# Icon: on macOS generate an icns from assets/icon.png; elsewhere copy a
-# pre-made one if provided at packaging/macos/lege.icns.
+# Icon: on macOS generate an icns from lege-misc/assets/icon.png; elsewhere
+# copy the pre-made one from lege-process/packaging/macos/lege.icns.
 if [[ "$(uname -s)" == "Darwin" ]] && command -v iconutil >/dev/null; then
   ICONSET="$(mktemp -d)/lege.iconset"
   mkdir -p "$ICONSET"
   # iconutil recognizes these five base slots plus their @2x variants.
   for size in 16 32 128 256 512; do
-    sips -z $size $size "$ROOT/assets/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-    sips -z $((size*2)) $((size*2)) "$ROOT/assets/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+    sips -z $size $size "$MISC_DIR/assets/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+    sips -z $((size*2)) $((size*2)) "$MISC_DIR/assets/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
   done
   iconutil -c icns "$ICONSET" -o "$RES_DIR/lege.icns"
-elif [[ -f "$ROOT/packaging/macos/lege.icns" ]]; then
-  install -m644 "$ROOT/packaging/macos/lege.icns" "$RES_DIR/lege.icns"
+elif [[ -f "$PROCESS_DIR/packaging/macos/lege.icns" ]]; then
+  install -m644 "$PROCESS_DIR/packaging/macos/lege.icns" "$RES_DIR/lege.icns"
 else
-  echo "(no lege.icns available — bundle ships without an icon; add packaging/macos/lege.icns)" >&2
+  echo "(no lege.icns available — bundle ships without an icon; add lege-process/packaging/macos/lege.icns)" >&2
 fi
 
 ICON_PLIST_ENTRY=""

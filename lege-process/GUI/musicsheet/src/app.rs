@@ -1084,7 +1084,7 @@ fn FileActionRow(state: State<AppState>) -> Element {
         tooltip_wrap_at(
             state,
             TooltipArea::FileActions,
-            music_add_input_tooltip(),
+            music_add_file_tooltip(),
             AttachedPosition::Left,
             Button::new()
                 .width(Size::fill())
@@ -1096,7 +1096,7 @@ fn FileActionRow(state: State<AppState>) -> Element {
         tooltip_wrap_at(
             state,
             TooltipArea::FileActions,
-            music_add_input_tooltip(),
+            music_add_folder_tooltip(),
             AttachedPosition::Left,
             Button::new()
                 .width(Size::fill())
@@ -1309,9 +1309,12 @@ fn music_target_height_tooltip() -> String {
         .replace("1200", &DEFAULT_MUSIC_TARGET_HEIGHT.to_string())
 }
 
-fn music_add_input_tooltip() -> String {
-    "Add File opens a multi-select window for PDF/ZIP files. Add Folder accepts one book made from page images. You can also drag and drop these inputs."
-        .to_string()
+fn music_add_file_tooltip() -> String {
+    GUI_TEXT.interactive.tooltips.add_file.clone()
+}
+
+fn music_add_folder_tooltip() -> String {
+    GUI_TEXT.interactive.tooltips.add_folder.clone()
 }
 
 #[derive(Clone, PartialEq)]
