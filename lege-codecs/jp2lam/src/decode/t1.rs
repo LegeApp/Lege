@@ -117,11 +117,15 @@ pub(crate) fn decode_tile_components_with_scratch(
     stats: &mut StatsSink<'_>,
     scratch: &mut Tier1Scratch,
 ) -> Result<Vec<DecodedTileCoefficients>> {
-    let width =
-        usize::try_from(header.siz.width).map_err(|_| invalid("tile width exceeds usize"))?;
-    let height =
-        usize::try_from(header.siz.height).map_err(|_| invalid("tile height exceeds usize"))?;
     let component_count = header.siz.components.len();
+    // Each component's coefficient plane is sized by ITS tile-component rectangle
+    // (Annex B.2): a subsampled chroma plane (`dx`/`dy` > 1) decodes at half
+    // resolution, while a non-subsampled component's dims equal the tile's, so
+    // the common path is byte-identical. Tier-2 already placed this component's
+    // code blocks in the same component-domain coordinate system.
+    let component_dims = (0..component_count)
+        .map(|component| header.tile_component_dims(component))
+        .collect::<Result<Vec<_>>>()?;
     // Irreversible 9/7 code blocks are dequantized as they are written, so the
     // tile plane is the final `f32` subband image. Reversible 5/3 has no
     // quantization and keeps integer magnitudes for the inverse 5/3 lifting.
@@ -129,18 +133,21 @@ pub(crate) fn decode_tile_components_with_scratch(
     // component reversible while the rest are 9/7, so each plane's storage type
     // follows `transform_for(component)`, not a single tile-wide flag.
     let mut components = (0..component_count)
-        .map(|component| DecodedTileCoefficients {
-            component,
-            width,
-            height,
-            plane: match header.transform_for(component) {
-                WaveletTransform::Irreversible97 => {
-                    CoefficientPlane::Real(vec![0.0f32; width * height])
-                }
-                WaveletTransform::Reversible53 => {
-                    CoefficientPlane::Integer(vec![0i32; width * height])
-                }
-            },
+        .map(|component| {
+            let (cw, ch) = component_dims[component];
+            DecodedTileCoefficients {
+                component,
+                width: cw,
+                height: ch,
+                plane: match header.transform_for(component) {
+                    WaveletTransform::Irreversible97 => {
+                        CoefficientPlane::Real(vec![0.0f32; cw * ch])
+                    }
+                    WaveletTransform::Reversible53 => {
+                        CoefficientPlane::Integer(vec![0i32; cw * ch])
+                    }
+                },
+            }
         })
         .collect::<Vec<_>>();
     // Serial when profiling (per-pass attribution needs one timeline) or when
@@ -165,10 +172,11 @@ pub(crate) fn decode_tile_components_with_scratch(
             let component = components
                 .get_mut(block.component)
                 .ok_or_else(|| invalid("decoded code-block references invalid component"))?;
+            let component_width = component.width;
             let output_start = stats.start();
             write_block_into_plane(
                 &mut component.plane,
-                width,
+                component_width,
                 block.x0,
                 block.y0,
                 params.block_width,
@@ -181,7 +189,7 @@ pub(crate) fn decode_tile_components_with_scratch(
             });
         }
     } else {
-        decode_codeblocks_parallel(header, packets, width, height, &mut components)?;
+        decode_codeblocks_parallel(header, packets, &mut components)?;
     }
 
     Ok(components)
@@ -284,8 +292,9 @@ enum PlanePtr {
 
 struct BlockPlanes {
     planes: Vec<PlanePtr>,
-    tile_width: usize,
-    tile_len: usize,
+    /// Per-component plane width and length, so a subsampled chroma plane uses
+    /// its own (smaller) row stride and bounds rather than the tile's.
+    dims: Vec<(usize, usize)>,
 }
 
 // SAFETY: `BlockPlanes` only ever hands out `&mut` to pairwise-disjoint plane
@@ -296,7 +305,16 @@ unsafe impl Send for BlockPlanes {}
 unsafe impl Sync for BlockPlanes {}
 
 impl BlockPlanes {
-    fn new(components: &mut [DecodedTileCoefficients], width: usize, height: usize) -> Self {
+    fn new(components: &mut [DecodedTileCoefficients]) -> Self {
+        let dims = components
+            .iter()
+            .map(|component| {
+                (
+                    component.width,
+                    component.width.saturating_mul(component.height),
+                )
+            })
+            .collect();
         let planes = components
             .iter_mut()
             .map(|component| match &mut component.plane {
@@ -304,11 +322,7 @@ impl BlockPlanes {
                 CoefficientPlane::Real(values) => PlanePtr::Real(values.as_mut_ptr()),
             })
             .collect();
-        Self {
-            planes,
-            tile_width: width,
-            tile_len: width.saturating_mul(height),
-        }
+        Self { planes, dims }
     }
 
     /// # Safety
@@ -331,12 +345,16 @@ impl BlockPlanes {
             .planes
             .get(component)
             .ok_or_else(|| invalid("decoded code-block references invalid component"))?;
+        let &(tile_width, tile_len) = self
+            .dims
+            .get(component)
+            .ok_or_else(|| invalid("decoded code-block references invalid component"))?;
         for y in 0..block_height {
             let dst = (y0 + y)
-                .checked_mul(self.tile_width)
+                .checked_mul(tile_width)
                 .and_then(|row| row.checked_add(x0))
                 .ok_or_else(|| invalid("block copy offset overflow"))?;
-            if dst.checked_add(block_width).is_none_or(|end| end > self.tile_len) {
+            if dst.checked_add(block_width).is_none_or(|end| end > tile_len) {
                 return Err(invalid("decoded block extends past tile"));
             }
             let src_row = &coefficients[y * block_width..y * block_width + block_width];
@@ -370,11 +388,9 @@ impl BlockPlanes {
 fn decode_codeblocks_parallel(
     header: &CodestreamHeader,
     packets: &DecodedTilePackets<'_>,
-    width: usize,
-    height: usize,
     components: &mut [DecodedTileCoefficients],
 ) -> Result<()> {
-    let planes = BlockPlanes::new(components, width, height);
+    let planes = BlockPlanes::new(components);
     let style = header.cod.code_block_style;
     packets
         .codeblocks

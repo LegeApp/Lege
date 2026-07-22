@@ -888,6 +888,16 @@ fn decode_tile_components(
     // DWT is local, region pixels depend only on retained coefficients and match
     // a full decode exactly.
     if let Some(region) = region {
+        if reconstruction_header
+            .siz
+            .components
+            .iter()
+            .any(|component| component.dx != 1 || component.dy != 1)
+        {
+            return Err(crate::Jp2LamError::InvalidInput(
+                "region decode of chroma-subsampled components is not supported".into(),
+            ));
+        }
         let windows = t2::region_band_windows(
             &reconstruction_header,
             region.x0,

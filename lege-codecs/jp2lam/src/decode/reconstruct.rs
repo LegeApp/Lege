@@ -53,9 +53,37 @@ fn reconstruct_ycbcr_image(
         }
     }
     // `use_mct` is validated false for sYCC, so these are the raw, level-shifted
-    // Y/Cb/Cr planes (no colour transform applied).
+    // Y/Cb/Cr planes (no colour transform applied). Each plane is reconstructed
+    // at its own tile-component resolution, so a 4:2:0 chroma plane comes back
+    // half-width and half-height and must be upsampled to full resolution before
+    // the colour transform.
+    let full_width = header.siz.width as usize;
+    let full_height = header.siz.height as usize;
+    // Capture per-component sample dims before the tiles are consumed.
+    let component_dims = (0..header.siz.components.len())
+        .map(|c| header.tile_component_dims(c))
+        .collect::<Result<Vec<_>>>()?;
     let mut planes = reconstruct_color_planes_finalized(header, tiles, stats)?;
     let start = stats.start();
+    // Nearest-neighbour (2x2 replication) chroma upsampling, matching OpenJPEG's
+    // `sycc420_to_rgb` for images whose origin is (0, 0) (validated). Each chroma
+    // sample fills the `dx`x`dy` block of full-resolution pixels anchored at its
+    // top-left, exactly the samples OpenJPEG feeds to `sycc_to_rgb` per pixel.
+    for c in 1..planes.len() {
+        let comp = header.siz.components[c];
+        if comp.dx != 1 || comp.dy != 1 {
+            let (cw, ch) = component_dims[c];
+            planes[c] = upsample_chroma_nearest(
+                &planes[c],
+                cw,
+                ch,
+                full_width,
+                full_height,
+                usize::from(comp.dx.max(1)),
+                usize::from(comp.dy.max(1)),
+            );
+        }
+    }
     sycc_to_rgb_in_place(&mut planes, header.siz.components[0].precision);
     record_finalize_time(stats, start);
 
@@ -66,27 +94,58 @@ fn reconstruct_ycbcr_image(
             .output_pixels
             .saturating_add(planes.iter().map(|plane| plane.len() as u64).sum::<u64>());
     });
+    // After upsampling + colour transform every plane is a full-resolution sRGB
+    // channel, so the output components are all 1:1 (like OpenJPEG resetting
+    // `comps[1].dx = comps[0].dx` after `sycc420_to_rgb`).
+    let precision = u32::from(header.siz.components[0].precision);
+    let signed = header.siz.components[0].signed;
     Ok(Image {
         width,
         height,
         colorspace: ColorSpace::Srgb,
         components: planes
             .into_iter()
-            .enumerate()
-            .map(|(idx, data)| {
-                let component = header.siz.components[idx];
-                Component {
-                    data,
-                    width,
-                    height,
-                    precision: u32::from(component.precision),
-                    signed: component.signed,
-                    dx: u32::from(component.dx),
-                    dy: u32::from(component.dy),
-                }
+            .map(|data| Component {
+                data,
+                width,
+                height,
+                precision,
+                signed,
+                dx: 1,
+                dy: 1,
             })
             .collect(),
     })
+}
+
+/// Upsample a subsampled chroma plane to full resolution by nearest-neighbour
+/// (block) replication: the sample at chroma coordinate `(cx, cy)` fills the
+/// `dx`×`dy` block of output pixels whose top-left is `(cx*dx, cy*dy)`. For a
+/// (0, 0)-origin image this reproduces OpenJPEG's `sycc420_to_rgb` /
+/// `sycc422_to_rgb` chroma selection exactly (same replicated Cb/Cr fed to each
+/// output pixel), including odd trailing rows/columns, because `cw = ceil(w/dx)`
+/// and `ch = ceil(h/dy)` keep every `x/dx < cw` and `y/dy < ch`.
+fn upsample_chroma_nearest(
+    src: &[i32],
+    cw: usize,
+    ch: usize,
+    full_width: usize,
+    full_height: usize,
+    dx: usize,
+    dy: usize,
+) -> Vec<i32> {
+    debug_assert_eq!(src.len(), cw * ch);
+    let mut out = vec![0i32; full_width * full_height];
+    for y in 0..full_height {
+        let cy = (y / dy).min(ch.saturating_sub(1));
+        let src_row = &src[cy * cw..cy * cw + cw];
+        let out_row = &mut out[y * full_width..y * full_width + full_width];
+        for (x, dst) in out_row.iter_mut().enumerate() {
+            let cx = (x / dx).min(cw.saturating_sub(1));
+            *dst = src_row[cx];
+        }
+    }
+    out
 }
 
 /// In-place inverse sYCC→sRGB on three level-shifted planes (Y, Cb, Cr →
@@ -98,15 +157,21 @@ fn sycc_to_rgb_in_place(planes: &mut [Vec<i32>], precision: u8) {
     let (cb_plane, cr_plane) = rest.split_first_mut().expect("three sYCC planes");
     let cr_plane = &mut cr_plane[0];
     for i in 0..y_plane.len() {
-        let y = y_plane[i] as f32;
-        let cb = (cb_plane[i] - offset) as f32;
-        let cr = (cr_plane[i] - offset) as f32;
-        let r = y + 1.402 * cr;
-        let g = y - 0.344_136 * cb - 0.714_136 * cr;
-        let b = y + 1.772 * cb;
-        y_plane[i] = (r + 0.5).clamp(0.0, max_sample as f32) as i32;
-        cb_plane[i] = (g + 0.5).clamp(0.0, max_sample as f32) as i32;
-        cr_plane[i] = (b + 0.5).clamp(0.0, max_sample as f32) as i32;
+        // Match OpenJPEG's `sycc_to_rgb` bit-for-bit (src/bin/common/color.c):
+        // integer luma with the chroma term cast `(int)` (truncation toward
+        // zero) using the exact coefficients 1.402 / 0.344 / 0.714 / 1.772, then
+        // clamped to [0, 2^prec - 1]. Round-to-nearest or the more precise
+        // 0.344136/0.714136 constants would diverge from the reference by 1-2
+        // codes at chroma-heavy pixels.
+        let y = y_plane[i];
+        let cb = cb_plane[i] - offset;
+        let cr = cr_plane[i] - offset;
+        let r = y + (1.402 * cr as f32) as i32;
+        let g = y - (0.344 * cb as f32 + 0.714 * cr as f32) as i32;
+        let b = y + (1.772 * cb as f32) as i32;
+        y_plane[i] = r.clamp(0, max_sample);
+        cb_plane[i] = g.clamp(0, max_sample);
+        cr_plane[i] = b.clamp(0, max_sample);
     }
 }
 
@@ -131,10 +196,13 @@ fn reconstruct_color_planes_finalized(
             let mut planes = Vec::with_capacity(tiles.len());
             for tile in tiles {
                 let component = tile.component;
+                let (w, h) = (tile.width, tile.height);
                 planes.push(reconstruct_reversible_53_centered(
                     header,
                     tile.into_integer()?,
                     component,
+                    w,
+                    h,
                     stats,
                 )?);
             }
@@ -157,9 +225,12 @@ fn reconstruct_color_planes_finalized(
         WaveletTransform::Irreversible97 => {
             let mut planes = Vec::with_capacity(tiles.len());
             for tile in tiles {
+                let (w, h) = (tile.width, tile.height);
                 planes.push(reconstruct_irreversible_97_centered(
                     header,
                     tile.into_real()?,
+                    w,
+                    h,
                     stats,
                 )?);
             }
@@ -191,15 +262,23 @@ fn reconstruct_aux_component_finalized(
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<i32>> {
     let component = tile.component;
+    let (w, h) = (tile.width, tile.height);
     let precision = header.siz.components[component].precision;
     Ok(match header.transform_for(component) {
         WaveletTransform::Irreversible97 => {
-            let centered = reconstruct_irreversible_97_centered(header, tile.into_real()?, stats)?;
+            let centered =
+                reconstruct_irreversible_97_centered(header, tile.into_real()?, w, h, stats)?;
             finalize_f32_samples(centered, precision)
         }
         WaveletTransform::Reversible53 => {
-            let centered =
-                reconstruct_reversible_53_centered(header, tile.into_integer()?, component, stats)?;
+            let centered = reconstruct_reversible_53_centered(
+                header,
+                tile.into_integer()?,
+                component,
+                w,
+                h,
+                stats,
+            )?;
             finalize_i32_samples(centered, precision)
         }
     })
@@ -286,14 +365,15 @@ pub(crate) fn reconstruct_grayscale_image(
     let samples = match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
             let centered =
-                reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, stats)?;
+                reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, width, height, stats)?;
             let start = stats.start();
             let output = finalize_i32_samples(centered, component.precision);
             record_finalize_time(stats, start);
             output
         }
         WaveletTransform::Irreversible97 => {
-            let centered = reconstruct_irreversible_97_centered(header, tile.into_real()?, stats)?;
+            let centered =
+                reconstruct_irreversible_97_centered(header, tile.into_real()?, width, height, stats)?;
             let start = stats.start();
             let output = finalize_f32_samples(centered, component.precision);
             record_finalize_time(stats, start);
@@ -366,7 +446,7 @@ fn reconstruct_grayscale_u8_profiled(
     let output = match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
             let centered =
-                reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, stats)?;
+                reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, width, height, stats)?;
             let start = stats.start();
             let shift = 1i32 << (component.precision - 1);
             let max_sample = (1i32 << component.precision) - 1;
@@ -383,7 +463,8 @@ fn reconstruct_grayscale_u8_profiled(
             output
         }
         WaveletTransform::Irreversible97 => {
-            let centered = reconstruct_irreversible_97_centered(header, tile.into_real()?, stats)?;
+            let centered =
+                reconstruct_irreversible_97_centered(header, tile.into_real()?, width, height, stats)?;
             let start = stats.start();
             let shift = (1u32 << (component.precision - 1)) as f32;
             let max_sample = (1u32 << component.precision) - 1;
@@ -501,10 +582,13 @@ fn reconstruct_colour_u8(
             let mut planes = Vec::with_capacity(tiles.len());
             for tile in tiles {
                 let component = tile.component;
+                let (w, h) = (tile.width, tile.height);
                 planes.push(reconstruct_reversible_53_centered(
                     header,
                     tile.into_integer()?,
                     component,
+                    w,
+                    h,
                     stats,
                 )?);
             }
@@ -524,9 +608,12 @@ fn reconstruct_colour_u8(
         WaveletTransform::Irreversible97 => {
             let mut planes = Vec::with_capacity(tiles.len());
             for tile in tiles {
+                let (w, h) = (tile.width, tile.height);
                 planes.push(reconstruct_irreversible_97_centered(
                     header,
                     tile.into_real()?,
+                    w,
+                    h,
                     stats,
                 )?);
             }
@@ -553,15 +640,23 @@ fn reconstruct_aux_component_u8(
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
     let component = tile.component;
+    let (w, h) = (tile.width, tile.height);
     let precision = header.siz.components[component].precision;
     Ok(match header.transform_for(component) {
         WaveletTransform::Irreversible97 => {
-            let centered = reconstruct_irreversible_97_centered(header, tile.into_real()?, stats)?;
+            let centered =
+                reconstruct_irreversible_97_centered(header, tile.into_real()?, w, h, stats)?;
             centered_f32_to_u8(centered, precision)
         }
         WaveletTransform::Reversible53 => {
-            let centered =
-                reconstruct_reversible_53_centered(header, tile.into_integer()?, component, stats)?;
+            let centered = reconstruct_reversible_53_centered(
+                header,
+                tile.into_integer()?,
+                component,
+                w,
+                h,
+                stats,
+            )?;
             centered_i32_to_u8(centered, precision)
         }
     })
@@ -638,6 +733,8 @@ fn reconstruct_reversible_53_centered(
     header: &CodestreamHeader,
     mut coefficients: Vec<i32>,
     component: usize,
+    width: usize,
+    height: usize,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<i32>> {
     if header.quant_for(component).style != QuantizationStyle::NoQuantization {
@@ -650,8 +747,8 @@ fn reconstruct_reversible_53_centered(
         if stats.is_enabled() {
             let timing = crate::dwt::inverse_53_2d_in_place_profiled(
                 &mut coefficients,
-                header.siz.width as usize,
-                header.siz.height as usize,
+                width,
+                height,
                 header.cod.decomposition_levels,
                 PRIMITIVES.backend != "scalar",
             )?;
@@ -659,16 +756,16 @@ fn reconstruct_reversible_53_centered(
         } else {
             (PRIMITIVES.dwt.inverse_53_2d)(
                 &mut coefficients,
-                header.siz.width as usize,
-                header.siz.height as usize,
+                width,
+                height,
                 header.cod.decomposition_levels,
             )?;
         }
     } else {
         crate::dwt::inverse_53_2d_in_place_at(
             &mut coefficients,
-            header.siz.width as usize,
-            header.siz.height as usize,
+            width,
+            height,
             header.cod.decomposition_levels,
             header.siz.x_origin as usize,
             header.siz.y_origin as usize,
@@ -708,15 +805,14 @@ fn inverse_rct_centered(planes: &mut [Vec<i32>]) -> Result<()> {
 fn reconstruct_irreversible_97_centered(
     header: &CodestreamHeader,
     mut data: Vec<f32>,
+    width: usize,
+    height: usize,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<f32>> {
     // Dequantization is fused into Tier-1 code-block output (see
     // `t1::dequantize_block_to_tile`): `data` already holds the dequantized
     // `f32` subband samples, so reconstruction goes straight to the inverse DWT
     // with no separate full-image coefficient plane or dequant sweep.
-    let width = header.siz.width as usize;
-    let height = header.siz.height as usize;
-
     let dwt_start = stats.start();
     if header.siz.x_origin == 0 && header.siz.y_origin == 0 {
         if stats.is_enabled() {
@@ -822,10 +918,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sycc_to_rgb_matches_bt601_full_range() {
-        // Neutral chroma (Cb=Cr=128) is a pure grayscale ramp: R=G=B=Y exactly
-        // (the transform OpenJPEG's sycc_to_rgb applies). The BT.601 primaries
-        // round-trip to a dominant channel with the others near zero.
+    fn sycc_to_rgb_matches_openjpeg_reference() {
+        // These are the exact codes OpenJPEG's `sycc_to_rgb`
+        // (src/bin/common/color.c) produces: integer luma plus the `(int)`
+        // (truncate-toward-zero) chroma term with coefficients
+        // 1.402 / 0.344 / 0.714 / 1.772, clamped to [0, 255]. Neutral chroma
+        // (Cb=Cr=128) is a grayscale ramp; the BT.601 primaries saturate one
+        // channel. Hand-computed against the reference formula, not round-to-
+        // nearest, so the decoder stays bit-exact with `opj_decompress`.
         let mut planes = vec![
             vec![0, 128, 255, 76, 150, 29],    // Y
             vec![128, 128, 128, 85, 44, 255],  // Cb
@@ -836,14 +936,48 @@ mod tests {
         assert_eq!(px(0), (0, 0, 0));
         assert_eq!(px(1), (128, 128, 128));
         assert_eq!(px(2), (255, 255, 255));
-        // Red / green / blue primaries: the named channel saturates, the others
-        // stay ≤ 1 (sub-LSB from the forward Y quantization).
-        let (r, g, b) = px(3);
-        assert!(r >= 254 && g <= 1 && b <= 1, "red primary: {:?}", px(3));
-        let (r, g, b) = px(4);
-        assert!(g >= 254 && r <= 1 && b <= 1, "green primary: {:?}", px(4));
-        let (r, g, b) = px(5);
-        assert!(b >= 254 && r <= 1 && g <= 1, "blue primary: {:?}", px(5));
+        assert_eq!(px(3), (254, 1, 0), "red primary");
+        assert_eq!(px(4), (0, 255, 2), "green primary");
+        assert_eq!(px(5), (0, 1, 254), "blue primary");
+    }
+
+    #[test]
+    fn upsample_chroma_nearest_replicates_2x2_blocks() {
+        // A 2x2 chroma plane upsampled to a full 4:2:0 (dx=dy=2) 4x4 image:
+        // every chroma sample fills the 2x2 block anchored at its top-left,
+        // matching OpenJPEG's `sycc420_to_rgb` replication for a (0,0)-origin
+        // image.
+        let src = vec![10, 20, 30, 40];
+        let out = upsample_chroma_nearest(&src, 2, 2, 4, 4, 2, 2);
+        assert_eq!(
+            out,
+            vec![
+                10, 10, 20, 20, //
+                10, 10, 20, 20, //
+                30, 30, 40, 40, //
+                30, 30, 40, 40, //
+            ]
+        );
+    }
+
+    #[test]
+    fn upsample_chroma_nearest_handles_odd_full_dimensions() {
+        // Odd full width/height (5x3): the last column/row reuse the final
+        // chroma column/row, exactly as OpenJPEG's odd-dimension tail does with
+        // `cw = ceil(5/2) = 3`, `ch = ceil(3/2) = 2`.
+        let src = vec![
+            1, 2, 3, //
+            4, 5, 6, //
+        ];
+        let out = upsample_chroma_nearest(&src, 3, 2, 5, 3, 2, 2);
+        assert_eq!(
+            out,
+            vec![
+                1, 1, 2, 2, 3, //
+                1, 1, 2, 2, 3, //
+                4, 4, 5, 5, 6, //
+            ]
+        );
     }
 
     #[test]

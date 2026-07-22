@@ -713,9 +713,9 @@ fn build_band_lookup(
 }
 
 fn build_precinct_grids(header: &CodestreamHeader) -> Result<Vec<Vec<PrecinctGrid>>> {
-    let resolution_bounds = resolution_bounds(header)?;
     let mut grids = Vec::with_capacity(header.siz.components.len());
-    for _component in &header.siz.components {
+    for component in 0..header.siz.components.len() {
+        let resolution_bounds = resolution_bounds(header, component)?;
         let mut component_grids = Vec::with_capacity(resolution_bounds.len());
         for (resolution, &bounds) in resolution_bounds.iter().enumerate() {
             let (pp_x, pp_y, explicit) = if header.cod.uses_precincts {
@@ -872,10 +872,10 @@ fn build_precinct_band_states(
     header: &CodestreamHeader,
     precinct_grids: &[Vec<PrecinctGrid>],
 ) -> Result<Vec<BandState>> {
-    let geometries = band_geometries(header)?;
-    let mut bands =
-        Vec::with_capacity(header.siz.components.len().saturating_mul(geometries.len()));
+    let band_count = 1 + usize::from(header.cod.decomposition_levels) * 3;
+    let mut bands = Vec::with_capacity(header.siz.components.len().saturating_mul(band_count));
     for component in 0..header.siz.components.len() {
+        let geometries = band_geometries(header, component)?;
         for &geometry in &geometries {
             let grid = *precinct_grids
                 .get(component)
@@ -990,41 +990,33 @@ fn build_precinct_band(
     })
 }
 
-fn resolution_bounds(header: &CodestreamHeader) -> Result<Vec<Rect>> {
+fn resolution_bounds(header: &CodestreamHeader, component: usize) -> Result<Vec<Rect>> {
     let levels = header.cod.decomposition_levels;
-    let x1 = header
-        .siz
-        .x_origin
-        .checked_add(header.siz.width)
-        .ok_or_else(|| invalid("tile-component x bound overflow"))?;
-    let y1 = header
-        .siz
-        .y_origin
-        .checked_add(header.siz.height)
-        .ok_or_else(|| invalid("tile-component y bound overflow"))?;
+    // Derive every resolution's bounds from the tile-component reference grid
+    // (`ceil(tile / dx)`), so a subsampled chroma plane sizes its subbands from
+    // its own half-resolution extent. For `dx == dy == 1` these equal the tile
+    // bounds and the geometry is byte-identical to the non-subsampled path.
+    let (tcx0, tcy0, tcx1, tcy1) = header.tile_component_bounds(component)?;
     let mut bounds = Vec::with_capacity(usize::from(levels) + 1);
     for resolution in 0..=levels {
         let scale = 1u32 << (levels - resolution);
         bounds.push(Rect {
-            x0: header.siz.x_origin.div_ceil(scale),
-            y0: header.siz.y_origin.div_ceil(scale),
-            x1: x1.div_ceil(scale),
-            y1: y1.div_ceil(scale),
+            x0: tcx0.div_ceil(scale),
+            y0: tcy0.div_ceil(scale),
+            x1: tcx1.div_ceil(scale),
+            y1: tcy1.div_ceil(scale),
         });
     }
     Ok(bounds)
 }
 
-fn band_geometries(header: &CodestreamHeader) -> Result<Vec<BandGeometry>> {
+fn band_geometries(header: &CodestreamHeader, component: usize) -> Result<Vec<BandGeometry>> {
     let levels = header.cod.decomposition_levels;
-    let bounds = resolution_bounds(header)?;
-    let sizes = resolution_ladder(
-        header.siz.x_origin,
-        header.siz.y_origin,
-        header.siz.width,
-        header.siz.height,
-        levels,
-    );
+    // All subband partitioning is in the tile-component reference grid, so a
+    // subsampled chroma plane's HL/LH/HH bounds shrink with its own extent.
+    let (tcx0, tcy0, tcx1, tcy1) = header.tile_component_bounds(component)?;
+    let bounds = resolution_bounds(header, component)?;
+    let sizes = resolution_ladder(tcx0, tcy0, tcx1 - tcx0, tcy1 - tcy0, levels);
     let mut bands = Vec::with_capacity(1 + usize::from(levels) * 3);
     bands.push(BandGeometry {
         resolution: 0,
@@ -1034,24 +1026,16 @@ fn band_geometries(header: &CodestreamHeader) -> Result<Vec<BandGeometry>> {
         packed_y0: 0,
     });
 
-    let tile_x1 = header
-        .siz
-        .x_origin
-        .checked_add(header.siz.width)
-        .ok_or_else(|| invalid("tile-component x bound overflow"))?;
-    let tile_y1 = header
-        .siz
-        .y_origin
-        .checked_add(header.siz.height)
-        .ok_or_else(|| invalid("tile-component y bound overflow"))?;
+    let tile_x1 = tcx1;
+    let tile_y1 = tcy1;
     for resolution in 1..=levels {
         let decomposition = levels - resolution + 1;
         let scale = 1i64 << decomposition;
         let high_offset = 1i64 << (decomposition - 1);
-        let low_x = subband_axis_bounds(header.siz.x_origin, tile_x1, scale, 0)?;
-        let high_x = subband_axis_bounds(header.siz.x_origin, tile_x1, scale, high_offset)?;
-        let low_y = subband_axis_bounds(header.siz.y_origin, tile_y1, scale, 0)?;
-        let high_y = subband_axis_bounds(header.siz.y_origin, tile_y1, scale, high_offset)?;
+        let low_x = subband_axis_bounds(tcx0, tile_x1, scale, 0)?;
+        let high_x = subband_axis_bounds(tcx0, tile_x1, scale, high_offset)?;
+        let low_y = subband_axis_bounds(tcy0, tile_y1, scale, 0)?;
+        let high_y = subband_axis_bounds(tcy0, tile_y1, scale, high_offset)?;
         let low_size = sizes[usize::from(resolution - 1)];
         bands.push(BandGeometry {
             resolution,
@@ -1116,7 +1100,11 @@ pub(crate) fn region_band_windows(
     region_y1: u32,
     margin: u32,
 ) -> Result<Vec<RegionBandWindow>> {
-    let geometries = band_geometries(header)?;
+    // Region decode over subsampled components is not supported; the caller
+    // rejects it before reaching here. Component 0 (full resolution for the
+    // supported layouts) drives the window geometry, identical to the tile grid
+    // for every non-subsampled component.
+    let geometries = band_geometries(header, 0)?;
     let levels = header.cod.decomposition_levels;
     let margin = i64::from(margin);
 
@@ -1564,7 +1552,7 @@ mod tests {
         let header = precinct_header(ProgressionOrder::Lrcp);
         let grids = build_precinct_grids(&header).unwrap();
         let bands = build_band_states(&header, &grids).unwrap();
-        let geometries = band_geometries(&header).unwrap();
+        let geometries = band_geometries(&header, 0).unwrap();
 
         for (band, geometry) in bands[..geometries.len()].iter().zip(&geometries) {
             let expected_area = u64::from(geometry.bounds.x1 - geometry.bounds.x0)
@@ -1768,6 +1756,73 @@ mod tests {
             coc: Vec::new(),
             comment_count: 0,
         }
+    }
+
+    #[test]
+    fn subsampled_420_sizes_each_component_from_its_own_reference_grid() {
+        // 4:2:0 sYCC: luma (comp 0) full-resolution, chroma (comps 1, 2) at
+        // half width AND half height. Each component's finest-resolution band
+        // geometry must be sized from its tile-component rectangle
+        // (ceil(dim / d)), so the chroma planes decode at half resolution.
+        let mut header = tiny_header();
+        header.siz.width = 40;
+        header.siz.height = 24;
+        header.siz.tile_width = 40;
+        header.siz.tile_height = 24;
+        header.cod.decomposition_levels = 2;
+        header.siz.components = vec![
+            ComponentSiz {
+                precision: 8,
+                signed: false,
+                dx: 1,
+                dy: 1,
+            },
+            ComponentSiz {
+                precision: 8,
+                signed: false,
+                dx: 2,
+                dy: 2,
+            },
+            ComponentSiz {
+                precision: 8,
+                signed: false,
+                dx: 2,
+                dy: 2,
+            },
+        ];
+        header.qcd.steps = vec![
+            QuantizationStep {
+                exponent: 8,
+                mantissa: 0,
+            };
+            7
+        ];
+
+        // Tile-component dims: luma 40x24, chroma 20x12.
+        assert_eq!(header.tile_component_dims(0).unwrap(), (40, 24));
+        assert_eq!(header.tile_component_dims(1).unwrap(), (20, 12));
+        assert_eq!(header.tile_component_dims(2).unwrap(), (20, 12));
+
+        // Every subband (LL at resolution 0 plus HL/LH/HH at each level)
+        // partitions the packed coefficient plane, so the total band area equals
+        // each component's own full extent: 40x24 for luma, 20x12 per chroma.
+        for (component, (cw, ch)) in [(0usize, (40u32, 24u32)), (1, (20, 12)), (2, (20, 12))] {
+            let geometries = band_geometries(&header, component).unwrap();
+            let area: u32 = geometries
+                .iter()
+                .map(|g| (g.bounds.x1 - g.bounds.x0) * (g.bounds.y1 - g.bounds.y0))
+                .sum();
+            assert_eq!(area, cw * ch, "component {component} band area");
+        }
+
+        // The per-component precinct grids and band states build without the
+        // whole tile being assumed full resolution.
+        let grids = build_precinct_grids(&header).unwrap();
+        let bands = build_band_states(&header, &grids).unwrap();
+        // 3 components x (1 + 3*levels) bands.
+        assert_eq!(bands.len(), 3 * (1 + 3 * 2));
+        let packets = build_packet_positions(&header, &grids).unwrap();
+        assert!(!packets.is_empty());
     }
 
     fn precinct_header(order: ProgressionOrder) -> CodestreamHeader {

@@ -49,6 +49,44 @@ impl CodestreamHeader {
             .map(|(_, transform)| *transform)
             .unwrap_or(self.cod.transform)
     }
+
+    /// Tile-component coordinate bounds on the component reference grid
+    /// (ISO/IEC 15444-1 Annex B.2): `tcx0 = ceil(tx0 / dx)`, `tcx1 =
+    /// ceil(tx1 / dx)`, and the same for y with `dy`. The `siz` fields hold the
+    /// tile-local reference-grid rectangle (`x_origin..x_origin+width`), so for a
+    /// non-subsampled component (`dx == dy == 1`) this equals the tile rectangle
+    /// exactly and every existing geometry stays byte-identical.
+    pub(crate) fn tile_component_bounds(&self, component: usize) -> Result<(u32, u32, u32, u32)> {
+        let comp = self
+            .siz
+            .components
+            .get(component)
+            .ok_or_else(|| invalid("component index out of range"))?;
+        let dx = u32::from(comp.dx.max(1));
+        let dy = u32::from(comp.dy.max(1));
+        let x1 = self
+            .siz
+            .x_origin
+            .checked_add(self.siz.width)
+            .ok_or_else(|| invalid("tile-component x bound overflow"))?;
+        let y1 = self
+            .siz
+            .y_origin
+            .checked_add(self.siz.height)
+            .ok_or_else(|| invalid("tile-component y bound overflow"))?;
+        Ok((
+            self.siz.x_origin.div_ceil(dx),
+            self.siz.y_origin.div_ceil(dy),
+            x1.div_ceil(dx),
+            y1.div_ceil(dy),
+        ))
+    }
+
+    /// Tile-component sample dimensions `(width, height)` for `component`.
+    pub(crate) fn tile_component_dims(&self, component: usize) -> Result<(usize, usize)> {
+        let (x0, y0, x1, y1) = self.tile_component_bounds(component)?;
+        Ok(((x1 - x0) as usize, (y1 - y0) as usize))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -750,10 +788,46 @@ fn validate_decoder_scope(
                 }
             )));
         }
-        if component.dx != 1 || component.dy != 1 {
+    }
+    // Chroma subsampling: the only supported layout is 4:2:0 sYCC — a
+    // three-component scan whose luma (component 0) is full resolution and whose
+    // two chroma planes (components 1, 2) are half-width AND half-height
+    // (dx == dy == 2). Each subsampled chroma plane decodes at its own
+    // `TileComponentRect` size and is upsampled by nearest-neighbour replication
+    // to full resolution before the inverse sYCC colour transform, matching
+    // OpenJPEG's `sycc420_to_rgb`. Any other subsampling combination (4:2:2,
+    // 4:4:0, mixed factors, MCT-coupled subsampling, or subsampling on a 1- or
+    // 4-component image) is not verified against the reference decoder and is
+    // rejected cleanly rather than emitting a plausibly-wrong image.
+    let any_subsampled = siz
+        .components
+        .iter()
+        .any(|component| component.dx != 1 || component.dy != 1);
+    if any_subsampled {
+        // A single tile keeps every component's reference-grid origin at (0, 0),
+        // so chroma upsampling replicates from the top-left with no odd-phase
+        // boundary handling (OpenJPEG's `offx`/`offy` paths). Multi-tile
+        // subsampling is not verified and is rejected.
+        let single_tile = siz.width <= siz.tile_width && siz.height <= siz.tile_height;
+        let is_420_sycc = single_tile
+            && siz.components.len() == 3
+            && !cod.use_mct
+            && siz.components[0].dx == 1
+            && siz.components[0].dy == 1
+            && siz.components[1].dx == 2
+            && siz.components[1].dy == 2
+            && siz.components[2].dx == 2
+            && siz.components[2].dy == 2;
+        if !is_420_sycc {
+            let details = siz
+                .components
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| format!("component {idx} dx={} dy={}", c.dx, c.dy))
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(invalid(format!(
-                "subsampled components are unsupported: component {idx} has dx={} dy={}",
-                component.dx, component.dy
+                "unsupported chroma subsampling: only 4:2:0 sYCC (comp0 1:1, comps 1&2 2:2, no MCT) is implemented; found {details}"
             )));
         }
     }
