@@ -248,7 +248,7 @@ impl Jp2Decoder {
 pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
     let mut stats = StatsSink::disabled();
     // Metadata describes the file as authored, palette and all.
-    let core = parse_jp2_core(bytes, &mut stats, false)?;
+    let core = parse_jp2_core(bytes, &mut stats, false, false)?;
     let first_payload = core.parts.tile_parts[0].payload;
     Ok(DecodeMetadata {
         width: core.header.width,
@@ -435,7 +435,7 @@ fn decode_packed_direct(
     ignore_container_palette: bool,
 ) -> Result<Option<DecodedRaster>> {
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette)?;
+    let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette, true)?;
     let expected_space = match format {
         DecodeOutputFormat::Gray8 | DecodeOutputFormat::GrayA8 => ColorSpace::Gray,
         DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 => ColorSpace::Srgb,
@@ -658,7 +658,7 @@ fn decode_region_request(
 ) -> Result<DecodeResult> {
     let region = request.region.expect("region decode requires a region");
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats, request.ignore_container_palette)?;
+    let core = parse_jp2_core(bytes, &mut stats, request.ignore_container_palette, true)?;
     let reduce_levels = select_reduce_levels(&core.codestream, request.resolution)?;
     let (region_spatial, crop) = project_region(&core.codestream.siz, region, reduce_levels)?;
     drop(core);
@@ -775,7 +775,7 @@ fn decode_jp2_impl(
     scratch: &mut DecodeScratch,
     ignore_container_palette: bool,
 ) -> Result<Image> {
-    let core = parse_jp2_core(bytes, stats, ignore_container_palette)?;
+    let core = parse_jp2_core(bytes, stats, ignore_container_palette, true)?;
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
     // A palettized image decodes as its single index component (grayscale-like)
     // and is expanded to the container's channels afterwards; the codestream
@@ -1049,6 +1049,7 @@ fn parse_jp2_core<'a>(
     bytes: &'a [u8],
     stats: &mut StatsSink<'_>,
     ignore_container_palette: bool,
+    validate: bool,
 ) -> Result<ParsedJp2Core<'a>> {
     // Raw J2K codestream (no JP2 boxes): decode the codestream directly and
     // synthesize the container-level header from SIZ.
@@ -1108,7 +1109,16 @@ fn parse_jp2_core<'a>(
         Some(header) => header,
         None => synthesize_header_from_codestream(&codestream)?,
     };
-    validate_jp2_decode_scope(&header, &codestream)?;
+    // Inspection only describes the file (palette, dimensions, colour space);
+    // the decode-scope preconditions — including the palette channel-count
+    // check — belong to an actual decode. A container whose `pclr` produces a
+    // channel count the JP2 colour space alone cannot interpret (e.g. a
+    // 2-channel palette over Gray) must still be inspectable, so an embedding
+    // format such as PDF `/Indexed` (ISO 32000-1 §7.4.9) can see the palette
+    // exists and request an index-passthrough decode instead.
+    if validate {
+        validate_jp2_decode_scope(&header, &codestream)?;
+    }
     stats.finish(codestream_start, |stats, elapsed| {
         stats.codestream_parse_ns = stats.codestream_parse_ns.saturating_add(elapsed);
     });
@@ -2168,6 +2178,42 @@ mod tests {
         assert_eq!(plain.components[0].data, ignored.components[0].data);
         let expected: Vec<i32> = samples.iter().map(|s| *s as i32).collect();
         assert_eq!(ignored.components[0].data, expected);
+    }
+
+    #[test]
+    fn inspect_reports_a_palette_the_container_space_cannot_interpret() {
+        // A `pclr` producing two channels over a Gray container space has no
+        // valid standalone expansion, but an embedding format (PDF `/Indexed`,
+        // ISO 32000-1 §7.4.9) overrides the space and only needs the raw index.
+        // Inspection must therefore describe the palette instead of rejecting
+        // the file, so the caller can choose an index-passthrough decode — the
+        // dropped cover photo in The-Uyghurs-Strangers-in-Their-Own-Land.
+        let (jp2, samples) = gray_ramp_jp2(32, 32);
+        let palettized = splice_palette(&jp2, 2, |index, column| (index + column) as u8);
+
+        let meta = inspect_jp2(&palettized).expect("inspect must not reject the palette");
+        assert_eq!(meta.container_palette_channels, Some(2));
+
+        // The default (validating) decode still declines it: there is no
+        // standalone reading of a 2-channel Gray palette.
+        assert!(decode_jp2(&palettized).is_err());
+
+        // Index passthrough recovers the raw index samples for the PDF layer.
+        let DecodeResult::Raster(raster) = decode_jp2_request(
+            &palettized,
+            &DecodeRequest {
+                output: DecodeOutputFormat::Gray8,
+                ignore_container_palette: true,
+                ..Default::default()
+            },
+        )
+        .expect("passthrough decode") else {
+            panic!("expected a packed raster");
+        };
+        let rows: Vec<u8> = (0..32usize)
+            .flat_map(|y| raster.data[y * raster.stride..y * raster.stride + 32].to_vec())
+            .collect();
+        assert_eq!(rows, samples, "raw index samples, palette not applied");
     }
 
     #[test]
