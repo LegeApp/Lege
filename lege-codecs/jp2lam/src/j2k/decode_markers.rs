@@ -238,8 +238,9 @@ impl CodestreamHeader {
                 MARKER_QCC => qcc_segments.push(segment),
                 MARKER_COC => coc_segments.push(segment),
                 MARKER_COM => comment_count += 1,
-                // TLM/PLM/PLT length hints are accepted and ignored.
-                MARKER_TLM | MARKER_PLM | MARKER_PLT => {}
+                // TLM/PLM/PLT length hints and the CRG registration hint are
+                // accepted and ignored.
+                MARKER_TLM | MARKER_PLM | MARKER_PLT | MARKER_CRG => {}
                 _ => unreachable!("main marker allowlist accepted an unhandled marker"),
             }
         }
@@ -631,10 +632,19 @@ fn parse_coc(segment: &[u8], component_count: usize, cod: &CodSegment) -> Result
 
     // Accept only a transform-only override; anything that reshapes the Tier-2
     // packet structure is out of scope and must fail cleanly (see the doc note).
+    //
+    // `predictable_termination` is exempt: T.800 Annex D.4.5 makes it a decoder
+    // *error-detection* hint, and this decoder never reads it (it appears
+    // nowhere in Tier-1), so a COC that differs from the COD only in that bit
+    // decodes identically either way. Encoders do emit exactly that (pdf.js
+    // issue11004 sets PTERM on the COD and clears it on the chroma COC);
+    // rejecting it dropped the image and rendered the page blank.
+    let mut coc_style = code_block_style_from_byte(style_byte);
+    coc_style.predictable_termination = cod.code_block_style.predictable_termination;
     if decomposition_levels != cod.decomposition_levels
         || code_block_width != cod.code_block_width
         || code_block_height != cod.code_block_height
-        || code_block_style_from_byte(style_byte) != cod.code_block_style
+        || coc_style != cod.code_block_style
         || uses_precincts != cod.uses_precincts
         || precinct_sizes != cod.precinct_sizes
     {
@@ -766,9 +776,13 @@ fn validate_decoder_scope(
     if siz.width == 0 || siz.height == 0 {
         return Err(invalid("SIZ image dimensions must be non-zero"));
     }
-    if !matches!(siz.components.len(), 1 | 3 | 4) {
+    // 2 components is Gray + an in-data opacity plane (the JP2 `cdef` box marks
+    // which); the container layer decides whether the second plane is a usable
+    // alpha and rejects it there if not, so the codestream check only needs to
+    // let the layout through.
+    if !matches!(siz.components.len(), 1 | 2 | 3 | 4) {
         return Err(invalid(format!(
-            "unsupported component layout: decoder supports 1 (grayscale), 3 (sRGB), or 4 (CMYK) components, found {} components",
+            "unsupported component layout: decoder supports 1 (grayscale), 2 (grayscale + alpha), 3 (sRGB), or 4 (CMYK) components, found {} components",
             siz.components.len()
         )));
     }
@@ -974,12 +988,17 @@ fn reject_unsupported_main_marker(marker: u16) -> Result<()> {
         // and the packet headers, so they are safely ignored (as OpenJPEG does
         // when not indexing).
         MARKER_TLM | MARKER_PLM | MARKER_PLT => Ok(()),
+        // CRG records a sub-sample registration offset for each component. It
+        // is a *display* hint about where each component's samples sit on the
+        // reference grid; it changes no decoded sample value and no packet
+        // structure. OpenJPEG reads it and deliberately applies nothing
+        // (`opj_j2k_read_crg`), so ignoring it matches the reference decoder.
+        MARKER_CRG => Ok(()),
         MARKER_CAP => unsupported_marker(marker, "CAP capabilities marker"),
         MARKER_RGN => unsupported_marker(marker, "RGN region-of-interest marker"),
         MARKER_POC => unsupported_marker(marker, "POC progression-order change marker"),
         MARKER_PPM => unsupported_marker(marker, "PPM packed packet headers"),
         MARKER_PPT => unsupported_marker(marker, "PPT packed packet headers"),
-        MARKER_CRG => unsupported_marker(marker, "CRG component registration marker"),
         _ => Err(unsupported(format!(
             "unsupported codestream marker 0x{marker:04x} in main header"
         ))),
@@ -1059,6 +1078,22 @@ mod tests {
     };
 
 
+    /// CRG is a display-registration hint that changes no sample and no packet
+    /// structure; OpenJPEG reads and ignores it. Rejecting it blanked whole
+    /// pages (corpus 0518325.pdf), so it must be accepted silently.
+    #[test]
+    fn crg_marker_is_accepted_and_ignored() {
+        let mut segments = supported_segments();
+        segments.push(segment(MARKER_CRG, &[0x00, 0x00]));
+
+        CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect("CRG should be ignored, not rejected");
+    }
+
     #[test]
     fn unsupported_main_marker_fails_fast_with_feature_name() {
         let mut segments = supported_segments();
@@ -1078,15 +1113,15 @@ mod tests {
 
     #[test]
     fn unsupported_main_marker_matrix_fails_fast_with_feature_names() {
-        // TLM/PLM/PLT are length hints now accepted and ignored, so they are
-        // deliberately absent from this rejection matrix.
+        // TLM/PLM/PLT are length hints, and CRG is a display-registration hint;
+        // all are now accepted and ignored, so they are deliberately absent
+        // from this rejection matrix.
         for (marker, expected) in [
             (MARKER_CAP, "CAP capabilities marker"),
             (MARKER_RGN, "RGN region-of-interest marker"),
             (MARKER_POC, "POC progression-order change marker"),
             (MARKER_PPM, "PPM packed packet headers"),
             (MARKER_PPT, "PPT packed packet headers"),
-            (MARKER_CRG, "CRG component registration marker"),
         ] {
             let mut segments = supported_segments();
             segments.push(segment(marker, &[0x00, 0x00]));

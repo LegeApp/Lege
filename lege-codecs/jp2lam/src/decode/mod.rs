@@ -76,6 +76,9 @@ pub enum DecodeOutputFormat {
     NativePlanarI32,
     /// Write one packed 8-bit grayscale sample per pixel.
     Gray8,
+    /// Write packed 8-bit grayscale and opacity samples (the codestream must
+    /// carry a `cdef` opacity channel).
+    GrayA8,
     /// Write packed 8-bit red, green, and blue samples.
     Rgb8,
     /// Write packed 8-bit red, green, blue, and opacity samples (the codestream
@@ -91,8 +94,25 @@ impl DecodeOutputFormat {
     fn component_count(self) -> usize {
         match self {
             DecodeOutputFormat::NativePlanarI32 | DecodeOutputFormat::Gray8 => 1,
+            DecodeOutputFormat::GrayA8 => 2,
             DecodeOutputFormat::Rgb8 => 3,
             DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 4,
+        }
+    }
+
+    /// How many leading components form the colour set that shares the
+    /// multiple-component transform. Any further component (a CMYK `K` plane or
+    /// an in-data opacity plane) is auxiliary and is reconstructed under its own
+    /// transform, so this is *not* `component_count().min(3)` — Gray+alpha has
+    /// two output channels but only one colour channel.
+    fn colour_component_count(self) -> usize {
+        match self {
+            DecodeOutputFormat::NativePlanarI32
+            | DecodeOutputFormat::Gray8
+            | DecodeOutputFormat::GrayA8 => 1,
+            DecodeOutputFormat::Rgb8
+            | DecodeOutputFormat::Rgba8
+            | DecodeOutputFormat::Cmyk8 => 3,
         }
     }
 }
@@ -417,7 +437,7 @@ fn decode_packed_direct(
     let mut stats = StatsSink::disabled();
     let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette)?;
     let expected_space = match format {
-        DecodeOutputFormat::Gray8 => ColorSpace::Gray,
+        DecodeOutputFormat::Gray8 | DecodeOutputFormat::GrayA8 => ColorSpace::Gray,
         DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 => ColorSpace::Srgb,
         DecodeOutputFormat::Cmyk8 => ColorSpace::Cmyk,
         DecodeOutputFormat::NativePlanarI32 => return Ok(None),
@@ -425,13 +445,19 @@ fn decode_packed_direct(
     if core.header.palette.is_some() || core.header.colorspace != expected_space {
         return Ok(None);
     }
-    // Rgba8 interleaves a 4th (opacity) plane; without an in-data alpha channel
-    // there is nothing to fill it, so fall back to the planar path.
-    if matches!(format, DecodeOutputFormat::Rgba8) && core.header.alpha.is_none() {
+    // Rgba8/GrayA8 interleave a trailing opacity plane; without an in-data
+    // alpha channel there is nothing to fill it, so fall back to the planar
+    // path.
+    if matches!(
+        format,
+        DecodeOutputFormat::Rgba8 | DecodeOutputFormat::GrayA8
+    ) && core.header.alpha.is_none()
+    {
         return Ok(None);
     }
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
     let channels = format.component_count();
+    let colour_channels = format.colour_component_count();
 
     // Single tile: reconstruct straight into the packed raster (no intermediate
     // planar image), the phase-1/2 fast path.
@@ -449,6 +475,7 @@ fn decode_packed_direct(
             &header,
             expected_space,
             channels,
+            colour_channels,
             components,
             &mut stats,
         )?;
@@ -513,6 +540,7 @@ fn decode_packed_direct(
             &header,
             expected_space,
             channels,
+            colour_channels,
             components,
             &mut stats,
         )?;
@@ -1323,6 +1351,7 @@ fn reduced_axis_bounds(mut start: u32, mut end: u32, reduce_levels: u8) -> (u32,
 fn pack_image_8bit(image: &Image, format: DecodeOutputFormat) -> Result<DecodedRaster> {
     let expected_components = match format {
         DecodeOutputFormat::Gray8 => 1,
+        DecodeOutputFormat::GrayA8 => 2,
         DecodeOutputFormat::Rgb8 => 3,
         DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 4,
         DecodeOutputFormat::NativePlanarI32 => {
@@ -1535,10 +1564,18 @@ fn validate_jp2_decode_scope(
         ));
     }
     if header.colorspace == ColorSpace::Gray && header.component_count != 1 {
-        return Err(crate::Jp2LamError::UnsupportedFeature(format!(
-            "unsupported JP2 component count: decoder currently supports one grayscale component, found {} components",
-            header.component_count
-        )));
+        // Grayscale + a single `cdef` opacity channel on component 1 is a
+        // Gray+alpha image whose alpha the PDF layer applies as an in-data soft
+        // mask (or drops when `/SMaskInData` is 0); accept it. Any other
+        // grayscale + N is still unsupported.
+        let is_gray_alpha = header.component_count == 2
+            && header.alpha.is_some_and(|alpha| alpha.component == 1);
+        if !is_gray_alpha {
+            return Err(crate::Jp2LamError::UnsupportedFeature(format!(
+                "unsupported JP2 component count: decoder currently supports one grayscale component, found {} components",
+                header.component_count
+            )));
+        }
     }
     if header.colorspace == ColorSpace::Srgb && header.component_count != 3 {
         // sRGB + a single `cdef` opacity channel on component 3 is an RGBA image

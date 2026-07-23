@@ -73,26 +73,43 @@ pub fn decode_mmr_into(
         return Ok(());
     }
 
-    let mut row: u32 = 0;
-    let result = decode_g4(data.iter().copied(), width, Some(height), |transitions| {
-        // `decode_g4` never emits more than `height` lines, but guard anyway so
-        // a future change cannot write out of range.
-        if row >= height {
-            return;
-        }
-        let dst = output.row_mut(row);
-        for w in dst.iter_mut() {
-            *w = 0;
-        }
-        // `pels` yields exactly `width` items.
-        for (x, color) in pels(transitions, width).enumerate() {
-            if color == Color::Black {
-                let wi = x >> 5;
-                dst[wi] |= 1u32 << (31 - (x as u32 & 31));
+    let mut run = |src: &[u8], output: &mut MonoBitmap| {
+        let mut row: u32 = 0;
+        let result = decode_g4(src.iter().copied(), width, Some(height), |transitions| {
+            // `decode_g4` never emits more than `height` lines, but guard anyway so
+            // a future change cannot write out of range.
+            if row >= height {
+                return;
             }
-        }
-        row += 1;
-    });
+            let dst = output.row_mut(row);
+            for w in dst.iter_mut() {
+                *w = 0;
+            }
+            // `pels` yields exactly `width` items.
+            for (x, color) in pels(transitions, width).enumerate() {
+                if color == Color::Black {
+                    let wi = x >> 5;
+                    dst[wi] |= 1u32 << (31 - (x as u32 & 31));
+                }
+            }
+            row += 1;
+        });
+        (result, row)
+    };
+
+    let (mut result, _) = run(data, output);
+    if result.is_none() {
+        // T.88 §6.2.6 leaves the EOFB optional, and real encoders (notably the
+        // §6.5.9 Huffman collective bitmaps in scanner output) simply stop after
+        // the last line. `fax`'s decoder needs a terminating EOL to close that
+        // final line, so retry once with an EOFB appended rather than throwing
+        // away an otherwise complete bitmap.
+        let mut padded = Vec::with_capacity(data.len() + 3);
+        padded.extend_from_slice(data);
+        padded.extend_from_slice(&[0x00, 0x10, 0x01]);
+        let (r2, _) = run(&padded, output);
+        result = r2;
+    }
 
     match result {
         Some(()) => Ok(()),
@@ -265,6 +282,39 @@ mod tests {
         roundtrip(40, 12, |_, _| true);
         roundtrip(40, 12, |_, _| false);
         roundtrip(33, 9, |x, _| x < 10);
+    }
+
+    /// A block whose data ends immediately after the last line's codes, with no
+    /// EOFB, is what the Huffman collective bitmaps in real scanner output look
+    /// like. It must decode fully rather than losing the final row.
+    #[test]
+    fn block_without_trailing_eofb_decodes_every_row() {
+        let (width, height) = (12u32, 4u32);
+        let black = |x: u32, y: u32| (x + y) % 3 == 0;
+        let mut encoder = FaxEncoder::new(VecWriter::new());
+        for y in 0..height {
+            let line = (0..width).map(|x| {
+                if black(x, y) {
+                    Color::Black
+                } else {
+                    Color::White
+                }
+            });
+            encoder.encode_line(line, width).unwrap();
+        }
+        let full = encoder.finish().unwrap().finish();
+        // Drop the trailing EOFB the encoder appends: the last 3 bytes carry it
+        // (two EOLs, byte-aligned), leaving a bare run of coded lines.
+        let truncated = &full[..full.len() - 3];
+
+        let limits = DecodeLimits::default();
+        let bm = decode_mmr_bitmap(truncated, width, height, &limits)
+            .expect("EOFB-less block should still decode");
+        for y in 0..height {
+            for x in 0..width {
+                assert_eq!(bm.get(x, y), black(x, y), "pixel ({x},{y}) without EOFB");
+            }
+        }
     }
 
     #[test]

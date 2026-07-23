@@ -597,9 +597,11 @@ struct MergedSegment<'a> {
 fn validate_packet_scope(header: &CodestreamHeader) -> Result<()> {
     // All five Annex B.12 progression orders are materialized into an explicit
     // packet plan, including the precinct-position axis.
-    if !matches!(header.siz.components.len(), 1 | 3 | 4) {
+    // The packet plan is component-count agnostic (it iterates the component
+    // axis); 2 is admitted for Gray + in-data alpha.
+    if !matches!(header.siz.components.len(), 1 | 2 | 3 | 4) {
         return Err(invalid(
-            "only 1-, 3-, and 4-component packet decoding is implemented",
+            "only 1-, 2-, 3-, and 4-component packet decoding is implemented",
         ));
     }
     if header.cod.uses_precincts {

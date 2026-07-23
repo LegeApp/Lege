@@ -20,10 +20,15 @@ pub(crate) fn reconstruct_image_profiled(
 ) -> Result<Image> {
     match colorspace {
         ColorSpace::Gray => {
-            if tiles.len() != 1 {
-                return Err(invalid("grayscale JP2 must decode exactly one component"));
+            // Gray+alpha carries a second `cdef` opacity plane; the planar
+            // output keeps it as a trailing component, exactly like the sRGB
+            // RGBA case, and the PDF layer decides whether to apply it.
+            if !matches!(tiles.len(), 1 | 2) {
+                return Err(invalid(
+                    "grayscale JP2 must decode one component (plus an optional alpha)",
+                ));
             }
-            reconstruct_grayscale_image(header, tiles.into_iter().next().unwrap(), stats)
+            reconstruct_grayscale_image_with_alpha(header, tiles, stats)
         }
         ColorSpace::Srgb => reconstruct_srgb_image(header, tiles, stats),
         ColorSpace::YCbCr => reconstruct_ycbcr_image(header, tiles, stats),
@@ -342,6 +347,48 @@ fn reconstruct_cmyk_image(
     })
 }
 
+/// Reconstruct a grayscale image that may carry a trailing `cdef` opacity
+/// plane (Gray+alpha, `ihdr` component count 2).
+///
+/// The single colour plane takes the normal grayscale path; the alpha plane is
+/// reconstructed independently under its own transform (no colour transform)
+/// and appended, exactly like a CMYK `K` plane or an sRGB alpha plane.
+fn reconstruct_grayscale_image_with_alpha(
+    header: &CodestreamHeader,
+    mut tiles: Vec<DecodedTileCoefficients>,
+    stats: &mut StatsSink<'_>,
+) -> Result<Image> {
+    tiles.sort_by_key(|tile| tile.component);
+    for (idx, tile) in tiles.iter().enumerate() {
+        if tile.component != idx {
+            return Err(invalid("decoded grayscale components are not contiguous"));
+        }
+    }
+    let alpha_tile = if tiles.len() == 2 { tiles.pop() } else { None };
+    let gray = tiles
+        .pop()
+        .ok_or_else(|| invalid("missing decoded grayscale component"))?;
+    let mut image = reconstruct_grayscale_image(header, gray, stats)?;
+    if let Some(alpha) = alpha_tile {
+        let plane = reconstruct_aux_component_finalized(header, alpha, stats)?;
+        let component = header
+            .siz
+            .components
+            .get(1)
+            .ok_or_else(|| invalid("missing alpha component header"))?;
+        image.components.push(Component {
+            data: plane,
+            width: image.width,
+            height: image.height,
+            precision: u32::from(component.precision),
+            signed: component.signed,
+            dx: u32::from(component.dx),
+            dy: u32::from(component.dy),
+        });
+    }
+    Ok(image)
+}
+
 pub(crate) fn reconstruct_grayscale_image(
     header: &CodestreamHeader,
     tile: DecodedTileCoefficients,
@@ -407,13 +454,25 @@ pub(crate) fn reconstruct_packed_u8_profiled(
     header: &CodestreamHeader,
     colorspace: ColorSpace,
     channels: usize,
+    colour_channels: usize,
     tiles: Vec<DecodedTileCoefficients>,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
     match colorspace {
-        ColorSpace::Gray => reconstruct_grayscale_u8_profiled(header, tiles, stats),
-        ColorSpace::Srgb | ColorSpace::Cmyk => {
-            reconstruct_interleaved_u8_profiled(header, colorspace, channels, tiles, stats)
+        // Gray+alpha is still `Gray`, but interleaves two planes, so it takes
+        // the general path with one colour channel and one auxiliary one.
+        ColorSpace::Gray if channels == 1 => {
+            reconstruct_grayscale_u8_profiled(header, tiles, stats)
+        }
+        ColorSpace::Gray | ColorSpace::Srgb | ColorSpace::Cmyk => {
+            reconstruct_interleaved_u8_profiled(
+                header,
+                colorspace,
+                channels,
+                colour_channels,
+                tiles,
+                stats,
+            )
         }
         other => Err(invalid(format!(
             "unsupported packed output colorspace: {other:?}"
@@ -485,10 +544,12 @@ fn reconstruct_grayscale_u8_profiled(
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_interleaved_u8_profiled(
     header: &CodestreamHeader,
     colorspace: ColorSpace,
     channels: usize,
+    colour_channels: usize,
     mut tiles: Vec<DecodedTileCoefficients>,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
@@ -513,12 +574,12 @@ fn reconstruct_interleaved_u8_profiled(
     tiles.truncate(channels);
     let pixel_count = header.siz.width as usize * header.siz.height as usize;
 
-    // Components 0..min(3,channels) are the MCT colour set (uniform transform);
-    // any further component (a CMYK K plane, or an sRGB alpha plane) is
-    // auxiliary and may carry a COC transform override, so scale it from its own
-    // transform. Per-component u8 planes are then interleaved. For a uniform
-    // stream this is byte-identical to a single-transform pass.
-    let colour_count = channels.min(3);
+    // The leading `colour_channels` components are the MCT colour set (uniform
+    // transform); any further component (a CMYK K plane, or an sRGB/Gray alpha
+    // plane) is auxiliary and may carry a COC transform override, so scale it
+    // from its own transform. Per-component u8 planes are then interleaved. For
+    // a uniform stream this is byte-identical to a single-transform pass.
+    let colour_count = colour_channels.min(channels);
     let mut tiles_iter = tiles.into_iter();
     let colour_tiles: Vec<DecodedTileCoefficients> = tiles_iter.by_ref().take(colour_count).collect();
     let mut component_u8 = reconstruct_colour_u8(header, colour_tiles, stats)?;
