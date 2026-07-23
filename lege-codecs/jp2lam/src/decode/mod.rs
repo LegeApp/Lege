@@ -37,6 +37,13 @@ pub struct DecodeMetadata {
     /// The consumer surfaces it as a soft mask (PDF `/SMaskInData`); request
     /// [`DecodeOutputFormat::Rgba8`] to receive the interleaved alpha plane.
     pub in_data_alpha: Option<InDataAlpha>,
+    /// Output channel count of the container's `pclr`/`cmap` palette, when the
+    /// file has one. The single codestream component is an index; `colorspace`
+    /// above already reflects the *expanded* channels. A consumer whose own
+    /// format overrides the colour space (PDF `/Indexed` over `/JPXDecode`)
+    /// should set [`DecodeRequest::ignore_container_palette`] and read the
+    /// index component directly.
+    pub container_palette_channels: Option<u8>,
 }
 
 /// A JPEG 2000 in-codestream opacity channel (from a `cdef` box).
@@ -118,6 +125,17 @@ pub struct DecodeRequest {
     pub output: DecodeOutputFormat,
     pub region: Option<DecodeRegion>,
     pub concurrency: DecodeConcurrency,
+    /// Decode a palettized JP2 to its raw index component instead of expanding
+    /// the container's `pclr`/`cmap` palette.
+    ///
+    /// A JP2 may carry its own palette, but an embedding format can override
+    /// the colour space and supply its own. PDF does exactly that: for a
+    /// `/JPXDecode` image with an `/Indexed` `/ColorSpace`, ISO 32000-1 §7.4.9
+    /// makes the PDF space authoritative, so the codestream's single component
+    /// is an index into the *PDF* palette and the container's palette must not
+    /// be applied. Applying it yields channels the consumer will misread — a
+    /// 3-column `pclr` looks like RGB but may hold DeviceN inks.
+    pub ignore_container_palette: bool,
 }
 
 impl Default for DecodeRequest {
@@ -127,6 +145,7 @@ impl Default for DecodeRequest {
             output: DecodeOutputFormat::NativePlanarI32,
             region: None,
             concurrency: DecodeConcurrency::Serial,
+            ignore_container_palette: false,
         }
     }
 }
@@ -208,7 +227,8 @@ impl Jp2Decoder {
 /// segments needed by packet and Tier-1 decoding.
 pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats)?;
+    // Metadata describes the file as authored, palette and all.
+    let core = parse_jp2_core(bytes, &mut stats, false)?;
     let first_payload = core.parts.tile_parts[0].payload;
     Ok(DecodeMetadata {
         width: core.header.width,
@@ -222,6 +242,11 @@ pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
             component: alpha.component as u16,
             premultiplied: alpha.premultiplied,
         }),
+        container_palette_channels: core
+            .header
+            .palette
+            .as_ref()
+            .map(|palette| palette.channel_count() as u8),
         codestream: core.codestream,
     })
 }
@@ -238,7 +263,7 @@ pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
 pub fn decode_jp2(bytes: &[u8]) -> Result<Image> {
     let mut stats = StatsSink::disabled();
     let mut scratch = DecodeScratch::new();
-    decode_jp2_impl(bytes, DecodeResolution::Full, None, &mut stats, &mut scratch)
+    decode_jp2_impl(bytes, DecodeResolution::Full, None, &mut stats, &mut scratch, false)
 }
 
 /// Decode a JP2/J2K image and return decoder-internal stage attribution.
@@ -251,7 +276,7 @@ pub fn decode_jp2_with_stats(bytes: &[u8]) -> Result<(Image, Jp2DecodeStats)> {
     let total_start = std::time::Instant::now();
     let image = {
         let mut sink = StatsSink::enabled(&mut stats);
-        decode_jp2_impl(bytes, DecodeResolution::Full, None, &mut sink, &mut scratch)?
+        decode_jp2_impl(bytes, DecodeResolution::Full, None, &mut sink, &mut scratch, false)?
     };
     stats.total_ns = u64::try_from(total_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     Ok((image, stats))
@@ -354,13 +379,27 @@ fn decode_jp2_request_with_scratch(
     }
     if request.output != DecodeOutputFormat::NativePlanarI32 {
         if let Some(raster) =
-            decode_packed_direct(bytes, request.resolution, request.output, None, scratch)?
+            decode_packed_direct(
+                bytes,
+                request.resolution,
+                request.output,
+                None,
+                scratch,
+                request.ignore_container_palette,
+            )?
         {
             return Ok(DecodeResult::Raster(raster));
         }
     }
     let mut stats = StatsSink::disabled();
-    let image = decode_jp2_impl(bytes, request.resolution, None, &mut stats, scratch)?;
+    let image = decode_jp2_impl(
+        bytes,
+        request.resolution,
+        None,
+        &mut stats,
+        scratch,
+        request.ignore_container_palette,
+    )?;
     match request.output {
         DecodeOutputFormat::NativePlanarI32 => Ok(DecodeResult::Native(image)),
         format => Ok(DecodeResult::Raster(pack_image_8bit(&image, format)?)),
@@ -373,9 +412,10 @@ fn decode_packed_direct(
     format: DecodeOutputFormat,
     region: Option<RegionSpatial>,
     scratch: &mut DecodeScratch,
+    ignore_container_palette: bool,
 ) -> Result<Option<DecodedRaster>> {
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats)?;
+    let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette)?;
     let expected_space = match format {
         DecodeOutputFormat::Gray8 => ColorSpace::Gray,
         DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 => ColorSpace::Srgb,
@@ -590,7 +630,7 @@ fn decode_region_request(
 ) -> Result<DecodeResult> {
     let region = request.region.expect("region decode requires a region");
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats)?;
+    let core = parse_jp2_core(bytes, &mut stats, request.ignore_container_palette)?;
     let reduce_levels = select_reduce_levels(&core.codestream, request.resolution)?;
     let (region_spatial, crop) = project_region(&core.codestream.siz, region, reduce_levels)?;
     drop(core);
@@ -603,6 +643,7 @@ fn decode_region_request(
             request.output,
             Some(region_spatial),
             scratch,
+            request.ignore_container_palette,
         )? {
             return Ok(DecodeResult::Raster(crop_raster(&raster, crop)?));
         }
@@ -615,6 +656,7 @@ fn decode_region_request(
         Some(region_spatial),
         &mut stats,
         scratch,
+        request.ignore_container_palette,
     )?;
     let cropped = crop_image(&image, crop)?;
     match request.output {
@@ -703,8 +745,9 @@ fn decode_jp2_impl(
     region: Option<RegionSpatial>,
     stats: &mut StatsSink<'_>,
     scratch: &mut DecodeScratch,
+    ignore_container_palette: bool,
 ) -> Result<Image> {
-    let core = parse_jp2_core(bytes, stats)?;
+    let core = parse_jp2_core(bytes, stats, ignore_container_palette)?;
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
     // A palettized image decodes as its single index component (grayscale-like)
     // and is expanded to the container's channels afterwards; the codestream
@@ -974,7 +1017,11 @@ struct ParsedJp2Core<'a> {
 /// begins with SOC directly instead of the JP2 signature box.
 const MARKER_SOC: [u8; 2] = [0xFF, 0x4F];
 
-fn parse_jp2_core<'a>(bytes: &'a [u8], stats: &mut StatsSink<'_>) -> Result<ParsedJp2Core<'a>> {
+fn parse_jp2_core<'a>(
+    bytes: &'a [u8],
+    stats: &mut StatsSink<'_>,
+    ignore_container_palette: bool,
+) -> Result<ParsedJp2Core<'a>> {
     // Raw J2K codestream (no JP2 boxes): decode the codestream directly and
     // synthesize the container-level header from SIZ.
     let (header, codestream_bytes) = if bytes.starts_with(&MARKER_SOC) {
@@ -987,6 +1034,18 @@ fn parse_jp2_core<'a>(bytes: &'a [u8], stats: &mut StatsSink<'_>) -> Result<Pars
         });
         (Some(parsed.header), parsed.codestream)
     };
+    // Dropping the palette here rather than at each expansion site keeps the
+    // rest of the decoder on one path: a palettized codestream carries exactly
+    // one component, so with no palette the image simply *is* that grayscale
+    // plane. `parse_jp2_header` aligns `colorspace` to the palette's channel
+    // count, so that alignment has to be undone too.
+    let header = header.map(|mut header| {
+        if ignore_container_palette && header.palette.is_some() {
+            header.palette = None;
+            header.colorspace = ColorSpace::Gray;
+        }
+        header
+    });
 
     let codestream_start = stats.start();
     let parts = codestream::parse_codestream_view(codestream_bytes)?;
@@ -1935,6 +1994,145 @@ mod tests {
         assert!(image.components[0].data.iter().any(|&sample| sample != 255));
     }
 
+    /// Splice a `pclr`+`cmap` pair into a JP2's `jp2h` box, turning a
+    /// single-component grayscale file into a palettized one whose palette
+    /// expands that component to `columns` channels. This is the shape
+    /// `Tirpitz-and-the-Imperial-German-Navy.pdf` carries: `ihdr` nc=1, a
+    /// 256-entry 3-column `pclr`, and a `cmap` mapping all outputs from
+    /// component 0.
+    fn splice_palette(jp2: &[u8], columns: usize, entry: impl Fn(usize, usize) -> u8) -> Vec<u8> {
+        let mut pclr = Vec::new();
+        pclr.extend_from_slice(&256u16.to_be_bytes());
+        pclr.push(columns as u8);
+        pclr.extend(std::iter::repeat_n(7u8, columns)); // 8-bit unsigned columns
+        for index in 0..256 {
+            for column in 0..columns {
+                pclr.push(entry(index, column));
+            }
+        }
+        let mut cmap = Vec::new();
+        for column in 0..columns {
+            cmap.extend_from_slice(&0u16.to_be_bytes()); // CMP: component 0
+            cmap.push(1); // MTYP: palette mapping
+            cmap.push(column as u8); // PCOL
+        }
+
+        let boxed = |kind: &[u8; 4], payload: &[u8]| {
+            let mut out = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(payload);
+            out
+        };
+        let extra = [boxed(b"pclr", &pclr), boxed(b"cmap", &cmap)].concat();
+
+        // Find jp2h, append the two boxes to it, and grow its length field.
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 8 <= jp2.len() {
+            let len = u32::from_be_bytes(jp2[i..i + 4].try_into().unwrap()) as usize;
+            let kind = &jp2[i + 4..i + 8];
+            let len = if len == 0 { jp2.len() - i } else { len };
+            if kind == b"jp2h" {
+                out.extend_from_slice(&((len + extra.len()) as u32).to_be_bytes());
+                out.extend_from_slice(&jp2[i + 4..i + len]);
+                out.extend_from_slice(&extra);
+            } else {
+                out.extend_from_slice(&jp2[i..i + len]);
+            }
+            i += len;
+        }
+        out
+    }
+
+    fn gray_ramp_jp2(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
+        let samples = (0..height)
+            .flat_map(|y| (0..width).map(move |x| ((x * 7 + y * 11) & 0xff) as u8))
+            .collect::<Vec<_>>();
+        let image = Image::from_gray_bytes(width, height, &samples).expect("source image");
+        let encoded = crate::encode(
+            &image,
+            &crate::EncodeOptions {
+                quality: 100,
+                format: crate::OutputFormat::Jp2,
+                profile: Default::default(),
+                ..Default::default()
+            },
+        )
+        .expect("encode jp2");
+        (encoded, samples)
+    }
+
+    #[test]
+    fn container_palette_expands_the_index_component_by_default() {
+        let (jp2, samples) = gray_ramp_jp2(32, 32);
+        // Palette column c maps index i to `i + c` — so an expanded channel is
+        // recognisably *not* the raw index.
+        let palettized = splice_palette(&jp2, 3, |index, column| (index + column) as u8);
+
+        let meta = inspect_jp2(&palettized).expect("inspect");
+        assert_eq!(meta.container_palette_channels, Some(3));
+        assert_eq!(meta.colorspace, ColorSpace::Srgb, "palette drives the space");
+
+        let decoded = decode_jp2(&palettized).expect("decode");
+        assert_eq!(decoded.components.len(), 3);
+        for (channel, component) in decoded.components.iter().enumerate() {
+            let expected: Vec<i32> = samples
+                .iter()
+                .map(|s| (*s as usize + channel) as u8 as i32)
+                .collect();
+            assert_eq!(component.data, expected, "channel {channel}");
+        }
+    }
+
+    #[test]
+    fn ignoring_the_container_palette_yields_the_raw_index_component() {
+        // PDF `/Indexed` over `/JPXDecode`: §7.4.9 makes the PDF colour space
+        // authoritative, so the consumer wants the index, not the container's
+        // expansion of it. Without this, `Tirpitz-and-the-Imperial-German-Navy`
+        // handed back three channels that looked like RGB but held DeviceN
+        // inks, and the cover portrait was dropped as unpaintable.
+        let (jp2, samples) = gray_ramp_jp2(32, 32);
+        let palettized = splice_palette(&jp2, 3, |index, column| (index + column) as u8);
+
+        let result = decode_jp2_request(
+            &palettized,
+            &DecodeRequest {
+                output: DecodeOutputFormat::Gray8,
+                ignore_container_palette: true,
+                ..Default::default()
+            },
+        )
+        .expect("decode ignoring the palette");
+        let DecodeResult::Raster(raster) = result else {
+            panic!("expected a packed raster");
+        };
+        assert_eq!(raster.format, DecodeOutputFormat::Gray8);
+        let rows: Vec<u8> = (0..32usize)
+            .flat_map(|y| raster.data[y * raster.stride..y * raster.stride + 32].to_vec())
+            .collect();
+        assert_eq!(rows, samples, "raw index samples, palette not applied");
+    }
+
+    #[test]
+    fn ignoring_an_absent_container_palette_changes_nothing() {
+        let (jp2, samples) = gray_ramp_jp2(32, 32);
+        let plain = decode_jp2(&jp2).expect("decode");
+        let ignored = decode_jp2_request(
+            &jp2,
+            &DecodeRequest {
+                ignore_container_palette: true,
+                ..Default::default()
+            },
+        )
+        .expect("decode");
+        let DecodeResult::Native(ignored) = ignored else {
+            panic!("expected a native image");
+        };
+        assert_eq!(plain.components[0].data, ignored.components[0].data);
+        let expected: Vec<i32> = samples.iter().map(|s| *s as i32).collect();
+        assert_eq!(ignored.components[0].data, expected);
+    }
+
     #[test]
     fn decode_jp2_roundtrips_native_gray_lossless() {
         let width = 32;
@@ -2433,6 +2631,7 @@ mod tests {
                     output: DecodeOutputFormat::Rgba8,
                     region: None,
                     concurrency: DecodeConcurrency::Serial,
+                    ignore_container_palette: false,
                 },
             )
             .expect("rgba decode")
@@ -2463,6 +2662,7 @@ mod tests {
                     output: DecodeOutputFormat::Rgb8,
                     region: None,
                     concurrency: DecodeConcurrency::Serial,
+                    ignore_container_palette: false,
                 },
             )
             .expect("rgb decode")
@@ -2788,6 +2988,7 @@ mod tests {
             output,
             region: None,
             concurrency: DecodeConcurrency::Serial,
+            ignore_container_palette: false,
         };
         let full = decode_jp2_request(encoded, &base).expect("full decode");
         let roi = decode_jp2_request(
@@ -2973,6 +3174,7 @@ mod tests {
                         output: format,
                         region: None,
                         concurrency: DecodeConcurrency::Serial,
+                        ignore_container_palette: false,
                     },
                 )
                 .expect("packed multi-tile decode");
@@ -2983,6 +3185,7 @@ mod tests {
                         output: DecodeOutputFormat::NativePlanarI32,
                         region: None,
                         concurrency: DecodeConcurrency::Serial,
+                        ignore_container_palette: false,
                     },
                 )
                 .expect("native multi-tile decode");
