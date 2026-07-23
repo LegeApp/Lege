@@ -422,16 +422,15 @@ fn infer_colorspace_from_components(
         1 => Ok((ColorSpace::Gray, ColorEncoding::Gray)),
         3 => Ok((ColorSpace::Srgb, ColorEncoding::Srgb)),
         4 => Ok((ColorSpace::Cmyk, ColorEncoding::Cmyk)),
-        2 => {
-            let detail = if alpha.is_some() {
-                "grayscale + in-data alpha reconstruction is unsupported"
-            } else {
-                "no enumerated colour space maps to two channels"
-            };
-            Err(unsupported(format!(
-                "ambiguous 2-component JP2 colour ({context}): {detail}"
-            )))
-        }
+        // Two components is Gray plus one auxiliary plane. Which it is —
+        // opacity, or a second colorant — is genuinely ambiguous here, and JP2
+        // has no 2-channel enumerated space to name it, so report Gray and hand
+        // both planes to the consumer. For a PDF that is the right answer
+        // either way: ISO 32000-1 §7.4.9 makes the PDF `/ColorSpace`
+        // authoritative over the container's, so the caller knows whether the
+        // second plane is a soft mask or a `/DeviceN` colorant. Guessing here
+        // instead cost whole pages: rejecting the stream rendered them blank.
+        2 => Ok((ColorSpace::Gray, ColorEncoding::Gray)),
         n => Err(unsupported(format!(
             "{context}: {n}-component JP2 has no default colour space"
         ))),

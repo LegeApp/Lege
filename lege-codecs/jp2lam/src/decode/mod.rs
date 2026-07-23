@@ -445,14 +445,14 @@ fn decode_packed_direct(
     if core.header.palette.is_some() || core.header.colorspace != expected_space {
         return Ok(None);
     }
-    // Rgba8/GrayA8 interleave a trailing opacity plane; without an in-data
-    // alpha channel there is nothing to fill it, so fall back to the planar
-    // path.
-    if matches!(
-        format,
-        DecodeOutputFormat::Rgba8 | DecodeOutputFormat::GrayA8
-    ) && core.header.alpha.is_none()
-    {
+    // Rgba8 interleaves a 4th (opacity) plane; without an in-data alpha
+    // channel there is nothing to fill it, so fall back to the planar path.
+    // GrayA8 needs only a second *component* — it carries an opacity plane or a
+    // second colorant, and the consumer tells them apart.
+    if matches!(format, DecodeOutputFormat::Rgba8) && core.header.alpha.is_none() {
+        return Ok(None);
+    }
+    if matches!(format, DecodeOutputFormat::GrayA8) && core.header.component_count != 2 {
         return Ok(None);
     }
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
@@ -1564,13 +1564,13 @@ fn validate_jp2_decode_scope(
         ));
     }
     if header.colorspace == ColorSpace::Gray && header.component_count != 1 {
-        // Grayscale + a single `cdef` opacity channel on component 1 is a
-        // Gray+alpha image whose alpha the PDF layer applies as an in-data soft
-        // mask (or drops when `/SMaskInData` is 0); accept it. Any other
-        // grayscale + N is still unsupported.
-        let is_gray_alpha = header.component_count == 2
-            && header.alpha.is_some_and(|alpha| alpha.component == 1);
-        if !is_gray_alpha {
+        // Grayscale + one auxiliary plane on component 1 is accepted: with a
+        // `cdef` opacity marker it is a Gray+alpha image whose alpha the PDF
+        // layer applies as an in-data soft mask (or drops when `/SMaskInData`
+        // is 0); without one it is a second colorant that the PDF
+        // `/ColorSpace` names (§7.4.9). Either way both planes are decoded and
+        // the consumer decides. Any other grayscale + N is still unsupported.
+        if header.component_count != 2 {
             return Err(crate::Jp2LamError::UnsupportedFeature(format!(
                 "unsupported JP2 component count: decoder currently supports one grayscale component, found {} components",
                 header.component_count

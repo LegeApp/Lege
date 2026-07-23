@@ -554,7 +554,9 @@ fn reconstruct_interleaved_u8_profiled(
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
     let decoded = header.siz.components.len();
-    if !matches!(channels, 3 | 4) || tiles.len() != decoded || decoded < channels {
+    // 2 covers Gray + one auxiliary plane (in-data alpha, or a second
+    // `/DeviceN` colorant).
+    if !matches!(channels, 2 | 3 | 4) || tiles.len() != decoded || decoded < channels {
         return Err(invalid(format!(
             "{colorspace:?} packed output requires {channels} of {decoded} decoded components"
         )));
