@@ -10,11 +10,11 @@ mod common;
 use common::oracle;
 use common::pbm::{Pbm, assert_pixels_eq};
 
+use jbig2enc_rust::decode::error::{DecodeError, UnsupportedFeature};
 use jbig2enc_rust::decode::{
     DecodeOptions, DecodedGlobals, DecoderContext, decode_embedded, decode_embedded_with_globals,
     decode_file, decode_globals,
 };
-use jbig2enc_rust::decode::error::{DecodeError, UnsupportedFeature};
 use jbig2enc_rust::jbig2structs::Jbig2Config;
 use jbig2enc_rust::shared::bitmap::MonoBitmap;
 use jbig2enc_rust::{
@@ -50,21 +50,27 @@ enum Mode {
 fn encode_standalone(mode: Mode, img: &Pbm) -> Vec<u8> {
     let (w, h) = (img.width, img.height);
     match mode {
-        Mode::Generic => encode_single_image(&img.pixels, w, h, false)
-            .expect("encode generic standalone")
-            .page_data,
-        Mode::Lossless => encode_single_image_lossless(&img.pixels, w, h, false)
-            .expect("encode lossless standalone")
-            .page_data,
+        Mode::Generic => {
+            encode_single_image(&img.pixels, w, h, false)
+                .expect("encode generic standalone")
+                .page_data
+        }
+        Mode::Lossless => {
+            encode_single_image_lossless(&img.pixels, w, h, false)
+                .expect("encode lossless standalone")
+                .page_data
+        }
     }
 }
 
 fn encode_embedded(mode: Mode, img: &Pbm) -> Vec<u8> {
     let (w, h) = (img.width, img.height);
     match mode {
-        Mode::Generic => encode_single_image(&img.pixels, w, h, true)
-            .expect("encode generic embedded")
-            .page_data,
+        Mode::Generic => {
+            encode_single_image(&img.pixels, w, h, true)
+                .expect("encode generic embedded")
+                .page_data
+        }
         Mode::Lossless => {
             let ctx = Jbig2Context::with_lossless_config(true);
             encode_single_image_with_config(&img.pixels, w, h, ctx)
@@ -90,8 +96,8 @@ fn check_standalone(mode: Mode, img: &Pbm, label: &str) {
 fn check_embedded(mode: Mode, img: &Pbm, label: &str) {
     let stream = encode_embedded(mode, img);
     let opts = DecodeOptions::default();
-    let native_bm = decode_embedded(None, &stream, &opts)
-        .unwrap_or_else(|e| panic!("{label} native: {e}"));
+    let native_bm =
+        decode_embedded(None, &stream, &opts).unwrap_or_else(|e| panic!("{label} native: {e}"));
     let native = mono_to_pbm(&native_bm);
     assert_pixels_eq(img, &native, &format!("{label} native vs original"));
 
@@ -104,7 +110,10 @@ fn check_embedded(mode: Mode, img: &Pbm, label: &str) {
 fn fixtures() -> Vec<(&'static str, Pbm)> {
     vec![
         ("test_image", load_fixture("tests/fixtures/test_image.pbm")),
-        ("test_image1", load_fixture("tests/fixtures/test_image1.pbm")),
+        (
+            "test_image1",
+            load_fixture("tests/fixtures/test_image1.pbm"),
+        ),
     ]
 }
 
@@ -248,7 +257,10 @@ fn symbol_modes_embedded_globals_vs_jbig2dec() {
 /// never a panic or wrong image.
 #[test]
 fn embedded_without_globals_is_typed_error() {
-    let (_n, img) = fixtures().into_iter().find(|(n, _)| *n == "test_image1").unwrap();
+    let (_n, img) = fixtures()
+        .into_iter()
+        .find(|(n, _)| *n == "test_image1")
+        .unwrap();
     let out = encode_single_image_with_config(
         &img.pixels,
         img.width,
@@ -270,7 +282,10 @@ fn embedded_without_globals_is_typed_error() {
 /// error or bounded result only).
 #[test]
 fn symbol_truncations_never_panic() {
-    let (_n, img) = fixtures().into_iter().find(|(n, _)| *n == "test_image1").unwrap();
+    let (_n, img) = fixtures()
+        .into_iter()
+        .find(|(n, _)| *n == "test_image1")
+        .unwrap();
     let out = encode_single_image_with_config(
         &img.pixels,
         img.width,
@@ -296,7 +311,11 @@ fn load_fixture_array(path: &str) -> Array2<u8> {
     let mut a = Array2::<u8>::zeros((p.height as usize, p.width as usize));
     for y in 0..p.height as usize {
         for x in 0..p.width as usize {
-            a[[y, x]] = if p.pixels[y * p.width as usize + x] != 0 { 255 } else { 0 };
+            a[[y, x]] = if p.pixels[y * p.width as usize + x] != 0 {
+                255
+            } else {
+                0
+            };
         }
     }
     a
@@ -325,7 +344,11 @@ fn multipage_shared_globals_vs_jbig2dec() {
         let native = mono_to_pbm(&bm);
         if let Some(res) = oracle::decode_embedded(split.global_segments.as_deref(), page) {
             let jd = res.unwrap_or_else(|e| panic!("multipage page {i} jbig2dec: {e}"));
-            assert_pixels_eq(&native, &jd, &format!("multipage page {i} native vs jbig2dec"));
+            assert_pixels_eq(
+                &native,
+                &jd,
+                &format!("multipage page {i} native vs jbig2dec"),
+            );
         }
     }
 }
@@ -377,7 +400,11 @@ fn multipage_deterministic_across_thread_counts() {
     }
     for (idx, h) in handles.into_iter().enumerate() {
         let got = h.join().expect("thread join");
-        assert_pixels_eq(&single[idx], &got, &format!("page {idx} 1-thread vs 4-thread"));
+        assert_pixels_eq(
+            &single[idx],
+            &got,
+            &format!("page {idx} 1-thread vs 4-thread"),
+        );
     }
 }
 
@@ -385,10 +412,13 @@ fn multipage_deterministic_across_thread_counts() {
 /// longer matches the export runs must be a typed error, not a panic.
 #[test]
 fn dictionary_export_count_mismatch_is_typed_error() {
-    use jbig2enc_rust::decode::file::parse_auto;
     use jbig2enc_rust::decode::DecodeLimits;
+    use jbig2enc_rust::decode::file::parse_auto;
 
-    let (_n, img) = fixtures().into_iter().find(|(n, _)| *n == "test_image1").unwrap();
+    let (_n, img) = fixtures()
+        .into_iter()
+        .find(|(n, _)| *n == "test_image1")
+        .unwrap();
     let out = encode_single_image_with_config(
         &img.pixels,
         img.width,

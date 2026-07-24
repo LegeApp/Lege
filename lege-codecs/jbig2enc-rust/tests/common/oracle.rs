@@ -47,7 +47,12 @@ pub fn decode_standalone(file_bytes: &[u8]) -> Option<Result<Pbm, String>> {
 /// Decode an embedded page stream (with optional globals) with `jbig2dec -e`.
 pub fn decode_embedded(globals: Option<&[u8]>, page: &[u8]) -> Option<Result<Pbm, String>> {
     let dec = jbig2dec_path()?;
-    Some(run(&dec, globals.into_iter().collect::<Vec<_>>().as_slice(), page, true))
+    Some(run(
+        &dec,
+        globals.into_iter().collect::<Vec<_>>().as_slice(),
+        page,
+        true,
+    ))
 }
 
 fn run(dec: &PathBuf, globals: &[&[u8]], page: &[u8], embedded: bool) -> Result<Pbm, String> {

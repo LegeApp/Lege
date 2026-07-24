@@ -52,7 +52,9 @@ fn seed_streams() -> Vec<Vec<u8>> {
     vec![
         encode_single_image(&px, w, h, false).unwrap().page_data,
         encode_single_image(&px, w, h, true).unwrap().page_data,
-        encode_single_image_lossless(&px, w, h, false).unwrap().page_data,
+        encode_single_image_lossless(&px, w, h, false)
+            .unwrap()
+            .page_data,
     ]
 }
 

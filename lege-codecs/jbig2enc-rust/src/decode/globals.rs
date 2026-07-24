@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use crate::decode::DecodeOptions;
 use crate::decode::context::DecoderContext;
 use crate::decode::error::{DecodeError, UnsupportedFeature};
 use crate::decode::file;
@@ -15,7 +16,6 @@ use crate::decode::page::{decode_pattern_dict_into, decode_symbol_dict_into, dec
 use crate::decode::pattern_dictionary::PatternDictionary;
 use crate::decode::store::SegmentStore;
 use crate::decode::symbol_dictionary::SymbolDictionary;
-use crate::decode::DecodeOptions;
 use crate::shared::segment::SegmentType;
 
 /// Decoded, immutable, shareable global resources (jbig2decplan.md §6).
@@ -55,10 +55,7 @@ impl DecodedGlobals {
 ///
 /// Only symbol-dictionary and metadata segments are expected in globals; a
 /// region or page-information segment there is a typed `Unsupported` error.
-pub fn decode_globals(
-    data: &[u8],
-    options: &DecodeOptions,
-) -> Result<DecodedGlobals, DecodeError> {
+pub fn decode_globals(data: &[u8], options: &DecodeOptions) -> Result<DecodedGlobals, DecodeError> {
     let doc = file::parse_auto_with(data, &options.limits, options.strictness)?;
     let mut ctx = DecoderContext::new();
     let mut store = SegmentStore::new();

@@ -91,7 +91,11 @@ impl SegmentStore {
         globals: Option<&'a SegmentStore>,
     ) -> Option<&'a Arc<MonoBitmap>> {
         for &rn in referred {
-            match self.values.get(&rn).or_else(|| globals.and_then(|g| g.get(rn))) {
+            match self
+                .values
+                .get(&rn)
+                .or_else(|| globals.and_then(|g| g.get(rn)))
+            {
                 Some(DecodedSegment::Region(bm)) => return Some(bm),
                 _ => continue,
             }
@@ -141,7 +145,11 @@ impl SegmentStore {
         globals: Option<&'a SegmentStore>,
     ) -> Result<&'a Arc<PatternDictionary>, DecodeError> {
         for &rn in referred {
-            match self.values.get(&rn).or_else(|| globals.and_then(|g| g.get(rn))) {
+            match self
+                .values
+                .get(&rn)
+                .or_else(|| globals.and_then(|g| g.get(rn)))
+            {
                 Some(DecodedSegment::PatternDictionary(p)) => return Ok(p),
                 _ => continue,
             }

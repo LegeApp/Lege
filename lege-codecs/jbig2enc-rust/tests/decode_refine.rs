@@ -13,9 +13,9 @@
 mod common;
 
 use common::oracle;
-use common::pbm::{assert_pixels_eq, Pbm};
+use common::pbm::{Pbm, assert_pixels_eq};
 
-use jbig2enc_rust::decode::{decode_embedded, decode_file, DecodeOptions};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded, decode_file};
 use jbig2enc_rust::jbig2arith::Jbig2ArithCoder;
 use jbig2enc_rust::jbig2enc::Jbig2Encoder;
 use jbig2enc_rust::jbig2structs::{
@@ -104,7 +104,11 @@ fn refine_mode_rdw_lossless_vs_jbig2dec_and_source() {
             .expect("native decode"),
     );
     let source = Pbm::new(w, h, px);
-    assert_pixels_eq(&source, &native, "refine RDW!=0 native vs source (S-advance)");
+    assert_pixels_eq(
+        &source,
+        &native,
+        "refine RDW!=0 native vs source (S-advance)",
+    );
 
     if let Some(res) = oracle::decode_embedded(out.global_segments.as_deref(), &out.page_streams[0])
     {
@@ -128,12 +132,7 @@ fn bitimage_from(w: u32, h: u32, set_pixels: &[(u32, u32)]) -> BitImage {
 /// §7.4.7): region info (w,h,x,y, ext-comb = REPLACE), refinement flags
 /// (GRTEMPLATE=0, TPGRON=0), AT flags (GRAT nominal (-1,-1) twice), then the
 /// arithmetic refinement payload coding `target` against `reference`.
-fn refinement_region_payload(
-    target: &BitImage,
-    reference: &BitImage,
-    x: u32,
-    y: u32,
-) -> Vec<u8> {
+fn refinement_region_payload(target: &BitImage, reference: &BitImage, x: u32, y: u32) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&(target.width as u32).to_be_bytes());
     p.extend_from_slice(&(target.height as u32).to_be_bytes());
@@ -293,7 +292,11 @@ fn standalone_refinement_region_vs_jbig2dec() {
     let opts = DecodeOptions::default();
     let native = mono_to_pbm(decode_file(&file, &opts).unwrap().first_page().unwrap());
     let expected = expected_page(pw, ph, &reference, 0, 0, &refinements);
-    assert_pixels_eq(&expected, &native, "standalone refinement native vs expected");
+    assert_pixels_eq(
+        &expected,
+        &native,
+        "standalone refinement native vs expected",
+    );
 
     if let Some(res) = oracle::decode_standalone(&file) {
         let jd = res.expect("jbig2dec decode");
@@ -355,13 +358,26 @@ fn two_refinement_regions_get_fresh_contexts() {
     let (pw, ph) = (12u32, 16u32);
     let mut out = Vec::new();
     out.extend_from_slice(
-        &FileHeader { organisation_type: false, unknown_n_pages: false, n_pages: 1 }.to_bytes(),
+        &FileHeader {
+            organisation_type: false,
+            unknown_n_pages: false,
+            n_pages: 1,
+        }
+        .to_bytes(),
     );
     Segment {
         number: 0,
         seg_type: SegmentType::PageInformation,
         page: Some(1),
-        payload: PageInfo { width: pw, height: ph, xres: 300, yres: 300, contains_refinements: true, ..Default::default() }.to_bytes(),
+        payload: PageInfo {
+            width: pw,
+            height: ph,
+            xres: 300,
+            yres: 300,
+            contains_refinements: true,
+            ..Default::default()
+        }
+        .to_bytes(),
         ..Default::default()
     }
     .write_into(&mut out)
@@ -399,7 +415,11 @@ fn two_refinement_regions_get_fresh_contexts() {
     let opts = DecodeOptions::default();
     let native = mono_to_pbm(decode_file(&out, &opts).unwrap().first_page().unwrap());
     let expected = expected_page(pw, ph, &t2, 0, 0, &[]);
-    assert_pixels_eq(&expected, &native, "chained refinement native vs expected (t2)");
+    assert_pixels_eq(
+        &expected,
+        &native,
+        "chained refinement native vs expected (t2)",
+    );
 
     if let Some(res) = oracle::decode_standalone(&out) {
         let jd = res.expect("jbig2dec decode");

@@ -111,11 +111,12 @@ impl MonoBitmap {
         }
 
         let stride_words = stride_words_for(width);
-        let total_words = (stride_words as u64)
-            .checked_mul(height as u64)
-            .ok_or(DecodeError::Overflow {
-                operation: "bitmap word count",
-            })?;
+        let total_words =
+            (stride_words as u64)
+                .checked_mul(height as u64)
+                .ok_or(DecodeError::Overflow {
+                    operation: "bitmap word count",
+                })?;
         let total_words = usize::try_from(total_words).map_err(|_| DecodeError::Overflow {
             operation: "bitmap word count to usize",
         })?;
@@ -151,11 +152,12 @@ impl MonoBitmap {
                 limit: limits.max_height as u64,
             }));
         }
-        let pixels = (self.width as u64)
-            .checked_mul(new_height as u64)
-            .ok_or(DecodeError::Overflow {
-                operation: "striped page pixel count",
-            })?;
+        let pixels =
+            (self.width as u64)
+                .checked_mul(new_height as u64)
+                .ok_or(DecodeError::Overflow {
+                    operation: "striped page pixel count",
+                })?;
         if pixels > max_pixels {
             return Err(DecodeError::limit(LimitError::Pixels {
                 what: "striped page",
@@ -246,13 +248,7 @@ impl MonoBitmap {
     /// coordinate `(x, y)` (signed — negative or overhanging placement is
     /// clipped). Whole interior words are combined at once; only the first and
     /// last partial words of each row are masked.
-    pub fn combine(
-        &mut self,
-        source: &MonoBitmap,
-        x: i32,
-        y: i32,
-        operator: CombinationOperator,
-    ) {
+    pub fn combine(&mut self, source: &MonoBitmap, x: i32, y: i32, operator: CombinationOperator) {
         if source.width == 0 || source.height == 0 || self.width == 0 || self.height == 0 {
             return;
         }

@@ -47,10 +47,9 @@ impl<'a> Reader<'a> {
 
     /// Borrow the next `len` bytes and advance past them.
     pub fn take(&mut self, len: usize) -> Result<&'a [u8], ParseError> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or(ParseError::Overflow { operation: "reader take offset" })?;
+        let end = self.offset.checked_add(len).ok_or(ParseError::Overflow {
+            operation: "reader take offset",
+        })?;
         if end > self.input.len() {
             return Err(ParseError::UnexpectedEof {
                 offset: self.offset,
@@ -64,10 +63,9 @@ impl<'a> Reader<'a> {
 
     /// Peek at the next `len` bytes without advancing.
     pub fn peek(&self, len: usize) -> Result<&'a [u8], ParseError> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or(ParseError::Overflow { operation: "reader peek offset" })?;
+        let end = self.offset.checked_add(len).ok_or(ParseError::Overflow {
+            operation: "reader peek offset",
+        })?;
         if end > self.input.len() {
             return Err(ParseError::UnexpectedEof {
                 offset: self.offset,

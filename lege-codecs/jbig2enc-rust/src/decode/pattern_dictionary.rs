@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::decode::arith::ArithmeticDecoder;
 use crate::decode::error::{DecodeError, LimitError};
-use crate::decode::generic::{decode_generic_bitmap, GenericScratch};
+use crate::decode::generic::{GenericScratch, decode_generic_bitmap};
 use crate::decode::mmr::decode_mmr_bitmap;
 use crate::shared::bitmap::MonoBitmap;
 use crate::shared::limits::DecodeLimits;
@@ -118,11 +118,12 @@ pub fn decode_pattern_dictionary(
     }
 
     // Collective bitmap width = num_patterns × HDPW (checked before allocation).
-    let collective_width = num_patterns
-        .checked_mul(hdr.hdpw as u64)
-        .ok_or(DecodeError::Overflow {
-            operation: "collective bitmap width",
-        })?;
+    let collective_width =
+        num_patterns
+            .checked_mul(hdr.hdpw as u64)
+            .ok_or(DecodeError::Overflow {
+                operation: "collective bitmap width",
+            })?;
     if collective_width > limits.max_width as u64 {
         return Err(DecodeError::limit(LimitError::Dimension {
             dimension: "collective bitmap width",

@@ -15,10 +15,10 @@
 
 #![allow(dead_code)]
 
+use jbig2enc_rust::Jbig2ArithCoder;
 use jbig2enc_rust::decode::huffman::HuffmanTable;
 use jbig2enc_rust::jbig2sym::BitImage;
 use jbig2enc_rust::shared::int_proc::IntProc;
-use jbig2enc_rust::Jbig2ArithCoder;
 
 /// A simple mutable test bitmap (row-major bool grid, `false` = white).
 #[derive(Clone)]
@@ -348,7 +348,13 @@ pub fn striped_unknown_height_page(width: u32, bands: &[TestBitmap]) -> Vec<u8> 
 /// Emit a short-form segment header (T.88 §7.2) followed by nothing — the
 /// caller appends the data. `referred` are 1-byte referred numbers (segment
 /// numbers must be <= 256 for that to be valid, which all our test streams are).
-fn segment_header(number: u32, type_code: u8, referred: &[u32], page: u8, data_len: u32) -> Vec<u8> {
+fn segment_header(
+    number: u32,
+    type_code: u8,
+    referred: &[u32],
+    page: u8,
+    data_len: u32,
+) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&number.to_be_bytes());
     v.push(type_code & 0x3F);
@@ -364,7 +370,12 @@ fn segment_header(number: u32, type_code: u8, referred: &[u32], page: u8, data_l
 /// A minimal embedded page stream (no file header) that jbig2dec `-e` and the
 /// native `decode_embedded` both accept: page-info segment, one immediate
 /// generic region, end-of-page.
-pub fn single_generic_page(bm: &TestBitmap, template: u8, at: &[(i8, i8); 4], tpgdon: bool) -> Vec<u8> {
+pub fn single_generic_page(
+    bm: &TestBitmap,
+    template: u8,
+    at: &[(i8, i8); 4],
+    tpgdon: bool,
+) -> Vec<u8> {
     let mut stream = Vec::new();
 
     // Segment 0: page information (type 48).
@@ -507,7 +518,10 @@ fn log2_ceil(v: usize) -> u8 {
 pub fn huffman_symbol_dict_payload(symbols: &[TestBitmap]) -> Vec<u8> {
     assert!(!symbols.is_empty());
     let height = symbols[0].height;
-    assert!(symbols.iter().all(|s| s.height == height), "one height class");
+    assert!(
+        symbols.iter().all(|s| s.height == height),
+        "one height class"
+    );
 
     let dh = standard_table(4).unwrap(); // SDHUFFDH
     let dw = standard_table(2).unwrap(); // SDHUFFDW (has OOB)
@@ -641,7 +655,7 @@ pub fn huffman_text_region_payload(
 // ------------------------------------------------------------------------
 
 const SLTP_CTX_GR0: usize = 0x010; // T.88 Figure 14 (centre reference), this crate's numbering
-const SLTP_CTX_GR1: usize = 0x040; // verified vs jbig2dec (see decode::refinement)
+const SLTP_CTX_GR1: usize = 0x080; // centre reference, bit 7 (matches decode::refinement / pdfium)
 
 fn ref_get(bm: &TestBitmap, x: i64, y: i64) -> u32 {
     if x < 0 || y < 0 || x >= bm.width as i64 || y >= bm.height as i64 {
@@ -716,7 +730,11 @@ pub fn refinement_arith_data(
     tpgron: bool,
 ) -> Vec<u8> {
     let mut coder = Jbig2ArithCoder::new();
-    let sltp_ctx = if grtemplate == 0 { SLTP_CTX_GR0 } else { SLTP_CTX_GR1 };
+    let sltp_ctx = if grtemplate == 0 {
+        SLTP_CTX_GR0
+    } else {
+        SLTP_CTX_GR1
+    };
     let mut ltp = false;
     for y in 0..target.height {
         if tpgron {
@@ -786,7 +804,9 @@ pub fn refinement_page(
         region.push((-1i8) as u8);
         region.push((-1i8) as u8);
     }
-    region.extend_from_slice(&refinement_arith_data(target, reference, grtemplate, tpgron));
+    region.extend_from_slice(&refinement_arith_data(
+        target, reference, grtemplate, tpgron,
+    ));
     stream.extend_from_slice(&segment_header(2, 42, &[], 1, region.len() as u32));
     stream.extend_from_slice(&region);
 
@@ -891,7 +911,9 @@ pub fn arith_aggregate_dict_payload(
     let mut coder = Jbig2ArithCoder::new();
     coder.encode_integer(IntProc::Iadh, height as i32).unwrap();
     // Single new symbol: DW from 0.
-    coder.encode_integer(IntProc::Iadw, sym_width as i32).unwrap();
+    coder
+        .encode_integer(IntProc::Iadw, sym_width as i32)
+        .unwrap();
     // Its bitmap is an aggregate text region of `instances`.
     coder
         .encode_integer(IntProc::Iaai, instances.len() as i32)
@@ -1005,8 +1027,15 @@ pub fn refagg_page(
     // Segment 3: Huffman text region placing the refined symbols (refers seg 2).
     let widths: Vec<u32> = targets.iter().map(|s| s.width).collect();
     let heights: Vec<u32> = targets.iter().map(|s| s.height).collect();
-    let region =
-        huffman_text_region_payload(page_w, page_h, targets.len(), &widths, &heights, placements, false);
+    let region = huffman_text_region_payload(
+        page_w,
+        page_h,
+        targets.len(),
+        &widths,
+        &heights,
+        placements,
+        false,
+    );
     stream.extend_from_slice(&segment_header(3, 6, &[2], 1, region.len() as u32));
     stream.extend_from_slice(&region);
 
@@ -1321,8 +1350,15 @@ pub fn huffman_refagg_page(
 
     let widths: Vec<u32> = targets.iter().map(|s| s.width).collect();
     let heights: Vec<u32> = targets.iter().map(|s| s.height).collect();
-    let region =
-        huffman_text_region_payload(page_w, page_h, targets.len(), &widths, &heights, placements, false);
+    let region = huffman_text_region_payload(
+        page_w,
+        page_h,
+        targets.len(),
+        &widths,
+        &heights,
+        placements,
+        false,
+    );
     stream.extend_from_slice(&segment_header(3, 6, &[2], 1, region.len() as u32));
     stream.extend_from_slice(&region);
 
@@ -1469,7 +1505,13 @@ fn encode_generic_dict_inner(
         .unwrap();
 }
 
-fn arith_dict_payload(data: &[u8], num_ex: usize, num_new: usize, used: bool, retained: bool) -> Vec<u8> {
+fn arith_dict_payload(
+    data: &[u8],
+    num_ex: usize,
+    num_new: usize,
+    used: bool,
+    retained: bool,
+) -> Vec<u8> {
     let mut flags: u16 = 0; // SDHUFF=0, SDREFAGG=0, SDTEMPLATE=0
     if used {
         flags |= 0x0100;

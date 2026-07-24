@@ -6,9 +6,9 @@
 mod common;
 
 use common::writer::{
-    standalone_file, striped_unknown_height_page, unknown_length_generic_page, TestBitmap,
+    TestBitmap, standalone_file, striped_unknown_height_page, unknown_length_generic_page,
 };
-use jbig2enc_rust::decode::{decode_embedded, DecodeOptions};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded};
 
 fn random_bitmap(w: u32, h: u32, seed: u32) -> TestBitmap {
     let mut bm = TestBitmap::new(w, h);

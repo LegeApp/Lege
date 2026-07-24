@@ -7,8 +7,8 @@
 
 mod common;
 
-use common::writer::{halftone_skip_page, standalone_file, TestBitmap};
-use jbig2enc_rust::decode::{decode_embedded, DecodeOptions};
+use common::writer::{TestBitmap, halftone_skip_page, standalone_file};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded};
 
 fn solid(w: u32, h: u32) -> TestBitmap {
     let mut bm = TestBitmap::new(w, h);

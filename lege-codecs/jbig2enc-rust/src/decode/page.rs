@@ -8,20 +8,20 @@
 
 use std::sync::Arc;
 
+use crate::decode::arith::ArithmeticDecoder;
 use crate::decode::context::DecoderContext;
 use crate::decode::error::{DecodeError, LimitError, ParseError, UnsupportedFeature};
 use crate::decode::file::{ParsedDocument, ParsedSegment};
 use crate::decode::generic::{decode_generic_region_into, parse_generic_region};
 use crate::decode::globals::DecodedGlobals;
 use crate::decode::halftone_region::{decode_halftone_region, parse_halftone_region};
-use crate::decode::pattern_dictionary::{decode_pattern_dictionary, PatternDictionary};
+use crate::decode::pattern_dictionary::{PatternDictionary, decode_pattern_dictionary};
 use crate::decode::refinement::{
-    decode_refinement_region_templated, page_reference_window, parse_refinement_region,
-    REFINEMENT_CONTEXT_COUNT,
+    REFINEMENT_CONTEXT_COUNT, decode_refinement_region_templated, page_reference_window,
+    parse_refinement_region,
 };
-use crate::decode::arith::ArithmeticDecoder;
 use crate::decode::store::{DecodedSegment, SegmentStore};
-use crate::decode::symbol_dictionary::{decode_symbol_dictionary, SymbolDictionary};
+use crate::decode::symbol_dictionary::{SymbolDictionary, decode_symbol_dictionary};
 use crate::decode::text_region::decode_text_region;
 use crate::shared::bitmap::{CombinationOperator, MonoBitmap};
 use crate::shared::limits::DecodeLimits;
@@ -119,8 +119,7 @@ pub(crate) fn decode_symbol_dict_into(
     limits: &DecodeLimits,
     ctx: &mut DecoderContext,
 ) -> Result<Arc<SymbolDictionary>, DecodeError> {
-    let imported =
-        local.gather_symbols(seg.header.number, &seg.header.referred_to, globals)?;
+    let imported = local.gather_symbols(seg.header.number, &seg.header.referred_to, globals)?;
     let tables = local.gather_huffman_tables(&seg.header.referred_to, globals);
 
     // §7.4.2.1.1 bits 8/9: "bitmap coding context used" / "retained".
@@ -462,12 +461,11 @@ fn run_segments(
                 | SegmentType::ImmediateLosslessGenericRegion
                 | SegmentType::IntermediateGenericRegion,
             ) => {
-                let mut region = parse_generic_region(seg.data).map_err(|source| {
-                    DecodeError::Segment {
+                let mut region =
+                    parse_generic_region(seg.data).map_err(|source| DecodeError::Segment {
                         segment: seg.header.number,
                         source,
-                    }
-                })?;
+                    })?;
                 if seg.header.is_unknown_length() {
                     // §7.2.7 / §6.2.6: the data part ends with a four-byte row
                     // count; the region's true height is that count (<= the
@@ -479,8 +477,7 @@ fn run_segments(
                         });
                     }
                     let rc = &region.data[dlen - 4..];
-                    let row_count =
-                        u32::from_be_bytes([rc[0], rc[1], rc[2], rc[3]]);
+                    let row_count = u32::from_be_bytes([rc[0], rc[1], rc[2], rc[3]]);
                     if row_count > region.height {
                         return Err(DecodeError::Malformed {
                             reason: "unknown-length row count exceeds region height",
@@ -550,24 +547,18 @@ fn run_segments(
                 | SegmentType::ImmediateHalftoneRegion
                 | SegmentType::ImmediateLosslessHalftoneRegion,
             ) => {
-                let region = parse_halftone_region(seg.data).map_err(|source| {
-                    DecodeError::Segment {
+                let region =
+                    parse_halftone_region(seg.data).map_err(|source| DecodeError::Segment {
                         segment: seg.header.number,
                         source,
-                    }
-                })?;
+                    })?;
                 let patterns = store
                     .pattern_dictionary(seg.header.number, &seg.header.referred_to, globals_store)?
                     .clone();
                 let (generic, scratch) = ctx.generic_and_scratch();
-                let region_bm = decode_halftone_region(
-                    &region,
-                    &patterns,
-                    limits,
-                    generic,
-                    scratch,
-                )
-                .map_err(|source| annotate(seg.header.number, source))?;
+                let region_bm =
+                    decode_halftone_region(&region, &patterns, limits, generic, scratch)
+                        .map_err(|source| annotate(seg.header.number, source))?;
                 if let Some(spare) = place_or_store(
                     matches!(ty, Some(SegmentType::IntermediateHalftoneRegion)),
                     seg.header.number,
@@ -602,8 +593,7 @@ fn run_segments(
                 let (reference, ext_comb) = if seg.header.referred_to.is_empty() {
                     // No referred region: refine the page buffer window in place;
                     // §7.4.7.5 step 1 external combination operator is REPLACE.
-                    let target =
-                        resolve_page(&mut pages, current, seg.header.page_association)?;
+                    let target = resolve_page(&mut pages, current, seg.header.page_association)?;
                     grow_if_unknown(
                         &mut pages[target].bitmap,
                         unknown_height[target],
@@ -644,6 +634,7 @@ fn run_segments(
                     region.grtemplate,
                     region.tpgron,
                     region.grat,
+                    region.grat2,
                     refine_ctx,
                     limits,
                 )
@@ -686,11 +677,12 @@ fn run_segments(
 }
 
 fn check_page_pixels(info: &PageInformation, limits: &DecodeLimits) -> Result<(), DecodeError> {
-    let pixels = (info.width as u64)
-        .checked_mul(info.height as u64)
-        .ok_or(DecodeError::Overflow {
-            operation: "page pixel count",
-        })?;
+    let pixels =
+        (info.width as u64)
+            .checked_mul(info.height as u64)
+            .ok_or(DecodeError::Overflow {
+                operation: "page pixel count",
+            })?;
     if pixels > limits.max_page_pixels {
         return Err(DecodeError::limit(LimitError::Pixels {
             what: "page",
@@ -731,12 +723,10 @@ fn compose_region(
     comb_operator: u8,
 ) -> MonoBitmap {
     let op = combination_operator(comb_operator);
-    let full_cover = x == 0
-        && y == 0
-        && region.width() == page.width()
-        && region.height() == page.height();
-    let movable = matches!(op, CombinationOperator::Or | CombinationOperator::Replace)
-        && page_is_blank(page);
+    let full_cover =
+        x == 0 && y == 0 && region.width() == page.width() && region.height() == page.height();
+    let movable =
+        matches!(op, CombinationOperator::Or | CombinationOperator::Replace) && page_is_blank(page);
     if full_cover && movable {
         // Swap rather than assign so the page's old buffer is returned for reuse
         // instead of dropped.

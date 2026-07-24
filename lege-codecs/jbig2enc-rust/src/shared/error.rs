@@ -56,10 +56,7 @@ pub enum ParseError {
     #[error("invalid file header")]
     InvalidFileHeader,
     #[error("invalid segment header at byte {offset}: {reason}")]
-    InvalidSegmentHeader {
-        offset: usize,
-        reason: &'static str,
-    },
+    InvalidSegmentHeader { offset: usize, reason: &'static str },
 }
 
 /// The top-level decoder error (jbig2decplan.md §5).
@@ -140,7 +137,10 @@ mod tests {
     #[test]
     fn from_conversions() {
         let e: DecodeError = ParseError::InvalidFileHeader.into();
-        assert!(matches!(e, DecodeError::Parse(ParseError::InvalidFileHeader)));
+        assert!(matches!(
+            e,
+            DecodeError::Parse(ParseError::InvalidFileHeader)
+        ));
 
         let e: DecodeError = UnsupportedFeature::SymbolCoding.into();
         assert!(matches!(

@@ -15,8 +15,8 @@
 
 mod common;
 
-use common::writer::{huffman_refine_text_page, standalone_file, TestBitmap};
-use jbig2enc_rust::decode::{decode_embedded, DecodeOptions};
+use common::writer::{TestBitmap, huffman_refine_text_page, standalone_file};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded};
 
 fn glyph(w: u32, h: u32, seed: u32) -> TestBitmap {
     let mut bm = TestBitmap::new(w, h);

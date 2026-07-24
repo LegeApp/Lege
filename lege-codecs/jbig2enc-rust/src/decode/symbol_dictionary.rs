@@ -16,15 +16,15 @@ use std::sync::Arc;
 
 use crate::decode::arith::ArithmeticDecoder;
 use crate::decode::error::{DecodeError, LimitError, usize_from_u32};
-use crate::decode::generic::{decode_generic_bitmap, GenericScratch};
-use crate::decode::huffman::{standard_table, BitReader, HuffmanTable, HuffmanValue};
+use crate::decode::generic::{GenericScratch, decode_generic_bitmap};
+use crate::decode::huffman::{BitReader, HuffmanTable, HuffmanValue, standard_table};
 use crate::decode::iaid::IaidContexts;
 use crate::decode::integer::{DecodedInteger, IntegerContexts};
 use crate::decode::mmr::decode_mmr_bitmap;
-use crate::decode::refinement::{decode_refinement_region_templated, REFINEMENT_CONTEXT_COUNT};
+use crate::decode::refinement::{REFINEMENT_CONTEXT_COUNT, decode_refinement_region_templated};
 use crate::decode::text_region::{
-    decode_huffman_text_core, decode_text_region_arith, HuffTextParams, HuffTextTables,
-    TextArithParams,
+    HuffTextParams, HuffTextTables, TextArithParams, decode_huffman_text_core,
+    decode_text_region_arith,
 };
 use crate::shared::bitmap::MonoBitmap;
 use crate::shared::int_proc::IntProc;
@@ -101,14 +101,19 @@ pub fn decode_symbol_dictionary(
         }
     }
     // §7.4.2.1.3 SDRAT: refinement AT, present only when SDREFAGG=1 and
-    // SDRTEMPLATE=0 (GRTEMPLATE-0 uses one target AT pair here).
+    // SDRTEMPLATE=0. GRTEMPLATE-0 uses two AT pairs (4 bytes): SDRAT1 is the
+    // target adaptive pixel, SDRAT2 the reference adaptive pixel (T.88 Fig. 12,
+    // context bit 8). Both must flow into the refinement context or a custom-AT
+    // symbol desyncs (pdf.js bitmap-symbol-symbolrefineone-customat).
     let mut sdrat: (i8, i8) = (-1, -1);
+    let mut sdrat2: (i8, i8) = (-1, -1);
     if sdrefagg && sdrtemplate == 0 {
         let x = r.read_i8()?;
         let y = r.read_i8()?;
-        let _x2 = r.read_i8()?;
-        let _y2 = r.read_i8()?;
+        let x2 = r.read_i8()?;
+        let y2 = r.read_i8()?;
         sdrat = (x, y);
+        sdrat2 = (x2, y2);
     }
 
     // §7.4.2.1.5/.6 exported and new symbol counts.
@@ -154,6 +159,7 @@ pub fn decode_symbol_dictionary(
             total,
             sdrtemplate,
             sdrat,
+            sdrat2,
             limits,
         );
     }
@@ -226,8 +232,9 @@ pub fn decode_symbol_dictionary(
             match int_ctx.decode(&mut dec, IntProc::Iadw) {
                 DecodedInteger::OutOfBand => break,
                 DecodedInteger::Value(v) => {
-                    sym_width =
-                        sym_width.checked_add(v as i64).ok_or(DecodeError::Overflow {
+                    sym_width = sym_width
+                        .checked_add(v as i64)
+                        .ok_or(DecodeError::Overflow {
                             operation: "symbol width",
                         })?;
                 }
@@ -243,11 +250,12 @@ pub fn decode_symbol_dictionary(
                 });
             }
 
-            let px = (sym_width as u64)
-                .checked_mul(hc_height as u64)
-                .ok_or(DecodeError::Overflow {
-                    operation: "symbol pixel count",
-                })?;
+            let px =
+                (sym_width as u64)
+                    .checked_mul(hc_height as u64)
+                    .ok_or(DecodeError::Overflow {
+                        operation: "symbol pixel count",
+                    })?;
             if px > limits.max_symbol_pixels {
                 return Err(DecodeError::limit(LimitError::Pixels {
                     what: "symbol",
@@ -277,6 +285,7 @@ pub fn decode_symbol_dictionary(
                     code_len,
                     sdrtemplate,
                     sdrat,
+                    sdrat2,
                     sym_width as u32,
                     hc_height as u32,
                     limits,
@@ -298,8 +307,14 @@ pub fn decode_symbol_dictionary(
     }
 
     // §6.5.10 export flags: alternating run lengths over [imported .. new].
-    let exported =
-        decode_export_flags(&mut dec, int_ctx, imported, &new_symbols, total, num_ex_usize)?;
+    let exported = decode_export_flags(
+        &mut dec,
+        int_ctx,
+        imported,
+        &new_symbols,
+        total,
+        num_ex_usize,
+    )?;
 
     Ok(SymbolDictionary {
         exported_symbols: exported.into_boxed_slice(),
@@ -320,6 +335,7 @@ fn decode_refagg_symbol(
     code_len: u8,
     sdrtemplate: u8,
     sdrat: (i8, i8),
+    sdrat2: (i8, i8),
     sym_width: u32,
     hc_height: u32,
     limits: &DecodeLimits,
@@ -337,7 +353,8 @@ fn decode_refagg_symbol(
         // §6.5.8.2 step 2: a true aggregate is decoded as an internal text
         // region (Table 17) over SBSYMS = imported ++ already-decoded new
         // symbols, sharing this dictionary's arithmetic decoder and contexts.
-        let mut combined: Vec<Arc<MonoBitmap>> = Vec::with_capacity(imported.len() + new_symbols.len());
+        let mut combined: Vec<Arc<MonoBitmap>> =
+            Vec::with_capacity(imported.len() + new_symbols.len());
         combined.extend(imported.iter().cloned());
         combined.extend(new_symbols.iter().cloned());
         let params = TextArithParams {
@@ -353,6 +370,7 @@ fn decode_refagg_symbol(
             sbrefine: true,
             sb_rtemplate: sdrtemplate,
             grat: sdrat,
+            grat2: sdrat2,
             code_len,
         };
         return decode_text_region_arith(
@@ -365,13 +383,17 @@ fn decode_refagg_symbol(
     let rdx = match int_ctx.decode(dec, IntProc::Iardx) {
         DecodedInteger::Value(v) => v,
         DecodedInteger::OutOfBand => {
-            return Err(DecodeError::Malformed { reason: "OOB for RDX" });
+            return Err(DecodeError::Malformed {
+                reason: "OOB for RDX",
+            });
         }
     };
     let rdy = match int_ctx.decode(dec, IntProc::Iardy) {
         DecodedInteger::Value(v) => v,
         DecodedInteger::OutOfBand => {
-            return Err(DecodeError::Malformed { reason: "OOB for RDY" });
+            return Err(DecodeError::Malformed {
+                reason: "OOB for RDY",
+            });
         }
     };
 
@@ -396,6 +418,7 @@ fn decode_refagg_symbol(
         sdrtemplate,
         false,
         sdrat,
+        sdrat2,
         refine_ctx,
         limits,
     )
@@ -478,6 +501,7 @@ fn decode_symbol_dictionary_huffman_refagg(
     total: usize,
     sdrtemplate: u8,
     sdrat: (i8, i8),
+    sdrat2: (i8, i8),
     limits: &DecodeLimits,
 ) -> Result<SymbolDictionary, DecodeError> {
     // §7.4.2.1.6 table selection, custom tables consumed in field order:
@@ -535,8 +559,9 @@ fn decode_symbol_dictionary_huffman_refagg(
             match dw_table.get().decode(&mut r)? {
                 HuffmanValue::Oob => break,
                 HuffmanValue::Value(dw) => {
-                    sym_width =
-                        sym_width.checked_add(dw as i64).ok_or(DecodeError::Overflow {
+                    sym_width = sym_width
+                        .checked_add(dw as i64)
+                        .ok_or(DecodeError::Overflow {
                             operation: "symbol width",
                         })?;
                 }
@@ -551,11 +576,12 @@ fn decode_symbol_dictionary_huffman_refagg(
                     reason: "more symbols coded than SDNUMNEWSYMS",
                 });
             }
-            let px = (sym_width as u64)
-                .checked_mul(hc_height as u64)
-                .ok_or(DecodeError::Overflow {
-                    operation: "symbol pixel count",
-                })?;
+            let px =
+                (sym_width as u64)
+                    .checked_mul(hc_height as u64)
+                    .ok_or(DecodeError::Overflow {
+                        operation: "symbol pixel count",
+                    })?;
             if px > limits.max_symbol_pixels {
                 return Err(DecodeError::limit(LimitError::Pixels {
                     what: "symbol",
@@ -598,13 +624,17 @@ fn decode_symbol_dictionary_huffman_refagg(
                 let rdx = match b15.decode(&mut r)? {
                     HuffmanValue::Value(v) => v,
                     HuffmanValue::Oob => {
-                        return Err(DecodeError::Malformed { reason: "OOB for RDX" });
+                        return Err(DecodeError::Malformed {
+                            reason: "OOB for RDX",
+                        });
                     }
                 };
                 let rdy = match b15.decode(&mut r)? {
                     HuffmanValue::Value(v) => v,
                     HuffmanValue::Oob => {
-                        return Err(DecodeError::Malformed { reason: "OOB for RDY" });
+                        return Err(DecodeError::Malformed {
+                            reason: "OOB for RDY",
+                        });
                     }
                 };
                 let bmsize = match b1.decode(&mut r)? {
@@ -645,6 +675,7 @@ fn decode_symbol_dictionary_huffman_refagg(
                     sdrtemplate,
                     false,
                     sdrat,
+                    sdrat2,
                     refine_ctx,
                     limits,
                 )?;
@@ -683,6 +714,7 @@ fn decode_symbol_dictionary_huffman_refagg(
                     sbrefine: true,
                     sb_rtemplate: sdrtemplate,
                     grat: sdrat,
+                    grat2: sdrat2,
                 };
                 decode_huffman_text_core(&mut r, &tables, &params, &combined, refine_ctx, limits)?
             } else {
@@ -764,8 +796,9 @@ fn decode_symbol_dictionary_huffman(
             match dw_table.get().decode(&mut r)? {
                 HuffmanValue::Oob => break,
                 HuffmanValue::Value(dw) => {
-                    sym_width =
-                        sym_width.checked_add(dw as i64).ok_or(DecodeError::Overflow {
+                    sym_width = sym_width
+                        .checked_add(dw as i64)
+                        .ok_or(DecodeError::Overflow {
                             operation: "symbol width",
                         })?;
                 }
@@ -785,11 +818,12 @@ fn decode_symbol_dictionary_huffman(
                 .ok_or(DecodeError::Overflow {
                     operation: "height class total width",
                 })?;
-            let px = (sym_width as u64)
-                .checked_mul(hc_height as u64)
-                .ok_or(DecodeError::Overflow {
-                    operation: "symbol pixel count",
-                })?;
+            let px =
+                (sym_width as u64)
+                    .checked_mul(hc_height as u64)
+                    .ok_or(DecodeError::Overflow {
+                        operation: "symbol pixel count",
+                    })?;
             if px > limits.max_symbol_pixels {
                 return Err(DecodeError::limit(LimitError::Pixels {
                     what: "symbol",
@@ -832,11 +866,12 @@ fn decode_symbol_dictionary_huffman(
         } else if bmsize == 0 {
             // Uncompressed: HCHEIGHT rows of TOTWIDTH pixels, byte-padded.
             let row_bytes = (tot_width_u as usize).div_ceil(8);
-            let need = row_bytes
-                .checked_mul(hc_height_u as usize)
-                .ok_or(DecodeError::Overflow {
-                    operation: "uncompressed collective bitmap size",
-                })?;
+            let need =
+                row_bytes
+                    .checked_mul(hc_height_u as usize)
+                    .ok_or(DecodeError::Overflow {
+                        operation: "uncompressed collective bitmap size",
+                    })?;
             let bytes = take_bytes(&mut r, need)?;
             bitmap_from_uncompressed(bytes, tot_width_u, hc_height_u, row_bytes, limits)?
         } else {
@@ -869,10 +904,12 @@ fn take_bytes<'a>(r: &mut BitReader<'a>, n: usize) -> Result<&'a [u8], DecodeErr
     let start = r.byte_position();
     let slice = r.remaining_from_byte();
     if slice.len() < n {
-        return Err(DecodeError::Parse(crate::decode::error::ParseError::UnexpectedEof {
-            offset: start,
-            needed: n - slice.len(),
-        }));
+        return Err(DecodeError::Parse(
+            crate::decode::error::ParseError::UnexpectedEof {
+                offset: start,
+                needed: n - slice.len(),
+            },
+        ));
     }
     // Advance the reader past the consumed bytes.
     for _ in 0..n {

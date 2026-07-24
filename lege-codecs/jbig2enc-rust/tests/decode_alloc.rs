@@ -18,8 +18,8 @@ mod common;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::writer::{nominal_at, single_generic_page, TestBitmap};
-use jbig2enc_rust::decode::{decode_embedded_into, DecodeOptions, DecoderContext};
+use common::writer::{TestBitmap, nominal_at, single_generic_page};
+use jbig2enc_rust::decode::{DecodeOptions, DecoderContext, decode_embedded_into};
 use jbig2enc_rust::shared::bitmap::MonoBitmap;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -84,7 +84,10 @@ fn steady_state_allocations_are_stable() {
     // Steady state: the allocation count does not grow across iterations.
     let first = counts[0];
     for &c in &counts {
-        assert_eq!(c, first, "allocation count grew across iterations: {counts:?}");
+        assert_eq!(
+            c, first,
+            "allocation count grew across iterations: {counts:?}"
+        );
     }
     eprintln!("steady-state heap allocations per decode: {first}");
 }

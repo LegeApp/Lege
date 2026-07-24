@@ -18,8 +18,8 @@
 //! bitmap) rather than crashing, and this wrapper turns a hard failure into a
 //! typed [`DecodeError`].
 
-use fax::decoder::{decode_g4, pels};
 use fax::Color;
+use fax::decoder::{decode_g4, pels};
 
 use crate::decode::error::DecodeError;
 use crate::shared::bitmap::MonoBitmap;
@@ -240,8 +240,8 @@ pub fn decode_mmr_plane(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use fax::encoder::Encoder as FaxEncoder;
     use fax::VecWriter;
+    use fax::encoder::Encoder as FaxEncoder;
 
     /// Encode a bitmap with the same `fax` path the encoder's halftone module
     /// uses, then decode it back and assert a pixel-exact round-trip.
@@ -263,7 +263,11 @@ mod tests {
         let bm = decode_mmr_bitmap(&data, width, height, &limits).unwrap();
         for y in 0..height {
             for x in 0..width {
-                assert_eq!(bm.get(x, y), black(x, y), "pixel ({x},{y}) w={width} h={height}");
+                assert_eq!(
+                    bm.get(x, y),
+                    black(x, y),
+                    "pixel ({x},{y}) w={width} h={height}"
+                );
             }
         }
     }
@@ -272,7 +276,9 @@ mod tests {
     fn roundtrip_odd_widths() {
         for &w in &[1u32, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65] {
             for &h in &[1u32, 3, 8, 17] {
-                roundtrip(w, h, |x, y| (x.wrapping_mul(7) ^ y.wrapping_mul(13)) & 1 == 0);
+                roundtrip(w, h, |x, y| {
+                    (x.wrapping_mul(7) ^ y.wrapping_mul(13)) & 1 == 0
+                });
             }
         }
     }
@@ -321,7 +327,9 @@ mod tests {
     fn malformed_data_is_typed_error_not_panic() {
         let limits = DecodeLimits::default();
         // Random bytes must never panic; either a bounded bitmap or a typed err.
-        let junk: Vec<u8> = (0..64u8).map(|i| i.wrapping_mul(37).wrapping_add(3)).collect();
+        let junk: Vec<u8> = (0..64u8)
+            .map(|i| i.wrapping_mul(37).wrapping_add(3))
+            .collect();
         let _ = decode_mmr_bitmap(&junk, 50, 20, &limits);
     }
 }

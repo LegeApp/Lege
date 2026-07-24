@@ -10,8 +10,8 @@
 
 mod common;
 
-use common::writer::{huffman_aggregate_page, huffman_refagg_page, TestBitmap};
-use jbig2enc_rust::decode::{decode_embedded, DecodeOptions};
+use common::writer::{TestBitmap, huffman_aggregate_page, huffman_refagg_page};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded};
 
 fn glyph(w: u32, h: u32, seed: u32) -> TestBitmap {
     let mut bm = TestBitmap::new(w, h);
@@ -83,7 +83,8 @@ fn huffman_aggregate_dictionary() {
     let placements = [(0usize, 1i32), (0, 12)];
     let (w, h) = (28u32, 12u32);
 
-    let stream = huffman_aggregate_page(w, h, &base, &instances, sym_width, sym_height, &placements);
+    let stream =
+        huffman_aggregate_page(w, h, &base, &instances, sym_width, sym_height, &placements);
 
     // Aggregate symbol = base0 at (0,0) OR base1 at (4,0), 9x8.
     let mut agg = TestBitmap::new(sym_width, sym_height);

@@ -64,8 +64,8 @@ fn bench_decode_generic_a4(c: &mut Criterion) {
     group.sample_size(20);
     group.bench_function("decode", |b| {
         b.iter(|| {
-            let doc = decode_file_with_context(black_box(&encoded), &opts, &mut dctx)
-                .expect("decode");
+            let doc =
+                decode_file_with_context(black_box(&encoded), &opts, &mut dctx).expect("decode");
             black_box(doc.pages.len());
         });
     });
@@ -151,7 +151,10 @@ fn bench_decode_refined_symbol_page(c: &mut Criterion) {
     let encoded = encode_single_image_with_config(&px, w, h, ctx)
         .expect("encode refined symbol page")
         .page_data;
-    eprintln!("encoded refined symbol page stream = {} bytes", encoded.len());
+    eprintln!(
+        "encoded refined symbol page stream = {} bytes",
+        encoded.len()
+    );
 
     let opts = DecodeOptions::default();
     let mut dctx = DecoderContext::new();

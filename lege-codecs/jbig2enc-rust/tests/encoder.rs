@@ -6,9 +6,9 @@ use std::process::Command;
 use std::time::Instant;
 use tempfile::TempDir;
 
-use jbig2enc_rust as jbig2;
 use jbig2::jbig2arith::{BASE, Jbig2ArithCoder, State};
 use jbig2::jbig2sym::{BitImage, Symbol};
+use jbig2enc_rust as jbig2;
 // Import the common test utilities
 mod common;
 use common::{TEST_IMAGE_PBM, TEST_IMAGE1_PBM, load_pbm, load_test_pbm};

@@ -169,8 +169,7 @@ impl HuffmanTable {
             let mut first_code = vec![0u32; len_max + 2];
             len_count[0] = 0;
             for cur_len in 1..=len_max {
-                first_code[cur_len] =
-                    (first_code[cur_len - 1] + len_count[cur_len - 1]) << 1;
+                first_code[cur_len] = (first_code[cur_len - 1] + len_count[cur_len - 1]) << 1;
                 let mut cur_code = first_code[cur_len];
                 for (i, l) in lines.iter().enumerate() {
                     if l.pref_len as usize == cur_len {
@@ -263,7 +262,12 @@ impl HuffmanTable {
                 continue;
             }
             if v <= l.range_low {
-                return Some((self.codes[i], l.pref_len, (l.range_low - v) as u64, l.range_len));
+                return Some((
+                    self.codes[i],
+                    l.pref_len,
+                    (l.range_low - v) as u64,
+                    l.range_len,
+                ));
             }
         }
         None
@@ -318,12 +322,7 @@ fn to_i32(v: i64) -> Result<HuffmanValue, DecodeError> {
 /// The 15 standard Huffman tables (T.88 Annex B.5). `n` is 1..=15 for B.1..B.15.
 pub fn standard_table(index: u8) -> Result<HuffmanTable, DecodeError> {
     let lines: Vec<RawLine> = match index {
-        1 => vec![
-            n(1, 4, 0),
-            n(2, 8, 16),
-            n(3, 16, 272),
-            n(3, 32, 65808),
-        ],
+        1 => vec![n(1, 4, 0), n(2, 8, 16), n(3, 16, 272), n(3, 32, 65808)],
         2 => vec![
             n(1, 0, 0),
             n(2, 0, 1),
@@ -510,13 +509,7 @@ pub fn standard_table(index: u8) -> Result<HuffmanTable, DecodeError> {
             n(7, 6, 77),
             n(7, 32, 141),
         ],
-        14 => vec![
-            n(3, 0, -2),
-            n(3, 0, -1),
-            n(1, 0, 0),
-            n(3, 0, 1),
-            n(3, 0, 2),
-        ],
+        14 => vec![n(3, 0, -2), n(3, 0, -1), n(1, 0, 0), n(3, 0, 1), n(3, 0, 2)],
         15 => vec![
             n(7, 4, -24),
             n(6, 2, -8),

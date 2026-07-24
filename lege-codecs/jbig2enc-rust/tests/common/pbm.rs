@@ -15,7 +15,11 @@ pub struct Pbm {
 impl Pbm {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
         assert_eq!(pixels.len(), (width as usize) * (height as usize));
-        Self { width, height, pixels }
+        Self {
+            width,
+            height,
+            pixels,
+        }
     }
 
     #[inline]
@@ -105,7 +109,11 @@ impl Pbm {
                 pixels.push(bit);
             }
         }
-        Ok(Pbm { width, height, pixels })
+        Ok(Pbm {
+            width,
+            height,
+            pixels,
+        })
     }
 }
 

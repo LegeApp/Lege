@@ -15,7 +15,7 @@
 
 use crate::decode::arith::ArithmeticDecoder;
 use crate::decode::error::{DecodeError, ParseError};
-use crate::decode::generic::{decode_generic_bitmap, GenericScratch};
+use crate::decode::generic::{GenericScratch, decode_generic_bitmap};
 use crate::decode::mmr::decode_mmr_plane;
 use crate::decode::pattern_dictionary::PatternDictionary;
 use crate::shared::bitmap::{CombinationOperator, MonoBitmap};
@@ -39,12 +39,12 @@ pub struct HalftoneRegion<'a> {
     /// Internal (pattern → region) combination operator, HCOMBOP.
     pub halftone_comb_operator: u8,
     pub default_pixel: bool,
-    pub grid_width: u32,     // HGW
-    pub grid_height: u32,    // HGH
-    pub grid_x: i32,         // HGX, 24.8 fixed-point
-    pub grid_y: i32,         // HGY, 24.8 fixed-point
-    pub grid_vector_x: u16,  // HRX, 8.8 fixed-point
-    pub grid_vector_y: u16,  // HRY, 8.8 fixed-point
+    pub grid_width: u32,    // HGW
+    pub grid_height: u32,   // HGH
+    pub grid_x: i32,        // HGX, 24.8 fixed-point
+    pub grid_y: i32,        // HGY, 24.8 fixed-point
+    pub grid_vector_x: u16, // HRX, 8.8 fixed-point
+    pub grid_vector_y: u16, // HRY, 8.8 fixed-point
     pub data: &'a [u8],
 }
 
@@ -204,8 +204,7 @@ pub fn decode_halftone_region(
         // Each plane is a separate byte-aligned EOFB-terminated MMR block.
         let mut off = 0usize;
         for j in (0..hbpp as usize).rev() {
-            let (plane, consumed) =
-                decode_mmr_plane(&region.data[off..], hgw, hgh, limits)?;
+            let (plane, consumed) = decode_mmr_plane(&region.data[off..], hgw, hgh, limits)?;
             planes[j] = plane;
             off = off.checked_add(consumed).ok_or(DecodeError::Overflow {
                 operation: "MMR gray-plane offset",
@@ -248,7 +247,14 @@ pub fn decode_halftone_region(
                     scratch,
                 )?,
                 None => decode_generic_bitmap(
-                    &mut dec, hgw, hgh, region.template, at, generic_ctx, limits, scratch,
+                    &mut dec,
+                    hgw,
+                    hgh,
+                    region.template,
+                    at,
+                    generic_ctx,
+                    limits,
+                    scratch,
                 )?,
             };
         }

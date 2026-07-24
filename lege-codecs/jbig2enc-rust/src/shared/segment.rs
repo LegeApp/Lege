@@ -89,7 +89,10 @@ mod tests {
 
     #[test]
     fn known_codes_round_trip() {
-        for code in [0u8, 4, 6, 7, 16, 20, 22, 23, 36, 38, 39, 40, 42, 43, 48, 49, 50, 51, 52, 53, 54, 56, 62] {
+        for code in [
+            0u8, 4, 6, 7, 16, 20, 22, 23, 36, 38, 39, 40, 42, 43, 48, 49, 50, 51, 52, 53, 54, 56,
+            62,
+        ] {
             let ty = SegmentType::from_code(code).expect("known code");
             assert_eq!(ty as u8, code);
             assert_eq!(SegmentType::try_from(code).unwrap(), ty);

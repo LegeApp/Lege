@@ -288,8 +288,9 @@ pub fn decode_generic_bitmap_skip(
             if skip.get(x, y) {
                 continue; // implicitly 0, no arithmetic bit consumed
             }
-            let ctx =
-                pixel_context(template, &bitmap, &*cur, prev1, prev2, width, y, x as i64, &at);
+            let ctx = pixel_context(
+                template, &bitmap, &*cur, prev1, prev2, width, y, x as i64, &at,
+            );
             let bit = decoder.decode_bit(&mut contexts[ctx]);
             if bit {
                 let xu = x as usize;
@@ -612,25 +613,13 @@ fn decode_template0_general(
 /// decoded); `dy < 0` reads row `y+dy` (all-zero above the top edge); `dy > 0`
 /// (never emitted for a valid AT pixel) reads nothing.
 #[inline(always)]
-fn at_pixel(
-    bitmap: &MonoBitmap,
-    cur: &[u32],
-    width: u32,
-    y: u32,
-    x: i64,
-    dx: i64,
-    dy: i64,
-) -> u32 {
+fn at_pixel(bitmap: &MonoBitmap, cur: &[u32], width: u32, y: u32, x: i64, dx: i64, dy: i64) -> u32 {
     let xx = x + dx;
     if xx < 0 || xx >= width as i64 {
         return 0;
     }
     if dy == 0 {
-        if xx >= x {
-            0
-        } else {
-            sample(cur, width, xx)
-        }
+        if xx >= x { 0 } else { sample(cur, width, xx) }
     } else {
         let yy = y as i64 + dy;
         if yy < 0 || dy > 0 {
@@ -848,11 +837,7 @@ mod tests {
         let bm = decode_generic_region(&region, &limits, &mut ctx, &mut scratch).unwrap();
         for y in 0..h {
             for x in 0..w {
-                assert_eq!(
-                    bm.get(x, y),
-                    img.get(x, y),
-                    "pixel ({x},{y}) w={w} h={h}"
-                );
+                assert_eq!(bm.get(x, y), img.get(x, y), "pixel ({x},{y}) w={w} h={h}");
             }
         }
     }
@@ -900,7 +885,14 @@ mod tests {
         let mut bm_gen = MonoBitmap::new(37, 20, false, &limits).unwrap();
         let mut d2 = ArithmeticDecoder::new(&data);
         let mut c2 = contexts();
-        decode_template0_general(&mut bm_gen, &mut d2, &mut c2, NOMINAL_AT0, false, &mut scratch);
+        decode_template0_general(
+            &mut bm_gen,
+            &mut d2,
+            &mut c2,
+            NOMINAL_AT0,
+            false,
+            &mut scratch,
+        );
 
         assert_eq!(bm_fast, bm_gen);
     }

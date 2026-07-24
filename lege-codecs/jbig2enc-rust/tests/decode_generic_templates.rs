@@ -11,8 +11,8 @@
 
 mod common;
 
-use common::writer::{nominal_at, single_generic_page, standalone_file, TestBitmap};
-use jbig2enc_rust::decode::{decode_embedded, DecodeOptions};
+use common::writer::{TestBitmap, nominal_at, single_generic_page, standalone_file};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded};
 
 /// A pseudo-random but deterministic bitmap.
 fn random_bitmap(w: u32, h: u32, seed: u32) -> TestBitmap {

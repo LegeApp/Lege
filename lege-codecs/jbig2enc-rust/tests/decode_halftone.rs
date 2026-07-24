@@ -9,16 +9,14 @@
 mod common;
 
 use common::oracle;
-use common::pbm::{assert_pixels_eq, Pbm};
+use common::pbm::{Pbm, assert_pixels_eq};
 
 use fax::encoder::Encoder as FaxEncoder;
 use fax::{Color, VecWriter};
 
-use jbig2enc_rust::decode::{decode_embedded, decode_file, DecodeLimits, DecodeOptions};
 use jbig2enc_rust::decode::error::DecodeError;
-use jbig2enc_rust::jbig2halftone::{
-    encode_halftone_document_auto, encode_halftone_pdf_split_auto,
-};
+use jbig2enc_rust::decode::{DecodeLimits, DecodeOptions, decode_embedded, decode_file};
+use jbig2enc_rust::jbig2halftone::{encode_halftone_document_auto, encode_halftone_pdf_split_auto};
 use jbig2enc_rust::jbig2structs::{
     FileHeader, GenericRegionParams, Jbig2Config, PageInfo, Segment, SegmentType,
 };
@@ -83,12 +81,11 @@ fn halftone_modes_standalone_vs_jbig2dec() {
                 let region = GenericRegionParams::new(w, h, 300);
                 let stream =
                     encode_halftone_document_auto(&img, &cfg, &region, 0, Some(1)).unwrap();
-                let label = format!(
-                    "halftone dict_mmr={dict_mmr} gray_mmr={gray_mmr} lossless={lossless}"
-                );
+                let label =
+                    format!("halftone dict_mmr={dict_mmr} gray_mmr={gray_mmr} lossless={lossless}");
 
-                let doc = decode_file(&stream, &opts)
-                    .unwrap_or_else(|e| panic!("{label} native: {e}"));
+                let doc =
+                    decode_file(&stream, &opts).unwrap_or_else(|e| panic!("{label} native: {e}"));
                 let native = mono_to_pbm(doc.first_page().expect("a page"));
                 assert_eq!(native.width, w);
                 assert_eq!(native.height, h);
@@ -242,7 +239,11 @@ fn generic_mmr_region_roundtrip_and_jbig2dec() {
             assert_pixels_eq(&img, &native, &format!("generic MMR w={w} h={h} vs source"));
             if let Some(res) = oracle::decode_standalone(&stream) {
                 let jd = res.unwrap_or_else(|e| panic!("generic MMR w={w} h={h} jbig2dec: {e}"));
-                assert_pixels_eq(&native, &jd, &format!("generic MMR w={w} h={h} vs jbig2dec"));
+                assert_pixels_eq(
+                    &native,
+                    &jd,
+                    &format!("generic MMR w={w} h={h} vs jbig2dec"),
+                );
             }
         }
     }
@@ -275,8 +276,7 @@ fn halftone_missing_pattern_dict_is_typed_error() {
     let img = gradient_bitimage(48, 40);
     let cfg = halftone_config(true, false, false);
     let region = GenericRegionParams::new(48, 40, 300);
-    let (_globals, page) =
-        encode_halftone_pdf_split_auto(&img, &cfg, &region, 1, Some(1)).unwrap();
+    let (_globals, page) = encode_halftone_pdf_split_auto(&img, &cfg, &region, 1, Some(1)).unwrap();
     let opts = DecodeOptions::default();
     match decode_embedded(None, &page, &opts) {
         Err(DecodeError::MissingReferredSegment { .. }) => {}

@@ -5,9 +5,9 @@
 
 mod common;
 
-use common::writer::{nominal_at, single_generic_page, TestBitmap};
+use common::writer::{TestBitmap, nominal_at, single_generic_page};
 use jbig2enc_rust::decode::{
-    decode_embedded_with_context, DecodeOptions, DecodeStrictness, DecoderContext, RecoveryEvent,
+    DecodeOptions, DecodeStrictness, DecoderContext, RecoveryEvent, decode_embedded_with_context,
 };
 
 fn random_bitmap(w: u32, h: u32, seed: u32) -> TestBitmap {
@@ -55,7 +55,10 @@ fn trailing_garbage_strict_vs_compatible() {
     }
     assert_eq!(ctx.recovery_events.len(), 1, "one recovery event expected");
     assert!(
-        matches!(ctx.recovery_events[0], RecoveryEvent::TrailingGarbage { bytes: 5, .. }),
+        matches!(
+            ctx.recovery_events[0],
+            RecoveryEvent::TrailingGarbage { bytes: 5, .. }
+        ),
         "unexpected recovery event: {:?}",
         ctx.recovery_events
     );

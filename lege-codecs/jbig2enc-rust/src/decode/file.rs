@@ -94,19 +94,23 @@ fn parse_random_access<'a>(
     let mut headers: Vec<SegmentHeader> = Vec::new();
     loop {
         if headers.len() >= limits.max_segments {
-            return Err(DecodeError::limit(crate::decode::error::LimitError::Count {
-                what: "segments",
-                value: headers.len() as u64,
-                limit: limits.max_segments as u64,
-            }));
+            return Err(DecodeError::limit(
+                crate::decode::error::LimitError::Count {
+                    what: "segments",
+                    value: headers.len() as u64,
+                    limit: limits.max_segments as u64,
+                },
+            ));
         }
         let header = parse_segment_header(reader).map_err(DecodeError::Parse)?;
         if header.referred_to.len() > limits.max_referred_segments {
-            return Err(DecodeError::limit(crate::decode::error::LimitError::Count {
-                what: "referred-to segments",
-                value: header.referred_to.len() as u64,
-                limit: limits.max_referred_segments as u64,
-            }));
+            return Err(DecodeError::limit(
+                crate::decode::error::LimitError::Count {
+                    what: "referred-to segments",
+                    value: header.referred_to.len() as u64,
+                    limit: limits.max_referred_segments as u64,
+                },
+            ));
         }
         let is_eof = matches!(header.segment_type(), Some(SegmentType::EndOfFile));
         headers.push(header);
@@ -175,11 +179,13 @@ fn parse_segment_sequence<'a>(
     let mut segments = Vec::new();
     while !reader.is_empty() {
         if segments.len() >= limits.max_segments {
-            return Err(DecodeError::limit(crate::decode::error::LimitError::Count {
-                what: "segments",
-                value: segments.len() as u64,
-                limit: limits.max_segments as u64,
-            }));
+            return Err(DecodeError::limit(
+                crate::decode::error::LimitError::Count {
+                    what: "segments",
+                    value: segments.len() as u64,
+                    limit: limits.max_segments as u64,
+                },
+            ));
         }
         let seg_start = reader.position();
         let remaining_at_start = reader.remaining();
@@ -199,11 +205,13 @@ fn parse_segment_sequence<'a>(
             }
         };
         if header.referred_to.len() > limits.max_referred_segments {
-            return Err(DecodeError::limit(crate::decode::error::LimitError::Count {
-                what: "referred-to segments",
-                value: header.referred_to.len() as u64,
-                limit: limits.max_referred_segments as u64,
-            }));
+            return Err(DecodeError::limit(
+                crate::decode::error::LimitError::Count {
+                    what: "referred-to segments",
+                    value: header.referred_to.len() as u64,
+                    limit: limits.max_referred_segments as u64,
+                },
+            ));
         }
         // §7.2.7 unknown data length: legal only for immediate generic regions,
         // whose length is recovered by scanning for the terminator sequence.

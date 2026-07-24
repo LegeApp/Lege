@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::decode::arith::ArithmeticDecoder;
 use crate::decode::error::{DecodeError, LimitError};
-use crate::decode::huffman::{standard_table, BitReader, HuffmanTable, HuffmanValue};
+use crate::decode::huffman::{BitReader, HuffmanTable, HuffmanValue, standard_table};
 use crate::decode::iaid::IaidContexts;
 use crate::decode::integer::{DecodedInteger, IntegerContexts};
 use crate::decode::refinement::decode_refinement_region_templated;
@@ -117,7 +117,13 @@ pub fn decode_text_region(
         return decode_text_region_huffman(
             &mut r,
             payload,
-            TextGeometry { width, height, x, y, ext_comb },
+            TextGeometry {
+                width,
+                height,
+                x,
+                y,
+                ext_comb,
+            },
             TextFlags {
                 sbrefine,
                 log_strips,
@@ -136,14 +142,18 @@ pub fn decode_text_region(
     }
     // §7.4.3.1.3 SBRAT: refinement adaptive-template pixels, present only when
     // SBREFINE=1 and SBRTEMPLATE=0 (GRTEMPLATE-0 uses two AT pairs = 4 bytes).
-    // Only the first (target) pair GRAT1 is used by the template-0 context.
+    // GRAT1 is the target adaptive pixel; GRAT2 is the reference adaptive pixel
+    // (T.88 Figure 12, context bit 8) — both must be honoured or a custom-AT
+    // refinement region desyncs (pdf.js bitmap-symbol-*refine*-customat).
     let mut grat: (i8, i8) = (-1, -1);
+    let mut grat2: (i8, i8) = (-1, -1);
     if sbrefine && sb_rtemplate == 0 {
         let g1x = r.read_i8()?;
         let g1y = r.read_i8()?;
-        let _g2x = r.read_i8()?;
-        let _g2y = r.read_i8()?;
+        let g2x = r.read_i8()?;
+        let g2y = r.read_i8()?;
         grat = (g1x, g1y);
+        grat2 = (g2x, g2y);
     }
 
     // §7.4.3.1.7 SBNUMINSTANCES.
@@ -178,6 +188,7 @@ pub fn decode_text_region(
         sbrefine,
         sb_rtemplate,
         grat,
+        grat2,
         code_len,
     };
     let data = &payload[r.position()..];
@@ -208,6 +219,7 @@ pub(crate) struct TextArithParams {
     pub sbrefine: bool,
     pub sb_rtemplate: u8,
     pub grat: (i8, i8),
+    pub grat2: (i8, i8),
     pub code_len: u8,
 }
 
@@ -239,13 +251,17 @@ pub(crate) fn decode_text_region_arith(
         let dt = decode_value(int_ctx.decode(dec, IntProc::Iadt))?;
         strip_t = strip_t
             .checked_add(dt as i64 * sb_strips)
-            .ok_or(DecodeError::Overflow { operation: "strip T" })?;
+            .ok_or(DecodeError::Overflow {
+                operation: "strip T",
+            })?;
 
         // §6.4.5 3c) first symbol S coordinate.
         let dfs = decode_value(int_ctx.decode(dec, IntProc::Iafs))?;
         first_s = first_s
             .checked_add(dfs as i64)
-            .ok_or(DecodeError::Overflow { operation: "first S" })?;
+            .ok_or(DecodeError::Overflow {
+                operation: "first S",
+            })?;
         let mut cur_s = first_s;
         let mut first_in_strip = true;
 
@@ -257,7 +273,9 @@ pub(crate) fn decode_text_region_arith(
                     DecodedInteger::Value(ids) => {
                         cur_s = cur_s
                             .checked_add(ids as i64 + p.sb_ds_offset as i64)
-                            .ok_or(DecodeError::Overflow { operation: "S coordinate" })?;
+                            .ok_or(DecodeError::Overflow {
+                                operation: "S coordinate",
+                            })?;
                     }
                 }
             }
@@ -275,9 +293,9 @@ pub(crate) fn decode_text_region_arith(
             } else {
                 decode_value(int_ctx.decode(dec, IntProc::Iait))? as i64
             };
-            let t_i = strip_t
-                .checked_add(cur_t)
-                .ok_or(DecodeError::Overflow { operation: "T coordinate" })?;
+            let t_i = strip_t.checked_add(cur_t).ok_or(DecodeError::Overflow {
+                operation: "T coordinate",
+            })?;
 
             // §6.4.5 3c x) symbol id.
             let id = iaid_ctx.decode(dec, p.code_len);
@@ -325,6 +343,7 @@ pub(crate) fn decode_text_region_arith(
                     p.sb_rtemplate,
                     false,
                     p.grat,
+                    p.grat2,
                     refine_ctx,
                     limits,
                 )?;
@@ -542,12 +561,14 @@ fn decode_text_region_huffman(
 
     // §7.4.3.1.3 SBRAT: present when SBREFINE=1 and SBRTEMPLATE=0.
     let mut grat: (i8, i8) = (-1, -1);
+    let mut grat2: (i8, i8) = (-1, -1);
     if tf.sbrefine && tf.sb_rtemplate == 0 {
         let g1x = r.read_i8()?;
         let g1y = r.read_i8()?;
-        let _g2x = r.read_i8()?;
-        let _g2y = r.read_i8()?;
+        let g2x = r.read_i8()?;
+        let g2y = r.read_i8()?;
         grat = (g1x, g1y);
+        grat2 = (g2x, g2y);
     }
 
     // §7.4.3.1.4 SBNUMINSTANCES.
@@ -623,6 +644,7 @@ fn decode_text_region_huffman(
         sbrefine: tf.sbrefine,
         sb_rtemplate: tf.sb_rtemplate,
         grat,
+        grat2,
     };
     let bitmap = decode_huffman_text_core(&mut br, &tables, &params, symbols, refine_ctx, limits)?;
     Ok(TextRegionResult {
@@ -648,6 +670,7 @@ pub(crate) struct HuffTextParams {
     pub sbrefine: bool,
     pub sb_rtemplate: u8,
     pub grat: (i8, i8),
+    pub grat2: (i8, i8),
 }
 
 /// The Huffman tables a text region reads from (already resolved to concrete
@@ -692,13 +715,15 @@ pub(crate) fn decode_huffman_text_core(
         let dt = huff_value(tables.dt.decode(br)?)? as i64;
         strip_t = strip_t
             .checked_add(dt * sb_strips)
-            .ok_or(DecodeError::Overflow { operation: "strip T" })?;
+            .ok_or(DecodeError::Overflow {
+                operation: "strip T",
+            })?;
 
         // §6.4.5 4c i) first S coordinate.
         let dfs = huff_value(tables.fs.decode(br)?)? as i64;
-        first_s = first_s
-            .checked_add(dfs)
-            .ok_or(DecodeError::Overflow { operation: "first S" })?;
+        first_s = first_s.checked_add(dfs).ok_or(DecodeError::Overflow {
+            operation: "first S",
+        })?;
         let mut cur_s = first_s;
         let mut first_in_strip = true;
 
@@ -710,7 +735,9 @@ pub(crate) fn decode_huffman_text_core(
                     HuffmanValue::Value(ids) => {
                         cur_s = cur_s
                             .checked_add(ids as i64 + p.sb_ds_offset as i64)
-                            .ok_or(DecodeError::Overflow { operation: "S coordinate" })?;
+                            .ok_or(DecodeError::Overflow {
+                                operation: "S coordinate",
+                            })?;
                     }
                 }
             }
@@ -728,9 +755,9 @@ pub(crate) fn decode_huffman_text_core(
             } else {
                 br.read_bits(log_strips) as i64
             };
-            let t_i = strip_t
-                .checked_add(cur_t)
-                .ok_or(DecodeError::Overflow { operation: "T coordinate" })?;
+            let t_i = strip_t.checked_add(cur_t).ok_or(DecodeError::Overflow {
+                operation: "T coordinate",
+            })?;
 
             // §6.4.5 4c iv) symbol ID via SBSYMCODES.
             let id = match tables.sym.decode(br)? {
@@ -795,6 +822,7 @@ pub(crate) fn decode_huffman_text_core(
                     p.sb_rtemplate,
                     false,
                     p.grat,
+                    p.grat2,
                     refine_ctx,
                     limits,
                 )?;
@@ -851,9 +879,9 @@ fn place_symbol(
     if !transposed {
         // vi) right corners advance CURS (the X axis) by WI-1 before placement.
         if right {
-            *cur_s = cur_s
-                .checked_add(wi - 1)
-                .ok_or(DecodeError::Overflow { operation: "S advance (pre)" })?;
+            *cur_s = cur_s.checked_add(wi - 1).ok_or(DecodeError::Overflow {
+                operation: "S advance (pre)",
+            })?;
         }
         let si = *cur_s;
         // viii) SBREG[SI, TI] with the given reference corner → top-left.
@@ -862,17 +890,17 @@ fn place_symbol(
         bitmap.combine(symbol, clamp_i32(x_left), clamp_i32(y_top), op);
         // xi) left corners advance CURS by WI-1 after placement.
         if !right {
-            *cur_s = cur_s
-                .checked_add(wi - 1)
-                .ok_or(DecodeError::Overflow { operation: "S advance (post)" })?;
+            *cur_s = cur_s.checked_add(wi - 1).ok_or(DecodeError::Overflow {
+                operation: "S advance (post)",
+            })?;
         }
     } else {
         // Transposed: the S axis is Y and the T axis is X (§6.4.5).
         // vi) bottom corners advance CURS (the Y axis) by HI-1 before placement.
         if bottom {
-            *cur_s = cur_s
-                .checked_add(hi - 1)
-                .ok_or(DecodeError::Overflow { operation: "S advance (pre)" })?;
+            *cur_s = cur_s.checked_add(hi - 1).ok_or(DecodeError::Overflow {
+                operation: "S advance (pre)",
+            })?;
         }
         let si = *cur_s;
         // viii) SBREG[TI, SI] with the given reference corner → top-left.
@@ -881,9 +909,9 @@ fn place_symbol(
         bitmap.combine(symbol, clamp_i32(x_left), clamp_i32(y_top), op);
         // xi) top corners advance CURS by HI-1 after placement.
         if !bottom {
-            *cur_s = cur_s
-                .checked_add(hi - 1)
-                .ok_or(DecodeError::Overflow { operation: "S advance (post)" })?;
+            *cur_s = cur_s.checked_add(hi - 1).ok_or(DecodeError::Overflow {
+                operation: "S advance (post)",
+            })?;
         }
     }
     Ok(())
@@ -949,7 +977,9 @@ mod tests {
             }
             r + if is_pow { 0 } else { 1 }
         }
-        for v in [0u32, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1000] {
+        for v in [
+            0u32, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1000,
+        ] {
             assert_eq!(log2_ceil(v.max(1)), log2up(v.max(1)), "v={v}");
         }
     }

@@ -23,15 +23,16 @@ use crate::shared::reader::Reader;
 pub const REFINEMENT_CONTEXT_COUNT: usize = 1 << 13;
 
 // SLTP pseudo-pixel contexts for TPGRON (T.88 §6.3.5.6, Figures 14/15 set the
-// centre reference pixel to 1). GRTEMPLATE-0's centre-reference bit is bit 4
-// (0x010) in this crate's numbering. GRTEMPLATE-1's value is 0x040 — this
-// crate's template-1 bit numbering differs from jbig2dec's by a transposition
-// that is invisible without TPGRON (the pixel partition is identical, so the MQ
-// stream matches), but the SLTP slot must land where jbig2dec's does; 0x040 is
-// verified against jbig2dec across a 20-image sweep (0x080, the naive
-// centre-reference bit, desyncs).
+// centre reference pixel to 1). The SLTP context is the index whose only set
+// bit is the centre-reference pixel GRREFERENCE(w, h). In this crate's context
+// numbering that pixel is bit 4 for GRTEMPLATE-0 (0x010) and bit 7 for
+// GRTEMPLATE-1 (0x080). These match pdfium's CJBig2_GRRDProc, which decodes
+// SLTP with grContexts[0x0010] (template 0) and grContexts[0x0008] (template 1)
+// — both the centre reference in pdfium's own numbering. The earlier 0x040
+// (bit 6 = GRREFERENCE(w+1, h)) desynced every template-1 TPGRON region
+// (pdf.js bitmap-refine-template1-tpgron).
 const SLTP_CTX_GR0: usize = 0x010;
-const SLTP_CTX_GR1: usize = 0x040;
+const SLTP_CTX_GR1: usize = 0x080;
 
 /// A parsed standalone generic-refinement-region segment header (T.88 §7.4.7),
 /// plus the arithmetic-coded payload that follows it.
@@ -49,6 +50,9 @@ pub struct RefinementRegionSegment<'a> {
     /// GRAT1 (target adaptive-template pixel), nominally `(-1, -1)`. Unused for
     /// GRTEMPLATE-1, which has no adaptive pixel.
     pub grat: (i8, i8),
+    /// GRAT2 (reference adaptive-template pixel), nominally `(-1, -1)`. Forms
+    /// context bit 0 for GRTEMPLATE-0 (T.88 Fig. 12); unused for GRTEMPLATE-1.
+    pub grat2: (i8, i8),
     pub data: &'a [u8],
 }
 
@@ -70,14 +74,14 @@ pub fn parse_refinement_region(payload: &[u8]) -> Result<RefinementRegionSegment
 
     // §7.4.7.3 AT flags: present only when GRTEMPLATE=0 (two AT pairs, 4 bytes).
     // Only GRAT1 is used by the template-0 context; template 1 has no AT pixel.
-    let grat = if grtemplate == 0 {
+    let (grat, grat2) = if grtemplate == 0 {
         let g1x = r.read_i8()?;
         let g1y = r.read_i8()?;
-        let _g2x = r.read_i8()?;
-        let _g2y = r.read_i8()?;
-        (g1x, g1y)
+        let g2x = r.read_i8()?;
+        let g2y = r.read_i8()?;
+        ((g1x, g1y), (g2x, g2y))
     } else {
-        (-1, -1)
+        ((-1, -1), (-1, -1))
     };
 
     let data = &payload[r.position()..];
@@ -90,6 +94,7 @@ pub fn parse_refinement_region(payload: &[u8]) -> Result<RefinementRegionSegment
         grtemplate,
         tpgron,
         grat,
+        grat2,
         data,
     })
 }
@@ -107,7 +112,9 @@ pub fn page_reference_window(
 ) -> Result<MonoBitmap, DecodeError> {
     let pixels = (width as u64)
         .checked_mul(height as u64)
-        .ok_or(DecodeError::Overflow { operation: "refinement window pixels" })?;
+        .ok_or(DecodeError::Overflow {
+            operation: "refinement window pixels",
+        })?;
     if pixels > limits.max_page_pixels {
         return Err(DecodeError::limit(LimitError::Pixels {
             what: "refinement window",
@@ -160,7 +167,18 @@ pub fn decode_refinement_region(
     limits: &DecodeLimits,
 ) -> Result<MonoBitmap, DecodeError> {
     decode_refinement_region_templated(
-        dec, reference, width, height, grdx, grdy, 0, false, grat, contexts, limits,
+        dec,
+        reference,
+        width,
+        height,
+        grdx,
+        grdy,
+        0,
+        false,
+        grat,
+        (-1, -1),
+        contexts,
+        limits,
     )
 }
 
@@ -180,6 +198,7 @@ pub fn decode_refinement_region_templated(
     grtemplate: u8,
     tpgron: bool,
     grat: (i8, i8),
+    grat2: (i8, i8),
     contexts: &mut [MqContext],
     limits: &DecodeLimits,
 ) -> Result<MonoBitmap, DecodeError> {
@@ -195,7 +214,13 @@ pub fn decode_refinement_region_templated(
 
     let grat_x = grat.0 as i64;
     let grat_y = grat.1 as i64;
-    let sltp_ctx = if grtemplate == 0 { SLTP_CTX_GR0 } else { SLTP_CTX_GR1 };
+    let grat2_x = grat2.0 as i64;
+    let grat2_y = grat2.1 as i64;
+    let sltp_ctx = if grtemplate == 0 {
+        SLTP_CTX_GR0
+    } else {
+        SLTP_CTX_GR1
+    };
     let mut ltp = false;
 
     for y in 0..height as i64 {
@@ -222,7 +247,9 @@ pub fn decode_refinement_region_templated(
             }
 
             let cx = if grtemplate == 0 {
-                context_gr0(&target, reference, x, y, rx, ry, grat_x, grat_y)
+                context_gr0(
+                    &target, reference, x, y, rx, ry, grat_x, grat_y, grat2_x, grat2_y,
+                )
             } else {
                 context_gr1(&target, reference, x, y, rx, ry)
             };
@@ -249,9 +276,17 @@ fn context_gr0(
     ry: i64,
     grat_x: i64,
     grat_y: i64,
+    grat2_x: i64,
+    grat2_y: i64,
 ) -> usize {
     let mut cx: usize = 0;
-    cx |= pget(reference, rx - 1, ry - 1) as usize;
+    // Bit 0 is the GRAT2 adaptive *reference* pixel (T.88 Fig. 12), nominally
+    // (rx-1, ry-1). pdfium's DecodeTemplate0UnoptCalculateContext reads
+    // GRREFERENCE(w + GRAT[2], h + GRAT[3]) for this slot — there is no fixed
+    // (rx-1, ry-1) reference pixel in the template — so a custom GRAT2 must be
+    // honoured or every custom-AT refinement region desyncs (pdf.js
+    // bitmap-refine-customat).
+    cx |= pget(reference, rx + grat2_x, ry + grat2_y) as usize;
     cx |= (pget(reference, rx, ry - 1) as usize) << 1;
     cx |= (pget(reference, rx + 1, ry - 1) as usize) << 2;
     cx |= (pget(reference, rx - 1, ry) as usize) << 3;
@@ -346,7 +381,15 @@ mod tests {
         let mut dec = ArithmeticDecoder::new(&data);
         let mut ctx = vec![MqContext::default(); REFINEMENT_CONTEXT_COUNT];
         let out = decode_refinement_region(
-            &mut dec, &ref_mono, 12, 16, 0, 0, (-1, -1), &mut ctx, &limits,
+            &mut dec,
+            &ref_mono,
+            12,
+            16,
+            0,
+            0,
+            (-1, -1),
+            &mut ctx,
+            &limits,
         )
         .unwrap();
 
@@ -355,5 +398,40 @@ mod tests {
                 assert_eq!(out.get(x, y), target.get(x, y), "pixel ({x},{y})");
             }
         }
+    }
+}
+
+// Decoder-only regression: the GRTEMPLATE-0 refinement context must read the
+// *reference* adaptive pixel at the parsed GRAT2 offset (T.88 Fig. 12, bit 8 in
+// pdfium's numbering / bit 0 here), not a fixed (rx-1, ry-1). A custom SDRAT2 /
+// SBRAT2 that is dropped desyncs every custom-AT refinement region — the
+// pdf.js bitmap-symbol-symbolrefineone-customat fixture blanked because of it.
+#[cfg(test)]
+mod grat2_tests {
+    use super::*;
+
+    #[test]
+    fn context_gr0_reads_the_custom_grat2_reference_pixel() {
+        let limits = DecodeLimits::default();
+        let target = MonoBitmap::new(8, 8, false, &limits).unwrap();
+        let mut reference = MonoBitmap::new(8, 8, false, &limits).unwrap();
+        // A lone black pixel far from the fixed neighbourhood window around
+        // (rx±1, ry±1) = (4..=6, 4..=6), so only the GRAT2 tap can see it.
+        reference.set(2, 3, true);
+
+        let (x, y, rx, ry) = (5i64, 5i64, 5i64, 5i64);
+        // Nominal GRAT1 target pixel, so bit 12 stays 0.
+        let (grat_x, grat_y) = (-1i64, -1i64);
+
+        // Nominal GRAT2 = (-1,-1) reads reference(4,4) = white → context 0.
+        let nominal = context_gr0(&target, &reference, x, y, rx, ry, grat_x, grat_y, -1, -1);
+        assert_eq!(nominal, 0, "nominal GRAT2 must not see the (2,3) pixel");
+
+        // Custom GRAT2 pointing at (2,3): rx+dx=2, ry+dy=3 → dx=-3, dy=-2.
+        let custom = context_gr0(&target, &reference, x, y, rx, ry, grat_x, grat_y, -3, -2);
+        assert_eq!(
+            custom, 1,
+            "custom GRAT2 must read the reference pixel into bit 0"
+        );
     }
 }

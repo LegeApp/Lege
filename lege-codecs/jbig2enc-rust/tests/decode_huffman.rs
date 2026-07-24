@@ -10,9 +10,9 @@
 mod common;
 
 use common::writer::{
-    huffman_symbol_text_page, huffman_symbol_text_page_ex, standalone_file, TestBitmap,
+    TestBitmap, huffman_symbol_text_page, huffman_symbol_text_page_ex, standalone_file,
 };
-use jbig2enc_rust::decode::{decode_embedded, DecodeOptions};
+use jbig2enc_rust::decode::{DecodeOptions, decode_embedded};
 
 /// A small distinct glyph of the given size.
 fn glyph(w: u32, h: u32, seed: u32) -> TestBitmap {
@@ -107,7 +107,12 @@ fn two_glyphs_side_by_side() {
 #[test]
 fn several_glyphs_varied_widths() {
     // Symbols ordered by non-decreasing width within the single height class.
-    let symbols = vec![glyph(3, 10, 3), glyph(4, 10, 4), glyph(7, 10, 5), glyph(9, 10, 6)];
+    let symbols = vec![
+        glyph(3, 10, 3),
+        glyph(4, 10, 4),
+        glyph(7, 10, 5),
+        glyph(9, 10, 6),
+    ];
     let placements = [(0usize, 0i32), (2, 6), (1, 16), (3, 22), (0, 34)];
     check(60, 14, &symbols, &placements, "varied-widths");
 }
@@ -151,7 +156,11 @@ fn transposed_vertical_text() {
         .unwrap_or_else(|e| panic!("transposed: native decode failed: {e}"));
     for y in 0..h {
         for x in 0..w {
-            assert_eq!(got.get(x, y), expected.get(x, y), "transposed native ({x},{y})");
+            assert_eq!(
+                got.get(x, y),
+                expected.get(x, y),
+                "transposed native ({x},{y})"
+            );
         }
     }
     let file = standalone_file(&stream);
@@ -173,7 +182,6 @@ fn transposed_vertical_text() {
 fn many_symbols_wide_id_codes() {
     // Enough symbols to force multi-bit symbol-ID codes (L = ceil(log2 N)).
     let symbols: Vec<TestBitmap> = (0..10).map(|i| glyph(4, 8, 100 + i)).collect();
-    let placements: Vec<(usize, i32)> =
-        (0..10).map(|i| (i as usize, (i as i32) * 6)).collect();
+    let placements: Vec<(usize, i32)> = (0..10).map(|i| (i as usize, (i as i32) * 6)).collect();
     check(80, 12, &symbols, &placements, "many-symbols");
 }

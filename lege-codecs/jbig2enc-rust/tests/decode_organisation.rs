@@ -6,8 +6,8 @@
 
 mod common;
 
-use common::writer::{nominal_at, random_access_generic_file, TestBitmap};
-use jbig2enc_rust::decode::{decode_file, DecodeOptions};
+use common::writer::{TestBitmap, nominal_at, random_access_generic_file};
+use jbig2enc_rust::decode::{DecodeOptions, decode_file};
 
 fn random_bitmap(w: u32, h: u32, seed: u32) -> TestBitmap {
     let mut bm = TestBitmap::new(w, h);

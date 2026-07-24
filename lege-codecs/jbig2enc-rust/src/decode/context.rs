@@ -134,7 +134,10 @@ impl DecoderContext {
     /// which need both.
     pub fn generic_and_scratch(
         &mut self,
-    ) -> (&mut [MqContext], &mut crate::decode::generic::GenericScratch) {
+    ) -> (
+        &mut [MqContext],
+        &mut crate::decode::generic::GenericScratch,
+    ) {
         self.ensure_generic();
         for c in &mut self.generic_contexts[..GENERIC_CONTEXT_COUNT] {
             *c = MqContext::default();
@@ -207,6 +210,9 @@ mod tests {
 
     #[test]
     fn default_options_are_strict() {
-        assert_eq!(DecodeOptions::default().strictness, DecodeStrictness::Strict);
+        assert_eq!(
+            DecodeOptions::default().strictness,
+            DecodeStrictness::Strict
+        );
     }
 }

@@ -16,11 +16,9 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-use jbig2enc_rust as jbig2;
 use jbig2::jbig2structs::Jbig2Config;
-use jbig2::{
-    Array2, encode_document_pdf_split, encode_single_image_with_config, Jbig2Context,
-};
+use jbig2::{Array2, Jbig2Context, encode_document_pdf_split, encode_single_image_with_config};
+use jbig2enc_rust as jbig2;
 
 const MANIFEST: &str = "tests/fixtures/encode_hashes.txt";
 
@@ -90,23 +88,26 @@ fn main_manifest_lines() -> Vec<String> {
                 sha256_hex(&embedded.page_data)
             ));
             if let Some(g) = &embedded.global_data {
-                lines.push(format!("{name} {mode_name} embedded global {}", sha256_hex(g)));
+                lines.push(format!(
+                    "{name} {mode_name} embedded global {}",
+                    sha256_hex(g)
+                ));
             }
         }
     }
 
     // Multi-page PDF split sharing one global dictionary across both fixtures.
-    let pages: Vec<Array2<u8>> = fixtures()
-        .iter()
-        .map(|f| load_pbm_array(f))
-        .collect();
+    let pages: Vec<Array2<u8>> = fixtures().iter().map(|f| load_pbm_array(f)).collect();
     let split = encode_document_pdf_split(&pages, &Jbig2Config::text())
         .expect("multipage pdf_split encode failed");
     if let Some(g) = &split.global_segments {
         lines.push(format!("multipage symbol split global {}", sha256_hex(g)));
     }
     for (i, page) in split.page_streams.iter().enumerate() {
-        lines.push(format!("multipage symbol split page{i} {}", sha256_hex(page)));
+        lines.push(format!(
+            "multipage symbol split page{i} {}",
+            sha256_hex(page)
+        ));
     }
 
     lines
@@ -208,7 +209,11 @@ fn load_pbm_array(path: &str) -> Array2<u8> {
     let mut arr = Array2::<u8>::zeros((h as usize, w as usize));
     for y in 0..h as usize {
         for x in 0..w as usize {
-            arr[[y, x]] = if pixels[y * w as usize + x] != 0 { 255 } else { 0 };
+            arr[[y, x]] = if pixels[y * w as usize + x] != 0 {
+                255
+            } else {
+                0
+            };
         }
     }
     arr

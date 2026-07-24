@@ -33,7 +33,7 @@ pub mod text_region;
 pub use context::{DecodeOptions, DecodeStrictness, DecoderContext, RecoveryEvent};
 pub use error::{DecodeError, LimitError, ParseError, UnsupportedFeature};
 pub use file::{FileOrganization, ParsedDocument, ParsedSegment};
-pub use globals::{decode_globals, DecodedGlobals};
+pub use globals::{DecodedGlobals, decode_globals};
 pub use page::{DecodedPage, PageInformation};
 pub use store::{DecodedSegment, SegmentStore};
 pub use symbol_dictionary::SymbolDictionary;
@@ -72,7 +72,10 @@ pub fn decode_file_with_context(
     let doc = file::parse_auto_with(data, &options.limits, options.strictness)?;
     let organization = doc.organization;
     let pages = page::process_document(&doc, &options.limits, ctx)?;
-    Ok(DecodedDocument { organization, pages })
+    Ok(DecodedDocument {
+        organization,
+        pages,
+    })
 }
 
 /// Decode a single PDF-embedded page stream, returning its page bitmap
@@ -117,8 +120,7 @@ pub fn decode_embedded_with_globals(
     ctx: &mut DecoderContext,
 ) -> Result<MonoBitmap, DecodeError> {
     let doc = file::parse_auto_with(page_data, &options.limits, options.strictness)?;
-    let mut pages =
-        page::process_document_with_globals(&doc, globals, &options.limits, ctx)?;
+    let mut pages = page::process_document_with_globals(&doc, globals, &options.limits, ctx)?;
     if pages.is_empty() {
         return Err(DecodeError::InvalidFileHeader);
     }
@@ -142,13 +144,8 @@ pub fn decode_embedded_into(
         _ => None,
     };
     let doc = file::parse_auto_with(page_data, &options.limits, options.strictness)?;
-    let produced = page::process_document_into(
-        &doc,
-        decoded_globals.as_ref(),
-        &options.limits,
-        ctx,
-        target,
-    )?;
+    let produced =
+        page::process_document_into(&doc, decoded_globals.as_ref(), &options.limits, ctx, target)?;
     if !produced {
         return Err(DecodeError::InvalidFileHeader);
     }
