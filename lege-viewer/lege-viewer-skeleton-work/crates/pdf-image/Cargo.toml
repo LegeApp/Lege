@@ -1,0 +1,26 @@
+[package]
+name = "pdf-image"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-object = { workspace = true }
+pdf-color = { workspace = true }
+pdf-page-ir = { workspace = true }
+jp2lam = { workspace = true }
+# JBIG2 decoder (decode-only). Confined to src/jbig2.rs.
+jbig2enc-rust = { workspace = true }
+pdf-profiling = { workspace = true, optional = true }
+
+[features]
+profiling = ["dep:pdf-profiling"]
+
+[dev-dependencies]
+# Differential oracle for the native CCITT decoder (src/ccitt.rs tests only).
+hayro-ccitt = { workspace = true }
+
+[lints]
+workspace = true

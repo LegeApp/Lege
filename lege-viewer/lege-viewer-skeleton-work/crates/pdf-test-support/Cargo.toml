@@ -1,0 +1,14 @@
+[package]
+name = "pdf-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-security = { workspace = true }
+
+[lints]
+workspace = true

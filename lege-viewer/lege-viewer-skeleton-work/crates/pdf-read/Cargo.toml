@@ -1,0 +1,22 @@
+[package]
+name = "pdf-read"
+description = "qpdf-style read-only document doctor: examine a PDF and report structure, encryption, page, annotation, and feature health."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pdf-source = { workspace = true }
+pdf-object = { workspace = true }
+pdf-structure = { workspace = true }
+pdf-document = { workspace = true }
+pdf-security = { workspace = true }
+pdf-content = { workspace = true }
+
+[dev-dependencies]
+pdf-test-support = { workspace = true }

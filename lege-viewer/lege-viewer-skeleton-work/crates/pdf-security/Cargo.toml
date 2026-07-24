@@ -1,0 +1,13 @@
+[package]
+name = "pdf-security"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-object = { workspace = true }
+
+[lints]
+workspace = true

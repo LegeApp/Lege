@@ -1,0 +1,31 @@
+[package]
+name = "pdf-render-cpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+rayon = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-image = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-color = { workspace = true }
+pdf-font = { version = "0.1.0", path = "../pdf-font" }
+pdf-profiling = { workspace = true, optional = true }
+
+[features]
+profiling = ["dep:pdf-profiling", "pdf-image/profiling"]
+
+# Dependency-free timing harness (no criterion): keeps the dep tree lean while
+# giving `cargo bench` a stable per-stage signal for iterative perf work.
+[[bench]]
+name = "raster"
+harness = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+pdf-test-support = { path = "../pdf-test-support" }

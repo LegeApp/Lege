@@ -1,0 +1,15 @@
+[package]
+name = "pdf-geom"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Leaf geometry crate: no dependencies, by design. Shared seam with the
+# lege-pdf writer (lege-pdf/write/src/types.rs mirrors Affine/PdfRect
+# field-for-field); at migration time the writer adopts these types and
+# retires its mirrors.
+[dependencies]
+
+[lints]
+workspace = true

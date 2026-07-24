@@ -1,0 +1,26 @@
+[package]
+name = "pdf-render-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+rayon = { workspace = true }
+crossbeam-channel = { workspace = true }
+pdf-document = { workspace = true }
+pdf-content = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-profiling = { workspace = true, optional = true }
+
+[features]
+profiling = ["dep:pdf-profiling", "pdf-document/profiling", "pdf-content/profiling"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+pdf-source = { path = "../pdf-source" }
+pdf-test-support = { path = "../pdf-test-support" }

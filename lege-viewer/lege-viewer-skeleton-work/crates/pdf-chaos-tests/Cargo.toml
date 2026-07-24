@@ -1,0 +1,27 @@
+[package]
+name = "pdf-chaos-tests"
+description = "Stable chaos/mutation regression gate for the never-panic invariant (dev/test-only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The library half holds the deterministic PRNG + mutation engine so the
+# harness itself is unit-testable. No external crates: the stable chaos
+# suite must run on stable with zero new dependencies.
+
+[dev-dependencies]
+pdf-source = { workspace = true }
+pdf-document = { workspace = true }
+pdf-content = { workspace = true }
+pdf-text = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-render-cpu = { workspace = true }
+pdf-test-support = { workspace = true }

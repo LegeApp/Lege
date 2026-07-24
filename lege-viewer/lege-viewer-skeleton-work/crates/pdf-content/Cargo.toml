@@ -1,0 +1,28 @@
+[package]
+name = "pdf-content"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-syntax = { workspace = true }
+pdf-object = { workspace = true }
+pdf-document = { workspace = true }
+pdf-color = { workspace = true }
+pdf-function = { workspace = true }
+pdf-font = { workspace = true }
+pdf-image = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-profiling = { workspace = true, optional = true }
+
+[features]
+profiling = ["dep:pdf-profiling", "pdf-document/profiling"]
+
+[dev-dependencies]
+pdf-source = { workspace = true }
+pdf-test-support = { workspace = true }
+
+[lints]
+workspace = true

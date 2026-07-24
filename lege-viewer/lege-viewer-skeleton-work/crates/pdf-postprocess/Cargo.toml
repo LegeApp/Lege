@@ -1,0 +1,13 @@
+[package]
+name = "pdf-postprocess"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-render-api = { workspace = true }
+
+[lints]
+workspace = true

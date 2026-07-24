@@ -1,0 +1,17 @@
+[package]
+name = "pdf-font"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-object = { workspace = true }
+skrifa = "0.44.0"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+pdf-test-support = { path = "../pdf-test-support" }

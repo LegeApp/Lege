@@ -1,0 +1,20 @@
+[package]
+name = "pdf-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+pdf-content = { workspace = true }
+pdf-font = { workspace = true }
+pdf-page-ir = { workspace = true }
+
+[dev-dependencies]
+pdf-document = { workspace = true }
+pdf-source = { workspace = true }
+pdf-test-support = { workspace = true }
+
+[lints]
+workspace = true

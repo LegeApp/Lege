@@ -1,0 +1,16 @@
+[package]
+name = "pdf-structure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+pdf-source = { workspace = true }
+pdf-syntax = { workspace = true }
+pdf-object = { workspace = true }
+
+[lints]
+workspace = true

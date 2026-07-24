@@ -1,0 +1,8 @@
+# Pinned to the latest stable, shared with jp2lam and the Lege ecosystem so
+# the renderer builds identically everywhere it is consumed. jp2lam (the
+# JPEG 2000 decoder, shared with Lege) is an edition-2024 crate; pin here
+# rather than constrain jp2lam.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["rustc", "cargo", "rust-std", "clippy", "rustfmt"]

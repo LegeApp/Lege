@@ -1,0 +1,25 @@
+[package]
+name = "pdf-document"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-source = { workspace = true }
+pdf-syntax = { workspace = true }
+pdf-object = { workspace = true }
+pdf-structure = { workspace = true }
+pdf-security = { workspace = true }
+pdf-profiling = { workspace = true, optional = true }
+
+[features]
+profiling = ["dep:pdf-profiling"]
+
+[dev-dependencies]
+pdf-test-support = { workspace = true }
+flate2 = { workspace = true }
+
+[lints]
+workspace = true

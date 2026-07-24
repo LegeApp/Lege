@@ -1,0 +1,15 @@
+[package]
+name = "pdf-page-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# THE rendering contract. Depends on no other engine crate — parser layers
+# produce it, render backends consume it, and neither side leaks through.
+[dependencies]
+bitflags = { workspace = true }
+pdf-geom = { workspace = true }
+
+[lints]
+workspace = true
