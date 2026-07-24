@@ -58,8 +58,10 @@ pub mod reflow; // RasterReflow: raster-first reflow for scanned books (scaffold
 #[path = "../resize/mod.rs"]
 pub mod resize;
 pub mod resolution_preset;
+pub mod runtime_stats;
 // resize context is now merged into pipeline::policies
 pub mod text_loader;
+pub mod toc; // Automatic table of contents: title capture + outline synthesis
 pub mod types;
 pub mod unicode_font;
 pub mod windows_dirs;
@@ -79,10 +81,8 @@ pub use encoding::toojpeg::{EncodeOptions, ImageFormat, encode_jpeg};
 pub use pipeline::{
     // Config types
     ImageRegionDitherMode,
-    InferenceActor,
     // Inference types
     InferenceHandle,
-    InferenceJob,
     PageRange,
     PageSelection,
     PageTask,
@@ -93,7 +93,6 @@ pub use pipeline::{
     // Helper functions and types
     ShutdownSignal,
     build_hocr_from_pdf_text,
-    ensure_pdfium_available,
     get_available_ram_gb,
     is_ocr_available,
     // Other

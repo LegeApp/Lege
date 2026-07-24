@@ -15,6 +15,11 @@ mod worker_process;
 
 use freya::prelude::*;
 
+/// Blocking-pool cap for the GUI shell. It mirrors
+/// `lege::runtime_stats::MAX_BLOCKING_THREADS`; the GUI talks to the worker
+/// over IPC and does not link the processing crate.
+const MAX_BLOCKING_THREADS: usize = 4;
+
 #[cfg(target_os = "windows")]
 use winapi::um::wincon::GetConsoleWindow;
 #[cfg(target_os = "windows")]
@@ -50,6 +55,8 @@ fn main() {
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
         .build()
         .expect("failed to create tokio runtime for Freya GUI");

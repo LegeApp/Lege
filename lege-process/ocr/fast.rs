@@ -89,38 +89,42 @@ pub async fn perform_page_rgb_ocr(
             (luma, true)
         }
     };
-    let result = tokio::task::spawn_blocking(move || -> Result<String> {
-        // Suppress show-through while preserving antialiasing. Keep this as one
-        // grayscale byte per pixel: Paddle expands it only once at the detector
-        // boundary, avoiding two redundant full-page RGB allocations/copies.
-        let cleaned = if needs_cleaning {
-            let opts = crate::clean_gray::CleanOptions::production_for_height(height, invert_input);
-            match crate::clean_gray::clean_gray_page(&luma, width, height, &opts) {
-                Ok(cleaned) => cleaned.pixels,
-                Err(_) => luma,
+    let result = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Ocr,
+        move || -> Result<String> {
+            // Suppress show-through while preserving antialiasing. Keep this as one
+            // grayscale byte per pixel: Paddle expands it only once at the detector
+            // boundary, avoiding two redundant full-page RGB allocations/copies.
+            let cleaned = if needs_cleaning {
+                let opts =
+                    crate::clean_gray::CleanOptions::production_for_height(height, invert_input);
+                match crate::clean_gray::clean_gray_page(&luma, width, height, &opts) {
+                    Ok(cleaned) => cleaned.pixels,
+                    Err(_) => luma,
+                }
+            } else {
+                luma
+            };
+            let gray = GrayImage::from_raw(width as u32, height as u32, cleaned)
+                .context("failed to build cleaned OCR image")?;
+            if gray.as_raw().first().map_or(true, |first| {
+                gray.as_raw().iter().all(|value| value == first)
+            }) {
+                return Ok(lege_ocr::hocr::build_page_hocr(
+                    &[],
+                    width as u32,
+                    height as u32,
+                ));
             }
-        } else {
-            luma
-        };
-        let gray = GrayImage::from_raw(width as u32, height as u32, cleaned)
-            .context("failed to build cleaned OCR image")?;
-        if gray.as_raw().first().map_or(true, |first| {
-            gray.as_raw().iter().all(|value| value == first)
-        }) {
-            return Ok(lege_ocr::hocr::build_page_hocr(
-                &[],
+            let engine = default_engine();
+            let lines = engine.ocr_page(&gray, &lang)?;
+            Ok(lege_ocr::hocr::build_page_hocr(
+                &lines,
                 width as u32,
                 height as u32,
-            ));
-        }
-        let engine = default_engine();
-        let lines = engine.ocr_page(&gray, &lang)?;
-        Ok(lege_ocr::hocr::build_page_hocr(
-            &lines,
-            width as u32,
-            height as u32,
-        ))
-    })
+            ))
+        },
+    )
     .await
     .map_err(|err| anyhow::anyhow!("OCR task panicked: {err}"))??;
     Ok(result)
@@ -135,11 +139,12 @@ pub async fn perform_ocr_on_binarized(
 ) -> Result<String> {
     let _permit = OCR_SEMAPHORE.acquire().await;
     let lang = language.to_string();
-    let result = tokio::task::spawn_blocking(move || {
-        let engine = default_engine();
-        engine.run_image(&binarized, width, height, true, &lang)
-    })
-    .await?;
+    let result =
+        crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Ocr, move || {
+            let engine = default_engine();
+            engine.run_image(&binarized, width, height, true, &lang)
+        })
+        .await?;
 
     Ok(result.map(|r| r.hocr).unwrap_or_default())
 }

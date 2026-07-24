@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crate::ShutdownSignal;
 use anyhow::{Context, Result};
 use flume::{Receiver, Sender};
+use std::sync::atomic::Ordering as AtomicOrdering;
 use tokio::sync::{Notify, broadcast};
 
 /// Detailed processing states that can be surfaced to both CLI and GUI.
@@ -1344,6 +1345,7 @@ impl ProcessingQueue {
         let worker = queue.clone();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
+                .max_blocking_threads(crate::runtime_stats::MAX_BLOCKING_THREADS)
                 .enable_all()
                 .build()
                 .expect("failed to create processing queue runtime");
@@ -1375,6 +1377,18 @@ impl ProcessingQueue {
         }
     }
 
+    fn cancel_all_queued(&self) -> usize {
+        let mut guard = self.queue.lock().expect("processing queue mutex poisoned");
+        let jobs = guard.drain(..).collect::<Vec<_>>();
+        let count = jobs.len();
+        drop(guard);
+        for job in jobs {
+            job.tracker
+                .finish_with_error(anyhow::anyhow!("Operation aborted"));
+        }
+        count
+    }
+
     async fn worker_loop(self: Arc<Self>) {
         loop {
             let job_opt = {
@@ -1396,6 +1410,9 @@ static PROCESSING_QUEUE: std::sync::OnceLock<Arc<ProcessingQueue>> = std::sync::
 static CANCEL_REGISTRY: std::sync::OnceLock<
     Mutex<HashMap<u64, broadcast::Sender<ShutdownSignal>>>,
 > = std::sync::OnceLock::new();
+static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+static SIGTERM_PENDING: AtomicBool = AtomicBool::new(false);
+static SIGTERM_HANDLER_INSTALLED: std::sync::Once = std::sync::Once::new();
 
 pub fn get_progress_manager() -> &'static ProgressManager {
     PROGRESS_MANAGER.get_or_init(ProgressManager::new)
@@ -1454,6 +1471,60 @@ pub fn cancel_task(task_id: u64) -> bool {
     sent_signal || removed_from_queue
 }
 
+pub fn termination_requested() -> bool {
+    TERMINATION_REQUESTED.load(AtomicOrdering::Acquire)
+}
+
+pub fn request_global_shutdown(message: &str) -> usize {
+    TERMINATION_REQUESTED.store(true, AtomicOrdering::Release);
+    let senders = {
+        let registry = get_cancel_registry()
+            .lock()
+            .expect("cancel registry poisoned");
+        registry.values().cloned().collect::<Vec<_>>()
+    };
+    for sender in &senders {
+        let _ = sender.send(ShutdownSignal {
+            reason: crate::ShutdownReason::UserCancellation,
+            message: Some(message.to_string()),
+        });
+    }
+    senders.len() + get_processing_queue().cancel_all_queued()
+}
+
+#[cfg(unix)]
+extern "C" fn mark_sigterm(_signal: libc::c_int) {
+    TERMINATION_REQUESTED.store(true, AtomicOrdering::Release);
+    SIGTERM_PENDING.store(true, AtomicOrdering::Release);
+}
+
+/// Install the CLI SIGTERM bridge. The signal handler only flips an atomic;
+/// a normal Rust thread performs channel sends and cleanup requests.
+pub fn install_sigterm_handler() {
+    #[cfg(unix)]
+    SIGTERM_HANDLER_INSTALLED.call_once(|| {
+        // SAFETY: `mark_sigterm` is an async-signal-safe handler that only
+        // stores to a lock-free atomic.
+        unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                mark_sigterm as *const () as libc::sighandler_t,
+            );
+        }
+        std::thread::Builder::new()
+            .name("lege-sigterm".to_string())
+            .spawn(|| {
+                loop {
+                    if SIGTERM_PENDING.swap(false, AtomicOrdering::AcqRel) {
+                        let _ = request_global_shutdown("Processing cancelled by SIGTERM");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            })
+            .expect("failed to spawn SIGTERM bridge");
+    });
+}
+
 pub fn spawn_file_processing_task(
     input_path: PathBuf,
     output_path: PathBuf,
@@ -1482,8 +1553,6 @@ async fn process_file_with_tracker(
     shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
 ) -> Result<String> {
     tracker.update(ProcessingStatus::Initializing);
-
-    crate::ensure_pdfium_available()?;
 
     crate::debug_log::clear_debug_log();
 
@@ -1652,17 +1721,9 @@ mod tests {
     }
 }
 
-// Perform unified dependency checks (pdfium presence heuristic, OCR if requested, DJVU runtime readiness if needed)
+// Perform unified dependency checks (OCR if requested, DJVU runtime readiness if needed)
 fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
     let mut missing: Vec<String> = Vec::new();
-
-    // Pdfium heuristic: ensure we can locate the platform library using the same search path as runtime binding
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    {
-        if crate::pipeline::config::resolve_pdfium_library_path().is_none() {
-            missing.push("pdfium".to_string());
-        }
-    }
 
     // OCR preflight if enabled. PaddleOCR's assets are embedded, but model
     // parsing alone does not prove that the selected GPU can compile and run
