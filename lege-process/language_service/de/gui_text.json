@@ -71,7 +71,7 @@
       "sauvola_window_size": "Lokale Analysefenstergröße – größer: glatter, kleiner: empfindlicher für Details.",
       "sauvola_k_factor": "Kontrastempfindlichkeit – niedriger: mehr Text bleibt erhalten, höher: sauberere Hintergründe. Profitiert von Layout-Erkennung.",
       "sauvola_r": "Varianzskalierung – niedriger: weniger aggressiv, höher: stärkere Anpassung an Rauschen.",
-      "threshold_value": "Fester Schwellenwert (0-255), der nach der Linearisierung angewendet wird.",
+      "threshold_value": "Ein Grenzwert für die ganze Seite: Pixel mit Luma unter diesem Wert (0-255) werden schwarz, der Rest weiß.",
       "margin_centering": "Zentriert den Inhaltsbereich innerhalb der Seitenmaße.",
       "margin_crop_resize": "Schneidet Ränder auf Inhaltsgrenzen zu und skaliert auf die angegebenen Maße.",
       "crop_free_aspect": "Schneidet Layout-Seiten auf stabile Text-Begrenzungsrahmen zu. Eine feste Ausgabebreite wird ignoriert.",
@@ -119,7 +119,7 @@
       "threshold": "Schwellenwert",
       "k_factor": "K-Faktor",
       "custom_adaptive": "Adaptiv anpassen",
-      "fixed_threshold": "Fester Schwellenwert",
+      "fixed_threshold": "Schwellenwert",
       "heavy_model": "Schweres Modell",
       "target_device": "Zielauflösung",
       "target_device_proportional": "Höhe festlegen, Breite proportional"

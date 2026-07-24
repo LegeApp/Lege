@@ -14,7 +14,7 @@
       - Sheet Music GUI: Mach-O x86_64.
       - No Tesseract or Linux libraries were linked; dependencies are Apple system frameworks including Metal.
 
-  - PDFium, CLI, and GUI all have verified ADHOC | RUNTIME signatures.
+  - CLI and GUI all have verified ADHOC | RUNTIME signatures.
   - ZIP integrity passed.
 
   The resulting Intel package is target/macos/Lege-Sheet-Music-Edition-1.4.63-x86_64.zip.
@@ -24,8 +24,7 @@
   scripts/build-macos-app.sh:83 now:
 
   - Builds the CLI with Paddle OCR and no Tesseract dependency.
-  - Rejects mismatched PDFium architectures.
-  - Places PDFium in Contents/Frameworks and Sauvola in Contents/Resources.
+  - Places Sauvola in Contents/Resources.
   - Supports inexpensive repackaging through SKIP_BUILD=1.
   - Signs nested Mach-O files before the app.
   - Enables hardened runtime for native codesign and Linux rcodesign.
@@ -62,12 +61,10 @@
 
   ### Apple Silicon
 
-  The bundled PDFium is x86_64-only. The script deliberately refuses to put it in an ARM bundle. For Apple Silicon, obtain a matching mac-arm64 libpdfium.dylib, then build:
+  Build Apple Silicon directly with:
 
-  TARGET=aarch64-apple-darwin \
-  PDFIUM_DYLIB=/path/to/arm64/libpdfium.dylib \
-  scripts/build-macos-app.sh
+  TARGET=aarch64-apple-darwin scripts/build-macos-app.sh
 
-  I recommend separate x86_64 and arm64 artifacts initially. A universal build requires combining both CLI binaries, both GUI binaries, and both PDFium builds with lipo.
+  I recommend separate x86_64 and arm64 artifacts initially. A universal build requires combining both CLI and GUI binaries with lipo.
 
-  The only remaining validation that cannot be done here is native launch testing on a Mac: GUI startup, PDFium opening a real PDF, Paddle OCR through Metal, and the actual Gatekeeper approval flow.
+  The remaining validation that cannot be done here is native launch testing on a Mac: GUI startup, opening a real PDF, Paddle OCR through Metal, and the actual Gatekeeper approval flow.

@@ -2910,7 +2910,7 @@ fn start_or_cancel_processing(
                                         tracker_infos.iter().find(|info| info.id == task_id)
                                     {
                                         // Persist all terminal failures. Previously
-                                        // PDFium, Metal, encoder and permission errors
+                                        // Renderer, Metal, encoder and permission errors
                                         // disappeared from the Log viewer.
                                         let original_size =
                                             backend::calculate_path_size(&info.input_path);

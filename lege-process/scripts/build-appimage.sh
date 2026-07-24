@@ -23,13 +23,12 @@ if [[ "$PROFILE" != "release" ]]; then
 fi
 
 if [[ -z "$INPUT_DIR" ]]; then
-  echo "Set LEGE_PACKAGE_INPUT_DIR to the folder containing libpdfium.so and sauvola.onnx." >&2
+  echo "Set LEGE_PACKAGE_INPUT_DIR to the folder containing sauvola.onnx." >&2
   echo "Tip: extract the existing Linux .tar.gz from GitHub releases to a folder of your choice." >&2
   exit 1
 fi
 
 required_inputs=(
-  "$INPUT_DIR/libpdfium.so"
   "$INPUT_DIR/sauvola.onnx"
   "$ROOT/lege-process/lege.desktop"
   "$ROOT/lege-misc/assets/icon.png"
@@ -70,7 +69,6 @@ mkdir -p \
 
 install -Dm755 "$ROOT/target/release/lege" "$APPDIR/usr/bin/lege"
 install -Dm755 "$ROOT/target/release/lege-gui" "$APPDIR/usr/bin/lege-gui"
-install -Dm644 "$INPUT_DIR/libpdfium.so" "$APPDIR/usr/lib/lege/libpdfium.so"
 install -Dm644 "$INPUT_DIR/sauvola.onnx" "$APPDIR/usr/share/lege/models/sauvola.onnx"
 install -Dm644 "$ROOT/lege-process/lege.desktop" "$APPDIR/usr/share/applications/lege.desktop"
 install -Dm644 "$ROOT/lege-process/lege.desktop" "$APPDIR/lege.desktop"

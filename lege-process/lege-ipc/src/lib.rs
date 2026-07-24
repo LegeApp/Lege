@@ -2,7 +2,7 @@
 //! (`lege-gui`, `lege-music-gui`). The GUIs drive processing by spawning the
 //! `lege` CLI as a subprocess and reading its newline-delimited JSON; they need
 //! only these log/interchange types, not the whole `lege` library. Keeping them
-//! here lets the GUIs avoid linking `lege` (and its wgpu/pdfium/tesseract build
+//! here lets the GUIs avoid linking `lege` (and its wgpu/renderer/OCR build
 //! graph) entirely.
 
 use std::path::{Path, PathBuf};

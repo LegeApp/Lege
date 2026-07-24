@@ -92,9 +92,6 @@ $dependenciesCopied = 0
 
 # Look for common dependency locations
 $depPaths = @(
-    "pdfium.dll", 
-    "libpdfium.dll",
-    "lib\libpdfium.so",
     "vcruntime*.dll"
 )
 
@@ -121,7 +118,7 @@ if ($dependenciesCopied -gt 0) {
     Write-Host "   -> Additional dependencies copied ($dependenciesCopied items)" -ForegroundColor Green
 } else {
     Write-Host "   INFO: No additional dependencies found to copy" -ForegroundColor Cyan
-    Write-Host "         You may need to manually copy: pdfium.dll, ONNX models, vcruntime DLLs" -ForegroundColor Cyan
+    Write-Host "         You may need to manually copy: ONNX models, vcruntime DLLs" -ForegroundColor Cyan
 }
 
 # Cleanup temporary directory

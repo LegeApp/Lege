@@ -5,7 +5,6 @@ Both formats read the same runtime asset staging directory:
 
 ```bash
 <staging>/
-  libpdfium.so
   sauvola.onnx
 ```
 
@@ -19,8 +18,8 @@ export LEGE_PACKAGE_INPUT_DIR=/path/to/extracted/linux64
 ```
 
 PaddleOCR and layout detection are compiled by default, and their models are
-embedded in the executables. Only Pdfium and the optional heavy-binarization
-model remain packaging inputs.
+embedded in the executables. Only the optional heavy-binarization model
+remains a packaging input.
 
 ## Debian package
 
@@ -33,8 +32,8 @@ cargo build --release --bin lege --bin lege-gui
 cargo deb
 ```
 
-The Debian package installs the CLI and GUI into `usr/bin`, Pdfium into
-`usr/lib/lege`, and `sauvola.onnx` into `usr/share/lege/models`.
+The Debian package installs the CLI and GUI into `usr/bin` and
+`sauvola.onnx` into `usr/share/lege/models`.
 
 ## AppImage
 
@@ -63,14 +62,13 @@ The AppImage bundles:
 
 - `usr/bin/lege`
 - `usr/bin/lege-gui`
-- `usr/lib/lege/libpdfium.so`
 - `usr/share/lege/models/sauvola.onnx`
 - `lege.desktop`
 - `lege.png`
 - AppStream metadata
 
 `AppRun` launches the GUI and exports `LD_LIBRARY_PATH` and `LEGE_DATA_DIR` so
-Lege resolves the bundled library and data from inside the mounted AppImage.
+Lege resolves bundled data from inside the mounted AppImage.
 
 To include AppImage update metadata, set the update string accepted by
 `appimagetool`:

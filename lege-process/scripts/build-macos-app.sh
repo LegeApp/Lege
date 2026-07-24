@@ -18,9 +18,6 @@
 #
 # Inputs / env:
 #   TARGET        rust target triple        (default: x86_64-apple-darwin)
-#   PDFIUM_DYLIB  path to libpdfium.dylib for TARGET
-#                 (default:
-#                    lege-process/packaging/macos/pdfium-mac-x64/lib/libpdfium.dylib)
 #   SAUVOLA_ONNX  path to sauvola.onnx      (default:
 #                 lege-process/packaging/macos/sauvola.onnx; required — the
 #                 --binarization heavy mode loads it at runtime)
@@ -67,7 +64,6 @@ ROOT="$(cd "$PROCESS_DIR/.." && pwd)"
 MISC_DIR="${MISC_DIR:-$ROOT/lege-misc}"
 TARGET="${TARGET:-x86_64-apple-darwin}"
 OUT_DIR="${OUT_DIR:-$ROOT/target/macos}"
-PDFIUM_DYLIB="${PDFIUM_DYLIB:-$PROCESS_DIR/packaging/macos/pdfium-mac-x64/lib/libpdfium.dylib}"
 SAUVOLA_ONNX="${SAUVOLA_ONNX:-$PROCESS_DIR/packaging/macos/sauvola.onnx}"
 CODESIGN_ID="${CODESIGN_ID:--}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
@@ -87,8 +83,7 @@ ARCH_PREFIX="${TARGET%%-*}"
 DJVU_ENCODER_BIN="$DJVU_ENCODER_TARGET_DIR/$TARGET/release/djvu-encoder"
 
 case "$TARGET" in
-  x86_64-apple-darwin) EXPECTED_PDFIUM_ARCH="x86_64" ;;
-  aarch64-apple-darwin) EXPECTED_PDFIUM_ARCH="arm64" ;;
+  x86_64-apple-darwin | aarch64-apple-darwin) ;;
   *)
     echo "Unsupported macOS target: $TARGET" >&2
     exit 1
@@ -141,17 +136,12 @@ if [[ "$(uname -s)" != "Darwin" \
   ARCHIVE_STEM="Lege-Sheet-Music-Edition-$VERSION-$ARCH_PREFIX"
   if command -v rcodesign >/dev/null 2>&1 && [[ -d "$HOST_APP" ]]; then
     echo "== Ad-hoc signing the macOS bundle with host rcodesign"
-    # Deliberately NOT hardened runtime: the runtime flag turns on library
-    # validation, and an ad-hoc identity has no Team ID, so the lege worker's
-    # dlopen of the ad-hoc-signed libpdfium.dylib would be rejected at runtime
-    # ("different Team IDs") — the GUI then fails silently on Process. Hardened
-    # runtime only matters for notarization, which needs a real Developer ID.
+    # A host signing pass replaces the deliberately unsigned cross-build.
     rcodesign sign "$HOST_APP"
     for signed_path in \
       Contents/MacOS/lege-music-gui \
       Contents/MacOS/lege \
-      Contents/Helpers/djvu-encoder \
-      Contents/Frameworks/libpdfium.dylib; do
+      Contents/Helpers/djvu-encoder; do
       # rcodesign's `verify` currently rejects valid ad-hoc signatures because
       # their CMS slot is intentionally empty. Parsing the signature confirms
       # that each nested Mach-O was signed successfully.
@@ -173,19 +163,6 @@ if [[ "$(uname -s)" != "Darwin" \
     echo "Install it with: cargo install apple-codesign" >&2
   fi
   exit 0
-fi
-
-if [[ ! -f "$PDFIUM_DYLIB" ]]; then
-  echo "Set PDFIUM_DYLIB to a libpdfium.dylib matching $TARGET" >&2
-  echo "(https://github.com/bblanchon/pdfium-binaries/releases, mac-x64 or mac-arm64)" >&2
-  exit 1
-fi
-
-PDFIUM_FILE_INFO="$(file -b "$PDFIUM_DYLIB")"
-if [[ "$PDFIUM_FILE_INFO" != *"$EXPECTED_PDFIUM_ARCH"* ]]; then
-  echo "PDFIUM_DYLIB architecture does not match $TARGET." >&2
-  echo "Expected $EXPECTED_PDFIUM_ARCH; file reports: $PDFIUM_FILE_INFO" >&2
-  exit 1
 fi
 
 if [[ -z "$SAUVOLA_ONNX" || ! -f "$SAUVOLA_ONNX" ]]; then
@@ -293,9 +270,6 @@ install -m644 "$MISC_DIR/docs/documentation-sheetmusic.html" \
   "$RES_DIR/docs/documentation-sheetmusic.html"
 install -m644 "$MISC_DIR/docs/licenses.html" "$RES_DIR/docs/licenses.html"
 ln -s ../Resources/docs "$MACOS_DIR/docs"
-# Lege's macOS runtime search explicitly checks Contents/Frameworks and
-# Contents/Resources, keeping code and data in their conventional locations.
-install -m644 "$PDFIUM_DYLIB" "$FRAMEWORKS_DIR/libpdfium.dylib"
 install -m644 "$SAUVOLA_ONNX" "$RES_DIR/sauvola.onnx"
 
 # Icon: on macOS generate an icns from lege-misc/assets/icon.png; elsewhere
@@ -363,19 +337,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # Sign nested Mach-O code first, then seal the outer bundle. The default `-`
   # identity is ad-hoc and requires no Apple account or certificate.
   #
-  # Hardened runtime (--options runtime) is applied ONLY with a real identity:
-  # it enables library validation, which demands that loaded dylibs share the
-  # process's Team ID (or be Apple-signed). Ad-hoc signatures carry no Team ID,
-  # so a hardened-runtime lege cannot dlopen the ad-hoc-signed libpdfium.dylib
-  # and processing fails at pdfium bind time. With a Developer ID every nested
-  # binary shares the Team ID, so library validation passes and hardened
-  # runtime (required for notarization) is safe. Secure timestamps likewise
-  # require a real identity.
+  # Hardened runtime and secure timestamps require a real signing identity.
   CODESIGN_ARGS=(--force --sign "$CODESIGN_ID")
   if [[ "$CODESIGN_ID" != "-" ]]; then
     CODESIGN_ARGS+=(--options runtime --timestamp)
   fi
-  codesign "${CODESIGN_ARGS[@]}" "$FRAMEWORKS_DIR/libpdfium.dylib"
   codesign "${CODESIGN_ARGS[@]}" "$HELPERS_DIR/djvu-encoder"
   codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege"
   codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege-music-gui"
@@ -395,12 +361,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "Ad-hoc signed: users must approve first launch in System Settings → Privacy & Security."
   fi
 elif command -v rcodesign >/dev/null; then
-  # Plain ad-hoc signatures, deliberately WITHOUT the hardened-runtime flag:
-  # hardened runtime enables library validation, which requires loaded dylibs
-  # to be signed by Apple or by the same Team ID as the process. An ad-hoc
-  # identity has no Team ID, so a hardened-runtime lege would be unable to
-  # dlopen the bundled libpdfium.dylib and every Process click would fail.
-  # Hardened runtime is only needed for notarization (Developer ID path).
+  # Plain ad-hoc signature; hardened runtime is reserved for Developer ID builds.
   rcodesign sign "$APP"
   echo "Ad-hoc signed with rcodesign. Create the dmg on a Mac (hdiutil) or ship the archive below."
   archive_bundle "Lege-Sheet-Music-Edition-$VERSION-$ARCH_PREFIX"

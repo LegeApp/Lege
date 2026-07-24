@@ -107,7 +107,6 @@
         <tr><td>toojpeg</td><td>Integrated JPEG encoder module</td><td>MIT</td><td>Local Rust port of TooJpeg under <code>src/encoding/</code>.</td></tr>
         <tr><td>jbig2enc-rust</td><td>JBIG2 codec dependency</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project.</td></tr>
         <tr><td>ort</td><td>ONNX Runtime Rust binding</td><td>MIT OR Apache-2.0</td><td>Local fork/configured copy used for inference runtime integration.</td></tr>
-        <tr><td>pdfium-render</td><td>PDF rendering wrapper</td><td>MIT OR Apache-2.0</td><td>Rust wrapper around PDFium.</td></tr>
         <tr><td>fast_image_resize</td><td>Image resize library</td><td>MIT OR Apache-2.0</td><td>Used in image processing paths.</td></tr>
         <tr><td>lopdf</td><td>PDF parsing and writing support</td><td>MIT</td><td>Used in PDF processing and output code.</td></tr>
         <tr><td>rayon</td><td>Parallel CPU work helper</td><td>MIT OR Apache-2.0</td><td>Used in CPU-heavy processing paths.</td></tr>
@@ -141,7 +140,6 @@
     <h2>Bundled Runtime Libraries and Assets</h2>
     <p>Depending on platform and packaging target, Lege may distribute or expect these runtime assets alongside the binaries:</p>
     <ul>
-      <li>PDFium shared library</li>
       <li>ONNX Runtime shared libraries</li>
       <li>ONNX model files used for layout detection, deskew/orientation, and heavy binarization</li>
       <li>Tesseract language data such as <code>eng.traineddata</code></li>
@@ -182,7 +180,6 @@
     <p>The following areas should be kept under review as the release process evolves:</p>
     <ul>
       <li>the exact license and provenance of each bundled ONNX model</li>
-      <li>the exact redistribution basis for bundled PDFium binaries</li>
       <li>the exact redistribution basis for bundled ONNX Runtime binaries</li>
       <li>whether <code>eng.traineddata</code> is bundled or required from the host system</li>
       <li>the local <code>djvu_encoder</code> crate metadata, which should declare its own license explicitly</li>

@@ -11,7 +11,6 @@ export LEGE_PACKAGE_INPUT_DIR=/path/to/extracted/linux64
 
 Expected files:
 
-- `libpdfium.so`
 - `yolo-layout.onnx`
 - `sauvola.onnx`
 - `eng.traineddata`

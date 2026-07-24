@@ -53,15 +53,18 @@ cargo music-sheet
 For a faster compile-only validation, run `cargo music-sheet-check`. Both shortcuts
 disable the normal default features and enable only the `music-sheet` feature set.
 The resulting edition does not compile `lege-ocr`, the EPUB builder, either OCR
-backend, or layout detection (and it does not embed the layout model).
+backend, or layout detection (and it does not embed the layout model). The release
+artifacts go under `target/music-sheet/release/`, separate from the full edition,
+so building this edition cannot replace `target/release/lege` with a layout-free
+worker.
 
 ### Linux release packaging
 
 Lege has first-pass `.deb` and AppImage packaging metadata. Download the
 existing Linux `.tar.gz` from the
 [GitHub releases](https://github.com/LegeApp/Lege/releases), extract it to a
-folder of your choice, and point packaging at the folder containing the two
-remaining runtime assets (`libpdfium.so` and `sauvola.onnx`):
+folder of your choice, and point packaging at the folder containing the
+remaining runtime asset (`sauvola.onnx`):
 
 ```bash
 export LEGE_PACKAGE_INPUT_DIR=/path/to/extracted/linux64
@@ -120,17 +123,9 @@ Lege requires several external files to be placed alongside the executables:
 **ONNX Models** (AI inference, loaded at runtime):
 - `sauvola.onnx` — Heavy neural binarization model
 
-**Platform libraries:**
+**Platform data:**
 
-**Windows:**
-- `pdfium.dll` — PDF rendering engine
-
-**Linux:**
-- `libpdfium.so` — PDF rendering engine
-
-**macOS:**
-- `libpdfium.dylib` — PDF rendering engine
-- Tesseract language data (system installation)
+- Tesseract language data (system installation, where that backend is enabled)
 
 > PaddleOCR, layout detection, and page rotation run through the native
 > **WebGPU** backend built into Lege. PaddleOCR and layout models are embedded;
@@ -146,7 +141,7 @@ Lege is an end-to-end document transformation system with distinct pipelines for
 
 ### Core stages
 
-1. **Render pages** (PDF → images) using PDFium (with thread-safety guardrails).
+1. **Render pages** (PDF → images) using Lege's integrated Rust renderer.
 2. **Layout inference** (optional): run an ONNX layout model at GPU speed via the native wgpu compute runtime; map detections into text-like vs image-like buckets.
 3. **Region processing**
 

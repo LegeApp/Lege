@@ -108,7 +108,6 @@ cargo test --features debug-logging -- --nocapture
 |---|---|
 | `debug-logging` | Enables `perf_log!`, `info_log!`, `warn_log!` macros; activates per-region timing |
 | `jp2-lam` (default) | Enables JPEG2000 encoding via the `jp2lam` library |
-| `static` | Statically links pdfium-render |
 | `profiling` | Inherits `debug-logging`; use with `--profile profiling` for flamegraph-compatible builds |
 | `debug-layers` | Propagated to `lege-gpu` for wgpu validation layer diagnostics |
 
@@ -122,7 +121,7 @@ The main processing flow lives in `lege-process/pipeline/`. The two concrete pip
 Both pipelines share the same stage structure:
 
 ```
-PdfiumPageSource (render pages at high-res + 1024×1024 inference size)
+PdfPageSource (render pages at high-res + 1024×1024 inference size)
   → inference_stage_parallel (YOLO layout detection via InferenceActor)
   → page processing (classify_page, region masking, binarization, encoding)
   → spawn_pdf_writer_actor (assembles output PDF/DJVU with hOCR text layer)
@@ -138,7 +137,7 @@ Key files per concern:
 | Page classification & blank detection | `lege-process/pipeline/page_analysis.rs` |
 | Region/resize policies | `lege-process/pipeline/policies.rs` |
 | Margin analysis | `lege-process/core/margin.rs` |
-| Page rendering (pdfium) | `lege-process/core/pagerender.rs` |
+| Page rendering | `lege-process/core/pagerender.rs` |
 | Content categories | `lege-process/core/types.rs` — `ContentCategory` drives downstream decisions |
 
 ## Layout detection
@@ -198,7 +197,7 @@ vars → `/usr/share/lege/models` (Linux). Models required:
 ## Platform notes
 
 - **Windows**: Uses WinRT OCR (`lege-process/ocr/winocr.rs`), Direct3D12 wgpu backend, Windows API for system dirs.
-- **Linux/macOS**: Uses Tesseract OCR, Vulkan/Metal wgpu backend. `libpdfium.so` must be on `LD_LIBRARY_PATH` or next to the binary.
+- **Linux/macOS**: Uses Tesseract OCR and the Vulkan/Metal wgpu backend.
 - `lege-process/core/windows_dirs.rs` / `app_dirs.rs` — platform-specific config/data directory resolution.
 
 ## Freya fork

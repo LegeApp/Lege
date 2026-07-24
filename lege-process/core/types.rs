@@ -776,7 +776,7 @@ impl CliConfigBuilder {
                 positional_threshold_seen = true;
             } else if is_fixed_choice && !positional_threshold_seen {
                 part.parse::<u8>()
-                    .map_err(|_| anyhow!("Invalid fixed threshold value: {}", part))?;
+                    .map_err(|_| anyhow!("Invalid threshold value: {}", part))?;
                 positional_threshold_seen = true;
             } else {
                 return Err(anyhow!(

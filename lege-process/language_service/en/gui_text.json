@@ -71,7 +71,7 @@
       "sauvola_window_size": "Local analysis window size - larger: smoother, smaller: more detail-sensitive",
       "sauvola_k_factor": "Contrast sensitivity - lower: more text preserved, higher: cleaner backgrounds. benefits from layout detection.",
       "sauvola_r": "Variance scaling - lower: less aggressive, higher: stronger adaptation to noise",
-      "threshold_value": "Fixed threshold value (0-255) applied after linearization.",
+      "threshold_value": "One cutoff for the whole page: pixels with luma below this value (0-255) become black, the rest white.",
       "margin_centering": "Centers content area within page dimensions",
       "margin_crop_resize": "Crops margins to content bounds and resizes to specified dimensions",
       "crop_free_aspect": "Does not preserve aspect ratio; crops to content bounds and resizes to specified dimensions",
@@ -119,7 +119,7 @@
       "threshold": "Threshold",
       "k_factor": "K factor",
       "custom_adaptive": "Custom adaptive",
-      "fixed_threshold": "Fixed threshold",
+      "fixed_threshold": "Threshold",
       "heavy_model": "Heavy model",
       "target_device": "Target resolution",
       "target_device_proportional": "Set height, width proportional"

@@ -512,8 +512,7 @@ fn classify_error(error: &str) -> &'static str {
         || lower.contains("status")
     {
         "worker_exit"
-    } else if lower.contains("pdfium")
-        || lower.contains("cannot read pdf")
+    } else if lower.contains("cannot read pdf")
         || lower.contains("cannot open pdf")
         || lower.contains("failed to render page")
         || lower.contains("load_pdf")
