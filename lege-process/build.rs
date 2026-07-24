@@ -42,27 +42,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../lege-misc/assets/icon.png");
     println!("cargo:rerun-if-changed=../lege-misc/assets/icon.ico");
 
-    // Check if we need to link against PDFium
-    println!("cargo:warning=To enable static linking with Pdfium:");
-    println!("cargo:warning=1. Set PDFIUM_STATIC_LIB_PATH environment variable");
-    println!("cargo:warning=2. Build with: cargo build --features static");
-
-    if cfg!(feature = "static") {
-        // Link against system libraries on Windows
-        if cfg!(target_os = "windows") {
-            println!("cargo:rustc-link-lib=user32");
-            println!("cargo:rustc-link-lib=gdi32");
-            println!("cargo:rustc-link-lib=advapi32");
-            println!("cargo:rustc-link-lib=shell32");
-            println!("cargo:rustc-link-lib=ole32");
-            println!("cargo:rustc-link-lib=oleaut32");
-            println!("cargo:rustc-link-lib=uuid");
-            println!("cargo:rustc-link-lib=comctl32");
-            println!("cargo:rustc-link-lib=comdlg32");
-            println!("cargo:rustc-link-lib=winspool");
-        }
-    }
-
     // Build Linux GUI on release builds (Linux only) - DISABLED FOR FASTER BUILDS
     // Uncomment this block if you want to auto-build GUI during cargo build
     // #[cfg(target_os = "linux")]
@@ -74,8 +53,6 @@ fn main() {
     // }
 
     // Re-run this build script if environment variables change
-    println!("cargo:rerun-if-env-changed=PDFIUM_STATIC_LIB_PATH");
-    println!("cargo:rerun-if-env-changed=PDFIUM_DYNAMIC_LIB_PATH");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=GUI/DocBrakeGUI/DocBrakeGUI.csproj");
     println!("cargo:rerun-if-changed=GUI/iced-gui/Cargo.toml");

@@ -66,9 +66,6 @@ pub struct LayoutEngine {
     provider_name: &'static str,
 }
 
-// SAFETY: The production pipeline owns this through a serialized inference actor.
-unsafe impl Sync for LayoutEngine {}
-
 impl LayoutEngine {
     pub fn new(model_path: &str, config: LayoutEngineConfig) -> Result<Self> {
         let layout_config = LayoutConfig {
@@ -89,6 +86,18 @@ impl LayoutEngine {
             provider_name: detector.provider_name(),
             detector,
             config,
+        })
+    }
+
+    /// Create another single-flight layout session on the same WGPU device.
+    /// Each session owns activation/readback buffers, while the prepared model
+    /// graph and device/queue are shared.
+    pub fn build_sibling(&self) -> Result<Self> {
+        let detector = self.detector.build_sibling()?;
+        Ok(Self {
+            provider_name: detector.provider_name(),
+            detector,
+            config: self.config.clone(),
         })
     }
 

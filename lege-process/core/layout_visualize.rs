@@ -1,5 +1,5 @@
 use crate::engine::Detection;
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::pagerender::prelude::{PdfRenderer, RasterConfig as PdfRasterConfig};
 use crate::types::{AppConfig, ContentCategory};
 use crate::{debug_println, info_println};
 use anyhow::{Context, Result, anyhow};
@@ -206,7 +206,7 @@ pub fn run_layout_visualize_mode(
     let pdf_bytes: Arc<[u8]> = Arc::from(pdf_bytes_vec.into_boxed_slice());
     let mut raster_cfg = PdfRasterConfig::default();
     raster_cfg.render_forms = false;
-    let renderer = PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
+    let renderer = PdfRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
     let total_pages = renderer.page_count() as usize;
 
     let pages_to_render: Vec<usize> = if let Some(range_str) = page_range {
@@ -250,6 +250,7 @@ pub fn run_layout_visualize_mode(
     );
 
     let rt = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(crate::runtime_stats::MAX_BLOCKING_THREADS)
         .enable_all()
         .build()?;
 

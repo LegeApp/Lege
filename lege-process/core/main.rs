@@ -129,6 +129,7 @@ fn cleanup_cli_resources() {
 /// ORT's WebGPU/Dawn backend registers atexit hooks that can segfault during
 /// Vulkan teardown; `_exit` bypasses them while still flushing Rust I/O.
 fn fast_exit(code: i32) -> ! {
+    lege::runtime_stats::dump();
     // Flush stdout/stderr so all output is visible
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -233,10 +234,8 @@ fn probe_json(path: PathBuf) -> Result<()> {
 
     match ext.as_str() {
         "pdf" => {
-            // Use pdfium, not lopdf: lopdf rejects PDFs with nonstandard trailers
-            // (e.g. Internet Archive scans), which would force the GUI page-range
-            // size estimate to fall back to the full-document size.
-            lege::pipeline::config::ensure_pdfium_available()?;
+            // Use the same reader as the processing pipeline so probing and
+            // rendering agree on nonstandard Internet Archive trailers.
             let bytes = std::fs::read(&path)
                 .map_err(|e| anyhow!("Cannot open PDF '{}': {}", path.display(), e))?;
             let pages = lege::pagerender::count_pdf_pages_from_bytes(&bytes)
@@ -435,6 +434,7 @@ struct CliOptions {
     jp2_debug: Option<u32>,        // --jp2-debug HEIGHT  (render pages → JP2 + size log)
     gray_jp2: bool,                // --gray-jp2  (image regions → grayscale JP2 overlay)
     layout_visualize: Option<u32>, // --layout-visualize HEIGHT  (render pages with detection bbox overlays)
+    debug_runtime_stats: bool,     // --debug-runtime-stats (Phase 0 process/stage metrics)
 
     // --- GUI integration modes ---
     /// Suppress human output and emit newline-delimited JSON progress events to stdout.
@@ -531,9 +531,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     .ok_or_else(|| anyhow!("Missing value after --binarization"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
-                    "adaptive" | "fixed" | "heavy" => {}
+                    // `fixed` is the legacy spelling of `threshold`, still accepted.
+                    "adaptive" | "threshold" | "fixed" | "heavy" => {}
                     _ => bail!(
-                        "Invalid --binarization '{}'. Use: adaptive, fixed, or heavy",
+                        "Invalid --binarization '{}'. Use: adaptive, threshold, or heavy",
                         val
                     ),
                 }
@@ -732,6 +733,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             }
             "--png-quantize" => {
                 opts.png_quantize = true;
+                i += 1;
+            }
+            "--debug-runtime-stats" => {
+                opts.debug_runtime_stats = true;
                 i += 1;
             }
 
@@ -999,6 +1004,20 @@ fn validate_page_geometry_options(
     Ok(())
 }
 
+fn apply_reflow_option(config: &mut PipelineConfig, requested: bool) -> Result<()> {
+    if !requested {
+        return Ok(());
+    }
+    if !cfg!(feature = "layout-detection") {
+        bail!("--reflow is unavailable in this layout-free Lege edition; use the full Lege worker");
+    }
+    if !config.enable_layout_detection() {
+        bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
+    }
+    config.set_enable_reflow(true);
+    Ok(())
+}
+
 fn parse_jbig2_mode_flag(raw: &str) -> Result<Jbig2Mode> {
     let normalized = raw.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -1068,15 +1087,21 @@ fn emit_worker_error_json(error: impl std::fmt::Display) {
 }
 
 fn main() -> Result<()> {
+    lege::progress::install_sigterm_handler();
     let is_gui_worker = std::env::args().any(|arg| arg == "--gui-worker");
-    match run_main() {
+    if std::env::args().any(|arg| arg == "--debug-runtime-stats") {
+        lege::runtime_stats::enable();
+    }
+    let result = match run_main() {
         Ok(()) => Ok(()),
         Err(err) if is_gui_worker => {
             emit_worker_error_json(format!("{err:#}"));
             fast_exit(1);
         }
         Err(err) => Err(err),
-    }
+    };
+    lege::runtime_stats::dump();
+    result
 }
 
 fn run_main() -> Result<()> {
@@ -1112,6 +1137,7 @@ fn run_main() -> Result<()> {
             .ok_or_else(|| anyhow!("Missing path for --check-ocr-json"))?;
         let pdf_path = PathBuf::from(sanitize_path_arg(value));
         let has_ocr = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(lege::runtime_stats::MAX_BLOCKING_THREADS)
             .enable_all()
             .build()?
             .block_on(check_pdf_ocr_layer(&pdf_path))
@@ -1191,6 +1217,9 @@ fn run_main() -> Result<()> {
 
     // Extract all --flag / --key value options, leaving only positional args.
     let (args, mut cli_opts) = extract_cli_options(args)?;
+    if cli_opts.debug_runtime_stats && !lege::runtime_stats::enabled() {
+        lege::runtime_stats::enable();
+    }
 
     if cli_opts.gui_worker {
         emit_worker_status_json(lege::progress::ProcessingStatus::Initializing);
@@ -1344,6 +1373,7 @@ fn run_main() -> Result<()> {
                 "both" | _ => DebugCropKind::Both,
             };
             return tokio::runtime::Builder::new_current_thread()
+                .max_blocking_threads(lege::runtime_stats::MAX_BLOCKING_THREADS)
                 .enable_all()
                 .build()?
                 .block_on(run_folder_layout_crop_debug(
@@ -1382,6 +1412,7 @@ fn run_main() -> Result<()> {
         // as a PDF and rendered page-by-page.
         if input_path.is_dir() {
             return tokio::runtime::Builder::new_current_thread()
+                .max_blocking_threads(lege::runtime_stats::MAX_BLOCKING_THREADS)
                 .enable_all()
                 .build()?
                 .block_on(run_folder_layout_crop_debug(
@@ -1414,6 +1445,7 @@ fn run_main() -> Result<()> {
             // pipeline and the documented `book.pdf all --crop-areas` example.
             .and_then(interpret_page_range_arg);
         return tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(lege::runtime_stats::MAX_BLOCKING_THREADS)
             .enable_all()
             .build()?
             .block_on(run_pdf_layout_crop_debug(
@@ -1704,7 +1736,7 @@ fn cli_binarization_config(cli_opts: &CliOptions) -> Option<lege::color::Binariz
     let method_str = if let Some(ref method) = cli_opts.binarization {
         let mut s = match method.as_str() {
             "adaptive" => "1".to_string(),
-            "fixed" => "2".to_string(),
+            "threshold" | "fixed" => "2".to_string(),
             "heavy" => "3".to_string(),
             _ => method.clone(),
         };
@@ -2015,12 +2047,7 @@ fn handle_simple_processing(
         });
         pipeline_config.set_jbig2_mode(selected_mode);
     }
-    if cli_opts.reflow {
-        if !pipeline_config.enable_layout_detection() {
-            bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
-        }
-        pipeline_config.set_enable_reflow(true);
-    }
+    apply_reflow_option(&mut pipeline_config, cli_opts.reflow)?;
     if cli_opts.jpeg_compat {
         pipeline_config.set_jpeg_compat(true);
     }
@@ -2330,6 +2357,7 @@ fn run_cli() -> Result<Option<(PathBuf, PipelineConfig)>> {
         == Some("pdf")
     {
         let has_ocr = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(lege::runtime_stats::MAX_BLOCKING_THREADS)
             .enable_all()
             .build()?
             .block_on(check_pdf_ocr_layer(&PathBuf::from(file_path)));
@@ -3416,13 +3444,58 @@ mod cli_parser_tests {
 
     #[test]
     fn page_geometry_options_are_mutually_exclusive() {
-        let err = validate_page_geometry_options(true, false, false, true)
-            .expect_err("center margins and reflow should conflict");
+        let modes = [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ];
+        for left in 0..modes.len() {
+            for right in (left + 1)..modes.len() {
+                let selected = (
+                    modes[left].0 || modes[right].0,
+                    modes[left].1 || modes[right].1,
+                    modes[left].2 || modes[right].2,
+                    modes[left].3 || modes[right].3,
+                );
+                let err =
+                    validate_page_geometry_options(selected.0, selected.1, selected.2, selected.3)
+                        .expect_err("two page geometry modes must conflict");
+                assert!(
+                    err.to_string().contains("mutually exclusive"),
+                    "unexpected error: {err}"
+                );
+            }
+        }
+        for mode in modes {
+            validate_page_geometry_options(mode.0, mode.1, mode.2, mode.3)
+                .expect("each page geometry mode is valid by itself");
+        }
+    }
 
-        assert!(
-            err.to_string().contains("mutually exclusive"),
-            "unexpected error: {err}"
-        );
+    #[cfg(feature = "layout-detection")]
+    #[test]
+    fn reflow_option_accepts_layout_and_rejects_effectively_disabled_layout() {
+        let mut config = PipelineConfig::new().expect("pipeline config");
+        apply_reflow_option(&mut config, true).expect("layout-backed reflow");
+        assert!(config.enable_reflow());
+
+        let mut no_layout = PipelineConfig::new().expect("pipeline config");
+        no_layout.set_enable_layout_detection(false);
+        assert!(apply_reflow_option(&mut no_layout, true).is_err());
+
+        let mut inverted = PipelineConfig::new().expect("pipeline config");
+        inverted.set_invert_input(true);
+        assert!(apply_reflow_option(&mut inverted, true).is_err());
+    }
+
+    #[cfg(not(feature = "layout-detection"))]
+    #[test]
+    fn layout_free_edition_reports_the_worker_mismatch_for_reflow() {
+        let mut config = PipelineConfig::new().expect("pipeline config");
+        let error = apply_reflow_option(&mut config, true)
+            .expect_err("layout-free builds cannot run reflow");
+        assert!(error.to_string().contains("layout-free Lege edition"));
     }
 
     #[test]
@@ -3436,6 +3509,19 @@ mod cli_parser_tests {
 
         assert!(opts.crop_margins);
         assert!(opts.crop_free_aspect);
+    }
+
+    #[test]
+    fn cli_debug_runtime_stats_is_consumed() {
+        let (remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "--debug-runtime-stats".to_string(),
+            "book.pdf".to_string(),
+        ])
+        .expect("runtime stats flag should parse");
+
+        assert!(opts.debug_runtime_stats);
+        assert_eq!(remaining, vec!["lege".to_string(), "book.pdf".to_string()]);
     }
 
     #[test]
@@ -3588,7 +3674,7 @@ fn parse_binarization_method(input: &str) -> Result<String> {
         "g" | "grayscale" | "gray" | "4" => return Ok("grayscale".to_string()),
         other => {
             return Err(anyhow!(
-                "Invalid choice: {}. Use 1 (Adaptive), 2 (Fixed threshold), 3 (Heavy Sauvola), or g (Grayscale/MRC)",
+                "Invalid choice: {}. Use 1 (Adaptive), 2 (Threshold), 3 (Heavy Sauvola), or g (Grayscale/MRC)",
                 other
             ));
         }
@@ -3617,12 +3703,12 @@ fn parse_binarization_method(input: &str) -> Result<String> {
         } else if choice == "2" && !positional_threshold_consumed {
             let threshold: u8 = part
                 .parse()
-                .map_err(|_| anyhow!("Invalid fixed threshold '{}'. Expected 0-255.", part))?;
+                .map_err(|_| anyhow!("Invalid threshold '{}'. Expected 0-255.", part))?;
             result.push_str(&format!(" thr={}", threshold));
             positional_threshold_consumed = true;
         } else if !part.is_empty() {
             return Err(anyhow!(
-                "Unrecognized parameter '{}'. Use k=<value>, thr=<value>, or for fixed mode: '2 <0-255>'.",
+                "Unrecognized parameter '{}'. Use k=<value>, thr=<value>, or for threshold mode: '2 <0-255>'.",
                 part
             ));
         }
@@ -4480,7 +4566,7 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     if let Some(ref method) = cli_opts.binarization {
         let mut method_str = match method.as_str() {
             "adaptive" => "1".to_string(),
-            "fixed" => "2".to_string(),
+            "threshold" | "fixed" => "2".to_string(),
             "heavy" => "3".to_string(),
             _ => method.clone(),
         };
@@ -4569,12 +4655,7 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
         });
         pipeline_config.set_jbig2_mode(selected_mode);
     }
-    if cli_opts.reflow {
-        if !pipeline_config.enable_layout_detection() {
-            bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
-        }
-        pipeline_config.set_enable_reflow(true);
-    }
+    apply_reflow_option(&mut pipeline_config, cli_opts.reflow)?;
     if cli_opts.jpeg_compat {
         pipeline_config.set_jpeg_compat(true);
     }
@@ -4614,21 +4695,30 @@ async fn check_pdf_ocr_layer(pdf_path: &PathBuf) -> Result<bool> {
     use std::sync::Arc;
 
     // Read PDF bytes
-    let pdf_bytes = tokio::fs::read(pdf_path)
-        .await
-        .map_err(|e| anyhow!("Failed to read PDF: {}", e))?;
+    let pdf_bytes = std::fs::read(pdf_path).map_err(|e| anyhow!("Failed to read PDF: {}", e))?;
     let pdf_bytes = Arc::from(pdf_bytes.into_boxed_slice());
 
-    // Create a minimal renderer just for checking text layers
-    let mut raster_cfg = lege::pagerender::RasterConfig::default();
-    raster_cfg.render_forms = false;
-
-    let renderer = lege::pagerender::PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
-
-    // Check for OCR using the has_any_text_layer method
-    let has_ocr = renderer.has_any_text_layer().await?;
-
-    Ok(has_ocr)
+    let document = lege_pdf_read::RenderSession::open(pdf_bytes, None)
+        .map_err(|error| anyhow!("Failed to read PDF: {error}"))?;
+    let total_pages = document.page_count();
+    if total_pages == 0 {
+        return Ok(false);
+    }
+    let sample_size = total_pages.min(5);
+    let step = if total_pages <= 5 {
+        1
+    } else {
+        total_pages / sample_size
+    };
+    for index in 0..sample_size {
+        let page = index * step;
+        if lege_pdf_read::has_text_layer(&document, page)
+            .map_err(|error| anyhow!("Failed to inspect PDF text layer: {error}"))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone, Copy, Default)]

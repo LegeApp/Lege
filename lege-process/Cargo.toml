@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.64"
+version = "1.4.7"
 edition = "2024"
 description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -37,7 +37,6 @@ dialoguer = { workspace = true }
 config = { workspace = true }
 dirs = "6.0.0"
 toml = "1.1.2"
-pdfium-render = { workspace = true }
 rayon = { workspace = true }
 once_cell = { workspace = true }
 tempfile = { workspace = true }
@@ -53,8 +52,9 @@ lege-gpu = { path = "../lege-gpu" }
 lege-ocr = { path = "../lege-ocr", optional = true }
 lege-ipc = { path = "lege-ipc" }
 lege-pdf-write = { path = "../lege-pdf/write" }
-jbig2enc-rust = { git = "https://github.com/LegeApp/jbig2enc-rust.git", default-features = false, features = ["symboldict", "parallel"] }
-jp2lam = { git = "https://github.com/LegeApp/jp2lam.git", optional = true }
+lege-pdf-read = { path = "../lege-pdf/read" }
+jbig2enc-rust = { path = "../lege-codecs/jbig2enc-rust", default-features = false, features = ["symboldict", "parallel"] }
+jp2lam = { path = "../lege-codecs/jp2lam", optional = true }
 epub-builder = { version = "0.8", optional = true }
 quick-xml = "0.41.0"
 # mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
@@ -133,7 +133,6 @@ ndarray = "0.17.2"
 
 [features]
 default = ["jp2-lam", "paddle-ocr", "layout-detection"]
-static = ["pdfium-render/static"]
 debug-logging = ["lege-gpu/debug-logging"]
 jp2-lam = ["dep:jp2lam"]
 layout-detection = ["lege-gpu/layout-detection"]
@@ -154,12 +153,10 @@ debug-layers = []
 no-include-shaders = []
 djvu_debug = []
 german = []
-# Static linking features for pdfium-render
-libstdcpp = ["pdfium-render/libstdc++"]
-libcpp = ["pdfium-render/libc++"]
 
 [dev-dependencies]
 flamegraph = "0.6.13"
+pdf-test-support = { workspace = true }
 
 [package.metadata.deb]
 maintainer = "Lege Apps <read@legeapp.com>"
@@ -177,8 +174,6 @@ assets = [
     # Install CLI and GUI binaries directly into PATH
     ["target/release/lege", "usr/bin/lege", "755"],
     ["target/release/lege-gui", "usr/bin/lege-gui", "755"],
-    # Required shared libraries
-    ["/home/dk/Desktop/lege-run/installer/linux64/libpdfium.so", "usr/lib/lege/", "644"],
     # Heavy binarization remains a runtime model. Layout and PaddleOCR are embedded.
     ["/home/dk/Desktop/lege-run/installer/linux64/sauvola.onnx", "usr/share/lege/models/", "644"],
     # Desktop integration

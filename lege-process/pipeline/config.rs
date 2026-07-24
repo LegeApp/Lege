@@ -6,25 +6,19 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow};
-use once_cell::sync::Lazy;
 
 // Import perf_log macro from the crate root
 #[allow(unused_imports)]
 use crate::perf_log;
 use image::RgbImage;
-use pdfium_render::prelude::Pdfium;
 
 use super::pdf_tokio_pipeline::create_and_run_pdf_tokio_pipeline;
 use crate::color::BinarizationConfig;
 use crate::encoding::Jbig2Mode;
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::policies::{InferenceResizeSpec, PaddleResizeConfig};
 use crate::types::CoverFormat;
 
 pub use crate::color::ImageRegionDitherMode;
-
-static RESOLVED_PDFIUM_LIBRARY_PATH: Lazy<Option<PathBuf>> =
-    Lazy::new(resolve_pdfium_library_path_uncached);
 
 #[derive(Debug)]
 pub struct PageTask {
@@ -104,11 +98,9 @@ pub struct ProcessingPipeline {
 impl ProcessingPipeline {
     pub fn new(pdf_bytes: Vec<u8>, config: PipelineConfig) -> Result<Self> {
         let pdf_bytes: Arc<[u8]> = Arc::from(pdf_bytes.into_boxed_slice());
-        // Use PdfiumRenderer to pre-cache page count without reloading the document elsewhere
-        let mut raster_cfg = PdfRasterConfig::default();
-        raster_cfg.render_forms = false;
-        let renderer = PdfiumRenderer::new_from_bytes(pdf_bytes.clone(), raster_cfg)?;
-        let page_count = renderer.page_count() as usize;
+        let document = lege_pdf_read::RenderSession::open(Arc::clone(&pdf_bytes), None)
+            .map_err(|error| anyhow!("Failed to read PDF document: {error}"))?;
+        let page_count = document.page_count() as usize;
         Ok(Self {
             pdf_bytes,
             input_path: std::path::PathBuf::from("unknown.pdf"),
@@ -469,7 +461,7 @@ pub struct PipelineConfig {
     /// background halo.
     pub(crate) mrc_adaptive_mask: bool,
     /// Resolution multiplier applied to `target_height` when slow OCR is enabled,
-    /// determining the height pdfium renders at ("render high, resize low"). The
+    /// determining the PDF render height ("render high, resize low"). The
     /// high-res raster feeds OCR; the encode path is resized back down to
     /// `target_height`. Clamped so the render height never exceeds
     /// `MAX_SLOW_OCR_RENDER_HEIGHT`.
@@ -771,7 +763,7 @@ impl PipelineConfig {
     }
     pub fn channel_buffer_size(&self) -> usize {
         self.channel_buffer_size
-            .unwrap_or_else(|| std::cmp::max(self.heavy_sauvola_concurrency * 2, 8))
+            .unwrap_or_else(|| self.max_parallel_pages.unwrap_or(4).max(1))
     }
     pub fn ocr_binarization_threshold(&self) -> Option<u8> {
         self.ocr_binarization_threshold
@@ -848,7 +840,7 @@ impl PipelineConfig {
         self.slow_ocr_scale
     }
 
-    /// Height (pixels) pdfium should render pages at. When slow OCR is enabled
+    /// Height (pixels) the PDF source should render at. When slow OCR is enabled
     /// this is `target_height * slow_ocr_scale` (clamped), so a high-resolution
     /// raster is available for recognition; otherwise it equals `target_height`.
     pub fn source_render_height(&self) -> u32 {
@@ -862,8 +854,8 @@ impl PipelineConfig {
         }
     }
 
-    /// Width (pixels) pdfium should render at, scaled in proportion to
-    /// `source_render_height`. `None` lets pdfium derive width from the page
+    /// Width (pixels) the PDF source should render at, scaled in proportion to
+    /// `source_render_height`. `None` derives width from the page
     /// aspect ratio (mirrors `target_width`).
     pub fn source_render_width(&self) -> Option<u32> {
         let render_h = self.source_render_height();
@@ -1198,78 +1190,6 @@ pub fn runtime_asset_path_if_exists(file_name: &str) -> Option<PathBuf> {
 
 pub fn runtime_asset_path(file_name: &str) -> PathBuf {
     runtime_asset_path_if_exists(file_name).unwrap_or_else(|| PathBuf::from(file_name))
-}
-
-pub fn locate_bundled_pdfium_library() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("LEGE_PDFIUM_PATH").map(PathBuf::from) {
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    bundled_pdfium_search_directories()
-        .into_iter()
-        .map(|dir| PathBuf::from(Pdfium::pdfium_platform_library_name_at_path(&dir)))
-        .find(|candidate| candidate.is_file())
-}
-
-fn bundled_pdfium_search_directories() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-
-    let mut push_unique = |path: PathBuf| {
-        if !dirs.iter().any(|p| p == &path) {
-            dirs.push(path);
-        }
-    };
-
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(dir) = exe_path.parent() {
-            push_unique(dir.to_path_buf());
-
-            if let Some(parent) = dir.parent() {
-                push_unique(parent.join("lib/lege"));
-                push_unique(parent.join("lib"));
-            }
-
-            #[cfg(target_os = "macos")]
-            if let Some(contents_dir) = dir
-                .parent()
-                .filter(|parent| parent.file_name().is_some_and(|name| name == "Contents"))
-            {
-                push_unique(contents_dir.join("Frameworks"));
-                push_unique(contents_dir.join("Resources"));
-            }
-        }
-    }
-
-    dirs
-}
-
-/// Resolve the bundled Pdfium library path used for runtime binding on all platforms.
-pub fn resolve_pdfium_library_path() -> Option<PathBuf> {
-    RESOLVED_PDFIUM_LIBRARY_PATH.clone()
-}
-
-fn resolve_pdfium_library_path_uncached() -> Option<PathBuf> {
-    locate_bundled_pdfium_library()
-}
-
-pub fn ensure_pdfium_available() -> Result<()> {
-    if let Some(_found_path) = resolve_pdfium_library_path() {
-        crate::dbglog!("Found pdfium at: {:?}", _found_path);
-        // Existence is not enough: dlopen can still fail (macOS library
-        // validation, architecture mismatch). Bind eagerly here so the failure
-        // is a clean Err through the normal error/JSON-event path instead of a
-        // later panic — release builds abort on panic, which would kill a
-        // --gui-worker child without emitting any error event.
-        return crate::pagerender::ensure_pdfium_binds();
-    }
-
-    let library_name = Pdfium::pdfium_platform_library_name();
-    Err(anyhow!(
-        "Missing bundled Pdfium library ({}). Place it next to the Lege executable.",
-        library_name.to_string_lossy()
-    ))
 }
 
 #[cfg(all(test, not(feature = "ocr")))]

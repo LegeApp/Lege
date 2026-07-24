@@ -1,12 +1,12 @@
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::pagerender::prelude::{PdfRenderer, RasterConfig as PdfRasterConfig};
 use crate::pipeline::config::{PipelineConfig, RenderedPageData};
-use crate::pipeline::helper_functions::wait_for_memory_relief;
 use crate::pipeline::policies::build_inference_image;
 use crate::progress::ProgressTracker;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
+use lege_pdf_read::RenderSession;
 use std::cmp::Ordering as CmpOrdering;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -28,54 +28,85 @@ pub struct SourcePage {
 pub trait PageSource: Send + Sync {
     fn page_count(&self) -> usize;
     fn source_concurrency(&self) -> usize;
-    fn pdf_renderer(&self) -> Option<Arc<PdfiumRenderer>> {
+    fn document_session(&self) -> Option<Arc<RenderSession>> {
         None
     }
     async fn load_page(&self, page_index: usize) -> Result<SourcePage>;
+
+    async fn load_page_cancellable(
+        &self,
+        page_index: usize,
+        _cancellation: lege_pdf_read::CancellationToken,
+    ) -> Result<SourcePage> {
+        self.load_page(page_index).await
+    }
 }
 
-pub struct PdfiumPageSource {
-    renderer: Arc<PdfiumRenderer>,
+pub struct PdfPageSource {
+    renderer: Arc<PdfRenderer>,
     config: Arc<PipelineConfig>,
 }
 
-impl PdfiumPageSource {
+impl PdfPageSource {
     pub fn new(pdf_bytes: Arc<[u8]>, config: Arc<PipelineConfig>) -> Result<Self> {
         let mut raster_cfg = PdfRasterConfig::default();
         raster_cfg.render_forms = false;
         raster_cfg.target_width = config.target_width();
-        let renderer = Arc::new(PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?);
+        let renderer = Arc::new(PdfRenderer::new_from_bytes(pdf_bytes, raster_cfg)?);
         Ok(Self { renderer, config })
     }
 }
 
 #[async_trait]
-impl PageSource for PdfiumPageSource {
+impl PageSource for PdfPageSource {
     fn page_count(&self) -> usize {
         self.renderer.page_count() as usize
     }
 
     fn source_concurrency(&self) -> usize {
-        1
+        std::thread::available_parallelism()
+            .map(|threads| threads.get().saturating_sub(1).max(1))
+            .unwrap_or(1)
     }
 
-    fn pdf_renderer(&self) -> Option<Arc<PdfiumRenderer>> {
-        Some(self.renderer.clone())
+    fn document_session(&self) -> Option<Arc<RenderSession>> {
+        Some(self.renderer.document_session())
     }
 
     async fn load_page(&self, page_index: usize) -> Result<SourcePage> {
+        self.load_pdf_page(page_index, None).await
+    }
+
+    async fn load_page_cancellable(
+        &self,
+        page_index: usize,
+        cancellation: lege_pdf_read::CancellationToken,
+    ) -> Result<SourcePage> {
+        self.load_pdf_page(page_index, Some(cancellation)).await
+    }
+}
+
+impl PdfPageSource {
+    async fn load_pdf_page(
+        &self,
+        page_index: usize,
+        cancellation: Option<lege_pdf_read::CancellationToken>,
+    ) -> Result<SourcePage> {
         // "Render high, resize low": render at the highest resolution any stage
         // needs (OCR when slow-OCR is enabled), then downstream stages resize
         // down to target_height for encoding. Equals target_height otherwise.
+        let target_height = self.config.source_render_height();
+        let target_width = self.config.source_render_width();
         let rgb_page = self
             .renderer
-            .render_page_rgb(
+            .render_page_rgb_cancellable(
                 page_index as u32,
-                self.config.source_render_height(),
-                self.config.source_render_width(),
+                target_height,
+                target_width,
+                cancellation,
             )
             .await
-            .map_err(|e| anyhow!("Failed to render page {}: {}", page_index, e))?;
+            .map_err(|error| anyhow!("Failed to render page {page_index}: {error}"))?;
 
         let image = RgbImage::from_raw(rgb_page.width, rgb_page.height, rgb_page.data).ok_or_else(
             || {
@@ -90,6 +121,9 @@ impl PageSource for PdfiumPageSource {
 
         Ok(SourcePage {
             image,
+            // The renderer already read and returned this geometry while
+            // calculating raster dimensions. Avoid a second page-tree lookup
+            // for every source page.
             original_width_pts: rgb_page.original_width_pts,
             original_height_pts: rgb_page.original_height_pts,
         })
@@ -203,9 +237,10 @@ impl PageSource for ImageFolderPageSource {
             .ok_or_else(|| anyhow!("Image page index {} out of bounds", page_index))?;
 
         let decode_path = path.clone();
-        let mut image = tokio::task::spawn_blocking(move || decode_folder_image(&decode_path))
-            .await
-            .map_err(|e| anyhow!("Image decode task panicked: {}", e))??;
+        let mut image =
+            crate::runtime_stats::spawn_blocking(move || decode_folder_image(&decode_path))
+                .await
+                .map_err(|e| anyhow!("Image decode task panicked: {}", e))??;
         let (width, height) = image.dimensions();
         maybe_dump_folder_source_image("decoded", page_index, &image)?;
         image = normalize_folder_image_to_target(
@@ -241,9 +276,10 @@ impl PageSource for ZipImagePageSource {
             .cloned()
             .ok_or_else(|| anyhow!("ZIP image page index {} out of bounds", page_index))?;
         let zip_path = self.zip_path.clone();
-        let mut image = tokio::task::spawn_blocking(move || decode_zip_image(&zip_path, &entry))
-            .await
-            .map_err(|e| anyhow!("ZIP image decode task panicked: {}", e))??;
+        let mut image =
+            crate::runtime_stats::spawn_blocking(move || decode_zip_image(&zip_path, &entry))
+                .await
+                .map_err(|e| anyhow!("ZIP image decode task panicked: {}", e))??;
         let (width, height) = image.dimensions();
         image = normalize_folder_image_to_target(
             image,
@@ -291,48 +327,51 @@ pub async fn source_stage(
             let page_index = next_page;
             next_page += 1;
 
-            in_flight.push(tokio::spawn(async move {
-                if page_index % 10 == 0 {
-                    wait_for_memory_relief().await;
-                }
-
-                #[cfg(feature = "debug-logging")]
-                crate::info_log!("[SourceStage] Loading page {}", page_index);
-                let source_page = source.load_page(page_index).await.map_err(|e| {
+            in_flight.push(tokio::spawn(crate::runtime_stats::track_future(
+                crate::runtime_stats::Stage::Render,
+                async move {
                     #[cfg(feature = "debug-logging")]
-                    crate::error_println!("[SourceStage] Page {} load failed: {:#}", page_index, e);
-                    e
-                })?;
-                let SourcePage {
-                    image,
-                    original_width_pts,
-                    original_height_pts,
-                } = source_page;
+                    crate::info_log!("[SourceStage] Loading page {}", page_index);
+                    let source_page = source.load_page(page_index).await.map_err(|e| {
+                        #[cfg(feature = "debug-logging")]
+                        crate::error_println!(
+                            "[SourceStage] Page {} load failed: {:#}",
+                            page_index,
+                            e
+                        );
+                        e
+                    })?;
+                    let SourcePage {
+                        image,
+                        original_width_pts,
+                        original_height_pts,
+                    } = source_page;
 
-                crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
+                    crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
 
-                let high_res_arc = Arc::new(image);
-                let page_layout_enabled = config.layout_detection_enabled_for_page(page_index);
-                // In no-layout mode the inference image is never used; share the
-                // high-res Arc instead of deep-cloning a full RGB page per file.
-                let inference_image = if page_layout_enabled {
-                    let spec = config.inference_resize_spec();
-                    let img = build_inference_image(high_res_arc.as_ref(), &spec)
-                        .unwrap_or_else(|_| (*high_res_arc).clone());
-                    Arc::new(img)
-                } else {
-                    high_res_arc.clone()
-                };
+                    let high_res_arc = Arc::new(image);
+                    let page_layout_enabled = config.layout_detection_enabled_for_page(page_index);
+                    // In no-layout mode the inference image is never used; share the
+                    // high-res Arc instead of deep-cloning a full RGB page per file.
+                    let inference_image = if page_layout_enabled {
+                        let spec = config.inference_resize_spec();
+                        let img = build_inference_image(high_res_arc.as_ref(), &spec)
+                            .unwrap_or_else(|_| (*high_res_arc).clone());
+                        Arc::new(img)
+                    } else {
+                        high_res_arc.clone()
+                    };
 
-                Ok::<_, anyhow::Error>(RenderedPageData {
-                    index: page_index,
-                    high_res_image: high_res_arc,
-                    inference_image,
-                    layout_detection_enabled: page_layout_enabled,
-                    original_width_pts,
-                    original_height_pts,
-                })
-            }));
+                    Ok::<_, anyhow::Error>(RenderedPageData {
+                        index: page_index,
+                        high_res_image: high_res_arc,
+                        inference_image,
+                        layout_detection_enabled: page_layout_enabled,
+                        original_width_pts,
+                        original_height_pts,
+                    })
+                },
+            )));
         }
 
         let Some(result) = in_flight.next().await else {

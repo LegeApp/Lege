@@ -1,9 +1,8 @@
-use crate::pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig};
+use crate::pagerender::prelude::{PdfRenderer, RasterConfig as PdfRasterConfig};
 use crate::{debug_println, error_println, info_println};
 use anyhow::{Context, Result, anyhow};
 use image::RgbImage;
 use std::sync::Arc;
-use tokio::runtime::Runtime;
 
 /// Render PDF pages to PNG files at specified height
 pub fn run_pdf_to_png_mode(
@@ -43,7 +42,7 @@ pub fn run_pdf_to_png_mode(
     let pdf_bytes: Arc<[u8]> = Arc::from(pdf_bytes_vec.into_boxed_slice());
     let mut raster_cfg = PdfRasterConfig::default();
     raster_cfg.render_forms = false;
-    let renderer = PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
+    let renderer = PdfRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
     let total_pages = renderer.page_count() as usize;
 
     // Parse page range or use all pages
@@ -106,9 +105,9 @@ pub fn run_pdf_to_png_mode(
     Ok(())
 }
 
-/// Render a single PDF page to PNG at specified height via PdfiumRenderer
+/// Render a single PDF page to PNG at the specified height.
 fn render_pdf_page_to_png(
-    renderer: &PdfiumRenderer,
+    renderer: &PdfRenderer,
     page_index: u32,
     target_height: u32,
     output_dir: &std::path::Path,
@@ -120,7 +119,7 @@ fn render_pdf_page_to_png(
             handle.block_on(renderer.render_page_rgb(page_index, target_height, None))
         })?
     } else {
-        let rt = Runtime::new()?;
+        let rt = crate::runtime_stats::build_control_runtime()?;
         rt.block_on(renderer.render_page_rgb(page_index, target_height, None))?
     };
     let img = RgbImage::from_raw(rgb.width, rgb.height, rgb.data).ok_or_else(|| {
@@ -268,8 +267,7 @@ pub fn run_pdf_to_jp2_debug_mode(
     let pdf_bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(pdf_bytes_vec.into_boxed_slice());
     let mut raster_cfg = crate::pagerender::prelude::RasterConfig::default();
     raster_cfg.render_forms = false;
-    let renderer =
-        crate::pagerender::prelude::PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
+    let renderer = crate::pagerender::prelude::PdfRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
     let total_pages = renderer.page_count() as usize;
 
     let pages_to_render = if let Some(range_str) = page_range {
@@ -301,7 +299,7 @@ pub fn run_pdf_to_jp2_debug_mode(
                 ))
             })?
         } else {
-            let rt = tokio::runtime::Runtime::new()?;
+            let rt = crate::runtime_stats::build_control_runtime()?;
             rt.block_on(renderer.render_page_rgb((page_num - 1) as u32, target_height, None))?
         };
 

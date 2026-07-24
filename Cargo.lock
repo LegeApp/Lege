@@ -63,9 +63,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.38.0"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d10a236f96f87d70732e44520046785431ef01d5bcd6b041317bfadd2f88245"
+checksum = "f950720ce064757a1b629caad3a408e8d2c63bb01f29b8a3ff8daa331053ffeb"
 dependencies = [
  "accesskit",
  "hashbrown 0.16.1",
@@ -73,12 +73,12 @@ dependencies = [
 
 [[package]]
 name = "accesskit_macos"
-version = "0.26.3"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce02dc63b43f0c9296af9ac946312a2dc8814427d7a64d2d600971dac55b6076"
+checksum = "17cb8b66cef272d48161b02a6317cc2bdd5f98bb0a5e79c68f704a5862aa396b"
 dependencies = [
  "accesskit",
- "accesskit_consumer 0.38.0",
+ "accesskit_consumer 0.37.0",
  "hashbrown 0.16.1",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
@@ -1171,26 +1171,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console_error_panic_hook"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
-dependencies = [
- "cfg-if",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "console_log"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86919cef3e37b9356ccf54d4421208c17ecfda01beae61393e7ffd72916c0ef1"
-dependencies = [
- "log",
- "web-sys",
-]
-
-[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2103,7 +2083,7 @@ dependencies = [
  "futures-util",
  "generational-box",
  "hotpath",
- "itertools 0.14.0",
+ "itertools",
  "keyboard-types",
  "paste",
  "pathgraph",
@@ -3085,15 +3065,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3316,7 +3287,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lege"
-version = "1.4.64"
+version = "1.4.7"
 dependencies = [
  "anyhow",
  "app_dirs2",
@@ -3351,6 +3322,7 @@ dependencies = [
  "lege-gpu",
  "lege-ipc",
  "lege-ocr",
+ "lege-pdf-read",
  "lege-pdf-write",
  "libc",
  "libloading 0.9.0",
@@ -3360,7 +3332,7 @@ dependencies = [
  "num_cpus",
  "once_cell",
  "parking_lot",
- "pdfium-render",
+ "pdf-test-support",
  "png",
  "pollster 1.0.1",
  "quick-xml 0.41.0",
@@ -3485,6 +3457,24 @@ dependencies = [
  "thiserror 2.0.19",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "lege-pdf-read"
+version = "0.1.0"
+dependencies = [
+ "pdf-content",
+ "pdf-document",
+ "pdf-object",
+ "pdf-page-ir",
+ "pdf-read",
+ "pdf-render-api",
+ "pdf-render-cpu",
+ "pdf-security",
+ "pdf-source",
+ "pdf-test-support",
+ "pdf-text",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -4557,29 +4547,169 @@ dependencies = [
 ]
 
 [[package]]
-name = "pdfium-render"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "826f8f64bc88cb15381cbb5aa245c1500632cd8a453b244bc2b0cbaff7098077"
+name = "pdf-color"
+version = "0.1.0"
+dependencies = [
+ "pdf-object",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-content"
+version = "0.1.0"
+dependencies = [
+ "pdf-color",
+ "pdf-document",
+ "pdf-font",
+ "pdf-function",
+ "pdf-image",
+ "pdf-object",
+ "pdf-page-ir",
+ "pdf-syntax",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-document"
+version = "0.1.0"
+dependencies = [
+ "pdf-object",
+ "pdf-security",
+ "pdf-source",
+ "pdf-structure",
+ "pdf-syntax",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-font"
+version = "0.1.0"
+dependencies = [
+ "pdf-object",
+ "skrifa 0.44.0",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-function"
+version = "0.1.0"
+
+[[package]]
+name = "pdf-geom"
+version = "0.1.0"
+
+[[package]]
+name = "pdf-image"
+version = "0.1.0"
+dependencies = [
+ "jbig2enc-rust",
+ "jp2lam",
+ "pdf-color",
+ "pdf-object",
+ "pdf-page-ir",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-object"
+version = "0.1.0"
+dependencies = [
+ "pdf-syntax",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-page-ir"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
- "bytemuck",
- "bytes",
- "chrono",
- "console_error_panic_hook",
- "console_log",
- "image",
- "itertools 0.15.0",
- "js-sys",
- "libloading 0.9.0",
- "log",
- "maybe-owned",
- "once_cell",
- "utf16string",
- "vecmath",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "pdf-geom",
+]
+
+[[package]]
+name = "pdf-read"
+version = "0.1.0"
+dependencies = [
+ "pdf-content",
+ "pdf-document",
+ "pdf-object",
+ "pdf-security",
+ "pdf-source",
+ "pdf-structure",
+]
+
+[[package]]
+name = "pdf-render-api"
+version = "0.1.0"
+dependencies = [
+ "pdf-page-ir",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-render-cpu"
+version = "0.1.0"
+dependencies = [
+ "pdf-color",
+ "pdf-font",
+ "pdf-image",
+ "pdf-page-ir",
+ "pdf-render-api",
+ "rayon",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-security"
+version = "0.1.0"
+dependencies = [
+ "pdf-object",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-source"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-structure"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "pdf-object",
+ "pdf-source",
+ "pdf-syntax",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-syntax"
+version = "0.1.0"
+dependencies = [
+ "pdf-source",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-test-support"
+version = "0.1.0"
+dependencies = [
+ "pdf-render-api",
+ "pdf-security",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "pdf-text"
+version = "0.1.0"
+dependencies = [
+ "pdf-content",
+ "pdf-font",
+ "pdf-page-ir",
 ]
 
 [[package]]
@@ -4715,12 +4845,6 @@ dependencies = [
  "fastrand",
  "futures-io",
 ]
-
-[[package]]
-name = "piston-float"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad78bf43dcf80e8f950c92b84f938a0fc7590b7f6866fbcbeca781609c115590"
 
 [[package]]
 name = "pkg-config"
@@ -5067,7 +5191,7 @@ version = "0.4.0-rc.17"
 dependencies = [
  "euclid",
  "hotpath",
- "itertools 0.14.0",
+ "itertools",
  "rustc-hash 2.1.3",
  "tracing",
 ]
@@ -5167,7 +5291,7 @@ dependencies = [
  "built",
  "cfg-if",
  "interpolate_name",
- "itertools 0.14.0",
+ "itertools",
  "libc",
  "libfuzzer-sys",
  "log",
@@ -5322,22 +5446,22 @@ dependencies = [
 
 [[package]]
 name = "ref-cast"
-version = "1.0.26"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "216e8f773d7923bcba9ceb86a86c93cabb3903a11872fc3f138c49630e50b96d"
+checksum = "f354300ae66f76f1c85c5f84693f0ce81d747e2c3f21a45fef496d89c960bf7d"
 dependencies = [
  "ref-cast-impl",
 ]
 
 [[package]]
 name = "ref-cast-impl"
-version = "1.0.26"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
+checksum = "b7186006dcb21920990093f30e3dea63b7d6e977bf1256be20c3563a5db070da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -6637,7 +6761,7 @@ name = "torin"
 version = "0.4.0-rc.17"
 dependencies = [
  "euclid",
- "itertools 0.14.0",
+ "itertools",
  "rustc-hash 2.1.3",
  "tracing",
 ]
@@ -6742,9 +6866,9 @@ dependencies = [
 
 [[package]]
 name = "twox-hash"
-version = "2.1.3"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8464ec13c3691491391d9fce00f6416c9a48e46972f72d7865688be2080192c9"
+checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typed-path"
@@ -6862,15 +6986,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "utf16string"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b62a1e85e12d5d712bf47a85f426b73d303e2d00a90de5f3004df3596e9d216"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6910,15 +7025,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "vecmath"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "956ae1e0d85bca567dee1dcf87fb1ca2e792792f66f87dced8381f99cd91156a"
-dependencies = [
- "piston-float",
-]
 
 [[package]]
 name = "version-compare"
@@ -7220,9 +7326,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
 ]

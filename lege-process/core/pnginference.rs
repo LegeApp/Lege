@@ -2,7 +2,7 @@ use crate::{
     EncodeOptions, ImageFormat, PipelineConfig, debug_println, encode_jpeg,
     engine::{Detection, LayoutEngine, LayoutEngineConfig},
     error_println, info_println,
-    pagerender::prelude::{PdfiumRenderer, RasterConfig as PdfRasterConfig},
+    pagerender::prelude::{PdfRenderer, RasterConfig as PdfRasterConfig},
     pipeline::helper_functions::init_encode_semaphore,
     pipeline::runtime_limits::{AdaptiveConcurrency, PipelineRuntimeLimits},
     progress::{ProgressMode, ProgressTracker},
@@ -194,8 +194,9 @@ fn run_image_source_with_config(
     let runtime = match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle,
         Err(_) => {
-            // We are not inside a runtime; create a new one.
-            owned_runtime = tokio::runtime::Runtime::new()?;
+            // We are not inside a runtime; create the single-thread control
+            // runtime. CPU work is dispatched through the compute/Rayon path.
+            owned_runtime = crate::runtime_stats::build_control_runtime()?;
             owned_runtime.handle().clone()
         }
     };
@@ -303,7 +304,7 @@ pub async fn run_pdf_layout_crop_debug(
     let pdf_bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(pdf_bytes_vec.into_boxed_slice());
     let mut raster_cfg = PdfRasterConfig::default();
     raster_cfg.render_forms = false;
-    let renderer = PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
+    let renderer = PdfRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
     let total_pages = renderer.page_count() as usize;
 
     let mut pipeline_config = PipelineConfig::default();
@@ -597,7 +598,7 @@ pub fn run_pdf_to_images_mode(
     let pdf_bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(pdf_bytes_vec.into_boxed_slice());
     let mut raster_cfg = PdfRasterConfig::default();
     raster_cfg.render_forms = false;
-    let renderer = PdfiumRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
+    let renderer = PdfRenderer::new_from_bytes(pdf_bytes, raster_cfg)?;
     let total_pages = renderer.page_count() as usize;
 
     // Parse page range
