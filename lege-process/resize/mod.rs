@@ -13,7 +13,7 @@ use once_cell::sync::OnceCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 use std::sync::atomic::{AtomicUsize, Ordering};
-static WGPU_RESIZER: OnceCell<Mutex<WgpuResizer>> = OnceCell::new();
+static WGPU_RESIZER_POOL: OnceCell<WgpuResizerPool> = OnceCell::new();
 static WGPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RESIZE_BACKEND_PREFERENCE: AtomicU8 = AtomicU8::new(0); // 0=auto, 1=fast_cpu
 
@@ -26,6 +26,93 @@ pub fn set_gpu_resize_enabled(enabled: bool) {
 
 pub fn gpu_resize_enabled() -> bool {
     GPU_RESIZE_GATE.load(AtomicOrdering::Relaxed)
+}
+
+/// Pool of `WgpuResizer` instances so page workers can resize concurrently.
+///
+/// A single resizer owns its GPU scratch/readback buffers and must be used by
+/// one thread at a time, so the old design serialized every resize behind one
+/// `Mutex<WgpuResizer>`. The renderer and inference paths are now multithreaded,
+/// so this pool hands each caller its own resizer (checked out from a free list
+/// or created on demand) and retains up to `max_idle` for reuse. The shared
+/// wgpu device/queue underneath is `Sync`, so concurrent submits are safe.
+struct WgpuResizerPool {
+    prototype: Mutex<WgpuResizer>,
+    free: Mutex<Vec<WgpuResizer>>,
+    max_idle: usize,
+    active: AtomicUsize,
+    peak_active: AtomicUsize,
+}
+
+impl WgpuResizerPool {
+    fn new(max_idle: usize) -> Result<Self, ResizeError> {
+        let prototype = WgpuResizer::new().map_err(|e| {
+            ResizeError::BackendError(format!("Failed to initialize WGPU resizer: {e}"))
+        })?;
+        Ok(Self {
+            prototype: Mutex::new(prototype),
+            free: Mutex::new(Vec::new()),
+            max_idle: max_idle.max(1),
+            active: AtomicUsize::new(0),
+            peak_active: AtomicUsize::new(0),
+        })
+    }
+
+    fn checkout(&self) -> Result<PooledResizer<'_>, ResizeError> {
+        let resizer = self.free.lock().unwrap().pop().unwrap_or_else(|| {
+            // Sibling creation only clones the already compiled pipeline
+            // handles and allocates scratch lazily on first use.
+            self.prototype.lock().unwrap().build_sibling()
+        });
+        let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
+        let previous_peak = self.peak_active.fetch_max(active, Ordering::Relaxed);
+        #[cfg(feature = "debug-logging")]
+        if active > previous_peak {
+            println!("WGPU resize pool concurrency reached {active}");
+        }
+        Ok(PooledResizer {
+            pool: self,
+            resizer: Some(resizer),
+        })
+    }
+
+    fn checkin(&self, resizer: WgpuResizer) {
+        let mut free = self.free.lock().unwrap();
+        if free.len() < self.max_idle {
+            free.push(resizer);
+        }
+        // Otherwise drop it: a transient burst allocated more resizers than the
+        // steady-state pool needs to retain.
+    }
+}
+
+/// RAII handle that returns its resizer to the pool on drop, even on the error
+/// paths of `resize_bytes`, so a failed resize never leaks a pool slot.
+struct PooledResizer<'a> {
+    pool: &'a WgpuResizerPool,
+    resizer: Option<WgpuResizer>,
+}
+
+impl std::ops::Deref for PooledResizer<'_> {
+    type Target = WgpuResizer;
+    fn deref(&self) -> &Self::Target {
+        self.resizer.as_ref().expect("resizer present until drop")
+    }
+}
+
+impl std::ops::DerefMut for PooledResizer<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.resizer.as_mut().expect("resizer present until drop")
+    }
+}
+
+impl Drop for PooledResizer<'_> {
+    fn drop(&mut self) {
+        self.pool.active.fetch_sub(1, Ordering::Relaxed);
+        if let Some(resizer) = self.resizer.take() {
+            self.pool.checkin(resizer);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,16 +211,19 @@ fn bell_filter_type() -> FirFilterType {
     FirFilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
-fn ensure_wgpu_resizer() -> Result<&'static Mutex<WgpuResizer>, ResizeError> {
-    WGPU_RESIZER.get_or_try_init(|| {
-        let resizer = WgpuResizer::new().map_err(|e| {
-            ResizeError::BackendError(format!("Failed to initialize WGPU resizer: {e}"))
-        })?;
-
+fn wgpu_resizer_pool() -> Result<&'static WgpuResizerPool, ResizeError> {
+    WGPU_RESIZER_POOL.get_or_try_init(|| {
+        let default_size = std::thread::available_parallelism()
+            .map(|threads| threads.get().clamp(2, 4))
+            .unwrap_or(2);
+        let pool_size = std::env::var("LEGE_GPU_RESIZE_SESSIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(default_size)
+            .clamp(1, 8);
         #[cfg(feature = "debug-logging")]
-        println!("✓ WGPU GPU resizer initialized successfully");
-
-        Ok(Mutex::new(resizer))
+        println!("WGPU resize pool configured for up to {pool_size} idle session(s)");
+        WgpuResizerPool::new(pool_size)
     })
 }
 
@@ -199,10 +289,7 @@ fn wgpu_resize_bytes(
     params: &ResizeParams,
     channel_count: u32,
 ) -> Result<Vec<u8>, ResizeError> {
-    let resizer_lock = ensure_wgpu_resizer()?;
-    let mut resizer = resizer_lock
-        .lock()
-        .map_err(|_| ResizeError::BackendError("WGPU resizer poisoned".to_string()))?;
+    let mut resizer = wgpu_resizer_pool()?.checkout()?;
 
     let mut wgpu_params = WgpuResizeParameters::new(
         src_width,
