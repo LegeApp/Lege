@@ -77,6 +77,14 @@ struct AnalysisPageResult {
     pixel_bounds: Option<ContentBounds>,
 }
 
+enum AnalysisJobResult {
+    Completed(AnalysisPageResult),
+    LoadFailed {
+        page_index: usize,
+        _error: anyhow::Error,
+    },
+}
+
 fn prepare_analysis_page(page_index: usize, original_image: RgbImage) -> AnalysisPreparedPage {
     const ANALYSIS_WIDTH: u32 = 640;
 
@@ -148,20 +156,25 @@ fn build_margin_analysis_future(
             &config,
         );
 
-        let pixel_bounds = tokio::task::spawn_blocking({
-            let analysis_image = analysis_image.clone();
-            let detections = detections.clone();
-            let config = config.clone();
-            move || {
-                if detections.is_empty() {
-                    compute_pixel_bounds_for_margin(&analysis_image, &config)
-                } else {
-                    compute_missed_pixel_bounds_for_margin(&analysis_image, &detections, &config)
+        let pixel_bounds =
+            crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Processing, {
+                let analysis_image = analysis_image.clone();
+                let detections = detections.clone();
+                let config = config.clone();
+                move || {
+                    if detections.is_empty() {
+                        compute_pixel_bounds_for_margin(&analysis_image, &config)
+                    } else {
+                        compute_missed_pixel_bounds_for_margin(
+                            &analysis_image,
+                            &detections,
+                            &config,
+                        )
+                    }
                 }
-            }
-        })
-        .await
-        .map_err(|error| anyhow!("Margin-analysis pixel guard task panicked: {}", error))?;
+            })
+            .await
+            .map_err(|error| anyhow!("Margin-analysis pixel guard task panicked: {}", error))?;
 
         Ok(AnalysisPageResult {
             page_index,
@@ -179,6 +192,7 @@ pub(crate) async fn perform_document_margin_analysis(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     total_pages: usize,
     page_range: std::ops::Range<usize>,
+    max_in_flight: usize,
     progress: &ProgressTracker,
 ) -> Result<(DocumentMarginAnalysis, Vec<CachedDetections>)> {
     info_log!("[Margin-Analysis] Phase 1: Analyzing document margins (Low-Res Pass)...");
@@ -186,8 +200,22 @@ pub(crate) async fn perform_document_margin_analysis(
 
     let mut margin_inputs = Vec::new();
     let mut detection_cache = vec![CachedDetections::Missing; source.page_count()];
-    let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
+    let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisJobResult>>> =
         FuturesUnordered::new();
+    let analysis_concurrency = max_in_flight
+        .max(
+            inference_handle
+                .as_ref()
+                .map_or(1, |handle| handle.session_count()),
+        )
+        .max(1);
+    info_log!(
+        "[Margin-Analysis] Low-res page workers: {} (GPU sessions: {})",
+        analysis_concurrency,
+        inference_handle
+            .as_ref()
+            .map_or(0, |handle| handle.session_count())
+    );
 
     let push_completed = |result: AnalysisPageResult,
                           margin_inputs: &mut Vec<PageMarginInput>,
@@ -208,10 +236,48 @@ pub(crate) async fn perform_document_margin_analysis(
         }
     };
 
-    for page_index in page_range {
-        let source_page = match source.load_page(page_index).await {
-            Ok(page) => page,
-            Err(_error) => {
+    let mut next_page = page_range.start;
+    let page_end = page_range.end;
+    while next_page < page_end || !pending.is_empty() {
+        while next_page < page_end && pending.len() < analysis_concurrency {
+            let page_index = next_page;
+            next_page += 1;
+            let source = source.clone();
+            let config = config.clone();
+            let inference_handle = inference_handle.clone();
+            pending.push(Box::pin(async move {
+                let source_page = match source.load_page(page_index).await {
+                    Ok(page) => page,
+                    Err(error) => {
+                        return Ok(AnalysisJobResult::LoadFailed {
+                            page_index,
+                            _error: error,
+                        });
+                    }
+                };
+                let prepared = crate::runtime_stats::spawn_blocking_stage(
+                    crate::runtime_stats::Stage::Processing,
+                    move || prepare_analysis_page(page_index, source_page.image),
+                )
+                .await
+                .map_err(|error| anyhow!("Margin-analysis prep task panicked: {}", error))?;
+                let result = crate::runtime_stats::track_future(
+                    crate::runtime_stats::Stage::Inference,
+                    build_margin_analysis_future(inference_handle, prepared, config),
+                )
+                .await?;
+                Ok(AnalysisJobResult::Completed(result))
+            }));
+        }
+
+        let Some(result) = pending.next().await else {
+            break;
+        };
+        match result? {
+            AnalysisJobResult::Completed(result) => {
+                push_completed(result, &mut margin_inputs, &mut detection_cache);
+            }
+            AnalysisJobResult::LoadFailed { page_index, _error } => {
                 warn_log!(
                     "Page {}: margin-analysis load failed: {}. Preserving page.",
                     page_index,
@@ -224,37 +290,14 @@ pub(crate) async fn perform_document_margin_analysis(
                     detections: Vec::new(),
                     pixel_bounds: None,
                 });
-                continue;
             }
-        };
-
-        let prepared = tokio::task::spawn_blocking(move || {
-            prepare_analysis_page(page_index, source_page.image)
-        })
-        .await
-        .map_err(|error| anyhow!("Margin-analysis prep task panicked: {}", error))?;
-
-        pending.push(build_margin_analysis_future(
-            inference_handle.clone(),
-            prepared,
-            config.clone(),
-        ));
-
-        // Keep the resident layout actor serialized while allowing page loading
-        // and CPU preparation to remain outside it.
-        if let Some(result) = pending.next().await {
-            push_completed(result?, &mut margin_inputs, &mut detection_cache);
-            progress.publish_margin_progress(
-                margin_inputs.len().min(total_pages),
-                margin_inputs.len().min(total_pages),
-                0,
-                total_pages,
-            );
         }
-    }
-
-    while let Some(result) = pending.next().await {
-        push_completed(result?, &mut margin_inputs, &mut detection_cache);
+        progress.publish_margin_progress(
+            margin_inputs.len().min(total_pages),
+            margin_inputs.len().min(total_pages),
+            0,
+            total_pages,
+        );
     }
     margin_inputs.sort_by_key(|input| input.page_index);
 

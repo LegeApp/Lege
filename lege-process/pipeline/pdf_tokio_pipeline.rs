@@ -1,14 +1,12 @@
 // pdf_tokio_pipeline.rs
 use crate::margin::DocumentMarginAnalysis;
 use crate::pagerender::NativeTextWord;
-use crate::pagerender::prelude::PdfiumRenderer;
 use crate::pipeline::config::{
     ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData,
 };
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, build_hocr_from_positioned_words, init_encode_semaphore,
-    merge_overlapping_image_detections, rounded_clamped_bbox, should_preserve_cover_page,
-    spawn_pdf_writer_actor,
+    build_hocr_from_positioned_words, init_encode_semaphore, merge_overlapping_image_detections,
+    rounded_clamped_bbox, should_preserve_cover_page, spawn_pdf_writer_actor,
 };
 use crate::pipeline::margin_pipeline::{
     CachedDetections, adjust_page_with_margin_analysis, cached_inference_result,
@@ -22,21 +20,19 @@ use crate::pipeline::policies::{
     LayoutRegions, MarginCorrection, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
 };
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
-use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
+use crate::pipeline::source::{PageSource, PdfPageSource};
 use crate::progress::ProgressTracker;
-use crate::progress::ReflowStage;
 use crate::{info_log, success_log, warn_log};
 
 use crate::color::BinarizationOptions;
 use crate::encoding::Jbig2Mode;
 use anyhow::{Result, anyhow};
 use futures::future::BoxFuture;
-use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 
 /// Result from inference stage
 #[derive(Clone)]
@@ -53,106 +49,12 @@ pub struct ProcessedPage {
     pub height: u32,
     pub elements: Vec<crate::accumulator::ContentElement>,
     pub hocr_text: Option<String>,
+    /// Title candidates for the automatic table of contents. Text only; empty
+    /// on any page with no title detection.
+    pub toc: crate::toc::PageTocData,
 }
 
-/// Inference stage with TRUE concurrency
-///
-/// Instead of: recv -> infer -> send -> recv -> infer -> send (sequential)
-/// Now:        recv -> spawn(infer) -> recv -> spawn(infer) -> collect results -> send
-pub(crate) async fn inference_stage_parallel(
-    inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
-    mut rx: mpsc::Receiver<RenderedPageData>,
-    tx: mpsc::Sender<PdfInferenceData>,
-    detect_count: Arc<AtomicUsize>,
-    concurrency: usize,
-    render_count: Arc<AtomicUsize>,
-    encode_count: Arc<AtomicUsize>,
-    progress: ProgressTracker,
-    total_pages: usize,
-    layout_enabled: bool,
-    detection_cache: Arc<Vec<CachedDetections>>,
-    analysis_width: u32,
-) -> Result<()> {
-    info_log!(
-        "[PDF-Parallel-Infer] Starting inference stage with concurrency={}",
-        concurrency
-    );
-
-    // Track in-flight inference tasks
-    let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<PdfInferenceData>>> =
-        FuturesUnordered::new();
-    let mut input_exhausted = false;
-
-    loop {
-        tokio::select! {
-            biased;  // Prioritize completing work over starting new work
-
-            // Collect completed inference results
-            Some(result) = in_flight.next(), if !in_flight.is_empty() => {
-                match result {
-                    Ok(data) => {
-                        let detected_val = detect_count.fetch_add(1, Ordering::Relaxed) + 1;
-                        if layout_enabled {
-                            let rendered_val = render_count.load(Ordering::Relaxed);
-                            let encoded_val = encode_count.load(Ordering::Relaxed);
-                            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
-                        }
-                        if tx.send(data).await.is_err() {
-                            info_log!("[PDF-Parallel-Infer] Downstream closed, stopping");
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        return Err(anyhow!(
-                            "[PDF-Parallel-Infer] Inference task failed: {}",
-                            e
-                        ));
-                    }
-                }
-            }
-
-            // Accept new work if we have capacity
-            recv_result = rx.recv(), if !input_exhausted && in_flight.len() < concurrency => {
-                match recv_result {
-                    Some(rendered) => {
-                        let handle_clone = inference_handle.clone();
-                        let cache_clone = detection_cache.clone();
-                        let analysis_w = analysis_width;
-
-                        in_flight.push(build_inference_future(
-                            handle_clone,
-                            rendered,
-                            cache_clone,
-                            analysis_w,
-                        ));
-                    }
-                    None => {
-                        input_exhausted = true;
-                        info_log!("[PDF-Parallel-Infer] Input exhausted, draining {} in-flight tasks", in_flight.len());
-                    }
-                }
-            }
-
-            // Input channel closed
-            else => {
-                // Exit when all work is done
-                if input_exhausted && in_flight.is_empty() {
-                    break;
-                }
-
-                // If we can't make progress, yield
-                if in_flight.is_empty() {
-                    tokio::task::yield_now().await;
-                }
-            }
-        }
-    }
-
-    info_log!("[PDF-Parallel-Infer] Inference stage complete");
-    Ok(())
-}
-
-fn build_inference_future(
+pub(crate) fn build_inference_future(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     rendered: RenderedPageData,
     detection_cache: Arc<Vec<CachedDetections>>,
@@ -243,112 +145,16 @@ fn build_inference_future(
     }
 }
 
-//==============================================================================
-// Stage 3: Processing
-//==============================================================================
-
-async fn processing_stage_parallel(
-    config: Arc<PipelineConfig>,
-    pdf_renderer: Option<Arc<PdfiumRenderer>>,
-    mut rx: mpsc::Receiver<PdfInferenceData>,
-    tx: mpsc::Sender<ProcessedPage>,
-    encode_count: Arc<AtomicUsize>,
-    page_index_offset: usize,
-    concurrency: usize,
-    render_count: Arc<AtomicUsize>,
-    detect_count: Arc<AtomicUsize>,
-    progress: ProgressTracker,
-    total_pages: usize,
-    layout_enabled: bool,
-    margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
-) -> Result<()> {
-    info_log!(
-        "[PDF-Parallel-Process] Starting processing stage with concurrency={}",
-        concurrency
-    );
-
-    let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
-    let mut input_exhausted = false;
-
-    loop {
-        tokio::select! {
-            biased;
-
-            // Collect completed processing results
-            Some(result) = in_flight.next(), if !in_flight.is_empty() => {
-                match result {
-                    Ok(Ok(processed_page)) => {
-                        let encoded_val = encode_count.fetch_add(1, Ordering::Relaxed) + 1;
-                        if layout_enabled {
-                            let rendered_val = render_count.load(Ordering::Relaxed);
-                            let detected_val = detect_count.load(Ordering::Relaxed);
-                            progress.publish_layout_progress(rendered_val, detected_val, encoded_val, total_pages);
-                        } else {
-                            progress.publish_no_layout_progress(encoded_val, total_pages);
-                        }
-                        if tx.send(processed_page).await.is_err() {
-                            return Ok(());
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        return Err(anyhow!("[PDF-Parallel-Process] Processing failed: {}", e));
-                    }
-                    Err(e) => {
-                        return Err(anyhow!("[PDF-Parallel-Process] Task join error: {}", e));
-                    }
-                }
-            }
-
-            // Accept new work if we have capacity
-            recv_result = rx.recv(), if !input_exhausted && in_flight.len() < concurrency => {
-                match recv_result {
-                    Some(inference_data) => {
-                        let config_clone = config.clone();
-                        let pdf_renderer_clone = pdf_renderer.clone();
-                        let margin_analysis_clone = margin_analysis.clone();
-
-                        // Spawn processing task
-                        let task = tokio::spawn(async move {
-                            process_single_page(
-                                config_clone,
-                                pdf_renderer_clone,
-                                inference_data,
-                                page_index_offset,
-                                margin_analysis_clone,
-                            ).await
-                        });
-
-                        in_flight.push(task);
-                    }
-                    None => {
-                        input_exhausted = true;
-                    }
-                }
-            }
-
-            else => {
-                if input_exhausted && in_flight.is_empty() {
-                    break;
-                }
-                if in_flight.is_empty() {
-                    tokio::task::yield_now().await;
-                }
-            }
-        }
-    }
-
-    info_log!("[PDF-Parallel-Process] Processing stage complete");
-    Ok(())
-}
-
 /// Process a single page (runs in its own task)
 async fn process_single_page(
     config: Arc<PipelineConfig>,
-    pdf_renderer: Option<Arc<PdfiumRenderer>>,
+    document_session: Option<Arc<lege_pdf_read::RenderSession>>,
     inference_data: PdfInferenceData,
     page_index_offset: usize,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
+    cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<ProcessedPage> {
+    checkpoint(&cancellation, "before page processing")?;
     let page_index = inference_data.inference_result.index;
     let local_index = page_index.saturating_sub(page_index_offset);
 
@@ -360,11 +166,16 @@ async fn process_single_page(
         page_index,
         config: config_clone,
         margin_analysis,
+        cancellation: cancellation.clone(),
     };
 
-    let cpu_result = tokio::task::spawn_blocking(move || process_page_cpu_work(input))
-        .await
-        .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
+    let cpu_result = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Processing,
+        move || process_page_cpu_work(input),
+    )
+    .await
+    .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
+    checkpoint(&cancellation, "after page processing")?;
 
     let PageProcessingOutput {
         adjusted_image,
@@ -452,6 +263,7 @@ async fn process_single_page(
     }
 
     // OCR or text extraction (can run concurrently with other pages)
+    checkpoint(&cancellation, "before OCR/text extraction")?;
     let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
         // Recognize on the high-res raster when available, else the page image.
         // Detections and the returned hOCR are in output (page) space.
@@ -483,13 +295,25 @@ async fn process_single_page(
         .await?
     } else {
         extract_pdf_text(
-            pdf_renderer.as_ref(),
+            document_session.as_ref(),
             page_index,
-            &adjusted_image,
+            adjusted_image.width(),
+            adjusted_image.height(),
             &native_text_transform,
         )
         .await?
     };
+    checkpoint(&cancellation, "after OCR/text extraction")?;
+
+    // Detections and hOCR share the output page's pixel space here, which is the
+    // only place the automatic table of contents needs them together.
+    let toc = crate::toc::capture_page(
+        &adjusted_detections,
+        hocr_text.as_deref(),
+        local_index,
+        width as u32,
+        height as u32,
+    );
 
     // If any region on this page is Abandon and we're using JBIG2 Symbol mode,
     // force the base layer to Generic to avoid Symbol-mode corruption of noisy pixels.
@@ -510,6 +334,7 @@ async fn process_single_page(
     // a full-page grayscale buffer per page through the process→writer channel and the
     // writer's out-of-order reorder buffer — a major OOM source on large OCR jobs.
     let adjusted_image = Arc::new(adjusted_image);
+    checkpoint(&cancellation, "before page encoding")?;
 
     // Cover preservation is mode-independent. Once the full-color cover has been
     // encoded, it is the page's only visible raster layer; in particular, do not
@@ -521,6 +346,7 @@ async fn process_single_page(
             height: height as u32,
             elements,
             hocr_text,
+            toc,
         });
     }
 
@@ -568,6 +394,7 @@ async fn process_single_page(
                     height: height as u32,
                     elements,
                     hocr_text,
+                    toc,
                 });
             }
             Err(e) => {
@@ -622,6 +449,7 @@ async fn process_single_page(
         height: height as u32,
         elements,
         hocr_text,
+        toc,
     })
 }
 
@@ -632,6 +460,7 @@ struct PageProcessingInput {
     page_index: usize,
     config: Arc<PipelineConfig>,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
+    cancellation: lege_pdf_read::CancellationToken,
 }
 
 struct RegionProcessingResult {
@@ -798,7 +627,9 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         page_index,
         config,
         margin_analysis,
+        cancellation,
     } = input;
+    checkpoint(&cancellation, "before CPU page work")?;
 
     let source_width = rendered.high_res_image.width();
     let source_height = rendered.high_res_image.height();
@@ -832,6 +663,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     };
     native_text_transform.source_width = source_width;
     native_text_transform.source_height = source_height;
+    checkpoint(&cancellation, "after page geometry adjustment")?;
 
     // "Render high, resize low": when the page was rendered above target_height
     // (for slow OCR), retain the high-res raster for recognition, then resize the
@@ -911,6 +743,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let width = adjusted_image.width() as usize;
     let height = adjusted_image.height() as usize;
+    checkpoint(&cancellation, "after output resize")?;
 
     // Use raw post-NMS YOLO bboxes (no full-page expansion).
     // We still merge overlaps to prevent double-encodes.
@@ -1181,6 +1014,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         (bin, None)
     };
     drop(binarization_image);
+    checkpoint(&cancellation, "after binarization")?;
 
     #[cfg(feature = "debug-logging")]
     if !binarized.is_empty() {
@@ -1221,6 +1055,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     let mut region_processing_results = Vec::new();
 
     for det in &adjusted_detections {
+        checkpoint(&cancellation, "during region processing")?;
         if !classifier.is_image_label(det) {
             continue;
         }
@@ -1483,6 +1318,14 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         region_processing_results,
         native_text_transform,
     })
+}
+
+fn checkpoint(cancellation: &lege_pdf_read::CancellationToken, stage: &'static str) -> Result<()> {
+    if cancellation.is_cancelled() {
+        Err(anyhow!("Processing cancelled {stage}"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Apply region policy transform (margin correction, layout)
@@ -1995,58 +1838,43 @@ async fn perform_ocr_binarized(
 
 /// Extract PDF text layer
 async fn extract_pdf_text(
-    pdf_renderer: Option<&Arc<PdfiumRenderer>>,
+    document_session: Option<&Arc<lege_pdf_read::RenderSession>>,
     page_index: usize,
-    image: &RgbImage,
+    output_width: u32,
+    output_height: u32,
     text_transform: &NativeTextTransform,
 ) -> Result<Option<String>> {
-    let Some(pdf_renderer) = pdf_renderer else {
+    let Some(session) = document_session else {
         return Ok(None);
     };
+    let session = Arc::clone(session);
+    let source_width = text_transform.source_width;
+    let source_height = text_transform.source_height;
+    let renderer_words =
+        crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Ocr, move || {
+            lege_pdf_read::positioned_words(
+                &session,
+                page_index as u32,
+                source_width,
+                source_height,
+            )
+        })
+        .await
+        .map_err(|error| anyhow!("Renderer text task panicked: {error}"))?;
 
-    match pdf_renderer.has_text_layer(page_index as u32).await {
-        Ok(true) => {
-            match pdf_renderer
-                .extract_positioned_text_words(
-                    page_index as u32,
-                    text_transform.source_width,
-                    text_transform.source_height,
-                )
-                .await
-            {
-                Ok(words) => {
-                    let mapped =
-                        map_native_text_words(words, text_transform, image.width(), image.height());
-                    let hocr =
-                        build_hocr_from_positioned_words(&mapped, image.width(), image.height());
-                    if !hocr.trim().is_empty() {
-                        return Ok(Some(hocr));
-                    }
-                }
-                Err(e) => {
-                    warn_log!(
-                        "Failed to extract positioned text from page {}: {}",
-                        page_index,
-                        e
-                    );
-                }
-            }
-
-            match pdf_renderer.extract_page_text(page_index as u32).await {
-                Ok(raw_text) => Ok(Some(build_hocr_from_pdf_text(
-                    &raw_text,
-                    image.width(),
-                    image.height(),
-                ))),
-                Err(e) => {
-                    warn_log!("Failed to extract text from page {}: {}", page_index, e);
-                    Ok(None)
-                }
-            }
+    match renderer_words {
+        Ok(words) if !words.is_empty() => {
+            let mapped = map_native_text_words(words, text_transform, output_width, output_height);
+            let hocr = build_hocr_from_positioned_words(&mapped, output_width, output_height);
+            Ok((!hocr.trim().is_empty()).then_some(hocr))
         }
-        Ok(false) => Ok(None),
-        Err(e) => {
-            warn_log!("Failed to check text layer for page {}: {}", page_index, e);
+        Ok(_) => Ok(None),
+        Err(error) => {
+            warn_log!(
+                "Renderer text extraction failed on page {}: {}",
+                page_index,
+                error
+            );
             Ok(None)
         }
     }
@@ -2075,13 +1903,9 @@ fn map_native_text_words(
 /// regions were already whited out to 255 by the region loop).
 ///
 /// MASK MODE: pinned to JBIG2 **Generic**, unlike the bilevel base layer's
-/// Symbol default. This is a renderer constraint, not an oversight: pdfium
-/// renders a symbol-mode `/ImageMask` stencil BLANK — with the dictionary in
-/// a JBIG2Globals stream or inlined ahead of the page segments — while the
-/// same symbol streams render fine as opaque images (Lege's normal JBIG2
-/// output). Verified 2026-07 on crusades p22: generic mask 14.0 KB renders,
-/// symbol mask 7.8 KB renders blank both ways. Revisit if pdfium gains
-/// symbol support in its ImageMask path (flip `jbig2_mode` below).
+/// Symbol default. Generic mode remains the compatibility baseline because
+/// symbol-mode `/ImageMask` stencils have historically rendered blank in
+/// common readers, while the same streams work as opaque images.
 async fn encode_mrc_base_layer(
     cleaned_gray: Vec<u8>,
     binarized: Vec<u8>,
@@ -2101,12 +1925,12 @@ async fn encode_mrc_base_layer(
     let bg_quality = config.mrc_bg_quality();
     let subsample_override = config.mrc_bg_subsample_override();
     let adaptive_mask = config.mrc_adaptive_mask();
-    // See the doc comment: Generic is required for pdfium ImageMask rendering.
+    // See the doc comment: Generic is the compatible ImageMask representation.
     // `force_generic` is kept in the signature so the Abandon-region rule stays
     // wired for the day symbol becomes usable here.
     let _ = force_generic;
     let jbig2_mode = crate::encoding::Jbig2Mode::Generic;
-    tokio::task::spawn_blocking(move || {
+    crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Encode, move || {
         let buffer = LegeImageBuffer {
             data: &binarized,
             width: width as u32,
@@ -2126,11 +1950,8 @@ async fn encode_mrc_base_layer(
                 page_data,
                 global_data,
             } => {
-                // pdfium renders a symbol-mode /ImageMask blank when the
-                // dictionary arrives via a JBIG2Globals DecodeParms stream
-                // (the opaque-image path handles it fine). Inlining the
-                // dictionary segments ahead of the page segments is equally
-                // legal embedded JBIG2 and renders correctly.
+                // Inlining dictionary segments before page segments is legal
+                // embedded JBIG2 and avoids reader-specific globals handling.
                 let mut inline = global_data;
                 inline.extend_from_slice(&page_data);
                 (inline, Vec::new())
@@ -2256,16 +2077,19 @@ async fn encode_base_layer(
         None => None,
     };
 
-    let encoding_result = tokio::task::spawn_blocking(move || {
-        let buffer = LegeImageBuffer {
-            data: &binarized,
-            width: width as u32,
-            height: height as u32,
-            channels: 1u8, // Grayscale/binary data
-        };
-        EncodingManager::encode(&buffer, &encoding_settings)
-            .map_err(|e| anyhow!("Encoding failed for format {}: {}", text_format, e))
-    })
+    let encoding_result = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Encode,
+        move || {
+            let buffer = LegeImageBuffer {
+                data: &binarized,
+                width: width as u32,
+                height: height as u32,
+                channels: 1u8, // Grayscale/binary data
+            };
+            EncodingManager::encode(&buffer, &encoding_settings)
+                .map_err(|e| anyhow!("Encoding failed for format {}: {}", text_format, e))
+        },
+    )
     .await
     .map_err(|e| anyhow!("Encoding task panicked: {}", e))??;
 
@@ -2391,35 +2215,38 @@ async fn encode_base_layer_fused(
 
     let text_format = config.text_format().to_string();
 
-    let encoding_result = tokio::task::spawn_blocking(move || {
-        crate::color::binarization::binarize_image_raw_with(
-            rgb_image.as_raw(),
-            width,
-            height,
-            &bin_options,
-            |binarized| {
-                if crate::bbox_trace::enabled() {
-                    let dark = binarized.iter().filter(|&&b| b <= 128).count();
-                    let light = binarized.len().saturating_sub(dark);
-                    eprintln!(
-                        "PAGE {} fused_binarized dark={} light={} total={}",
-                        page_index,
-                        dark,
-                        light,
-                        binarized.len()
-                    );
-                }
-                let buffer = LegeImageBuffer {
-                    data: binarized,
-                    width: width as u32,
-                    height: height as u32,
-                    channels: 1u8,
-                };
-                EncodingManager::encode(&buffer, &encoding_settings)
-                    .map_err(|e| anyhow!("Encoding failed for format {}: {}", text_format, e))
-            },
-        )
-    })
+    let encoding_result = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Encode,
+        move || {
+            crate::color::binarization::binarize_image_raw_with(
+                rgb_image.as_raw(),
+                width,
+                height,
+                &bin_options,
+                |binarized| {
+                    if crate::bbox_trace::enabled() {
+                        let dark = binarized.iter().filter(|&&b| b <= 128).count();
+                        let light = binarized.len().saturating_sub(dark);
+                        eprintln!(
+                            "PAGE {} fused_binarized dark={} light={} total={}",
+                            page_index,
+                            dark,
+                            light,
+                            binarized.len()
+                        );
+                    }
+                    let buffer = LegeImageBuffer {
+                        data: binarized,
+                        width: width as u32,
+                        height: height as u32,
+                        channels: 1u8,
+                    };
+                    EncodingManager::encode(&buffer, &encoding_settings)
+                        .map_err(|e| anyhow!("Encoding failed for format {}: {}", text_format, e))
+                },
+            )
+        },
+    )
     .await
     .map_err(|e| anyhow!("Fused encoding task panicked: {}", e))??;
 
@@ -2503,34 +2330,39 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
         None => None,
     };
 
-    let (data, format) = tokio::task::spawn_blocking(move || {
-        let buffer = LegeImageBuffer {
-            data: image_data.as_raw(),
-            width,
-            height,
-            channels: 3u8,
-        };
-        let (settings, fmt) = if jpeg_compat {
-            (
-                EncodingSettings::Jpeg(JpegSettings {
-                    quality: crate::pipeline::quality_policy::full_page_jpeg_compat(high_quality),
-                    baseline: true,
-                    optimized: true,
-                    downsample: false,
-                }),
-                "jpeg",
-            )
-        } else {
-            let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
-            (EncodingSettings::Jp2Lam { quality: q }, "jp2")
-        };
-        let result = EncodingManager::encode(&buffer, &settings)
-            .map_err(|e| anyhow!("Full-page encoding failed: {}", e))?;
-        match result {
-            EncodingResult::Standard(data) => Ok((data, fmt.to_string())),
-            _ => Err(anyhow!("Unexpected encoding result type for full-page")),
-        }
-    })
+    let (data, format) = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Encode,
+        move || {
+            let buffer = LegeImageBuffer {
+                data: image_data.as_raw(),
+                width,
+                height,
+                channels: 3u8,
+            };
+            let (settings, fmt) = if jpeg_compat {
+                (
+                    EncodingSettings::Jpeg(JpegSettings {
+                        quality: crate::pipeline::quality_policy::full_page_jpeg_compat(
+                            high_quality,
+                        ),
+                        baseline: true,
+                        optimized: true,
+                        downsample: false,
+                    }),
+                    "jpeg",
+                )
+            } else {
+                let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
+                (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+            };
+            let result = EncodingManager::encode(&buffer, &settings)
+                .map_err(|e| anyhow!("Full-page encoding failed: {}", e))?;
+            match result {
+                EncodingResult::Standard(data) => Ok((data, fmt.to_string())),
+                _ => Err(anyhow!("Unexpected encoding result type for full-page")),
+            }
+        },
+    )
     .await
     .map_err(|e| anyhow!("Full-page encoding task panicked: {}", e))??;
 
@@ -2692,8 +2524,8 @@ async fn perform_document_analysis(
 
     let mut margin_inputs = Vec::new();
     let mut detection_cache = vec![CachedDetections::Missing; source.page_count()];
-    // Keep margin pass inference queued through the actor; PageSource handles whether
-    // loading is Pdfium-backed or image-backed.
+    // Keep margin pass inference queued through the actor; PageSource handles
+    // whether loading is PDF-backed or image-backed.
     let analysis_infer_concurrency = 1usize;
     let mut pending: FuturesUnordered<BoxFuture<'static, Result<AnalysisPageResult>>> =
         FuturesUnordered::new();
@@ -2719,8 +2551,8 @@ async fn perform_document_analysis(
     };
 
     // Load pages at source resolution first, then resize in memory for analysis.
-    // For Pdfium sources this is the same render operation as before; for image-folder
-    // sources the already-rendered image is decoded and fed through the same analysis path.
+    // PDF sources render through the document session; image-folder sources
+    // decode their existing images and enter the same analysis path.
     for (idx, page_idx) in page_range.enumerate() {
         let source_page = match source.load_page(page_idx).await {
             Ok(source_page) => source_page,
@@ -2749,7 +2581,7 @@ async fn perform_document_analysis(
         };
 
         let config_clone = config.clone();
-        let prepared = tokio::task::spawn_blocking(move || {
+        let prepared = crate::runtime_stats::spawn_blocking(move || {
             prepare_analysis_page(page_idx, source_page.image, config_clone)
         })
         .await
@@ -2829,6 +2661,573 @@ async fn perform_document_analysis(
 // Main Pipeline Entry Point
 //==============================================================================
 
+struct PageOwnedJobOutput {
+    hocr_page: Option<SpilledHocrPage>,
+    toc: crate::toc::PageTocData,
+}
+
+struct SpilledHocrPage {
+    page_index: usize,
+    width_px: u32,
+    height_px: u32,
+    path: std::path::PathBuf,
+}
+
+struct PlannedPdfContext {
+    page: Arc<lege_pdf_read::CompiledDocumentPage>,
+    plan: lege_pdf_read::PageOutputPlan,
+    output_width: u32,
+    output_height: u32,
+    analysis_image: RgbImage,
+    original_width_pts: f32,
+    original_height_pts: f32,
+}
+
+fn dimensions_for_geometry(
+    geometry: lege_pdf_read::PageGeometry,
+    target_height: u32,
+    target_width: Option<u32>,
+) -> (u32, u32) {
+    if let Some(width) = target_width {
+        return (width.max(1), target_height.max(1));
+    }
+    let width = (geometry.display_width() * f64::from(target_height.max(1))
+        / geometry.display_height().max(f64::EPSILON))
+    .round()
+    .clamp(1.0, f64::from(u32::MAX)) as u32;
+    (width, target_height.max(1))
+}
+
+async fn prepare_planned_pdf_page(
+    session: Arc<lege_pdf_read::RenderSession>,
+    config: Arc<PipelineConfig>,
+    page_index: usize,
+    cancellation: lege_pdf_read::CancellationToken,
+) -> Result<Option<PlannedPdfContext>> {
+    if config.is_grayscale_mode()
+        || config.text_format() == "jpeg"
+        || (config.dither_images() && !config.keep_original_images())
+        || should_preserve_cover_page(page_index, &config)
+    {
+        return Ok(None);
+    }
+    crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Render, move || {
+        let geometry = session
+            .page_geometry(page_index as u32)
+            .map_err(|error| anyhow!("page geometry failed: {error}"))?;
+        let (output_width, output_height) =
+            dimensions_for_geometry(geometry, config.target_height(), config.target_width());
+        let page = session
+            .compile(page_index as u32)
+            .map_err(|error| anyhow!("page compile failed: {error}"))?;
+        let mut plan = crate::pipeline::page_output_plan::plan_page_output(
+            &config,
+            crate::pipeline::page_output_plan::PagePlanInput {
+                output_width,
+                output_height,
+                gray_suitability: page.gray_suitability(),
+            },
+        );
+        if plan.base.product.format != lege_pdf_read::RasterFormat::Gray8 {
+            return Ok(None);
+        }
+        let analysis_image = if let Some(target) = plan.analysis.take() {
+            let plane = session
+                .render_cancellable(&page, &target.product, Some(&cancellation))
+                .map_err(|error| anyhow!("analysis render failed: {error}"))?;
+            let lege_pdf_read::RasterPlane::Rgb8(surface) = plane else {
+                return Err(anyhow!("analysis target returned a non-RGB plane"));
+            };
+            RgbImage::from_raw(surface.width, surface.height, surface.pixels.to_vec())
+                .ok_or_else(|| anyhow!("analysis RGB surface was truncated"))?
+        } else {
+            RgbImage::from_pixel(1, 1, image::Rgb([255, 255, 255]))
+        };
+        Ok(Some(PlannedPdfContext {
+            page,
+            plan,
+            output_width,
+            output_height,
+            analysis_image,
+            original_width_pts: geometry.display_width() as f32,
+            original_height_pts: geometry.display_height() as f32,
+        }))
+    })
+    .await
+    .map_err(|error| anyhow!("planned PDF preparation task panicked: {error}"))?
+}
+
+fn scale_detections_to_output(
+    inference_data: &PdfInferenceData,
+    output_width: u32,
+    output_height: u32,
+) -> Vec<crate::engine::Detection> {
+    let (source_width, source_height) = if inference_data.inference_result.detections_are_page_space
+    {
+        (
+            inference_data.rendered.high_res_image.width(),
+            inference_data.rendered.high_res_image.height(),
+        )
+    } else {
+        (
+            inference_data.rendered.inference_image.width(),
+            inference_data.rendered.inference_image.height(),
+        )
+    };
+    let sx = output_width as f32 / source_width.max(1) as f32;
+    let sy = output_height as f32 / source_height.max(1) as f32;
+    let mut detections = inference_data.inference_result.detections.clone();
+    for detection in &mut detections {
+        detection.scale_bbox(sx, sy);
+    }
+    merge_overlapping_image_detections(
+        &mut detections,
+        &crate::types::LABEL_CLASSIFIER,
+        output_width,
+        output_height,
+    );
+    detections
+}
+
+fn compact_gray_surface(surface: lege_pdf_read::GraySurface) -> Result<Vec<u8>> {
+    let width = surface.width as usize;
+    let height = surface.height as usize;
+    if surface.stride == width && surface.pixels.len() == width.saturating_mul(height) {
+        return Ok(surface.pixels.to_vec());
+    }
+    let mut compact = Vec::with_capacity(width.saturating_mul(height));
+    for row in 0..height {
+        let start = row.saturating_mul(surface.stride);
+        let end = start.saturating_add(width);
+        compact.extend_from_slice(
+            surface
+                .pixels
+                .get(start..end)
+                .ok_or_else(|| anyhow!("truncated Gray8 row {row}"))?,
+        );
+    }
+    Ok(compact)
+}
+
+fn gray_to_rgb_image(gray: &[u8], width: u32, height: u32) -> Result<RgbImage> {
+    let mut rgb = Vec::with_capacity(gray.len().saturating_mul(3));
+    for &pixel in gray {
+        rgb.extend_from_slice(&[pixel, pixel, pixel]);
+    }
+    RgbImage::from_raw(width, height, rgb).ok_or_else(|| anyhow!("failed to expand Gray8 to RGB"))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_planned_pdf_products(
+    config: Arc<PipelineConfig>,
+    document_session: Arc<lege_pdf_read::RenderSession>,
+    page_index: usize,
+    page_start: usize,
+    products: lege_pdf_read::PageRasterProducts,
+    detections: Vec<crate::engine::Detection>,
+    cancellation: lege_pdf_read::CancellationToken,
+) -> Result<ProcessedPage> {
+    let lege_pdf_read::RasterPlane::Gray8(base_surface) = products.base else {
+        return Err(anyhow!("planned gray path received a non-gray base"));
+    };
+    let width = base_surface.width;
+    let height = base_surface.height;
+    let mut gray = compact_gray_surface(base_surface)?;
+    for region in &products.regions {
+        if let Some(crop) = region.target.product.crop {
+            const PAD: u32 = 3;
+            let x1 = (crop.x.max(0) as u32).saturating_sub(PAD);
+            let y1 = (crop.y.max(0) as u32).saturating_sub(PAD);
+            let x2 = (crop.x.max(0) as u32 + crop.width + PAD).min(width);
+            let y2 = (crop.y.max(0) as u32 + crop.height + PAD).min(height);
+            for y in y1..y2 {
+                let start = y as usize * width as usize + x1 as usize;
+                let end = y as usize * width as usize + x2 as usize;
+                gray[start..end].fill(255);
+            }
+        }
+    }
+    checkpoint(&cancellation, "after Gray8 region masking")?;
+    let options = crate::pipeline::policies::binarize_options_for(&config, false);
+    let binarized =
+        crate::color::binarization::binarize_gray(&gray, width as usize, height as usize, &options);
+    checkpoint(&cancellation, "after planned Gray8 binarization")?;
+
+    let native_text_transform = NativeTextTransform {
+        source_width: width,
+        source_height: height,
+        correction: identity_margin_correction(),
+    };
+    let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
+        let ocr_plane = products
+            .ocr
+            .ok_or_else(|| anyhow!("slow OCR plan did not render an OCR surface"))?;
+        let lege_pdf_read::RasterPlane::Rgb8(surface) = ocr_plane else {
+            return Err(anyhow!("slow OCR target returned a non-RGB plane"));
+        };
+        let ocr_image = RgbImage::from_raw(surface.width, surface.height, surface.pixels.to_vec())
+            .ok_or_else(|| anyhow!("OCR RGB surface was truncated"))?;
+        crate::ocr::slow::perform_slow_ocr(
+            &ocr_image,
+            &[],
+            &detections,
+            width,
+            height,
+            &config,
+            page_index,
+        )
+        .await?
+    } else if config.enable_ocr() {
+        let ocr_rgb = gray_to_rgb_image(&gray, width, height)?;
+        perform_ocr(
+            &binarized,
+            &ocr_rgb,
+            Some(&gray),
+            width as usize,
+            height as usize,
+            &detections,
+            &config,
+            page_index,
+        )
+        .await?
+    } else {
+        extract_pdf_text(
+            Some(&document_session),
+            page_index,
+            width,
+            height,
+            &native_text_transform,
+        )
+        .await?
+    };
+
+    let mut elements = Vec::new();
+    for region in products.regions {
+        checkpoint(&cancellation, "during planned region encoding")?;
+        let Some(crop) = region.target.product.crop else {
+            continue;
+        };
+        let lege_pdf_read::RasterPlane::Rgb8(surface) = region.plane else {
+            continue;
+        };
+        let (encoded, format) = crate::pipeline::helper_functions::encode_region_image(
+            &surface.pixels,
+            surface.width,
+            surface.height,
+            *config.cover_format(),
+            false,
+            config.high_quality_output(),
+            config.jpeg_compat(),
+        )
+        .await?;
+        elements.push(crate::accumulator::ContentElement {
+            x: crop.x.max(0) as f32,
+            y: crop.y.max(0) as f32,
+            width: crop.width as f32,
+            height: crop.height as f32,
+            content: crate::accumulator::ContentType::EncodedImage {
+                data: Arc::from(encoded),
+                pixel_width: surface.width,
+                pixel_height: surface.height,
+                format,
+            },
+        });
+    }
+
+    let force_jbig2_generic = config.text_format() == "jbig2"
+        && detections
+            .iter()
+            .any(|detection| detection.category.force_generic_jbig2());
+    let base = encode_base_layer(
+        binarized,
+        width as usize,
+        height as usize,
+        &config,
+        page_index,
+        force_jbig2_generic,
+    )
+    .await?;
+    elements.insert(
+        0,
+        crate::accumulator::ContentElement {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: height as f32,
+            content: base,
+        },
+    );
+
+    let index = page_index.saturating_sub(page_start);
+    let toc = crate::toc::capture_page(&detections, hocr_text.as_deref(), index, width, height);
+
+    Ok(ProcessedPage {
+        index,
+        width,
+        height,
+        elements,
+        hocr_text,
+        toc,
+    })
+}
+
+fn page_memory_budget_mb() -> usize {
+    if let Some(override_mb) = std::env::var("LEGE_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+    {
+        return override_mb;
+    }
+    crate::pipeline::helper_functions::get_available_ram_gb()
+        .saturating_mul(512)
+        .clamp(1024, 8192)
+}
+
+fn estimated_page_memory_mb(config: &PipelineConfig, budget_mb: usize) -> u32 {
+    let height = config.source_render_height() as usize;
+    let width = config
+        .source_render_width()
+        .map(|width| width as usize)
+        .unwrap_or_else(|| height.saturating_mul(3).div_ceil(2));
+    // Render RGB + inference RGB + adjusted RGB + gray/binary planes + codec
+    // scratch. This deliberately overestimates ordinary pages so admission
+    // happens before the large allocations, not after them.
+    let bytes = width.saturating_mul(height).saturating_mul(16);
+    bytes.div_ceil(1024 * 1024).max(1).min(budget_mb.max(1)) as u32
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_page_owned_job(
+    source: Arc<dyn PageSource>,
+    config: Arc<PipelineConfig>,
+    inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
+    document_session: Option<Arc<lege_pdf_read::RenderSession>>,
+    page_index: usize,
+    page_start: usize,
+    margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
+    detection_cache: Arc<Vec<CachedDetections>>,
+    analysis_width: u32,
+    cancellation: lege_pdf_read::CancellationToken,
+    pdf_writer_handle: crate::pipeline::PdfWriterHandle,
+    collect_hocr: bool,
+    render_count: Arc<AtomicUsize>,
+    detect_count: Arc<AtomicUsize>,
+    encode_count: Arc<AtomicUsize>,
+    progress: ProgressTracker,
+    total_pages: usize,
+    layout_enabled: bool,
+    memory_budget: Arc<Semaphore>,
+    memory_budget_mb: usize,
+    hocr_spool_dir: Option<Arc<std::path::PathBuf>>,
+) -> Result<PageOwnedJobOutput> {
+    let estimated_mb = estimated_page_memory_mb(&config, memory_budget_mb);
+    let _memory_permit = memory_budget
+        .acquire_many_owned(estimated_mb)
+        .await
+        .map_err(|_| anyhow!("page memory admission semaphore closed"))?;
+    checkpoint(&cancellation, "before render")?;
+    let planned_pdf = if margin_analysis.is_none() {
+        match document_session.clone() {
+            Some(session) => {
+                prepare_planned_pdf_page(session, config.clone(), page_index, cancellation.clone())
+                    .await?
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    let source_page = if let Some(planned) = &planned_pdf {
+        crate::pipeline::source::SourcePage {
+            image: planned.analysis_image.clone(),
+            original_width_pts: planned.original_width_pts,
+            original_height_pts: planned.original_height_pts,
+        }
+    } else {
+        crate::runtime_stats::track_future(
+            crate::runtime_stats::Stage::Render,
+            source.load_page_cancellable(page_index, cancellation.clone()),
+        )
+        .await?
+    };
+    checkpoint(&cancellation, "after render")?;
+
+    crate::pipeline::set_standard_dimensions_once(
+        source_page.image.width(),
+        source_page.image.height(),
+    );
+    let high_res_image = Arc::new(source_page.image);
+    let page_layout_enabled = config.layout_detection_enabled_for_page(page_index);
+    let inference_image = if page_layout_enabled {
+        let spec = config.inference_resize_spec();
+        Arc::new(
+            crate::pipeline::policies::build_inference_image(high_res_image.as_ref(), &spec)
+                .unwrap_or_else(|_| (*high_res_image).clone()),
+        )
+    } else {
+        Arc::clone(&high_res_image)
+    };
+    let rendered = RenderedPageData {
+        index: page_index,
+        high_res_image,
+        inference_image,
+        layout_detection_enabled: page_layout_enabled,
+        original_width_pts: source_page.original_width_pts,
+        original_height_pts: source_page.original_height_pts,
+    };
+
+    let rendered_val = render_count.fetch_add(1, Ordering::Relaxed) + 1;
+    if layout_enabled {
+        progress.publish_layout_progress(
+            rendered_val,
+            detect_count.load(Ordering::Relaxed),
+            encode_count.load(Ordering::Relaxed),
+            total_pages,
+        );
+    } else {
+        progress.publish_no_layout_render_progress(rendered_val, total_pages);
+    }
+
+    checkpoint(&cancellation, "before layout inference")?;
+    let inference_data =
+        build_inference_future(inference_handle, rendered, detection_cache, analysis_width).await?;
+    checkpoint(&cancellation, "after layout inference")?;
+
+    let detected_val = detect_count.fetch_add(1, Ordering::Relaxed) + 1;
+    if layout_enabled {
+        progress.publish_layout_progress(
+            render_count.load(Ordering::Relaxed),
+            detected_val,
+            encode_count.load(Ordering::Relaxed),
+            total_pages,
+        );
+    }
+
+    let processed_page = if let (Some(mut planned), Some(session)) =
+        (planned_pdf, document_session.clone())
+    {
+        let detections = scale_detections_to_output(
+            &inference_data,
+            planned.output_width,
+            planned.output_height,
+        );
+        let has_text = detections
+            .iter()
+            .any(|detection| crate::types::LABEL_CLASSIFIER.is_substantive_text(detection));
+        planned.plan.regions = detections
+            .iter()
+            .filter(|detection| crate::types::LABEL_CLASSIFIER.is_image_label(detection))
+            .filter(|detection| {
+                !(has_text
+                    && bbox_is_effectively_full_page(
+                        detection.bbox,
+                        planned.output_width,
+                        planned.output_height,
+                        0.90,
+                    ))
+            })
+            .filter_map(|detection| {
+                crate::pipeline::page_output_plan::region_target(
+                    detection.bbox,
+                    planned.output_width,
+                    planned.output_height,
+                )
+            })
+            .collect();
+        let render_session = session.clone();
+        let compiled_page = planned.page.clone();
+        let plan = planned.plan.clone();
+        let render_cancellation = cancellation.clone();
+        let products = crate::runtime_stats::spawn_blocking_stage(
+            crate::runtime_stats::Stage::Render,
+            move || {
+                render_session.render_output_plan(&compiled_page, &plan, Some(&render_cancellation))
+            },
+        )
+        .await
+        .map_err(|error| anyhow!("page product render task panicked: {error}"))?
+        .map_err(|error| anyhow!("page product render failed: {error}"))?;
+        process_planned_pdf_products(
+            config,
+            session,
+            page_index,
+            page_start,
+            products,
+            detections,
+            cancellation.clone(),
+        )
+        .await?
+    } else {
+        process_single_page(
+            config,
+            document_session,
+            inference_data,
+            page_start,
+            margin_analysis,
+            cancellation.clone(),
+        )
+        .await?
+    };
+    checkpoint(&cancellation, "before writer handoff")?;
+
+    let encoded_val = encode_count.fetch_add(1, Ordering::Relaxed) + 1;
+    if layout_enabled {
+        progress.publish_layout_progress(
+            render_count.load(Ordering::Relaxed),
+            detect_count.load(Ordering::Relaxed),
+            encoded_val,
+            total_pages,
+        );
+    } else {
+        progress.publish_no_layout_progress(encoded_val, total_pages);
+    }
+
+    let hocr_page = if collect_hocr {
+        if let (Some(hocr), Some(spool_dir)) = (
+            processed_page
+                .hocr_text
+                .as_ref()
+                .filter(|hocr| !hocr.trim().is_empty()),
+            hocr_spool_dir,
+        ) {
+            let path = spool_dir.join(format!("{:08}.hocr", processed_page.index));
+            let bytes = hocr.as_bytes().to_vec();
+            let write_path = path.clone();
+            crate::runtime_stats::spawn_blocking_stage(
+                crate::runtime_stats::Stage::Writer,
+                move || std::fs::write(&write_path, bytes),
+            )
+            .await
+            .map_err(|error| anyhow!("hOCR spool task panicked: {error}"))?
+            .map_err(|error| anyhow!("failed to spool hOCR {}: {error}", path.display()))?;
+            Some(SpilledHocrPage {
+                page_index: processed_page.index,
+                width_px: processed_page.width,
+                height_px: processed_page.height,
+                path,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let toc = processed_page.toc;
+    let page = crate::accumulator::Page {
+        width: processed_page.width as f32,
+        height: processed_page.height as f32,
+        elements: processed_page.elements,
+        hocr_text: processed_page.hocr_text,
+        index: processed_page.index,
+        binarized: None,
+    };
+    let output_index = page.index;
+    pdf_writer_handle.send_page(page, output_index).await?;
+
+    Ok(PageOwnedJobOutput { hocr_page, toc })
+}
+
 pub async fn create_and_run_pdf_source_pipeline(
     source: Arc<dyn PageSource>,
     config: Arc<PipelineConfig>,
@@ -2861,53 +3260,12 @@ pub async fn create_and_run_pdf_source_pipeline(
     // Reset standard dimensions at the start of each new document
     crate::pipeline::reset_standard_dimensions();
 
-    let mut config = config;
-    let inference_handle = if config.enable_layout_detection() {
-        match crate::pipeline::inference::InferenceHandle::new(&config) {
-            Ok(handle) => Some(Arc::new(handle)),
-            Err(e) if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) => {
-                let msg = format!(
-                    "No usable hardware GPU found — wgpu fell back to a CPU/software adapter. \
-                     Layout detection has been disabled for this run. \
-                     Install or update your GPU driver to enable hardware acceleration."
-                );
-                warn_log!("[PDF-Parallel] {msg}");
-                progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
-                    stage: "GPU Warning".to_string(),
-                    message: msg,
-                });
-                let mut fallback = (*config).clone();
-                fallback.set_enable_layout_detection(false);
-                config = Arc::new(fallback);
-                None
-            }
-            Err(e) if crate::pipeline::inference::is_gpu_device_error(e.as_ref()) => {
-                let msg = format!(
-                    "GPU initialization failed ({}). Layout detection disabled; \
-                     processing will continue without it. \
-                     Check that your GPU driver supports DX12 (Windows) or Vulkan (Linux/macOS).",
-                    e
-                );
-                warn_log!("[PDF-Parallel] {msg}");
-                progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
-                    stage: "GPU Warning".to_string(),
-                    message: msg,
-                });
-                let mut fallback = (*config).clone();
-                fallback.set_enable_layout_detection(false);
-                config = Arc::new(fallback);
-                None
-            }
-            Err(e) => {
-                return Err(anyhow!(
-                    "[PDF-Parallel] Failed to create InferenceHandle: {}",
-                    e
-                ));
-            }
-        }
-    } else {
-        None
-    };
+    let (config, inference_handle) =
+        crate::pipeline::helper_functions::initialize_inference_or_fallback(
+            config,
+            progress_tracker,
+            "PDF-Parallel",
+        )?;
 
     let pipeline_config = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(pipeline_config.page_workers);
@@ -2917,17 +3275,14 @@ pub async fn create_and_run_pdf_source_pipeline(
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
     let page_end = page_range.as_ref().map(|r| r.end).unwrap_or(document_pages);
     let total_pages = page_end - page_start;
-    let pdf_renderer = source.pdf_renderer();
+    let document_session = source.document_session();
 
     // Gate the GPU resize backend by document size: cold-start cost only pays
     // back once we have enough pages to amortize device init.
     const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
     crate::resize::set_gpu_resize_enabled(total_pages >= MIN_PAGES_FOR_GPU_RESIZE);
 
-    // InferenceActor owns the resident WGPU layout graph; >1 here lets prep/postproc
-    // overlap with the actor queue without creating extra GPU model instances.
-    let infer_concurrency = pipeline_config.page_workers.max(1);
-    let process_concurrency = pipeline_config.page_workers.max(1);
+    let page_concurrency = pipeline_config.page_workers.max(1);
 
     info_log!(
         "[PDF-Parallel] Processing {} pages (GPU resize: {})",
@@ -2939,9 +3294,10 @@ pub async fn create_and_run_pdf_source_pipeline(
         },
     );
     info_log!("[PDF-Parallel] Processing {} pages with:", total_pages);
-    info_log!("  - Render buffer: {}", pipeline_config.render_buffer);
-    info_log!("  - Inference concurrency: {}", infer_concurrency);
-    info_log!("  - Process concurrency: {}", process_concurrency);
+    info_log!("  - Page-owned workers: {}", page_concurrency);
+    if let Some(handle) = &inference_handle {
+        info_log!("  - GPU inference sessions: {}", handle.session_count());
+    }
 
     // Check for cancellation before starting processing
     if let Ok(signal) = shutdown_rx.try_recv() {
@@ -2968,6 +3324,7 @@ pub async fn create_and_run_pdf_source_pipeline(
             inference_handle.clone(),
             total_pages,
             page_start..page_end,
+            page_concurrency,
             progress_tracker,
         )
         .await?;
@@ -2992,12 +3349,7 @@ pub async fn create_and_run_pdf_source_pipeline(
     let detect_count = Arc::new(AtomicUsize::new(0));
     let encode_count = Arc::new(AtomicUsize::new(0));
 
-    // Create pipeline channels with larger buffers for better pipelining
-    let (render_tx, render_rx) = mpsc::channel(pipeline_config.render_buffer);
-    let (infer_tx, infer_rx) = mpsc::channel(pipeline_config.inference_buffer);
-    let (process_tx, process_rx) = mpsc::channel(pipeline_config.channel_capacity);
-
-    // Spawn PDF writer actor (already exists and works well)
+    // The writer channel is the only stage channel left on the PDF path.
     let use_margin_label = !matches!(
         config.margin_settings(),
         crate::margin::MarginSettings::None
@@ -3011,201 +3363,194 @@ pub async fn create_and_run_pdf_source_pipeline(
     );
 
     let epub_sidecar_output = config.epub_sidecar_output().cloned();
-
-    // Forward processed pages to PDF writer (mut for tokio::select!)
-    let mut writer_forwarder = {
-        let mut process_rx: mpsc::Receiver<ProcessedPage> = process_rx;
-        let pdf_writer_handle = pdf_writer_handle.clone();
-        let epub_sidecar_output = epub_sidecar_output.clone();
-
-        tokio::spawn(async move {
-            let mut hocr_pages = Vec::new();
-            while let Some(processed_page) = process_rx.recv().await {
-                if epub_sidecar_output.is_some()
-                    && let Some(hocr) = processed_page.hocr_text.clone()
-                    && !hocr.trim().is_empty()
-                {
-                    hocr_pages.push(crate::pipeline::epub_pipeline::HocrPage {
-                        page_index: processed_page.index,
-                        width_px: processed_page.width,
-                        height_px: processed_page.height,
-                        hocr,
-                    });
-                }
-
-                // Convert ProcessedPage to accumulator::Page format
-                let page = crate::accumulator::Page {
-                    width: processed_page.width as f32,
-                    height: processed_page.height as f32,
-                    elements: processed_page.elements,
-                    hocr_text: processed_page.hocr_text,
-                    index: processed_page.index,
-                    // PDF assembly never reads Page::binarized (it's for the DjVu writer);
-                    // leaving it None keeps full-page grayscale buffers out of the writer's
-                    // reorder buffer.
-                    binarized: None,
-                };
-
-                pdf_writer_handle
-                    .send_page(page, processed_page.index)
-                    .await?;
-            }
-
-            // CRITICAL: Finalize the PDF after all pages are sent
-            info_log!("[PDF-Parallel] Finalizing PDF...");
-            pdf_writer_handle.finalize().await?;
-
-            if let Some(epub_path) = epub_sidecar_output {
-                if !hocr_pages.is_empty() {
-                    let title = epub_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Document")
-                        .to_string();
-                    info_log!(
-                        "[PDF-Parallel] Assembling EPUB sidecar from existing OCR: {}",
-                        epub_path.display()
-                    );
-                    tokio::task::spawn_blocking(move || {
-                        crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
-                            &hocr_pages,
-                            &title,
-                            &epub_path,
-                        )
-                    })
-                    .await
-                    .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
-                } else {
-                    warn_log!(
-                        "[PDF-Parallel] EPUB sidecar requested, but no OCR text was available"
-                    );
-                }
-            }
-
-            Ok::<(), anyhow::Error>(())
-        })
+    let hocr_spool = if epub_sidecar_output.is_some() {
+        let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+        Some(
+            tempfile::Builder::new()
+                .prefix(".lege-hocr-")
+                .tempdir_in(parent)
+                .map_err(|error| anyhow!("failed to create hOCR spool directory: {error}"))?,
+        )
+    } else {
+        None
     };
-
-    // Spawn pipeline stages (mut for tokio::select!)
-    let mut render_task = tokio::spawn(source_stage(
-        source.clone(),
-        config.clone(),
-        page_start..page_end,
-        render_tx,
-        render_count.clone(),
-        detect_count.clone(),
-        encode_count.clone(),
-        progress_tracker.clone(),
-        total_pages,
-        layout_enabled,
-    ));
-
-    // Prepare detection cache for inference stage
+    let hocr_spool_dir = hocr_spool
+        .as_ref()
+        .map(|directory| Arc::new(directory.path().to_path_buf()));
     let detection_cache_arc = Arc::new(detection_cache);
     let analysis_width = if needs_two_pass { 640 } else { 0 };
-
-    let mut infer_task = tokio::spawn(inference_stage_parallel(
-        inference_handle,
-        render_rx,
-        infer_tx,
-        detect_count.clone(),
-        infer_concurrency,
-        render_count.clone(),
-        encode_count.clone(),
-        progress_tracker.clone(),
-        total_pages,
-        layout_enabled,
-        detection_cache_arc,
-        analysis_width,
-    ));
-
-    // Prepare margin analysis for processing stage
     let margin_analysis_arc = margin_analysis.map(Arc::new);
+    let cancellation = lege_pdf_read::CancellationToken::new();
+    let memory_budget_mb = page_memory_budget_mb();
+    let memory_budget = Arc::new(Semaphore::new(memory_budget_mb));
+    info_log!(
+        "[PDF-Parallel] Memory admission budget: {} MiB",
+        memory_budget_mb
+    );
+    let mut jobs = tokio::task::JoinSet::new();
+    let mut next_page = page_start;
+    let mut hocr_pages = Vec::new();
+    let mut toc_candidates: Vec<crate::toc::TocCandidate> = Vec::new();
+    let mut toc_stats: Vec<crate::toc::PageTextStats> = Vec::new();
 
-    let mut process_task = tokio::spawn(processing_stage_parallel(
-        config.clone(),
-        pdf_renderer.clone(),
-        infer_rx,
-        process_tx,
-        encode_count.clone(),
-        page_start,
-        process_concurrency,
-        render_count.clone(),
-        detect_count.clone(),
-        progress_tracker.clone(),
-        total_pages,
-        layout_enabled,
-        margin_analysis_arc,
-    ));
+    while next_page < page_end || !jobs.is_empty() {
+        while next_page < page_end && jobs.len() < page_concurrency {
+            let page_index = next_page;
+            next_page += 1;
+            jobs.spawn(run_page_owned_job(
+                source.clone(),
+                config.clone(),
+                inference_handle.clone(),
+                document_session.clone(),
+                page_index,
+                page_start,
+                margin_analysis_arc.clone(),
+                detection_cache_arc.clone(),
+                analysis_width,
+                cancellation.clone(),
+                pdf_writer_handle.clone(),
+                epub_sidecar_output.is_some(),
+                render_count.clone(),
+                detect_count.clone(),
+                encode_count.clone(),
+                progress_tracker.clone(),
+                total_pages,
+                layout_enabled,
+                memory_budget.clone(),
+                memory_budget_mb,
+                hocr_spool_dir.clone(),
+            ));
+        }
 
-    // Wait for all stages in pipeline order; abort remaining on cancellation.
-    info_log!("[PDF-Parallel] Waiting for pipeline stages to complete...");
-    use crate::pipeline::helper_functions::await_stage_or_cancel;
-    let h_infer = infer_task.abort_handle();
-    let h_process = process_task.abort_handle();
-    let h_forwarder = writer_forwarder.abort_handle();
-    let h_writer = pdf_writer_task.abort_handle();
-
-    await_stage_or_cancel(
-        &mut render_task,
-        &mut shutdown_rx,
-        "render",
-        &[
-            h_infer.clone(),
-            h_process.clone(),
-            h_forwarder.clone(),
-            h_writer.clone(),
-        ],
-    )
-    .await?;
-    info_log!("[PDF-Parallel] Render stage complete");
-
-    // Rendering is done; extract bookmarks while encoding pipeline is still humming.
-    // Runs in a blocking task so it doesn't block the async executor.
-    if let Some(renderer) = &pdf_renderer {
-        let renderer = renderer.clone();
-        let handle = pdf_writer_handle.clone();
-        tokio::spawn(async move {
-            let bookmarks = tokio::task::spawn_blocking(move || renderer.extract_bookmarks())
-                .await
-                .unwrap_or_default();
-            if !bookmarks.is_empty() {
-                let _ = handle
-                    .send_bookmarks(bookmarks, std::collections::HashMap::new())
-                    .await;
+        tokio::select! {
+            biased;
+            signal = shutdown_rx.recv() => {
+                if let Ok(signal) = signal {
+                    cancellation.cancel();
+                    jobs.abort_all();
+                    pdf_writer_task.abort();
+                    while jobs.join_next().await.is_some() {}
+                    return Err(anyhow!(
+                        "Processing cancelled: {}",
+                        signal.message.unwrap_or_else(|| "User requested cancellation".to_string())
+                    ));
+                }
             }
-        });
+            result = jobs.join_next(), if !jobs.is_empty() => {
+                let output = match result {
+                    Some(Ok(Ok(output))) => output,
+                    Some(Ok(Err(error))) => {
+                        cancellation.cancel();
+                        jobs.abort_all();
+                        pdf_writer_task.abort();
+                        while jobs.join_next().await.is_some() {}
+                        return Err(error);
+                    }
+                    Some(Err(error)) => {
+                        cancellation.cancel();
+                        jobs.abort_all();
+                        pdf_writer_task.abort();
+                        while jobs.join_next().await.is_some() {}
+                        return Err(anyhow!("page job panicked: {error}"));
+                    }
+                    None => {
+                        cancellation.cancel();
+                        pdf_writer_task.abort();
+                        return Err(anyhow!("page job set ended unexpectedly"));
+                    }
+                };
+                if let Some(hocr_page) = output.hocr_page {
+                    hocr_pages.push(hocr_page);
+                }
+                toc_candidates.extend(output.toc.candidates);
+                toc_stats.extend(output.toc.stats);
+            }
+        }
+    }
+    info_log!("[PDF-Parallel] Page-owned jobs complete");
+
+    // Await extraction so writer finalization cannot race bookmark delivery.
+    if let Some(session) = document_session {
+        let bookmarks =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
+                .await
+                .map_err(|error| anyhow!("Outline extraction task panicked: {error}"))?;
+        if !bookmarks.is_empty() {
+            let source_to_output = (page_start..page_end)
+                .enumerate()
+                .map(|(output, source)| (source, output))
+                .collect();
+            pdf_writer_handle
+                .send_bookmarks(bookmarks, source_to_output)
+                .await?;
+        }
     }
 
-    await_stage_or_cancel(
-        &mut infer_task,
-        &mut shutdown_rx,
-        "inference",
-        &[h_process.clone(), h_forwarder.clone(), h_writer.clone()],
-    )
-    .await?;
-    info_log!("[PDF-Parallel] Inference stage complete");
+    // The synthesized outline is offered, never imposed: the writer uses it only
+    // when the source document had no outline that survived remapping.
+    if !toc_candidates.is_empty() {
+        let total_pages = page_end.saturating_sub(page_start);
+        let outline = crate::toc::build_outline(toc_candidates, &toc_stats, total_pages);
+        if !outline.is_empty() {
+            info_log!(
+                "[PDF-Parallel] Synthesized a {}-entry table of contents",
+                outline.len()
+            );
+            pdf_writer_handle.send_synthetic_outline(outline).await?;
+        }
+    }
 
-    await_stage_or_cancel(
-        &mut process_task,
-        &mut shutdown_rx,
-        "processing",
-        &[h_forwarder.clone(), h_writer.clone()],
-    )
-    .await?;
-    info_log!("[PDF-Parallel] Processing stage complete");
-
-    await_stage_or_cancel(
-        &mut writer_forwarder,
-        &mut shutdown_rx,
-        "writer forwarder",
-        &[h_writer.clone()],
-    )
-    .await?;
-    info_log!("[PDF-Parallel] Writer forwarder complete");
-
+    info_log!("[PDF-Parallel] Finalizing PDF...");
+    pdf_writer_handle.finalize().await?;
+    use crate::pipeline::helper_functions::await_stage_or_cancel;
     await_stage_or_cancel(&mut pdf_writer_task, &mut shutdown_rx, "PDF writer", &[]).await?;
     info_log!("[PDF-Parallel] PDF writer complete");
+
+    if let Some(epub_path) = epub_sidecar_output {
+        if !hocr_pages.is_empty() {
+            hocr_pages.sort_by_key(|page| page.page_index);
+            let hocr_pages = hocr_pages
+                .into_iter()
+                .map(|page| {
+                    let hocr = std::fs::read_to_string(&page.path).map_err(|error| {
+                        anyhow!(
+                            "failed to read spooled hOCR {}: {error}",
+                            page.path.display()
+                        )
+                    })?;
+                    Ok(crate::pipeline::epub_pipeline::HocrPage {
+                        page_index: page.page_index,
+                        width_px: page.width_px,
+                        height_px: page.height_px,
+                        hocr,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let title = epub_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Document")
+                .to_string();
+            info_log!(
+                "[PDF-Parallel] Assembling EPUB sidecar from existing OCR: {}",
+                epub_path.display()
+            );
+            crate::runtime_stats::spawn_blocking_stage(
+                crate::runtime_stats::Stage::Writer,
+                move || {
+                    crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
+                        &hocr_pages,
+                        &title,
+                        &epub_path,
+                    )
+                },
+            )
+            .await
+            .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
+        } else {
+            warn_log!("[PDF-Parallel] EPUB sidecar requested, but no OCR text was available");
+        }
+    }
 
     success_log!("PDF pipeline complete: {}", output_path.display());
     Ok(())
@@ -3220,7 +3565,7 @@ pub async fn create_and_run_pdf_parallel_pipeline(
     shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
     progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
-    let source: Arc<dyn PageSource> = Arc::new(PdfiumPageSource::new(pdf_bytes, config.clone())?);
+    let source: Arc<dyn PageSource> = Arc::new(PdfPageSource::new(pdf_bytes, config.clone())?);
     create_and_run_pdf_source_pipeline(
         source,
         config,
@@ -3235,3 +3580,140 @@ pub async fn create_and_run_pdf_parallel_pipeline(
 
 // Re-export the original function name for compatibility
 pub use create_and_run_pdf_parallel_pipeline as create_and_run_pdf_tokio_pipeline;
+
+#[cfg(test)]
+mod phase4_ocr_baseline_tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+
+    fn slow_ocr_config() -> Arc<PipelineConfig> {
+        let mut config = PipelineConfig::new().expect("config");
+        config.set_target_height(600).expect("target height");
+        config
+            .set_high_res_render_height(1200)
+            .expect("render height");
+        config.set_enable_cover_page(false);
+        config.set_no_cover_page(true);
+        config.set_enable_layout_detection(false);
+        config.set_enable_ocr(true);
+        config.set_slow_ocr(true);
+        config.set_text_format("ccitt4").expect("format");
+        let mut bin = config.binarization().clone();
+        bin.use_fixed_threshold = true;
+        bin.fixed_threshold = 180;
+        config.set_binarization(bin);
+        Arc::new(config)
+    }
+
+    fn synthetic_ocr_page(width: u32, height: u32) -> RgbImage {
+        RgbImage::from_fn(width, height, |x, y| {
+            let line = y % 48;
+            if (10..18).contains(&line) && x % 120 < 82 {
+                Rgb([24, 24, 24])
+            } else {
+                Rgb([244, 242, 235])
+            }
+        })
+    }
+
+    #[test]
+    fn slow_ocr_baseline_keeps_high_res_surface_but_downscales_encode_surface() {
+        let config = slow_ocr_config();
+        let source = Arc::new(synthetic_ocr_page(800, 1200));
+        let rendered = RenderedPageData {
+            index: 1,
+            high_res_image: source.clone(),
+            inference_image: source.clone(),
+            layout_detection_enabled: false,
+            original_width_pts: 400.0,
+            original_height_pts: 600.0,
+        };
+        let inference_result = InferenceResult {
+            index: 1,
+            high_res_image: source.clone(),
+            inference_image: source,
+            detections: Vec::new(),
+            text_layer: None,
+            detections_are_page_space: true,
+            original_width_pts: 400.0,
+            original_height_pts: 600.0,
+            has_no_detections: true,
+        };
+        let output = process_page_cpu_work(PageProcessingInput {
+            rendered,
+            inference_result,
+            page_index: 1,
+            config,
+            margin_analysis: None,
+            cancellation: lege_pdf_read::CancellationToken::new(),
+        })
+        .expect("OCR-shaped CPU page work");
+
+        assert_eq!((output.width, output.height), (400, 600));
+        let ocr = output.ocr_image.expect("high resolution OCR surface");
+        assert_eq!(ocr.dimensions(), (800, 1200));
+        assert_eq!(output.binarized.len(), 400 * 600);
+    }
+
+    #[test]
+    fn cancelled_ocr_baseline_stops_before_cpu_allocations() {
+        let config = slow_ocr_config();
+        let source = Arc::new(synthetic_ocr_page(800, 1200));
+        let rendered = RenderedPageData {
+            index: 1,
+            high_res_image: source.clone(),
+            inference_image: source.clone(),
+            layout_detection_enabled: false,
+            original_width_pts: 400.0,
+            original_height_pts: 600.0,
+        };
+        let inference_result = InferenceResult {
+            index: 1,
+            high_res_image: source.clone(),
+            inference_image: source,
+            detections: Vec::new(),
+            text_layer: None,
+            detections_are_page_space: true,
+            original_width_pts: 400.0,
+            original_height_pts: 600.0,
+            has_no_detections: true,
+        };
+        let cancellation = lege_pdf_read::CancellationToken::new();
+        cancellation.cancel();
+        let started = std::time::Instant::now();
+        let result = process_page_cpu_work(PageProcessingInput {
+            rendered,
+            inference_result,
+            page_index: 1,
+            config,
+            margin_analysis: None,
+            cancellation,
+        });
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ocr_sized_pages_obey_mib_admission_before_render() {
+        let config = slow_ocr_config();
+        let permits = estimated_page_memory_mb(&config, 1024);
+        assert!(permits > 1);
+        let budget = Arc::new(Semaphore::new(permits as usize));
+        let first = budget
+            .clone()
+            .acquire_many_owned(permits)
+            .await
+            .expect("first page admitted");
+        let blocked = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            budget.clone().acquire_many_owned(permits),
+        )
+        .await;
+        assert!(blocked.is_err(), "second OCR-sized page must wait");
+        drop(first);
+        let _second = budget
+            .acquire_many_owned(permits)
+            .await
+            .expect("page admitted after previous handoff");
+    }
+}

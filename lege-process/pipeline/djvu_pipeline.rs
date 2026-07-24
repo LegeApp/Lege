@@ -11,7 +11,6 @@
 use crate::djvu::{DjvuConfig, DjvuOrchestrator, PageData, spawn_djvu_writer_actor}; // Use native encoder + writer actor
 use crate::engine::Detection;
 use crate::margin::DocumentMarginAnalysis;
-use crate::pagerender::prelude::PdfiumRenderer;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
     build_hocr_from_pdf_text, merge_overlapping_image_detections, rounded_clamped_bbox,
@@ -26,7 +25,7 @@ use crate::pipeline::page_analysis::{
     should_force_blank_page_threshold,
 };
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
-use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
+use crate::pipeline::source::{PageSource, PdfPageSource, source_stage};
 use crate::progress::ProgressTracker;
 use crate::{info_log, warn_log};
 use anyhow::{Result, anyhow};
@@ -34,6 +33,7 @@ use futures;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
+use lege_pdf_read::RenderSession;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -109,7 +109,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
     use tokio::sync::mpsc;
-    let mut config = config;
+    let config = config;
     #[cfg(feature = "debug-logging")]
     {
         info_log!("[DJVU-Parallel] Entering parallel tokio pipeline");
@@ -169,7 +169,7 @@ pub async fn create_and_run_djvu_source_pipeline(
         None => document_pages,
     };
     let page_index_offset: usize = page_range.as_ref().map(|r| r.start).unwrap_or(0);
-    let pdf_renderer = source.pdf_renderer();
+    let document_session = source.document_session();
     // Gate the GPU resize backend by document size: cold-start cost only pays
     // back once we have enough pages to amortize device init.
     const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
@@ -192,57 +192,22 @@ pub async fn create_and_run_djvu_source_pipeline(
     // Resolve the standalone AGPL encoder up front so DjVu jobs fail fast.
     let djvu_encoder_path = crate::djvu::resolve_encoder_path(djvu_config.encoder_path.as_deref())?;
     let orchestrator = Arc::new(DjvuOrchestrator::new(djvu_config)?);
-    // Create shared inference handle if layout detection is enabled
-    let shared_inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>> =
-        if config.enable_layout_detection() {
-            match crate::pipeline::inference::InferenceHandle::new(&config) {
-                Ok(handle) => Some(Arc::new(handle)),
-                Err(e)
-                    if crate::pipeline::inference::is_layout_software_adapter_error(e.as_ref()) =>
-                {
-                    let msg = format!(
-                        "No usable hardware GPU found — wgpu fell back to a CPU/software adapter. \
-                         Layout detection has been disabled for this run. \
-                         Install or update your GPU driver to enable hardware acceleration."
-                    );
-                    warn_log!("[DJVU-Parallel] {msg}");
-                    progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
-                        stage: "GPU Warning".to_string(),
-                        message: msg,
-                    });
-                    let mut fallback = (*config).clone();
-                    fallback.set_enable_layout_detection(false);
-                    config = Arc::new(fallback);
-                    None
-                }
-                Err(e) if crate::pipeline::inference::is_gpu_device_error(e.as_ref()) => {
-                    let msg = format!(
-                        "GPU initialization failed ({}). Layout detection disabled; \
-                         processing will continue without it. \
-                         Check that your GPU driver supports DX12 (Windows) or Vulkan (Linux/macOS).",
-                        e
-                    );
-                    warn_log!("[DJVU-Parallel] {msg}");
-                    progress_tracker.update(crate::progress::ProcessingStatus::PipelineMessage {
-                        stage: "GPU Warning".to_string(),
-                        message: msg,
-                    });
-                    let mut fallback = (*config).clone();
-                    fallback.set_enable_layout_detection(false);
-                    config = Arc::new(fallback);
-                    None
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "[DJVU-Parallel] Failed to create InferenceHandle: {}",
-                        e
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+    // Stop the encoder child and remove the work directory on every exit path,
+    // cancellation included.
+    let encoder_control = Arc::new(crate::djvu::DjvuEncoderControl::new());
+    let _work_dir_guard =
+        crate::djvu::DjvuWorkDirGuard::new(orchestrator.clone(), encoder_control.clone());
+    let (config, shared_inference_handle) =
+        crate::pipeline::helper_functions::initialize_inference_or_fallback(
+            config,
+            progress_tracker,
+            "DJVU-Parallel",
+        )?;
 
+    // Use the same adaptive worker limit for the margin pre-pass and the main
+    // page pipeline. Inference itself is additionally bounded by the shared
+    // GPU session pool.
+    let pipeline_config = PipelineRuntimeLimits::djvu_from_config(&config);
     let needs_margin_pass = matches!(
         config.margin_settings(),
         crate::margin::MarginSettings::StandardizeAndCenter
@@ -255,6 +220,7 @@ pub async fn create_and_run_djvu_source_pipeline(
             shared_inference_handle.clone(),
             total_pages,
             page_index_offset..page_index_offset + total_pages,
+            pipeline_config.page_workers,
             progress_tracker,
         )
         .await?;
@@ -267,7 +233,6 @@ pub async fn create_and_run_djvu_source_pipeline(
     };
 
     // Pipeline concurrency settings (similar to PDF pipeline)
-    let pipeline_config = PipelineRuntimeLimits::djvu_from_config(&config);
     // NOTE: no init_encode_semaphore here. The global encode semaphore is only acquired by
     // encode_region_image/encode_page_data, which the DjVu path never calls — its heavy
     // IW44/JB2 encode runs inside the in_flight-bounded encode stage (capped at
@@ -295,7 +260,7 @@ pub async fn create_and_run_djvu_source_pipeline(
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicUsize::new(0)),
     );
-    // Spawn source task. PDF input is serialized behind Pdfium; image-folder input
+    // Spawn source task. PDF and image-folder inputs advertise their own
     // can fan out through the same downstream pipeline.
     let mut render_task: JoinHandle<Result<()>> = {
         let config = config.clone();
@@ -362,11 +327,14 @@ pub async fn create_and_run_djvu_source_pipeline(
                     }
                     // Accept new work if we have capacity
                     Some(rendered) = render_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
-                        in_flight.push(build_djvu_inference_future(
-                            handle_clone.clone(),
-                            rendered,
-                            detection_cache.clone(),
-                        ));
+                        in_flight.push(Box::pin(crate::runtime_stats::track_future(
+                            crate::runtime_stats::Stage::Inference,
+                            build_djvu_inference_future(
+                                handle_clone.clone(),
+                                rendered,
+                                detection_cache.clone(),
+                            ),
+                        )));
                     }
                     // Input channel closed
                     else => {
@@ -394,7 +362,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     // Spawn binarization & text extraction stage with TRUE concurrency (similar to PDF pipeline) (mut for tokio::select!)
     let mut binarize_task: JoinHandle<Result<()>> = {
         let config = config.clone();
-        let pdf_renderer = pdf_renderer.clone();
+        let document_session = document_session.clone();
         let tracker = progress_tracker.clone();
         let external_cb = external_cb.clone();
         let rc = render_count.clone();
@@ -450,13 +418,13 @@ pub async fn create_and_run_djvu_source_pipeline(
                     // Accept new work if we have capacity
                     Some(inference_data) = infer_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
                         let config_clone = config.clone();
-                        let pdf_renderer_clone = pdf_renderer.clone();
+                        let document_session_clone = document_session.clone();
                         let margin_analysis = margin_analysis.clone();
                         // Spawn processing task
                         let task = tokio::spawn(async move {
                             process_single_djvu_page(
                                 config_clone,
-                                pdf_renderer_clone,
+                                document_session_clone,
                                 inference_data,
                                 page_index_offset,
                                 margin_analysis,
@@ -517,6 +485,7 @@ pub async fn create_and_run_djvu_source_pipeline(
         djvu_encoder_path.clone(),
         progress_tracker.clone(),
         pipeline_config.channel_capacity,
+        encoder_control.clone(),
     );
 
     let epub_sidecar_output = config.epub_sidecar_output().cloned();
@@ -582,9 +551,10 @@ pub async fn create_and_run_djvu_source_pipeline(
                             // directory inside one spawn_blocking so the CPU cost
                             // runs concurrently with other pages. The heavy IW44/JB2
                             // encode happens later in the encoder subprocess.
-                            let entry = tokio::task::spawn_blocking(move || -> Result<_> {
-                                orchestrator.process_page(page_data)
-                            })
+                            let entry = crate::runtime_stats::spawn_blocking_stage(
+                                crate::runtime_stats::Stage::Encode,
+                                move || -> Result<_> { orchestrator.process_page(page_data) },
+                            )
                             .await
                             .map_err(|e| anyhow!("DjVu compose task panicked: {}", e))??;
 
@@ -622,13 +592,16 @@ pub async fn create_and_run_djvu_source_pipeline(
                         "[DJVU-Parallel] Assembling EPUB sidecar from existing OCR: {}",
                         epub_path.display()
                     );
-                    tokio::task::spawn_blocking(move || {
-                        crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
-                            &hocr_pages,
-                            &title,
-                            &epub_path,
-                        )
-                    })
+                    crate::runtime_stats::spawn_blocking_stage(
+                        crate::runtime_stats::Stage::Writer,
+                        move || {
+                            crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
+                                &hocr_pages,
+                                &title,
+                                &epub_path,
+                            )
+                        },
+                    )
                     .await
                     .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
                 } else {
@@ -695,12 +668,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         output_path.display()
     );
 
-    // Cleanup
-    if let Err(_e) = orchestrator.cleanup_work_dir_only() {
-        #[cfg(feature = "debug-logging")]
-        warn_log!("[DJVU-Parallel] Failed to clean up work directory: {}", _e);
-    }
-
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Pipeline complete");
     Ok(())
@@ -715,7 +682,7 @@ pub async fn create_and_run_djvu_pipeline(
     shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
     progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
-    let source: Arc<dyn PageSource> = Arc::new(PdfiumPageSource::new(pdf_bytes, config.clone())?);
+    let source: Arc<dyn PageSource> = Arc::new(PdfPageSource::new(pdf_bytes, config.clone())?);
     create_and_run_djvu_source_pipeline(
         source,
         config,
@@ -813,7 +780,7 @@ fn build_djvu_inference_future(
 /// Process a single DJVU page with OCR/text extraction in the async part
 async fn process_single_djvu_page(
     config: Arc<PipelineConfig>,
-    pdf_renderer: Option<Arc<PdfiumRenderer>>,
+    document_session: Option<Arc<RenderSession>>,
     inference_data: DjvuInferenceData,
     page_index_offset: usize,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
@@ -829,9 +796,12 @@ async fn process_single_djvu_page(
         config: config_clone,
         margin_analysis,
     };
-    let cpu_result = tokio::task::spawn_blocking(move || process_djvu_cpu_intensive_work(input))
-        .await
-        .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
+    let cpu_result = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Processing,
+        move || process_djvu_cpu_intensive_work(input),
+    )
+    .await
+    .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
     let DjvuPageProcessingOutput {
         adjusted_image,
         adjusted_detections,
@@ -846,7 +816,7 @@ async fn process_single_djvu_page(
     // OCR and text extraction in async part (not CPU-intensive, involves I/O and API calls)
     let hocr_text = extract_djvu_text_layer(
         &config,
-        pdf_renderer.as_ref(),
+        document_session.as_ref(),
         &adjusted_image,
         ocr_image.as_ref(),
         &binarized,
@@ -1181,7 +1151,7 @@ fn process_djvu_cpu_intensive_work(
 #[allow(clippy::too_many_arguments)]
 async fn extract_djvu_text_layer(
     config: &PipelineConfig,
-    pdf_renderer: Option<&Arc<PdfiumRenderer>>,
+    document_session: Option<&Arc<RenderSession>>,
     adjusted_image: &RgbImage,
     ocr_image: Option<&RgbImage>,
     binarized: &[u8],
@@ -1280,32 +1250,38 @@ async fn extract_djvu_text_layer(
             Err(e) => Err(anyhow!("Page {}: OCR failed: {e:#}", page_index)),
         }
     } else {
-        let Some(pdf_renderer) = pdf_renderer else {
+        let Some(session) = document_session else {
             return Ok(None);
         };
-        Ok(match pdf_renderer.has_text_layer(page_index as u32).await {
-            Ok(true) => match pdf_renderer.extract_page_text(page_index as u32).await {
-                Ok(raw_text) => {
-                    let hocr = build_hocr_from_pdf_text(&raw_text, width as u32, height as u32);
-                    #[cfg(feature = "debug-logging")]
-                    info_log!(
-                        "[extract_djvu_text_layer] Page {}: PDF text extracted, HOCR {} chars",
-                        page_index,
-                        hocr.len()
-                    );
-                    Some(hocr)
-                }
-                Err(e) => {
-                    warn_log!("Failed to extract text from page {}: {}", page_index, e);
-                    None
-                }
-            },
-            Ok(false) => None,
-            Err(e) => {
-                warn_log!("Failed to check text layer for page {}: {}", page_index, e);
-                None
+        let session = Arc::clone(session);
+        let native_text = crate::runtime_stats::spawn_blocking_stage(
+            crate::runtime_stats::Stage::Ocr,
+            move || lege_pdf_read::page_text(&session, page_index as u32),
+        )
+        .await
+        .map_err(|e| anyhow!("Renderer text task panicked: {e}"))?;
+
+        match native_text {
+            Ok(raw_text) if !raw_text.trim().is_empty() => {
+                let hocr = build_hocr_from_pdf_text(&raw_text, width as u32, height as u32);
+                #[cfg(feature = "debug-logging")]
+                info_log!(
+                    "[extract_djvu_text_layer] Page {}: renderer text extracted, HOCR {} chars",
+                    page_index,
+                    hocr.len()
+                );
+                Ok(Some(hocr))
             }
-        })
+            Ok(_) => Ok(None),
+            Err(e) => {
+                warn_log!(
+                    "Renderer text extraction failed on page {}: {}",
+                    page_index,
+                    e
+                );
+                Ok(None)
+            }
+        }
     }
 }
 /// Apply region policy transform (margins, layout) for DJVU

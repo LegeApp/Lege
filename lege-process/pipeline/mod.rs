@@ -16,6 +16,7 @@ pub mod inference;
 pub mod inference;
 pub(crate) mod margin_pipeline;
 pub mod page_analysis;
+pub mod page_output_plan;
 pub mod pdf_tokio_pipeline;
 pub mod policies;
 pub mod quality_policy;
@@ -26,8 +27,7 @@ pub mod source;
 // Re-export key types
 pub use config::{
     ImageRegionDitherMode, PageMode, PageRange, PageSelection, PageTask, PipelineConfig,
-    ProcessingPipeline, RenderedPageData, ensure_pdfium_available, runtime_asset_path,
-    runtime_asset_path_if_exists,
+    ProcessingPipeline, RenderedPageData, runtime_asset_path, runtime_asset_path_if_exists,
 };
 pub use djvu_pipeline::{
     DjvuBinarizedData,
@@ -41,7 +41,7 @@ pub use helper_functions::{
     encode_page_data, encode_region_image, get_available_ram_gb, is_ocr_available,
     rounded_clamped_bbox, should_treat_as_cover_page, spawn_pdf_writer_actor,
 };
-pub use inference::{InferenceActor, InferenceHandle, InferenceJob};
+pub use inference::InferenceHandle;
 pub use page_analysis::{
     BLANK_PAGE_FALLBACK_THRESHOLD, PageClassification, classify_page,
     compute_pixel_bounds_for_margin, detections_bbox_area_fraction, is_full_page_image,
@@ -55,6 +55,6 @@ pub use pdf_tokio_pipeline::{
 };
 pub use policies::{reset_standard_dimensions, set_standard_dimensions_once};
 pub use source::{
-    ImageFolderPageSource, PageSource, PdfiumPageSource, ZipImagePageSource,
+    ImageFolderPageSource, PageSource, PdfPageSource, ZipImagePageSource,
     collect_largest_sequential_image_run,
 };

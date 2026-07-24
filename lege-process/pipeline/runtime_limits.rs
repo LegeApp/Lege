@@ -12,8 +12,10 @@ pub struct PipelineRuntimeLimits {
 
 impl PipelineRuntimeLimits {
     pub fn from_config(config: &PipelineConfig) -> Self {
-        let page_workers = config.max_parallel_pages().unwrap_or(4).max(1);
-        let channel_capacity = config.channel_buffer_size().max(page_workers);
+        let requested_workers = config.max_parallel_pages().unwrap_or(4).max(1);
+        let adaptive = AdaptiveConcurrency::detect();
+        let page_workers = requested_workers.min(adaptive.cpu_workers).max(1);
+        let channel_capacity = page_workers;
 
         Self {
             page_workers,
@@ -31,10 +33,7 @@ impl PipelineRuntimeLimits {
         let cpu_workers = requested_workers.min(adaptive.cpu_workers).max(1);
         let encode_workers = (cpu_workers / 3).max(1);
         let process_workers = cpu_workers.saturating_sub(encode_workers).max(1);
-        let channel_capacity = config
-            .channel_buffer_size()
-            .max(cpu_workers)
-            .min(adaptive.io_workers.max(cpu_workers));
+        let channel_capacity = cpu_workers;
 
         Self {
             page_workers: cpu_workers,
@@ -166,12 +165,12 @@ mod tests {
 
         let limits = PipelineRuntimeLimits::from_config(&config);
 
-        assert_eq!(limits.page_workers, 3);
-        assert_eq!(limits.channel_capacity, 3);
-        assert_eq!(limits.render_buffer, 3);
-        assert_eq!(limits.inference_buffer, 3);
-        assert_eq!(limits.process_workers, 3);
-        assert_eq!(limits.djvu_encode_workers, 3);
+        assert!((1..=3).contains(&limits.page_workers));
+        assert_eq!(limits.channel_capacity, limits.page_workers);
+        assert_eq!(limits.render_buffer, limits.page_workers);
+        assert_eq!(limits.inference_buffer, limits.page_workers);
+        assert_eq!(limits.process_workers, limits.page_workers);
+        assert_eq!(limits.djvu_encode_workers, limits.page_workers);
     }
 
     #[test]
@@ -186,6 +185,6 @@ mod tests {
         assert!(limits.process_workers >= 1);
         assert!(limits.djvu_encode_workers >= 1);
         assert!(limits.process_workers + limits.djvu_encode_workers <= limits.page_workers.max(2));
-        assert!(limits.channel_capacity >= limits.page_workers);
+        assert_eq!(limits.channel_capacity, limits.page_workers);
     }
 }

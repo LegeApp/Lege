@@ -16,6 +16,8 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::{Result, anyhow};
 use epub_builder::{EpubBuilder, EpubContent, ReferenceType, ZipLibrary};
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
 use lege_ocr::{
@@ -28,10 +30,10 @@ use lege_ocr::{
 
 use crate::pipeline::config::PipelineConfig;
 use crate::pipeline::margin_pipeline::CachedDetections;
-use crate::pipeline::pdf_tokio_pipeline::inference_stage_parallel;
+use crate::pipeline::pdf_tokio_pipeline::{PdfInferenceData, build_inference_future};
 use crate::pipeline::policies::maybe_remap_bbox_from_infer;
 use crate::pipeline::runtime_limits::PipelineRuntimeLimits;
-use crate::pipeline::source::{PageSource, PdfiumPageSource, source_stage};
+use crate::pipeline::source::{PageSource, PdfPageSource, source_stage};
 use crate::progress::{ProcessingStatus, ProgressTracker};
 use crate::types::ContentCategory;
 use crate::{info_log, success_log, warn_log};
@@ -42,6 +44,61 @@ pub struct HocrPage {
     pub width_px: u32,
     pub height_px: u32,
     pub hocr: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn epub_inference_stage(
+    inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
+    mut rx: mpsc::Receiver<crate::pipeline::RenderedPageData>,
+    tx: mpsc::Sender<PdfInferenceData>,
+    detect_count: Arc<AtomicUsize>,
+    concurrency: usize,
+    render_count: Arc<AtomicUsize>,
+    encode_count: Arc<AtomicUsize>,
+    progress: ProgressTracker,
+    total_pages: usize,
+    layout_enabled: bool,
+) -> Result<()> {
+    let mut in_flight: FuturesUnordered<BoxFuture<'static, Result<PdfInferenceData>>> =
+        FuturesUnordered::new();
+    let mut input_exhausted = false;
+    loop {
+        tokio::select! {
+            biased;
+            Some(result) = in_flight.next(), if !in_flight.is_empty() => {
+                let data = result?;
+                let detected = detect_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if layout_enabled {
+                    progress.publish_layout_progress(
+                        render_count.load(std::sync::atomic::Ordering::Relaxed),
+                        detected,
+                        encode_count.load(std::sync::atomic::Ordering::Relaxed),
+                        total_pages,
+                    );
+                }
+                if tx.send(data).await.is_err() {
+                    return Ok(());
+                }
+            }
+            rendered = rx.recv(), if !input_exhausted && in_flight.len() < concurrency => {
+                match rendered {
+                    Some(rendered) => in_flight.push(build_inference_future(
+                        inference_handle.clone(),
+                        rendered,
+                        Arc::new(Vec::<CachedDetections>::new()),
+                        0,
+                    )),
+                    None => input_exhausted = true,
+                }
+            }
+            else => {
+                if input_exhausted && in_flight.is_empty() {
+                    return Ok(());
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+    }
 }
 
 /// Run the full EPUB pipeline over a PDF byte buffer.
@@ -59,7 +116,7 @@ pub async fn create_and_run_epub_pipeline(
     crate::pipeline::reset_standard_dimensions();
 
     let mut config = config;
-    let source: Arc<dyn PageSource> = Arc::new(PdfiumPageSource::new(pdf_bytes, config.clone())?);
+    let source: Arc<dyn PageSource> = Arc::new(PdfPageSource::new(pdf_bytes, config.clone())?);
 
     let inference_handle = if config.enable_layout_detection() {
         match crate::pipeline::inference::InferenceHandle::new(&config) {
@@ -161,8 +218,7 @@ pub async fn create_and_run_epub_pipeline(
     ));
 
     // Stage 2: layout detection
-    let detection_cache = Arc::new(Vec::<CachedDetections>::new());
-    let mut infer_task = tokio::spawn(inference_stage_parallel(
+    let mut infer_task = tokio::spawn(epub_inference_stage(
         inference_handle,
         render_rx,
         infer_tx,
@@ -173,8 +229,6 @@ pub async fn create_and_run_epub_pipeline(
         progress_tracker.clone(),
         total_pages,
         layout_enabled,
-        detection_cache,
-        0,
     ));
 
     // Stage 3: OCR each page into structured PageText, collected in page order.
@@ -267,9 +321,11 @@ pub async fn create_and_run_epub_pipeline(
         .to_string();
     let output_path_buf = output_path.to_path_buf();
     progress_tracker.update(ProcessingStatus::AssemblingOutput);
-    tokio::task::spawn_blocking(move || build_epub(&pages, &title, &output_path_buf))
-        .await
-        .map_err(|e| anyhow!("[EPUB] packaging task panicked: {e}"))??;
+    crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Writer, move || {
+        build_epub(&pages, &title, &output_path_buf)
+    })
+    .await
+    .map_err(|e| anyhow!("[EPUB] packaging task panicked: {e}"))??;
 
     success_log!("EPUB pipeline complete: {}", output_path.display());
     Ok(())
@@ -427,10 +483,13 @@ async fn ocr_collect_stage(
                             .map_err(|_| anyhow!("[EPUB] OCR semaphore closed"))?;
                         let config = config.clone();
                         let ocr_pipeline = ocr_pipeline.clone();
-                        in_flight.push(tokio::task::spawn_blocking(move || {
-                            let _permit = permit;
-                            ocr_page(&config, &ocr_pipeline, data)
-                        }));
+                        in_flight.push(crate::runtime_stats::spawn_blocking_stage(
+                            crate::runtime_stats::Stage::Ocr,
+                            move || {
+                                let _permit = permit;
+                                ocr_page(&config, &ocr_pipeline, data)
+                            },
+                        ));
                     }
                     None => break,
                 }
