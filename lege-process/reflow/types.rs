@@ -190,6 +190,62 @@ impl SourcePageImage {
     }
 }
 
+/// The set of source pages that are resident in memory right now, addressed by
+/// source page index.
+///
+/// Composition and reflow OCR read source crops for one output page at a time.
+/// An output page references only a small number of source pages, so the
+/// pipeline holds those pages and not the whole document (see the two-pass
+/// reflow design). This type replaces the old "every source page in one vector"
+/// slice that both consumers indexed directly.
+#[derive(Clone, Default)]
+pub struct SourcePageSet {
+    pages: std::collections::BTreeMap<usize, std::sync::Arc<SourcePageImage>>,
+}
+
+impl SourcePageSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a page. The key is the page's own `page_index`.
+    pub fn insert(&mut self, page: std::sync::Arc<SourcePageImage>) {
+        self.pages.insert(page.page_index, page);
+    }
+
+    pub fn get(&self, index: usize) -> Option<&SourcePageImage> {
+        self.pages.get(&index).map(|page| page.as_ref())
+    }
+
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SourcePageImage> {
+        self.pages.values().map(|page| page.as_ref())
+    }
+}
+
+impl FromIterator<SourcePageImage> for SourcePageSet {
+    fn from_iter<T: IntoIterator<Item = SourcePageImage>>(iter: T) -> Self {
+        let mut set = Self::new();
+        for page in iter {
+            set.insert(std::sync::Arc::new(page));
+        }
+        set
+    }
+}
+
+impl From<Vec<SourcePageImage>> for SourcePageSet {
+    fn from(pages: Vec<SourcePageImage>) -> Self {
+        pages.into_iter().collect()
+    }
+}
+
 /// A 1-bit foreground (ink) mask over a page or sub-region.
 ///
 /// `true` means "ink" (foreground / dark pixel). Stored row-major as a dense

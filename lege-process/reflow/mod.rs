@@ -38,8 +38,8 @@ pub mod words;
 pub use config::RasterReflowConfig;
 pub use types::{
     FlowItem, InkMask, PlacedItem, PlacedKind, ProjectionProfile, PxRect, ReflowConfidence,
-    ReflowDocument, ReflowPage, ReflowRegion, RegionKind, SourceMap, SourcePageImage, SourceRef,
-    TextRow, WordSpan,
+    ReflowDocument, ReflowPage, ReflowRegion, RegionKind, SourceMap, SourcePageImage,
+    SourcePageSet, SourceRef, TextRow, WordSpan,
 };
 
 use crate::engine::Detection;
@@ -208,21 +208,42 @@ pub fn estimate_document_body_height(
     if pages.is_empty() {
         return None;
     }
-    let step = (pages.len() / max_samples.max(1)).max(1);
+    let step = body_height_sample_step(pages.len(), max_samples);
     let mut bodies: Vec<u32> = Vec::new();
     for (pi, page) in pages.iter().enumerate().step_by(step) {
         let hints: &[Detection] = hints_per_page.get(pi).map(|v| v.as_slice()).unwrap_or(&[]);
-        let regions = regions::detect_regions(page, hints, cfg);
-        let mut rows: Vec<TextRow> = Vec::new();
-        for region in &regions {
-            if region.kind.is_reflowable() {
-                rows.extend(rows::detect_rows(page, region, cfg));
-            }
-        }
-        if let Some(m) = estimate_page_text_metrics(&rows, cfg) {
-            bodies.push(m.body_row_height);
+        if let Some(body) = estimate_page_body_height(page, hints, cfg) {
+            bodies.push(body);
         }
     }
+    combine_body_height_samples(bodies)
+}
+
+/// Sample stride used by the document body-height calibration. A streaming
+/// caller uses this to decide which pages to render for the calibration pass.
+pub fn body_height_sample_step(page_count: usize, max_samples: usize) -> usize {
+    (page_count / max_samples.max(1)).max(1)
+}
+
+/// Body-text row height of one page, in that page's own source pixels. This is
+/// one calibration sample; see [`combine_body_height_samples`].
+pub fn estimate_page_body_height(
+    page: &SourcePageImage,
+    hints: &[Detection],
+    cfg: &RasterReflowConfig,
+) -> Option<u32> {
+    let regions = regions::detect_regions(page, hints, cfg);
+    let mut rows: Vec<TextRow> = Vec::new();
+    for region in &regions {
+        if region.kind.is_reflowable() {
+            rows.extend(rows::detect_rows(page, region, cfg));
+        }
+    }
+    estimate_page_text_metrics(&rows, cfg).map(|m| m.body_row_height)
+}
+
+/// Median of the per-page samples from [`estimate_page_body_height`].
+pub fn combine_body_height_samples(mut bodies: Vec<u32>) -> Option<u32> {
     if bodies.is_empty() {
         return None;
     }
@@ -262,6 +283,20 @@ pub fn reflow_document(
         confidence.push(conf);
     }
 
+    paginate_document_flow(full_flow, confidence, cfg)
+}
+
+/// Compose and paginate an already-collected document flow.
+///
+/// A streaming caller builds `full_flow` one source page at a time — appending
+/// each page's [`reflow_page_flow`] output plus a [`FlowItem::RegionBreak`] —
+/// and then calls this once. The flow holds only rectangles, so the source
+/// images do not have to stay in memory to reach this point.
+pub fn paginate_document_flow(
+    full_flow: Vec<FlowItem>,
+    confidence: Vec<ReflowConfidence>,
+    cfg: &RasterReflowConfig,
+) -> ReflowDocument {
     let blocks = compose::compose(&full_flow, cfg);
     let (out_pages, source_map) = output::paginate(&blocks, cfg, 0);
 

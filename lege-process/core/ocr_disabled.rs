@@ -101,7 +101,7 @@ pub mod slow {
     use super::*;
     use crate::engine::Detection;
     use crate::pipeline::config::PipelineConfig;
-    use crate::reflow::{ReflowPage, SourcePageImage};
+    use crate::reflow::{ReflowPage, SourcePageSet};
 
     #[allow(clippy::too_many_arguments)]
     pub async fn perform_slow_ocr(
@@ -118,7 +118,7 @@ pub mod slow {
 
     pub async fn perform_reflow_page_ocr(
         _page: &ReflowPage,
-        _sources: &[SourcePageImage],
+        _sources: &SourcePageSet,
         _config: &PipelineConfig,
     ) -> Result<Option<String>> {
         unavailable()

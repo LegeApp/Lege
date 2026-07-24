@@ -14,7 +14,7 @@ use lege_ocr::{
 
 use crate::engine::Detection;
 use crate::pipeline::config::PipelineConfig;
-use crate::reflow::{PlacedKind, PxRect, ReflowPage, SourcePageImage};
+use crate::reflow::{PlacedKind, PxRect, ReflowPage, SourcePageSet};
 use crate::types::ContentCategory;
 
 thread_local! {
@@ -66,6 +66,32 @@ fn detections_to_regions(
         .collect()
 }
 
+fn ocr_regions(
+    detections: &[Detection],
+    page_index: usize,
+    image_w: u32,
+    image_h: u32,
+    output_w: u32,
+    output_h: u32,
+) -> Vec<TextRegion> {
+    let regions =
+        detections_to_regions(detections, page_index, image_w, image_h, output_w, output_h);
+    if !regions.is_empty() {
+        return regions;
+    }
+
+    // Best OCR must remain useful when layout detection is disabled or finds
+    // no text-like regions. The fast OCR path already falls back to whole-page
+    // tiling in this case; give slow OCR the same full-page recognition region.
+    vec![TextRegion {
+        page_index,
+        region_id: 0,
+        class_name: Some("page".to_string()),
+        bbox_highres: [0, 0, image_w, image_h],
+        confidence: 1.0,
+    }]
+}
+
 /// Run the slow OCR pipeline on one page and return a page-level hOCR string.
 ///
 /// `image` is the raster to recognize — the high-resolution OCR raster when
@@ -97,7 +123,7 @@ pub async fn perform_slow_ocr(
         return Ok(None);
     }
 
-    let regions = detections_to_regions(
+    let regions = ocr_regions(
         detections,
         page_index,
         image_w,
@@ -105,10 +131,6 @@ pub async fn perform_slow_ocr(
         output_width,
         output_height,
     );
-
-    if regions.is_empty() {
-        return Ok(None);
-    }
 
     let language = config.ocr_language().to_string();
     let coord_map = CoordinateMap::identity(image_w, image_h, image_w as f32, image_h as f32);
@@ -123,29 +145,30 @@ pub async fn perform_slow_ocr(
         Vec::new()
     };
 
-    let mut slow_page = tokio::task::spawn_blocking(move || {
-        // Binarize the OCR raster ourselves when the caller could not supply a
-        // mask at this resolution (the high-res render has none).
-        let binary = if binarized_clone.is_empty() {
-            normalize::binarize_page(&image_clone)
-        } else {
-            binarized_clone
-        };
-        PIPELINES.with(|cell| {
-            let mut pipelines = cell.borrow_mut();
-            let pipeline = pipelines.entry(language.clone()).or_insert_with(|| {
-                OcrPipeline::new(SlowOcrConfig {
-                    language: language.clone(),
-                    debug: false,
-                    debug_out_dir: None,
-                    ..Default::default()
-                })
-            });
-            pipeline.process_page(&image_clone, &binary, &regions, &coord_map, page_index)
+    let mut slow_page =
+        crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Ocr, move || {
+            // Binarize the OCR raster ourselves when the caller could not supply a
+            // mask at this resolution (the high-res render has none).
+            let binary = if binarized_clone.is_empty() {
+                normalize::binarize_page(&image_clone)
+            } else {
+                binarized_clone
+            };
+            PIPELINES.with(|cell| {
+                let mut pipelines = cell.borrow_mut();
+                let pipeline = pipelines.entry(language.clone()).or_insert_with(|| {
+                    OcrPipeline::new(SlowOcrConfig {
+                        language: language.clone(),
+                        debug: false,
+                        debug_out_dir: None,
+                        ..Default::default()
+                    })
+                });
+                pipeline.process_page(&image_clone, &binary, &regions, &coord_map, page_index)
+            })
         })
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("slow OCR task panicked: {e}"))??;
+        .await
+        .map_err(|e| anyhow::anyhow!("slow OCR task panicked: {e}"))??;
 
     // Scale recognition results from the OCR raster's space back to output space
     // and rebuild the page hOCR there (the writer treats hOCR coordinates as
@@ -205,14 +228,16 @@ struct OutputWord {
 /// Build a page-level hOCR text layer for a *reflowed* output page by reusing
 /// the text-row / word regions the reflow stage already detected.
 ///
-/// `sources` are the rendered source pages reflow composed from (high-resolution
-/// when slow OCR is active, since `source_render_height` scales them up). The
+/// `sources` are the source pages this output page draws from (high-resolution
+/// when slow OCR is active, since `source_render_height` scales them up). Only
+/// the pages this output page references are resident; see the reflow compose
+/// window. The
 /// returned hOCR is expressed in `page`'s output-pixel coordinates — the space
 /// the PDF/DJVU writer maps 1:1 onto the page — so the invisible text overlays
 /// the reflowed bitmaps. Returns `None` when the page has no recognizable text.
 pub async fn perform_reflow_page_ocr(
     page: &ReflowPage,
-    sources: &[SourcePageImage],
+    sources: &SourcePageSet,
     config: &PipelineConfig,
 ) -> Result<Option<String>> {
     // Gather reflowed text items. Figures and tables carry no recognizable
@@ -288,28 +313,29 @@ pub async fn perform_reflow_page_ocr(
 
     // OCR is synchronous and the engine is cached per worker thread, so run all
     // row crops on the blocking pool. Returns (placement_index, text, conf).
-    let recognized: Vec<(usize, String, Option<f32>)> = tokio::task::spawn_blocking(move || {
-        PIPELINES.with(|cell| {
-            let mut pipelines = cell.borrow_mut();
-            let pipeline = pipelines.entry(language.clone()).or_insert_with(|| {
-                OcrPipeline::new(SlowOcrConfig {
-                    language: language.clone(),
-                    debug: false,
-                    debug_out_dir: None,
-                    ..Default::default()
-                })
-            });
-            let mut out: Vec<(usize, String, Option<f32>)> = Vec::new();
-            for job in &jobs {
-                if let Some(line) = pipeline.ocr_gray_line(&job.crop) {
-                    assign_words_to_slots(&line, &job.slots, &mut out);
+    let recognized: Vec<(usize, String, Option<f32>)> =
+        crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Ocr, move || {
+            PIPELINES.with(|cell| {
+                let mut pipelines = cell.borrow_mut();
+                let pipeline = pipelines.entry(language.clone()).or_insert_with(|| {
+                    OcrPipeline::new(SlowOcrConfig {
+                        language: language.clone(),
+                        debug: false,
+                        debug_out_dir: None,
+                        ..Default::default()
+                    })
+                });
+                let mut out: Vec<(usize, String, Option<f32>)> = Vec::new();
+                for job in &jobs {
+                    if let Some(line) = pipeline.ocr_gray_line(&job.crop) {
+                        assign_words_to_slots(&line, &job.slots, &mut out);
+                    }
                 }
-            }
-            out
+                out
+            })
         })
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("reflow OCR task panicked: {e}"))?;
+        .await
+        .map_err(|e| anyhow::anyhow!("reflow OCR task panicked: {e}"))?;
 
     // Attach recognized text to the reflowed output rectangles.
     let mut out_words: Vec<OutputWord> = recognized
@@ -515,6 +541,14 @@ mod reflow_ocr_tests {
             text: text.to_string(),
             confidence: None,
         }
+    }
+
+    #[test]
+    fn empty_layout_falls_back_to_a_whole_page_ocr_region() {
+        let regions = ocr_regions(&[], 7, 1600, 2400, 800, 1200);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].page_index, 7);
+        assert_eq!(regions[0].bbox_highres, [0, 0, 1600, 2400]);
     }
 
     #[test]
