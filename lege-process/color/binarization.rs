@@ -6,8 +6,15 @@ use anyhow::{Result, anyhow};
 use image::{GrayImage, RgbImage};
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
+use std::cell::RefCell;
 use std::cmp::{max, min};
-use std::sync::Mutex;
+
+thread_local! {
+    /// Per-worker arena for whole-page heavy Sauvola RGB input. The model
+    /// remains shared, while Rayon workers retain their largest region buffer
+    /// instead of allocating it again for every page.
+    static HEAVY_SAUVOLA_RGB_ARENA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Format bytes into human-readable memory sizes
 fn format_memory_size(bytes: usize) -> String {
@@ -98,7 +105,13 @@ impl HeavySauvolaProcessor {
                 rgb_data.len()
             ));
         }
-        let mut rgb = vec![0u8; region_h as usize * row_bytes];
+        let required = region_h as usize * row_bytes;
+        let mut rgb = HEAVY_SAUVOLA_RGB_ARENA.with(|arena| {
+            let mut arena = arena.borrow_mut();
+            let mut buffer = std::mem::take(&mut *arena);
+            buffer.resize(required, 0);
+            buffer
+        });
         for y in 0..region_h as usize {
             let src_y = region_y as usize + y;
             let src_start = (src_y * page_width as usize + region_x as usize) * 3;
@@ -110,6 +123,11 @@ impl HeavySauvolaProcessor {
             .ok_or_else(|| anyhow!("failed to create RgbImage from region"))?;
 
         let mut mask = self.processor.binarize_rgb(&img)?;
+        let mut recycled = img.into_raw();
+        recycled.clear();
+        HEAVY_SAUVOLA_RGB_ARENA.with(|arena| {
+            *arena.borrow_mut() = recycled;
+        });
 
         // Handle input inversion
         if opt.invert_input {
@@ -219,7 +237,30 @@ pub fn binarize_image_raw(
     height: usize,
     options: &BinarizationOptions,
 ) -> Vec<u8> {
-    binarize_image_raw_into(image, width, height, options)
+    assert_eq!(
+        image.len(),
+        width * height * 3,
+        "Input image size does not match width*height*3"
+    );
+    let gray = rgb_to_gray_for_binarization(image, width, height, options);
+    binarize_gray_impl(&gray, width, height, options, Some(image))
+}
+
+/// Binarizes an 8-bit grayscale image and returns raw binary data.
+///
+/// This is the primary binarization API. RGB callers are compatibility
+/// adapters that convert to the same grayscale representation used by the
+/// previous implementation before entering this path.
+///
+/// # Panics
+/// Panics if the input image size does not match `width * height`.
+pub fn binarize_gray(
+    gray: &[u8],
+    width: usize,
+    height: usize,
+    options: &BinarizationOptions,
+) -> Vec<u8> {
+    binarize_gray_impl(gray, width, height, options, None)
 }
 
 /// Callback variant: produces binarized bytes and hands them to `f` without forcing
@@ -279,7 +320,7 @@ where
     }
 
     // CPU fallback: materialize then call f.
-    let result = binarize_image_raw_into(image, width, height, options);
+    let result = binarize_image_raw(image, width, height, options);
     (f_slot.take().unwrap())(&result)
 }
 
@@ -332,21 +373,52 @@ where
     lege_gpu::binarization::try_binarize_rgb_with(rgb, &params, f)
 }
 
-fn binarize_image_raw_into(
+fn rgb_to_gray_for_binarization(
     image: &[u8],
     width: usize,
     height: usize,
     options: &BinarizationOptions,
 ) -> Vec<u8> {
+    let use_heavy = options.use_heavy_duty && !options.use_fixed_threshold;
+    if !use_heavy && (options.use_fixed_threshold || !options.disable_gpu) {
+        let mut gray = vec![0u8; width * height];
+        gray.par_iter_mut()
+            .zip(image.par_chunks_exact(3))
+            .for_each(|(out, rgb)| {
+                let r = rgb[0] as u32;
+                let green = rgb[1] as u32;
+                let b = rgb[2] as u32;
+                *out = ((r * 77 + green * 150 + b * 29) >> 8) as u8;
+            });
+        gray
+    } else {
+        linearized_rgb_to_gray(image, width, height)
+    }
+}
+
+fn linearized_rgb_to_gray(image: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let linear_rgb = crate::color::linearize::linearize_rgb_bytes_to_f32(image);
+    let mut gray = vec![0; width * height];
+    crate::color::linearize::linearized_rgb_to_grayscale(&linear_rgb, &mut gray);
+    gray
+}
+
+fn binarize_gray_impl(
+    gray: &[u8],
+    width: usize,
+    height: usize,
+    options: &BinarizationOptions,
+    source_rgb: Option<&[u8]>,
+) -> Vec<u8> {
     assert_eq!(
-        image.len(),
-        width * height * 3,
-        "Input image size does not match width*height*3"
+        gray.len(),
+        width * height,
+        "Input grayscale size does not match width*height"
     );
 
     #[cfg(feature = "debug-logging")]
     crate::encoding::streamline::log_debug_message(&format!(
-        "[BinarizationRaw] Processing {}x{} image, method: {}",
+        "[BinarizationGray] Processing {}x{} image, method: {}",
         width,
         height,
         if options.use_fixed_threshold {
@@ -358,13 +430,24 @@ fn binarize_image_raw_into(
         }
     ));
 
-    if !options.use_fixed_threshold && options.use_heavy_duty {
+    let use_heavy = options.use_heavy_duty && !options.use_fixed_threshold;
+    if use_heavy {
         if let Some(processor) = get_or_init_heavy_processor() {
-            match apply_heavy_duty_binarization_raw(processor, image, width, height, options) {
+            let expanded_rgb;
+            let heavy_rgb = if let Some(source_rgb) = source_rgb {
+                source_rgb
+            } else {
+                expanded_rgb = gray
+                    .iter()
+                    .flat_map(|value| [*value, *value, *value])
+                    .collect::<Vec<_>>();
+                &expanded_rgb
+            };
+            match apply_heavy_duty_binarization_raw(processor, heavy_rgb, width, height, options) {
                 Ok(result) => {
                     #[cfg(feature = "debug-logging")]
                     crate::encoding::streamline::log_debug_message(&format!(
-                        "[BinarizationRaw] Heavy-duty completed: {}x{} -> {} binary bytes",
+                        "[BinarizationGray] Heavy-duty completed: {}x{} -> {} binary bytes",
                         width,
                         height,
                         result.len()
@@ -385,82 +468,70 @@ fn binarize_image_raw_into(
     // Light binarization: improved Sauvola + adaptive Otsu fusion
     #[cfg(feature = "debug-logging")]
     crate::encoding::streamline::log_debug_message(&format!(
-        "[BinarizationRaw] Using light binarization for {}x{} image",
+        "[BinarizationGray] Using light binarization for {}x{} image",
         width, height
     ));
 
-    // Integer Rec.601 luma — used both for the GPU fast-path and for fixed-threshold
-    // CPU fallback. Avoids the ~12 byte/pixel transient + slow palette conversion of
-    // the f32 sRGB-linearize path. For adaptive Sauvola the linearized luma below
-    // is preferred (slight quality edge), so we materialize int luma lazily.
-    let want_int_luma =
-        !options.use_heavy_duty && (options.use_fixed_threshold || !options.disable_gpu);
-    let int_luma: Option<Vec<u8>> = if want_int_luma {
-        let mut g = vec![0u8; width * height];
-        g.par_iter_mut()
-            .zip(image.par_chunks_exact(3))
-            .for_each(|(out, rgb)| {
-                let r = rgb[0] as u32;
-                let gv = rgb[1] as u32;
-                let b = rgb[2] as u32;
-                *out = ((r * 77 + gv * 150 + b * 29) >> 8) as u8;
-            });
-        if options.invert_input {
-            g.par_iter_mut().for_each(|p| *p = 255 - *p);
-        }
-        Some(g)
+    let mut inverted_gray;
+    let gray = if options.invert_input {
+        inverted_gray = gray.to_vec();
+        inverted_gray
+            .par_iter_mut()
+            .for_each(|pixel| *pixel = 255 - *pixel);
+        &inverted_gray
     } else {
-        None
+        gray
     };
 
-    // GPU fast-path on integer luma.
-    if !options.use_heavy_duty && !options.disable_gpu {
-        if let Some(gray_fast) = int_luma.as_deref() {
-            if let Some(result) = try_gpu_binarize_gray_raw(gray_fast, width, height, options) {
-                return result;
-            }
-        }
-    }
-
-    // Fixed-threshold CPU fallback uses the integer luma directly — no need to pay
-    // the f32 linearize cost since fixed thresholding is already a coarse operation.
-    if options.use_fixed_threshold {
-        let gray = int_luma.expect("int_luma materialized for fixed-threshold path");
-        let mut result = vec![0u8; width * height];
-        apply_threshold(&gray, options.fixed_threshold, &mut result, width, height);
-        if options.invert {
-            result.par_iter_mut().for_each(|p| *p = 255 - *p);
-        }
-        return result;
-    }
-
-    // Adaptive CPU fallback: materialize linearized luma for slightly better quality
-    // on Sauvola+Otsu fusion. (The transient f32 buffer is the price of accuracy.)
-    let linear_rgb = crate::color::linearize::linearize_rgb_bytes_to_f32(image);
-    let mut gray = vec![0; width * height];
-    crate::color::linearize::linearized_rgb_to_grayscale(&linear_rgb, &mut gray);
-    drop(linear_rgb);
-
-    if options.invert_input {
-        #[cfg(feature = "debug-logging")]
-        crate::encoding::streamline::log_debug_message(&format!(
-            "[BinarizationRaw] Applying input inversion to {}x{} grayscale",
-            width, height
-        ));
-        gray.par_iter_mut().for_each(|p| *p = 255 - *p);
-    }
-
-    // GPU retry with linearized grayscale (reached only if first GPU attempt failed/unavailable).
-    if !options.disable_gpu {
-        if let Some(result) = try_gpu_binarize_gray_raw(&gray, width, height, options) {
+    // The supplied plane is already in the representation that this stage
+    // thresholds. Try it directly on the GPU.
+    if !use_heavy && !options.disable_gpu {
+        if let Some(result) = try_gpu_binarize_gray_raw(gray, width, height, options) {
             return result;
         }
     }
 
-    let mut result = improved_binarize(&gray, width, height, options);
+    if options.use_fixed_threshold {
+        let mut result = vec![0u8; width * height];
+        apply_threshold(gray, options.fixed_threshold, &mut result, width, height);
+        if options.invert {
+            result
+                .par_iter_mut()
+                .for_each(|pixel| *pixel = 255 - *pixel);
+        }
+        return result;
+    }
+
+    // Preserve the old RGB fallback exactly. The first GPU attempt used the
+    // integer Rec.601 plane; after a GPU failure the previous implementation
+    // retried and then ran the CPU algorithm on linear-light BT.709 grayscale.
+    let mut fallback_gray;
+    let gray = if !use_heavy && !options.disable_gpu {
+        if let Some(source_rgb) = source_rgb {
+            fallback_gray = linearized_rgb_to_gray(source_rgb, width, height);
+            if options.invert_input {
+                fallback_gray
+                    .par_iter_mut()
+                    .for_each(|pixel| *pixel = 255 - *pixel);
+            }
+            if let Some(result) = try_gpu_binarize_gray_raw(&fallback_gray, width, height, options)
+            {
+                return result;
+            }
+            fallback_gray.as_slice()
+        } else {
+            gray
+        }
+    } else {
+        gray
+    };
+
+    let mut result = improved_binarize(gray, width, height, options);
 
     if options.invert {
-        result.par_iter_mut().for_each(|p| *p = 255 - *p);
+        result
+            .par_iter_mut()
+            .for_each(|pixel| *pixel = 255 - *pixel);
     }
 
     result
@@ -1028,7 +1099,11 @@ pub mod pbm {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_threshold, dilate_square_reflect, improved_binarize, invert_binary};
+    use super::{
+        apply_threshold, binarize_gray, binarize_image, binarize_image_raw,
+        binarize_image_raw_with, dilate_square_reflect, improved_binarize, invert_binary,
+        rgb_to_gray_for_binarization, try_gpu_binarize_gray_raw,
+    };
     use crate::color::BinarizationOptions;
 
     #[test]
@@ -1084,6 +1159,217 @@ mod tests {
             improved_binarize(&gray, width, height, &normal),
             improved_binarize(&gray, width, height, &inverted)
         );
+    }
+
+    fn make_rgb_test_image(width: usize, height: usize) -> Vec<u8> {
+        (0..width * height)
+            .flat_map(|index| {
+                let x = index % width;
+                let y = index / width;
+                [
+                    ((x * 17 + y * 3) % 256) as u8,
+                    ((x * 5 + y * 19 + 41) % 256) as u8,
+                    ((x * 11 + y * 7 + 89) % 256) as u8,
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rgb_fixed_threshold_wrapper_matches_legacy_and_gray_paths() {
+        let (width, height) = (43, 31);
+        let rgb = make_rgb_test_image(width, height);
+        let options = BinarizationOptions {
+            invert: true,
+            invert_input: true,
+            use_fixed_threshold: true,
+            fixed_threshold: 137,
+            disable_gpu: true,
+            ..BinarizationOptions::default()
+        };
+
+        let gray = rgb_to_gray_for_binarization(&rgb, width, height, &options);
+        let mut legacy_gray = gray.clone();
+        legacy_gray
+            .iter_mut()
+            .for_each(|pixel| *pixel = 255 - *pixel);
+        let mut legacy = vec![0; width * height];
+        apply_threshold(
+            &legacy_gray,
+            options.fixed_threshold,
+            &mut legacy,
+            width,
+            height,
+        );
+        legacy.iter_mut().for_each(|pixel| *pixel = 255 - *pixel);
+
+        let rgb_result = binarize_image_raw(&rgb, width, height, &options);
+        assert_eq!(rgb_result, legacy);
+        assert_eq!(rgb_result, binarize_gray(&gray, width, height, &options));
+        assert_eq!(
+            binarize_image(&rgb, width, height, &options),
+            super::pbm::make_pbm_p4(&legacy, width, height)
+        );
+    }
+
+    #[test]
+    fn rgb_adaptive_wrapper_matches_legacy_cpu_and_callback_paths() {
+        let (width, height) = (47, 37);
+        let rgb = make_rgb_test_image(width, height);
+        let options = BinarizationOptions {
+            invert: true,
+            invert_input: true,
+            disable_gpu: true,
+            ..BinarizationOptions::default()
+        };
+
+        let linear_rgb = crate::color::linearize::linearize_rgb_bytes_to_f32(&rgb);
+        let mut legacy_gray = vec![0; width * height];
+        crate::color::linearize::linearized_rgb_to_grayscale(&linear_rgb, &mut legacy_gray);
+        legacy_gray
+            .iter_mut()
+            .for_each(|pixel| *pixel = 255 - *pixel);
+        let mut legacy = improved_binarize(&legacy_gray, width, height, &options);
+        legacy.iter_mut().for_each(|pixel| *pixel = 255 - *pixel);
+
+        let rgb_result = binarize_image_raw(&rgb, width, height, &options);
+        assert_eq!(rgb_result, legacy);
+        let callback_result =
+            binarize_image_raw_with(&rgb, width, height, &options, <[u8]>::to_vec);
+        assert_eq!(callback_result, legacy);
+
+        let gray = rgb_to_gray_for_binarization(&rgb, width, height, &options);
+        assert_eq!(rgb_result, binarize_gray(&gray, width, height, &options));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn rgb_wrapper_matches_legacy_gpu_gray_path() {
+        if std::env::var("LEGE_RUN_GPU_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+
+        let (width, height) = (128, 96);
+        let rgb = make_rgb_test_image(width, height);
+        let options = BinarizationOptions::default();
+        let gray = rgb_to_gray_for_binarization(&rgb, width, height, &options);
+        let legacy = try_gpu_binarize_gray_raw(&gray, width, height, &options)
+            .expect("real GPU is required for the wrapper parity test");
+
+        assert_eq!(binarize_image_raw(&rgb, width, height, &options), legacy);
+    }
+
+    fn legacy_cpu_binarize_rgb(
+        rgb: &[u8],
+        width: usize,
+        height: usize,
+        options: &BinarizationOptions,
+    ) -> Vec<u8> {
+        let mut gray = if options.use_fixed_threshold {
+            let mut gray = vec![0; width * height];
+            gray.iter_mut()
+                .zip(rgb.chunks_exact(3))
+                .for_each(|(out, pixel)| {
+                    *out = ((pixel[0] as u32 * 77 + pixel[1] as u32 * 150 + pixel[2] as u32 * 29)
+                        >> 8) as u8;
+                });
+            gray
+        } else {
+            let linear_rgb = crate::color::linearize::linearize_rgb_bytes_to_f32(rgb);
+            let mut gray = vec![0; width * height];
+            crate::color::linearize::linearized_rgb_to_grayscale(&linear_rgb, &mut gray);
+            gray
+        };
+        if options.invert_input {
+            gray.iter_mut().for_each(|pixel| *pixel = 255 - *pixel);
+        }
+
+        let mut result = if options.use_fixed_threshold {
+            let mut result = vec![0; width * height];
+            apply_threshold(&gray, options.fixed_threshold, &mut result, width, height);
+            result
+        } else {
+            improved_binarize(&gray, width, height, options)
+        };
+        if options.invert {
+            result.iter_mut().for_each(|pixel| *pixel = 255 - *pixel);
+        }
+        result
+    }
+
+    #[test]
+    #[ignore = "requires LEGE_BINARIZATION_PARITY_CORPUS with local PDF paths"]
+    fn rgb_wrappers_are_byte_identical_to_legacy_cpu_on_pdf_corpus() {
+        use std::sync::Arc;
+
+        use lege_pdf_read::{RasterPlane, RasterProduct, RenderSession};
+
+        let corpus = std::env::var_os("LEGE_BINARIZATION_PARITY_CORPUS")
+            .expect("set LEGE_BINARIZATION_PARITY_CORPUS to PDF paths");
+        let paths = std::env::split_paths(&corpus).collect::<Vec<_>>();
+        assert!(!paths.is_empty(), "binarization parity corpus is empty");
+
+        let cases = [
+            BinarizationOptions {
+                disable_gpu: true,
+                ..BinarizationOptions::default()
+            },
+            BinarizationOptions {
+                use_fixed_threshold: true,
+                fixed_threshold: 173,
+                disable_gpu: true,
+                ..BinarizationOptions::default()
+            },
+        ];
+
+        for path in paths {
+            let bytes: Arc<[u8]> =
+                Arc::from(std::fs::read(&path).expect("failed to read parity PDF"));
+            let session =
+                RenderSession::open(bytes, None).expect("failed to open binarization parity PDF");
+            for page_index in 0..session.page_count() {
+                let geometry = session
+                    .page_geometry(page_index)
+                    .expect("failed to read page geometry");
+                let height = 160u32;
+                let width = ((geometry.display_width() / geometry.display_height())
+                    * f64::from(height))
+                .round()
+                .max(1.0) as u32;
+                let page = session
+                    .compile(page_index)
+                    .expect("failed to compile parity page");
+                let RasterPlane::Rgb8(surface) = session
+                    .render(&page, &RasterProduct::rgb8(width, height))
+                    .expect("failed to render parity page")
+                else {
+                    panic!("RGB parity request returned a non-RGB plane");
+                };
+
+                for options in &cases {
+                    let legacy = legacy_cpu_binarize_rgb(
+                        &surface.pixels,
+                        width as usize,
+                        height as usize,
+                        options,
+                    );
+                    let current = binarize_image_raw(
+                        &surface.pixels,
+                        width as usize,
+                        height as usize,
+                        options,
+                    );
+                    assert_eq!(
+                        current,
+                        legacy,
+                        "binarization changed for {} page {} ({:?})",
+                        path.display(),
+                        page_index,
+                        options
+                    );
+                }
+            }
+        }
     }
 
     // --- GPU algorithm parity tests ---

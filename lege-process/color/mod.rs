@@ -19,8 +19,8 @@ pub use types::{BinarizationConfig, BinarizationOptions, DEFAULT_K_FACTOR};
 
 // Export essential binarization utilities
 pub use binarization::{
-    HeavySauvolaProcessor, binarize_image, binarize_image_raw, compute_adaptive_gpu_constants,
-    odd_background_window, sauvola_window_for,
+    HeavySauvolaProcessor, binarize_gray, binarize_image, binarize_image_raw,
+    compute_adaptive_gpu_constants, odd_background_window, sauvola_window_for,
 };
 
 // Export color processing utilities
