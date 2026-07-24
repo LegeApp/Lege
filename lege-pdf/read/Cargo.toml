@@ -1,0 +1,26 @@
+[package]
+name = "lege-pdf-read"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+description = "Lege-owned document intake seam over the external PDF renderer"
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-content = { workspace = true }
+pdf-document = { workspace = true }
+pdf-object = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-read = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-render-cpu = { workspace = true }
+pdf-security = { workspace = true }
+pdf-source = { workspace = true }
+pdf-text = { workspace = true }
+
+[dev-dependencies]
+pdf-test-support = { workspace = true }
+
+[lints]
+workspace = true

@@ -361,6 +361,7 @@ mod tests {
         w.set_bookmarks(vec![OutlineItem {
             title: "Cover".to_string(),
             page_index: 0,
+            top: None,
             children: vec![],
         }]);
         w.add_page(&jpeg_page(0)).unwrap();

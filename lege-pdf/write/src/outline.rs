@@ -10,14 +10,19 @@
 use std::io::Write;
 
 use crate::pages::WrittenPageSlots;
-use crate::serialize::{write_i64, write_literal_string, write_name, write_ref};
+use crate::serialize::{write_i64, write_literal_string, write_name, write_real, write_ref};
 use crate::sink::PdfSink;
 use crate::types::{ObjectId, Result};
 
 /// A bookmark node from Lege. `page_index` is the 0-based output page index.
+#[derive(Clone, Debug, PartialEq)]
 pub struct OutlineItem {
     pub title: String,
     pub page_index: u32,
+    /// Destination Y in PDF user space. With a value the node gets
+    /// `/XYZ null top null`, so a tap lands at the title rather than at the top
+    /// of the page. Without one it falls back to page-level `/Fit`.
+    pub top: Option<f32>,
     pub children: Vec<OutlineItem>,
 }
 
@@ -26,6 +31,7 @@ struct Node {
     id: ObjectId,
     title: String,
     page: ObjectId,
+    top: Option<f32>,
     children: Vec<Node>,
 }
 
@@ -81,6 +87,7 @@ fn build_nodes<W: Write>(
             id,
             title: item.title.clone(),
             page,
+            top: item.top,
             children,
         });
     }
@@ -114,11 +121,19 @@ fn write_nodes<W: Write>(sink: &mut PdfSink<W>, nodes: &[Node], parent: ObjectId
             key(&mut d, b"Count");
             write_i64(&mut d, descendants(node));
         }
-        // Destination: [page /Fit].
+        // Destination: [page /XYZ null top null] when a title position is
+        // known, else page-level [page /Fit].
         key(&mut d, b"Dest");
         d.push(b'[');
         write_ref(&mut d, node.page);
-        d.extend_from_slice(b" /Fit]");
+        match node.top {
+            Some(top) if top.is_finite() => {
+                d.extend_from_slice(b" /XYZ null ");
+                write_real(&mut d, top as f64);
+                d.extend_from_slice(b" null]");
+            }
+            _ => d.extend_from_slice(b" /Fit]"),
+        }
         d.extend_from_slice(b">>");
         sink.write_indirect(node.id, &d)?;
 
@@ -184,6 +199,7 @@ mod tests {
         let items = vec![OutlineItem {
             title: "x".into(),
             page_index: 9,
+            top: None,
             children: vec![],
         }];
         assert!(write_outline(&mut sink, &slots, &items).unwrap().is_none());
@@ -197,15 +213,18 @@ mod tests {
             OutlineItem {
                 title: "Chapter 1".into(),
                 page_index: 0,
+                top: None,
                 children: vec![OutlineItem {
                     title: "Section 1.1".into(),
                     page_index: 1,
+                    top: None,
                     children: vec![],
                 }],
             },
             OutlineItem {
                 title: "Chapter 2".into(),
                 page_index: 2,
+                top: Some(742.5),
                 children: vec![],
             },
         ];
@@ -219,7 +238,10 @@ mod tests {
         assert!(t.contains("(Section 1.1)"));
         assert!(t.contains("/Dest [100 0 R /Fit]"));
         assert!(t.contains("/Dest [101 0 R /Fit]"));
-        assert!(t.contains("/Dest [102 0 R /Fit]"));
+        assert!(
+            t.contains("/Dest [102 0 R /XYZ null 742.5 null]"),
+            "a node with a title position gets an /XYZ destination: {t}"
+        );
         // Chapter 1 has a child count of 1.
         assert!(t.contains("/Count 1"), "{t}");
         assert!(root.num >= 1);
@@ -232,6 +254,7 @@ mod tests {
         let items = vec![OutlineItem {
             title: "Café".into(),
             page_index: 0,
+            top: None,
             children: vec![],
         }];
         write_outline(&mut sink, &slots, &items).unwrap();
