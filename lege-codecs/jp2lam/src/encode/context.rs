@@ -350,7 +350,11 @@ mod tests {
         )
         .err()
         .expect("ambiguous YCbCr must be rejected");
-        assert!(error.to_string().contains("not an advertised photographic input"));
+        assert!(
+            error
+                .to_string()
+                .contains("not an advertised photographic input")
+        );
     }
 
     #[test]
@@ -401,6 +405,10 @@ mod tests {
         )
         .err()
         .expect("ambiguous YCbCr must be rejected before tile loading");
-        assert!(error.to_string().contains("not an advertised photographic input"));
+        assert!(
+            error
+                .to_string()
+                .contains("not an advertised photographic input")
+        );
     }
 }

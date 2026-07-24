@@ -95,13 +95,17 @@ fn validate_restricted_icc(bytes: &[u8], model: IccComponentModel) -> crate::err
     }
     let declared_len = u32::from_be_bytes(bytes[0..4].try_into().expect("four-byte ICC length"));
     if declared_len as usize != bytes.len() {
-        return Err(invalid_input("ICC header size does not match profile bytes"));
+        return Err(invalid_input(
+            "ICC header size does not match profile bytes",
+        ));
     }
     if &bytes[36..40] != b"acsp" {
         return Err(invalid_input("ICC profile signature is not 'acsp'"));
     }
     if &bytes[20..24] != b"XYZ " {
-        return Err(invalid_input("restricted JP2 ICC profile PCS must be 'XYZ '"));
+        return Err(invalid_input(
+            "restricted JP2 ICC profile PCS must be 'XYZ '",
+        ));
     }
     let expected_space = match model {
         IccComponentModel::Gray => b"GRAY".as_slice(),

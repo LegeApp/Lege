@@ -474,7 +474,8 @@ fn write_cmyk_png(image: &Image, output_path: &Path) -> Result<(), String> {
     let pixel_count = image
         .width
         .checked_mul(image.height)
-        .ok_or_else(|| "decoded image dimensions overflow".to_string())? as usize;
+        .ok_or_else(|| "decoded image dimensions overflow".to_string())?
+        as usize;
     let (c, m, y, k) = (
         &image.components[0].data,
         &image.components[1].data,
@@ -492,8 +493,9 @@ fn write_cmyk_png(image: &Image, output_path: &Path) -> Result<(), String> {
             bytes.push(((inv * kk) / 255) as u8);
         }
     }
-    let png = RgbImage::from_raw(image.width, image.height, bytes)
-        .ok_or_else(|| "decoded CMYK component length does not match image dimensions".to_string())?;
+    let png = RgbImage::from_raw(image.width, image.height, bytes).ok_or_else(|| {
+        "decoded CMYK component length does not match image dimensions".to_string()
+    })?;
     png.save(output_path)
         .map_err(|err| format!("failed to write PNG: {err}"))
 }

@@ -174,8 +174,7 @@ impl EncodingPlan {
             }
             (None, ColorSpace::Yuv | ColorSpace::YCbCr) => {
                 return Err(Jp2LamError::InvalidInput(
-                    "implicit YUV/YCbCr conversion is not an advertised photographic input"
-                        .into(),
+                    "implicit YUV/YCbCr conversion is not an advertised photographic input".into(),
                 ));
             }
             (None, ColorSpace::Cmyk) => {
@@ -199,7 +198,9 @@ impl EncodingPlan {
             ),
             RateControl::CompressionRatio(ratio) => (
                 99,
-                Some(OutputRateTarget::Bytes(target_bytes_from_ratio(image, ratio)?)),
+                Some(OutputRateTarget::Bytes(target_bytes_from_ratio(
+                    image, ratio,
+                )?)),
             ),
         };
         let is_lossless = matches!(rate_control, RateControl::Lossless);
@@ -328,21 +329,29 @@ fn target_bytes_from_bpp(image: &ImageView<'_>, bpp: f32) -> Result<u64> {
 }
 
 fn target_bytes_from_ratio(image: &ImageView<'_>, ratio: f32) -> Result<u64> {
-    let source_bits = image.components.iter().try_fold(0u128, |total, component| {
-        let sampled_width = u128::from(image.width).div_ceil(u128::from(component.dx));
-        let sampled_height = u128::from(image.height).div_ceil(u128::from(component.dy));
-        total
-            .checked_add(
-                sampled_width
-                    .checked_mul(sampled_height)
-                    .and_then(|samples| samples.checked_mul(u128::from(component.precision)))
-                    .ok_or_else(|| {
-                        Jp2LamError::InvalidInput("meaningful source bit count overflows".into())
-                    })?,
-            )
-            .ok_or_else(|| Jp2LamError::InvalidInput("source bit count overflows".into()))
-    })?;
-    rounded_positive_bytes(source_bits as f64 / f64::from(ratio) / 8.0, "compression ratio")
+    let source_bits = image
+        .components
+        .iter()
+        .try_fold(0u128, |total, component| {
+            let sampled_width = u128::from(image.width).div_ceil(u128::from(component.dx));
+            let sampled_height = u128::from(image.height).div_ceil(u128::from(component.dy));
+            total
+                .checked_add(
+                    sampled_width
+                        .checked_mul(sampled_height)
+                        .and_then(|samples| samples.checked_mul(u128::from(component.precision)))
+                        .ok_or_else(|| {
+                            Jp2LamError::InvalidInput(
+                                "meaningful source bit count overflows".into(),
+                            )
+                        })?,
+                )
+                .ok_or_else(|| Jp2LamError::InvalidInput("source bit count overflows".into()))
+        })?;
+    rounded_positive_bytes(
+        source_bits as f64 / f64::from(ratio) / 8.0,
+        "compression ratio",
+    )
 }
 
 fn rounded_positive_bytes(value: f64, label: &str) -> Result<u64> {
@@ -563,7 +572,10 @@ mod tests {
                 },
             )
             .expect("explicit rate plan");
-            assert_eq!(plan.output_rate_target, Some(OutputRateTarget::Bytes(2_000)));
+            assert_eq!(
+                plan.output_rate_target,
+                Some(OutputRateTarget::Bytes(2_000))
+            );
             assert_eq!(plan.rate_control, rate_control);
             assert!(!plan.is_lossless());
         }

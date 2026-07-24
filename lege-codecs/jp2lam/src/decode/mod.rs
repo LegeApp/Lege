@@ -110,9 +110,7 @@ impl DecodeOutputFormat {
             DecodeOutputFormat::NativePlanarI32
             | DecodeOutputFormat::Gray8
             | DecodeOutputFormat::GrayA8 => 1,
-            DecodeOutputFormat::Rgb8
-            | DecodeOutputFormat::Rgba8
-            | DecodeOutputFormat::Cmyk8 => 3,
+            DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 3,
         }
     }
 }
@@ -283,7 +281,14 @@ pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
 pub fn decode_jp2(bytes: &[u8]) -> Result<Image> {
     let mut stats = StatsSink::disabled();
     let mut scratch = DecodeScratch::new();
-    decode_jp2_impl(bytes, DecodeResolution::Full, None, &mut stats, &mut scratch, false)
+    decode_jp2_impl(
+        bytes,
+        DecodeResolution::Full,
+        None,
+        &mut stats,
+        &mut scratch,
+        false,
+    )
 }
 
 /// Decode a JP2/J2K image and return decoder-internal stage attribution.
@@ -296,7 +301,14 @@ pub fn decode_jp2_with_stats(bytes: &[u8]) -> Result<(Image, Jp2DecodeStats)> {
     let total_start = std::time::Instant::now();
     let image = {
         let mut sink = StatsSink::enabled(&mut stats);
-        decode_jp2_impl(bytes, DecodeResolution::Full, None, &mut sink, &mut scratch, false)?
+        decode_jp2_impl(
+            bytes,
+            DecodeResolution::Full,
+            None,
+            &mut sink,
+            &mut scratch,
+            false,
+        )?
     };
     stats.total_ns = u64::try_from(total_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     Ok((image, stats))
@@ -398,16 +410,14 @@ fn decode_jp2_request_with_scratch(
         return decode_region_request(bytes, request, scratch);
     }
     if request.output != DecodeOutputFormat::NativePlanarI32 {
-        if let Some(raster) =
-            decode_packed_direct(
-                bytes,
-                request.resolution,
-                request.output,
-                None,
-                scratch,
-                request.ignore_container_palette,
-            )?
-        {
+        if let Some(raster) = decode_packed_direct(
+            bytes,
+            request.resolution,
+            request.output,
+            None,
+            scratch,
+            request.ignore_container_palette,
+        )? {
             return Ok(DecodeResult::Raster(raster));
         }
     }
@@ -479,9 +489,11 @@ fn decode_packed_direct(
             components,
             &mut stats,
         )?;
-        let stride = (header.siz.width as usize).checked_mul(channels).ok_or_else(|| {
-            crate::Jp2LamError::DecodeFailed("packed output stride overflow".into())
-        })?;
+        let stride = (header.siz.width as usize)
+            .checked_mul(channels)
+            .ok_or_else(|| {
+                crate::Jp2LamError::DecodeFailed("packed output stride overflow".into())
+            })?;
         return Ok(Some(DecodedRaster {
             width: header.siz.width,
             height: header.siz.height,
@@ -814,11 +826,11 @@ fn decode_jp2_impl(
     // so the reduced tiles still partition the reduced canvas with no gap or
     // overlap.
     let siz = &core.codestream.siz;
-    let (canvas_x0, _) =
-        reduced_axis_bounds(siz.x_origin, siz.x_origin + siz.width, reduce_levels);
+    let (canvas_x0, _) = reduced_axis_bounds(siz.x_origin, siz.x_origin + siz.width, reduce_levels);
     let (canvas_y0, _) =
         reduced_axis_bounds(siz.y_origin, siz.y_origin + siz.height, reduce_levels);
-    let mut image = empty_decoded_image_reduced(&core.codestream, reconstruct_space, reduce_levels)?;
+    let mut image =
+        empty_decoded_image_reduced(&core.codestream, reconstruct_space, reduce_levels)?;
     for (tile_index, part_indices) in tile_parts.iter().enumerate() {
         let tile_index = u16::try_from(tile_index).map_err(|_| {
             crate::Jp2LamError::DecodeFailed("tile index exceeds Isot range".into())
@@ -1591,8 +1603,8 @@ fn validate_jp2_decode_scope(
         // sRGB + a single `cdef` opacity channel on component 3 is an RGBA image
         // whose alpha the PDF layer applies as an in-data soft mask; accept it.
         // Any other sRGB + N is still unsupported.
-        let is_rgba = header.component_count == 4
-            && header.alpha.is_some_and(|alpha| alpha.component == 3);
+        let is_rgba =
+            header.component_count == 4 && header.alpha.is_some_and(|alpha| alpha.component == 3);
         if !is_rgba {
             return Err(crate::Jp2LamError::UnsupportedFeature(format!(
                 "unsupported JP2 component count: decoder currently supports three sRGB components, found {} components",
@@ -1618,7 +1630,8 @@ fn validate_jp2_decode_scope(
         }
         if codestream.cod.use_mct {
             return Err(crate::Jp2LamError::UnsupportedFeature(
-                "unsupported JP2 feature: sYCC combined with the multiple-component transform".into(),
+                "unsupported JP2 feature: sYCC combined with the multiple-component transform"
+                    .into(),
             ));
         }
     }
@@ -2118,7 +2131,11 @@ mod tests {
 
         let meta = inspect_jp2(&palettized).expect("inspect");
         assert_eq!(meta.container_palette_channels, Some(3));
-        assert_eq!(meta.colorspace, ColorSpace::Srgb, "palette drives the space");
+        assert_eq!(
+            meta.colorspace,
+            ColorSpace::Srgb,
+            "palette drives the space"
+        );
 
         let decoded = decode_jp2(&palettized).expect("decode");
         assert_eq!(decoded.components.len(), 3);
@@ -2438,8 +2455,7 @@ mod tests {
         // subsample of the source; a mis-placed tile would shift whole regions.
         let samples: Vec<u8> = (0..height)
             .flat_map(|y| {
-                (0..width)
-                    .map(move |x| ((x * 200 / width + y * 200 / height).min(255)) as u8)
+                (0..width).map(move |x| ((x * 200 / width + y * 200 / height).min(255)) as u8)
             })
             .collect();
         let image = Image::from_gray_bytes(width, height, &samples).expect("source image");
@@ -2729,11 +2745,18 @@ mod tests {
             let mut prev = 0u8;
             for x in 0..w {
                 let a = rgba.data[(y * w + x) * 4 + 3];
-                assert!(a >= prev, "alpha must be non-decreasing across x at row {y}");
+                assert!(
+                    a >= prev,
+                    "alpha must be non-decreasing across x at row {y}"
+                );
                 prev = a;
             }
             assert_eq!(rgba.data[y * w * 4 + 3], 0, "left column transparent");
-            assert_eq!(rgba.data[(y * w + w - 1) * 4 + 3], 255, "right column opaque");
+            assert_eq!(
+                rgba.data[(y * w + w - 1) * 4 + 3],
+                255,
+                "right column opaque"
+            );
         }
 
         // Rgb8 on the same stream drops the alpha (three interleaved planes).
@@ -2935,7 +2958,11 @@ mod tests {
         let (codestream_start, codestream_end) = top_level_box_range(bytes, b"jp2c");
         let codestream = &bytes[codestream_start..codestream_end];
         let parts = codestream::parse_codestream_view(codestream).expect("parse native codestream");
-        assert_eq!(parts.tile_parts.len(), 1, "native fixture has one tile-part");
+        assert_eq!(
+            parts.tile_parts.len(),
+            1,
+            "native fixture has one tile-part"
+        );
         let payload = parts.tile_parts[0].payload;
 
         let sot_start = codestream
@@ -2987,19 +3014,32 @@ mod tests {
         let encoded = crate::encode(&image, &region_opts(75)).expect("encode 9/7 jp2");
 
         let meta = inspect_jp2(&encoded).expect("inspect encoded");
-        assert_eq!(meta.codestream.cod.transform, WaveletTransform::Irreversible97);
+        assert_eq!(
+            meta.codestream.cod.transform,
+            WaveletTransform::Irreversible97
+        );
         let step_count = 1 + usize::from(meta.codestream.cod.decomposition_levels) * 3;
         let base_exp = meta.codestream.qcd.steps[0].exponent;
-        let new_exp = u16::from(if base_exp >= 3 { base_exp - 2 } else { base_exp + 2 });
+        let new_exp = u16::from(if base_exp >= 3 {
+            base_exp - 2
+        } else {
+            base_exp + 2
+        });
 
         let base = rebuild_with_tile_header_segments(&encoded, &[]);
-        let overridden =
-            rebuild_with_tile_header_segments(&encoded, &[qcd_override_segment(step_count, new_exp)]);
+        let overridden = rebuild_with_tile_header_segments(
+            &encoded,
+            &[qcd_override_segment(step_count, new_exp)],
+        );
 
-        let base_px = decode_jp2(&base).expect("decode without override").components[0]
+        let base_px = decode_jp2(&base)
+            .expect("decode without override")
+            .components[0]
             .data
             .clone();
-        let over_px = decode_jp2(&overridden).expect("decode with tile QCD override").components[0]
+        let over_px = decode_jp2(&overridden)
+            .expect("decode with tile QCD override")
+            .components[0]
             .data
             .clone();
 
@@ -3100,7 +3140,11 @@ mod tests {
         match (full, roi, roi_budgeted) {
             (DecodeResult::Native(full), DecodeResult::Native(roi), DecodeResult::Native(bud)) => {
                 let cropped = crop_image(&full, crop).expect("crop full");
-                assert_eq!((cropped.width, cropped.height), (roi.width, roi.height), "{label}");
+                assert_eq!(
+                    (cropped.width, cropped.height),
+                    (roi.width, roi.height),
+                    "{label}"
+                );
                 for (c, r) in cropped.components.iter().zip(&roi.components) {
                     assert_eq!(c.data, r.data, "region native mismatch: {label}");
                 }
@@ -3124,11 +3168,36 @@ mod tests {
         // Corner, interior odd-offset, right edge, odd extent, and a small far
         // corner — the offsets/parities where inverse-DWT region math misaligns.
         let regions = [
-            DecodeRegion { x: 0, y: 0, width: 40, height: 40 },
-            DecodeRegion { x: 71, y: 53, width: 49, height: 33 },
-            DecodeRegion { x: 138, y: 0, width: 62, height: 90 },
-            DecodeRegion { x: 15, y: 137, width: 33, height: 31 },
-            DecodeRegion { x: 191, y: 159, width: 9, height: 9 },
+            DecodeRegion {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 40,
+            },
+            DecodeRegion {
+                x: 71,
+                y: 53,
+                width: 49,
+                height: 33,
+            },
+            DecodeRegion {
+                x: 138,
+                y: 0,
+                width: 62,
+                height: 90,
+            },
+            DecodeRegion {
+                x: 15,
+                y: 137,
+                width: 33,
+                height: 31,
+            },
+            DecodeRegion {
+                x: 191,
+                y: 159,
+                width: 9,
+                height: 9,
+            },
         ];
         // quality 100 -> reversible 5/3, quality 75 -> irreversible 9/7.
         for quality in [100u8, 75u8] {
@@ -3191,9 +3260,24 @@ mod tests {
             )
             .expect("encode multi-tile");
             let regions = [
-                DecodeRegion { x: 10, y: 12, width: 50, height: 44 },
-                DecodeRegion { x: 150, y: 100, width: 90, height: 70 },
-                DecodeRegion { x: 260, y: 190, width: 40, height: 30 },
+                DecodeRegion {
+                    x: 10,
+                    y: 12,
+                    width: 50,
+                    height: 44,
+                },
+                DecodeRegion {
+                    x: 150,
+                    y: 100,
+                    width: 90,
+                    height: 70,
+                },
+                DecodeRegion {
+                    x: 260,
+                    y: 190,
+                    width: 40,
+                    height: 30,
+                },
             ];
             for resolution in [DecodeResolution::Full, DecodeResolution::ReduceLevels(1)] {
                 for &region in &regions {

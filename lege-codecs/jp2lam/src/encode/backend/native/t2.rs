@@ -1,9 +1,7 @@
-use crate::encode::profile_enter;
 use crate::encode::block_store::{SharedEncodedBlockStore, StoredBand, StoredTier1Layout};
+use crate::encode::profile_enter;
 use crate::error::{Jp2LamError, Result};
-use crate::t2::{
-    PacketSequenceBuilder, StoredPacket, StoredPayloadRange, TilePartPayload,
-};
+use crate::t2::{PacketSequenceBuilder, StoredPacket, StoredPayloadRange, TilePartPayload};
 
 use super::t1::{NativeEncodedTier1Band, NativeEncodedTier1Layout, NativeTier1SelectionLayout};
 
@@ -743,9 +741,9 @@ pub(crate) fn build_stored_tile_part_payload(
                 let selected_band = selected_band_refs
                     .as_ref()
                     .and_then(|bands| bands.get(packet_band_index).copied());
-                if selected_band.is_some_and(|selected| {
-                    selected.selected_passes.len() != band.blocks.len()
-                }) {
+                if selected_band
+                    .is_some_and(|selected| selected.selected_passes.len() != band.blocks.len())
+                {
                     return Err(Jp2LamError::EncodeFailed(
                         "stored packet selection block count mismatch".into(),
                     ));

@@ -133,7 +133,9 @@ fn benchmark_region(encoded: &[u8], iterations: usize) {
         iterations: usize,
     ) -> (Duration, u32, u32) {
         // Warm-up.
-        let _ = decoder.decode(encoded, request).expect("warm region decode");
+        let _ = decoder
+            .decode(encoded, request)
+            .expect("warm region decode");
         let mut samples = Vec::with_capacity(iterations);
         let mut dims = (0u32, 0u32);
         for _ in 0..iterations {
@@ -157,7 +159,8 @@ fn benchmark_region(encoded: &[u8], iterations: usize) {
     println!("region.region_dims={region_w}x{region_h}");
     println!(
         "region.area_fraction={:.3}",
-        f64::from(region_w) * f64::from(region_h) / (f64::from(full_w) * f64::from(full_h)).max(1.0)
+        f64::from(region_w) * f64::from(region_h)
+            / (f64::from(full_w) * f64::from(full_h)).max(1.0)
     );
     println!(
         "region.time_fraction={:.3}",

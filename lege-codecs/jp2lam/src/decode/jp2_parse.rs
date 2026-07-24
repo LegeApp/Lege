@@ -395,12 +395,18 @@ fn parse_color_spec(
                 )),
                 // Profile too short to name a space, or a non-Gray/RGB model
                 // (e.g. CMYK): defer to the component count.
-                _ => infer_colorspace_from_components(component_count, alpha, "any-ICC (colr METH 3)"),
+                _ => infer_colorspace_from_components(
+                    component_count,
+                    alpha,
+                    "any-ICC (colr METH 3)",
+                ),
             }
         }
         // METH 4 (vendor colour): no interoperable profile, so the only signal
         // is the component layout.
-        4 => infer_colorspace_from_components(component_count, alpha, "vendor colour (colr METH 4)"),
+        4 => {
+            infer_colorspace_from_components(component_count, alpha, "vendor colour (colr METH 4)")
+        }
         other => Err(unsupported(format!(
             "unsupported JP2 colour specification method {other}"
         ))),
@@ -658,7 +664,9 @@ mod tests {
     fn colour_only_channel_definition_declares_no_alpha() {
         // A cdef whose single channel is colour (Typ=0) is the identity default:
         // parsed, with no opacity channel surfaced.
-        let cdef = [0, 1, /*Cn*/ 0, 0, /*Typ*/ 0, 0, /*Asoc*/ 0, 1];
+        let cdef = [
+            0, 1, /*Cn*/ 0, 0, /*Typ*/ 0, 0, /*Asoc*/ 0, 1,
+        ];
         let bytes = jp2_with_extra_header_box(BOX_CHANNEL_DEFINITION, &cdef);
         let parsed = parse_jp2(&bytes).expect("colour-only cdef should parse");
         assert!(parsed.header.alpha.is_none());
@@ -795,7 +803,10 @@ mod tests {
         gray.extend_from_slice(&[0u8; 16]);
         gray.extend_from_slice(b"GRAY");
         gray.extend_from_slice(&[0u8; 108]);
-        assert_eq!(parse_color_spec(&gray, 1, None).unwrap().0, ColorSpace::Gray);
+        assert_eq!(
+            parse_color_spec(&gray, 1, None).unwrap().0,
+            ColorSpace::Gray
+        );
 
         let mut rgb = vec![3u8, 0, 0];
         rgb.extend_from_slice(&[0u8; 16]);
@@ -850,7 +861,11 @@ mod tests {
         // inconsistent greyscale colr — otherwise the stream is wrongly rejected.
         let mut jp2h = Vec::new();
         push_box(&mut jp2h, BOX_IMAGE_HEADER, &ihdr_payload()); // ihdr nc = 1
-        push_box(&mut jp2h, BOX_COLOR_SPEC, &enumerated_colr_payload(ENUM_GRAY));
+        push_box(
+            &mut jp2h,
+            BOX_COLOR_SPEC,
+            &enumerated_colr_payload(ENUM_GRAY),
+        );
         // pclr: NE = 2 entries, NPC = 4 columns, all 8-bit, then 2×4 samples.
         let mut pclr = vec![0u8, 2, 4, 7, 7, 7, 7];
         pclr.extend_from_slice(&[10, 11, 12, 13]); // entry 0

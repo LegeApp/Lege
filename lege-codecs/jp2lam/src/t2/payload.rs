@@ -52,8 +52,7 @@ impl TilePartPayload {
             Self::StoredPacketSequence { packets, .. } => packets
                 .iter()
                 .map(|packet| {
-                    packet.header.len()
-                        + packet.body.iter().map(|range| range.len).sum::<usize>()
+                    packet.header.len() + packet.body.iter().map(|range| range.len).sum::<usize>()
                 })
                 .sum(),
         }

@@ -27,8 +27,8 @@ pub use decode::{
 };
 #[cfg(feature = "counters")]
 pub use encode::counters::{
-    CLEANUP_PASSES, EMPTY_BLOCKS, MQ_SYMBOLS, MR_PASSES, SP_PASSES, TOTAL_BLOCKS, TOTAL_PASS_BYTES,
-    MemoryCounterSnapshot, memory_snapshot, print, reset,
+    CLEANUP_PASSES, EMPTY_BLOCKS, MQ_SYMBOLS, MR_PASSES, MemoryCounterSnapshot, SP_PASSES,
+    TOTAL_BLOCKS, TOTAL_PASS_BYTES, memory_snapshot, print, reset,
 };
 pub use encode::{
     EncodeMetrics, encode, encode_to_writer, encode_view, encode_view_to_writer, encode_with_psnr,
@@ -37,6 +37,6 @@ pub use encode::{
 pub use error::{Jp2LamError, Result};
 pub use model::{
     ColorEncoding, ColorSpace, Component, ComponentSampleData, ComponentView, ContentProfile,
-    EncodeOptions, IccComponentModel, Image, ImageView, OutputFormat, Preset, ResourceLimits,
-    RateControl, SamplePrecision, TilePolicy,
+    EncodeOptions, IccComponentModel, Image, ImageView, OutputFormat, Preset, RateControl,
+    ResourceLimits, SamplePrecision, TilePolicy,
 };

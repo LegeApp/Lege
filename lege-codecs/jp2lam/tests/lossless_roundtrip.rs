@@ -244,7 +244,10 @@ fn lossless_gray_u16_storage_roundtrips_exactly_at_supported_precisions() {
         assert_eq!(decoded.components[0].precision, precision);
         assert_eq!(
             decoded.components[0].data,
-            samples.iter().map(|&sample| i32::from(sample)).collect::<Vec<_>>(),
+            samples
+                .iter()
+                .map(|&sample| i32::from(sample))
+                .collect::<Vec<_>>(),
             "{precision}-bit grayscale samples"
         );
     }
@@ -266,7 +269,11 @@ fn lossless_rgb_u16_storage_roundtrips_exactly_at_supported_precisions() {
                     let ramp = ((x * u32::from(max)) / (width - 1)) as u16;
                     [ramp, max - ramp, ramp / 2]
                 } else {
-                    [rng.next_u16() & max, rng.next_u16() & max, rng.next_u16() & max]
+                    [
+                        rng.next_u16() & max,
+                        rng.next_u16() & max,
+                        rng.next_u16() & max,
+                    ]
                 };
                 samples.extend_from_slice(&rgb);
                 for component in 0..3 {
@@ -500,7 +507,10 @@ fn ambiguous_rgb_requires_explicit_color_encoding() {
     let mut image = rgb_fixture(3, 3, |x, y| [x as u8, y as u8, (x + y) as u8]);
     image.colorspace = ColorSpace::Rgb;
     let error = encode(&image, &EncodeOptions::default()).expect_err("ambiguous RGB must fail");
-    assert!(error.to_string().contains("explicit ColorEncoding"), "{error}");
+    assert!(
+        error.to_string().contains("explicit ColorEncoding"),
+        "{error}"
+    );
 
     encode(
         &image,

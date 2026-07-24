@@ -17,9 +17,7 @@ use crate::plan::{BandOrientation, SubbandQuant};
 // use crate::dwt::pcrd::{apply_contrast_masking_to_delta, band_distortion_bias};
 // use crate::profile::class_distortion_weight;
 
-use super::t1::{
-    NativeEncodedTier1CodeBlock, NativeEncodedTier1Layout, NativeEncodedTier1Pass,
-};
+use super::t1::{NativeEncodedTier1CodeBlock, NativeEncodedTier1Layout, NativeEncodedTier1Pass};
 
 /// Estimated packet-header signaling cost per included code-block (bytes).
 ///
@@ -96,12 +94,7 @@ pub(crate) fn curves_from_stored_layout(
             .map(|sq| quant_step_from_subband(*sq, precision))
             .unwrap_or(1.0);
         for block in &band.blocks {
-            let raws = raw_records_for_passes(
-                &block.passes,
-                weight,
-                quant_step,
-                component_weight,
-            );
+            let raws = raw_records_for_passes(&block.passes, weight, quant_step, component_weight);
             curves.push(build_hull_curve(first_block_id + curves.len(), &raws)?);
         }
     }
@@ -158,12 +151,7 @@ fn raw_records_for_block(
     quant_step: f64,
     component_weight: f64,
 ) -> Vec<RawPassRecord> {
-    raw_records_for_passes(
-        &block.passes,
-        subband_weight,
-        quant_step,
-        component_weight,
-    )
+    raw_records_for_passes(&block.passes, subband_weight, quant_step, component_weight)
 }
 
 fn raw_records_for_passes(

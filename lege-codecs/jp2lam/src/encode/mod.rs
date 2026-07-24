@@ -114,11 +114,9 @@ pub fn encode_view(image: ImageView<'_>, options: &EncodeOptions) -> Result<Vec<
 
     let output = match context.plan.output_format {
         OutputFormat::J2k => Ok(codestream),
-        OutputFormat::Jp2 => jp2::wrap_codestream_view(
-            &context.image,
-            &context.plan.color_encoding,
-            &codestream,
-        ),
+        OutputFormat::Jp2 => {
+            jp2::wrap_codestream_view(&context.image, &context.plan.color_encoding, &codestream)
+        }
     }?;
     counters::record_output_buffer(output.capacity());
     Ok(output)
@@ -324,8 +322,7 @@ mod tests {
             };
 
             let encoded = encode(&image, &options).expect("lossy multi-tile encode");
-            let decoded =
-                crate::decode::decode_jp2(&encoded).expect("decode lossy multi-tile JP2");
+            let decoded = crate::decode::decode_jp2(&encoded).expect("decode lossy multi-tile JP2");
             assert_eq!((decoded.width, decoded.height), (image.width, image.height));
             assert_eq!(decoded.components.len(), 1);
             sizes.push(encoded.len());
@@ -340,8 +337,8 @@ mod tests {
     fn exact_rate_modes_target_complete_jp2_output() {
         let width = 128;
         let height = 96;
-        let image = Image::from_gray_bytes(width, height, &gray_samples(width, height))
-            .expect("image");
+        let image =
+            Image::from_gray_bytes(width, height, &gray_samples(width, height)).expect("image");
         let target_bytes = 1_536u64;
         let modes = [
             RateControl::TargetBytes(target_bytes),
@@ -374,8 +371,8 @@ mod tests {
     fn exact_rate_ladders_are_monotone_for_j2k_and_jp2() {
         let width = 128;
         let height = 96;
-        let image = Image::from_gray_bytes(width, height, &gray_samples(width, height))
-            .expect("image");
+        let image =
+            Image::from_gray_bytes(width, height, &gray_samples(width, height)).expect("image");
 
         for format in [OutputFormat::J2k, OutputFormat::Jp2] {
             let mut previous = 0usize;

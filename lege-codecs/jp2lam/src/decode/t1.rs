@@ -207,7 +207,10 @@ struct BlockParams {
 /// Resolve a code block's decode geometry, magnitude bit-plane count, and (for
 /// the irreversible path) its fused dequantization step from the codestream
 /// headers. Shared by the serial and parallel Tier-1 loops.
-fn block_params(header: &CodestreamHeader, block: &super::t2::DecodedCodeBlock<'_>) -> Result<BlockParams> {
+fn block_params(
+    header: &CodestreamHeader,
+    block: &super::t2::DecodedCodeBlock<'_>,
+) -> Result<BlockParams> {
     // Per-component quantization: a QCC override for this component, else the
     // default QCD (ISO/IEC 15444-1 Annex A.6.5).
     let comp_quant = header.quant_for(block.component);
@@ -354,7 +357,10 @@ impl BlockPlanes {
                 .checked_mul(tile_width)
                 .and_then(|row| row.checked_add(x0))
                 .ok_or_else(|| invalid("block copy offset overflow"))?;
-            if dst.checked_add(block_width).is_none_or(|end| end > tile_len) {
+            if dst
+                .checked_add(block_width)
+                .is_none_or(|end| end > tile_len)
+            {
                 return Err(invalid("decoded block extends past tile"));
             }
             let src_row = &coefficients[y * block_width..y * block_width + block_width];
@@ -392,10 +398,9 @@ fn decode_codeblocks_parallel(
 ) -> Result<()> {
     let planes = BlockPlanes::new(components);
     let style = header.cod.code_block_style;
-    packets
-        .codeblocks
-        .par_iter()
-        .try_for_each_init(Tier1Scratch::new, |scratch, block| -> Result<()> {
+    packets.codeblocks.par_iter().try_for_each_init(
+        Tier1Scratch::new,
+        |scratch, block| -> Result<()> {
             let params = block_params(header, block)?;
             let mut sink = StatsSink::disabled();
             decode_codeblock_segments_into(
@@ -423,7 +428,8 @@ fn decode_codeblocks_parallel(
                     params.step,
                 )
             }
-        })
+        },
+    )
 }
 
 #[allow(dead_code)]

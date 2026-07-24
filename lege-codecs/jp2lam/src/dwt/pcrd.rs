@@ -330,13 +330,13 @@ fn fill_remaining_budget(
     selection: &mut LayerSelection,
 ) -> Result<(), PcrdError> {
     loop {
-        let remaining = selection.target_bytes.saturating_sub(selection.actual_bytes);
+        let remaining = selection
+            .target_bytes
+            .saturating_sub(selection.actual_bytes);
         let mut best: Option<(usize, PcrdPoint, f64)> = None;
 
-        for (selection_index, (curve, chosen)) in curves
-            .iter()
-            .zip(selection.selections.iter())
-            .enumerate()
+        for (selection_index, (curve, chosen)) in
+            curves.iter().zip(selection.selections.iter()).enumerate()
         {
             let point_index = curve
                 .points
@@ -362,8 +362,7 @@ fn fill_remaining_budget(
             };
             if best.as_ref().is_none_or(|(best_index, _, best_slope)| {
                 slope > *best_slope
-                    || (slope == *best_slope
-                        && curve.block_id < curves[*best_index].block_id)
+                    || (slope == *best_slope && curve.block_id < curves[*best_index].block_id)
             }) {
                 best = Some((selection_index, next, slope));
             }
@@ -1206,7 +1205,10 @@ mod tests {
 
         assert!(a.actual_bytes <= b.actual_bytes);
         assert!(b.actual_bytes <= c.actual_bytes);
-        assert_eq!(b.actual_bytes, 30, "discrete fill should use the residual budget");
+        assert_eq!(
+            b.actual_bytes, 30,
+            "discrete fill should use the residual budget"
+        );
 
         for i in 0..a.selections.len() {
             assert!(a.selections[i].passes <= b.selections[i].passes);

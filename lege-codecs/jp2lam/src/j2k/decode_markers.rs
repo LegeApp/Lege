@@ -305,7 +305,15 @@ impl CodestreamHeader {
             }
         }
 
-        validate_decoder_scope(first_tile_header, tile_part_count, &siz, &cod, &qcd, &qcc, &coc)?;
+        validate_decoder_scope(
+            first_tile_header,
+            tile_part_count,
+            &siz,
+            &cod,
+            &qcd,
+            &qcc,
+            &coc,
+        )?;
         Ok(Self {
             siz,
             cod,
@@ -582,7 +590,11 @@ fn wavelet_transform_from_byte(value: u8) -> Result<WaveletTransform> {
 /// depth, code-block geometry/style, or precinct partition would require the
 /// Tier-2 packet iterator and reconstruction to run per-component structure and
 /// is rejected cleanly rather than mis-decoded.
-fn parse_coc(segment: &[u8], component_count: usize, cod: &CodSegment) -> Result<(usize, WaveletTransform)> {
+fn parse_coc(
+    segment: &[u8],
+    component_count: usize,
+    cod: &CodSegment,
+) -> Result<(usize, WaveletTransform)> {
     let body = body(segment)?;
     // Ccoc is 1 byte for <257 components, 2 bytes otherwise (mirrors Cqcc).
     let (component, rest) = if component_count < 257 {
@@ -648,7 +660,10 @@ fn parse_coc(segment: &[u8], component_count: usize, cod: &CodSegment) -> Result
         || uses_precincts != cod.uses_precincts
         || precinct_sizes != cod.precinct_sizes
     {
-        unsupported_marker(MARKER_COC, "COC that overrides more than the wavelet transform")?;
+        unsupported_marker(
+            MARKER_COC,
+            "COC that overrides more than the wavelet transform",
+        )?;
     }
     Ok((component, transform))
 }
@@ -1077,7 +1092,6 @@ mod tests {
         MARKER_PPT, MARKER_QCC, MARKER_RGN, MARKER_TLM,
     };
 
-
     /// CRG is a display-registration hint that changes no sample and no packet
     /// structure; OpenJPEG reads and ignores it. Rejecting it blanked whole
     /// pages (corpus 0518325.pdf), so it must be accepted silently.
@@ -1374,8 +1388,12 @@ mod tests {
     }
 
     fn base_header(segments: &[Vec<u8>]) -> CodestreamHeader {
-        CodestreamHeader::from_marker_segments(segments.iter().map(Vec::as_slice), tile_header(0), 1)
-            .expect("base header")
+        CodestreamHeader::from_marker_segments(
+            segments.iter().map(Vec::as_slice),
+            tile_header(0),
+            1,
+        )
+        .expect("base header")
     }
 
     #[test]

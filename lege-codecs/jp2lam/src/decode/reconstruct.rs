@@ -411,16 +411,27 @@ pub(crate) fn reconstruct_grayscale_image(
 
     let samples = match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
-            let centered =
-                reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, width, height, stats)?;
+            let centered = reconstruct_reversible_53_centered(
+                header,
+                tile.into_integer()?,
+                0,
+                width,
+                height,
+                stats,
+            )?;
             let start = stats.start();
             let output = finalize_i32_samples(centered, component.precision);
             record_finalize_time(stats, start);
             output
         }
         WaveletTransform::Irreversible97 => {
-            let centered =
-                reconstruct_irreversible_97_centered(header, tile.into_real()?, width, height, stats)?;
+            let centered = reconstruct_irreversible_97_centered(
+                header,
+                tile.into_real()?,
+                width,
+                height,
+                stats,
+            )?;
             let start = stats.start();
             let output = finalize_f32_samples(centered, component.precision);
             record_finalize_time(stats, start);
@@ -504,8 +515,14 @@ fn reconstruct_grayscale_u8_profiled(
 
     let output = match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
-            let centered =
-                reconstruct_reversible_53_centered(header, tile.into_integer()?, 0, width, height, stats)?;
+            let centered = reconstruct_reversible_53_centered(
+                header,
+                tile.into_integer()?,
+                0,
+                width,
+                height,
+                stats,
+            )?;
             let start = stats.start();
             let shift = 1i32 << (component.precision - 1);
             let max_sample = (1i32 << component.precision) - 1;
@@ -522,8 +539,13 @@ fn reconstruct_grayscale_u8_profiled(
             output
         }
         WaveletTransform::Irreversible97 => {
-            let centered =
-                reconstruct_irreversible_97_centered(header, tile.into_real()?, width, height, stats)?;
+            let centered = reconstruct_irreversible_97_centered(
+                header,
+                tile.into_real()?,
+                width,
+                height,
+                stats,
+            )?;
             let start = stats.start();
             let shift = (1u32 << (component.precision - 1)) as f32;
             let max_sample = (1u32 << component.precision) - 1;
@@ -583,7 +605,8 @@ fn reconstruct_interleaved_u8_profiled(
     // a uniform stream this is byte-identical to a single-transform pass.
     let colour_count = colour_channels.min(channels);
     let mut tiles_iter = tiles.into_iter();
-    let colour_tiles: Vec<DecodedTileCoefficients> = tiles_iter.by_ref().take(colour_count).collect();
+    let colour_tiles: Vec<DecodedTileCoefficients> =
+        tiles_iter.by_ref().take(colour_count).collect();
     let mut component_u8 = reconstruct_colour_u8(header, colour_tiles, stats)?;
     for tile in tiles_iter {
         component_u8.push(reconstruct_aux_component_u8(header, tile, stats)?);

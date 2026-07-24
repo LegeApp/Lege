@@ -15,8 +15,7 @@ use crate::perceptual::{
     ContrastMaskMap, ContrastMaskParams, build_contrast_mask_map_from_luma_u8,
 };
 use crate::plan::{
-    EncodeLane, EncodingPlan, OutputRateTarget, QuantizationStyle, SubbandQuant,
-    WaveletTransform,
+    EncodeLane, EncodingPlan, OutputRateTarget, QuantizationStyle, SubbandQuant, WaveletTransform,
 };
 use crate::simd::PRIMITIVES;
 use crate::tiling::{TileRect, tile_component_rect, tile_grid};
@@ -95,12 +94,8 @@ impl NativeBackend {
         let _p = crate::encode::profile_enter("prepare_component_coefficients_97");
         let mut data =
             irreversible_input_component_rect(context, component_index, x0, y0, width, height)?;
-        crate::encode::counters::record_tile_samples(
-            data.len() * std::mem::size_of::<f32>(),
-        );
-        crate::encode::counters::record_dwt_coefficients(
-            data.len() * std::mem::size_of::<f32>(),
-        );
+        crate::encode::counters::record_tile_samples(data.len() * std::mem::size_of::<f32>());
+        crate::encode::counters::record_dwt_coefficients(data.len() * std::mem::size_of::<f32>());
 
         let width = width as usize;
         let height = height as usize;
@@ -228,12 +223,8 @@ impl NativeBackend {
 
         let mut data =
             reversible_input_component_rect(context, component_index, x0, y0, width, height)?;
-        crate::encode::counters::record_tile_samples(
-            data.len() * std::mem::size_of::<i32>(),
-        );
-        crate::encode::counters::record_dwt_coefficients(
-            data.len() * std::mem::size_of::<i32>(),
-        );
+        crate::encode::counters::record_tile_samples(data.len() * std::mem::size_of::<i32>());
+        crate::encode::counters::record_dwt_coefficients(data.len() * std::mem::size_of::<i32>());
 
         crate::dwt::forward_53_2d_in_place_at(
             &mut data,
@@ -573,11 +564,7 @@ impl NativeBackend {
                 tc.width(),
                 tc.height(),
             )?;
-            stored.push(store_tier1_layout(
-                store,
-                component_index as u16,
-                encoded,
-            )?);
+            stored.push(store_tier1_layout(store, component_index as u16, encoded)?);
         }
         Ok(stored)
     }
@@ -628,8 +615,7 @@ impl NativeBackend {
                     target_bytes,
                 )?
             } else {
-                let stored_selections =
-                    select_stored_tile_passes(&stored_tiles, context, None)?;
+                let stored_selections = select_stored_tile_passes(&stored_tiles, context, None)?;
                 build_stored_tile_parts(&stored_tiles, stored_selections, shared_store)?
             }
         } else {
@@ -855,11 +841,7 @@ fn irreversible_input_component_rect(
         let source = context.load_component_rect_i32(component_index, x0, y0, width, height)?;
         let mut out = vec![0.0f32; source.len()];
         let precision = SamplePrecision::new(context.plan.components[component_index].precision)?;
-        (PRIMITIVES.color.level_shift_f32)(
-            &source,
-            precision.unsigned_level_shift(),
-            &mut out,
-        );
+        (PRIMITIVES.color.level_shift_f32)(&source, precision.unsigned_level_shift(), &mut out);
         return Ok(out);
     }
 
@@ -908,11 +890,7 @@ fn reversible_input_component_rect(
         let source = context.load_component_rect_i32(component_index, x0, y0, width, height)?;
         let mut out = vec![0i32; source.len()];
         let precision = SamplePrecision::new(context.plan.components[component_index].precision)?;
-        (PRIMITIVES.color.level_shift_i32)(
-            &source,
-            precision.unsigned_level_shift(),
-            &mut out,
-        );
+        (PRIMITIVES.color.level_shift_i32)(&source, precision.unsigned_level_shift(), &mut out);
         return Ok(out);
     }
     if context.plan.component_count != 3 {
@@ -1186,10 +1164,7 @@ fn select_stored_tile_passes(
     let pixel_count = context.image.width * context.image.height;
     let selection = if let Some(target_body_bytes) = target_body_bytes {
         crate::dwt::pcrd::select_for_target_bytes(&curves, target_body_bytes)
-    } else if matches!(
-        context.plan.rate_mode,
-        crate::plan::RateMode::DocumentTrim
-    ) {
+    } else if matches!(context.plan.rate_mode, crate::plan::RateMode::DocumentTrim) {
         crate::dwt::pcrd::select_for_document_trim(&curves)
     } else {
         select_for_quality(&curves, context.plan.quality, pixel_count)
@@ -1198,9 +1173,11 @@ fn select_stored_tile_passes(
 
     let mut flat_selected_passes = vec![0u16; curves.len()];
     for block in selection.selections {
-        let slot = flat_selected_passes.get_mut(block.block_id).ok_or_else(|| {
-            Jp2LamError::EncodeFailed("global PCRD block selection index out of range".into())
-        })?;
+        let slot = flat_selected_passes
+            .get_mut(block.block_id)
+            .ok_or_else(|| {
+                Jp2LamError::EncodeFailed("global PCRD block selection index out of range".into())
+            })?;
         *slot = block.passes;
     }
 
@@ -1274,10 +1251,8 @@ fn select_exact_rate_tile_parts(
 
     while low <= high {
         let body_target = low + (high - low) / 2;
-        let selections =
-            select_stored_tile_passes(stored_tiles, context, Some(body_target))?;
-        let tile_parts =
-            build_stored_tile_parts(stored_tiles, selections, shared_store.clone())?;
+        let selections = select_stored_tile_passes(stored_tiles, context, Some(body_target))?;
+        let tile_parts = build_stored_tile_parts(stored_tiles, selections, shared_store.clone())?;
         let candidate = CodestreamParts {
             main_header_segments: main_header_segments.to_vec(),
             tile_parts: tile_parts.clone(),
@@ -1330,9 +1305,7 @@ fn complete_output_len(
     }
 }
 
-fn stored_all_pass_selection(
-    layout: &StoredTier1Layout,
-) -> Result<t1::NativeTier1SelectionLayout> {
+fn stored_all_pass_selection(layout: &StoredTier1Layout) -> Result<t1::NativeTier1SelectionLayout> {
     let mut next_block = 0usize;
     let selected = layout
         .bands
@@ -1353,9 +1326,12 @@ fn stored_selection_layout_from_flat(
     for band in &layout.bands {
         let mut selected_passes = Vec::with_capacity(band.blocks.len());
         for block in &band.blocks {
-            let desired = flat_selected_passes.get(*next_block).copied().ok_or_else(|| {
-                Jp2LamError::EncodeFailed("global PCRD block count mismatch".into())
-            })?;
+            let desired = flat_selected_passes
+                .get(*next_block)
+                .copied()
+                .ok_or_else(|| {
+                    Jp2LamError::EncodeFailed("global PCRD block count mismatch".into())
+                })?;
             *next_block += 1;
             let mut retain = usize::from(desired).min(block.passes.len());
             while retain > 0 && block.passes[retain - 1].cumulative_length == 0 {
@@ -1421,7 +1397,10 @@ fn pcrd_component_weight(context: &EncodeContext<'_>, component_index: usize) ->
 
     if !context.plan.use_mct
         || !matches!(context.image.colorspace.encoding_domain(), ColorSpace::Srgb)
-        || !matches!(context.plan.color_encoding, crate::model::ColorEncoding::Srgb)
+        || !matches!(
+            context.plan.color_encoding,
+            crate::model::ColorEncoding::Srgb
+        )
     {
         return 1.0;
     }
@@ -1568,13 +1547,7 @@ fn component_parallel_working_memory_floor(plan: &EncodingPlan) -> Option<usize>
 
 /// Mean SSIM over non-overlapping 8×8 luma blocks.
 /// Wang et al. (2004), constants from the standard formulation.
-fn mssim_8x8(
-    orig: &[f32],
-    recon: &[f32],
-    width: usize,
-    height: usize,
-    sample_peak: f64,
-) -> f64 {
+fn mssim_8x8(orig: &[f32], recon: &[f32], width: usize, height: usize, sample_peak: f64) -> f64 {
     const BLOCK: usize = 8;
     let c1 = (0.01 * sample_peak).powi(2);
     let c2 = (0.03 * sample_peak).powi(2);
@@ -1629,8 +1602,8 @@ mod tests {
     use super::{
         NativeBackend, allow_component_parallelism, component_parallel_working_memory_floor,
     };
-    use crate::encode::context::EncodeContext;
     use crate::encode::block_store::EncodedBlockStore;
+    use crate::encode::context::EncodeContext;
     use crate::model::{
         ColorSpace, Component, EncodeOptions, Image, OutputFormat, Preset, ResourceLimits,
     };
@@ -1910,9 +1883,13 @@ mod tests {
 
         assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].tile_index, 7);
-        assert!(layouts[0].bands.iter().flat_map(|band| &band.blocks).all(
-            |block| block.id.tile_index == 7 && block.id.component == 0
-        ));
+        assert!(
+            layouts[0]
+                .bands
+                .iter()
+                .flat_map(|band| &band.blocks)
+                .all(|block| block.id.tile_index == 7 && block.id.component == 0)
+        );
         let stats = store.stats();
         assert!(stats.payload_count > 0);
         assert!(stats.spilled_payload_count > 0);
