@@ -3,21 +3,7 @@ use crate::pipeline::config::PipelineConfig;
 use anyhow::{Result, bail};
 use image::RgbImage;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
-
-pub struct InferenceJob {
-    pub page_index: usize,
-    pub image: Arc<RgbImage>,
-    pub response_tx: oneshot::Sender<Result<Vec<Detection>>>,
-}
-
-pub struct InferenceJobAsync {
-    pub page_index: usize,
-    pub image: Arc<RgbImage>,
-    pub result_tx: mpsc::Sender<(usize, Result<Vec<Detection>>)>,
-}
-
-pub struct InferenceActor;
+use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub struct InferenceHandle;
@@ -45,6 +31,10 @@ impl InferenceHandle {
 
     pub fn has_capacity(&self) -> bool {
         false
+    }
+
+    pub fn session_count(&self) -> usize {
+        0
     }
 }
 

@@ -1,6 +1,7 @@
 // helper_functions.rs - Shared helper functions for the pipeline
 use anyhow::{Result, anyhow};
 use image::RgbImage;
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::bbox_trace;
@@ -19,7 +20,6 @@ use crate::{info_log, warn_log};
 
 // Memory monitoring and limits
 // Increased from 4GB to 12GB to support layout detection with multiple workers
-const DEFAULT_MEMORY_LIMIT_GB: usize = 12; // 12GB default limit for modern systems
 
 static ENCODE_SEMAPHORE: std::sync::OnceLock<std::sync::Mutex<std::sync::Arc<Semaphore>>> =
     std::sync::OnceLock::new();
@@ -36,6 +36,65 @@ pub fn get_encode_semaphore() -> Option<std::sync::Arc<Semaphore>> {
     ENCODE_SEMAPHORE
         .get()
         .and_then(|semaphore| semaphore.lock().ok().map(|guard| guard.clone()))
+}
+
+/// Build the shared layout-inference session pool, with the same hardware-GPU
+/// fallback behavior for every output pipeline.
+///
+/// PDF and DjVu previously carried near-identical initialization/error blocks,
+/// which had already drifted in log prefixes. Keeping this at the shared
+/// pipeline seam ensures any future adapter policy or warning text applies to
+/// both formats.
+pub(crate) fn initialize_inference_or_fallback(
+    mut config: Arc<PipelineConfig>,
+    progress: &crate::progress::ProgressTracker,
+    pipeline_label: &str,
+) -> Result<(
+    Arc<PipelineConfig>,
+    Option<Arc<crate::pipeline::inference::InferenceHandle>>,
+)> {
+    if !config.enable_layout_detection() {
+        return Ok((config, None));
+    }
+
+    match crate::pipeline::inference::InferenceHandle::new(&config) {
+        Ok(handle) => Ok((config, Some(Arc::new(handle)))),
+        Err(error)
+            if crate::pipeline::inference::is_layout_software_adapter_error(error.as_ref()) =>
+        {
+            let message = "No usable hardware GPU found — wgpu fell back to a CPU/software \
+                           adapter. Layout detection has been disabled for this run. Install or \
+                           update your GPU driver to enable hardware acceleration."
+                .to_string();
+            warn_log!("[{}] {}", pipeline_label, message);
+            progress.update(crate::progress::ProcessingStatus::PipelineMessage {
+                stage: "GPU Warning".to_string(),
+                message,
+            });
+            Arc::make_mut(&mut config).set_enable_layout_detection(false);
+            Ok((config, None))
+        }
+        Err(error) if crate::pipeline::inference::is_gpu_device_error(error.as_ref()) => {
+            let message = format!(
+                "GPU initialization failed ({}). Layout detection disabled; processing will \
+                 continue without it. Check that your GPU driver supports DX12 (Windows) or \
+                 Vulkan (Linux/macOS).",
+                error
+            );
+            warn_log!("[{}] {}", pipeline_label, message);
+            progress.update(crate::progress::ProcessingStatus::PipelineMessage {
+                stage: "GPU Warning".to_string(),
+                message,
+            });
+            Arc::make_mut(&mut config).set_enable_layout_detection(false);
+            Ok((config, None))
+        }
+        Err(error) => Err(anyhow!(
+            "[{}] Failed to create InferenceHandle: {}",
+            pipeline_label,
+            error
+        )),
+    }
 }
 
 pub(crate) fn jp2_quality(high_quality: bool) -> u8 {
@@ -385,17 +444,20 @@ pub async fn encode_region_image(
         Some(sem) => Some(sem.acquire_owned().await.ok()),
         None => None,
     };
-    let (encoding_result, fmt_str) = tokio::task::spawn_blocking(move || {
-        let buffer = LegeImageBuffer {
-            data: &image_data_owned,
-            width,
-            height,
-            channels: CHANNELS as u8,
-        };
-        let result = EncodingManager::encode(&buffer, &settings)
-            .map_err(|e| anyhow!("Region encoding failed: {}", e))?;
-        Ok::<(EncodingResult, String), anyhow::Error>((result, fmt_str.to_string()))
-    })
+    let (encoding_result, fmt_str) = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Encode,
+        move || {
+            let buffer = LegeImageBuffer {
+                data: &image_data_owned,
+                width,
+                height,
+                channels: CHANNELS as u8,
+            };
+            let result = EncodingManager::encode(&buffer, &settings)
+                .map_err(|e| anyhow!("Region encoding failed: {}", e))?;
+            Ok::<(EncodingResult, String), anyhow::Error>((result, fmt_str.to_string()))
+        },
+    )
     .await
     .map_err(|e| anyhow!("Region encoding task panicked: {}", e))??;
     drop(permit);
@@ -701,173 +763,6 @@ pub fn get_available_ram_gb() -> usize {
     8
 }
 
-// Memory usage monitor
-static MEMORY_MONITOR: std::sync::OnceLock<MemoryMonitor> = std::sync::OnceLock::new();
-
-pub struct MemoryMonitor {
-    limit_bytes: u64,
-}
-
-impl MemoryMonitor {
-    pub fn new(limit_gb: usize) -> Self {
-        Self {
-            limit_bytes: (limit_gb as u64) * 1024 * 1024 * 1024,
-        }
-    }
-
-    pub fn get_current_usage_bytes(&self) -> u64 {
-        #[cfg(target_os = "windows")]
-        {
-            use winapi::shared::minwindef::DWORD;
-            use winapi::um::processthreadsapi::GetCurrentProcess;
-            use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-
-            let mut pmc: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
-            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as DWORD;
-
-            unsafe {
-                if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
-                    return pmc.WorkingSetSize as u64;
-                }
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(contents) = std::fs::read_to_string("/proc/self/status") {
-                for line in contents.lines() {
-                    if line.starts_with("VmRSS:") {
-                        if let Some(kb_str) = line.split_whitespace().nth(1) {
-                            if let Ok(kb) = kb_str.parse::<u64>() {
-                                return kb * 1024; // Convert KB to bytes
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: return 0 if unable to determine
-        0
-    }
-
-    pub fn get_current_usage_gb(&self) -> f64 {
-        self.get_current_usage_bytes() as f64 / (1024.0 * 1024.0 * 1024.0)
-    }
-
-    pub fn is_approaching_limit(&self, safety_margin_gb: usize) -> bool {
-        let current_gb = self.get_current_usage_gb();
-        let limit_gb = self.limit_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        current_gb >= (limit_gb - safety_margin_gb as f64)
-    }
-
-    pub fn get_memory_pressure(&self) -> MemoryPressure {
-        // Disable memory management for systems with 16GB+ RAM
-        static LOGGED_DISABLE: std::sync::Once = std::sync::Once::new();
-        let system_ram_gb = get_available_ram_gb();
-        if system_ram_gb >= 16 {
-            LOGGED_DISABLE.call_once(|| {
-                info_log!(
-                    "Memory management disabled - system has {}GB RAM (â‰¥16GB)",
-                    system_ram_gb
-                );
-            });
-            return MemoryPressure::Low;
-        }
-
-        let current_gb = self.get_current_usage_gb();
-        let limit_gb = self.limit_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-
-        let pressure = current_gb / limit_gb;
-        if pressure >= 0.9 {
-            MemoryPressure::Critical
-        } else if pressure >= 0.7 {
-            MemoryPressure::High
-        } else if pressure >= 0.5 {
-            MemoryPressure::Medium
-        } else {
-            MemoryPressure::Low
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryPressure {
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-pub fn get_memory_monitor() -> &'static MemoryMonitor {
-    MEMORY_MONITOR.get_or_init(|| MemoryMonitor::new(adaptive_memory_limit_gb()))
-}
-
-/// Derive a memory limit that is meaningful on the machine actually running.
-///
-/// The pressure ratio used for backpressure is `current_usage / limit`, so a fixed
-/// 12 GB limit is useless on the 4–8 GB machines that actually run out of memory:
-/// `Critical` (ratio ≥ 0.9) would require ~10.8 GB of working set, which those
-/// machines can never reach before the OS kills the process. Scaling the limit to a
-/// fraction of physical RAM keeps backpressure (`wait_for_memory_relief`) engaging
-/// with headroom for the OS and other apps, while never exceeding the original
-/// ceiling on large machines.
-fn adaptive_memory_limit_gb() -> usize {
-    let total_ram_gb = get_available_ram_gb();
-    // Use ~70% of physical RAM as the working-set ceiling, clamped to a small floor so
-    // tiny/undetected configs still trip backpressure rather than overflowing, and to
-    // the historical default as the upper bound.
-    ((total_ram_gb * 7) / 10).clamp(3, DEFAULT_MEMORY_LIMIT_GB)
-}
-
-/// Wait for memory pressure to decrease below critical level.
-/// This implements backpressure by pausing processing when memory is too high.
-/// Returns immediately if memory pressure is not critical.
-///
-/// Unlike a simple time-based wait, this checks memory frequently (every 50ms)
-/// expecting that as other pages complete processing and get written to disk,
-/// memory will be freed naturally.
-pub async fn wait_for_memory_relief() {
-    let monitor = get_memory_monitor();
-    let mut wait_count = 0;
-    let initial_usage = monitor.get_current_usage_gb();
-
-    loop {
-        let pressure = monitor.get_memory_pressure();
-
-        if pressure != MemoryPressure::Critical {
-            if wait_count > 0 {
-                let current_usage = monitor.get_current_usage_gb();
-                info_log!(
-                    "[MemoryBackpressure] Memory pressure relieved after {} checks ({:.2} GB -> {:.2} GB)",
-                    wait_count,
-                    initial_usage,
-                    current_usage
-                );
-            }
-            break;
-        }
-
-        if wait_count == 0 {
-            warn_log!(
-                "[MemoryBackpressure] Critical memory pressure detected ({:.2} GB / {:.2} GB), pausing until other pages complete",
-                monitor.get_current_usage_gb(),
-                monitor.limit_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
-            );
-        } else if wait_count % 20 == 0 {
-            // Log every 20 checks (1 second) to show we're waiting for other work to complete
-            warn_log!(
-                "[MemoryBackpressure] Still waiting for memory relief ({:.2} GB used, waiting for other pages to finish)",
-                monitor.get_current_usage_gb()
-            );
-        }
-
-        wait_count += 1;
-
-        // Wait 50ms before checking again - short enough to respond quickly when memory frees
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    }
-}
 /// Await a pipeline stage task, aborting remaining tasks on shutdown signal.
 ///
 /// Each stage call conveys the tasks that are still alive and should be cancelled
@@ -968,16 +863,19 @@ pub async fn encode_page_data(
         Some(sem) => Some(sem.acquire_owned().await.ok()),
         None => None,
     };
-    let encoding_result = tokio::task::spawn_blocking(move || {
-        let buffer = LegeImageBuffer {
-            data: &binarized_owned,
-            width: width as u32,
-            height: height as u32,
-            channels: 1u8,
-        };
-        EncodingManager::encode(&buffer, &encoding_settings)
-            .map_err(|e| anyhow::anyhow!("Encoding failed for format {}: {}", text_format, e))
-    })
+    let encoding_result = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Encode,
+        move || {
+            let buffer = LegeImageBuffer {
+                data: &binarized_owned,
+                width: width as u32,
+                height: height as u32,
+                channels: 1u8,
+            };
+            EncodingManager::encode(&buffer, &encoding_settings)
+                .map_err(|e| anyhow::anyhow!("Encoding failed for format {}: {}", text_format, e))
+        },
+    )
     .await
     .map_err(|e| anyhow::anyhow!("Encoding task panicked: {}", e))??;
     drop(permit);
@@ -1077,12 +975,16 @@ pub enum WriterMessage {
         page: crate::accumulator::Page,
         page_index: usize,
     },
-    /// Supply bookmarks to be written at finalize time (must arrive before Finalize)
+    /// Supply the *source* document's bookmarks, to be resolved and written at
+    /// finalize time (must arrive before Finalize).
     SetBookmarks {
         bookmarks: Vec<crate::pagerender::OwnedBookmarkNode>,
         /// For reflow: source-page-index → output-page-index mapping. Empty = identity.
         source_to_output: std::collections::HashMap<usize, usize>,
     },
+    /// Supply a synthesized outline, already in output page space. It is used
+    /// only when the source document had no outline that survived remapping.
+    SetSyntheticOutline(Vec<lege_pdf_write::outline::OutlineItem>),
     /// Signal that all pages have been sent and PDF should be finalized
     Finalize,
 }
@@ -1118,6 +1020,19 @@ impl PdfWriterHandle {
                 bookmarks,
                 source_to_output,
             })
+            .await
+            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+        Ok(())
+    }
+
+    /// Send a synthesized outline (output page space). Must be called before
+    /// finalize(). A source outline that resolves takes precedence over this.
+    pub async fn send_synthetic_outline(
+        &self,
+        items: Vec<lege_pdf_write::outline::OutlineItem>,
+    ) -> Result<(), anyhow::Error> {
+        self.sender
+            .send(WriterMessage::SetSyntheticOutline(items))
             .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
@@ -1176,6 +1091,7 @@ pub fn spawn_pdf_writer_actor(
             Vec<crate::pagerender::OwnedBookmarkNode>,
             std::collections::HashMap<usize, usize>,
         )> = None;
+        let mut pending_synthetic: Option<Vec<lege_pdf_write::outline::OutlineItem>> = None;
         let mut do_finalize = false;
 
         crate::info_log!("[PdfWriterActor] Started (lege-pdf-write), waiting for pages...");
@@ -1187,6 +1103,8 @@ pub fn spawn_pdf_writer_actor(
             // is restored by the page tree at finalize.
             match msg {
                 WriterMessage::AppendPage { page, page_index } => {
+                    let _writer_stage =
+                        crate::runtime_stats::enter_stage(crate::runtime_stats::Stage::Writer);
                     let (artifact, globals) =
                         match crate::pdf_artifact::page_to_artifact(&page, embedded_available) {
                             Ok(v) => v,
@@ -1243,6 +1161,9 @@ pub fn spawn_pdf_writer_actor(
                 } => {
                     pending_bookmarks = Some((bookmarks, source_to_output));
                 }
+                WriterMessage::SetSyntheticOutline(items) => {
+                    pending_synthetic = Some(items);
+                }
                 WriterMessage::Finalize => {
                     crate::info_log!(
                         "[PdfWriterActor] Finalize requested, written {} of {} pages",
@@ -1264,8 +1185,19 @@ pub fn spawn_pdf_writer_actor(
 
         // finalize() consumes the writer, so it must happen after the loop.
         if do_finalize {
-            if let Some((bookmarks, source_to_output)) = pending_bookmarks.take() {
-                writer.set_bookmarks(bookmarks_to_outline(&bookmarks, &source_to_output));
+            let _writer_stage =
+                crate::runtime_stats::enter_stage(crate::runtime_stats::Stage::Writer);
+            // Outline precedence is decided here because "did the source outline
+            // survive remapping" is only knowable once the pages are resolved.
+            let source_outline = pending_bookmarks
+                .take()
+                .map(|(bookmarks, source_to_output)| {
+                    bookmarks_to_outline(&bookmarks, &source_to_output)
+                })
+                .unwrap_or_default();
+            let outline = merge_outline(source_outline, pending_synthetic.take());
+            if !outline.is_empty() {
+                writer.set_bookmarks(outline);
             }
             let mut inner = writer
                 .finalize()
@@ -1283,10 +1215,17 @@ pub fn spawn_pdf_writer_actor(
     (handle, task)
 }
 
-/// Resolve pdfium bookmarks (source page indices, optional reflow source→output
-/// map) into writer outline items keyed by output page index. Nodes whose page
-/// cannot be resolved are dropped along with their subtree, matching the prior
-/// behavior.
+/// Resolve document bookmarks (source page indices, optional source→output map)
+/// into writer outline items keyed by output page index.
+///
+/// A node whose page falls outside the run — a page range that cuts a part
+/// heading, or a destination the reader could not resolve — is dropped, but its
+/// resolvable children are promoted into its place instead of disappearing with
+/// it. One unreachable parent must not cost a whole subtree.
+///
+/// Preserved nodes keep the page-level `/Fit` destination. Their `top` is in the
+/// *source* page's user space, and the output page is re-rendered at a different
+/// scale, so reusing it would land somewhere arbitrary.
 fn bookmarks_to_outline(
     nodes: &[crate::pagerender::OwnedBookmarkNode],
     source_to_output: &std::collections::HashMap<usize, usize>,
@@ -1300,14 +1239,32 @@ fn bookmarks_to_outline(
         } else {
             source_to_output.get(&node.source_page).copied()
         };
-        let Some(out_idx) = out_idx else { continue };
-        out.push(lege_pdf_write::outline::OutlineItem {
-            title: node.title.clone(),
-            page_index: out_idx as u32,
-            children: bookmarks_to_outline(&node.children, source_to_output),
-        });
+        let children = bookmarks_to_outline(&node.children, source_to_output);
+        match out_idx {
+            Some(out_idx) => out.push(lege_pdf_write::outline::OutlineItem {
+                title: node.title.clone(),
+                page_index: out_idx as u32,
+                top: None,
+                children,
+            }),
+            None => out.extend(children),
+        }
     }
     out
+}
+
+/// Outline precedence. An author's outline is ground truth: when it resolves to
+/// at least one page it wins outright, and nothing is synthesized. A synthesized
+/// outline only ever fills a gap, so the feature's failure mode is absence.
+fn merge_outline(
+    source: Vec<lege_pdf_write::outline::OutlineItem>,
+    synthetic: Option<Vec<lege_pdf_write::outline::OutlineItem>>,
+) -> Vec<lege_pdf_write::outline::OutlineItem> {
+    if source.is_empty() {
+        synthetic.unwrap_or_default()
+    } else {
+        source
+    }
 }
 
 #[cfg(test)]
@@ -1316,8 +1273,8 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::{
-        PdfWriterHandle, WriterMessage, drain_ready_values, should_preserve_cover_page,
-        should_treat_as_cover_page,
+        PdfWriterHandle, WriterMessage, bookmarks_to_outline, drain_ready_values, merge_outline,
+        should_preserve_cover_page, should_treat_as_cover_page,
     };
     use crate::pipeline::config::{PageRange, PipelineConfig};
     use crate::types::CoverFormat;
@@ -1331,6 +1288,87 @@ mod tests {
             index,
             binarized: None,
         }
+    }
+
+    fn node(
+        title: &str,
+        source_page: usize,
+        children: Vec<crate::pagerender::OwnedBookmarkNode>,
+    ) -> crate::pagerender::OwnedBookmarkNode {
+        crate::pagerender::OwnedBookmarkNode {
+            title: title.to_string(),
+            source_page,
+            top: None,
+            children,
+        }
+    }
+
+    fn item(title: &str, page_index: u32) -> lege_pdf_write::outline::OutlineItem {
+        lege_pdf_write::outline::OutlineItem {
+            title: title.to_string(),
+            page_index,
+            top: None,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_source_outline_beats_a_synthesized_one() {
+        let merged = merge_outline(
+            vec![item("Preface", 0), item("Chapter I", 4)],
+            Some(vec![item("Synthesized", 2)]),
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].title, "Preface");
+    }
+
+    #[test]
+    fn a_synthesized_outline_fills_the_gap_and_nothing_fills_neither() {
+        let merged = merge_outline(Vec::new(), Some(vec![item("Chapter I", 3)]));
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].title, "Chapter I");
+
+        assert!(merge_outline(Vec::new(), None).is_empty());
+        assert!(merge_outline(Vec::new(), Some(Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn a_page_range_shifts_indexes_and_promotes_orphaned_children() {
+        // Pages 10..14 of the source become output pages 0..4. The part heading
+        // on source page 3 falls outside the run; its chapters must survive.
+        let map: std::collections::HashMap<usize, usize> =
+            (10..14).enumerate().map(|(out, src)| (src, out)).collect();
+        let bookmarks = vec![node(
+            "Part One",
+            3,
+            vec![
+                node("Chapter I", 10, vec![]),
+                node("Chapter II", 12, vec![]),
+            ],
+        )];
+
+        let outline = bookmarks_to_outline(&bookmarks, &map);
+
+        assert_eq!(
+            outline.len(),
+            2,
+            "the unreachable parent does not take its children with it"
+        );
+        assert_eq!(outline[0].title, "Chapter I");
+        assert_eq!(outline[0].page_index, 0);
+        assert_eq!(outline[1].page_index, 2);
+        assert!(outline[0].top.is_none(), "preserved nodes keep /Fit");
+    }
+
+    #[test]
+    fn a_full_document_run_maps_source_pages_through_unchanged() {
+        let outline = bookmarks_to_outline(
+            &[node("Chapter I", 7, vec![node("Section 1.1", 9, vec![])])],
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(outline.len(), 1);
+        assert_eq!(outline[0].page_index, 7);
+        assert_eq!(outline[0].children[0].page_index, 9);
     }
 
     #[test]

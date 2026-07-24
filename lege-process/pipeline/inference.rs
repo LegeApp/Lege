@@ -1,156 +1,179 @@
-// inference.rs
+// GPU layout inference session pool.
+//
+// Each LayoutEngine/CompiledGraph remains single-flight because it owns
+// activation and readback buffers. The pool creates K sibling sessions on the
+// process-wide shared WGPU device and checks one out per page. This removes the
+// serial InferenceActor and its image-cloning batch path while allowing pages
+// to overlap until the GPU saturates.
 
 use crate::engine::{Detection, LayoutEngine, LayoutEngineConfig};
 use crate::pipeline::config::PipelineConfig;
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use image::RgbImage;
-use log::{error, info};
+use log::info;
+use parking_lot::Mutex;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, oneshot};
 
-const DEFAULT_MAX_BATCH_SIZE: usize = 16;
-const DEFAULT_BATCH_TIMEOUT_MS: u64 = 10;
+const DEFAULT_GPU_SESSIONS: usize = 2;
+const MIN_GPU_SESSIONS: usize = 2;
+const MAX_GPU_SESSIONS: usize = 4;
+const DEFAULT_VRAM_BUDGET_MB: usize = 2 * 1024;
+// Conservative admission estimate for one PP-DocLayout-M inference. Resident
+// session buffers are allocated at pool creation; this covers transient
+// command/readback/input pressure while a checked-out session is in flight.
+const SESSION_TRANSIENT_MB: usize = 384;
 
-pub struct InferenceJob {
-    pub page_index: usize,
-    pub image: Arc<RgbImage>,
-    pub response_tx: oneshot::Sender<Result<Vec<Detection>>>,
+struct SessionPool {
+    sessions: Mutex<Vec<LayoutEngine>>,
+    available: Arc<Semaphore>,
+    vram: Arc<Semaphore>,
+    vram_budget_mb: usize,
+    session_count: usize,
 }
 
-/// Fire-and-forget job - results sent back via callback channel
-pub struct InferenceJobAsync {
-    pub page_index: usize,
-    pub image: Arc<RgbImage>,
-    pub result_tx: mpsc::Sender<(usize, Result<Vec<Detection>>)>,
-}
-
-pub struct InferenceActor {
-    receiver: mpsc::Receiver<InferenceJob>,
-    engine: LayoutEngine,
-    max_batch_size: usize,
-    batch_timeout_ms: u64,
-    initial_single_pages: usize,
-}
-
-impl InferenceActor {
-    fn new(receiver: mpsc::Receiver<InferenceJob>, config: &PipelineConfig) -> Result<Self> {
+impl SessionPool {
+    fn new(config: &PipelineConfig) -> Result<Self> {
         let engine_config = LayoutEngineConfig {
             confidence_threshold: config.confidence_threshold(),
             nms_threshold: config.nms_threshold(),
             iou_threshold: config.nms_threshold(),
-            batch_size: config.batch_size(),
+            batch_size: 1,
         };
 
-        let max_batch_size = config
-            .max_inference_batch_size()
-            .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
-        let batch_timeout_ms = config.batch_timeout_ms().min(DEFAULT_BATCH_TIMEOUT_MS); // Cap at 10ms
-        let initial_single_pages = config.initial_single_pages();
+        let requested_sessions = std::env::var("LEGE_GPU_SESSIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_GPU_SESSIONS)
+            .clamp(MIN_GPU_SESSIONS, MAX_GPU_SESSIONS);
+        let vram_budget_mb = std::env::var("LEGE_VRAM_BUDGET_MB")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_VRAM_BUDGET_MB)
+            .max(1);
+
+        // Do not construct more resident sessions than the configured VRAM
+        // budget can plausibly support. A deliberately tiny budget may reduce
+        // the pool to one session instead of failing initialization.
+        let budget_sessions = (vram_budget_mb / SESSION_TRANSIENT_MB).max(1);
+        let session_count = requested_sessions.min(budget_sessions);
 
         info!(
-            "InferenceActor: Creating LayoutEngine with model: {}",
-            config.model_path()
+            "InferenceSessionPool: creating {} session(s), VRAM budget={} MiB",
+            session_count, vram_budget_mb
         );
+        let first = LayoutEngine::new(config.model_path(), engine_config)
+            .context("failed to create the first layout inference session")?;
+        let provider = first.provider_name().to_string();
+        let mut sessions = Vec::with_capacity(session_count);
+        sessions.push(first);
+        while sessions.len() < session_count {
+            let sibling = sessions[0]
+                .build_sibling()
+                .with_context(|| format!("failed to create layout session {}", sessions.len()))?;
+            sessions.push(sibling);
+        }
         info!(
-            "InferenceActor: Max batch size: {}, timeout: {}ms",
-            max_batch_size, batch_timeout_ms
+            "InferenceSessionPool: initialized {} {} session(s) on the shared device",
+            sessions.len(),
+            provider
         );
 
-        let engine = LayoutEngine::new(config.model_path(), engine_config)?;
-        info!(
-            "InferenceActor: Engine initialized with {}",
-            engine.provider_name()
-        );
-
-        Ok(InferenceActor {
-            receiver,
-            engine,
-            max_batch_size,
-            batch_timeout_ms,
-            initial_single_pages,
+        Ok(Self {
+            sessions: Mutex::new(sessions),
+            available: Arc::new(Semaphore::new(session_count)),
+            vram: Arc::new(Semaphore::new(vram_budget_mb)),
+            vram_budget_mb,
+            session_count,
         })
     }
 
-    /// Main run loop for the resident WGPU layout detector.
-    fn run(mut self) {
-        info!("InferenceActor: Starting inference loop");
+    fn transient_mb_for(image: &RgbImage) -> usize {
+        let input_bytes = (image.width() as usize)
+            .saturating_mul(image.height() as usize)
+            .saturating_mul(3);
+        SESSION_TRANSIENT_MB.saturating_add(input_bytes.div_ceil(1024 * 1024))
+    }
 
-        let mut processed_count: usize = 0;
+    fn run(&self, image: &RgbImage) -> Result<Vec<Detection>> {
+        let mut engine = self
+            .sessions
+            .lock()
+            .pop()
+            .expect("session semaphore granted a permit without an engine");
+        let result = catch_unwind(AssertUnwindSafe(|| engine.detect_single_blocking(image)))
+            .unwrap_or_else(|payload| {
+                Err(anyhow!(
+                    "layout inference panicked: {}",
+                    panic_payload_message(payload)
+                ))
+            });
+        self.sessions.lock().push(engine);
+        result
+    }
+}
 
-        loop {
-            let first_job = match self.receiver.blocking_recv() {
-                Some(job) => job,
-                None => break,
-            };
+#[derive(Clone)]
+pub struct InferenceHandle {
+    pool: Arc<SessionPool>,
+}
 
-            let mut jobs = vec![first_job];
+impl InferenceHandle {
+    pub fn new(config: &PipelineConfig) -> Result<Self> {
+        Ok(Self {
+            pool: Arc::new(SessionPool::new(config)?),
+        })
+    }
 
-            if processed_count >= self.initial_single_pages && self.max_batch_size > 1 {
-                let deadline = Instant::now() + Duration::from_millis(self.batch_timeout_ms);
+    /// Check out one GPU session and run a single page. Permit order is VRAM
+    /// first, then session, matching the global byte-before-GPU ordering rule.
+    pub async fn detect(&self, page_index: usize, image: Arc<RgbImage>) -> Result<Vec<Detection>> {
+        let requested_mb =
+            SessionPool::transient_mb_for(&image).min(self.pool.vram_budget_mb) as u32;
+        let _vram = Arc::clone(&self.pool.vram)
+            .acquire_many_owned(requested_mb.max(1))
+            .await
+            .map_err(|_| anyhow!("layout VRAM admission semaphore closed"))?;
+        let _session = Arc::clone(&self.pool.available)
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("layout inference session pool closed"))?;
 
-                while jobs.len() < self.max_batch_size && Instant::now() < deadline {
-                    match self.receiver.try_recv() {
-                        Ok(job) => jobs.push(job),
-                        Err(_) => {
-                            std::thread::sleep(Duration::from_micros(500));
-                        }
-                    }
-                }
-            }
+        let pool = Arc::clone(&self.pool);
+        crate::runtime_stats::spawn_blocking_stage(
+            crate::runtime_stats::Stage::Inference,
+            move || {
+                pool.run(&image)
+                    .with_context(|| format!("layout inference failed on page {page_index}"))
+            },
+        )
+        .await
+        .map_err(|error| anyhow!("layout inference worker panicked: {error}"))?
+    }
 
-            let batch_size = jobs.len();
+    /// Compatibility seam for existing page-job code. Unlike the removed
+    /// actor, this only spawns a lightweight waiter; GPU execution happens in
+    /// the checked-out session pool.
+    pub async fn submit(
+        &self,
+        page_index: usize,
+        image: Arc<RgbImage>,
+    ) -> Result<oneshot::Receiver<Result<Vec<Detection>>>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let handle = self.clone();
+        tokio::spawn(async move {
+            let _ = response_tx.send(handle.detect(page_index, image).await);
+        });
+        Ok(response_rx)
+    }
 
-            if batch_size == 1 {
-                let job = jobs.pop().unwrap();
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    self.engine.detect_single_blocking(&job.image)
-                }))
-                .unwrap_or_else(|payload| {
-                    Err(anyhow::anyhow!(
-                        "layout inference panicked: {}",
-                        panic_payload_message(payload)
-                    ))
-                });
-                let _ = job.response_tx.send(result);
-            } else {
-                let images: Vec<RgbImage> = jobs.iter().map(|j| (*j.image).clone()).collect();
-                let indices: Vec<usize> = (0..images.len()).collect();
+    pub fn has_capacity(&self) -> bool {
+        self.pool.available.available_permits() > 0
+    }
 
-                let batch_result = catch_unwind(AssertUnwindSafe(|| {
-                    self.engine
-                        .detect_batch_with_indices_blocking(&images, &indices)
-                }))
-                .unwrap_or_else(|payload| {
-                    Err(anyhow::anyhow!(
-                        "layout inference panicked: {}",
-                        panic_payload_message(payload)
-                    ))
-                });
-
-                match batch_result {
-                    Ok(results) => {
-                        for (job, detections) in jobs.into_iter().zip(results) {
-                            let _ = job.response_tx.send(Ok(detections));
-                        }
-                    }
-                    Err(e) => {
-                        let msg = format!("Batch inference failed: {}", e);
-                        for job in jobs {
-                            let _ = job.response_tx.send(Err(anyhow::anyhow!("{}", msg)));
-                        }
-                    }
-                }
-            }
-
-            processed_count += batch_size;
-        }
-
-        info!(
-            "InferenceActor: Shutting down after {} pages",
-            processed_count
-        );
+    pub fn session_count(&self) -> usize {
+        self.pool.session_count
     }
 }
 
@@ -170,154 +193,4 @@ pub fn is_layout_software_adapter_error(error: &(dyn std::error::Error + 'static
 
 pub fn is_gpu_device_error(error: &(dyn std::error::Error + 'static)) -> bool {
     lege_gpu::vision::is_layout_gpu_device_error(error)
-}
-
-#[derive(Clone)]
-pub struct InferenceHandle {
-    sender: mpsc::Sender<InferenceJob>,
-}
-
-impl InferenceHandle {
-    pub fn new(config: &PipelineConfig) -> Result<Self> {
-        // Larger buffer for better throughput
-        let (sender, receiver) = mpsc::channel(256);
-        let config_clone = config.clone();
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
-
-        std::thread::Builder::new()
-            .name("inference-actor".to_string())
-            .spawn(move || match InferenceActor::new(receiver, &config_clone) {
-                Ok(actor) => {
-                    let _ = ready_tx.send(Ok(()));
-                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| actor.run())) {
-                        error!(
-                            "InferenceActor panicked: {}",
-                            panic_payload_message(payload)
-                        );
-                    }
-                }
-                Err(e) => {
-                    error!("InferenceActor failed to initialize: {}", e);
-                    crate::warn_log!("InferenceActor failed to initialize: {}", e);
-                    let _ = ready_tx.send(Err(anyhow::anyhow!(
-                        "InferenceActor failed to initialize: {}",
-                        e
-                    )));
-                }
-            })?;
-
-        ready_rx
-            .recv()
-            .map_err(|_| anyhow::anyhow!("Inference actor startup handshake failed"))??;
-
-        info!("InferenceHandle: Actor thread spawned (buffer: 256)");
-        Ok(Self { sender })
-    }
-
-    /// Standard detect - waits for result
-    pub async fn detect(&self, page_index: usize, image: Arc<RgbImage>) -> Result<Vec<Detection>> {
-        let (response_tx, response_rx) = oneshot::channel();
-        let job = InferenceJob {
-            page_index,
-            image,
-            response_tx,
-        };
-
-        self.sender
-            .send(job)
-            .await
-            .map_err(|_| anyhow::anyhow!("Inference actor channel closed"))?;
-
-        response_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("Inference actor dropped response"))?
-    }
-
-    /// Fire-and-forget - submits job without waiting
-    /// Useful when caller wants to overlap inference with other work
-    pub async fn submit(
-        &self,
-        page_index: usize,
-        image: Arc<RgbImage>,
-    ) -> Result<oneshot::Receiver<Result<Vec<Detection>>>> {
-        let (response_tx, response_rx) = oneshot::channel();
-        let job = InferenceJob {
-            page_index,
-            image,
-            response_tx,
-        };
-
-        self.sender
-            .send(job)
-            .await
-            .map_err(|_| anyhow::anyhow!("Inference actor channel closed"))?;
-
-        Ok(response_rx)
-    }
-
-    /// Check if the channel has capacity (non-blocking)
-    pub fn has_capacity(&self) -> bool {
-        self.sender.capacity() > 0
-    }
-}
-
-//==============================================================================
-// Alternative: multi-worker inference pool
-//==============================================================================
-
-/// Each worker owns an engine instance. The main pipeline currently uses the
-/// single actor so one resident WGPU graph serializes GPU access.
-pub struct InferencePool {
-    senders: Vec<mpsc::Sender<InferenceJob>>,
-    next_worker: std::sync::atomic::AtomicUsize,
-}
-
-impl InferencePool {
-    pub fn new(config: &PipelineConfig, num_workers: usize) -> Result<Self> {
-        let mut senders = Vec::with_capacity(num_workers);
-
-        for i in 0..num_workers {
-            let (sender, receiver) = mpsc::channel(64);
-            let config_clone = config.clone();
-
-            std::thread::Builder::new()
-                .name(format!("inference-worker-{}", i))
-                .spawn(move || match InferenceActor::new(receiver, &config_clone) {
-                    Ok(actor) => actor.run(),
-                    Err(e) => error!("InferenceWorker {} failed: {}", i, e),
-                })?;
-
-            senders.push(sender);
-        }
-
-        info!("InferencePool: Created {} workers", num_workers);
-        Ok(Self {
-            senders,
-            next_worker: std::sync::atomic::AtomicUsize::new(0),
-        })
-    }
-
-    /// Round-robin job distribution
-    pub async fn detect(&self, page_index: usize, image: Arc<RgbImage>) -> Result<Vec<Detection>> {
-        let worker_idx = self
-            .next_worker
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % self.senders.len();
-
-        let (response_tx, response_rx) = oneshot::channel();
-        let job = InferenceJob {
-            page_index,
-            image,
-            response_tx,
-        };
-
-        self.senders[worker_idx]
-            .send(job)
-            .await
-            .map_err(|_| anyhow::anyhow!("Inference worker {} closed", worker_idx))?;
-
-        response_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("Inference worker dropped response"))?
-    }
 }
