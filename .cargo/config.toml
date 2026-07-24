@@ -30,5 +30,5 @@ djvu = "build --manifest-path lege-codecs/djvulibrust/Cargo.toml --features cli 
 ecosystem-check = "check --workspace"
 build-debug-logging = "build --package lege --bin lege --profile debug-fast --features debug-logging"
 run-debug-logging = "run --package lege --bin lege --profile debug-fast --features debug-logging --"
-music-sheet = "build --release --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"
+music-sheet = "build --release --target-dir target/music-sheet --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"
 music-sheet-check = "check --no-default-features --features lege/music-sheet --package lege --package lege-music-gui"

@@ -94,7 +94,7 @@ fn build_raster_reflow_config(
 /// original rendered source page and resizing it onto a white canvas.
 fn compose_reflow_page_raster(
     page: &crate::reflow::ReflowPage,
-    sources: &[crate::reflow::SourcePageImage],
+    sources: &crate::reflow::SourcePageSet,
     reflow_cfg: &crate::reflow::RasterReflowConfig,
 ) -> RgbImage {
     let mut canvas = RgbImage::from_pixel(
@@ -190,22 +190,249 @@ fn binarized_reflow_text_crop(
     rgb
 }
 
-/// Shared render+detect+reflow setup used by both the PDF and DJVU reflow variants.
+/// How many source pages the compose pass may hold at one time. An output page
+/// normally draws from one or two source pages, so a small window keeps every
+/// page it needs resident and still bounds memory to a constant.
+const SOURCE_PAGE_WINDOW: usize = 4;
+
+/// Number of pages the body-height calibration samples across the document.
+const BODY_HEIGHT_SAMPLES: usize = 24;
+
+/// One analyzed source page: the grayscale render plus the layout hints. This
+/// is what the analysis passes keep; the RGB render is dropped at once because
+/// only the compose pass reads color.
+struct AnalyzedPage {
+    page: crate::reflow::SourcePageImage,
+    hints: Vec<crate::engine::Detection>,
+}
+
+/// The reflow plan: the calibrated config and the paginated document. It holds
+/// rectangles only, never pixels, so it is small for any document size.
+struct ReflowPlan {
+    cfg: crate::reflow::RasterReflowConfig,
+    doc: crate::reflow::ReflowDocument,
+    total_source_pages: usize,
+}
+
+fn cancelled_if_signalled(
+    shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+) -> Result<()> {
+    if let Ok(signal) = shutdown_rx.try_recv() {
+        return Err(anyhow!(
+            "Processing cancelled: {}",
+            signal
+                .message
+                .unwrap_or_else(|| "User requested cancellation".to_string())
+        ));
+    }
+    Ok(())
+}
+
+/// Render one source page, run layout detection on it, and map the detections
+/// into page space. `want_rgb` keeps the color render for the compose pass;
+/// the analysis passes set it to `false` and keep the grayscale plane only.
+async fn analyze_source_page(
+    source: &Arc<dyn PageSource>,
+    inference: Option<(
+        &crate::pipeline::inference::InferenceHandle,
+        &crate::pipeline::policies::InferenceResizeSpec,
+    )>,
+    page_index: usize,
+    local_index: usize,
+    want_rgb: bool,
+) -> Result<AnalyzedPage> {
+    let crate::pipeline::source::SourcePage {
+        image,
+        original_width_pts,
+        original_height_pts,
+    } = source.load_page(page_index).await?;
+
+    crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
+    let render_dpi = (image.width() as f32 / original_width_pts.max(1.0)) * 72.0;
+    let high_res = Arc::new(image);
+
+    let mut hints = Vec::new();
+    if let Some((inference_handle, spec)) = inference {
+        let inference_image = Arc::new(
+            build_inference_image(&high_res, spec).unwrap_or_else(|_| (*high_res).clone()),
+        );
+        hints = inference_handle
+            .detect(page_index, inference_image)
+            .await
+            .unwrap_or_else(|e| {
+                warn_log!(
+                    "[Reflow] Page {}: layout detection failed: {}",
+                    page_index,
+                    e
+                );
+                Vec::new()
+            });
+        let (page_w, page_h) = (high_res.width(), high_res.height());
+        for det in hints.iter_mut() {
+            if crate::pipeline::policies::is_in_inference_space(&det.bbox, spec) {
+                det.bbox = crate::pipeline::policies::map_bbox_infer_to_page(
+                    det.bbox, page_w, page_h, spec,
+                );
+            }
+        }
+    }
+
+    let gray = image::imageops::grayscale(high_res.as_ref());
+    // The page Arc is uniquely held here, so reclaim the RGB buffer instead of a
+    // whole-page deep clone (Phase 8 reflow memory reduction).
+    let rgb = if want_rgb {
+        Some(match Arc::try_unwrap(high_res) {
+            Ok(image) => image,
+            Err(shared) => (*shared).clone(),
+        })
+    } else {
+        drop(high_res);
+        None
+    };
+
+    Ok(AnalyzedPage {
+        page: crate::reflow::SourcePageImage {
+            page_index: local_index,
+            gray,
+            rgb,
+            render_dpi,
+            page_pts: (original_width_pts, original_height_pts),
+        },
+        hints,
+    })
+}
+
+/// A bounded window of loaded source pages for the compose pass.
 ///
-/// Validates layout detection is enabled, renders all source pages, runs YOLO
-/// layout detection, calibrates the reflow config, and runs `reflow_document`.
-/// Returns the rendered source pages, the calibrated config, and the reflow plan.
-async fn render_detect_and_reflow(
+/// Output pages are produced in reading order, so consecutive output pages ask
+/// for the same or the next source page. Keeping the last few pages therefore
+/// re-renders each source page about one time while the resident set stays at
+/// `capacity` pages instead of the whole document.
+struct SourcePageWindow {
+    source: Arc<dyn PageSource>,
+    page_start: usize,
+    /// Source pages that carry a figure or table placement somewhere in the
+    /// document. Only these need their color render kept.
+    color_pages: std::collections::HashSet<usize>,
+    capacity: usize,
+    /// Least-recently-used order; the front is the next eviction candidate.
+    order: std::collections::VecDeque<usize>,
+    pages: std::collections::HashMap<usize, Arc<crate::reflow::SourcePageImage>>,
+    renders: usize,
+}
+
+impl SourcePageWindow {
+    fn new(
+        source: Arc<dyn PageSource>,
+        page_start: usize,
+        doc: &crate::reflow::ReflowDocument,
+    ) -> Self {
+        let mut color_pages = std::collections::HashSet::new();
+        for page in &doc.pages {
+            for item in &page.items {
+                if matches!(
+                    item.kind,
+                    crate::reflow::PlacedKind::Figure | crate::reflow::PlacedKind::Table
+                ) {
+                    color_pages.insert(item.src.page_index);
+                }
+            }
+        }
+        Self {
+            source,
+            page_start,
+            color_pages,
+            capacity: SOURCE_PAGE_WINDOW,
+            order: std::collections::VecDeque::new(),
+            pages: std::collections::HashMap::new(),
+            renders: 0,
+        }
+    }
+
+    fn touch(&mut self, local_index: usize) {
+        if let Some(pos) = self.order.iter().position(|&i| i == local_index) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(local_index);
+    }
+
+    /// Drop least-recently-used pages until the window fits, never dropping a
+    /// page the current output page still needs.
+    fn evict_down_to(&mut self, keep: &std::collections::BTreeSet<usize>) {
+        let limit = self.capacity.max(keep.len());
+        let mut retained: std::collections::VecDeque<usize> =
+            std::collections::VecDeque::with_capacity(self.order.len());
+        while self.pages.len() > limit {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if keep.contains(&oldest) {
+                retained.push_back(oldest);
+                continue;
+            }
+            self.pages.remove(&oldest);
+        }
+        while let Some(index) = retained.pop_back() {
+            self.order.push_front(index);
+        }
+    }
+
+    /// Make every page in `needed` resident and return them as a set.
+    async fn load(
+        &mut self,
+        needed: &std::collections::BTreeSet<usize>,
+    ) -> Result<crate::reflow::SourcePageSet> {
+        for &local_index in needed {
+            if !self.pages.contains_key(&local_index) {
+                let analyzed = analyze_source_page(
+                    &self.source,
+                    None,
+                    self.page_start + local_index,
+                    local_index,
+                    self.color_pages.contains(&local_index),
+                )
+                .await?;
+                self.renders += 1;
+                self.pages.insert(local_index, Arc::new(analyzed.page));
+            }
+            self.touch(local_index);
+        }
+        self.evict_down_to(needed);
+
+        let mut set = crate::reflow::SourcePageSet::new();
+        for &local_index in needed {
+            if let Some(page) = self.pages.get(&local_index) {
+                set.insert(Arc::clone(page));
+            }
+        }
+        Ok(set)
+    }
+}
+
+/// Source pages one output page draws from, in ascending order.
+fn source_pages_for(page: &crate::reflow::ReflowPage) -> std::collections::BTreeSet<usize> {
+    page.items.iter().map(|item| item.src.page_index).collect()
+}
+
+/// Shared analysis+plan setup used by both the PDF and DJVU reflow variants.
+///
+/// This is the analysis half of the two-pass reflow design. It never holds more
+/// than one source page at a time:
+///
+/// 1. Calibration pass — render the sampled pages, measure the document body
+///    text height, and build the calibrated config.
+/// 2. Flow pass — render every page once more, extract its reading-order flow,
+///    and drop the pixels. The flow holds rectangles only.
+///
+/// Composition is the second half and streams the source pages again through a
+/// bounded window (see [`SourcePageWindow`]).
+async fn analyze_and_plan(
     source: &Arc<dyn PageSource>,
     config: &Arc<PipelineConfig>,
     page_range: &Option<std::ops::Range<usize>>,
     progress_tracker: &ProgressTracker,
     shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
-) -> Result<(
-    Vec<crate::reflow::SourcePageImage>,
-    crate::reflow::RasterReflowConfig,
-    crate::reflow::ReflowDocument,
-)> {
+) -> Result<ReflowPlan> {
     if !config.enable_layout_detection() {
         return Err(anyhow!(
             "Raster reflow requires layout detection; it cannot run with layout detection disabled"
@@ -223,91 +450,57 @@ async fn render_detect_and_reflow(
     }
 
     info_log!(
-        "[Reflow] Rendering and detecting layout for {} source pages",
+        "[Reflow] Analyzing {} source pages (bounded two-pass)",
         total_source_pages
     );
 
     let spec = config.inference_resize_spec();
-    let mut source_pages: Vec<crate::reflow::SourcePageImage> =
-        Vec::with_capacity(total_source_pages);
-    let mut hints_per_page: Vec<Vec<crate::engine::Detection>> =
-        Vec::with_capacity(total_source_pages);
+    let sample_step =
+        crate::reflow::body_height_sample_step(total_source_pages, BODY_HEIGHT_SAMPLES);
+    let sample_indices: Vec<usize> = (0..total_source_pages).step_by(sample_step).collect();
+    // The analysis passes report one progress unit per rendered page.
+    let analysis_units = sample_indices.len() + total_source_pages;
+    let mut analysis_done = 0usize;
 
-    for page_index in page_start..page_end {
-        if let Ok(signal) = shutdown_rx.try_recv() {
-            return Err(anyhow!(
-                "Processing cancelled: {}",
-                signal
-                    .message
-                    .unwrap_or_else(|| "User requested cancellation".to_string())
-            ));
+    // Pass 1: calibration samples.
+    let mut reflow_cfg: Option<crate::reflow::RasterReflowConfig> = None;
+    let mut body_samples: Vec<u32> = Vec::with_capacity(sample_indices.len());
+    let mut sampled_heights: Vec<u32> = Vec::with_capacity(sample_indices.len());
+    for &local_index in &sample_indices {
+        cancelled_if_signalled(shutdown_rx)?;
+        let analyzed = analyze_source_page(
+            source,
+            Some((&inference_handle, &spec)),
+            page_start + local_index,
+            local_index,
+            false,
+        )
+        .await?;
+        let cfg =
+            reflow_cfg.get_or_insert_with(|| build_raster_reflow_config(config, &analyzed.page));
+        sampled_heights.push(analyzed.page.gray.height());
+        if cfg.text_magnification > 0.0
+            && let Some(body) =
+                crate::reflow::estimate_page_body_height(&analyzed.page, &analyzed.hints, cfg)
+        {
+            body_samples.push(body);
         }
-
-        let crate::pipeline::source::SourcePage {
-            image,
-            original_width_pts,
-            original_height_pts,
-        } = source.load_page(page_index).await?;
-
-        crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
-        let render_dpi = (image.width() as f32 / original_width_pts.max(1.0)) * 72.0;
-        let high_res = Arc::new(image);
-
-        let inference_image = Arc::new(
-            build_inference_image(&high_res, &spec).unwrap_or_else(|_| (*high_res).clone()),
-        );
-        let mut detections = inference_handle
-            .detect(page_index, inference_image)
-            .await
-            .unwrap_or_else(|e| {
-                warn_log!(
-                    "[Reflow] Page {}: layout detection failed: {}",
-                    page_index,
-                    e
-                );
-                Vec::new()
-            });
-        let (page_w, page_h) = (high_res.width(), high_res.height());
-        for det in detections.iter_mut() {
-            if crate::pipeline::policies::is_in_inference_space(&det.bbox, &spec) {
-                det.bbox = crate::pipeline::policies::map_bbox_infer_to_page(
-                    det.bbox, page_w, page_h, &spec,
-                );
-            }
-        }
-
-        let local_index = page_index - page_start;
-        let gray = image::imageops::grayscale(high_res.as_ref());
-        source_pages.push(crate::reflow::SourcePageImage {
-            page_index: local_index,
-            gray,
-            rgb: Some((*high_res).clone()),
-            render_dpi,
-            page_pts: (original_width_pts, original_height_pts),
-        });
-        hints_per_page.push(detections);
-
-        let done = local_index + 1;
+        analysis_done += 1;
         progress_tracker.publish_reflow_progress(
             ReflowStage::SourceAnalysis,
-            done,
-            total_source_pages,
+            analysis_done,
+            analysis_units,
         );
     }
 
-    let mut reflow_cfg = build_raster_reflow_config(config, &source_pages[0]);
+    let mut reflow_cfg =
+        reflow_cfg.ok_or_else(|| anyhow!("Raster reflow: no source page could be analyzed"))?;
 
     // Adaptive target text height calibration
     if reflow_cfg.text_magnification > 0.0 {
-        if let Some(body_src) = crate::reflow::estimate_document_body_height(
-            &source_pages,
-            &hints_per_page,
-            &reflow_cfg,
-            24,
-        ) {
-            let mut src_heights: Vec<u32> = source_pages.iter().map(|p| p.gray.height()).collect();
-            src_heights.sort_unstable();
-            let src_page_h = src_heights[src_heights.len() / 2].max(1);
+        if let Some(body_src) = crate::reflow::combine_body_height_samples(body_samples) {
+            sampled_heights.sort_unstable();
+            let src_page_h = sampled_heights[sampled_heights.len() / 2].max(1);
             let raw =
                 reflow_cfg.text_magnification * (reflow_cfg.page_height as f32) * (body_src as f32)
                     / (src_page_h as f32);
@@ -337,29 +530,62 @@ async fn render_detect_and_reflow(
         .validate()
         .map_err(|e| anyhow!("Raster reflow configuration is invalid: {}", e))?;
 
+    // Pass 2: per-page reading-order flow. Only the flow survives each page.
+    let mut full_flow: Vec<crate::reflow::FlowItem> = Vec::new();
+    let mut confidence: Vec<crate::reflow::ReflowConfidence> =
+        Vec::with_capacity(total_source_pages);
+    for local_index in 0..total_source_pages {
+        cancelled_if_signalled(shutdown_rx)?;
+        let analyzed = analyze_source_page(
+            source,
+            Some((&inference_handle, &spec)),
+            page_start + local_index,
+            local_index,
+            false,
+        )
+        .await?;
+        let (flow, conf) =
+            crate::reflow::reflow_page_flow(&analyzed.page, &analyzed.hints, &reflow_cfg);
+        full_flow.extend(flow);
+        // Source-page boundary is a safe break between flows.
+        full_flow.push(crate::reflow::FlowItem::RegionBreak);
+        confidence.push(conf);
+
+        analysis_done += 1;
+        progress_tracker.publish_reflow_progress(
+            ReflowStage::SourceAnalysis,
+            analysis_done,
+            analysis_units,
+        );
+    }
+
     info_log!(
         "[Reflow] Composing {} source pages onto a {}x{} canvas",
-        source_pages.len(),
+        total_source_pages,
         reflow_cfg.page_width,
         reflow_cfg.page_height
     );
     progress_tracker.update(crate::progress::ProcessingStatus::ReflowProgress {
         stage: ReflowStage::Compose,
-        current: source_pages.len(),
-        total: source_pages.len(),
+        current: total_source_pages,
+        total: total_source_pages,
         eta: None,
     });
-    let doc = crate::reflow::reflow_document(&source_pages, &hints_per_page, &reflow_cfg);
+    let doc = crate::reflow::paginate_document_flow(full_flow, confidence, &reflow_cfg);
     if doc.pages.is_empty() {
         return Err(anyhow!("Raster reflow produced no output pages"));
     }
     info_log!(
         "[Reflow] Reflowed {} source pages into {} output pages",
-        source_pages.len(),
+        total_source_pages,
         doc.pages.len()
     );
 
-    Ok((source_pages, reflow_cfg, doc))
+    Ok(ReflowPlan {
+        cfg: reflow_cfg,
+        doc,
+        total_source_pages,
+    })
 }
 
 /// Whole-document batch path used when [`PipelineConfig::enable_reflow`] is set.
@@ -368,7 +594,7 @@ async fn render_detect_and_reflow(
 /// be written, so it cannot stream page-by-page like
 /// [`crate::pipeline::pdf_tokio_pipeline::create_and_run_pdf_source_pipeline`].
 /// This renders every source page and runs layout detection up front
-/// (sequentially — `PdfiumPageSource` only supports `source_concurrency() == 1`
+/// (concurrently, bounded by the PDF source's advertised source concurrency,
 /// anyway), builds the reflow plan via [`crate::reflow::reflow_document`], then
 /// rasterizes, encodes and writes each output page through the same RGB-capable
 /// encoder / writer-actor path the streaming pipeline uses.
@@ -386,7 +612,11 @@ pub(crate) async fn run_raster_reflow_pipeline(
     let runtime_limits = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(runtime_limits.page_workers);
 
-    let (source_pages, reflow_cfg, doc) = render_detect_and_reflow(
+    let ReflowPlan {
+        cfg: reflow_cfg,
+        doc,
+        total_source_pages,
+    } = analyze_and_plan(
         &source,
         &config,
         &page_range,
@@ -394,6 +624,8 @@ pub(crate) async fn run_raster_reflow_pipeline(
         &mut shutdown_rx,
     )
     .await?;
+    let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
+    let mut window = SourcePageWindow::new(source.clone(), page_start, &doc);
 
     let total_out_pages = doc.pages.len();
     progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, 0, total_out_pages);
@@ -417,6 +649,8 @@ pub(crate) async fn run_raster_reflow_pipeline(
             ));
         }
 
+        // Load only the source pages this output page draws from, then compose.
+        let source_pages = window.load(&source_pages_for(reflow_page)).await?;
         let canvas = Arc::new(compose_reflow_page_raster(
             reflow_page,
             &source_pages,
@@ -476,9 +710,17 @@ pub(crate) async fn run_raster_reflow_pipeline(
         progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, done, total_out_pages);
     }
 
+    info_log!(
+        "[Reflow] Composed {} output pages from {} source pages with {} streamed page renders (window {})",
+        total_out_pages,
+        total_source_pages,
+        window.renders,
+        SOURCE_PAGE_WINDOW
+    );
+
     // After all pages are composed, extract bookmarks and send them before finalize.
     // Reflow re-paginates, so we build source-page → first-output-page mapping from SourceMap.
-    if let Some(renderer) = source.pdf_renderer() {
+    if let Some(session) = source.document_session() {
         let source_map = &doc.source_map;
         let mut src_to_out: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
@@ -488,7 +730,9 @@ pub(crate) async fn run_raster_reflow_pipeline(
                 .and_modify(|e| *e = (*e).min(placement.out_page))
                 .or_insert(placement.out_page);
         }
-        let bookmarks = tokio::task::spawn_blocking(move || renderer.extract_bookmarks()).await?;
+        let bookmarks =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
+                .await?;
         if !bookmarks.is_empty() {
             pdf_writer_handle
                 .send_bookmarks(bookmarks, src_to_out)
@@ -526,7 +770,11 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
 
     let runtime_limits = PipelineRuntimeLimits::djvu_from_config(&config);
 
-    let (source_pages, reflow_cfg, doc) = render_detect_and_reflow(
+    let ReflowPlan {
+        cfg: reflow_cfg,
+        doc,
+        total_source_pages,
+    } = analyze_and_plan(
         &source,
         &config,
         &page_range,
@@ -534,6 +782,8 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         &mut shutdown_rx,
     )
     .await?;
+    let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
+    let mut window = SourcePageWindow::new(source.clone(), page_start, &doc);
 
     let total_out_pages = doc.pages.len();
     progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, 0, total_out_pages);
@@ -545,6 +795,11 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
     let djvu_work_dir = djvu_config.work_dir.clone();
     let djvu_encoder_path = crate::djvu::resolve_encoder_path(djvu_config.encoder_path.as_deref())?;
     let orchestrator = Arc::new(crate::djvu::DjvuOrchestrator::new(djvu_config)?);
+    // Stop the encoder child and remove the work directory on every exit path,
+    // cancellation included.
+    let encoder_control = Arc::new(crate::djvu::DjvuEncoderControl::new());
+    let _work_dir_guard =
+        crate::djvu::DjvuWorkDirGuard::new(orchestrator.clone(), encoder_control.clone());
     let (djvu_writer, mut writer_task) = crate::djvu::spawn_djvu_writer_actor(
         output_path.to_path_buf(),
         total_out_pages,
@@ -555,6 +810,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         djvu_encoder_path,
         progress_tracker.clone(),
         runtime_limits.channel_capacity,
+        encoder_control.clone(),
     );
 
     for reflow_page in &doc.pages {
@@ -568,6 +824,8 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
             ));
         }
 
+        // Load only the source pages this output page draws from, then compose.
+        let source_pages = window.load(&source_pages_for(reflow_page)).await?;
         let canvas = compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg);
         let binarized =
             crate::pipeline::djvu_pipeline::binarize_djvu_image(&canvas, &config, false);
@@ -604,9 +862,10 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         };
 
         let orchestrator = orchestrator.clone();
-        let entry = tokio::task::spawn_blocking(move || -> Result<_> {
-            orchestrator.process_page(page_data)
-        })
+        let entry = crate::runtime_stats::spawn_blocking_stage(
+            crate::runtime_stats::Stage::Encode,
+            move || -> Result<_> { orchestrator.process_page(page_data) },
+        )
         .await
         .map_err(|e| anyhow!("DjVu compose task panicked: {}", e))??;
 
@@ -616,17 +875,153 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, done, total_out_pages);
     }
 
+    info_log!(
+        "[Reflow] Composed {} output pages from {} source pages with {} streamed page renders (window {})",
+        total_out_pages,
+        total_source_pages,
+        window.renders,
+        SOURCE_PAGE_WINDOW
+    );
+
     djvu_writer.finalize().await?;
     await_stage_or_cancel(&mut writer_task, &mut shutdown_rx, "DJVU writer", &[]).await?;
-
-    if let Err(_e) = orchestrator.cleanup_work_dir_only() {
-        #[cfg(feature = "debug-logging")]
-        warn_log!("[Reflow] Failed to clean up DJVU work directory: {}", _e);
-    }
 
     success_log!(
         "Raster reflow DJVU pipeline complete: {}",
         output_path.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::source::SourcePage;
+    use crate::reflow::{PlacedItem, PlacedKind, PxRect, ReflowPage, SourceRef};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A page source that counts renders, so a test can prove the compose pass
+    /// loads each source page about one time.
+    struct CountingSource {
+        pages: usize,
+        loads: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl PageSource for CountingSource {
+        fn page_count(&self) -> usize {
+            self.pages
+        }
+
+        fn source_concurrency(&self) -> usize {
+            1
+        }
+
+        async fn load_page(&self, _page_index: usize) -> Result<SourcePage> {
+            self.loads.fetch_add(1, Ordering::Relaxed);
+            Ok(SourcePage {
+                image: RgbImage::from_pixel(32, 40, image::Rgb([255, 255, 255])),
+                original_width_pts: 32.0,
+                original_height_pts: 40.0,
+            })
+        }
+    }
+
+    fn item(src_page: usize, kind: PlacedKind) -> PlacedItem {
+        PlacedItem {
+            out_rect: PxRect::new(0, 0, 10, 10),
+            src: SourceRef {
+                page_index: src_page,
+                rect: PxRect::new(0, 0, 10, 10),
+            },
+            scale: 1.0,
+            kind,
+        }
+    }
+
+    /// One output page per source page, `n` of them.
+    fn document(source_pages: &[Vec<usize>], kind: PlacedKind) -> crate::reflow::ReflowDocument {
+        let mut doc = crate::reflow::ReflowDocument::default();
+        for (index, sources) in source_pages.iter().enumerate() {
+            let mut page = ReflowPage::new(index, 100, 100);
+            page.items = sources.iter().map(|&s| item(s, kind)).collect();
+            doc.pages.push(page);
+        }
+        doc
+    }
+
+    fn window_for(
+        doc: &crate::reflow::ReflowDocument,
+        loads: Arc<AtomicUsize>,
+        pages: usize,
+    ) -> SourcePageWindow {
+        let source: Arc<dyn PageSource> = Arc::new(CountingSource { pages, loads });
+        SourcePageWindow::new(source, 0, doc)
+    }
+
+    #[tokio::test]
+    async fn compose_window_stays_bounded_and_renders_each_page_once() {
+        let doc = document(
+            &[vec![0], vec![1], vec![2], vec![3], vec![4], vec![5]],
+            PlacedKind::Word,
+        );
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut window = window_for(&doc, loads.clone(), 6);
+
+        for page in &doc.pages {
+            let set = window.load(&source_pages_for(page)).await.expect("load");
+            assert_eq!(set.len(), 1);
+            assert!(
+                window.pages.len() <= SOURCE_PAGE_WINDOW,
+                "resident pages {} exceeded the window",
+                window.pages.len()
+            );
+        }
+        assert_eq!(loads.load(Ordering::Relaxed), 6);
+        assert_eq!(window.renders, 6);
+    }
+
+    #[tokio::test]
+    async fn output_page_spanning_two_source_pages_gets_both() {
+        let doc = document(&[vec![0, 1]], PlacedKind::Word);
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut window = window_for(&doc, loads, 2);
+
+        let set = window
+            .load(&source_pages_for(&doc.pages[0]))
+            .await
+            .expect("load");
+        assert!(set.get(0).is_some() && set.get(1).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_resident_page_is_not_rendered_again() {
+        let doc = document(&[vec![0], vec![0], vec![1], vec![0]], PlacedKind::Word);
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut window = window_for(&doc, loads.clone(), 2);
+
+        for page in &doc.pages {
+            window.load(&source_pages_for(page)).await.expect("load");
+        }
+        assert_eq!(loads.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn color_is_kept_only_for_pages_that_carry_a_figure() {
+        let text_doc = document(&[vec![0]], PlacedKind::Word);
+        let mut text_window = window_for(&text_doc, Arc::new(AtomicUsize::new(0)), 1);
+        let text_set = text_window
+            .load(&source_pages_for(&text_doc.pages[0]))
+            .await
+            .expect("load");
+        assert!(text_set.get(0).expect("page").rgb.is_none());
+
+        let figure_doc = document(&[vec![0]], PlacedKind::Figure);
+        let mut figure_window = window_for(&figure_doc, Arc::new(AtomicUsize::new(0)), 1);
+        let figure_set = figure_window
+            .load(&source_pages_for(&figure_doc.pages[0]))
+            .await
+            .expect("load");
+        assert!(figure_set.get(0).expect("page").rgb.is_some());
+    }
 }
