@@ -17,6 +17,10 @@ pub struct HocrWord {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Recognition confidence in 0..=1, from the hOCR `x_wconf` property.
+    /// `None` when the producer emitted no confidence, which is the case for
+    /// native PDF text: absent means "not scored", never "scored low".
+    pub confidence: Option<f32>,
 }
 
 /// A line of hOCR text composed of words.
@@ -32,6 +36,21 @@ pub struct HocrLine {
     pub avg_char_width: f32,
     /// Optional raw line text (from the OCR engine) for authoritative spacing.
     pub raw_text: Option<String>,
+}
+
+/// Read the `x_wconf` property out of an hOCR `title` attribute and return it
+/// as a 0..=1 fraction. The property is written as a percentage
+/// (`bbox 1 2 3 4; x_wconf 87`), which is what `lege_ocr::hocr` emits.
+fn parse_word_confidence(title: &str) -> Option<f32> {
+    let start = title.find("x_wconf")? + "x_wconf".len();
+    let value = title[start..]
+        .split(';')
+        .next()?
+        .split_whitespace()
+        .next()?
+        .parse::<f32>()
+        .ok()?;
+    Some((value / 100.0).clamp(0.0, 1.0))
 }
 
 pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
@@ -53,6 +72,7 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
                 let mut is_word = false;
                 let mut is_line = false;
                 let mut bbox: Option<(f32, f32, f32, f32)> = None;
+                let mut confidence: Option<f32> = None;
 
                 for attr in e.attributes() {
                     let attr = attr?;
@@ -89,6 +109,7 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
                                         bbox = Some((x1, y1, x2, y2));
                                     }
                                 }
+                                confidence = parse_word_confidence(&title_str);
                             }
                         }
                         _ => {}
@@ -101,6 +122,7 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
                         current_word_text.clear();
                         words.push(HocrWord {
                             text: String::new(),
+                            confidence,
                             x: x1,
                             y: y1,
                             width: (x2 - x1).max(0.0),
@@ -324,5 +346,31 @@ pub fn dedup_adjacent_repeats(lines: &mut [HocrLine]) {
             cleaned.push(w.clone());
         }
         line.words = cleaned;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_confidence_is_read_from_x_wconf() {
+        let hocr = r#"<span class="ocr_line" title="bbox 0 0 100 20"><span class="ocrx_word" title="bbox 0 0 40 20; x_wconf 93">hello</span> <span class="ocrx_word" title="bbox 50 0 100 20; x_wconf 41">wor1d</span></span>"#;
+        let lines = parse_hocr(hocr).expect("parse");
+        assert_eq!(lines.len(), 1);
+        let words = &lines[0].words;
+        assert_eq!(words.len(), 2);
+        assert!((words[0].confidence.unwrap() - 0.93).abs() < 1e-6);
+        assert!((words[1].confidence.unwrap() - 0.41).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_word_without_a_confidence_reports_none() {
+        let hocr = r#"<span class="ocr_line" title="bbox 0 0 100 20"><span class="ocrx_word" title="bbox 0 0 40 20">native</span></span>"#;
+        let lines = parse_hocr(hocr).expect("parse");
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].confidence, None);
+        // The bbox must still parse when no confidence follows it.
+        assert_eq!(lines[0].words[0].width, 40.0);
     }
 }
