@@ -17,6 +17,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use unicode_normalization::UnicodeNormalization;
 
@@ -768,13 +769,135 @@ impl DjvuOrchestrator {
     }
 
     /// Clean up the manifest and page-layer files written for this job.
+    ///
+    /// A job directory below the managed DjVu temp base is removed whole. Any
+    /// other work directory — one the caller chose — keeps its directory and
+    /// loses only the interchange files this job wrote, so a cleanup can never
+    /// delete a location the user owns.
     pub fn cleanup(&self) -> Result<()> {
-        dbglog!("[djvu] cleanup() called");
+        let work_dir = self.config.work_dir.as_path();
+        dbglog!("[djvu] cleanup() removing {:?}", work_dir);
+        if !work_dir.exists() {
+            return Ok(());
+        }
+
+        let base = app_dirs::djvu_base_dir();
+        if work_dir != base && work_dir.starts_with(&base) {
+            return fs::remove_dir_all(work_dir)
+                .or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })
+                .with_context(|| format!("Failed to remove DjVu work directory: {:?}", work_dir));
+        }
+
+        let entries = fs::read_dir(work_dir)
+            .with_context(|| format!("Failed to read DjVu work directory: {:?}", work_dir))?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let is_job_file = name == "manifest.json"
+                || (name.starts_with("page-")
+                    && (name.ends_with("-mask.png")
+                        || name.ends_with("-bg.png")
+                        || name.ends_with("-ocr.json")));
+            if is_job_file {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        let _ = fs::remove_dir_all(work_dir.join("preencode-pbm"));
         Ok(())
     }
 
     pub fn cleanup_work_dir_only(&self) -> Result<()> {
         self.cleanup()
+    }
+}
+
+/// Job-scoped control channel to the `djvu-encoder` child process.
+///
+/// The child runs inside the writer actor's blocking task, which a broadcast
+/// cancel cannot interrupt. The pipeline holds this control, sets `cancelled`
+/// when the job unwinds, and waits for the encoder loop to kill and reap the
+/// child. Without it a cancelled DjVu job leaves an orphan encoder.
+#[derive(Default)]
+pub struct DjvuEncoderControl {
+    cancelled: std::sync::atomic::AtomicBool,
+    running: std::sync::atomic::AtomicBool,
+}
+
+impl DjvuEncoderControl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+            || crate::progress::termination_requested()
+    }
+
+    fn mark_running(&self, running: bool) {
+        self.running
+            .store(running, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Block until the encoder child is reaped, or the timeout expires.
+    /// Returns true when no encoder is running any more.
+    pub fn wait_until_stopped(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.is_running() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+}
+
+/// Ends a DjVu job cleanly when the job ends, whatever the reason — success,
+/// failure, or cancellation. It stops the encoder child and then removes the
+/// work directory. Phase 8 requires that a cancelled job leave neither behind.
+pub struct DjvuWorkDirGuard {
+    orchestrator: std::sync::Arc<DjvuOrchestrator>,
+    encoder: std::sync::Arc<DjvuEncoderControl>,
+}
+
+impl DjvuWorkDirGuard {
+    pub fn new(
+        orchestrator: std::sync::Arc<DjvuOrchestrator>,
+        encoder: std::sync::Arc<DjvuEncoderControl>,
+    ) -> Self {
+        Self {
+            orchestrator,
+            encoder,
+        }
+    }
+}
+
+impl Drop for DjvuWorkDirGuard {
+    fn drop(&mut self) {
+        if self.encoder.is_running() {
+            self.encoder.cancel();
+            if !self.encoder.wait_until_stopped(Duration::from_secs(5)) {
+                crate::warn_log!("[djvu] Encoder did not stop before work-directory cleanup");
+            }
+        }
+        if let Err(_error) = self.orchestrator.cleanup() {
+            crate::warn_log!("[djvu] Failed to clean up work directory: {}", _error);
+        }
     }
 }
 
@@ -872,6 +995,7 @@ pub fn spawn_djvu_writer_actor(
     encoder_path: PathBuf,
     progress_tracker: crate::progress::ProgressTracker,
     channel_capacity: usize,
+    encoder_control: std::sync::Arc<DjvuEncoderControl>,
 ) -> (
     DjvuWriterHandle,
     tokio::task::JoinHandle<Result<(), anyhow::Error>>,
@@ -921,15 +1045,20 @@ pub fn spawn_djvu_writer_actor(
                     let progress = progress_tracker.clone();
                     let encoder_path = encoder_path.clone();
                     let output_path = output_path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        run_encoder(
-                            &encoder_path,
-                            &manifest_path,
-                            &output_path,
-                            total_pages,
-                            &progress,
-                        )
-                    })
+                    let control = encoder_control.clone();
+                    crate::runtime_stats::spawn_blocking_stage(
+                        crate::runtime_stats::Stage::Writer,
+                        move || {
+                            run_encoder(
+                                &encoder_path,
+                                &manifest_path,
+                                &output_path,
+                                total_pages,
+                                &progress,
+                                &control,
+                            )
+                        },
+                    )
                     .await
                     .map_err(|e| anyhow!("DjVu encoder task panicked: {}", e))??;
 
@@ -947,12 +1076,23 @@ pub fn spawn_djvu_writer_actor(
 
 /// Run the `djvu-encoder` subprocess, streaming NDJSON progress into the
 /// tracker and returning its stderr verbatim on failure.
+/// Clears the encoder's running flag when `run_encoder` returns, so a waiting
+/// [`DjvuWorkDirGuard`] can proceed with cleanup.
+struct RunningGuard<'a>(&'a DjvuEncoderControl);
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.mark_running(false);
+    }
+}
+
 fn run_encoder(
     encoder_path: &Path,
     manifest_path: &Path,
     output_path: &Path,
     total_pages: usize,
     progress: &crate::progress::ProgressTracker,
+    control: &DjvuEncoderControl,
 ) -> Result<()> {
     let mut child = Command::new(encoder_path)
         .arg("encode-document")
@@ -965,6 +1105,9 @@ fn run_encoder(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to launch DjVu encoder: {}", encoder_path.display()))?;
+    control.mark_running(true);
+    // Report the child as stopped on every exit path of this function.
+    let _running = RunningGuard(control);
 
     // Drain stderr on a separate thread to avoid a full-pipe deadlock.
     let stderr = child.stderr.take();
@@ -976,25 +1119,56 @@ fn run_encoder(
         buf
     });
 
-    if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if let Ok(evt) = serde_json::from_str::<ProgressLine>(&line) {
-                if evt.event == "page_done" {
-                    if let (Some(current), Some(total)) = (evt.page, evt.of) {
-                        progress.update(crate::progress::ProcessingStatus::PdfAppend {
-                            current,
-                            total,
-                        });
-                    }
+    let stdout = child.stdout.take();
+    let progress_clone = progress.clone();
+    let stdout_thread = std::thread::spawn(move || {
+        if let Some(stdout) = stdout {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Ok(evt) = serde_json::from_str::<ProgressLine>(&line)
+                    && evt.event == "page_done"
+                    && let (Some(current), Some(total)) = (evt.page, evt.of)
+                {
+                    progress_clone
+                        .update(crate::progress::ProcessingStatus::PdfAppend { current, total });
                 }
             }
         }
-    }
+    });
 
-    let status = child
-        .wait()
-        .context("Failed to wait for DjVu encoder process")?;
+    let timeout = std::env::var("LEGE_DJVU_ENCODER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&seconds| seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(30 * 60));
+    let started = Instant::now();
+    let status = loop {
+        // On a kill path the drain threads are left detached on purpose: a
+        // grandchild of the encoder can hold the pipe open, and joining would
+        // then make the cancel latency unbounded.
+        if control.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("djvu-encoder cancelled by shutdown request"));
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!(
+                "djvu-encoder timed out after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        match child
+            .try_wait()
+            .context("Failed to poll DjVu encoder process")?
+        {
+            Some(status) => break status,
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    let _ = stdout_thread.join();
     let stderr_str = stderr_thread.join().unwrap_or_default();
 
     if !status.success() {
@@ -1023,7 +1197,69 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::time::{Duration, timeout};
 
-    use super::{DjvuWriterHandle, DjvuWriterMessage, bundled_encoder_candidates};
+    use super::{
+        DjvuConfig, DjvuEncoderControl, DjvuOrchestrator, DjvuWorkDirGuard, DjvuWriterHandle,
+        DjvuWriterMessage, bundled_encoder_candidates,
+    };
+
+    /// A job directory inside the managed DjVu temp base, holding one page's
+    /// interchange files and a manifest.
+    fn populated_job_dir(name: &str) -> PathBuf {
+        let dir = crate::app_dirs::djvu_work_dir_for(Some(Path::new(name)));
+        std::fs::create_dir_all(&dir).expect("work dir");
+        std::fs::write(dir.join("manifest.json"), b"{}").expect("manifest");
+        std::fs::write(dir.join("page-00000-mask.png"), b"x").expect("mask");
+        std::fs::write(dir.join("page-00000-bg.png"), b"x").expect("bg");
+        dir
+    }
+
+    fn orchestrator_for(work_dir: PathBuf) -> std::sync::Arc<DjvuOrchestrator> {
+        std::sync::Arc::new(
+            DjvuOrchestrator::new(DjvuConfig {
+                work_dir,
+                ..Default::default()
+            })
+            .expect("orchestrator"),
+        )
+    }
+
+    #[test]
+    fn cleanup_removes_a_managed_job_directory() {
+        let dir = populated_job_dir("cleanup_removes_managed_dir.djvu");
+        orchestrator_for(dir.clone()).cleanup().expect("cleanup");
+        assert!(!dir.exists(), "job directory {dir:?} was left behind");
+    }
+
+    #[test]
+    fn cleanup_keeps_an_unmanaged_directory_but_removes_the_job_files() {
+        let dir = std::env::temp_dir().join("lege_djvu_unmanaged_cleanup_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("manifest.json"), b"{}").expect("manifest");
+        std::fs::write(dir.join("page-00000-mask.png"), b"x").expect("mask");
+        std::fs::write(dir.join("keep-me.txt"), b"user file").expect("user file");
+
+        orchestrator_for(dir.clone()).cleanup().expect("cleanup");
+
+        assert!(dir.exists());
+        assert!(!dir.join("manifest.json").exists());
+        assert!(!dir.join("page-00000-mask.png").exists());
+        assert!(dir.join("keep-me.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn work_dir_guard_cleans_up_when_a_job_unwinds() {
+        let dir = populated_job_dir("guard_cleans_up_on_unwind.djvu");
+        {
+            let _guard = DjvuWorkDirGuard::new(
+                orchestrator_for(dir.clone()),
+                std::sync::Arc::new(DjvuEncoderControl::new()),
+            );
+            assert!(dir.exists());
+        }
+        assert!(!dir.exists(), "cancelled job left {dir:?} behind");
+    }
 
     #[test]
     fn macos_bundle_prefers_helpers_then_executable_directory() {
