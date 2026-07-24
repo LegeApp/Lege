@@ -5,7 +5,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use once_cell::sync::OnceCell;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinarizationMode {
@@ -122,7 +122,86 @@ pub mod wgpu;
 
 type PlatformGpuBinarizer = wgpu::WgpuBinarizer;
 
-static GPU_BINARIZER: OnceCell<Mutex<PlatformGpuBinarizer>> = OnceCell::new();
+struct BinarizerPool {
+    sessions: Mutex<Vec<PlatformGpuBinarizer>>,
+    available: Condvar,
+}
+
+impl BinarizerPool {
+    fn new() -> Result<Self> {
+        let count = std::env::var("LEGE_GPU_BINARIZER_SESSIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(2)
+            .clamp(1, 4);
+        let mut sessions = Vec::with_capacity(count);
+        for _ in 0..count {
+            sessions.push(PlatformGpuBinarizer::new()?);
+        }
+        Ok(Self {
+            sessions: Mutex::new(sessions),
+            available: Condvar::new(),
+        })
+    }
+
+    fn checkout(&self) -> BinarizerLease<'_> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        while sessions.is_empty() {
+            sessions = self
+                .available
+                .wait(sessions)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        BinarizerLease {
+            pool: self,
+            session: sessions.pop(),
+        }
+    }
+}
+
+struct BinarizerLease<'a> {
+    pool: &'a BinarizerPool,
+    session: Option<PlatformGpuBinarizer>,
+}
+
+impl std::ops::Deref for BinarizerLease<'_> {
+    type Target = PlatformGpuBinarizer;
+
+    fn deref(&self) -> &Self::Target {
+        self.session.as_ref().expect("binarizer lease is empty")
+    }
+}
+
+impl std::ops::DerefMut for BinarizerLease<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.session.as_mut().expect("binarizer lease is empty")
+    }
+}
+
+impl Drop for BinarizerLease<'_> {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            self.pool
+                .sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(session);
+            self.pool.available.notify_one();
+        }
+    }
+}
+
+static GPU_BINARIZER_POOL: OnceCell<BinarizerPool> = OnceCell::new();
+
+fn gpu_binarizer_pool() -> Option<&'static BinarizerPool> {
+    match GPU_BINARIZER_POOL.get_or_try_init(BinarizerPool::new) {
+        Ok(pool) => Some(pool),
+        Err(error) => {
+            log::debug!("[GPU binarizer] initialization failed: {error}");
+            None
+        }
+    }
+}
 
 fn backend_is_cpu_forced() -> bool {
     if std::env::var("LEGE_FORCE_CPU_BINARIZATION")
@@ -149,25 +228,7 @@ pub fn try_binarize_batch(pages: &[(&[u8], &BinarizationParams)]) -> Option<Vec<
         return None;
     }
 
-    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-        PlatformGpuBinarizer::new()
-            .map(Mutex::new)
-            .map_err(|e| e.to_string())
-    }) {
-        Ok(lock) => lock,
-        Err(err) => {
-            log::debug!("[GPU binarizer] initialization failed: {err}");
-            return None;
-        }
-    };
-
-    let mut binarizer = match binarizer_lock.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-            return None;
-        }
-    };
+    let mut binarizer = gpu_binarizer_pool()?.checkout();
 
     match binarizer.binarize_batch(pages) {
         Ok(results) => {
@@ -189,25 +250,7 @@ pub fn try_binarize_gray(gray: &[u8], params: &BinarizationParams) -> Option<Vec
         return None;
     }
 
-    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-        PlatformGpuBinarizer::new()
-            .map(Mutex::new)
-            .map_err(|e| e.to_string())
-    }) {
-        Ok(lock) => lock,
-        Err(err) => {
-            log::debug!("[GPU binarizer] initialization failed: {err}");
-            return None;
-        }
-    };
-
-    let mut binarizer = match binarizer_lock.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-            return None;
-        }
-    };
+    let mut binarizer = gpu_binarizer_pool()?.checkout();
 
     match binarizer.binarize_gray_raw(gray, params) {
         Ok(result) => {
@@ -237,25 +280,7 @@ where
         return None;
     }
 
-    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-        PlatformGpuBinarizer::new()
-            .map(Mutex::new)
-            .map_err(|e| e.to_string())
-    }) {
-        Ok(lock) => lock,
-        Err(err) => {
-            log::debug!("[GPU binarizer] initialization failed: {err}");
-            return None;
-        }
-    };
-
-    let mut binarizer = match binarizer_lock.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-            return None;
-        }
-    };
+    let mut binarizer = gpu_binarizer_pool()?.checkout();
 
     match binarizer.binarize_gray_raw_with(gray, params, f) {
         Ok(result) => {
@@ -283,24 +308,7 @@ where
     if backend_is_cpu_forced() {
         return None;
     }
-    let binarizer_lock = match GPU_BINARIZER.get_or_try_init(|| {
-        PlatformGpuBinarizer::new()
-            .map(Mutex::new)
-            .map_err(|e| e.to_string())
-    }) {
-        Ok(lock) => lock,
-        Err(err) => {
-            log::debug!("[GPU binarizer] initialization failed: {err}");
-            return None;
-        }
-    };
-    let mut binarizer = match binarizer_lock.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            log::debug!("[GPU binarizer] mutex poisoned; falling back to CPU");
-            return None;
-        }
-    };
+    let mut binarizer = gpu_binarizer_pool()?.checkout();
     match binarizer.binarize_rgb_raw_with(rgb, params, f) {
         Ok(result) => Some(result),
         Err(err) => {

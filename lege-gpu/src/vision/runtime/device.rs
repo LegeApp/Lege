@@ -6,11 +6,48 @@ use anyhow::{Context, Result, bail};
 use async_lock::Mutex;
 
 #[derive(Clone)]
+struct GpuPoller {
+    sender: std::sync::mpsc::Sender<std::sync::mpsc::Sender<Result<(), String>>>,
+}
+
+impl GpuPoller {
+    fn new(device: Arc<crate::vision::wgpu::Device>) -> Result<Self> {
+        let (sender, receiver) =
+            std::sync::mpsc::channel::<std::sync::mpsc::Sender<Result<(), String>>>();
+        std::thread::Builder::new()
+            .name("gpu-poll".to_string())
+            .spawn(move || {
+                while let Ok(done) = receiver.recv() {
+                    let result = device
+                        .poll(crate::vision::wgpu::PollType::wait_indefinitely())
+                        .map(|_| ())
+                        .map_err(|error| format!("{error:?}"));
+                    let _ = done.send(result);
+                }
+            })
+            .context("failed to spawn shared GPU poll thread")?;
+        Ok(Self { sender })
+    }
+
+    fn wait(&self) -> Result<()> {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        self.sender
+            .send(done_tx)
+            .context("shared GPU poll thread stopped")?;
+        done_rx
+            .recv()
+            .context("shared GPU poll thread dropped completion")?
+            .map_err(anyhow::Error::msg)
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct GpuContext {
     pub(crate) device: Arc<crate::vision::wgpu::Device>,
     pub(crate) queue: Arc<crate::vision::wgpu::Queue>,
     pub(crate) is_cpu_adapter: bool,
     pub(crate) supports_timestamps: bool,
+    poller: GpuPoller,
 }
 
 impl GpuContext {
@@ -152,11 +189,14 @@ impl GpuContext {
                             info.name
                         );
                     }
+                    let device = Arc::new(device);
+                    let poller = GpuPoller::new(Arc::clone(&device))?;
                     return Ok(Self {
-                        device: Arc::new(device),
+                        device,
                         queue: Arc::new(queue),
                         is_cpu_adapter: is_cpu,
                         supports_timestamps,
+                        poller,
                     });
                 }
                 Err(e) => {
@@ -197,6 +237,10 @@ impl GpuContext {
             .get()
             .expect("shared GPU context was just initialized")
             .clone())
+    }
+
+    pub(crate) fn wait(&self) -> Result<()> {
+        self.poller.wait()
     }
 }
 
@@ -330,7 +374,7 @@ pub(crate) async fn dispatch_compute(
     encoder.copy_buffer_to_buffer(out_buf, 0, &readback, 0, output_bytes as u64);
     ctx.queue.submit(Some(encoder.finish()));
 
-    map_readback(&ctx.device, &readback, output_bytes).await
+    map_readback(ctx, &readback, output_bytes).await
 }
 
 pub(crate) fn storage_bgl_entries(
@@ -355,7 +399,7 @@ pub(crate) fn storage_bgl_entries(
 }
 
 pub(crate) async fn map_readback(
-    device: &crate::vision::wgpu::Device,
+    ctx: &GpuContext,
     buf: &crate::vision::wgpu::Buffer,
     bytes: usize,
 ) -> Result<Vec<u8>> {
@@ -364,7 +408,7 @@ pub(crate) async fn map_readback(
     slice.map_async(crate::vision::wgpu::MapMode::Read, move |r| {
         let _ = sender.send(r);
     });
-    let _ = device.poll(crate::vision::wgpu::PollType::wait_indefinitely());
+    ctx.wait()?;
     receiver
         .recv()
         .context("readback callback was not called")?

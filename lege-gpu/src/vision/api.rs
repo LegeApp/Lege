@@ -65,7 +65,7 @@ const PICODET_INPUT: u32 = 640;
 
 #[cfg(feature = "layout-detection")]
 pub struct LayoutDetector {
-    graph: PreparedGraph,
+    graph: Arc<PreparedGraph>,
     compiled: CompiledGraph,
     config: LayoutConfig,
 }
@@ -113,7 +113,7 @@ impl LayoutDetector {
             .context("failed to compile layout graph for WGPU")?;
 
         Ok(Self {
-            graph,
+            graph: Arc::new(graph),
             compiled,
             config,
         })
@@ -121,6 +121,24 @@ impl LayoutDetector {
 
     pub fn from_model_path(model_path: impl Into<PathBuf>) -> Result<Self> {
         Self::new(LayoutConfig::new(model_path))
+    }
+
+    /// Build a second inference session that shares this detector's GPU device
+    /// and immutable prepared graph but owns its own resident activation and
+    /// readback buffers, so it can run one page concurrently with the parent
+    /// (Phase 5 GPU session pool). Model weights are re-uploaded per session;
+    /// PP-DocLayout-M is small, so a handful of sessions stay well inside the
+    /// VRAM budget.
+    pub fn build_sibling(&self) -> Result<Self> {
+        let compiled = self
+            .compiled
+            .build_sibling(&self.graph)
+            .context("failed to build sibling layout session")?;
+        Ok(Self {
+            graph: Arc::clone(&self.graph),
+            compiled,
+            config: self.config.clone(),
+        })
     }
 
     pub fn detect_rgb(&self, image: &RgbImage) -> Result<Vec<LayoutDetection>> {

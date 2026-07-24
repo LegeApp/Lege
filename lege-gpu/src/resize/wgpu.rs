@@ -202,13 +202,14 @@ pub struct WgpuResizeOutput {
     pub size_in_bytes: usize,
 }
 
+#[derive(Clone)]
 struct WgpuContext {
-    _instance: wgpu::Instance,
-    _adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    shared: crate::vision::runtime::device::GpuContext,
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
 }
 
+#[derive(Clone)]
 struct WgpuPipelineState {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -303,37 +304,13 @@ fn compact_from_rgba(gpu_out: &[u8], channel_count: u32, dst_size: usize) -> Vec
 
 impl WgpuContext {
     async fn new_async(_verbose: bool) -> Result<Self> {
-        // Constrain to the production backend policy (DX12 on Windows) so the
-        // HighPerformance adapter request cannot silently land on Vulkan.
-        let instance = crate::wgpu_setup::create_instance();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
+        let shared = crate::vision::runtime::device::GpuContext::shared()
             .await
-            .map_err(|e| {
-                WgpuResizeError::Initialization(format!("request_adapter failed: {e:?}"))
-            })?;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("lege-wgpu-resize-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| WgpuResizeError::Initialization(format!("request_device failed: {e}")))?;
-
+            .map_err(|e| WgpuResizeError::Initialization(e.to_string()))?;
         Ok(Self {
-            _instance: instance,
-            _adapter: adapter,
-            device,
-            queue,
+            device: std::sync::Arc::clone(&shared.device),
+            queue: std::sync::Arc::clone(&shared.queue),
+            shared,
         })
     }
 
@@ -365,6 +342,21 @@ impl WgpuResizer {
         };
         resizer.initialize_pipelines()?;
         Ok(resizer)
+    }
+
+    /// Create an independently usable resize session on the same device,
+    /// sharing immutable compiled pipelines while owning separate scratch and
+    /// readback buffers. This is the resize counterpart of layout inference's
+    /// sibling sessions.
+    pub fn build_sibling(&self) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+            resize_pipelines: self.resize_pipelines.clone(),
+            resize_buffers: None,
+            convert_pipelines: self.convert_pipelines.clone(),
+            convert_buffers: None,
+            verbose: self.verbose,
+        }
     }
 
     pub fn resize(&mut self, src_data: &[u8], params: &ResizeParameters) -> Result<Vec<u8>> {
@@ -954,9 +946,9 @@ impl WgpuResizer {
         });
 
         self.ctx
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| WgpuResizeError::Execution(format!("device poll failed: {e:?}")))?;
+            .shared
+            .wait()
+            .map_err(|e| WgpuResizeError::Execution(format!("device poll failed: {e:#}")))?;
 
         rx.recv()
             .map_err(|_| WgpuResizeError::Execution("map_async channel failed".to_string()))?

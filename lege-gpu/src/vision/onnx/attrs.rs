@@ -106,24 +106,33 @@ pub(crate) fn tensor_const(tensor: &TensorProto) -> Option<TensorConst> {
 }
 
 /// Decode an IEEE-754 half-precision (binary16) value into f32.
+///
+/// Every binary16 value is exactly representable in binary32, so this is a pure
+/// bit-field widening: the exponent is rebiased from 15 to 127 and the mantissa
+/// is left-shifted by 13. Subnormals are the only case needing arithmetic, and
+/// they are rare enough in trained weights to be worth a branch.
+///
+/// This was written with `2.0f32.powi(exp - 15)`, which compiles to a call to
+/// the `__powisf2` compiler-runtime loop *per weight element*. On a 40-page
+/// optical-character-recognition run that single helper accounted for 31% of all
+/// CPU cycles, because the OCR graphs re-widen their weights whenever a new
+/// input size forces a rebuild. See `measurements.md`, Phase 9.
 fn f16_bits_to_f32(bits: u16) -> f32 {
-    let sign = (bits >> 15) & 0x1;
+    let sign = (bits as u32 & 0x8000) << 16;
     let exp = (bits >> 10) & 0x1f;
-    let mant = bits & 0x3ff;
-    let sign_f = if sign == 1 { -1.0_f32 } else { 1.0_f32 };
+    let mant = (bits & 0x3ff) as u32;
     match exp {
-        // Subnormal / zero: value = sign * 2^-14 * (mant / 1024).
-        0 => sign_f * 2.0_f32.powi(-14) * (mant as f32 / 1024.0),
-        // Inf / NaN.
-        0x1f => {
-            if mant == 0 {
-                sign_f * f32::INFINITY
-            } else {
-                f32::NAN
-            }
+        0 if mant == 0 => f32::from_bits(sign),
+        // Subnormal: value = sign * 2^-14 * (mant / 1024).
+        0 => {
+            let magnitude = (mant as f32 / 1024.0) * (1.0 / 16384.0);
+            f32::from_bits(sign | magnitude.to_bits())
         }
-        // Normal: value = sign * 2^(exp-15) * (1 + mant/1024).
-        _ => sign_f * 2.0_f32.powi(exp as i32 - 15) * (1.0 + mant as f32 / 1024.0),
+        // Inf / NaN. A quiet-NaN bit keeps a signalling payload from being lost.
+        0x1f if mant == 0 => f32::from_bits(sign | 0x7f80_0000),
+        0x1f => f32::from_bits(sign | 0x7f80_0000 | (mant << 13) | 0x0040_0000),
+        // Normal: rebias the exponent from 15 to 127 and widen the mantissa.
+        _ => f32::from_bits(sign | ((exp as u32 + 112) << 23) | (mant << 13)),
     }
 }
 
@@ -365,4 +374,57 @@ pub(crate) fn load_model(path: &Path) -> Result<ModelProto> {
 pub(crate) fn load_model_from_bytes(bytes: &[u8]) -> Result<ModelProto> {
     use protobuf::Message;
     ModelProto::parse_from_bytes(bytes).context("failed to parse ONNX protobuf from memory")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::f16_bits_to_f32;
+
+    /// The formula this replaced, kept as the oracle.
+    fn f16_bits_to_f32_reference(bits: u16) -> f32 {
+        let sign = (bits >> 15) & 0x1;
+        let exp = (bits >> 10) & 0x1f;
+        let mant = bits & 0x3ff;
+        let sign_f = if sign == 1 { -1.0_f32 } else { 1.0_f32 };
+        match exp {
+            0 => sign_f * 2.0_f32.powi(-14) * (mant as f32 / 1024.0),
+            0x1f => {
+                if mant == 0 {
+                    sign_f * f32::INFINITY
+                } else {
+                    f32::NAN
+                }
+            }
+            _ => sign_f * 2.0_f32.powi(exp as i32 - 15) * (1.0 + mant as f32 / 1024.0),
+        }
+    }
+
+    #[test]
+    fn every_half_value_widens_exactly_as_before() {
+        for bits in 0..=u16::MAX {
+            let expected = f16_bits_to_f32_reference(bits);
+            let actual = f16_bits_to_f32(bits);
+            if expected.is_nan() {
+                assert!(actual.is_nan(), "0x{bits:04x} should still be NaN");
+                continue;
+            }
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "0x{bits:04x}: {actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_values_round_trip() {
+        assert_eq!(f16_bits_to_f32(0x0000), 0.0);
+        assert!(f16_bits_to_f32(0x8000).is_sign_negative());
+        assert_eq!(f16_bits_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_bits_to_f32(0xc000), -2.0);
+        assert_eq!(f16_bits_to_f32(0x7bff), 65504.0); // largest finite half
+        assert_eq!(f16_bits_to_f32(0x0001), 2.0_f32.powi(-24)); // smallest subnormal
+        assert_eq!(f16_bits_to_f32(0x7c00), f32::INFINITY);
+        assert_eq!(f16_bits_to_f32(0xfc00), f32::NEG_INFINITY);
+    }
 }

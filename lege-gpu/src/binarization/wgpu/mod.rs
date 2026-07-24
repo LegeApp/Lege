@@ -10,83 +10,21 @@ use crate::binarization::{
 // ---------------------------------------------------------------------------
 
 struct WgpuContext {
-    _instance: wgpu::Instance,
-    _adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    shared: crate::vision::runtime::device::GpuContext,
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
 }
 
 impl WgpuContext {
     async fn new_async() -> Result<Self> {
-        let backends = crate::wgpu_setup::requested_backends();
-        let instance = crate::wgpu_setup::create_instance();
-
-        // Build candidate list: HighPerformance preferred adapter first, then
-        // remaining enumerated adapters as fallback for bad-driver scenarios.
-        let enumerated: Vec<wgpu::Adapter> = instance.enumerate_adapters(backends).await;
-        let candidates: Vec<wgpu::Adapter> = match instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
+        let shared = crate::vision::runtime::device::GpuContext::shared()
             .await
-        {
-            Ok(preferred) => {
-                let preferred_name = preferred.get_info().name.clone();
-                let mut list = vec![preferred];
-                for a in enumerated {
-                    if a.get_info().name != preferred_name {
-                        list.push(a);
-                    }
-                }
-                list
-            }
-            Err(_) => enumerated,
-        };
-
-        if candidates.is_empty() {
-            return Err(GpuBinarizationError::Initialization(format!(
-                "no wgpu adapters found for backends {backends:?}"
-            )));
-        }
-
-        let device_desc = wgpu::DeviceDescriptor {
-            label: Some("lege-wgpu-binarize-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits {
-                max_storage_buffers_per_shader_stage: 8,
-                ..wgpu::Limits::downlevel_defaults()
-            },
-            memory_hints: wgpu::MemoryHints::Performance,
-            ..Default::default()
-        };
-
-        let mut adapter_errors: Vec<String> = Vec::new();
-        for adapter in candidates {
-            let info = adapter.get_info();
-            let desc = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
-            match adapter.request_device(&device_desc).await {
-                Ok((device, queue)) => {
-                    return Ok(Self {
-                        _instance: instance,
-                        _adapter: adapter,
-                        device,
-                        queue,
-                    });
-                }
-                Err(e) => {
-                    log::debug!("[GPU binarizer] adapter `{desc}` rejected: {e}");
-                    adapter_errors.push(format!("`{desc}`: {e}"));
-                }
-            }
-        }
-
-        Err(GpuBinarizationError::Initialization(format!(
-            "every adapter failed request_device — {}",
-            adapter_errors.join("; ")
-        )))
+            .map_err(|error| GpuBinarizationError::Initialization(error.to_string()))?;
+        Ok(Self {
+            device: std::sync::Arc::clone(&shared.device),
+            queue: std::sync::Arc::clone(&shared.queue),
+            shared,
+        })
     }
 
     fn new() -> Result<Self> {
@@ -696,9 +634,9 @@ impl WgpuBinarizer {
 
         // --- Pass 4: single poll for all N page submissions ---
         self.ctx
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| GpuBinarizationError::Execution(format!("device poll failed: {e:?}")))?;
+            .shared
+            .wait()
+            .map_err(|e| GpuBinarizationError::Execution(format!("device poll failed: {e:#}")))?;
 
         // --- Pass 5: single map of the full readback buffer ---
         let rb = self.readback.as_ref().unwrap();
@@ -707,12 +645,9 @@ impl WgpuBinarizer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.ctx
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| {
-                GpuBinarizationError::Execution(format!("device poll (map) failed: {e:?}"))
-            })?;
+        self.ctx.shared.wait().map_err(|e| {
+            GpuBinarizationError::Execution(format!("device poll (map) failed: {e:#}"))
+        })?;
         rx.recv()
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?
             .map_err(|e| GpuBinarizationError::Execution(format!("map_async failed: {e:?}")))?;
@@ -1226,9 +1161,9 @@ impl WgpuBinarizer {
             let _ = tx.send(res);
         });
         self.ctx
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| GpuBinarizationError::Execution(format!("device poll failed: {e:?}")))?;
+            .shared
+            .wait()
+            .map_err(|e| GpuBinarizationError::Execution(format!("device poll failed: {e:#}")))?;
         rx.recv()
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?
             .map_err(|e| GpuBinarizationError::Execution(format!("map_async failed: {e:?}")))?;

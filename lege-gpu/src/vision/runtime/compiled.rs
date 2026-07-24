@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::vision::wgpu::util::DeviceExt;
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 
 use crate::vision::onnx::attrs::shape_i64_to_usize;
 use crate::vision::onnx::graph::PreparedGraph;
@@ -23,6 +24,46 @@ use crate::vision::runtime::device::{GpuContext, map_readback, storage_bgl_entri
 use crate::vision::runtime::memory_plan::ResidentMemoryPlan;
 
 const DUMMY_BIAS: &str = "__dummy_zero_bias__";
+
+fn build_pipeline_for_shader(
+    device: &crate::vision::wgpu::Device,
+    wgsl: &'static str,
+    n_read_inputs: usize,
+) -> (
+    Arc<crate::vision::wgpu::ComputePipeline>,
+    Arc<crate::vision::wgpu::BindGroupLayout>,
+) {
+    let mut read_flags: Vec<bool> = vec![true; n_read_inputs];
+    read_flags.push(false); // output (read_write)
+    read_flags.push(true); // params (read)
+    let bgl = Arc::new(device.create_bind_group_layout(
+        &crate::vision::wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &storage_bgl_entries(&read_flags),
+        },
+    ));
+    let pipeline_layout =
+        device.create_pipeline_layout(&crate::vision::wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+    let shader = device.create_shader_module(crate::vision::wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: crate::vision::wgpu::ShaderSource::Wgsl(wgsl.into()),
+    });
+    let pipeline = Arc::new(device.create_compute_pipeline(
+        &crate::vision::wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: crate::vision::wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        },
+    ));
+    (pipeline, bgl)
+}
 
 struct CompiledStep {
     step_index: usize,
@@ -47,7 +88,7 @@ pub(crate) struct StepProfile {
 
 pub(crate) struct CompiledGraph {
     ctx: GpuContext,
-    slot_buffers: Vec<crate::vision::wgpu::Buffer>,
+    slot_buffers: Vec<Arc<crate::vision::wgpu::Buffer>>,
     tensor_slots: HashMap<String, usize>,
     _dummy_bias_buffer: crate::vision::wgpu::Buffer,
     aliases: HashMap<String, String>,
@@ -60,6 +101,10 @@ pub(crate) struct CompiledGraph {
     output_bytes: Vec<usize>,
     // Keep params buffers alive for their bind groups
     _params_bufs: Vec<crate::vision::wgpu::Buffer>,
+    // Immutable per-shader GPU objects, shared with sibling sessions so only the
+    // first session for a document pays the shader-compilation cost.
+    pipeline_cache: HashMap<&'static str, Arc<crate::vision::wgpu::ComputePipeline>>,
+    bgl_cache: HashMap<&'static str, Arc<crate::vision::wgpu::BindGroupLayout>>,
 }
 
 pub(crate) struct SubmittedRun<'a> {
@@ -80,7 +125,7 @@ impl CompiledGraph {
             "  compiled.build: gpu_init={:.0}ms",
             t0.elapsed().as_millis()
         );
-        Self::build_from_context(graph, ctx, t0)
+        Self::build_from_context(graph, ctx, t0, None)
     }
 
     #[cfg(feature = "layout-detection")]
@@ -95,7 +140,7 @@ impl CompiledGraph {
             "  compiled.layout_build: gpu_init={:.0}ms",
             t0.elapsed().as_millis()
         );
-        Self::build_from_context(graph, ctx, t0)
+        Self::build_from_context(graph, ctx, t0, None)
     }
 
     #[cfg(feature = "layout-detection")]
@@ -104,33 +149,53 @@ impl CompiledGraph {
     }
 
     pub(crate) fn build_sibling(&self, graph: &PreparedGraph) -> Result<Self> {
-        Self::build_from_context(graph, self.ctx.clone(), std::time::Instant::now())
+        Self::build_from_context(
+            graph,
+            self.ctx.clone(),
+            std::time::Instant::now(),
+            Some(self),
+        )
     }
 
     fn build_from_context(
         graph: &PreparedGraph,
         ctx: GpuContext,
         t0: std::time::Instant,
+        shared_constants: Option<&CompiledGraph>,
     ) -> Result<Self> {
         #[cfg(not(feature = "debug-logging"))]
         let _ = t0;
         // ── Allocate GPU buffers ──────────────────────────────────────────
         let plan = ResidentMemoryPlan::from_graph(graph)?;
         let slot_sizes = plan.slot_sizes();
+        let constant_slots = plan
+            .initializer_entries()
+            .filter_map(|entry| entry.reuse_slot)
+            .collect::<HashSet<_>>();
         #[cfg(feature = "debug-logging")]
         let total_slot_bytes = slot_sizes.iter().sum::<u64>();
         let mut slot_buffers = Vec::with_capacity(slot_sizes.len());
         for (slot, byte_size) in slot_sizes.iter().enumerate() {
-            let buf = ctx
-                .device
-                .create_buffer(&crate::vision::wgpu::BufferDescriptor {
-                    label: Some(&format!("resident slot {slot}")),
-                    size: *byte_size,
-                    usage: crate::vision::wgpu::BufferUsages::STORAGE
-                        | crate::vision::wgpu::BufferUsages::COPY_SRC
-                        | crate::vision::wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+            if constant_slots.contains(&slot)
+                && let Some(parent) = shared_constants
+            {
+                let parent_buffer = parent.slot_buffers.get(slot).with_context(|| {
+                    format!("compiled sibling: parent is missing constant slot {slot}")
+                })?;
+                slot_buffers.push(Arc::clone(parent_buffer));
+                continue;
+            }
+            let buf = Arc::new(
+                ctx.device
+                    .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                        label: Some(&format!("resident slot {slot}")),
+                        size: *byte_size,
+                        usage: crate::vision::wgpu::BufferUsages::STORAGE
+                            | crate::vision::wgpu::BufferUsages::COPY_SRC
+                            | crate::vision::wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+            );
             slot_buffers.push(buf);
         }
         let mut tensor_slots = HashMap::new();
@@ -168,6 +233,9 @@ impl CompiledGraph {
             let slot = *tensor_slots.get(name).with_context(|| {
                 format!("compiled: missing resident slot for constant `{name}`")
             })?;
+            if shared_constants.is_some() && constant_slots.contains(&slot) {
+                continue;
+            }
             let buf = slot_buffers
                 .get(slot)
                 .with_context(|| format!("compiled: missing resident slot buffer {slot}"))?;
@@ -240,10 +308,68 @@ impl CompiledGraph {
         // Keyed by shader source value, not pointer: `const &str` addresses
         // are not guaranteed stable across reference sites, and a missed hit
         // would compile (and pay naga validation for) the same WGSL twice.
-        let mut pipeline_cache: HashMap<&'static str, Arc<crate::vision::wgpu::ComputePipeline>> =
-            HashMap::new();
-        let mut bgl_cache: HashMap<&'static str, Arc<crate::vision::wgpu::BindGroupLayout>> =
-            HashMap::new();
+        let mut pipeline_cache = shared_constants
+            .map(|parent| parent.pipeline_cache.clone())
+            .unwrap_or_default();
+        let mut bgl_cache = shared_constants
+            .map(|parent| parent.bgl_cache.clone())
+            .unwrap_or_default();
+
+        // The first session for a document has no parent to inherit pipelines
+        // from, so it must compile every unique shader. naga validation and
+        // backend codegen (HLSL/FXC on DX12, SPIR-V on Vulkan) dominate cold
+        // start, and each unique WGSL source is independent, so compile them in
+        // parallel across Rayon workers instead of serially inside the step
+        // loop. wgpu's `Device` is `Sync`, which makes concurrent pipeline
+        // creation safe. Sibling sessions skip this entirely: their caches were
+        // cloned from the parent above (Arc clones of the same GPU objects).
+        if shared_constants.is_none() {
+            use crate::vision::ops::sigmoid::SIGMOID_VEC4_WGSL;
+            // Collect the unique (shader source → read-input count) set, honoring
+            // the same SiLU rewrite the step loop applies so the precompiled
+            // pipelines match exactly what the loop will look up.
+            let mut unique_shaders: HashMap<&'static str, usize> = HashMap::new();
+            for (op_idx, op) in graph.planned_ops.iter().enumerate() {
+                if fused_mul_ops.contains(&op_idx) {
+                    continue;
+                }
+                let mut step_specs = op_steps(op, DUMMY_BIAS)?;
+                if silu_overrides.contains_key(&op_idx) {
+                    for spec in &mut step_specs {
+                        let is_vec4 = spec.wgsl == SIGMOID_VEC4_WGSL;
+                        spec.wgsl = if is_vec4 { SILU_VEC4_WGSL } else { SILU_WGSL };
+                    }
+                }
+                for spec in &step_specs {
+                    unique_shaders
+                        .entry(spec.wgsl)
+                        .or_insert(spec.n_read_inputs);
+                }
+            }
+
+            let device: &crate::vision::wgpu::Device = &ctx.device;
+            let compiled: Vec<(
+                &'static str,
+                Arc<crate::vision::wgpu::ComputePipeline>,
+                Arc<crate::vision::wgpu::BindGroupLayout>,
+            )> = unique_shaders
+                .par_iter()
+                .map(|(&wgsl, &n_read_inputs)| {
+                    let (pipeline, bgl) = build_pipeline_for_shader(device, wgsl, n_read_inputs);
+                    (wgsl, pipeline, bgl)
+                })
+                .collect();
+            for (wgsl, pipeline, bgl) in compiled {
+                pipeline_cache.insert(wgsl, pipeline);
+                bgl_cache.insert(wgsl, bgl);
+            }
+            #[cfg(feature = "debug-logging")]
+            eprintln!(
+                "  compiled.build: precompiled {} unique pipeline(s) in parallel at {:.0}ms",
+                pipeline_cache.len(),
+                t0.elapsed().as_millis()
+            );
+        }
 
         // ── Build compiled steps ──────────────────────────────────────────
         let mut steps: Vec<CompiledStep> = Vec::new();
@@ -306,39 +432,10 @@ impl CompiledGraph {
                 {
                     (p.clone(), b.clone())
                 } else {
-                    let mut read_flags: Vec<bool> = vec![true; spec.n_read_inputs];
-                    read_flags.push(false); // output (read_write)
-                    read_flags.push(true); // params (read)
-                    let bgl = Arc::new(ctx.device.create_bind_group_layout(
-                        &crate::vision::wgpu::BindGroupLayoutDescriptor {
-                            label: None,
-                            entries: &storage_bgl_entries(&read_flags),
-                        },
-                    ));
-                    let pipeline = Arc::new(ctx.device.create_compute_pipeline(
-                        &crate::vision::wgpu::ComputePipelineDescriptor {
-                            label: None,
-                            layout: Some(&ctx.device.create_pipeline_layout(
-                                &crate::vision::wgpu::PipelineLayoutDescriptor {
-                                    label: None,
-                                    bind_group_layouts: &[Some(&bgl)],
-                                    immediate_size: 0,
-                                },
-                            )),
-                            module: &ctx.device.create_shader_module(
-                                crate::vision::wgpu::ShaderModuleDescriptor {
-                                    label: None,
-                                    source: crate::vision::wgpu::ShaderSource::Wgsl(
-                                        spec.wgsl.into(),
-                                    ),
-                                },
-                            ),
-                            entry_point: Some("main"),
-                            compilation_options:
-                                crate::vision::wgpu::PipelineCompilationOptions::default(),
-                            cache: None,
-                        },
-                    ));
+                    // Fallback for a shader the parallel pre-pass did not cover
+                    // (e.g. a sibling whose parent cache somehow lacks it).
+                    let (pipeline, bgl) =
+                        build_pipeline_for_shader(&ctx.device, wgsl_key, spec.n_read_inputs);
                     pipeline_cache.insert(wgsl_key, pipeline.clone());
                     bgl_cache.insert(wgsl_key, bgl.clone());
                     (pipeline, bgl)
@@ -501,6 +598,8 @@ impl CompiledGraph {
             output_shapes,
             output_bytes,
             _params_bufs: params_bufs,
+            pipeline_cache,
+            bgl_cache,
         })
     }
 
@@ -547,10 +646,7 @@ impl CompiledGraph {
             }
             self.ctx.queue.submit(Some(encoder.finish()));
             if self.ctx.is_cpu_adapter {
-                let _ = self
-                    .ctx
-                    .device
-                    .poll(crate::vision::wgpu::PollType::wait_indefinitely());
+                self.ctx.wait()?;
             }
         }
 
@@ -603,10 +699,7 @@ impl CompiledGraph {
             receivers.push((i, name, receiver));
         }
 
-        let _ = self
-            .ctx
-            .device
-            .poll(crate::vision::wgpu::PollType::wait_indefinitely());
+        self.ctx.wait()?;
 
         for (i, name, receiver) in receivers {
             receiver
@@ -732,7 +825,7 @@ impl CompiledGraph {
         encoder.copy_buffer_to_buffer(&resolve_buffer, 0, &readback_buffer, 0, query_bytes as u64);
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        let raw = map_readback(&self.ctx.device, &readback_buffer, query_bytes).await?;
+        let raw = map_readback(&self.ctx, &readback_buffer, query_bytes).await?;
         let ticks: Vec<u64> = bytemuck::cast_slice(&raw).to_vec();
         let period_ns = self.ctx.queue.get_timestamp_period() as f64;
         let mut profiles = Vec::with_capacity(self.steps.len());
@@ -839,7 +932,7 @@ impl CompiledGraph {
         encoder.resolve_query_set(&query_set, 0..query_count, &resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(&resolve_buffer, 0, &readback_buffer, 0, query_bytes as u64);
         self.ctx.queue.submit(Some(encoder.finish()));
-        let raw = map_readback(&self.ctx.device, &readback_buffer, query_bytes).await?;
+        let raw = map_readback(&self.ctx, &readback_buffer, query_bytes).await?;
         let ticks: Vec<u64> = bytemuck::cast_slice(&raw).to_vec();
         let period_ns = self.ctx.queue.get_timestamp_period() as f64;
         let to_ms = |ticks: u64| ticks as f64 * period_ns / 1_000_000.0;
