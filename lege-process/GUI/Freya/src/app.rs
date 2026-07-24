@@ -1496,7 +1496,8 @@ fn OutputSettingsCard(
                     move |_| {
                         let should_show_popup = {
                             let mut s = state.write();
-                            s.options.layout_analysis = !s.options.layout_analysis;
+                            let enabled = !s.options.layout_analysis;
+                            s.options.set_layout_analysis(enabled);
                             !s.options.layout_analysis
                         };
                         if should_show_popup {
@@ -1671,7 +1672,8 @@ fn PagesDeviceCard(
                     let mut state = state;
                     move |_| {
                         let mut s = state.write();
-                        s.options.invert_input = !s.options.invert_input;
+                        let enabled = !s.options.invert_input;
+                        s.options.set_invert_input(enabled);
                     }
                 },
             ),
@@ -1892,13 +1894,7 @@ fn PagesDeviceCard(
                     move |_| {
                         let mut s = state.write();
                         let enable = !s.options.reflow;
-                        s.options.reflow = enable;
-                        if enable {
-                            s.options.center_margins = false;
-                            s.options.crop_margins = false;
-                            s.options.crop_footnotes = false;
-                            s.options.crop_free_aspect = false;
-                        }
+                        s.options.set_reflow(enable);
                     }
                 },
             ),
@@ -3381,7 +3377,7 @@ fn start_or_cancel_processing(
                                     {
                                         // Persist every terminal failure, not just
                                         // spawn/exit errors: worker-reported errors
-                                        // (PDFium, Metal, encoder, permissions) used
+                                        // (renderer, Metal, encoder, permissions) used
                                         // to vanish once the popup timed out.
                                         {
                                             let original_size =

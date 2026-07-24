@@ -351,6 +351,9 @@ pub fn gui_options_to_cli_args(
     options: &ProcessingOptions,
     gui_worker: bool,
 ) -> Vec<OsString> {
+    let mut normalized_options = options.clone();
+    normalized_options.normalize_processing_dependencies();
+    let options = &normalized_options;
     let mut args: Vec<OsString> = Vec::new();
 
     if gui_worker {
@@ -643,14 +646,10 @@ fn configure_cli_command(cmd: &mut std::process::Command, cli_path: &Path) {
     #[cfg(target_os = "macos")]
     if let Some(contents_dir) = macos_bundle_contents_dir(cli_path) {
         let resources_dir = contents_dir.join("Resources");
-        let pdfium_path = contents_dir.join("Frameworks/libpdfium.dylib");
         let encoder_path = contents_dir.join("Helpers/djvu-encoder");
 
         cmd.env("LEGE_ASSET_DIR", &resources_dir);
         cmd.env("LEGE_DATA_DIR", &resources_dir);
-        if pdfium_path.is_file() {
-            cmd.env("LEGE_PDFIUM_PATH", pdfium_path);
-        }
         if encoder_path.is_file() {
             cmd.env("LEGE_DJVU_ENCODER", encoder_path);
         }
@@ -940,6 +939,56 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
         assert!(args.iter().any(|arg| arg == OsStr::new("--dither")));
+    }
+
+    #[test]
+    fn reflow_cli_matrix_keeps_layout_enabled_for_pdf_and_djvu() {
+        for (output_format, output_name, text_format) in [
+            (OutputFormat::Pdf, "output.pdf", "ccitt4"),
+            (OutputFormat::Djvu, "output.djvu", "djvu"),
+        ] {
+            let mut options = ProcessingOptions::new();
+            options.output_format = output_format;
+            options.set_reflow(true);
+
+            let args = gui_options_to_cli_args(
+                &PathBuf::from("input.pdf"),
+                &PathBuf::from(output_name),
+                &options,
+                true,
+            );
+
+            assert_eq!(
+                cli_arg_after(&args, "--text-format").as_deref(),
+                Some(text_format)
+            );
+            assert!(args.iter().any(|arg| arg == OsStr::new("--reflow")));
+            assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
+            assert!(!args.iter().any(|arg| arg == OsStr::new("--invert")));
+            assert!(!args.iter().any(|arg| arg == OsStr::new("--center-margins")));
+            assert!(!args.iter().any(|arg| arg == OsStr::new("--crop-margins")));
+        }
+    }
+
+    #[test]
+    fn worker_args_repair_stale_reflow_dependencies() {
+        let mut options = ProcessingOptions::new();
+        options.reflow = true;
+        options.layout_analysis = false;
+        options.invert_input = true;
+        options.center_margins = true;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert!(args.iter().any(|arg| arg == OsStr::new("--reflow")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--invert")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--center-margins")));
     }
 
     #[test]

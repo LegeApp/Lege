@@ -169,6 +169,105 @@ impl ProcessingOptions {
             },
         }
     }
+
+    /// Keep GUI state aligned with the core pipeline's effective feature
+    /// rules. Reflow is a layout mode; inversion disables the layout model.
+    pub fn set_layout_analysis(&mut self, enabled: bool) {
+        self.layout_analysis = enabled;
+        if enabled {
+            self.invert_input = false;
+        } else {
+            self.reflow = false;
+        }
+    }
+
+    pub fn set_invert_input(&mut self, enabled: bool) {
+        self.invert_input = enabled;
+        if enabled {
+            self.layout_analysis = false;
+            self.reflow = false;
+        }
+    }
+
+    pub fn set_reflow(&mut self, enabled: bool) {
+        self.reflow = enabled;
+        if enabled {
+            self.layout_analysis = true;
+            self.invert_input = false;
+            self.center_margins = false;
+            self.crop_margins = false;
+            self.crop_footnotes = false;
+            self.crop_free_aspect = false;
+        }
+    }
+
+    /// Repair stale or hand-edited settings before they become worker
+    /// arguments. An explicit reflow selection wins over hidden incompatible
+    /// state because it is the most constrained mode.
+    pub fn normalize_processing_dependencies(&mut self) {
+        if self.reflow {
+            self.set_reflow(true);
+        } else if self.invert_input {
+            self.set_invert_input(true);
+        } else if !self.layout_analysis {
+            self.set_layout_analysis(false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod reflow_tests {
+    use super::ProcessingOptions;
+
+    #[test]
+    fn reflow_enables_layout_and_clears_incompatible_geometry_state() {
+        let mut options = ProcessingOptions::new();
+        options.layout_analysis = false;
+        options.invert_input = true;
+        options.center_margins = true;
+        options.crop_margins = true;
+        options.crop_footnotes = true;
+        options.crop_free_aspect = true;
+
+        options.set_reflow(true);
+
+        assert!(options.reflow);
+        assert!(options.layout_analysis);
+        assert!(!options.invert_input);
+        assert!(!options.center_margins);
+        assert!(!options.crop_margins);
+        assert!(!options.crop_footnotes);
+        assert!(!options.crop_free_aspect);
+    }
+
+    #[test]
+    fn disabling_layout_or_enabling_inversion_disables_reflow() {
+        let mut options = ProcessingOptions::new();
+        options.set_reflow(true);
+        options.set_layout_analysis(false);
+        assert!(!options.reflow);
+
+        options.set_reflow(true);
+        options.set_invert_input(true);
+        assert!(!options.reflow);
+        assert!(!options.layout_analysis);
+    }
+
+    #[test]
+    fn normalization_repairs_stale_reflow_settings() {
+        let mut options = ProcessingOptions::new();
+        options.reflow = true;
+        options.layout_analysis = false;
+        options.invert_input = true;
+        options.crop_margins = true;
+
+        options.normalize_processing_dependencies();
+
+        assert!(options.reflow);
+        assert!(options.layout_analysis);
+        assert!(!options.invert_input);
+        assert!(!options.crop_margins);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
