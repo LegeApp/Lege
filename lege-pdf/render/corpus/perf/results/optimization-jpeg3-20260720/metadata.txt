@@ -1,0 +1,25 @@
+baseline_binary=built from CURRENT tree (before this pass's jpeg/mod.rs edits), copied aside
+baseline_git=HEAD (detached) 1bb357984d66cdbc2526199dbc033c085e3e0a67 — tree has large uncommitted changes (JPEG passes 1-2, JPX, jp2lam path dep); NOT committed
+measurement=paired A/B, alternating first-runner across two batches; per-task attribution in one thermal window
+decode-only: viewer page scale 1.0, 2x10 runs/binary (paired), 2x8 runs/binary (attribution)
+compiled: sweep page scale 2.0833333, 2x5 runs/binary
+pdf=/mnt/Samsung980_1TB/to-sort/globalhistoryofm0000unse_1.pdf page 0 (2758x3561 baseline 4:2:0, Y 2x2, Cb/Cr 1x1)
+PDF_RENDERER_PDFIUM=/mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/libpdfium.so
+PDF_RENDERER_CORPUS_ROOT=/mnt/Samsung980_1TB
+RUSTFLAGS=
+
+--- rustc -vV ---
+rustc 1.95.0 (59807616e 2026-04-14)
+binary: rustc
+commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860
+commit-date: 2026-04-14
+host: x86_64-unknown-linux-gnu
+release: 1.95.0
+LLVM version: 22.1.2
+
+--- lscpu (head) ---
+Architecture:                            x86_64
+CPU(s):                                  20
+Model name:                              13th Gen Intel(R) Core(TM) i7-13700H
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities
+NUMA node0 CPU(s):                       0-19

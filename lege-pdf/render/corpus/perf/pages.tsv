@@ -1,0 +1,14 @@
+# id	class	path	page	scale	timing_runs	counter_runs
+jpeg-scan-viewer	jpeg_scan	to-sort/globalhistoryofm0000unse_1.pdf	0	1.0	10	5
+jpeg-scan-sweep	jpeg_scan_high_resolution_slow	to-sort/globalhistoryofm0000unse_1.pdf	0	2.0833333	5	2
+jpx-scan	jpx_scan	Pol was right again/Ancient History/Etruscans/Culture/Axel Boethius- Etruscan and Early Roman Architecture.pdf	1	2.0833333	10	5
+mrc-jpx-jbig2	mrc	to-sort/Zen-essence.pdf	0	2.0833333	10	5
+ccitt-bilevel	ccitt	Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfbox-source/tools/src/test/resources/input/ImageIOUtil/ccitt4-cib-test.pdf	0	2.0	15	15
+latin-text	latin_text	Rust-projects/pdfium-port-plan/renderer-corpus/from-red-drive/Ebooks 2020/Cambridge Textbooks/Buddhist_Ethics.pdf	10	2.0	50	75
+cjk-cid-text	cjk_glyph_heavy	Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/arial_unicode_ab_cidfont.pdf	0	2.0	75	150
+type1-fonts	type1_cff	Rust-projects/pdfium-port-plan/renderer-corpus/hayro-source/hayro-tests/pdfs/custom/fonts_type1_latex.pdf	0	2.0	20	20
+vector-diagram	vector_path_heavy	Rust-projects/pdfium-port-plan/renderer-corpus/PDF/Ebooks 2020/Springer Textbooks/2013_Book_Acid-BaseDiagrams.pdf	50	2.0	75	200
+transparency-group	transparency_group	Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/transparent.pdf	0	2.0	500	2000
+soft-mask	soft_mask	Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/smaskdim.pdf	0	2.0	100	250
+tiling-pattern	tiling_pattern	Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/tiling_patterns_variations.pdf	0	2.0	100	250
+radial-shading	shading_heavy	Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/radial_gradients.pdf	0	2.0	75	100

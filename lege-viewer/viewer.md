@@ -1,3 +1,8 @@
+> **Roadmap note (2026-07-25):** This is the original platform and viewer
+> design reference. Its phase numbering is historical. `STAGES.md` is the
+> authority for current stage order and for the evidence-gated placement of
+> GPU work.
+
 This is feasible, with one necessary qualification: **Winit alone cannot present pixels**. It creates windows and supplies events and raw platform handles, but deliberately provides no drawing API. The minimal practical foundation is therefore **Winit plus Softbuffer**, with every layout, control, scrollbar, compositor, and viewer behavior written specifically for Lege. Winit’s current event model already exposes wheel, pan, pinch, touch, IME, DPI, keyboard, file-drop, and redraw events, so it is sufficient as the platform boundary. ([Docs.rs][1])
 
 # Lege Viewer: From-Scratch Cross-Platform GUI Plan

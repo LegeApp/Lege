@@ -1,11 +1,15 @@
 # Lege Viewer — Fundamentals Plan (Reader-First Core)
 
+> **Roadmap note (2026-07-25):** This remains the authority for reader-first
+> mechanics, but not for current stage numbering or order. See `STAGES.md` for
+> the reconciled roadmap and current position.
+
 This document extends `viewer.md`. That document defines the platform
 foundation (winit + softbuffer, retained framebuffer, damage tracking, thread
 ownership, phased build-up). This one defines the **reader-first mechanics**
 that the foundation exists to serve, resolves the open decisions needed to
 start building, and grounds the renderer bridge in the actual API of the
-`pdf-renderer` workspace (`/mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/pdf-renderer`).
+renderer crates (`lege-pdf/render`).
 
 Where the two documents overlap, this one is authoritative.
 

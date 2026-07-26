@@ -1,0 +1,30 @@
+/target
+**/*.rs.bk
+*.pdb
+/.claude/
+# The differential oracle: its build dir, its output, and the prebuilt
+# libpdfium it grades against (never a dependency of the engine).
+tools/*/target/
+tools/pdfium-diff/pdfium-diff-out/
+# Any sweep/rerun/dry-run output directory the oracle writes.
+tools/pdfium-diff/pdfium-diff-*/
+*.so
+tools/pdfium-diff/pdfium-diff-out.log
+# Third-party renderer checkouts used as differential controls: each keeps its
+# own VCS history and is never vendored here. (The sibling mupdf/poppler/
+# ghostscript/pdf.js checkouts likely want the same treatment.)
+tools/hayro/
+tools/mupdf/
+tools/poppler-*/
+tools/ghostscript-*/
+tools/pdf.js/
+tools/.renderer-build/
+tools/.renderer-bin/
+
+# Ad-hoc local sampling captures. Curated profiling artifacts live under
+# corpus/perf/results/ and are committed explicitly.
+/perf.data*
+/compiled-page.*
+/scan-prepared.*
+/text-compiled.*
+/text-prepared.*

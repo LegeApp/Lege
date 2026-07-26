@@ -1,0 +1,20 @@
+[package]
+name = "pdf-render-wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+lege-gpu = { path = "../../../../lege-gpu" }
+pdf-content = { workspace = true }
+pdf-document = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-render-cpu = { workspace = true }
+pdf-source = { workspace = true }
+
+[lints]
+workspace = true

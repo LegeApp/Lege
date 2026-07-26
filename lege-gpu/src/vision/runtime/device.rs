@@ -47,6 +47,9 @@ pub(crate) struct GpuContext {
     pub(crate) queue: Arc<crate::vision::wgpu::Queue>,
     pub(crate) is_cpu_adapter: bool,
     pub(crate) supports_timestamps: bool,
+    pub(crate) adapter_name: Arc<str>,
+    pub(crate) adapter_backend: crate::vision::wgpu::Backend,
+    pub(crate) adapter_device_type: crate::vision::wgpu::DeviceType,
     poller: GpuPoller,
 }
 
@@ -196,6 +199,9 @@ impl GpuContext {
                         queue: Arc::new(queue),
                         is_cpu_adapter: is_cpu,
                         supports_timestamps,
+                        adapter_name: Arc::from(info.name),
+                        adapter_backend: info.backend,
+                        adapter_device_type: info.device_type,
                         poller,
                     });
                 }

@@ -1,0 +1,23 @@
+file: /mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/renderer-corpus/from-red-drive/Ebooks 2020/Cambridge Textbooks/Buddhist_Ethics.pdf
+pages: ours=74 pdfium=74   scale=2
+open (ours): 1.8 ms
+
+── per-page render (single-threaded) ──
+page    ours(ms)  pdfium(ms)    ratio
+   0       469.7       104.9     4.5x
+   1         1.7         1.7     1.0x
+   2        11.9         4.2     2.8x
+   3         7.4         3.5     2.1x
+   4         7.7         2.6     3.0x
+   5         3.5         1.1     3.1x
+   6        12.3         4.6     2.7x
+   7         8.8         3.1     2.8x
+   8         8.8         3.0     3.0x
+   9         8.8         3.0     3.0x
+mean        54.1        13.2     4.1x   (pdfium open 0.3 ms)
+
+── whole document ──
+ours (parallel, 7 compile + 13 render workers): 0.51 s   74/74 pages rendered   145.1 pages/s
+pdfium (sequential):                                 0.31 s   74/74 pages rendered   238.2 pages/s
+
+=> ours is 1.64x slower than PDFium on whole-document throughput.

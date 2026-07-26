@@ -1,0 +1,49 @@
+# The PDFium differential oracle (roadmap line 18: "the differential-testing
+# oracle"; README: tools/ = "PDFium reference-render comparison tooling").
+#
+# Deliberately OUTSIDE the workspace: it needs a prebuilt libpdfium.so, which
+# is not a dependency of the engine and must never become one. The engine
+# never links PDFium; this tool loads it at runtime purely to grade us.
+[package]
+name = "pdfium-diff"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+dhat-heap = ["dep:dhat"]
+renderer-pdfium = []
+renderer-hayro = []
+renderer-poppler = []
+renderer-mupdf = []
+renderer-ghostscript = []
+renderer-pdfjs = []
+all-renderers = [
+    "renderer-pdfium",
+    "renderer-hayro",
+    "renderer-poppler",
+    "renderer-mupdf",
+    "renderer-ghostscript",
+    "renderer-pdfjs",
+]
+
+[dependencies]
+dhat = { version = "0.3.3", optional = true }
+libloading = "0.8"
+png = "0.17"
+font8x8 = "0.3"
+pdf-content = { path = "../../crates/pdf-content", features = ["profiling"] }
+pdf-document = { path = "../../crates/pdf-document", features = ["profiling"] }
+pdf-source = { path = "../../crates/pdf-source" }
+pdf-page-ir = { path = "../../crates/pdf-page-ir" }
+pdf-render-api = { path = "../../crates/pdf-render-api" }
+pdf-render-cpu = { path = "../../crates/pdf-render-cpu", features = ["profiling"] }
+pdf-render-scheduler = { path = "../../crates/pdf-render-scheduler", features = ["profiling"] }
+pdf-font = { path = "../../crates/pdf-font" }
+pdf-profiling = { path = "../../crates/pdf-profiling" }
+
+[workspace]
+
+[profile.release]
+debug = "line-tables-only"

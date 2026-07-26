@@ -1,0 +1,30 @@
+# optimization-raster-20260720 measurement metadata
+
+## git HEAD (read-only; NO commits made)
+98d981430f46eba98a80093c61d69ca3d8d498d1
+
+## working tree (uncommitted)
+ M crates/pdf-render-cpu/src/raster.rs
+?? corpus/perf/results/optimization-raster-20260720/
+
+## binaries
+bin-base: tools/pdfium-diff built from clean HEAD 98d9814 BEFORE editing raster.rs (frozen aside)
+bin-opt:  tools/pdfium-diff built after the raster.rs rewrite (A1+A2+A3 + routing guard)
+5c6d6654540fd95140b9f646d2f3a894  pdfium-diff-BASE
+dd93e429855d80b48238896d4561d53a  pdfium-diff-OPT
+
+## method
+Paired A/B, tools/pdfium-diff 'profile --mode compiled' (one JSONL row per timing run),
+two alternating batches per page (base,opt,base,opt); medians computed from the pooled rows.
+Whole-document via 'pipeline-profile' (4 runs/binary). PDFium severity via
+PDF_RENDERER_PDFIUM=libpdfium.so (oracle render outside the timed region).
+Corpus root /mnt/Samsung980_1TB. Pages per corpus/perf/pages.tsv, scale 2.0.
+
+## rustc
+rustc 1.95.0 (59807616e 2026-04-14)
+
+## host CPU
+CPU(s):                                  20
+Model name:                              13th Gen Intel(R) Core(TM) i7-13700H
+Thread(s) per core:                      2
+Core(s) per socket:                      14

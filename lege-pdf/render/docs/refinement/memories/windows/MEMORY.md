@@ -1,0 +1,6 @@
+> CANONICAL/FULLER MEMORY IS ON THE LINUX MOUNT: `E:\home\dk\.claude\projects\-mnt-Samsung980-1TB-Rust-projects-pdfium-port-plan\memory\` (project path differs Windows D:\ vs Linux /mnt, so the harness picks this C:\ dir on Windows). Read the E:\ MEMORY.md first — it has the complete sweep 6–13 history. Write session memory there for continuity; this C:\ store is a partial mirror.
+
+- [pdf-renderer state pointer](pdf-renderer-state-pointer.md) — 2026-07-20 production-readiness pass merged to master; repo moves, temp codec paths, no-remote flag, Linux-side sweep pending
+- [sweep-4 review + 6 fixes](sweep4-review-shading-fix.md) — 2026-07-21 sweep-4 triage; 6 code fixes (shading colorspace/BBox/text/bg, TIFF predictor, defensive clamps) all committed
+- [sweep-5 analysis + fix queue](sweep5-analysis.md) — 2026-07-21 sweep-5 (book corpus, 2/3 roots); tail halved; NEW top residuals: CJK non-embedded text (blank), scanned-book over-ink (black) & under-ink (blank)
+- [sweep-12 tail: JBIG2 + CMYK-ICC](sweep12-tail-jbig2-cmyk.md) — 2026-07-24 last 2 residuals closed: JBIG2 custom-AT refinement (committed 027a485) + Huser CMYK-ICC IccCmyk evaluator (validated, uncommitted — entangled with text-extraction WIP in interpret.rs)

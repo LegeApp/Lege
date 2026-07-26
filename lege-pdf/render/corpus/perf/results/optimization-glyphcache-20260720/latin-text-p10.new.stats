@@ -1,0 +1,2 @@
+shared-glyph-cache: hits=52884 misses=896 inserts=896 hit_rate=0.9833
+wrote structured profiles to /mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/pdf-renderer/corpus/perf/results/optimization-glyphcache-20260720/latin-text-p10.new.jsonl

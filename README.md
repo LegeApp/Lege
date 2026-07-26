@@ -2,7 +2,7 @@
 
 This directory is the Rust workspace root for the Lege application family.
 The layout separates applications, shared compute/OCR/PDF libraries, codecs,
-and project tooling so the processor and forthcoming PDF viewer/manager can
+and project tooling so the processor and native PDF viewer/manager can
 share the renderer and lower-level crates without becoming one monolithic app.
 
 ## Folder contract
@@ -28,8 +28,10 @@ Lege-ecosystem/
 ├── lege-gpu/                  shared GPU compute and ONNX runtime
 ├── lege-ocr/                  shared OCR library and debug program
 ├── lege-pdf/
+│   ├── read/                  document intake/read seam
 │   ├── write/                 shared typed PDF writer
-│   └── render/                assigned home for the renderer workspace
+│   └── render/                native document and rendering engine
+├── lege-viewer/               reader-first native PDF viewer
 ├── lege-codecs/
 │   ├── jbig2enc-rust/         JBIG2 codec project
 │   ├── jp2lam/                JPEG2000 codec project
@@ -38,10 +40,10 @@ Lege-ecosystem/
 └── freya-main/                vendored Freya workspace
 ```
 
-`lege-pdf/render` is deliberately excluded from the ecosystem workspace until
-the renderer is placed there. The codec projects keep independent build graphs,
-but the root workspace patches the processor's historical Git dependencies to
-the in-tree JBIG2 and JPEG2000 sources.
+`lege-pdf/render` and `lege-viewer` are direct workspace members and evolve
+together through retained semantic, text, compiled-IR, and tiled-raster APIs.
+The codec projects keep independent build graphs, while the root workspace
+uses the in-tree JBIG2 and JPEG2000 sources.
 
 ## Common commands
 
@@ -55,6 +57,7 @@ cargo build
 cargo process
 cargo gui
 cargo music-gui
+cargo viewer
 
 # Shared crates
 cargo gpu
@@ -78,6 +81,7 @@ cargo ecosystem-check
 
 # Run the processor CLI
 cargo process-run -- path/to/input.pdf
+cargo viewer-run -- path/to/input.pdf
 
 # Packaging task help
 cargo xtask-help

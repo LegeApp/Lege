@@ -5,8 +5,8 @@
 #   * lege-gpu       — shared wgpu compute backend (binarization, resize, ONNX)
 #   * lege-ocr       — OCR pipeline library + debug binary
 #   * lege-pdf/write — typed, append-only PDF emitter
-#   * lege-pdf/read  — Lege-owned seam over the external PDF renderer
-#   * lege-pdf/render— placeholder only; the renderer stays in its own workspace
+#   * lege-pdf/read  — Lege-owned document intake/read seam
+#   * lege-pdf/render— native Lege PDF document and rendering engine
 #   * lege-codecs/*  — JBIG2 / JPEG2000 / DjVu codecs (own build graphs — excluded,
 #                      linked codecs are wired in via [patch] below)
 #
@@ -22,26 +22,42 @@ members = [
     "lege-gpu",                 # `lege_gpu`
     "lege-ocr",                 # `lege_ocr`
     "lege-pdf/read",            # renderer-backed document intake/read seam
+    "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
+    "lege-viewer",              # reader-first native PDF viewer
     "lege-misc/xtask",          # packaging tasks (`cargo appimage`)
 ]
 # Kept out of the workspace on purpose:
 #   freya-main               — vendored upstream fork with its own workspace
 #   lege-codecs/*            — separate build graphs / licenses (patched in below)
-#   lege-pdf/render          — empty placeholder; external renderer stays separate
 exclude = [
     "freya-main",
     "lege-codecs",
-    "lege-pdf/render",
 ]
 default-members = [
     "lege-process",
     "lege-process/GUI/Freya",
 ]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/LegeApp/Lege"
+
 [workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
 unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "german", "layout-detection", "music-sheet", "ocr", "paddle-ocr", "tesseract-ocr", "trace_arith"))'] }
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
 [workspace.dependencies]
 anyhow = { version = "1.0.103", features = ["backtrace"] }
@@ -58,21 +74,38 @@ once_cell = "1.21.4"
 rayon = "1.11.0"
 image = { version = "0.25.10", features = ["png", "jpeg", "tiff"] }
 flume = "0.11"
-# Temporary external renderer workspace. Keep every path here so moving the
-# renderer later changes one manifest only.
-pdf-content = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-content" }
-pdf-document = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-document" }
-pdf-object = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-object" }
-pdf-page-ir = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-page-ir" }
-pdf-read = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-read" }
-pdf-render-api = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-render-api" }
-pdf-render-cpu = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-render-cpu" }
-pdf-security = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-security" }
-pdf-source = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-source" }
-pdf-test-support = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-test-support" }
-pdf-text = { path = "../pdfium-port-plan/pdf-renderer/crates/pdf-text" }
+# Native renderer crates. Their single canonical source tree is in
+# `lege-pdf/render`; the viewer consumes these APIs directly.
+pdf-color = { path = "lege-pdf/render/crates/pdf-color" }
+pdf-content = { path = "lege-pdf/render/crates/pdf-content" }
+pdf-document = { path = "lege-pdf/render/crates/pdf-document" }
+pdf-font = { path = "lege-pdf/render/crates/pdf-font" }
+pdf-function = { path = "lege-pdf/render/crates/pdf-function" }
+pdf-geom = { path = "lege-pdf/render/crates/pdf-geom" }
+pdf-image = { path = "lege-pdf/render/crates/pdf-image" }
+pdf-object = { path = "lege-pdf/render/crates/pdf-object" }
+pdf-page-ir = { path = "lege-pdf/render/crates/pdf-page-ir" }
+pdf-postprocess = { path = "lege-pdf/render/crates/pdf-postprocess" }
+pdf-profiling = { path = "lege-pdf/render/crates/pdf-profiling" }
+pdf-read = { path = "lege-pdf/render/crates/pdf-read" }
+pdf-render-api = { path = "lege-pdf/render/crates/pdf-render-api" }
+pdf-render-cpu = { path = "lege-pdf/render/crates/pdf-render-cpu" }
+pdf-render-scheduler = { path = "lege-pdf/render/crates/pdf-render-scheduler" }
+pdf-render-wgpu = { path = "lege-pdf/render/crates/pdf-render-wgpu" }
+pdf-security = { path = "lege-pdf/render/crates/pdf-security" }
+pdf-source = { path = "lege-pdf/render/crates/pdf-source" }
+pdf-structure = { path = "lege-pdf/render/crates/pdf-structure" }
+pdf-syntax = { path = "lege-pdf/render/crates/pdf-syntax" }
+pdf-test-support = { path = "lege-pdf/render/crates/pdf-test-support" }
+pdf-text = { path = "lege-pdf/render/crates/pdf-text" }
+memmap2 = "0.9"
+crossbeam-channel = "0.5"
+arc-swap = "1.7"
+jp2lam = { path = "lege-codecs/jp2lam", default-features = false }
+jbig2enc-rust = { path = "lege-codecs/jbig2enc-rust", default-features = false, features = ["decode"] }
+hayro-ccitt = "0.3"
 tempfile = "3.27.0"
-flate2 = "1.1.9"
+flate2 = { version = "1.1.9", features = ["zlib-rs"] }
 zip = { version = "8.6.0", default-features = false }
 miniz_oxide = "0.8"
 lazy_static = "1.5.0"
@@ -140,6 +173,7 @@ euclid = "0.22.9"
 bytes = "1.12.1"
 rfd = "0.17"
 cosmic-text = "0.19.0"
+copypasta = "0.10"
 softbuffer = "0.4.8"
 tiny-skia = "0.12.0"
 raw-window-handle = "0.6.0"

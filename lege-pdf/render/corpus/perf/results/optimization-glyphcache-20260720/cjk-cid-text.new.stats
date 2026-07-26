@@ -1,0 +1,2 @@
+shared-glyph-cache: hits=76 misses=4 inserts=4 hit_rate=0.9500
+wrote structured profiles to /mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/pdf-renderer/corpus/perf/results/optimization-glyphcache-20260720/cjk-cid-text.new.jsonl

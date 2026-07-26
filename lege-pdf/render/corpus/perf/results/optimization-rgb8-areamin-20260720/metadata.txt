@@ -1,0 +1,24 @@
+# optimization-rgb8-areamin-20260720 metadata
+
+## git HEAD before edits (read-only; NO commits made)
+5e31d9a6ab93f6b28efd94fba6ecdfcfe7d4456d
+
+## working tree
+ M crates/pdf-render-cpu/src/exec.rs
+ M crates/pdf-render-cpu/src/image.rs
+?? corpus/perf/results/optimization-rgb8-areamin-20260720/
+
+## rustc
+rustc 1.95.0 (59807616e 2026-04-14)
+
+## host
+CPU(s):                                  20
+Model name:                              13th Gen Intel(R) Core(TM) i7-13700H
+
+## pdfium
+/mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/libpdfium.so
+
+## binaries
+bin-base-rgb8 = clean HEAD 5e31d9a; bin-opt-rgb8 = + this pass
+2654c7a27772d45415a771d925661d80  /tmp/claude-1000/-mnt-Samsung980-1TB-Rust-projects/41d8e742-4f3f-47ba-bf78-9b522cb5ecfe/scratchpad/bin-base-rgb8
+14c7c529b42e4073a559d93d36587219  /tmp/claude-1000/-mnt-Samsung980-1TB-Rust-projects/41d8e742-4f3f-47ba-bf78-9b522cb5ecfe/scratchpad/bin-opt-rgb8

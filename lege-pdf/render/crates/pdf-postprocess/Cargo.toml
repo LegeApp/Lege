@@ -1,0 +1,19 @@
+[package]
+name = "pdf-postprocess"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gpu = ["dep:bytemuck", "dep:lege-gpu"]
+
+[dependencies]
+thiserror = { workspace = true }
+pdf-render-api = { workspace = true }
+bytemuck = { workspace = true, optional = true }
+lege-gpu = { path = "../../../../lege-gpu", optional = true }
+
+[lints]
+workspace = true

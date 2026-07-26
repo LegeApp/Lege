@@ -1,0 +1,11 @@
+shared-glyph-cache: hits=785 misses=677 inserts=677 hit_rate=0.5369
+shared-glyph-cache: hits=58 misses=176 inserts=176 hit_rate=0.2479
+shared-glyph-cache: hits=58 misses=323 inserts=323 hit_rate=0.1522
+shared-glyph-cache: hits=601 misses=796 inserts=796 hit_rate=0.4302
+shared-glyph-cache: hits=432 misses=718 inserts=718 hit_rate=0.3757
+shared-glyph-cache: hits=66 misses=316 inserts=316 hit_rate=0.1728
+shared-glyph-cache: hits=1571 misses=971 inserts=971 hit_rate=0.6180
+shared-glyph-cache: hits=2033 misses=751 inserts=751 hit_rate=0.7302
+shared-glyph-cache: hits=2002 misses=763 inserts=763 hit_rate=0.7241
+shared-glyph-cache: hits=1850 misses=753 inserts=753 hit_rate=0.7107
+shared-glyph-cache: hits=172463 misses=7480 inserts=7480 hit_rate=0.9584

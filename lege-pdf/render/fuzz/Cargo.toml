@@ -1,0 +1,100 @@
+# cargo-fuzz workspace — deliberately OUTSIDE the main workspace
+# (`[workspace]` below makes this its own root; the main manifest's
+# `members = ["crates/*"]` glob cannot pick up `fuzz/` at the repo root).
+#
+# libfuzzer-sys/arbitrary are sanctioned dev-only exceptions to the
+# external-crate ban, confined to this excluded workspace. Running needs
+# nightly + a libFuzzer-capable target (Linux); see README.md.
+
+[package]
+name = "pdf-renderer-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+pdf-syntax = { path = "../crates/pdf-syntax" }
+pdf-object = { path = "../crates/pdf-object" }
+pdf-source = { path = "../crates/pdf-source" }
+pdf-structure = { path = "../crates/pdf-structure" }
+pdf-document = { path = "../crates/pdf-document" }
+pdf-content = { path = "../crates/pdf-content" }
+pdf-text = { path = "../crates/pdf-text" }
+pdf-image = { path = "../crates/pdf-image" }
+pdf-page-ir = { path = "../crates/pdf-page-ir" }
+pdf-render-api = { path = "../crates/pdf-render-api" }
+pdf-render-cpu = { path = "../crates/pdf-render-cpu" }
+
+# Prevent this from being interpreted as part of the parent workspace.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "syntax_lexer"
+path = "fuzz_targets/syntax_lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structure_decode"
+path = "fuzz_targets/structure_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structure_load"
+path = "fuzz_targets/structure_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content_compile"
+path = "fuzz_targets/content_compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_jpeg"
+path = "fuzz_targets/image_jpeg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_jbig2"
+path = "fuzz_targets/image_jbig2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_ccitt"
+path = "fuzz_targets/image_ccitt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_render"
+path = "fuzz_targets/open_render.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_extract"
+path = "fuzz_targets/text_extract.rs"
+test = false
+doc = false
+bench = false

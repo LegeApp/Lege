@@ -1,0 +1,38 @@
+[package]
+name = "pdf-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pdfr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+pdf-source = { workspace = true }
+pdf-document = { workspace = true }
+pdf-content = { workspace = true }
+pdf-font = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-render-cpu = { workspace = true }
+pdf-render-wgpu = { workspace = true }
+pdf-render-scheduler = { workspace = true }
+pdf-read = { workspace = true }
+pdf-text = { workspace = true }
+png = "0.17"
+
+[features]
+profiling = ["pdf-document/profiling", "pdf-content/profiling", "pdf-image/profiling", "pdf-render-cpu/profiling", "pdf-render-scheduler/profiling"]
+
+[dev-dependencies]
+pdf-test-support = { workspace = true }
+pdf-image = { workspace = true }
+pdf-object = { workspace = true }
+jp2lam = { workspace = true }
+tempfile.workspace = true
+
+[lints]
+workspace = true

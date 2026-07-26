@@ -1,0 +1,18 @@
+# started on Sun Jul 19 23:38:29 2026
+
+4001401676,,task-clock,4001401676,100.00,0.999,CPUs utilized
+97,,context-switches,4001401676,100.00,24.242,/sec
+10,,cpu-migrations,4001401676,100.00,2.499,/sec
+63065,,page-faults,4001401676,100.00,15.761,K/sec
+12344066050,,cpu_atom/cycles/,21572866,0.00,3.085,GHz
+18674387494,,cpu_core/cycles/,3979828810,99.00,4.667,GHz
+31176321410,,cpu_atom/instructions/,21572866,0.00,2.53,insn per cycle
+51422005118,,cpu_core/instructions/,3979828810,99.00,2.75,insn per cycle
+4570199273,,cpu_atom/branches/,21572866,0.00,1.142,G/sec
+5683519726,,cpu_core/branches/,3979828810,99.00,1.420,G/sec
+24757910,,cpu_atom/branch-misses/,21572866,0.00,0.54,of all branches
+10447886,,cpu_core/branch-misses/,3979828810,99.00,0.18,of all branches
+58758814,,cpu_atom/cache-references/,21572866,0.00,14.685,M/sec
+15030670,,cpu_core/cache-references/,3979828810,99.00,3.756,M/sec
+33285681,,cpu_atom/cache-misses/,21572866,0.00,56.65,of all cache refs
+6660118,,cpu_core/cache-misses/,3979828810,99.00,44.31,of all cache refs

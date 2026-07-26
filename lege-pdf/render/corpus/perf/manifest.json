@@ -1,0 +1,110 @@
+{
+  "schema_version": 2,
+  "description": "Permanent local performance corpus. Paths are relative to PDF_RENDERER_CORPUS_ROOT and source PDFs remain external to this repository.",
+  "pages": [
+    {
+      "id": "jpeg-scan-viewer",
+      "class": "jpeg_scan",
+      "source_kind": "real_world",
+      "path": "to-sort/globalhistoryofm0000unse_1.pdf",
+      "page": 0,
+      "scale": 1.0
+    },
+    {
+      "id": "jpeg-scan-sweep",
+      "class": "jpeg_scan_high_resolution_slow",
+      "source_kind": "real_world",
+      "path": "to-sort/globalhistoryofm0000unse_1.pdf",
+      "page": 0,
+      "scale": 2.0833333
+    },
+    {
+      "id": "jpx-scan",
+      "class": "jpx_scan",
+      "source_kind": "real_world",
+      "path": "Pol was right again/Ancient History/Etruscans/Culture/Axel Boethius- Etruscan and Early Roman Architecture.pdf",
+      "page": 1,
+      "scale": 2.0833333
+    },
+    {
+      "id": "mrc-jpx-jbig2",
+      "class": "mrc",
+      "source_kind": "real_world",
+      "path": "to-sort/Zen-essence.pdf",
+      "page": 0,
+      "scale": 2.0833333
+    },
+    {
+      "id": "ccitt-bilevel",
+      "class": "ccitt",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfbox-source/tools/src/test/resources/input/ImageIOUtil/ccitt4-cib-test.pdf",
+      "page": 0,
+      "scale": 2.0
+    },
+    {
+      "id": "latin-text",
+      "class": "latin_text",
+      "source_kind": "real_world",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/from-red-drive/Ebooks 2020/Cambridge Textbooks/Buddhist_Ethics.pdf",
+      "page": 10,
+      "scale": 2.0
+    },
+    {
+      "id": "cjk-cid-text",
+      "class": "cjk_glyph_heavy",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/arial_unicode_ab_cidfont.pdf",
+      "page": 0,
+      "scale": 2.0
+    },
+    {
+      "id": "type1-fonts",
+      "class": "type1_cff",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/hayro-source/hayro-tests/pdfs/custom/fonts_type1_latex.pdf",
+      "page": 0,
+      "scale": 2.0
+    },
+    {
+      "id": "vector-diagram",
+      "class": "vector_path_heavy",
+      "source_kind": "real_world",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/PDF/Ebooks 2020/Springer Textbooks/2013_Book_Acid-BaseDiagrams.pdf",
+      "page": 50,
+      "scale": 2.0
+    },
+    {
+      "id": "transparency-group",
+      "class": "transparency_group",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/transparent.pdf",
+      "page": 0,
+      "scale": 2.0
+    },
+    {
+      "id": "soft-mask",
+      "class": "soft_mask",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/smaskdim.pdf",
+      "page": 0,
+      "scale": 2.0
+    },
+    {
+      "id": "tiling-pattern",
+      "class": "tiling_pattern",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/tiling_patterns_variations.pdf",
+      "page": 0,
+      "scale": 2.0
+    },
+    {
+      "id": "radial-shading",
+      "class": "shading_heavy",
+      "source_kind": "upstream_regression",
+      "path": "Rust-projects/pdfium-port-plan/renderer-corpus/upstream-pdfjs-source/test/pdfs/radial_gradients.pdf",
+      "page": 0,
+      "scale": 2.0
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/placeholder/pdf-renderer"
+
+[workspace.dependencies]
+# External. Keep this list ruthlessly minimal; see skeleton-blueprint.md §3.
+thiserror = "2"
+bitflags = "2"
+memmap2 = "0.9"
+# FlateDecode for xref streams / object streams (Phase 1 codec decision per
+# blueprint §3). `zlib-rs` is the zlib-ng port in pure Rust — still no C
+# toolchain, but ~1.5x miniz_oxide's inflate rate on corpus streams (446 →
+# 679 MB/s measured over 22k real streams / 408 MB of output).
+flate2 = { version = "1", features = ["zlib-rs"] }
+rayon = "1.10"
+crossbeam-channel = "0.5"
+anyhow = "1"
+# JPEG 2000 (/JPXDecode). A deliberate external dependency: Lege calls the
+# same crate, so it is developed as its own project rather than vendored.
+jp2lam = { path = "../../Lege-ecosystem/lege-codecs/jp2lam", default-features = false }
+# JBIG2 (/JBIG2Decode). The in-house decoder half of our own JBIG2 codec,
+# grown from the Rust encoder we own (MRC foreground masks on archive.org scans
+# depend on it). Decode-only: the encoder half and its heavier deps are gated
+# off. Confined to `pdf-image`'s codec seam (`crates/pdf-image/src/jbig2.rs`).
+jbig2enc-rust = { path = "../../Lege-ecosystem/lege-codecs/jbig2enc-rust", default-features = false, features = ["decode"] }
+# CCITT G3/G4 now has a native in-house decoder (crates/pdf-image/src/ccitt.rs,
+# ported from PDFium's faxmodule.cpp). hayro-ccitt is retained ONLY as a
+# dev-dependency: the differential oracle that cross-checks that decoder.
+hayro-ccitt = { version = "0.3" }
+
+# Internal.
+pdf-geom = { path = "crates/pdf-geom" }
+pdf-source = { path = "crates/pdf-source" }
+pdf-syntax = { path = "crates/pdf-syntax" }
+pdf-object = { path = "crates/pdf-object" }
+pdf-structure = { path = "crates/pdf-structure" }
+pdf-security = { path = "crates/pdf-security" }
+pdf-document = { path = "crates/pdf-document" }
+pdf-color = { path = "crates/pdf-color" }
+pdf-function = { path = "crates/pdf-function" }
+pdf-font = { path = "crates/pdf-font" }
+pdf-image = { path = "crates/pdf-image" }
+pdf-content = { path = "crates/pdf-content" }
+pdf-text = { path = "crates/pdf-text" }
+pdf-page-ir = { path = "crates/pdf-page-ir" }
+pdf-read = { path = "crates/pdf-read" }
+pdf-render-api = { path = "crates/pdf-render-api" }
+pdf-render-cpu = { path = "crates/pdf-render-cpu" }
+pdf-render-wgpu = { path = "crates/pdf-render-wgpu" }
+pdf-render-scheduler = { path = "crates/pdf-render-scheduler" }
+pdf-postprocess = { path = "crates/pdf-postprocess" }
+pdf-test-support = { path = "crates/pdf-test-support" }
+pdf-profiling = { path = "crates/pdf-profiling" }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+# Never-panic invariant: no page of any document may panic or hard-fail the
+# pipeline. Denied since Phase-2 integration; test modules opt out locally
+# with #[allow]/cfg_attr, and provably-safe production cases carry a
+# one-line safety comment on their #[allow].
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+debug = "line-tables-only"

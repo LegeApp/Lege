@@ -7,8 +7,8 @@ use pdf_content::PageCompiler;
 use pdf_document::{DocumentLimits, DocumentSnapshot, PageIndex, ParseContext};
 use pdf_page_ir::{CompiledPage, DeviceRect, DeviceSize, Matrix, PageFeatures};
 use pdf_render_api::{
-    AnnotationMode, Background, OutputFormat, OutputResidency, PageTransform, RenderLimits,
-    RenderQuality, RenderRequest,
+    AnnotationMode, Background, OutputFormat, OutputResidency, PageTransform, RenderColorPolicy,
+    RenderLimits, RenderQuality, RenderRequest,
 };
 use pdf_render_cpu::{CpuBackend, CpuBackendOptions, CpuWorkerContext};
 
@@ -372,6 +372,7 @@ impl RenderSession {
             },
             output_format,
             background: Background::White,
+            color_policy: RenderColorPolicy::Original,
             annotations: AnnotationMode::StaticAppearances,
             quality: RenderQuality::Normal,
             limits: RenderLimits {

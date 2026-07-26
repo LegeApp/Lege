@@ -9,6 +9,9 @@ gui = "build --package lege-gui"
 gui-check = "check --package lege-gui"
 music-gui = "build --package lege-music-gui"
 music-gui-check = "check --package lege-music-gui"
+viewer = "build --package lege-viewer"
+viewer-check = "check --package lege-viewer --all-targets"
+viewer-run = "run --package lege-viewer --"
 
 # Shared libraries / development utilities
 gpu = "build --package lege-gpu"

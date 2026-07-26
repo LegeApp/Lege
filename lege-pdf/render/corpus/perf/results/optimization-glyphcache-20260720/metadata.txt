@@ -1,0 +1,8 @@
+Phase B — glyph coverage-bitmap cache + sub-pixel bucketing
+Date: 2026-07-20  Host: i7-13700H
+base binary: pdfium-diff @ afda1ec (clean HEAD, Phase A merged)
+new binary: working tree (Phase B), default PDF_RENDERER_GLYPH_SUBPIXEL=4,4
+PDFium: /mnt/Samsung980_1TB/Rust-projects/pdfium-port-plan/libpdfium.so
+corpus root: /mnt/Samsung980_1TB
+mode: compiled, 20 runs/page, medians reported.
+cache-OFF (PDF_RENDERER_GLYPHCACHE=off) new binary == base byte-identical on all 5 pages (verified).

@@ -1,0 +1,57 @@
+[package]
+name = "lege-viewer"
+description = "Reader-first viewer tightly integrated with the Lege PDF document engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lege-viewer"
+path = "src/main.rs"
+
+[features]
+default = ["wgpu-presenter", "softbuffer-presenter", "pdf-engine"]
+softbuffer-presenter = ["dep:softbuffer"]
+pdf-engine = [
+    "dep:pdf-source",
+    "dep:pdf-document",
+    "dep:pdf-content",
+    "dep:pdf-text",
+    "dep:pdf-page-ir",
+    "dep:pdf-render-api",
+    "dep:pdf-render-cpu",
+    "dep:pdf-render-wgpu",
+]
+wgpu-presenter = ["dep:lege-gpu"]
+
+[dependencies]
+arc-swap.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+winit.workspace = true
+cosmic-text.workspace = true
+copypasta.workspace = true
+pdf-font.workspace = true
+tempfile.workspace = true
+open.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+softbuffer = { workspace = true, optional = true }
+lege-gpu = { path = "../lege-gpu", optional = true, features = ["presentation"] }
+
+pdf-source = { workspace = true, optional = true }
+pdf-document = { workspace = true, optional = true }
+pdf-content = { workspace = true, optional = true }
+pdf-text = { workspace = true, optional = true }
+pdf-page-ir = { workspace = true, optional = true }
+pdf-render-api = { workspace = true, optional = true }
+pdf-render-cpu = { workspace = true, optional = true }
+pdf-render-wgpu = { workspace = true, optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+pdf-test-support.workspace = true

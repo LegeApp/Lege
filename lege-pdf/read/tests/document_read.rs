@@ -309,7 +309,7 @@ fn annotation_fixture() -> Vec<u8> {
 
 fn read_renderer_fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../pdfium-port-plan/pdf-renderer/crates/pdf-document/tests/fixtures")
+        .join("../render/crates/pdf-document/tests/fixtures")
         .join(name);
     std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }

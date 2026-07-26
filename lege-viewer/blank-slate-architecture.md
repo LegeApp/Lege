@@ -1,5 +1,9 @@
 # Lege Viewer — Blank-Slate Architecture
 
+> **Roadmap note (2026-07-25):** This remains the main architecture reference,
+> but its build-order section is historical. `STAGES.md` supersedes the
+> promotion of GPU compositing and is authoritative for current stages.
+
 **Premise:** a viewer and renderer designed together, by one team, with no
 black-box boundary between them. Every existing viewer except Acrobat farms
 rendering out to a third-party engine and therefore consumes exactly one
@@ -255,6 +259,13 @@ extensions, neither speculative):
 
 # 5. Presentation: software reference, GPU steady-state
 
+> **Current roadmap correction:** `STAGES.md` retains WGPU as an implemented
+> optional presenter, not a required steady-state destination. The renderer
+> corpus attributes page-readiness cost to decode, sampling, glyph/path work,
+> and in-page composition, and contains no controlled presenter A/B. This
+> section records the earlier design rationale, not a current performance
+> conclusion.
+
 The earlier plans treated a GPU presenter as a distant maybe. Blank slate,
 I invert that: **design for the GPU compositor as the destination**, ship
 the software path first as the reference implementation, keep both forever.
@@ -451,6 +462,10 @@ A second window is `lege-viewer file.pdf` again.
 ---
 
 # 11. Build order (delta view)
+
+> **Historical order:** the reconciled required stages are in `STAGES.md`.
+> In particular, the GPU compositor entry below no longer gates search,
+> selection, outline, renderer-aware display, or any other reader feature.
 
 Phases 0–3 of the earlier plans stand (contracts → window/presenter →
 painter → synthetic 10k-page document with scrollbar, paging, anchor).

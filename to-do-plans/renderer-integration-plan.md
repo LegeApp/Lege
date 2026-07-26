@@ -1,8 +1,7 @@
 # Renderer Integration Plan: pdf-renderer into Lege, pdfium removed
 
-Status: planning (renderer not yet moved; it lives at
-`pdfium-port-plan/pdf-renderer`, production-readiness pass complete
-2026-07-21). Companion to — and partial successor of —
+Status: renderer move completed 2026-07-25; it now lives at
+`lege-pdf/render` as members of this workspace. Companion to — and partial successor of —
 `compute-scheduler-plan.md`. That plan's audit (§1) remains the factual
 baseline for Lege's current Tokio/Rayon/actor topology and is not repeated
 here; where the two disagree, this document wins, because three of its

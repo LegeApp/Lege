@@ -19,6 +19,7 @@ image = { workspace = true }
 rayon = { workspace = true }
 pollster = "1.0.1"
 protobuf = { version = "3.7.2", features = ["with-bytes"] }
+winit = { workspace = true, optional = true }
 
 [build-dependencies]
 protobuf-codegen = "3.7.2"
@@ -32,6 +33,7 @@ wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl"
 [features]
 default = []
 layout-detection = []
+presentation = ["dep:winit"]
 debug-logging = []
 debug-layers = []
 no-include-shaders = []
