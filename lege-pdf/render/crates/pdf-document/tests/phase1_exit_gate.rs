@@ -237,6 +237,61 @@ fn missing_xref_section_rebuilds() {
 }
 
 #[test]
+fn partial_page_tree_loss_retries_with_rebuilt_xref() {
+    // Keep a valid classic xref, but make page 4's entry point forward at page
+    // 5. The initial tree walk can resolve its siblings but not page 4; a
+    // whole-file xref reconstruction can recover the real object header.
+    let mut b = pdf_test_support::builder::PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R 4 0 R 5 0 R]/Count 3/MediaBox[0 0 200 200]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R>>");
+    let page4_offset = b.add_object(4, "<</Type/Page/Parent 2 0 R>>");
+    let page5_offset = b.add_object(5, "<</Type/Page/Parent 2 0 R>>");
+    b.finish_classic_xref("/Root 1 0 R");
+    let mut bytes = b.into_bytes();
+
+    let old_entry = format!("{page4_offset:010} 00000 n\r\n");
+    let bad_entry = format!("{page5_offset:010} 00000 n\r\n");
+    let entry_offset = bytes
+        .windows(old_entry.len())
+        .rposition(|window| window == old_entry.as_bytes())
+        .expect("page 4 xref entry");
+    bytes[entry_offset..entry_offset + old_entry.len()].copy_from_slice(bad_entry.as_bytes());
+
+    let snap = open_bytes(bytes);
+    assert_eq!(snap.page_count(), 3);
+    let objects = (0..snap.page_count())
+        .map(|index| snap.page(PageIndex(index)).unwrap().object)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        objects,
+        vec![
+            Some(ObjectId::new(3, 0)),
+            Some(ObjectId::new(4, 0)),
+            Some(ObjectId::new(5, 0)),
+        ]
+    );
+    assert!(
+        snap.recovery_events()
+            .iter()
+            .any(|event| matches!(event, RecoveryEvent::XrefRebuilt)),
+        "partial page-tree loss should trigger one xref rebuild: {:?}",
+        snap.recovery_events()
+    );
+    assert!(
+        snap.recovery_events().iter().all(|event| !matches!(
+            event,
+            RecoveryEvent::Other(note) if note.contains("blank page")
+        )),
+        "rebuild recovery must win over placeholders: {:?}",
+        snap.recovery_events()
+    );
+}
+
+#[test]
 fn wrong_length_stream_repaired_and_observable() {
     let snapshot = open_bytes(builder::wrong_length_fixture());
     let mut ctx = ParseContext::new();
@@ -479,4 +534,108 @@ fn truncated_page_tree_synthesizes_blank_placeholders_to_declared_count() {
         1,
         "a lying /Count alone synthesizes nothing"
     );
+}
+
+#[test]
+fn missing_reference_generation_in_page_kids_is_repaired() {
+    let mut b = pdf_test_support::builder::PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R 4 R 5 0 R]/Count 3/MediaBox[0 0 200 200]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R>>");
+    b.add_object(4, "<</Type/Page/Parent 2 0 R>>");
+    b.add_object(5, "<</Type/Page/Parent 2 0 R>>");
+    b.finish_classic_xref("/Root 1 0 R");
+
+    let snap = open_bytes(b.into_bytes());
+    assert_eq!(snap.page_count(), 3);
+    let objects = (0..snap.page_count())
+        .map(|index| snap.page(PageIndex(index)).unwrap().object)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        objects,
+        vec![
+            Some(ObjectId::new(3, 0)),
+            Some(ObjectId::new(4, 0)),
+            Some(ObjectId::new(5, 0)),
+        ]
+    );
+    assert!(snap.recovery_events().iter().any(|event| matches!(
+        event,
+        RecoveryEvent::ReferenceGenerationRepaired { referenced: 4, .. }
+    )));
+}
+
+#[test]
+fn exact_mid_tree_loss_inserts_placeholders_in_document_order() {
+    // The parent says four leaves. Its two readable kids account for one each,
+    // so the sole unreadable middle child has an exact two-page span.
+    let mut b = pdf_test_support::builder::PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R 99 0 R 4 0 R]/Count 4/MediaBox[0 0 200 200]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R>>");
+    b.add_object(4, "<</Type/Page/Parent 2 0 R>>");
+    b.finish_classic_xref("/Root 1 0 R");
+
+    let snap = open_bytes(b.into_bytes());
+    assert_eq!(snap.page_count(), 4);
+    let objects = (0..snap.page_count())
+        .map(|index| snap.page(PageIndex(index)).unwrap().object)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        objects,
+        vec![
+            Some(ObjectId::new(3, 0)),
+            None,
+            None,
+            Some(ObjectId::new(4, 0)),
+        ]
+    );
+    assert!(snap.recovery_events().iter().any(|event| matches!(
+        event,
+        RecoveryEvent::Other(note) if note.contains("at the lost tree position")
+    )));
+}
+
+#[test]
+fn ambiguous_multiple_tree_holes_keep_tail_padding_fallback() {
+    // Three missing pages are split across two unreadable kids. There is no
+    // defensible way to assign 1+2 versus 2+1, so retain the count-only tail
+    // approximation instead of inventing an ordering.
+    let mut b = pdf_test_support::builder::PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R 98 0 R 4 0 R 99 0 R 5 0 R]/Count 6/MediaBox[0 0 200 200]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R>>");
+    b.add_object(4, "<</Type/Page/Parent 2 0 R>>");
+    b.add_object(5, "<</Type/Page/Parent 2 0 R>>");
+    b.finish_classic_xref("/Root 1 0 R");
+
+    let snap = open_bytes(b.into_bytes());
+    assert_eq!(snap.page_count(), 6);
+    let objects = (0..snap.page_count())
+        .map(|index| snap.page(PageIndex(index)).unwrap().object)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        objects,
+        vec![
+            Some(ObjectId::new(3, 0)),
+            Some(ObjectId::new(4, 0)),
+            Some(ObjectId::new(5, 0)),
+            None,
+            None,
+            None,
+        ]
+    );
+    assert!(snap.recovery_events().iter().any(|event| matches!(
+        event,
+        RecoveryEvent::Other(note) if note.contains("ambiguous blank")
+    )));
 }

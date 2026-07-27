@@ -95,6 +95,14 @@ pub const ANNOT_FLAG_HIDDEN: u32 = 1 << 1;
 /// Annotation flag bit: printed but not displayed on screen (bit 6).
 pub const ANNOT_FLAG_NOVIEW: u32 = 1 << 5;
 
+/// `/C` annotation color, retained in its authored device color space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnnotationColor {
+    Gray(f32),
+    Rgb([f32; 3]),
+    Cmyk([f32; 4]),
+}
+
 /// One annotation of a page, resolved at open to exactly what static
 /// appearance-stream rendering needs (ISO 32000-1 §12.5). `/Popup`
 /// annotations are dropped at parse time — PDFium's `CPDF_AnnotList` never
@@ -120,6 +128,14 @@ pub struct PageAnnotation {
     /// A link annotation's `/A` action dictionary, retained unresolved for
     /// semantic extraction. Rendering does not interpret actions.
     pub action: Option<PdfObject>,
+    /// `/QuadPoints`, grouped in the PDF text-markup Z order
+    /// (top-left, top-right, bottom-left, bottom-right).
+    pub quad_points: std::sync::Arc<[[f64; 8]]>,
+    /// `/C` text-markup color. Missing or malformed colors remain `None`, so
+    /// the renderer can apply the subtype's conventional default.
+    pub color: Option<AnnotationColor>,
+    /// `/CA` constant opacity, clamped to `[0,1]` (default 1).
+    pub opacity: f32,
 }
 
 impl PageAnnotation {
@@ -458,44 +474,43 @@ impl DocumentSnapshot {
         // forced full-file reconstruction (PDFium/mupdf `RebuildCrossRef`:
         // scan for every object and `/Type /Catalog`). Surface the original
         // error only when the rebuild path cannot open it either.
-        let (mut structure, mut ctx, (mut security, mut pages, mut ocg, stats), rebuilt_already) =
-            match pdf_structure::load_structure(source.as_ref(), &names, &structure_limits) {
-                Ok(s) => match try_build(s) {
-                    Ok((s, c, p)) => (s, c, p, false),
-                    Err(build_err) => match rebuild() {
-                        Ok(r) => match try_build(r) {
-                            Ok((s, c, p)) => (s, c, p, true),
-                            Err(_) => return Err(build_err),
-                        },
-                        Err(_) => return Err(build_err),
-                    },
-                },
-                Err(load_err) => match rebuild() {
+        let (
+            mut structure,
+            mut ctx,
+            (mut security, mut pages, mut ocg, mut stats),
+            rebuilt_already,
+        ) = match pdf_structure::load_structure(source.as_ref(), &names, &structure_limits) {
+            Ok(s) => match try_build(s) {
+                Ok((s, c, p)) => (s, c, p, false),
+                Err(build_err) => match rebuild() {
                     Ok(r) => match try_build(r) {
                         Ok((s, c, p)) => (s, c, p, true),
-                        Err(_) => return Err(load_err.into()),
+                        Err(_) => return Err(build_err),
                     },
+                    Err(_) => return Err(build_err),
+                },
+            },
+            Err(load_err) => match rebuild() {
+                Ok(r) => match try_build(r) {
+                    Ok((s, c, p)) => (s, c, p, true),
                     Err(_) => return Err(load_err.into()),
                 },
-            };
+                Err(_) => return Err(load_err.into()),
+            },
+        };
 
-        // The chain loaded cleanly (resolvable `/Root`, consistent offsets) yet
-        // the walk recovered *zero* real pages while provably dropping subtrees
-        // — a `/Kids` reference resolving to a null the xref points at a wrong
-        // offset, invisible to `load_structure`'s trailer/root-level rebuild
-        // gates. Escalate to a full reconstruction and adopt it only if it
-        // recovers strictly more pages (never degrade a genuinely-empty doc,
-        // whose walk drops nothing → `lost_subtrees == 0`). Skipped when the
-        // fallback above already rebuilt.
+        // A cleanly loaded chain can still contain stale offsets below a valid
+        // catalog. Any page-tree subtree that was provably lost warrants one
+        // full reconstruction, including a *partial* tree: otherwise pages
+        // after a mid-tree hole remain shifted. Adopt only a strict structural
+        // improvement, so genuinely truncated files keep their usable chain.
         if !rebuilt_already
-            && stats.real_pages == 0
             && stats.lost_subtrees > 0
             && let Ok(rebuilt) = rebuild()
         {
             let mut ctx2 = ParseContext::new();
             if let Ok((sec2, pages2, ocg2, stats2)) = build_parts(&rebuilt, &mut ctx2) {
-                let mut recovered_orphans = false;
-                let pages2 = if stats2.real_pages == 0 {
+                let (pages2, candidate_stats) = if stats2.real_pages == 0 {
                     let resolver = Resolver {
                         source: source.as_ref(),
                         structure: &rebuilt,
@@ -505,20 +520,30 @@ impl DocumentSnapshot {
                     };
                     let orphans = pages::recover_orphan_pages(&resolver, &mut ctx2);
                     if orphans.page_count() > 0 {
-                        recovered_orphans = true;
-                        orphans
+                        let orphan_count = orphans.page_count() as usize;
+                        (
+                            orphans,
+                            pages::WalkStats {
+                                real_pages: orphan_count,
+                                lost_subtrees: 0,
+                            },
+                        )
                     } else {
-                        pages2
+                        (pages2, stats2)
                     }
                 } else {
-                    pages2
+                    (pages2, stats2)
                 };
-                if recovered_orphans || stats2.real_pages > stats.real_pages {
+                let improves = candidate_stats.real_pages > stats.real_pages
+                    || (candidate_stats.real_pages == stats.real_pages
+                        && candidate_stats.lost_subtrees < stats.lost_subtrees);
+                if improves {
                     structure = rebuilt;
                     security = sec2;
                     pages = pages2;
                     ocg = ocg2;
                     ctx = ctx2;
+                    stats = candidate_stats;
                 }
             }
         }

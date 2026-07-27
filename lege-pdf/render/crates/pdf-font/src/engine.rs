@@ -512,12 +512,10 @@ impl FontProgram {
     }
 
     /// The glyph id for a Unicode scalar via the font's cmap (simple-font
-    /// encoding resolution). When the face carries no Unicode-capable cmap
-    /// (only a Macintosh `(1,0)` subtable, common in Office-produced
-    /// TrueType subsets), the scalar is mapped Unicode → Mac OS Roman and
-    /// looked up in that subtable natively — Skrifa's `Charmap` ignores
-    /// Macintosh subtables, PDFium consults them
-    /// (`cpdf_truetypefont.cpp` kMacRoman branch).
+    /// encoding resolution). When Skrifa's selected Unicode charmap does not
+    /// cover the scalar, map Unicode → Mac OS Roman and consult byte-oriented
+    /// format 0/6 subtables directly. This covers Macintosh-only Office
+    /// subsets while still allowing malformed Microsoft format-6 subsets.
     pub fn gid_for_char(&self, c: char) -> Option<u32> {
         if let ProgramKind::Type1(t1) = &self.kind {
             return t1.gid_for_char(c);
@@ -525,7 +523,7 @@ impl FontProgram {
         let font = self.font_ref()?;
         font.charmap().map(c).map(|g| g.to_u32()).or_else(|| {
             let code = crate::encoding::macroman_code_for_char(c)?;
-            self.mac_cmap_gid(code)
+            self.native_byte_cmap_gid(code, true)
         })
     }
 
@@ -635,17 +633,15 @@ impl FontProgram {
         cm.map(code as u32)
             .or_else(|| cm.map(0xF000 | code as u32))
             .map(|g| g.to_u32())
-            // A face whose only cmap is the Macintosh (1,0) subtable: the
-            // raw byte IS the Mac Roman code (PDFium kMacRoman/builtin).
-            .or_else(|| self.mac_cmap_gid(code))
+            // Some embedded subsets use a byte-oriented format 0/6 cmap even
+            // under Microsoft (3,1). The raw PDF code indexes that table.
+            .or_else(|| self.native_byte_cmap_gid(code, false))
     }
 
-    /// Native lookup in the Macintosh (platform 1, encoding 0) cmap
-    /// subtable — formats 0 and 6, the only forms that occur there. Skrifa's
-    /// `Charmap` only consults Unicode-capable subtables, so a subset font
-    /// carrying nothing but a `(1,0)` table (e.g. the DLIFLC Calibri
-    /// subsets) resolved every code to notdef without this.
-    fn mac_cmap_gid(&self, code: u8) -> Option<u32> {
+    /// Native lookup in byte-oriented cmap formats 0 and 6. `prefer_mac` is
+    /// used by the Unicode→MacRoman bridge; raw PDF character codes prefer a
+    /// Microsoft (3,1) table, as found in pdf.js issue5701.
+    fn native_byte_cmap_gid(&self, code: u8, prefer_mac: bool) -> Option<u32> {
         let data: &[u8] = &self.data;
         let u16at = |o: usize| -> Option<u32> {
             Some(((*data.get(o)? as u32) << 8) | *data.get(o + 1)? as u32)
@@ -676,29 +672,37 @@ impl FontProgram {
         }
         let cmap = cmap?;
         let n_sub = u16at(cmap + 2)? as usize;
-        let mut sub = None;
-        for i in 0..n_sub {
-            let rec = cmap + 4 + 8 * i;
-            if u16at(rec)? == 1 && u16at(rec + 2)? == 0 {
-                sub = Some(cmap + u32at(rec + 4)? as usize);
-                break;
+        let priorities = if prefer_mac {
+            [(1, 0), (3, 1), (3, 10), (0, 3), (0, 4), (0, 0)]
+        } else {
+            [(3, 1), (3, 10), (1, 0), (0, 3), (0, 4), (0, 0)]
+        };
+        for (platform, encoding) in priorities {
+            for i in 0..n_sub {
+                let rec = cmap + 4 + 8 * i;
+                if u16at(rec)? != platform || u16at(rec + 2)? != encoding {
+                    continue;
+                }
+                let sub = cmap + u32at(rec + 4)? as usize;
+                let gid = match u16at(sub)? {
+                    0 => *data.get(sub + 6 + code as usize)? as u32,
+                    6 => {
+                        let first = u16at(sub + 6)?;
+                        let count = u16at(sub + 8)?;
+                        let c = code as u32;
+                        if c < first || c >= first + count {
+                            continue;
+                        }
+                        u16at(sub + 10 + 2 * (c - first) as usize)?
+                    }
+                    _ => continue,
+                };
+                if gid != 0 {
+                    return Some(gid);
+                }
             }
         }
-        let sub = sub?;
-        let gid = match u16at(sub)? {
-            0 => *data.get(sub + 6 + code as usize)? as u32,
-            6 => {
-                let first = u16at(sub + 6)?;
-                let count = u16at(sub + 8)?;
-                let c = code as u32;
-                if c < first || c >= first + count {
-                    return None;
-                }
-                u16at(sub + 10 + 2 * (c - first) as usize)?
-            }
-            _ => return None,
-        };
-        (gid != 0).then_some(gid)
+        None
     }
 
     fn outline_from(
@@ -811,6 +815,32 @@ mod tests {
             "unicode -> MacRoman -> (1,0)"
         );
         assert_eq!(prog.gid_for_code(0x42), None, "unmapped code stays notdef");
+    }
+
+    #[test]
+    fn microsoft_format_6_cmap_resolves_raw_codes() {
+        let mut ttf = pdf_test_support::fonts::minimal_ttf_mac_cmap_only();
+        patch_only_cmap_platform(&mut ttf, 3, 1);
+        let prog = FontProgram::parse(ttf.into()).expect("parse");
+        assert_eq!(
+            prog.gid_for_code(0x41),
+            Some(1),
+            "raw byte through Microsoft (3,1) format 6"
+        );
+    }
+
+    fn patch_only_cmap_platform(ttf: &mut [u8], platform: u16, encoding: u16) {
+        let num_tables = u16::from_be_bytes([ttf[4], ttf[5]]) as usize;
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            if &ttf[rec..rec + 4] == b"cmap" {
+                let off = u32::from_be_bytes(ttf[rec + 8..rec + 12].try_into().unwrap()) as usize;
+                ttf[off + 4..off + 6].copy_from_slice(&platform.to_be_bytes());
+                ttf[off + 6..off + 8].copy_from_slice(&encoding.to_be_bytes());
+                return;
+            }
+        }
+        panic!("no cmap table");
     }
 
     #[test]

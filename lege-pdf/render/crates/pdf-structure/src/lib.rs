@@ -138,6 +138,13 @@ pub enum RecoveryEvent {
         declared: Option<i64>,
         actual: u64,
     },
+    /// A malformed indirect reference omitted its generation (`N R`);
+    /// generation zero was supplied.
+    ReferenceGenerationRepaired {
+        id: ObjectId,
+        referenced: u32,
+        offset: u64,
+    },
     /// Full-file reconstruction: xref unusable, objects indexed by scanning
     /// for `N G obj` headers (PDFium's `RebuildCrossRef` equivalent).
     XrefRebuilt,

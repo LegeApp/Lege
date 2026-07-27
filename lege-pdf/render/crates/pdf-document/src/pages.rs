@@ -93,13 +93,20 @@ pub(crate) fn build_page_tree(
         });
 
     let mut pages: Vec<PageRef> = Vec::new();
+    let mut real_pages = 0usize;
     let mut lost_subtrees = 0usize;
     let mut visited: HashSet<ObjectId> = HashSet::new();
-    // Stack of (node value, inherited attrs); kids pushed reversed so the
-    // walk emits document order.
-    let mut stack: Vec<(PdfObject, Inherited)> = vec![(pages_root, Inherited::default())];
+    // Stack of (node value, inherited attrs, expected leaf span). The span is
+    // used only when the node proves unreadable, and only when its parent
+    // `/Count` made that span exact. Kids are pushed reversed so the walk emits
+    // document order.
+    let root_span = declared_count
+        .and_then(|count| usize::try_from(count).ok())
+        .filter(|&count| limits.max_pages == 0 || count <= limits.max_pages as usize);
+    let mut stack: Vec<(PdfObject, Inherited, Option<usize>)> =
+        vec![(pages_root, Inherited::default(), root_span)];
 
-    while let Some((node, inherited)) = stack.pop() {
+    while let Some((node, inherited, expected_span)) = stack.pop() {
         // Resolve the node to a dictionary, remembering its id when it is
         // (as the spec requires) an indirect reference.
         let (resolved, node_id) = match node {
@@ -117,6 +124,14 @@ pub(crate) fn build_page_tree(
                             "page tree node {id} unreadable ({e}); skipped"
                         )));
                         lost_subtrees += 1;
+                        append_inferred_placeholders(
+                            &mut pages,
+                            expected_span,
+                            &inherited,
+                            limits.max_pages,
+                            ctx,
+                            &format!("unreadable page-tree node {id}"),
+                        )?;
                         continue;
                     }
                 }
@@ -131,6 +146,14 @@ pub(crate) fn build_page_tree(
             // A dangling kid resolves to Null in the tolerant resolver —
             // the truncated-tail shape; counts as a lost subtree.
             lost_subtrees += 1;
+            append_inferred_placeholders(
+                &mut pages,
+                expected_span,
+                &inherited,
+                limits.max_pages,
+                ctx,
+                "non-dictionary page-tree node",
+            )?;
             continue;
         };
 
@@ -146,6 +169,14 @@ pub(crate) fn build_page_tree(
                         "unreadable /Kids ({e}); subtree skipped"
                     )));
                     lost_subtrees += 1;
+                    append_inferred_placeholders(
+                        &mut pages,
+                        expected_span,
+                        &inherited,
+                        limits.max_pages,
+                        ctx,
+                        "unreadable /Kids",
+                    )?;
                     continue;
                 }
             };
@@ -154,10 +185,19 @@ pub(crate) fn build_page_tree(
                     "/Kids is not an array; subtree skipped".into(),
                 ));
                 lost_subtrees += 1;
+                append_inferred_placeholders(
+                    &mut pages,
+                    expected_span,
+                    &inherited,
+                    limits.max_pages,
+                    ctx,
+                    "non-array /Kids",
+                )?;
                 continue;
             };
-            for kid in kids.iter().rev() {
-                stack.push((kid.clone(), inherited.clone()));
+            let spans = infer_child_spans(dict, kids, resolver, ctx);
+            for (kid, span) in kids.iter().zip(spans).rev() {
+                stack.push((kid.clone(), inherited.clone(), span));
             }
             continue;
         }
@@ -182,6 +222,7 @@ pub(crate) fn build_page_tree(
             contents: dict.get(names.known.contents).cloned(),
             annotations: parse_annots(dict.get(names.intern(b"Annots")), resolver, ctx),
         });
+        real_pages += 1;
     }
 
     // PDFium-parity placeholder synthesis: PDFium reports the root's
@@ -192,9 +233,6 @@ pub(crate) fn build_page_tree(
     // blank placeholder pages so page counts (and diff-tool page keys)
     // line up with the oracle. Never triggered by a merely lying /Count:
     // it requires an actual unresolvable subtree.
-    // Pages recovered by the walk itself, before any blank-placeholder padding.
-    let real_pages = pages.len();
-
     if lost_subtrees > 0
         && let Some(declared) = declared_count
         && declared > pages.len() as i64
@@ -202,22 +240,11 @@ pub(crate) fn build_page_tree(
     {
         let missing = declared as usize - pages.len();
         ctx.recovery.push(RecoveryEvent::Other(format!(
-            "page tree declares {declared} pages but only {} were recoverable              ({lost_subtrees} lost subtrees); appending {missing} blank              placeholder pages (PDFium parity)",
-            pages.len()
+            "page tree declares {declared} pages but only {real_pages} were recoverable \
+             ({lost_subtrees} lost subtrees); appending {missing} ambiguous blank \
+             placeholder pages at the tail (PDFium count parity)"
         )));
-        for _ in 0..missing {
-            pages.push(PageRef {
-                index: PageIndex(pages.len() as u32),
-                // A synthesized blank placeholder has no backing object.
-                object: None,
-                media_box: LETTER,
-                crop_box: LETTER,
-                rotate: 0,
-                resources: None,
-                contents: None,
-                annotations: std::sync::Arc::from(Vec::new()),
-            });
-        }
+        append_blank_pages(&mut pages, missing, &Inherited::default(), limits.max_pages)?;
     }
 
     Ok((
@@ -227,6 +254,123 @@ pub(crate) fn build_page_tree(
             lost_subtrees,
         },
     ))
+}
+
+/// Estimate each child's leaf span without trusting `/Count` for the normal
+/// walk. Counts are used only to position a blank hole if a child later proves
+/// unreadable. One unknown gets the exact parent residual; multiple unknowns
+/// are exact only when the residual is one leaf apiece.
+fn infer_child_spans(
+    parent: &Dictionary,
+    kids: &[PdfObject],
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> Vec<Option<usize>> {
+    let mut spans = kids
+        .iter()
+        .map(|kid| declared_child_span(kid, resolver, ctx))
+        .collect::<Vec<_>>();
+    let unknown = spans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, span)| span.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    if unknown.is_empty() {
+        return spans;
+    }
+
+    let Some(declared) = resolve_int(parent.get(resolver.names.intern(b"Count")), resolver, ctx)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|&value| {
+            resolver.limits.max_pages == 0 || value <= resolver.limits.max_pages as usize
+        })
+    else {
+        return spans;
+    };
+    let Some(known) = spans
+        .iter()
+        .flatten()
+        .try_fold(0usize, |sum, &span| sum.checked_add(span))
+    else {
+        return spans;
+    };
+    let Some(residual) = declared.checked_sub(known) else {
+        return spans;
+    };
+
+    if unknown.len() == 1 {
+        spans[unknown[0]] = Some(residual);
+    } else if residual == unknown.len() {
+        for index in unknown {
+            spans[index] = Some(1);
+        }
+    }
+    spans
+}
+
+fn declared_child_span(
+    child: &PdfObject,
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> Option<usize> {
+    let resolved = resolver.resolve_value(child, ctx).ok()?;
+    let dict = resolved.as_dict()?;
+    if dict.contains_key(resolver.names.known.kids) {
+        resolve_int(dict.get(resolver.names.intern(b"Count")), resolver, ctx)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|&value| {
+                resolver.limits.max_pages == 0 || value <= resolver.limits.max_pages as usize
+            })
+    } else {
+        Some(1)
+    }
+}
+
+fn append_inferred_placeholders(
+    pages: &mut Vec<PageRef>,
+    count: Option<usize>,
+    inherited: &Inherited,
+    max_pages: u32,
+    ctx: &mut ParseContext,
+    reason: &str,
+) -> Result<(), DocumentError> {
+    let Some(count) = count.filter(|&count| count > 0) else {
+        return Ok(());
+    };
+    ctx.recovery.push(RecoveryEvent::Other(format!(
+        "{reason}; inserted {count} blank placeholder page(s) at the lost tree position"
+    )));
+    append_blank_pages(pages, count, inherited, max_pages)
+}
+
+fn append_blank_pages(
+    pages: &mut Vec<PageRef>,
+    count: usize,
+    inherited: &Inherited,
+    max_pages: u32,
+) -> Result<(), DocumentError> {
+    let final_len = pages
+        .len()
+        .checked_add(count)
+        .ok_or(DocumentError::LimitExceeded("max_pages"))?;
+    if max_pages > 0 && final_len > max_pages as usize {
+        return Err(DocumentError::LimitExceeded("max_pages"));
+    }
+    let media_box = inherited.media_box.unwrap_or(LETTER);
+    let crop_box = clamp_to(inherited.crop_box.unwrap_or(media_box), media_box);
+    for _ in 0..count {
+        pages.push(PageRef {
+            index: PageIndex(pages.len() as u32),
+            object: None,
+            media_box,
+            crop_box,
+            rotate: normalize_rotation(inherited.rotate.unwrap_or(0)),
+            resources: inherited.resources.clone(),
+            contents: None,
+            annotations: std::sync::Arc::from(Vec::new()),
+        });
+    }
+    Ok(())
 }
 
 /// Last-resort recovery for a rebuilt document whose page-tree walk still
@@ -394,9 +538,77 @@ fn parse_annots(
             appearance_state: dict.get(names.intern(b"AS")).and_then(PdfObject::as_name),
             destination: dict.get(names.intern(b"Dest")).cloned(),
             action: dict.get(names.intern(b"A")).cloned(),
+            quad_points: annot_quad_points(dict.get(names.intern(b"QuadPoints")), resolver, ctx),
+            color: annot_color(dict.get(names.intern(b"C")), resolver, ctx),
+            opacity: resolve_number(dict.get(names.intern(b"CA")), resolver, ctx)
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0) as f32,
         });
     }
     out.into()
+}
+
+fn resolve_number(
+    value: Option<&PdfObject>,
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> Option<f64> {
+    resolver
+        .resolve_value(value?, ctx)
+        .ok()?
+        .as_number()
+        .filter(|number| number.is_finite())
+}
+
+fn annot_numbers(
+    value: Option<&PdfObject>,
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> Option<Vec<f64>> {
+    let resolved = resolver.resolve_value(value?, ctx).ok()?;
+    let PdfObject::Array(items) = &*resolved else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| {
+            resolver
+                .resolve_value(item, ctx)
+                .ok()?
+                .as_number()
+                .filter(|number| number.is_finite())
+        })
+        .collect()
+}
+
+fn annot_quad_points(
+    value: Option<&PdfObject>,
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> std::sync::Arc<[[f64; 8]]> {
+    let Some(numbers) = annot_numbers(value, resolver, ctx) else {
+        return std::sync::Arc::from([]);
+    };
+    numbers
+        .chunks_exact(8)
+        .map(|chunk| chunk.try_into().expect("chunks_exact(8)"))
+        .collect::<Vec<[f64; 8]>>()
+        .into()
+}
+
+fn annot_color(
+    value: Option<&PdfObject>,
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> Option<crate::AnnotationColor> {
+    let numbers = annot_numbers(value, resolver, ctx)?;
+    let c = |index: usize| numbers[index].clamp(0.0, 1.0) as f32;
+    match numbers.len() {
+        1 => Some(crate::AnnotationColor::Gray(c(0))),
+        3 => Some(crate::AnnotationColor::Rgb([c(0), c(1), c(2)])),
+        4 => Some(crate::AnnotationColor::Cmyk([c(0), c(1), c(2), c(3)])),
+        _ => None,
+    }
 }
 
 /// An annotation's `/Rect`: corner-normalized but *not* required to have

@@ -92,6 +92,49 @@ fn rgb_image_xobject_decodes_samples() {
 }
 
 #[test]
+fn ccitt_decode_parm_scalars_may_be_indirect() {
+    let mut b = PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 100 100]>>",
+    );
+    b.add_object(
+        3,
+        "<</Type/Page/Parent 2 0 R/Contents 4 0 R/Resources<</XObject<</Im 5 0 R>>>>>>",
+    );
+    b.add_stream(4, "", b"/Im Do");
+    b.add_stream(
+        5,
+        "/Type/XObject/Subtype/Image/Width 16/Height 2/BitsPerComponent 1\
+         /ColorSpace/DeviceGray/Filter/CCITTFaxDecode\
+         /DecodeParms<</K 6 0 R/Columns 7 0 R/Rows 8 0 R/BlackIs1 9 0 R\
+         /EncodedByteAlign 10 0 R/EndOfLine 11 0 R/EndOfBlock 12 0 R>>",
+        &[0],
+    );
+    b.add_object(6, "-1");
+    b.add_object(7, "16");
+    b.add_object(8, "2");
+    b.add_object(9, "true");
+    b.add_object(10, "true");
+    b.add_object(11, "true");
+    b.add_object(12, "false");
+    b.finish_classic_xref("/Root 1 0 R");
+
+    let page = compile(&open(b.into_bytes()), 0);
+    let parms = page.images[0]
+        .codec_parms
+        .as_ref()
+        .expect("CCITT parameters");
+    assert_eq!(parms.k, -1);
+    assert_eq!((parms.columns, parms.rows), (16, 2));
+    assert!(parms.black_is_1);
+    assert!(parms.byte_align);
+    assert!(parms.end_of_line);
+    assert!(!parms.end_of_block);
+}
+
+#[test]
 fn codec_cmyk_image_carries_icc_lookup_tables_into_ir() {
     let mut b = PdfBuilder::new();
     b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");

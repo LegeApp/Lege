@@ -288,32 +288,45 @@ fn parse_subrs(private: &[u8], len_iv: i32) -> Vec<Vec<u8>> {
         return Vec::new();
     };
     let mut subrs: Vec<Vec<u8>> = Vec::new();
-    let mut p = at;
+    let mut defined: Vec<bool> = Vec::new();
+    let section_start = at + b"/Subrs".len();
+    // Conditional Type 1 programs sometimes define a second /Subrs array for
+    // a device-specific branch. A deterministic parser cannot execute the
+    // PostScript condition; retain the first definition and stop at the next
+    // section boundary instead of silently overwriting its working routines.
+    let section_end = [
+        find(&private[section_start..], b"/Subrs").map(|p| section_start + p),
+        find(&private[section_start..], b"/CharStrings").map(|p| section_start + p),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or(private.len());
+    let section = &private[..section_end];
+    let mut p = section_start;
     // Entries look like: `dup <index> <len> RD <bytes> NP`
-    while let Some(next) = find(&private[p..], b"dup ") {
+    while let Some(next) = find(&section[p..], b"dup ") {
         let mut q = p + next + 4;
-        let Some((idx, after)) = read_uint(private, q) else {
+        let Some((idx, after)) = read_uint(section, q) else {
             break;
         };
         q = after;
-        let Some((len, after)) = read_uint(private, q) else {
+        let Some((len, after)) = read_uint(section, q) else {
             break;
         };
         q = after;
-        let Some(bin) = binary_after_token(private, q, len) else {
+        let Some(bin) = binary_after_token(section, q, len) else {
             break;
         };
         if subrs.len() <= idx {
             subrs.resize(idx + 1, Vec::new());
+            defined.resize(idx + 1, false);
         }
-        subrs[idx] = decrypt_charstring(bin, len_iv);
+        if !defined[idx] {
+            subrs[idx] = decrypt_charstring(bin, len_iv);
+            defined[idx] = true;
+        }
         p = q + len;
-        // /CharStrings follows /Subrs; stop before running into it.
-        if let Some(cs) = find(private, b"/CharStrings")
-            && p > cs
-        {
-            break;
-        }
     }
     subrs
 }
@@ -934,6 +947,14 @@ mod tests {
             !outline.verbs.is_empty(),
             "a plaintext charstring must produce an outline"
         );
+    }
+
+    #[test]
+    fn first_subrs_section_wins_over_later_conditional_definition() {
+        let private = b"/Subrs 6 array dup 5 2 RD \x8b\x0b NP /Subrs 6 array dup 5 1 RD \x0b NP \
+              /CharStrings 0 dict";
+        let subrs = parse_subrs(private, -1);
+        assert_eq!(subrs.get(5).map(Vec::as_slice), Some(&b"\x8b\x0b"[..]));
     }
 
     #[test]

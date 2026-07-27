@@ -29,6 +29,10 @@ pub enum IndirectRepair {
     /// `/Length` was missing, unresolvable, or did not land on `endstream`;
     /// the actual body length was determined by scanning.
     StreamLengthRepaired { declared: Option<i64>, actual: u64 },
+    /// A malformed `N R` reference omitted its generation; generation zero
+    /// was supplied. `R` has no standalone direct-object meaning, so this is
+    /// an unambiguous recovery used by PDFium-style malformed-tree handling.
+    MissingReferenceGeneration { number: u32, offset: Offset },
     /// The closing `endobj` keyword was absent.
     MissingEndObj,
 }
@@ -48,6 +52,7 @@ pub struct ParsedIndirect {
 pub struct ObjectParser<'a> {
     lexer: Lexer<'a>,
     names: &'a NameTable,
+    repairs: Vec<IndirectRepair>,
 }
 
 impl<'a> ObjectParser<'a> {
@@ -60,13 +65,18 @@ impl<'a> ObjectParser<'a> {
         Self {
             lexer: Lexer::new(input, base_offset, limits),
             names,
+            repairs: Vec::new(),
         }
     }
 
     /// Build directly on an existing lexer (used by the structure layer,
     /// which interleaves token-level and object-level reads).
     pub fn from_lexer(lexer: Lexer<'a>, names: &'a NameTable) -> Self {
-        Self { lexer, names }
+        Self {
+            lexer,
+            names,
+            repairs: Vec::new(),
+        }
     }
 
     /// Position relative to the window start.
@@ -109,7 +119,7 @@ impl<'a> ObjectParser<'a> {
             Token::Real(r) => Ok(PdfObject::Real(r)),
             Token::String(s) => Ok(PdfObject::String(PdfString::new(s))),
             Token::Name(n) => Ok(PdfObject::Name(self.names.intern(&n))),
-            Token::Integer(i) => Ok(self.integer_or_reference(i)?),
+            Token::Integer(i) => Ok(self.integer_or_reference(i, tok.start)?),
             Token::ArrayOpen => self.parse_array_body(depth),
             Token::DictOpen => self
                 .parse_dict_body(depth)
@@ -144,7 +154,11 @@ impl<'a> ObjectParser<'a> {
     }
 
     /// `N` was read; decide `N` vs `N G R` with two-token lookahead.
-    fn integer_or_reference(&mut self, value: i64) -> Result<PdfObject, SyntaxError> {
+    fn integer_or_reference(
+        &mut self,
+        value: i64,
+        value_offset: Offset,
+    ) -> Result<PdfObject, SyntaxError> {
         let save = self.lexer.pos();
         // Both lookahead reads tolerate lex errors by restoring: a binary
         // blob after an integer must not fail the integer itself.
@@ -153,8 +167,23 @@ impl<'a> ObjectParser<'a> {
                 Ok(t) => t,
                 Err(_) => return Ok(None),
             };
-            let Token::Integer(generation) = t2.value else {
-                return Ok(None);
+            let generation = match t2.value {
+                Token::Integer(generation) => generation,
+                Token::Keyword(kw) if kw == b"R" => {
+                    let Ok(number) = u32::try_from(value) else {
+                        return Ok(None);
+                    };
+                    if number == u32::MAX {
+                        return Ok(None);
+                    }
+                    self.repairs
+                        .push(IndirectRepair::MissingReferenceGeneration {
+                            number,
+                            offset: value_offset,
+                        });
+                    return Ok(Some(PdfObject::Reference(ObjectId::new(number, 0))));
+                }
+                _ => return Ok(None),
             };
             let t3 = match self.lexer.next_token() {
                 Ok(t) => t,
@@ -284,8 +313,9 @@ impl<'a> ObjectParser<'a> {
         }
         let id = ObjectId::new(number, generation);
 
+        self.repairs.clear();
         let body = self.parse_object_at_depth(0)?;
-        let mut repairs = Vec::new();
+        let mut repairs = std::mem::take(&mut self.repairs);
 
         // Decide between `endobj` and the stream protocol.
         let save = self.lexer.pos();
@@ -463,14 +493,23 @@ mod tests {
     }
 
     #[test]
-    fn references_need_two_ints_and_r() {
+    fn references_repair_a_missing_generation() {
         let names = NameTable::new();
         assert!(matches!(
             parse(&names, b"12 0 R"),
             PdfObject::Reference(id) if id == ObjectId::new(12, 0)
         ));
-        // Not references: missing generation, non-R keyword, real numbers.
-        assert!(matches!(parse(&names, b"12 R"), PdfObject::Integer(12)));
+        // `R` cannot be a standalone direct object, so a missing generation
+        // is unambiguously repaired to zero.
+        assert!(matches!(
+            parse(&names, b"12 R"),
+            PdfObject::Reference(id) if id == ObjectId::new(12, 0)
+        ));
+        assert!(matches!(
+            parse(&names, b"335\r\n R"),
+            PdfObject::Reference(id) if id == ObjectId::new(335, 0)
+        ));
+        // Still not references: non-R keyword and real generations.
         assert!(matches!(parse(&names, b"12 0 RR"), PdfObject::Integer(12)));
         assert!(matches!(parse(&names, b"12 1.0 R"), PdfObject::Integer(12)));
         // Out-of-range ids degrade to plain integers.
@@ -513,6 +552,22 @@ mod tests {
         assert!(matches!(items[0], PdfObject::Reference(id) if id.number == 1));
         assert!(matches!(items[1], PdfObject::Reference(id) if id.number == 2));
         assert!(matches!(items[2], PdfObject::Integer(7)));
+    }
+
+    #[test]
+    fn malformed_reference_repair_is_reported_by_indirect_parser() {
+        let names = NameTable::new();
+        let limits = SyntaxLimits::default();
+        let mut parser =
+            ObjectParser::new(b"9 0 obj <</Kids[335\r\n R]>> endobj", 100, &limits, &names);
+        let parsed = parser.parse_indirect(&mut |_| None).unwrap();
+        assert!(matches!(
+            parsed.repairs.as_slice(),
+            [IndirectRepair::MissingReferenceGeneration {
+                number: 335,
+                offset: 116
+            }]
+        ));
     }
 
     #[test]

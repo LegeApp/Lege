@@ -251,6 +251,15 @@ fn describe_recovery(event: &RecoveryEvent) -> String {
         } => {
             format!("stream {id} /Length {declared:?} wrong; actual {actual}")
         }
+        RecoveryEvent::ReferenceGenerationRepaired {
+            id,
+            referenced,
+            offset,
+        } => {
+            format!(
+                "object {id} reference {referenced} R at offset {offset} omitted generation; assumed 0"
+            )
+        }
         RecoveryEvent::XrefRebuilt => "cross-reference table rebuilt by full object scan".into(),
         RecoveryEvent::SizeRepaired { declared, actual } => {
             format!("trailer /Size {declared} wrong; actual {actual}")

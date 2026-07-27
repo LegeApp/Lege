@@ -34,6 +34,148 @@ const MAX_OPERAND_STACK: usize = 1 << 16;
 /// guard). Shadings need only modest resolution.
 const MAX_SAMPLED_FN: usize = 1 << 24;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkupKind {
+    Highlight,
+    Underline,
+    Squiggly,
+    StrikeOut,
+}
+
+fn append_markup_geometry(builder: &mut PathBuilder, quad: [f64; 8], kind: MarkupKind) {
+    if !quad.iter().all(|value| value.is_finite()) {
+        return;
+    }
+    let points = [
+        [quad[0], quad[1]],
+        [quad[2], quad[3]],
+        [quad[4], quad[5]],
+        [quad[6], quad[7]],
+    ];
+    if matches!(kind, MarkupKind::Highlight) {
+        append_polygon(builder, &[points[0], points[1], points[3], points[2]]);
+        return;
+    }
+
+    let distance = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+    let height = (distance(points[0], points[2]) + distance(points[1], points[3])) * 0.5;
+    let length = distance(points[2], points[3]);
+    if height <= 1e-6 || length <= 1e-6 {
+        return;
+    }
+    let bottom_mid = [
+        (points[2][0] + points[3][0]) * 0.5,
+        (points[2][1] + points[3][1]) * 0.5,
+    ];
+    let top_mid = [
+        (points[0][0] + points[1][0]) * 0.5,
+        (points[0][1] + points[1][1]) * 0.5,
+    ];
+    let inward_len = distance(bottom_mid, top_mid);
+    if inward_len <= 1e-6 {
+        return;
+    }
+    let inward = [
+        (top_mid[0] - bottom_mid[0]) / inward_len,
+        (top_mid[1] - bottom_mid[1]) / inward_len,
+    ];
+    let thickness = (height / 14.0).clamp(0.5, height / 3.0);
+
+    match kind {
+        MarkupKind::Underline => {
+            let offset = thickness;
+            append_strip(
+                builder,
+                add_scaled(points[2], inward, offset),
+                add_scaled(points[3], inward, offset),
+                inward,
+                thickness,
+            );
+        }
+        MarkupKind::StrikeOut => {
+            append_strip(
+                builder,
+                [
+                    (points[0][0] + points[2][0]) * 0.5,
+                    (points[0][1] + points[2][1]) * 0.5,
+                ],
+                [
+                    (points[1][0] + points[3][0]) * 0.5,
+                    (points[1][1] + points[3][1]) * 0.5,
+                ],
+                inward,
+                thickness,
+            );
+        }
+        MarkupKind::Squiggly => {
+            let amplitude = (height * 0.09).max(thickness);
+            let baseline = amplitude + thickness;
+            let steps = ((length / (amplitude * 1.5)).ceil() as usize).clamp(4, 256);
+            let mut centers = Vec::with_capacity(steps + 1);
+            for index in 0..=steps {
+                let t = index as f64 / steps as f64;
+                let mut center = [
+                    points[2][0] + (points[3][0] - points[2][0]) * t,
+                    points[2][1] + (points[3][1] - points[2][1]) * t,
+                ];
+                let wave = if index % 2 == 0 { -0.5 } else { 0.5 };
+                center = add_scaled(center, inward, baseline + wave * amplitude);
+                centers.push(center);
+            }
+            let mut polygon = Vec::with_capacity(centers.len() * 2);
+            polygon.extend(
+                centers
+                    .iter()
+                    .copied()
+                    .map(|point| add_scaled(point, inward, thickness * 0.5)),
+            );
+            polygon.extend(
+                centers
+                    .iter()
+                    .rev()
+                    .copied()
+                    .map(|point| add_scaled(point, inward, -thickness * 0.5)),
+            );
+            append_polygon(builder, &polygon);
+        }
+        MarkupKind::Highlight => {}
+    }
+}
+
+fn add_scaled(point: [f64; 2], vector: [f64; 2], scale: f64) -> [f64; 2] {
+    [point[0] + vector[0] * scale, point[1] + vector[1] * scale]
+}
+
+fn append_strip(
+    builder: &mut PathBuilder,
+    start: [f64; 2],
+    end: [f64; 2],
+    normal: [f64; 2],
+    thickness: f64,
+) {
+    let half = thickness * 0.5;
+    append_polygon(
+        builder,
+        &[
+            add_scaled(start, normal, half),
+            add_scaled(end, normal, half),
+            add_scaled(end, normal, -half),
+            add_scaled(start, normal, -half),
+        ],
+    );
+}
+
+fn append_polygon(builder: &mut PathBuilder, points: &[[f64; 2]]) {
+    let Some(first) = points.first() else {
+        return;
+    };
+    builder.move_to(first[0], first[1]);
+    for point in &points[1..] {
+        builder.line_to(point[0], point[1]);
+    }
+    builder.close();
+}
+
 #[derive(Debug, Clone)]
 struct MarkedContentFrame {
     hidden: bool,
@@ -3565,11 +3707,13 @@ impl<'a> Interpreter<'a> {
                 out.jbig2_globals = Some(Arc::from(bytes));
             }
             let int = |this: &mut Self, key: &[u8]| -> Option<i64> {
-                d.get(this.intern(key)).and_then(PdfObject::as_int)
+                let value = d.get(this.intern(key))?.clone();
+                this.resolve_obj(&value)?.as_int()
             };
             let boolean = |this: &mut Self, key: &[u8]| -> Option<bool> {
-                match d.get(this.intern(key)) {
-                    Some(PdfObject::Boolean(b)) => Some(*b),
+                let value = d.get(this.intern(key))?.clone();
+                match &*this.resolve_obj(&value)? {
+                    PdfObject::Boolean(b) => Some(*b),
                     _ => None,
                 }
             };
@@ -3787,7 +3931,7 @@ impl<'a> Interpreter<'a> {
         annot: &pdf_document::PageAnnotation,
     ) -> Result<(), ContentError> {
         let Some((stream_id, stream)) = self.annotation_appearance(annot) else {
-            return Ok(()); // no normal appearance — nothing to paint
+            return self.render_markup_annotation(annot);
         };
         let bbox = read_rect(&stream.dict, self.intern(b"BBox"));
         let matrix = read_matrix(&stream.dict, self.intern(b"Matrix"));
@@ -3821,6 +3965,98 @@ impl<'a> Interpreter<'a> {
             self.ops.push(SemanticOp::Restore);
         }
         result
+    }
+
+    /// Synthesize the conventional static appearance for text-markup
+    /// annotations whose author omitted `/AP /N`. A usable appearance stream
+    /// is always authoritative; this fallback covers only the four geometric
+    /// markup subtypes defined by §12.5.6.10.
+    fn render_markup_annotation(
+        &mut self,
+        annot: &pdf_document::PageAnnotation,
+    ) -> Result<(), ContentError> {
+        let Some(subtype) = annot.subtype.map(|name| self.names.resolve(name)) else {
+            return Ok(());
+        };
+        let kind = match subtype.as_ref() {
+            b"Highlight" => MarkupKind::Highlight,
+            b"Underline" => MarkupKind::Underline,
+            b"Squiggly" => MarkupKind::Squiggly,
+            b"StrikeOut" => MarkupKind::StrikeOut,
+            _ => return Ok(()),
+        };
+
+        let fallback_quad = [
+            annot.rect[0],
+            annot.rect[3],
+            annot.rect[2],
+            annot.rect[3],
+            annot.rect[0],
+            annot.rect[1],
+            annot.rect[2],
+            annot.rect[1],
+        ];
+        let quads: &[[f64; 8]] = if annot.quad_points.is_empty() {
+            if annot.rect[0] >= annot.rect[2] || annot.rect[1] >= annot.rect[3] {
+                return Ok(());
+            }
+            std::slice::from_ref(&fallback_quad)
+        } else {
+            &annot.quad_points
+        };
+
+        let mut builder = PathBuilder::default();
+        for quad in quads {
+            append_markup_geometry(&mut builder, *quad, kind);
+        }
+        if builder.is_empty() {
+            return Ok(());
+        }
+        let path = self.intern_path(builder.take());
+        let default = if matches!(kind, MarkupKind::Highlight) {
+            SemColor::DeviceRgb(1.0, 1.0, 0.0)
+        } else {
+            SemColor::DeviceGray(0.0)
+        };
+        let color = match annot.color {
+            Some(pdf_document::AnnotationColor::Gray(gray)) => {
+                SemColor::DeviceGray(f64::from(gray))
+            }
+            Some(pdf_document::AnnotationColor::Rgb(rgb)) => {
+                SemColor::DeviceRgb(f64::from(rgb[0]), f64::from(rgb[1]), f64::from(rgb[2]))
+            }
+            Some(pdf_document::AnnotationColor::Cmyk(cmyk)) => SemColor::DeviceCmyk(
+                f64::from(cmyk[0]),
+                f64::from(cmyk[1]),
+                f64::from(cmyk[2]),
+                f64::from(cmyk[3]),
+            ),
+            None => default,
+        };
+        let blend = if matches!(kind, MarkupKind::Highlight) {
+            BlendMode::Multiply
+        } else {
+            BlendMode::Normal
+        };
+
+        // Each synthesized appearance is an isolated semantic state just like
+        // an appearance Form. Attribution remains AnnotationAppearance so
+        // sweep diagnostics do not misclassify these pixels as page content.
+        self.ops.push(SemanticOp::Save);
+        self.ops.push(SemanticOp::BeginPaintOrigin(
+            PaintOrigin::AnnotationAppearance,
+        ));
+        self.ops.push(SemanticOp::SetFillColor(color));
+        self.ops
+            .push(SemanticOp::SetFillAlpha(annot.opacity.clamp(0.0, 1.0)));
+        self.ops.push(SemanticOp::SetBlendMode(blend));
+        self.ops.push(SemanticOp::Fill {
+            path,
+            rule: FillRule::NonZero,
+        });
+        self.ops.push(SemanticOp::EndPaintOrigin);
+        self.ops.push(SemanticOp::Restore);
+        Ok(())
     }
 
     /// Select an annotation's normal appearance stream. Always `/AP /N`

@@ -252,12 +252,23 @@ impl Resolver<'_> {
                         });
                     }
                     for repair in parsed.repairs {
-                        if let IndirectRepair::StreamLengthRepaired { declared, actual } = repair {
-                            ctx.recovery.push(RecoveryEvent::StreamLengthRepaired {
-                                id,
-                                declared,
-                                actual,
-                            });
+                        match repair {
+                            IndirectRepair::StreamLengthRepaired { declared, actual } => {
+                                ctx.recovery.push(RecoveryEvent::StreamLengthRepaired {
+                                    id,
+                                    declared,
+                                    actual,
+                                });
+                            }
+                            IndirectRepair::MissingReferenceGeneration { number, offset } => {
+                                ctx.recovery
+                                    .push(RecoveryEvent::ReferenceGenerationRepaired {
+                                        id,
+                                        referenced: number,
+                                        offset,
+                                    });
+                            }
+                            IndirectRepair::MissingEndObj => {}
                         }
                     }
                     return Ok(parsed.object);

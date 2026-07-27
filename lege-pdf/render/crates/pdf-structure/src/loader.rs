@@ -544,14 +544,25 @@ impl<'a> Loader<'a> {
             return Err(StructureError::NoUsableXref);
         };
         for repair in &parsed.repairs {
-            if let pdf_object::parser::IndirectRepair::StreamLengthRepaired { declared, actual } =
-                repair
-            {
-                self.recovery.push(RecoveryEvent::StreamLengthRepaired {
-                    id: parsed.id,
-                    declared: *declared,
-                    actual: *actual,
-                });
+            match repair {
+                pdf_object::parser::IndirectRepair::StreamLengthRepaired { declared, actual } => {
+                    self.recovery.push(RecoveryEvent::StreamLengthRepaired {
+                        id: parsed.id,
+                        declared: *declared,
+                        actual: *actual,
+                    })
+                }
+                pdf_object::parser::IndirectRepair::MissingReferenceGeneration {
+                    number,
+                    offset,
+                } => self
+                    .recovery
+                    .push(RecoveryEvent::ReferenceGenerationRepaired {
+                        id: parsed.id,
+                        referenced: *number,
+                        offset: *offset,
+                    }),
+                pdf_object::parser::IndirectRepair::MissingEndObj => {}
             }
         }
         let dict = &stream.dict;

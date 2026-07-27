@@ -201,6 +201,7 @@ pub struct SubstitutionRequest<'a> {
 const FLAG_FIXED_PITCH: u32 = 1 << 0;
 const FLAG_SERIF: u32 = 1 << 1;
 const FLAG_SYMBOLIC: u32 = 1 << 2;
+const FLAG_NONSYMBOLIC: u32 = 1 << 5;
 const FLAG_ITALIC: u32 = 1 << 6;
 const FLAG_FORCE_BOLD: u32 = 1 << 18;
 
@@ -329,7 +330,7 @@ pub fn substitute_with_style(request: SubstitutionRequest<'_>) -> (StandardFont,
         Family::Fixed
     } else if has(b"zapf") || has(b"dingbat") {
         Family::Dingbats
-    } else if has(b"symbol") {
+    } else if has(b"symbol") && flags & FLAG_NONSYMBOLIC == 0 {
         Family::Symbol
     } else if has(b"times")
         || has(b"georgia")
@@ -475,6 +476,23 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(f.family(), Family::Sans);
+    }
+
+    #[test]
+    fn nonsymbolic_descriptor_overrides_symbol_family_substring() {
+        let f = substitute(SubstitutionRequest {
+            base_font: b"SegoeUISymbol",
+            flags: Some(FLAG_NONSYMBOLIC),
+            ..Default::default()
+        });
+        assert_eq!(f.family(), Family::Sans);
+        // An exact standard-font name remains authoritative.
+        let exact = substitute(SubstitutionRequest {
+            base_font: b"Symbol",
+            flags: Some(FLAG_NONSYMBOLIC),
+            ..Default::default()
+        });
+        assert_eq!(exact, StandardFont::Symbol);
     }
 
     #[test]

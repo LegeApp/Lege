@@ -58,15 +58,19 @@ pub(crate) struct AlphaChannel {
     pub(crate) premultiplied: bool,
 }
 
-/// A JP2 palette (`pclr`) resolved against its component mapping (`cmap`): the
-/// output channels, each an 8-bit lookup indexed by the single decoded index
-/// sample. Only the common case is modeled — one index component, every output
-/// channel palette-mapped, 8-bit palette entries.
+/// A JP2 palette (`pclr`) resolved against its component mapping (`cmap`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Palette {
-    /// Output channels in container order; `output_columns[j][index]` is the
-    /// value of channel `j` for a decoded sample `index`.
-    pub(crate) output_columns: Vec<Vec<u8>>,
+    /// Output channels in container order.
+    pub(crate) output_columns: Vec<PaletteColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaletteColumn {
+    /// `values[index]` is this channel's sample for a decoded palette index.
+    pub(crate) values: Vec<i32>,
+    pub(crate) precision: u8,
+    pub(crate) signed: bool,
 }
 
 impl Palette {
@@ -207,8 +211,7 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
     let mut header = image_header.ok_or_else(|| invalid("JP2 header lacks ihdr box"))?;
     header.alpha = alpha;
     let colr = colr_payload.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
-    let (colorspace, color_encoding) =
-        parse_color_spec(colr, header.component_count, header.alpha.as_ref())?;
+    let (colorspace, color_encoding) = parse_color_spec(colr, header.component_count)?;
     header.colorspace = colorspace;
     header.color_encoding = color_encoding;
     // pclr/cmap resolution happens in `parse_jp2`: cmap may sit inside jp2h
@@ -218,9 +221,9 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
 }
 
 /// Resolve a `pclr` palette against a `cmap` component mapping into per-output
-/// channel lookup tables. Only 8-bit unsigned palette entries and
-/// palette-mapped channels sourced from component 0 are supported; anything
-/// else is rejected loudly (never a silent wrong color).
+/// channel lookup tables. Palette-mapped channels must be sourced from
+/// component 0; entry widths from 1 through 32 bits, signed or unsigned, are
+/// retained so downstream normalization sees the authored sample domain.
 fn resolve_palette(pclr: &[u8], cmap: &[u8]) -> Result<Palette> {
     if pclr.len() < 3 {
         return Err(invalid("JP2 pclr box is too short"));
@@ -233,21 +236,44 @@ fn resolve_palette(pclr: &[u8], cmap: &[u8]) -> Result<Palette> {
     let bit_depths = pclr
         .get(3..3 + num_columns)
         .ok_or_else(|| invalid("JP2 pclr bit-depth table is truncated"))?;
-    if bit_depths.iter().any(|&b| b != 7) {
+    if bit_depths.iter().any(|&b| (b & 0x7f) >= 32) {
         return Err(unsupported(
-            "unsupported JP2 feature: non-8-bit or signed palette entries",
+            "unsupported JP2 feature: palette entries wider than 32 bits",
         ));
     }
     // Column-major lookup tables: columns[col][entry].
-    let mut columns = vec![Vec::with_capacity(num_entries); num_columns];
+    let mut columns: Vec<PaletteColumn> = bit_depths
+        .iter()
+        .map(|&depth| PaletteColumn {
+            values: Vec::with_capacity(num_entries),
+            precision: (depth & 0x7f) + 1,
+            signed: depth & 0x80 != 0,
+        })
+        .collect();
     let mut offset = 3 + num_columns;
     for _ in 0..num_entries {
         for column in columns.iter_mut() {
-            let value = *pclr
-                .get(offset)
+            let byte_count = usize::from(column.precision).div_ceil(8);
+            let bytes = pclr
+                .get(offset..offset + byte_count)
                 .ok_or_else(|| invalid("JP2 pclr entry table is truncated"))?;
-            column.push(value);
-            offset += 1;
+            let mut raw = 0u32;
+            for &byte in bytes {
+                raw = (raw << 8) | u32::from(byte);
+            }
+            let mask = if column.precision == 32 {
+                u32::MAX
+            } else {
+                (1u32 << column.precision) - 1
+            };
+            raw &= mask;
+            let value = if column.signed && raw & (1u32 << (column.precision - 1)) != 0 {
+                (raw | !mask) as i32
+            } else {
+                raw as i32
+            };
+            column.values.push(value);
+            offset += byte_count;
         }
     }
 
@@ -319,13 +345,10 @@ fn parse_image_header(payload: &[u8]) -> Result<Jp2Header> {
 /// the same 1→Gray / 3→sRGB / 4→CMYK mapping the raw-codestream path uses, which
 /// is how OpenJPEG behaves when it ignores a non-regular colr method
 /// (`opj_jp2_read_colr` warns "meth value is not a regular value" and falls back
-/// to the component layout). A 2-component stream has no unambiguous colour
-/// interpretation and is rejected rather than guessed.
-fn parse_color_spec(
-    payload: &[u8],
-    component_count: u16,
-    alpha: Option<&AlphaChannel>,
-) -> Result<(ColorSpace, ColorEncoding)> {
+/// to the component layout). A 2-component stream is treated as Gray plus an
+/// auxiliary plane. PDF image decoding remains responsible for interpreting
+/// that auxiliary plane (typically alpha) from the image dictionary.
+fn parse_color_spec(payload: &[u8], component_count: u16) -> Result<(ColorSpace, ColorEncoding)> {
     if payload.len() < 3 {
         return Err(invalid("JP2 colr box is too short"));
     }
@@ -395,18 +418,12 @@ fn parse_color_spec(
                 )),
                 // Profile too short to name a space, or a non-Gray/RGB model
                 // (e.g. CMYK): defer to the component count.
-                _ => infer_colorspace_from_components(
-                    component_count,
-                    alpha,
-                    "any-ICC (colr METH 3)",
-                ),
+                _ => infer_colorspace_from_components(component_count, "any-ICC (colr METH 3)"),
             }
         }
         // METH 4 (vendor colour): no interoperable profile, so the only signal
         // is the component layout.
-        4 => {
-            infer_colorspace_from_components(component_count, alpha, "vendor colour (colr METH 4)")
-        }
+        4 => infer_colorspace_from_components(component_count, "vendor colour (colr METH 4)"),
         other => Err(unsupported(format!(
             "unsupported JP2 colour specification method {other}"
         ))),
@@ -421,7 +438,6 @@ fn parse_color_spec(
 /// rather than guessed; a clean blank beats a wrong colour interpretation.
 fn infer_colorspace_from_components(
     component_count: u16,
-    alpha: Option<&AlphaChannel>,
     context: &str,
 ) -> Result<(ColorSpace, ColorEncoding)> {
     match component_count {
@@ -776,8 +792,7 @@ mod tests {
 
     #[test]
     fn enum_cs_12_is_cmyk() {
-        let (space, encoding) =
-            parse_color_spec(&enumerated_colr_payload(ENUM_CMYK), 4, None).unwrap();
+        let (space, encoding) = parse_color_spec(&enumerated_colr_payload(ENUM_CMYK), 4).unwrap();
         assert_eq!(space, ColorSpace::Cmyk);
         assert_eq!(encoding, ColorEncoding::Cmyk);
     }
@@ -785,13 +800,13 @@ mod tests {
     #[test]
     fn colr_meth4_vendor_infers_space_from_component_count() {
         // METH 4 carries no usable profile: 1/3/4 components map to Gray/sRGB/
-        // CMYK exactly like a raw codestream, and 2 is rejected as ambiguous.
-        let vendor = |ncomp: u16| parse_color_spec(&[4, 0, 0], ncomp, None);
+        // CMYK exactly like a raw codestream. Two components remain decodable
+        // as Gray plus an auxiliary plane for the PDF layer to interpret.
+        let vendor = |ncomp: u16| parse_color_spec(&[4, 0, 0], ncomp);
         assert_eq!(vendor(1).unwrap().0, ColorSpace::Gray);
+        assert_eq!(vendor(2).unwrap().0, ColorSpace::Gray);
         assert_eq!(vendor(3).unwrap().0, ColorSpace::Srgb);
         assert_eq!(vendor(4).unwrap().0, ColorSpace::Cmyk);
-        let err = vendor(2).expect_err("2-component is ambiguous").to_string();
-        assert!(err.contains("ambiguous 2-component"), "{err}");
     }
 
     #[test]
@@ -803,23 +818,20 @@ mod tests {
         gray.extend_from_slice(&[0u8; 16]);
         gray.extend_from_slice(b"GRAY");
         gray.extend_from_slice(&[0u8; 108]);
-        assert_eq!(
-            parse_color_spec(&gray, 1, None).unwrap().0,
-            ColorSpace::Gray
-        );
+        assert_eq!(parse_color_spec(&gray, 1).unwrap().0, ColorSpace::Gray);
 
         let mut rgb = vec![3u8, 0, 0];
         rgb.extend_from_slice(&[0u8; 16]);
         rgb.extend_from_slice(b"RGB ");
         rgb.extend_from_slice(&[0u8; 108]);
-        assert_eq!(parse_color_spec(&rgb, 3, None).unwrap().0, ColorSpace::Srgb);
+        assert_eq!(parse_color_spec(&rgb, 3).unwrap().0, ColorSpace::Srgb);
 
         let mut cmyk_profile = vec![3u8, 0, 0];
         cmyk_profile.extend_from_slice(&[0u8; 16]);
         cmyk_profile.extend_from_slice(b"CMYK");
         cmyk_profile.extend_from_slice(&[0u8; 108]);
         assert_eq!(
-            parse_color_spec(&cmyk_profile, 4, None).unwrap().0,
+            parse_color_spec(&cmyk_profile, 4).unwrap().0,
             ColorSpace::Cmyk
         );
     }
@@ -834,9 +846,9 @@ mod tests {
         let cmap = [0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2]; // 3 palette-mapped channels
         let palette = resolve_palette(&pclr, &cmap).unwrap();
         assert_eq!(palette.channel_count(), 3);
-        assert_eq!(palette.output_columns[0], vec![10, 20]);
-        assert_eq!(palette.output_columns[1], vec![11, 21]);
-        assert_eq!(palette.output_columns[2], vec![12, 22]);
+        assert_eq!(palette.output_columns[0].values, vec![10, 20]);
+        assert_eq!(palette.output_columns[1].values, vec![11, 21]);
+        assert_eq!(palette.output_columns[2].values, vec![12, 22]);
     }
 
     #[test]
@@ -849,7 +861,28 @@ mod tests {
         let cmap = [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let palette = resolve_palette(&pclr, &cmap).unwrap();
         assert_eq!(palette.channel_count(), 3);
-        assert_eq!(palette.output_columns[2], vec![12, 22]);
+        assert_eq!(palette.output_columns[2].values, vec![12, 22]);
+    }
+
+    #[test]
+    fn resolve_palette_preserves_precision_and_sign() {
+        // Two one-column palettes: unsigned 4-bit and signed 12-bit.
+        let unsigned = resolve_palette(&[0, 2, 1, 3, 0x0f, 0x02], &[0, 0, 1, 0]).unwrap();
+        assert_eq!(unsigned.output_columns[0].precision, 4);
+        assert!(!unsigned.output_columns[0].signed);
+        assert_eq!(unsigned.output_columns[0].values, vec![15, 2]);
+
+        let signed =
+            resolve_palette(&[0, 2, 1, 0x80 | 11, 0x0f, 0xff, 0x08, 0x00], &[0, 0, 1, 0]).unwrap();
+        assert_eq!(signed.output_columns[0].precision, 12);
+        assert!(signed.output_columns[0].signed);
+        assert_eq!(signed.output_columns[0].values, vec![-1, -2048]);
+    }
+
+    #[test]
+    fn resolve_palette_rejects_entries_wider_than_32_bits() {
+        let err = resolve_palette(&[0, 1, 1, 32], &[0, 0, 1, 0]).unwrap_err();
+        assert!(err.to_string().contains("wider than 32 bits"));
     }
 
     #[test]

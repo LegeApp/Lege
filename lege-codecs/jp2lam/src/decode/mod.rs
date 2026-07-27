@@ -1481,16 +1481,17 @@ fn expand_palette(
                 .data
                 .iter()
                 .map(|&sample| {
-                    let idx = sample.clamp(0, column.len().saturating_sub(1) as i32) as usize;
-                    column.get(idx).copied().unwrap_or(0) as i32
+                    let idx =
+                        sample.clamp(0, column.values.len().saturating_sub(1) as i32) as usize;
+                    column.values.get(idx).copied().unwrap_or(0)
                 })
                 .collect();
             crate::model::Component {
                 data,
                 width,
                 height,
-                precision: 8,
-                signed: false,
+                precision: u32::from(column.precision),
+                signed: column.signed,
                 dx: 1,
                 dy: 1,
             }

@@ -429,6 +429,13 @@ impl JpxCodec {
         // interleave and scale to 8-bit.
         let pixels = width as usize * height as usize;
         let mut out = vec![0u8; bytes];
+        // When the PDF declares `/Indexed`, ignoring a JP2 container palette
+        // leaves the codestream's samples as literal PDF palette indices. A
+        // 4-bit index 15 must remain byte value 15 in the decoded Gray8
+        // carrier; widening it to 240 makes the renderer clamp nearly every
+        // sample to `/HiVal` and collapses the image to one palette color
+        // (pdf.js issue12213).
+        let preserve_palette_indices = ignore_container_palette && ncomp == 1;
         for (ci, comp) in image.components.iter().enumerate() {
             if comp.data.len() < pixels {
                 return Err(ImageError::Decode("JPX: short component plane".into()));
@@ -449,13 +456,13 @@ impl JpxCodec {
             // ever traded for spec-literal colour mapping.
             let max_sample = (1u32 << comp.precision.clamp(1, 31)) - 1;
             for i in 0..pixels {
-                let v = comp.data[i];
-                out[i * ncomp + ci] = if comp.precision < 8 {
-                    ((v.clamp(0, max_sample as i32) as u32) << (8 - comp.precision)).min(255) as u8
-                } else {
-                    let v = if shift > 0 { v >> shift } else { v };
-                    v.clamp(0, 255) as u8
-                };
+                out[i * ncomp + ci] = component_sample_to_u8(
+                    comp.data[i],
+                    comp.precision,
+                    max_sample,
+                    shift,
+                    preserve_palette_indices,
+                );
             }
         }
 
@@ -466,5 +473,42 @@ impl JpxCodec {
             stride,
             data: Arc::from(out),
         })
+    }
+}
+
+fn component_sample_to_u8(
+    value: i32,
+    precision: u32,
+    max_sample: u32,
+    right_shift: u32,
+    preserve_palette_index: bool,
+) -> u8 {
+    if preserve_palette_index {
+        return value.clamp(0, max_sample.min(255) as i32) as u8;
+    }
+    if precision < 8 {
+        ((value.clamp(0, max_sample as i32) as u32) << (8 - precision)).min(255) as u8
+    } else {
+        let value = if right_shift > 0 {
+            value >> right_shift
+        } else {
+            value
+        };
+        value.clamp(0, 255) as u8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::component_sample_to_u8;
+
+    #[test]
+    fn sub8_pdf_palette_indices_are_not_color_widened() {
+        assert_eq!(component_sample_to_u8(15, 4, 15, 0, true), 15);
+        assert_eq!(
+            component_sample_to_u8(15, 4, 15, 0, false),
+            240,
+            "ordinary 4-bit color components retain PDFium's widening"
+        );
     }
 }

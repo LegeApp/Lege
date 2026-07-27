@@ -143,6 +143,85 @@ fn appearance_state_selects_among_n_substates() {
 }
 
 #[test]
+fn text_markup_without_ap_gets_synthesized_appearance() {
+    let mut b = PdfBuilder::new();
+    base_doc(&mut b, "10 0 R 11 0 R 12 0 R 13 0 R");
+    b.add_object(
+        10,
+        "<</Type/Annot/Subtype/Highlight/Rect[10 200 110 220]\
+         /QuadPoints 20 0 R/C 21 0 R/CA 22 0 R>>",
+    );
+    b.add_object(
+        11,
+        "<</Type/Annot/Subtype/Underline/Rect[10 150 110 170]\
+         /QuadPoints[10 170 110 170 10 150 110 150]>>",
+    );
+    b.add_object(
+        12,
+        "<</Type/Annot/Subtype/Squiggly/Rect[10 100 110 120]\
+         /QuadPoints[10 120 110 120 10 100 110 100]>>",
+    );
+    b.add_object(
+        13,
+        "<</Type/Annot/Subtype/StrikeOut/Rect[10 50 110 70]\
+         /QuadPoints[10 70 110 70 10 50 110 50]>>",
+    );
+    b.add_object(20, "[10 220 110 220 10 200 110 200]");
+    b.add_object(21, "[1 0.5 0]");
+    b.add_object(22, "0.5");
+    b.finish_classic_xref("/Root 1 0 R");
+
+    let page = compile_with_annots(&open(b.into_bytes()));
+    assert_eq!(fill_colors(&page).len(), 4);
+    assert!(
+        page.ops
+            .iter()
+            .any(|op| matches!(op, SemanticOp::SetFillAlpha(alpha) if *alpha == 0.5))
+    );
+    assert!(page.ops.iter().any(|op| matches!(
+        op,
+        SemanticOp::SetBlendMode(pdf_page_ir::BlendMode::Multiply)
+    )));
+    assert_eq!(
+        page.ops
+            .iter()
+            .filter(|op| matches!(
+                op,
+                SemanticOp::BeginPaintOrigin(pdf_page_ir::PaintOrigin::AnnotationAppearance)
+            ))
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn authored_ap_is_authoritative_for_markup_annotation() {
+    let mut b = PdfBuilder::new();
+    base_doc(&mut b, "10 0 R");
+    b.add_object(
+        10,
+        "<</Type/Annot/Subtype/Highlight/Rect[0 0 50 50]\
+         /QuadPoints[0 50 50 50 0 0 50 0]/AP<</N 11 0 R>>>>",
+    );
+    b.add_stream(
+        11,
+        "/Type/XObject/Subtype/Form/BBox[0 0 50 50]",
+        b"1 0 0 rg 0 0 50 50 re f",
+    );
+    b.finish_classic_xref("/Root 1 0 R");
+
+    let page = compile_with_annots(&open(b.into_bytes()));
+    let colors = fill_colors(&page);
+    assert_eq!(
+        colors.len(),
+        1,
+        "fallback must not paint behind authored AP"
+    );
+    assert!(matches!(colors[0], SemColor::DeviceRgb(r, g, b)
+        if (*r, *g, *b) == (1.0, 0.0, 0.0)));
+}
+
+#[test]
 fn missing_as_falls_back_to_single_entry_dict_else_skips() {
     // Single-entry /N dict without /AS → that entry is used (tolerance).
     let mut b = PdfBuilder::new();
