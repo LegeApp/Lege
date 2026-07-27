@@ -206,3 +206,42 @@ Log path:
 If DX12 initialization or recovery fails, preserve the complete log. The next
 session should remain focused on that single failure; do not expand masks,
 clips, blends, or mixed-content coverage in the same pass.
+
+## Windows validation result — 2026-07-27
+
+The focused Windows pass completed successfully for normal DX12 rendering and
+parallel execution.
+
+```text
+Windows version: build 26200.8875, 25H2
+GPU / driver: NVIDIA GeForce RTX 4060 Laptop GPU / 596.36
+Adapter line: NVIDIA GeForce RTX 4060 Laptop GPU (Dx12, DiscreteGpu)
+DX12 tests: pdf-render-wgpu --all-targets passed (34 passed, 0 failed)
+Bilevel scale 2 telemetry: GPU 0, CPU 48, fallback 0, initializations 0
+Bilevel scale 4 telemetry: GPU 48, CPU 0, fallback 0, initializations 1
+JPEG page 180 cold/warm: 1441.692 ms / 175.244 ms
+Parallel whole-page CPU1/CPU8: 2412.185 ms / 414.019 ms
+Parallel whole-page GPU1/GPU8: 446.148 ms / 94.929 ms
+Reset produced device-loss callback: no
+Recovery telemetry: unavailable; no callback was exposed before manual stop
+Process survived and resumed GPU work: not induced
+Log path: gpu-dx12-device-loss.stdout.log / gpu-dx12-device-loss.stderr.log
+```
+
+The scale-2 bilevel run did not enumerate an adapter. The scale-4 bilevel and
+JPEG runs selected DX12, remained entirely GPU-routed, had zero fallback, and
+produced stable cold/warm checksums. GPU8 was 4.70× faster than GPU1 and 4.36×
+faster than CPU8, so the Windows path does not show the feared one-page-at-a-
+time serialization.
+
+The MRC soft-mask, solid stencil, explicit hard-mask, and analytic-clip
+fixtures also routed all 72 requests per case to DX12 with zero fallback and
+stable checksums. Their warm medians were 160.577 ms, 140.783 ms, 154.819 ms,
+and 104.778 ms respectively.
+
+`Win+Ctrl+Shift+B` caused the expected display flicker during a long JPEG run,
+but wgpu emitted no device-loss callback, adapter rediscovery, fallback, or
+recovery message during approximately 13 minutes before the run was stopped.
+Per the criterion above, record this as **loss not induced**, not a recovery
+failure. Deterministic injected-loss reconstruction remains covered by the
+passing automated test.
