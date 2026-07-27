@@ -315,6 +315,7 @@ mod tests {
             clip_has_mask: false,
             blend: BlendMode::Normal,
             shading: None,
+            stencil: None,
         })
     }
 

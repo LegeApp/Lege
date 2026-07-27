@@ -168,6 +168,32 @@ fn dark_luminosity_mask_blocks_painting() {
 }
 
 #[test]
+fn empty_soft_mask_blocks_painting_instead_of_disabling_the_mask() {
+    // A real empty Alpha/Luminosity mask has zero coverage everywhere. It is
+    // distinct from `/SMask /None`, which is represented by `ClearSoftMask`.
+    let ops = vec![
+        DisplayOp::BeginSoftMask {
+            kind: MaskKind::Alpha,
+            transfer: None,
+        },
+        DisplayOp::EndSoftMask,
+        fill(0, 0),
+    ];
+    let host = render(
+        vec![rect(0.0, 0.0, 20.0, 20.0)],
+        vec![Paint::Solid(Color::from_rgb(1.0, 0.0, 0.0))],
+        ops,
+        20,
+    );
+
+    assert!(
+        white(px(&host, 10, 10)),
+        "empty real soft mask blocks the fill: {:?}",
+        px(&host, 10, 10)
+    );
+}
+
+#[test]
 fn clear_soft_mask_restores_unmasked_painting() {
     // Set a dark (blocking) mask, then /SMask /None, then paint red → the fill
     // is unmasked and shows.

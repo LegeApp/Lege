@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use pdf_page_ir::{
-    Color, CompiledPage, DeviceSize, DisplayOp, FillRule, Matrix, PageBounds, PageComplexity,
-    PageFeatures, Paint, PathData, PathVerb, Point, Rect, ResourceKey, ShadingId, ShadingKind,
-    ShadingResource,
+    Color, CompiledPage, DeviceSize, DisplayOp, FillRule, ImageColorSpace, ImageIr,
+    InterpolationMode, Matrix, PageBounds, PageComplexity, PageFeatures, Paint, PathData, PathVerb,
+    Point, Rect, ResourceKey, ShadingId, ShadingKind, ShadingResource,
 };
 use pdf_render_api::{
     AnnotationMode, Background, HostPage, OutputFormat, OutputResidency, PageTransform,
@@ -384,6 +384,75 @@ fn axial_pattern_background_fills_outside_the_axis() {
         px(&host, 0, 0),
         [255, 255, 255, 255],
         "outside the path stays white"
+    );
+}
+
+#[test]
+fn shading_pattern_paints_only_through_image_mask_coverage() {
+    let kind = ShadingKind::Axial {
+        coords: [0.0, 0.0, 8.0, 0.0],
+        domain: [0.0, 1.0],
+        extend: [true, true],
+        ramp: gray_ramp(),
+        background: None,
+    };
+    let mut page = page_with(
+        vec![
+            DisplayOp::ConcatTransform(Matrix::scale(8.0, 8.0)),
+            DisplayOp::DrawImage {
+                image: pdf_page_ir::ImageId(0),
+                paint: pdf_page_ir::PaintId(0),
+                transform: Matrix::IDENTITY,
+                alpha: 1.0,
+                blend: pdf_page_ir::BlendMode::Normal,
+            },
+        ],
+        vec![Paint::Shading {
+            shading: ShadingId(0),
+            matrix: Matrix::IDENTITY,
+        }],
+        vec![],
+        vec![shading_resource(kind, 2)],
+        8.0,
+    );
+    // 2×1: sample 0 paints, sample 1 masks. The row is MSB-first.
+    page.images = Arc::from([ImageIr {
+        key: ResourceKey {
+            object_number: 1,
+            generation: 0,
+            variant: 0,
+        },
+        width: 2,
+        height: 1,
+        is_stencil: true,
+        interpolation: InterpolationMode::Nearest,
+        soft_mask: None,
+        bits_per_component: 1,
+        color_space: ImageColorSpace::Gray,
+        decode: None,
+        samples: Some(Arc::from([0x40])),
+        codec: None,
+        codec_data: None,
+        codec_parms: None,
+        smask: None,
+        mask: None,
+        smask_in_data: 0,
+        lowering_degraded: false,
+    }]);
+    page.features |= PageFeatures::IMAGES;
+
+    let (host, _) = CpuBackend::default()
+        .render_to_host(&request(page, 8))
+        .unwrap();
+    let painted = px(&host, 1, 4);
+    assert!(
+        painted[0] < 100 && painted[1] < 100 && painted[2] < 100,
+        "paint sample takes the dark end of the shading: {painted:?}"
+    );
+    assert_eq!(
+        px(&host, 6, 4),
+        [255, 255, 255, 255],
+        "masked sample leaves the backdrop untouched"
     );
 }
 

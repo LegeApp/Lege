@@ -857,6 +857,10 @@ pub struct PreparedCommand {
     /// When set, the fill is painted with this shading (per-pixel color from
     /// the ramp) instead of the solid `rgb`; coverage still applies.
     pub shading: Option<Box<PreparedShading>>,
+    /// Optional `/ImageMask` coverage for a shading-painted stencil. The path
+    /// bounds the image placement; this image supplies the authored per-pixel
+    /// stencil coverage before the shading color is composited.
+    pub stencil: Option<Box<crate::image::PreparedImage>>,
 }
 
 /// One placed occurrence of a cached glyph: a shared coverage bitmap and the
@@ -1125,6 +1129,7 @@ pub fn lower(
         None,
         None,
         None,
+        false,
         #[cfg(feature = "profiling")]
         None,
     )
@@ -1159,6 +1164,7 @@ pub(crate) fn lower_cell(
         None,
         None,
         outer.image_cache.as_ref(),
+        false,
         #[cfg(feature = "profiling")]
         outer.decode_cache.clone(),
     )
@@ -1193,6 +1199,44 @@ pub(crate) fn lower_with_font_cache(
         shared_fonts,
         shared_glyphs,
         shared_images,
+        false,
+        #[cfg(feature = "profiling")]
+        None,
+    )
+}
+
+/// Lower for a raster backend that consumes vector draw commands directly.
+///
+/// Visible glyph fills are emitted as small glyph-local batches instead of
+/// one page-wide run. This keeps a GPU path rasterizer's bounds and edge
+/// searches local while amortizing dispatch setup, without changing the CPU
+/// renderer's normal cached-glyph lowering.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_for_external_raster(
+    page: &CompiledPage,
+    base: Matrix,
+    size: DeviceSize,
+    codecs: &pdf_image::CodecRegistry,
+    decode_limits: &pdf_image::DecodeLimits,
+    hinting: pdf_font::HintingPolicy,
+    color_policy: pdf_render_api::RenderColorPolicy,
+    font_cache: &mut FontProgramCache,
+    shared_fonts: Option<&SharedFontProgramCache>,
+    shared_images: Option<&Arc<SharedImageCache>>,
+) -> CpuPreparedPage {
+    lower_impl(
+        page,
+        base,
+        size,
+        codecs,
+        decode_limits,
+        hinting,
+        color_policy,
+        Some(font_cache),
+        shared_fonts,
+        None,
+        shared_images,
+        true,
         #[cfg(feature = "profiling")]
         None,
     )
@@ -1221,6 +1265,7 @@ pub fn lower_with_decode_cache(
         None,
         None,
         None,
+        false,
         Some(decode_cache),
     )
 }
@@ -1367,6 +1412,7 @@ fn lower_impl(
     shared_fonts: Option<&SharedFontProgramCache>,
     shared_glyphs: Option<&SharedGlyphCache>,
     shared_images: Option<&Arc<SharedImageCache>>,
+    split_glyph_draws: bool,
     #[cfg(feature = "profiling")] decode_cache: Option<DecodedImageCache>,
 ) -> CpuPreparedPage {
     #[cfg(feature = "profiling")]
@@ -1508,6 +1554,7 @@ fn lower_impl(
                         *blend,
                         soft_count > 0,
                         None,
+                        None,
                     ),
                     // Shading pattern: fill the path shape, coloring per pixel
                     // from the shading ramp. Shading space maps to device via
@@ -1531,6 +1578,7 @@ fn lower_impl(
                                 *blend,
                                 soft_count > 0,
                                 Some(Box::new(sh)),
+                                None,
                             ),
                             None => None,
                         }
@@ -1723,12 +1771,19 @@ fn lower_impl(
                                 };
                                 match cached {
                                     Some(b) => b,
+                                    None if split_glyph_draws => lower_glyph_outlines_split(
+                                        &mut out, gr, prog, ctm, *color, *alpha, clip, *blend,
+                                        synth,
+                                    ),
                                     None => lower_glyph_outlines(
                                         &mut out, gr, prog, ctm, *color, *alpha, clip, *blend,
                                         synth,
                                     ),
                                 }
                             }
+                            None if split_glyph_draws => lower_glyph_boxes_split(
+                                &mut out, gr, ctm, *color, *alpha, clip, *blend,
+                            ),
                             None => {
                                 lower_glyph_boxes(&mut out, gr, ctm, *color, *alpha, clip, *blend)
                             }
@@ -1942,6 +1997,43 @@ fn lower_impl(
                             *blend,
                             paint_policy,
                             Some(stencil_img),
+                        );
+                        accumulate_scope_bounds(&mut scope_stack, b);
+                    }
+                } else if ir.is_stencil
+                    && let Paint::Shading { shading, matrix } = &page.paints[paint.index()]
+                {
+                    let prepared_shading = prepare_shading(
+                        &page.shadings[shading.index()],
+                        matrix.then(base),
+                        size,
+                        true,
+                        paint_policy,
+                    );
+                    if let (Some(shading), Some((stencil, _))) = (
+                        prepared_shading,
+                        lower_image(
+                            &mut out,
+                            ir,
+                            [255, 255, 255],
+                            ctm,
+                            1.0,
+                            pdf_page_ir::BlendMode::Normal,
+                            None,
+                        ),
+                    ) {
+                        let b = lower_fill(
+                            &mut out,
+                            &unit_square_path(),
+                            ctm,
+                            pdf_page_ir::FillRule::NonZero,
+                            pdf_page_ir::Color::BLACK,
+                            *alpha,
+                            clip,
+                            *blend,
+                            soft_count > 0,
+                            Some(Box::new(shading)),
+                            Some(stencil),
                         );
                         accumulate_scope_bounds(&mut scope_stack, b);
                     }
@@ -2859,6 +2951,7 @@ fn lower_fill(
     blend: pdf_page_ir::BlendMode,
     soft_active: bool,
     shading: Option<Box<PreparedShading>>,
+    stencil: Option<Box<crate::image::PreparedImage>>,
 ) -> Option<DeviceRect> {
     let range_start = out.subpaths.len() as u32;
     let pt_start = out.points.len();
@@ -2890,6 +2983,9 @@ fn lower_fill(
     } else {
         false
     };
+    if let Some(stencil) = &stencil {
+        bounds = intersect(bounds, stencil.bounds);
+    }
     if bounds.width == 0 || bounds.height == 0 {
         out.points.truncate(pt_start);
         out.subpaths.truncate(range_start as usize);
@@ -2939,6 +3035,7 @@ fn lower_fill(
         clip_has_mask,
         blend,
         shading,
+        stencil,
     }));
     Some(bounds)
 }
@@ -3339,6 +3436,7 @@ fn lower_stroke(
         clip_has_mask,
         blend,
         shading,
+        stencil: None,
     }));
     Some(bounds)
 }
@@ -3365,6 +3463,30 @@ fn lower_glyph_boxes(
     let pt_start = out.points.len();
     append_glyph_boxes(out, run, ctm);
     finish_glyph_fill(out, range_start, pt_start, clip, color, op_alpha, blend)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_glyph_boxes_split(
+    out: &mut CpuPreparedPage,
+    run: &GlyphRun,
+    ctm: Matrix,
+    color: pdf_page_ir::Color,
+    op_alpha: f32,
+    clip: Option<u32>,
+    blend: pdf_page_ir::BlendMode,
+) -> Option<DeviceRect> {
+    let mut bounds = None;
+    for glyphs in run.glyphs.chunks(8) {
+        let batch = GlyphRun {
+            glyphs: Arc::from(glyphs),
+            ..run.clone()
+        };
+        bounds = union_rect(
+            bounds,
+            lower_glyph_boxes(out, &batch, ctm, color, op_alpha, clip, blend),
+        );
+    }
+    bounds
 }
 
 /// Append a glyph run's fallback boxes (no outline program) into the shared
@@ -3542,6 +3664,11 @@ fn resolve_font_program(
 /// control) pays no retention cost — the cache is self-financing.
 const MIN_PARSE_TO_CACHE: std::time::Duration = std::time::Duration::from_micros(400);
 
+#[inline]
+fn should_retain_font_program(program: &FontProgram, parse_cost: std::time::Duration) -> bool {
+    program.benefits_from_parse_cache() && parse_cost >= MIN_PARSE_TO_CACHE
+}
+
 /// Parse `resource`'s embedded program, consulting the document-scoped cache
 /// first. Only programs that both `benefits_from_parse_cache` (Type 1 / bare
 /// CFF) *and* actually took [`MIN_PARSE_TO_CACHE`] to parse are retained;
@@ -3564,8 +3691,7 @@ fn resolve_program_bytes(
     let program = parse_font_program(resource);
     let parse_cost = start.elapsed();
     if let Some(prog) = &program
-        && prog.benefits_from_parse_cache()
-        && parse_cost >= MIN_PARSE_TO_CACHE
+        && should_retain_font_program(prog, parse_cost)
     {
         shared.insert(key, prog.clone(), prog.retained_bytes());
     }
@@ -4070,6 +4196,32 @@ fn lower_glyph_outlines(
     finish_glyph_fill(out, range_start, pt_start, clip, color, op_alpha, blend)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn lower_glyph_outlines_split(
+    out: &mut CpuPreparedPage,
+    run: &GlyphRun,
+    prog: &FontProgram,
+    ctm: Matrix,
+    color: pdf_page_ir::Color,
+    op_alpha: f32,
+    clip: Option<u32>,
+    blend: pdf_page_ir::BlendMode,
+    synth: GlyphSynthesis,
+) -> Option<DeviceRect> {
+    let mut bounds = None;
+    for glyphs in run.glyphs.chunks(8) {
+        let batch = GlyphRun {
+            glyphs: Arc::from(glyphs),
+            ..run.clone()
+        };
+        bounds = union_rect(
+            bounds,
+            lower_glyph_outlines(out, &batch, prog, ctm, color, op_alpha, clip, blend, synth),
+        );
+    }
+    bounds
+}
+
 /// Lower a text fill whose paint is a tiling pattern. Glyph geometry is
 /// appended directly to the ordinary tiler's device-space fill arena; unlike
 /// solid text it cannot use the coverage-bitmap glyph cache because the color
@@ -4520,6 +4672,7 @@ fn finish_glyph_fill(
         clip_has_mask,
         blend,
         shading: None,
+        stencil: None,
     }));
     Some(bounds)
 }
@@ -5406,6 +5559,7 @@ fn lower_shading_op(
         clip_has_mask,
         blend: pdf_page_ir::BlendMode::Normal,
         shading: Some(Box::new(shading)),
+        stencil: None,
     }));
     Some(region)
 }
@@ -5468,22 +5622,25 @@ mod font_cache_tests {
     }
 
     #[test]
-    fn cheap_parses_are_not_retained() {
-        // A bare CFF parses in microseconds, below `MIN_PARSE_TO_CACHE`, so the
-        // resolve path must not retain it — this is what keeps a document of
-        // cheap-to-parse fonts free of retention cost. The gate is a measured
-        // wall-clock parse cost, so a scheduler hiccup under parallel test load
-        // can legitimately push one parse over the threshold: retry with a
-        // fresh cache and require that an uncontended parse stays uncached.
-        for _ in 0..5 {
-            let cache = SharedFontProgramCache::default();
-            let res = resource(bare_cff());
-            resolve_program_bytes(&res, Some(&cache)).expect("parse bare cff");
-            if cache.len() == 0 && cache.stats().1 == 0 {
-                return;
-            }
-        }
-        panic!("cheap parse was retained on every attempt");
+    fn parse_cache_retention_policy_is_deterministic() {
+        // Test the policy, not wall-clock scheduling. The production timer is
+        // intentionally best-effort: a preempted parse may occasionally be
+        // retained, but the bounded cache makes that harmless.
+        let bare = FontProgram::parse(bare_cff()).expect("parse bare cff");
+        assert!(bare.benefits_from_parse_cache());
+        assert!(!should_retain_font_program(
+            &bare,
+            MIN_PARSE_TO_CACHE - std::time::Duration::from_micros(1)
+        ));
+        assert!(should_retain_font_program(&bare, MIN_PARSE_TO_CACHE));
+
+        let sfnt = FontProgram::parse(pdf_font::StandardFont::Helvetica.program_data())
+            .expect("parse bundled sfnt");
+        assert!(!sfnt.benefits_from_parse_cache());
+        assert!(!should_retain_font_program(
+            &sfnt,
+            std::time::Duration::from_secs(1)
+        ));
     }
 
     #[test]
@@ -6027,6 +6184,7 @@ mod image_cache_tests {
             None,
             None,
             cache,
+            false,
             #[cfg(feature = "profiling")]
             None,
         )

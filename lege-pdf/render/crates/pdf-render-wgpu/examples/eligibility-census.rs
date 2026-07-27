@@ -88,6 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut image_pages = 0u64;
     let mut ignored_text_pages = 0u64;
     let mut ignored_text_draws = 0u64;
+    let mut analytic_clip_pages = 0u64;
+    let mut page_soft_mask_pages = 0u64;
 
     for (index, candidate) in candidates.iter().enumerate() {
         if candidate.file != current_file {
@@ -175,8 +177,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 && image.footprint[1].is_finite()
                                 && image.footprint[0] <= MAX_BOX_FOOTPRINT
                                 && image.footprint[1] <= MAX_BOX_FOOTPRINT
+                                && image.opacity.as_ref().is_none_or(|opacity| {
+                                    opacity.footprint[0].is_finite()
+                                        && opacity.footprint[1].is_finite()
+                                        && opacity.footprint[0] <= MAX_BOX_FOOTPRINT
+                                        && opacity.footprint[1] <= MAX_BOX_FOOTPRINT
+                                })
                         }) =>
                     {
+                        if prepared.images.iter().any(|image| image.clip.is_some()) {
+                            analytic_clip_pages += 1;
+                            note = "analytic-clip".to_owned();
+                        }
+                        if prepared
+                            .images
+                            .iter()
+                            .any(|image| image.soft_mask.is_some())
+                        {
+                            page_soft_mask_pages += 1;
+                            if !note.is_empty() {
+                                note.push(';');
+                            }
+                            note.push_str("page-soft-mask");
+                        }
                         is_prepared_eligible = true;
                         prepared_eligible += 1;
                     }
@@ -237,6 +260,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "pages with ignored non-painting text: {ignored_text_pages} ({ignored_text_draws} draws)"
     );
+    println!("eligible pages with analytic clip masks: {analytic_clip_pages}");
+    println!("eligible pages with active page soft masks: {page_soft_mask_pages}");
     for (reason, count) in ranked {
         println!("{reason}: {count}");
     }

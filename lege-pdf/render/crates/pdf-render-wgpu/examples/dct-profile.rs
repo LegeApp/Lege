@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         request.page.operations.len(),
         request.page.images.len()
     );
+    print_image_diagnostics(&request);
     if !matches!(gpu.supports(&request.page, &request), SupportLevel::Native) {
         print_operation_diagnostics(&request);
         return Err("page is not eligible for the experimental RGB8 image-only GPU path".into());
@@ -112,6 +113,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cold_gpu.uploaded_bytes as f64 / (1024.0 * 1024.0)
     );
     println!(
+        "gpu commands:            {} image, {} path; {} edges, {} band refs",
+        cold_gpu.image_draws,
+        cold_gpu.path_draws,
+        cold_gpu.path_edges,
+        cold_gpu.band_edge_references
+    );
+    println!(
+        "gpu path batches:        {} batches, {} dispatches, {} active tiles, {} tile refs, depth {}",
+        cold_gpu.path_batches,
+        cold_gpu.path_dispatches,
+        cold_gpu.active_path_tiles,
+        cold_gpu.tile_path_references,
+        cold_gpu.max_tile_depth
+    );
+    println!(
+        "gpu path packing:        {:.2} MiB geometry, {:.2} MiB masks",
+        cold_gpu.packed_path_bytes as f64 / (1024.0 * 1024.0),
+        cold_gpu.packed_mask_bytes as f64 / (1024.0 * 1024.0)
+    );
+    println!(
         "gpu warm prepare median: {:.3} ms",
         millis(median(&mut gpu_warm_prepare))
     );
@@ -133,8 +154,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         quality.mean_absolute, quality.max_absolute, quality.changed_percent
     );
     println!("cache: {:?}", gpu.upload_cache_telemetry());
+    println!("path cache: {:?}", gpu.path_upload_cache_telemetry());
     drop(cold_cpu);
     Ok(())
+}
+
+fn print_image_diagnostics(request: &RenderRequest) {
+    for (index, image) in request.page.images.iter().enumerate() {
+        println!(
+            "image {index}: {}x{} bpc={} color={:?} codec={:?} stencil={} \
+             legacy-soft-mask={} smask={} mask={:?} smask-in-data={}",
+            image.width,
+            image.height,
+            image.bits_per_component,
+            image.color_space,
+            image.codec,
+            image.is_stencil,
+            image.soft_mask.is_some(),
+            image.smask.is_some(),
+            image.mask,
+            image.smask_in_data,
+        );
+    }
 }
 
 fn print_operation_diagnostics(request: &RenderRequest) {

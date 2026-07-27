@@ -175,6 +175,309 @@ impl Default for SharedRgbImageCache {
     }
 }
 
+/// Document-scoped cache of normalized alpha8 image masks used by the GPU
+/// preparation seam. The source allocation remains weakly held so this cache
+/// cannot pin a decoded mask after the document image cache releases it.
+#[derive(Debug)]
+pub(crate) struct SharedOpacityImageCache {
+    state: Mutex<OpacityImageCacheState>,
+    budget_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct OpacityImageCacheState {
+    entries: Vec<OpacityImageCacheEntry>,
+    bytes: usize,
+    clock: u64,
+}
+
+#[derive(Debug)]
+struct OpacityImageCacheEntry {
+    source: Weak<[u8]>,
+    width: u32,
+    height: u32,
+    bpc: u8,
+    decode: Option<Arc<[[f32; 2]]>>,
+    inverted: bool,
+    components: u8,
+    color_key: Option<Arc<[[u32; 2]]>>,
+    alpha: Arc<[u8]>,
+    charge: usize,
+    last_used: u64,
+}
+
+impl SharedOpacityImageCache {
+    pub(crate) fn new(budget_bytes: usize) -> Self {
+        Self {
+            state: Mutex::new(OpacityImageCacheState::default()),
+            budget_bytes,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn get_or_expand(
+        &self,
+        source: &Arc<[u8]>,
+        width: u32,
+        height: u32,
+        bpc: u8,
+        decode: Option<&Arc<[[f32; 2]]>>,
+        inverted: bool,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Option<Arc<[u8]>>, RenderError> {
+        if !(1..=16).contains(&bpc) {
+            return Ok(None);
+        }
+        let Some(alpha_len) = (width as usize).checked_mul(height as usize) else {
+            return Ok(None);
+        };
+        if alpha_len == 0 || alpha_len > self.budget_bytes {
+            return Ok(None);
+        }
+        if let Some(alpha) = self.lookup(source, width, height, bpc, decode, inverted, 1, None) {
+            return Ok(Some(alpha));
+        }
+
+        let row_bits = (width as usize * bpc as usize).div_ceil(8) * 8;
+        let max_value = ((1u64 << bpc) - 1) as f32;
+        let decode_pair = decode.and_then(|pairs| pairs.first()).copied();
+        let mut expanded = vec![0u8; alpha_len];
+        for row in 0..height {
+            if row % 32 == 0 && cancellation.is_some_and(CancellationToken::is_cancelled) {
+                return Err(RenderError::Cancelled);
+            }
+            for column in 0..width {
+                let bit = row as usize * row_bits + column as usize * bpc as usize;
+                let raw = read_bits(source, bit, bpc as usize) as f32 / max_value;
+                let decoded = match decode_pair {
+                    Some([lo, hi]) => lo + raw * (hi - lo),
+                    None => raw,
+                }
+                .clamp(0.0, 1.0);
+                let opacity = if inverted { 1.0 - decoded } else { decoded };
+                expanded[row as usize * width as usize + column as usize] = to_u8(opacity);
+            }
+        }
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(RenderError::Cancelled);
+        }
+        let expanded: Arc<[u8]> = Arc::from(expanded);
+        if let Some(alpha) = self.lookup(source, width, height, bpc, decode, inverted, 1, None) {
+            return Ok(Some(alpha));
+        }
+        self.insert(
+            source,
+            width,
+            height,
+            bpc,
+            decode.cloned(),
+            inverted,
+            1,
+            None,
+            Arc::clone(&expanded),
+        );
+        Ok(Some(expanded))
+    }
+
+    /// Expand a PDF colour-key `/Mask` into tight alpha8. The ranges apply to
+    /// the base image's raw components before `/Decode`; a pixel is transparent
+    /// only when every component lies inside its corresponding range.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn get_or_expand_color_key(
+        &self,
+        source: &Arc<[u8]>,
+        width: u32,
+        height: u32,
+        bpc: u8,
+        components: usize,
+        ranges: &Arc<[[u32; 2]]>,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Option<Arc<[u8]>>, RenderError> {
+        if !(1..=16).contains(&bpc)
+            || components == 0
+            || components > u8::MAX as usize
+            || ranges.len() != components
+        {
+            return Ok(None);
+        }
+        let Some(alpha_len) = (width as usize).checked_mul(height as usize) else {
+            return Ok(None);
+        };
+        if alpha_len == 0 || alpha_len > self.budget_bytes {
+            return Ok(None);
+        }
+        let components = components as u8;
+        if let Some(alpha) = self.lookup(
+            source,
+            width,
+            height,
+            bpc,
+            None,
+            false,
+            components,
+            Some(ranges),
+        ) {
+            return Ok(Some(alpha));
+        }
+
+        let Some(row_sample_bits) = (width as usize)
+            .checked_mul(components as usize)
+            .and_then(|samples| samples.checked_mul(bpc as usize))
+        else {
+            return Ok(None);
+        };
+        let row_bits = row_sample_bits.div_ceil(8) * 8;
+        let Some(source_bytes) = row_bits
+            .checked_div(8)
+            .and_then(|bytes| bytes.checked_mul(height as usize))
+        else {
+            return Ok(None);
+        };
+        if source.len() < source_bytes {
+            return Ok(None);
+        }
+
+        let mut expanded = vec![255u8; alpha_len];
+        for row in 0..height {
+            if row % 32 == 0 && cancellation.is_some_and(CancellationToken::is_cancelled) {
+                return Err(RenderError::Cancelled);
+            }
+            for column in 0..width {
+                let pixel_bit =
+                    row as usize * row_bits + column as usize * components as usize * bpc as usize;
+                let masked = ranges.iter().enumerate().all(|(component, &[lo, hi])| {
+                    let bit = pixel_bit + component * bpc as usize;
+                    let raw = read_bits(source, bit, bpc as usize);
+                    raw >= lo && raw <= hi
+                });
+                if masked {
+                    expanded[row as usize * width as usize + column as usize] = 0;
+                }
+            }
+        }
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(RenderError::Cancelled);
+        }
+
+        let expanded: Arc<[u8]> = Arc::from(expanded);
+        if let Some(alpha) = self.lookup(
+            source,
+            width,
+            height,
+            bpc,
+            None,
+            false,
+            components,
+            Some(ranges),
+        ) {
+            return Ok(Some(alpha));
+        }
+        self.insert(
+            source,
+            width,
+            height,
+            bpc,
+            None,
+            false,
+            components,
+            Some(Arc::clone(ranges)),
+            Arc::clone(&expanded),
+        );
+        Ok(Some(expanded))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lookup(
+        &self,
+        source: &Arc<[u8]>,
+        width: u32,
+        height: u32,
+        bpc: u8,
+        decode: Option<&Arc<[[f32; 2]]>>,
+        inverted: bool,
+        components: u8,
+        color_key: Option<&Arc<[[u32; 2]]>>,
+    ) -> Option<Arc<[u8]>> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.clock = state.clock.wrapping_add(1);
+        let clock = state.clock;
+        let mut hit = None;
+        let mut removed_bytes = 0usize;
+        state.entries.retain_mut(|entry| {
+            let Some(cached_source) = entry.source.upgrade() else {
+                removed_bytes = removed_bytes.saturating_add(entry.charge);
+                return false;
+            };
+            if hit.is_none()
+                && Arc::ptr_eq(&cached_source, source)
+                && entry.width == width
+                && entry.height == height
+                && entry.bpc == bpc
+                && entry.decode.as_ref() == decode
+                && entry.inverted == inverted
+                && entry.components == components
+                && entry.color_key.as_ref() == color_key
+            {
+                entry.last_used = clock;
+                hit = Some(Arc::clone(&entry.alpha));
+            }
+            true
+        });
+        state.bytes = state.bytes.saturating_sub(removed_bytes);
+        hit
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert(
+        &self,
+        source: &Arc<[u8]>,
+        width: u32,
+        height: u32,
+        bpc: u8,
+        decode: Option<Arc<[[f32; 2]]>>,
+        inverted: bool,
+        components: u8,
+        color_key: Option<Arc<[[u32; 2]]>>,
+        alpha: Arc<[u8]>,
+    ) {
+        let charge = alpha.len() + std::mem::size_of::<OpacityImageCacheEntry>();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.clock = state.clock.wrapping_add(1);
+        let clock = state.clock;
+        state.entries.push(OpacityImageCacheEntry {
+            source: Arc::downgrade(source),
+            width,
+            height,
+            bpc,
+            decode,
+            inverted,
+            components,
+            color_key,
+            alpha,
+            charge,
+            last_used: clock,
+        });
+        state.bytes += charge;
+        while state.bytes > self.budget_bytes && state.entries.len() > 1 {
+            let victim = state
+                .entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            let removed = state.entries.swap_remove(victim);
+            state.bytes = state.bytes.saturating_sub(removed.charge);
+        }
+    }
+}
+
+impl Default for SharedOpacityImageCache {
+    fn default() -> Self {
+        Self::new(crate::MAX_PREPARED_OPACITY_CONVERSION_BYTES)
+    }
+}
+
 /// An image prepared for one render request.
 #[derive(Debug, Clone)]
 pub struct PreparedImage {

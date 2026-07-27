@@ -111,6 +111,117 @@ pub fn execute(
     }
 }
 
+/// Derive every top-level page soft mask once for the experimental image-page
+/// preparation seam. Mask content still runs through the normative CPU
+/// executor, including nested masks, groups, clips, `/BC`, and `/TR`; callers
+/// can then attach the resulting device-space coverage plane to GPU image
+/// draws without teaching the GPU backend how to paint arbitrary mask content.
+///
+/// The returned vector is indexed like `page.ops`; only `PushSoftMask` slots
+/// are populated. `None` for the whole result means cooperative cancellation.
+pub(crate) fn prepare_soft_masks(page: &CpuPreparedPage) -> Option<Vec<Option<ClipMask>>> {
+    let mut prepared: Vec<Option<ClipMask>> = std::iter::repeat_with(|| None)
+        .take(page.ops.len())
+        .collect();
+    let mut raster = RasterKernel::default();
+    let kernels = KernelSet::select();
+    let mut masks: Vec<Option<ClipMask>> = (0..page.clips.len()).map(|_| None).collect();
+    let mut stats = RenderStats::default();
+    let mut i = 0;
+
+    while i < page.ops.len() {
+        if let Some(cancel) = &page.decode_limits.should_cancel
+            && cancel()
+        {
+            return None;
+        }
+        match &page.ops[i] {
+            PreparedOp::PushSoftMask {
+                kind,
+                transfer,
+                content_end,
+                bounds,
+            } => {
+                let content_end = *content_end as usize;
+                prepared[i] = Some(render_soft_mask(
+                    page,
+                    i + 1,
+                    content_end,
+                    *kind,
+                    transfer.as_deref(),
+                    *bounds,
+                    &mut raster,
+                    &kernels,
+                    &mut masks,
+                    &mut stats,
+                ));
+                if stats.cancelled {
+                    return None;
+                }
+                i = content_end;
+            }
+            _ => i += 1,
+        }
+    }
+
+    Some(prepared)
+}
+
+/// Rasterize one patterned `/ImageMask` brush without its page-level alpha or
+/// blend. The resulting bounded plane is straight RGB plus independent alpha,
+/// ready for the experimental GPU image compositor to apply painter-order
+/// state. `None` means cancellation or a degraded nested pattern-cell draw;
+/// callers then route the complete request through the normative CPU backend
+/// so diagnostics cannot disappear at the GPU seam.
+pub(crate) fn prepare_patterned_stencil(
+    page: &CpuPreparedPage,
+    tiling: &crate::prepared::PreparedTiling,
+) -> Option<crate::PreparedPatternedStencil> {
+    tiling.stencil.as_ref()?;
+    let mut normalized = tiling.clone();
+    normalized.alpha = 255;
+    normalized.blend = pdf_page_ir::BlendMode::Normal;
+
+    let mut surface = Surface::offscreen(normalized.bounds);
+    let mut raster = RasterKernel::default();
+    let kernels = KernelSet::select();
+    let mut masks: Vec<Option<ClipMask>> = (0..page.clips.len()).map(|_| None).collect();
+    let mut stats = RenderStats::default();
+    render_tiling(
+        page,
+        &normalized,
+        &mut surface,
+        &mut raster,
+        &kernels,
+        &mut masks,
+        &mut stats,
+    );
+    if stats.cancelled || stats.degraded_draws > 0 {
+        return None;
+    }
+
+    let (_, rgba) = surface.into_output(pdf_render_api::OutputFormat::Rgba8PremultipliedSrgb);
+    let pixels = normalized.bounds.width as usize * normalized.bounds.height as usize;
+    let mut samples = Vec::with_capacity(pixels * 3);
+    let mut opacity = Vec::with_capacity(pixels);
+    for pixel in rgba.chunks_exact(4) {
+        let alpha = u16::from(pixel[3]);
+        opacity.push(pixel[3]);
+        if alpha == 0 {
+            samples.extend_from_slice(&[0, 0, 0]);
+        } else {
+            for &channel in &pixel[..3] {
+                samples.push(((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8);
+            }
+        }
+    }
+    Some(crate::PreparedPatternedStencil {
+        bounds: normalized.bounds,
+        samples: samples.into(),
+        opacity: opacity.into(),
+    })
+}
+
 /// Pre-build every clip mask the ops will consume, across the rayon pool, so the
 /// serial draw loop finds them cached. Each mask is a pure function of `page`
 /// and byte-identical regardless of build order, so this is safe to parallelize
@@ -314,58 +425,19 @@ fn run_ops(
                 bounds,
             } => {
                 let ce = *content_end as usize;
-                let mask = if bounds.width == 0 || bounds.height == 0 {
-                    // Empty mask content. For Alpha / plain Luminosity this
-                    // masks everything (luminosity of an all-black backdrop
-                    // is 0 → `None`); with a /BC backdrop the whole plane
-                    // takes the backdrop's luminosity instead. `/TR` applies
-                    // to the outside value too.
-                    match apply_transfer(soft_mask_outside(*kind), transfer.as_deref()) {
-                        0 => None,
-                        outside => Some(ClipMask {
-                            bounds: DeviceRect {
-                                x: 0,
-                                y: 0,
-                                width: 0,
-                                height: 0,
-                            },
-                            data: Vec::new(),
-                            outside,
-                            // A soft mask, not an elidable rectangular clip.
-                            all_opaque: false,
-                        }),
-                    }
-                } else {
-                    let mut off = Surface::offscreen(*bounds);
-                    // A /BC luminosity mask composites its content against
-                    // the backdrop color, not transparent black (§11.6.5.2).
-                    if let pdf_page_ir::MaskKind::LuminosityBc { backdrop } = kind {
-                        for ly in 0..off.height {
-                            let row = off.row_mut(off.origin_y + ly);
-                            for px in row.chunks_exact_mut(4) {
-                                px[0] = backdrop[0];
-                                px[1] = backdrop[1];
-                                px[2] = backdrop[2];
-                                px[3] = 255;
-                            }
-                        }
-                    }
-                    // The mask content renders isolated from any outer soft mask.
-                    let mut inner: Vec<Option<ClipMask>> = Vec::new();
-                    run_ops(
-                        page,
-                        i + 1,
-                        ce,
-                        &mut off,
-                        raster,
-                        kernels,
-                        masks,
-                        &mut inner,
-                        stats,
-                    );
-                    Some(derive_soft_mask(&off, *kind, transfer.as_deref()))
-                };
-                soft.push(mask);
+                let mask = render_soft_mask(
+                    page,
+                    i + 1,
+                    ce,
+                    *kind,
+                    transfer.as_deref(),
+                    *bounds,
+                    raster,
+                    kernels,
+                    masks,
+                    stats,
+                );
+                soft.push(Some(mask));
                 stats.soft_masks += 1;
                 i = ce;
             }
@@ -382,6 +454,62 @@ fn run_ops(
             return;
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_soft_mask(
+    page: &CpuPreparedPage,
+    content_start: usize,
+    content_end: usize,
+    kind: pdf_page_ir::MaskKind,
+    transfer: Option<&[u8; 256]>,
+    bounds: DeviceRect,
+    raster: &mut RasterKernel,
+    kernels: &KernelSet,
+    masks: &mut Vec<Option<ClipMask>>,
+    stats: &mut RenderStats,
+) -> ClipMask {
+    if bounds.width == 0 || bounds.height == 0 {
+        // An empty real mask is not `/SMask /None`: its outside value still
+        // gates every subsequent pixel. Keeping an explicit zero-sized mask
+        // also fixes the formerly inverted Alpha/plain-Luminosity empty-mask
+        // case, where `None` accidentally disabled masking altogether.
+        return ClipMask {
+            bounds,
+            data: Vec::new(),
+            outside: apply_transfer(soft_mask_outside(kind), transfer),
+            all_opaque: false,
+        };
+    }
+
+    let mut off = Surface::offscreen(bounds);
+    // A /BC luminosity mask composites its content against the backdrop color,
+    // not transparent black (§11.6.5.2).
+    if let pdf_page_ir::MaskKind::LuminosityBc { backdrop } = kind {
+        for ly in 0..off.height {
+            let row = off.row_mut(off.origin_y + ly);
+            for px in row.chunks_exact_mut(4) {
+                px[0] = backdrop[0];
+                px[1] = backdrop[1];
+                px[2] = backdrop[2];
+                px[3] = 255;
+            }
+        }
+    }
+    // The mask content renders isolated from any outer soft mask.
+    let mut inner: Vec<Option<ClipMask>> = Vec::new();
+    run_ops(
+        page,
+        content_start,
+        content_end,
+        &mut off,
+        raster,
+        kernels,
+        masks,
+        &mut inner,
+        stats,
+    );
+    derive_soft_mask(&off, kind, transfer)
 }
 
 fn build_render_clip_mask(
@@ -2008,6 +2136,7 @@ fn paint_command(
             let (rgb, alpha, opaque, premul) = (cmd.rgb, cmd.alpha, cmd.opaque, cmd.premul);
             let blend = choose_blend(cmd.blend);
             let shading = cmd.shading.as_deref();
+            let stencil = cmd.stencil.as_deref();
             // The coverage buffer is sized to the device plane, not the
             // (possibly offset) surface; pass full device dims.
             let width = surface.origin_x + surface.width;
@@ -2026,7 +2155,7 @@ fn paint_command(
                     }
                     dispatch_row(
                         surface, kernels, y, x0, x1, cov, bx0, bx1, mask, soft, rgb, alpha, opaque,
-                        premul, blend, shading,
+                        premul, blend, shading, stencil,
                     );
                 },
             ) {
@@ -2283,6 +2412,7 @@ fn dispatch_row(
     premul: [u8; 4],
     blend: BlendChoice,
     shading: Option<&crate::prepared::PreparedShading>,
+    stencil: Option<&crate::image::PreparedImage>,
 ) {
     // Restrict to the clip's column envelope.
     let cxa = x0.max(bx0);
@@ -2319,6 +2449,18 @@ fn dispatch_row(
                 sm.outside
             };
             cov[x] = mul_div_255(cov[x] as u16, sv as u16) as u8;
+        }
+    }
+    // A shading-painted `/ImageMask` contributes coverage rather than color.
+    // Sampling the already-prepared image preserves decode polarity,
+    // interpolation, minification, rotation and shear.
+    if let Some(stencil) = stencil {
+        #[allow(clippy::needless_range_loop)]
+        for x in cxa..=cxb {
+            let alpha = stencil
+                .shade(x as f64 + 0.5, y as f64 + 0.5)
+                .map_or(0, |sample| sample[3]);
+            cov[x] = mul_div_255(cov[x] as u16, alpha as u16) as u8;
         }
     }
 
@@ -2708,6 +2850,7 @@ mod cancel_tests {
             clip_has_mask: false,
             blend: pdf_page_ir::BlendMode::Normal,
             shading: None,
+            stencil: None,
         };
         let ops = (0..n).map(|_| PreparedOp::Draw(cmd.clone())).collect();
         crate::prepared::CpuPreparedPage {
