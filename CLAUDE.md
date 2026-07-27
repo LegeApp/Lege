@@ -57,20 +57,6 @@ cargo deb
 
 # Single crate build
 cargo build -p lege-gpu
-
-# Convenient aliases for each sub-program
-cargo process
-cargo gui
-cargo music-gui
-cargo gpu
-cargo ocr
-cargo pdf-write
-cargo jbig2
-cargo jp2
-cargo djvu
-
-# Check every ecosystem workspace member
-cargo ecosystem-check
 ```
 
 Normal root Cargo commands already use the in-tree `jp2lam` and
