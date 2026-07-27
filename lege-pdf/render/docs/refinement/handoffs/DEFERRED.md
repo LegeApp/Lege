@@ -15,6 +15,69 @@ cap). Adversarial fixtures (self-referential pattern, cyclic function, absurd
 sample count, missing pattern, deep form nesting) terminate without panic —
 `crates/pdf-content/tests/adversarial_tests.rs`.
 
+> **2026-07-27 malformed page-tree closure.** The Sweep-15 wrong-page class is
+> closed with bounded recovery rather than a global `/Parent` scan:
+>
+> - An indirect reference written as `N R` is parsed as `N 0 R` and emits the
+>   typed `ReferenceGenerationRepaired` event, including the containing object
+>   and byte offset.
+> - Any provably lost page-tree subtree triggers one full xref rebuild, even
+>   when sibling pages survived. The rebuilt walk is adopted only when it
+>   recovers more real pages, or the same number with fewer losses.
+> - If rebuild cannot recover a lost child but its span is exactly inferable
+>   from the parent `/Count` and readable siblings, blank placeholders are
+>   inserted at that child's position. Only genuinely ambiguous multi-hole
+>   distributions retain count-backed tail padding.
+>
+> The real Cambourne report now opens as 152/152 pages and reports repair of
+> object 923's `335 R`. Its sampled page 100 changed from the wrong-page
+> Sweep-15 ink deltas 0.30413/0.29196 to 0.00377/0.00840 and `ok` against
+> PDFium/MuPDF. Regressions cover malformed references, partial-xref rebuild
+> adoption, exact middle insertion, ambiguous fallback, and truncation.
+>
+> The two previously red tests were not production defects. The font-cache
+> test was scheduling-sensitive because it asserted a wall-clock parse
+> threshold; it now tests the retention policy as a pure decision. The JP2
+> test expected method-4 two-component data to be rejected after production
+> had intentionally adopted Gray-plus-auxiliary-plane recovery. The corrected
+> suites pass: `pdf-render-cpu` 67/67 and JP2 309 passed/5 intentional ignores.
+
+> **2026-07-27 Sweep-15 residual pass — five focused workstreams.** This
+> five-workstream pass deliberately excluded malformed page-tree recovery; the
+> follow-on closure above handles it. The evidence-backed non-structural
+> residuals are now closed:
+>
+> - CCITT scalar values inside `/DecodeParms` resolve when indirect (`/K`,
+>   `/Columns`, `/Rows`, `/BlackIs1`, `/EncodedByteAlign`, `/EndOfLine`,
+>   `/EndOfBlock`). The Byzantine Legacies p102 two-page scan now decodes
+>   cleanly instead of as vertical noise.
+> - JP2 `pclr` entries retain signedness and 1–32-bit precision through palette
+>   expansion; widths above 32 bits are a typed decline. When a PDF `/Indexed`
+>   color space overrides the container palette, sub-8-bit JPX samples also
+>   remain literal palette indices instead of being widened as color
+>   components. `issue12213.pdf` is now `ok` against PDFium and MuPDF (ink
+>   deltas 0.00146 and 0.00129).
+> - Native TrueType cmap fallback now reads byte-oriented format 0/6 tables
+>   under Microsoft `(3,1)` as well as Macintosh `(1,0)` (`issue5701.pdf`);
+>   `/NonSymbolic` prevents family names such as `SegoeUISymbol` from being
+>   misclassified as the Symbol face (`issue8697.pdf`); and the Type 1 parser
+>   keeps the first `/Subrs` section rather than overwriting it with a later
+>   conditional definition (`issue18548_reduced.pdf`).
+> - CPU lowering now paints `/ImageMask` stencils through `Paint::Shading`,
+>   using the prepared stencil as coverage inside the ordinary
+>   clip/soft-mask/alpha/blend compositor. The experimental GPU vector seam
+>   declines the command because it already declines shading commands.
+>   `issue13372.pdf` now carries its gradient through the authored mask.
+> - Highlight, Underline, Squiggly, and StrikeOut annotations without a usable
+>   `/AP /N` receive synthesized geometry from `/QuadPoints`, `/C`, and `/CA`.
+>   Authored appearances remain authoritative; highlight uses Multiply and the
+>   conventional yellow default. `bug1538111.pdf` now renders all four markup
+>   classes.
+>
+> Focused regressions cover each parser/render path. The full `pdf-font` suite,
+> content annotation/image integrations, shading integrations, and corrected
+> CPU/JP2 library suites pass.
+
 > **2026-07-21 production-readiness pass — batch closure.** The three-stream
 > hardening pass (merged to master 2026-07-20/21) closed many items below;
 > each affected section carries a dated note, this is the map. **Closed:**
@@ -213,6 +276,17 @@ already cover them) alongside a distinct **structural** failure, now fixed:
   `orphan_page_is_recovered_after_rebuilt_tree_remains_empty` and
   `live_entries_skip_free_objects_and_preserve_generations`.
 
+- **Partial malformed page trees — done 2026-07-27.** A readable catalog and
+  some readable leaves no longer prevent escalation when another subtree is
+  provably lost. `pdf-document` retries once with a full xref rebuild and
+  adopts it only when the real-page/loss score improves. The object parser also
+  repairs the observed malformed-reference form `N R` to generation zero and
+  surfaces a typed recovery event. This restores all 152 real pages in the
+  Cambourne report, whose last ten-page branch was previously rejected because
+  object 923 ended `/Kids` with `335 R`. Tests:
+  `partial_page_tree_loss_retries_with_rebuilt_xref` and
+  `missing_reference_generation_in_page_kids_is_repaired`.
+
 - **Rebuild indexes object-stream members** — *done*. `loader.rebuild()` now
   records each `/Type /ObjStm` container during the scan, decompresses it, and
   indexes its members as `InObjectStream` (revision order preserved: a member
@@ -239,10 +313,14 @@ already cover them) alongside a distinct **structural** failure, now fixed:
   `/Count` exceeds the recovered pages, blank letter placeholders are
   appended up to the declaration (bounded by `max_pages`), with a recovery
   note. A merely lying `/Count` with an intact tree synthesizes nothing.
-  Placeholders append at the end, so mid-document losses can still
-  misalign later indices vs PDFium's in-place nulls — inherent to the
-  approximation, fine for tail truncation (the normal case). Test
-  `truncated_page_tree_synthesizes_blank_placeholders_to_declared_count`.
+  **Refined 2026-07-27:** when one lost child has an exact span derivable from
+  its parent `/Count` minus readable sibling spans, placeholders are inserted
+  at the lost position, preserving later page indices. Multiple unknown
+  children whose spans cannot be assigned unambiguously still receive tail
+  padding rather than invented ordering. Tests
+  `truncated_page_tree_synthesizes_blank_placeholders_to_declared_count`,
+  `exact_mid_tree_loss_inserts_placeholders_in_document_order`, and
+  `ambiguous_multiple_tree_holes_keep_tail_padding_fallback`.
 
 - **Content-stream decode failure no longer drops the page** — *done*.
   `append_content` skips a truncated/corrupt content stream (with an observable
@@ -1048,7 +1126,13 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
     (K passes through), reconstructed as independent planes → `Cmyk8`;
   - **`pclr` palette** (+ `cmap`, whether inside jp2h or a top-level box),
     expanding the single index component to the container's channels, with
-    OpenJPEG's fallback when the `cmap` is malformed.
+    OpenJPEG's fallback when the `cmap` is malformed. **Update 2026-07-27:**
+    palette entries are no longer restricted to unsigned 8-bit values:
+    signed/unsigned 1–32-bit columns preserve their precision and sign in the
+    expanded `Component`; >32-bit entries decline explicitly. When the PDF
+    supplies `/Indexed` and therefore supersedes `pclr`, 1/2/4-bit decoded
+    samples stay literal palette indices rather than undergoing component
+    range expansion (`issue12213.pdf`).
   *Still deferred within JPX* (each now a clean, B3-flagged failure, never a
   silent blank — measured counts from the 424-doc census):
   - **degenerate decomposition level** on power-of-two dimensions (a 5th
@@ -1102,6 +1186,10 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
   *inside* the parms dict were never abbreviated per Table 93, only the
   top-level key was; `/JBIG2Globals` needs an indirect stream an inline
   image cannot reference). Test `inline_image_dp_carries_ccitt_parameters`.
+  **Update 2026-07-27:** XObject `/DecodeParms` scalar entries themselves may
+  be indirect and are now resolved before type conversion. Regression:
+  `ccitt_decode_parm_scalars_may_be_indirect`; real verification:
+  Byzantine Legacies p102.
   `/EndOfBlock` consultation is **won't-do by oracle-parity policy**
   (re-affirmed 2026-07-21): PDFium's FaxDecoder ignores it, so consulting
   it could only diverge from the oracle with no corpus evidence of need.
@@ -1262,9 +1350,292 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
   source resolution it routes to GPU. Forced `Gpu` is intentionally
   unaffected, preserving the complete experimental surface.
 
-  Still deferred: actual driver device-loss/recreation, more Linux adapters,
-  Windows DX12, masks/clips/blends/color spaces, visible mixed content, and
-  the resident renderer-to-postprocess/presenter handoff. See
+  **Prepare-first startup + recoverable shared device 2026-07-26:** `Auto`
+  now classifies and prepares before touching WGPU, then gives an eligible
+  prepared page directly to the lazily created backend. On the CCITT fixture
+  at scale 2, this eliminated adapter discovery entirely
+  (`gpu_initializations=0`) and reduced the cold 12-tile set from
+  **156.868 ms to 29.501 ms**. Scale 4 initialized once and remained fully
+  GPU-routed. The shared GPU context now records wgpu's real device-loss
+  callback and occupies a replaceable slot; the renderer invalidates its
+  pipelines/cache and lazily reconstructs them after a loss. Initialization
+  and recovery counts are exposed in routing telemetry. The eligible scale-4
+  case passed without fallback on both the RTX 4060 and Intel Iris Xe Vulkan
+  adapters, with identical aggregate checksums.
+
+  **Image soft masks + solid stencil brushes 2026-07-26:** image-attached
+  `/SMask` (including codec-backed JPX/JBIG2 MRC and `/SMaskInData`) and
+  solid-colour `/ImageMask` draws now enter the GPU renderer. The CPU
+  preparation seam normalizes packed mask samples and `/Decode` into a
+  document-cached alpha8 plane; WGPU uploads/caches that plane independently,
+  samples its own dimensions and minification footprint, and composites it
+  source-over. Opaque image draws keep the prior overwrite shader path.
+  Synthetic GPU tests cover soft-mask transparency, stencil polarity/brush
+  colour, warm RGB+opacity upload reuse, and CPU preparation cache identity.
+
+  The deterministic sweep-15 sample moved **47 → 50** decode-confirmed
+  eligible pages (**36.8%** of 136 image-bearing), with no static/preparation
+  drift. The new pages are one solid CCITT stencil and two JPX+JBIG2 MRC
+  soft-mask pages. On RTX 4060/Vulkan, `Appian Roman History.pdf` p196 at
+  scale 2 measured **129.424 ms CPU vs 16.446 ms GPU warm (7.87×)** with all
+  48 requests GPU-routed and no fallback. The real solid-stencil fixture at
+  scale 4 measured **65.613 ms CPU vs 20.128 ms GPU warm (3.26×)**. This also
+  narrowed `Auto`'s bilevel rule: stencils now stay GPU-eligible under
+  minification because the CPU's packed-bilevel popcount fast path explicitly
+  excludes them.
+
+  **Explicit hard image masks 2026-07-26:** colour-key `/Mask` arrays and
+  separate stencil-mask streams now lower into the same bounded, independently
+  cached alpha8 upload path. Colour keys are evaluated against every raw source
+  component before `/Decode`, and stencil streams retain hard-mask polarity
+  after codec decoding. Unlike soft masks and `/ImageMask` coverage, explicit
+  hard masks remain nearest/binary under minification. Synthetic CPU/GPU tests
+  cover both forms, polarity, cache reuse, upload accounting, and compositing.
+
+  The deterministic sweep-15 sample moved **50 → 51** decode-confirmed
+  eligible pages (**37.5%** of 136 image-bearing), again with exact
+  static/preparation counts. The newly admitted `Argentine Democracy.pdf`
+  p108 page routed all 60 viewer tile requests to the RTX 4060 without fallback
+  at scale 2 and measured **220.742 ms CPU vs 22.511 ms GPU warm (9.81×)**.
+  The other sampled hard-mask page correctly remains CPU-routed because it also
+  contains visible text and clipping.
+
+  **Parallel page execution + rectangular image clips 2026-07-26:** the
+  production viewer concurrency path was audited and measured before extending
+  GPU coverage. Each persistent raster worker has its own CPU worker context
+  and submits an independent page buffer, encoder, and readback through the
+  shared WGPU device/queue. There is no page-wide mutex or one-page-at-a-time
+  software queue; only short upload-cache lookups are locked. The hardware
+  queue orders submissions, but multiple pages are submitted and await
+  readback concurrently.
+
+  `lege-viewer/examples/pdf_parallel_profile.rs` now measures that exact
+  production path with persistent workers. On eight whole image pages from
+  `buddhasahibsmenw0000alle_1.pdf` (pages 180–187, scale 1, RTX 4060/Vulkan),
+  warm time was **354.022 ms with one GPU worker vs 76.023 ms with eight
+  (4.66× concurrency gain)**. Eight CPU workers took **461.894 ms**, so the
+  eight-worker GPU route was **6.08× faster**. Checksums were stable and equal
+  across CPU/GPU runs, and all 40 measured GPU requests routed without
+  fallback. Small 256×256 tiles are a different boundary: eight GPU workers
+  and eight CPU workers were effectively tied (132.161 vs 130.303 ms for 32
+  tiles). Page-level GPU rendering is therefore viable without sacrificing
+  page parallelism, while `Auto` should remain conservative for small,
+  already-parallel tile sets until batching/resident presentation removes
+  their fixed transfer cost.
+
+  Axis-aligned rectangular `PushClip` paths are now accepted after tracking
+  the full Save/Restore/Concat CTM stack. They reuse the CPU preparer's exact
+  bounds-only lowering, so analytic clips still decline rather than being
+  approximated. The sweep-15 sample moved **51 → 60** decode-confirmed
+  eligible pages (**44.1%** of 136 image-bearing pages); clip-blocked pages
+  fell **93 → 19**, with exact static/preparation agreement. Nine real pages
+  became fully eligible. `The Image of Edessa.pdf` p86 automatically routed
+  all seven whole-page requests to GPU without fallback and measured
+  **63.777 ms CPU vs 1.746 ms GPU warm** after initialization. Synthetic
+  coverage verifies both the painted rectangular interior and untouched
+  exterior; a triangular clip was retained as the next capability gate.
+
+  **Analytic image clip masks 2026-07-27:** arbitrary path clips around image
+  draws now reuse the normative CPU rasterizer's exact anti-aliased coverage
+  instead of reimplementing PDF curves/fill rules in WGSL. Preparation exports
+  one bounded device-space alpha8 plane per distinct consumed path-clip chain;
+  nested clips are already multiplied by the CPU mask builder, rectangular
+  descendants remain bounds-only, and multiple images under one mask share the
+  same `Arc` and device upload. WGPU samples the clip by absolute device
+  coordinate and multiplies it with any independent image `/SMask` opacity.
+  Cancellation remains cooperative during mask rasterization. Text clips still
+  decline because their glyph-outline preparation is a separate vocabulary.
+
+  The deterministic sweep-15 sample moved **60 → 63** decode-confirmed
+  eligible pages, or **46.3%** of 136 image-bearing pages, with static and
+  prepared counts again identical. Standalone `clip` blockers fell **19 → 0**;
+  sixteen of those pages still have independent visible-text/path/group
+  blockers. One newly eligible page uses a true analytic clip plane; the other
+  two use rectangle forms recognized by the CPU lowerer's final classifier.
+  On RTX 4060/Vulkan, `Byzantium, Latin Romania and the Mediterranean.pdf`
+  p290 measured **93.463 ms CPU vs 5.349 ms GPU warm whole-page (17.47×)**,
+  and **93.839 ms vs 24.359 ms** for twelve viewer tiles (3.85×). All requests
+  routed automatically without fallback. A full 1241×1755 render had normalized
+  CPU/GPU RMSE **0.000131** (about 77.6 dB PSNR), with visual differences
+  limited to ordinary scan resampling.
+
+  **Page-level soft-mask state 2026-07-27:** image-page preparation now walks
+  the CPU prepared stream's balanced `PushSoftMask` / `PushSoftMaskNone` /
+  `PopSoftMask` scopes. Real mask-group content is still rendered once by the
+  normative CPU executor, so arbitrary mask paths/images/text/groups, nested
+  masks, Alpha vs Luminosity, `/BC`, and `/TR` retain CPU semantics; only the
+  derived bounded device-space alpha8 plane crosses the GPU seam. WGPU binds
+  that plane independently from image opacity and analytic clipping and
+  multiplies all three coverages. A bounded 64 MiB document-session cache keeps
+  derived-mask `Arc` identity stable, allowing the existing GPU upload cache to
+  hit on page revisits.
+
+  This work also fixed an independent CPU bug: an empty real Alpha/plain
+  Luminosity mask was represented as `None` and therefore disabled masking,
+  instead of retaining zero coverage everywhere. `/SMask /None` remains the
+  distinct `PushSoftMaskNone` state. CPU regressions cover the distinction;
+  RTX 4060/Vulkan tests cover an active path-derived luminosity mask, warm mask
+  upload reuse, and nonzero `/BC` coverage outside the mask bounds.
+
+  The deterministic sweep-15 sample moved **63 → 64** decode-confirmed
+  eligible pages, or **47.1%** of 136 image-bearing pages, with static and
+  prepared counts still exact. The census now separately reports active
+  page-mask draws: this sample has **zero**, confirming that the newly admitted
+  `The Ashgate Research Companion to Imperial Germany.pdf` p0 only carries
+  `/SMask /None` state. It nevertheless measured **71.641 ms CPU vs 0.993 ms
+  GPU warm (72.15×)** at scale 2; the active-mask shader path is validated by
+  the focused GPU fixture rather than mislabeling that page as a real mask
+  oracle. A broader future sweep should locate a real image-only active-mask
+  page for external visual validation.
+
+  **Braudel image-`/SMask` oracle + constant image alpha 2026-07-27:** the
+  suggested `The Structures of Everyday Life` volume is a strong MRC
+  image-resource mask stress test, but it does not use active page-level
+  graphics-state masks. All **632/632** pages are statically and
+  decode-confirmed eligible at scale 2, with zero active page masks. Page 0
+  combines two 2222×3191 JPX images and attaches `/SMask` to the foreground;
+  page 300 combines a 699×1017 JPX background with a masked 2099×3055 JPX
+  foreground.
+
+  On RTX 4060/Vulkan, page 0 measured **181.673 ms CPU warm vs 1.524 ms GPU
+  warm (119.20×)**; page 300 measured **153.356 ms vs 1.268 ms (120.97×)**.
+  RGB mean absolute differences were 0.017 and 0.034 respectively. Both warm
+  runs reused all three cached planes (two images plus the mask), confirming
+  the image `/SMask` preparation, sampling, and upload-cache path on a real
+  all-MRC book.
+
+  Constant Normal-blend image opacity now also remains eligible. CPU
+  preparation carries it as alpha8 and WGSL multiplies it independently with
+  image opacity, analytic clip coverage, and active page-soft-mask coverage
+  before source-over composition. CPU-only and real RTX tests cover 50%
+  constant alpha combined with image `/SMask`. The deterministic 240-page
+  sweep-15 sample remains **64/136 (47.1%)**, since it contains no page blocked
+  solely by image alpha; this is a semantic closure rather than a measured
+  coverage increase.
+
+  **Image blend modes + atomic Auto fallback 2026-07-27:** all 16 PDF image
+  blend modes now cross the prepared image seam. WGSL implements the CPU
+  compositor's separable and non-separable formulas, with premultiplied
+  source-over and the existing image opacity/resource mask/analytic clip/page
+  soft-mask coverages. A two-image overlap regression on RTX 4060/Vulkan
+  passed every mode with every output byte within one level of CPU. The
+  deterministic sweep-15 sample remains **64/136 (47.1%)** because no sampled
+  page was blocked solely by image blend mode. Braudel p0 retained the Normal
+  hot path at **182.396 ms CPU vs 1.561 ms GPU warm (116.83×)**.
+
+  The policy seam now treats a GPU attempt as a transaction over the immutable
+  request. A complete validated/read-back `HostPage` is the only GPU result
+  that can escape; typed errors or unexpected panics discard the attempt and
+  repaint the original request from its first operation on CPU. Telemetry now
+  distinguishes GPU panics and CPU failures. A real-hardware injected-panic
+  test proves byte-identical fallback, then verifies that `Auto` quarantines
+  the panicking backend and sends subsequent pages directly to CPU. An
+  eight-way parallel fault test also verifies that every in-flight page
+  completes across that quarantine boundary. Device loss remains separately
+  invalidated and lazily recreated. Cancellation remains cancellation and
+  intentionally does not start duplicate CPU work.
+
+  **Patterned stencil brushes 2026-07-27:** patterned `/ImageMask` paint now
+  crosses a bounded hybrid seam rather than forcing an otherwise image-only
+  page to CPU. The normative CPU tiling executor renders the arbitrary pattern
+  cell through the stencil into straight RGB plus alpha; WGPU retains final
+  painter ordering, constant alpha, all blend modes, and active page masks.
+  A 64 MiB request-shape LRU keeps the two planes stable so the existing upload
+  cache hits warm. Degraded nested pattern-cell draws decline to full CPU,
+  preserving recovery diagnostics. `Auto` also declines pattern-only pages
+  because CPU already performed their only paint, but admits the bridge when
+  a native image draw can amortize the GPU transfer/readback.
+
+  On RTX 4060/Vulkan, a native RGB backdrop plus colored tiling stencil under
+  Multiply at 75% alpha matched the CPU renderer within one byte and reused
+  all three uploads on the warm pass. The deterministic sweep-15 sample
+  remains **64/136 (47.1%)** because it has no page blocked solely by a
+  patterned stencil; this closes the known semantic gate without fabricating
+  a corpus gain.
+
+  **Forced-GPU mixed content + text clipping prototype 2026-07-27:** the
+  external-raster seam is now a painter-ordered command stream rather than an
+  image list. Decoded images, solid fill/stroke paths, and solid visible text
+  can be interleaved without a readback boundary. Visible glyphs are lowered
+  as small outline batches and rasterized natively in WGSL; Draft uses 4×4
+  samples and Normal uses 8×8. The shader shares each Y crossing calculation
+  across a complete sample row, and the preparation seam simplifies the CPU
+  flattener's conservative curves to 0.1 device-pixel tolerance before packing
+  16-row edge bands. Alpha, all blend modes, rectangular/path clips, active
+  page soft masks, and image-resource masks retain painter semantics. Text
+  clips work through the existing exact CPU-derived device alpha plane; moving
+  clip-outline coverage itself to GPU remains a separate optimization, not a
+  correctness gap.
+
+  Forced `Gpu` accepts path-only pages as well as mixed image pages. `Auto`
+  deliberately retains both gates: at least one native image draw, and no
+  vector/text path commands. The transaction boundary is unchanged, so any
+  preparation, validation, submission, mapping, device-loss, or panic failure
+  discards the attempt and restarts the immutable request on CPU. Synthetic
+  RTX tests cover ordered image→path paint, path-only forced routing, a real
+  text clip constraining a native GPU fill, warm path-upload reuse, and the
+  existing parallel quarantine/fallback cases. The full `pdf-render-wgpu`
+  suite passes 30/30 on RTX 4060/Vulkan.
+
+  **GPU-native mixed span/coverage batching 2026-07-27:** Consecutive path
+  commands now lower into bounded batches over deterministic 8×8 active-tile
+  worklists; images remain painter-order barriers. One workgroup owns a tile,
+  shares each crossing across its horizontal subpixel row, accumulates
+  coverage cooperatively, and composites all paths while retaining the page
+  pixel locally. Batches split at 64 paths per tile, 4,096 paths, or 64 MiB
+  component limits. A stable-identity device LRU caches the complete uploaded
+  descriptor/geometry/tile/mask bundle, with clip and soft-mask planes
+  deduplicated into one alpha atlas.
+
+  On `The-Flower-of-Chinese-Buddhism.pdf` p99 at 354×592, the 411 logical path
+  draws and 45,814 edges now execute as **one path dispatch**, 2,143 active
+  tiles, 4,331 tile-path references, and maximum tile depth seven. RTX
+  4060/Vulkan warm paint/readback fell from **101.357 ms to 5.914 ms** (about
+  17.1×); warm preparation is 0.002 ms and the complete batch upload is reused.
+  Output stayed at RGB MAE 0.990, maximum 41, and 14.33% changed channels. CPU
+  measured 4.784 ms, leaving GPU at 0.81× CPU: a major implementation win but
+  still below the 1.2× Auto gate. Auto therefore continues to decline every
+  mixed path page. The next mixed-content session should use a representative
+  sweep-15 subset to determine whether the remaining gap is coverage work,
+  image/readback overhead, or page-shape crossover; do not relax routing from
+  this single-page result.
+
+  A second sweep-15 probe,
+  `How-Zen-Became-Zen-…pdf` p50 at 432×648, exercised a path-only page with
+  456 logical draws, 76,090 edges, 2,823 tiles, and one dispatch. GPU measured
+  5.012 ms versus 0.941 ms CPU, confirming that dispatch collapse alone does
+  not make small CPU-native vector pages suitable for automatic routing. A
+  bilevel scan probe was correctly rejected by the existing minification gate.
+
+  **Shared GPU completion scheduling 2026-07-27:** PDF rendering,
+  postprocessing, resize, binarization, and layout inference already use
+  `lege-gpu`'s one process-wide device and queue. Their per-page/session
+  scratch remains independent, so CPU command encoding and page preparation
+  can proceed in parallel while WGPU preserves submission order. The shared
+  poller formerly waited for the most recent process-wide submission,
+  however, which allowed work queued later by an unrelated client to become
+  an accidental readback dependency. Every production readback path now
+  carries its own `SubmissionIndex` and waits for that exact fence. Batched
+  binarization waits only for its final ordered submission and no longer
+  performs a redundant whole-device wait before mapping.
+
+  Do not add a global one-job mutex: it would undo parallel page rendering.
+  A larger centralized scheduler is deferred until cross-workload telemetry
+  demonstrates queue monopolization or aggregate VRAM pressure. If needed,
+  it should provide bounded, fair admission across workload classes while
+  retaining multiple in-flight jobs; the queue itself already supplies
+  correctness and ordering. Current local bounds are renderer/page workers,
+  two binarizer sessions, and the inference session plus VRAM semaphores.
+  Resize sessions are created on demand (only idle retention is capped), so
+  their effective bound is the calling pipeline's page-worker limit. None of
+  those budgets is coordinated globally yet.
+
+  Still deferred: an actually induced driver-loss/recreation run, Windows
+  DX12, a real image-only active page-soft-mask corpus oracle, GPU-native
+  clip-outline coverage, performant mixed-content batching sufficient for
+  `Auto`, and the resident renderer-to-postprocess/presenter handoff. The
+  Windows continuation is isolated in
+  [`WINDOWS-DX12-GPU-VALIDATION.md`](WINDOWS-DX12-GPU-VALIDATION.md); see also
   [`PLAN-GPU-IMAGE-RENDERING.md`](../plans/PLAN-GPU-IMAGE-RENDERING.md).
 - **Postprocess graph (`pdf-postprocess`)** — skeleton only. **Done
   2026-07-21 (CPU executor):** `CpuPostprocess` implements the full Stage C

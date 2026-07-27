@@ -75,6 +75,13 @@ Sweep 15 is the first complete post-move, two-oracle production-path baseline:
   On `Tang-Dynasty-Tales-A-Guided-Reader-.pdf`, all five formerly suspect
   sampled body pages are now `ok` against both controls; page 114 moved from
   ink deltas 0.08455/0.07835 to 0.00623/0.00003 (PDFium/MuPDF).
+- The malformed page-tree class is also fixed. Missing-generation indirect
+  references such as `335 R` recover as generation zero with a typed event;
+  any partial subtree loss gets one bounded xref-rebuild retry; and exact
+  count-backed placeholder spans are inserted in document order when real
+  objects remain unrecoverable. The 152-page Cambourne report now recovers its
+  final ten-page branch. Page 100 moved from ink deltas 0.30413/0.29196 to
+  0.00377/0.00840 and `ok` against PDFium/MuPDF.
 - Sweep CSV output now actually matches its declared 18-column schema.
   Successful rows include the empty flags field; renderer failures use schema
   3 with empty measurement fields, aligned `status`/`note`, and CSV-escaped
@@ -108,14 +115,28 @@ Sweep 15 is the first complete post-move, two-oracle production-path baseline:
   patterned text is present; page 2 moved from suspect to `ok` against both
   controls (PDFium ink/gross 0.07148/0.07929 → 0.03539/0.04187; MuPDF
   0.07471/0.08346 → 0.03862/0.03925).
+- A 2026-07-27 focused residual pass then closed five Sweep-15 workstreams
+  before the separate malformed page-tree closure: indirect scalar CCITT
+  `/DecodeParms`; signed/variable-precision JP2 palettes and literal sub-8-bit
+  PDF `/Indexed` JPX indices; Microsoft
+  format-0/6 byte cmap fallback; `/NonSymbolic` family classification; duplicate
+  Type 1 `/Subrs`; shading-painted image-mask stencils; and synthesized static
+  appearances for Highlight/Underline/Squiggly/StrikeOut annotations that omit
+  `/AP /N`. Targeted real renders are present on `issue5701`, `issue8697`,
+  `issue18548_reduced`, `issue12213`, `issue13372`, `bug1538111`, and the
+  Byzantine Legacies CCITT page. `issue12213` is `ok` against both controls
+  (ink deltas 0.00146 PDFium and 0.00129 MuPDF). Focused regression suites
+  pass; see the dated closure block at the top of `handoffs/DEFERRED.md`.
 
 ## Next refinement pass
 
-The immediate next renderer work is focused triage from Sweep 15, not another
+The immediate next renderer work remains focused triage from Sweep 15, not another
 corpus-wide sweep. Treat disagreements as actionable only after checking both
 PDFium and MuPDF; either oracle can be the outlier. The recurring MRC
-scanned-book class described above is closed; select another evidence-backed
-cluster rather than continuing speculative JPEG or page-wide tone changes.
+scanned-book class, malformed page-tree class, and the dated 2026-07-27
+residual classes described above are closed; select another evidence-backed
+cluster rather than continuing speculative JPEG, page-wide tone, malformed
+tree, or already-fixed markup/font work.
 
 Known longer-term or deliberately deferred areas remain documented in
 `handoffs/DEFERRED.md`. Reconfirm each against the latest sweep memory before
