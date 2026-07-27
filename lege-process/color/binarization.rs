@@ -48,26 +48,31 @@ pub struct HeavySauvolaProcessor {
 
 impl HeavySauvolaProcessor {
     pub fn new() -> Result<Self> {
-        // Dynamic-resolution prepared model; fall back to the raw sauvola.onnx.
+        // Runtime assets remain deliberate model-rollout overrides. Normal
+        // packaged execution falls back to the model embedded in the binary.
         let model_path = crate::runtime_asset_path_if_exists("sauvola.prepared.onnx")
-            .or_else(|| crate::runtime_asset_path_if_exists("sauvola.onnx"))
-            .ok_or_else(|| {
-                anyhow!("Heavy-duty Sauvola model not found (expected sauvola.prepared.onnx or sauvola.onnx near the executable or under share/lege/models; set LEGE_ASSET_DIR to override).")
-            })?;
-
-        #[cfg(feature = "debug-logging")]
-        {
-            if let Ok(metadata) = std::fs::metadata(&model_path) {
-                crate::encoding::streamline::log_debug_message(&format!(
-                    "Loading DIBCO Sauvola model: {} ({:.1} KB)",
-                    model_path.display(),
-                    metadata.len() as f64 / 1024.0
-                ));
+            .or_else(|| crate::runtime_asset_path_if_exists("sauvola.onnx"));
+        let processor = if let Some(model_path) = model_path {
+            #[cfg(feature = "debug-logging")]
+            {
+                if let Ok(metadata) = std::fs::metadata(&model_path) {
+                    crate::encoding::streamline::log_debug_message(&format!(
+                        "Loading DIBCO Sauvola model override: {} ({:.1} KB)",
+                        model_path.display(),
+                        metadata.len() as f64 / 1024.0
+                    ));
+                }
             }
+            lege_gpu::vision::SauvolaCpuProcessor::from_model_path(&model_path)
+        } else {
+            #[cfg(feature = "debug-logging")]
+            crate::encoding::streamline::log_debug_message(&format!(
+                "Loading embedded DIBCO Sauvola model ({:.1} KB)",
+                crate::EMBEDDED_SAUVOLA_MODEL.len() as f64 / 1024.0
+            ));
+            lege_gpu::vision::SauvolaCpuProcessor::from_model_bytes(crate::EMBEDDED_SAUVOLA_MODEL)
         }
-
-        let processor = lege_gpu::vision::SauvolaCpuProcessor::from_model_path(&model_path)
-            .map_err(|e| anyhow!("Failed to load sauvola model via lege-vision: {e}"))?;
+        .map_err(|e| anyhow!("Failed to load sauvola model via lege-vision: {e}"))?;
 
         Ok(Self { processor })
     }
@@ -1105,6 +1110,12 @@ mod tests {
         rgb_to_gray_for_binarization, try_gpu_binarize_gray_raw,
     };
     use crate::color::BinarizationOptions;
+
+    #[test]
+    fn embedded_sauvola_model_loads_from_bytes() {
+        lege_gpu::vision::SauvolaCpuProcessor::from_model_bytes(crate::EMBEDDED_SAUVOLA_MODEL)
+            .expect("embedded Sauvola model should parse and pass compatibility checks");
+    }
 
     #[test]
     fn apply_threshold_sets_expected_binary_values() {

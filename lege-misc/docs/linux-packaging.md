@@ -1,39 +1,21 @@
 # Linux packaging
 
 Lege currently has first-pass Linux packaging for `.deb` and AppImage builds.
-Both formats read the same runtime asset staging directory:
-
-```bash
-<staging>/
-  sauvola.onnx
-```
-
-Those binary inputs are not committed to the repository. Download the existing
-Linux `.tar.gz` from the
-[GitHub releases](https://github.com/LegeApp/Lege/releases), extract it to a
-folder of your choice, and point packaging at that folder:
-
-```bash
-export LEGE_PACKAGE_INPUT_DIR=/path/to/extracted/linux64
-```
-
-PaddleOCR and layout detection are compiled by default, and their models are
-embedded in the executables. Only the optional heavy-binarization model
-remains a packaging input.
+PaddleOCR, layout detection, and heavy Sauvola binarization are compiled by
+default, and their models are embedded in the executables. No external model
+staging directory is required.
 
 ## Debian package
 
 The `.deb` package metadata lives in `Cargo.toml` under
-`[package.metadata.deb]`. Its asset paths mirror the AppImage inputs; update
-them to match wherever you extracted the release assets.
+`[package.metadata.deb]`.
 
 ```bash
 cargo build --release --bin lege --bin lege-gui
 cargo deb
 ```
 
-The Debian package installs the CLI and GUI into `usr/bin` and
-`sauvola.onnx` into `usr/share/lege/models`.
+The Debian package installs the CLI and GUI into `usr/bin`.
 
 ## AppImage
 
@@ -62,7 +44,6 @@ The AppImage bundles:
 
 - `usr/bin/lege`
 - `usr/bin/lege-gui`
-- `usr/share/lege/models/sauvola.onnx`
 - `lege.desktop`
 - `lege.png`
 - AppStream metadata

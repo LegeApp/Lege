@@ -59,10 +59,11 @@ obj/
 **/*_wpftmp.csproj
 test-outputs/
 
-# Embedded layout model — required build asset (compiled in via include_bytes!).
-# Un-ignored so it is tracked; override the *.onnx and models/ rules above.
+# Embedded layout and Sauvola models — required build assets (compiled in via
+# include_bytes!). Un-ignore them over the *.onnx and models/ rules above.
 !models/
 !models/doclayout.onnx
+!models/sauvola.onnx
 
 # Embedded PP-OCR det/rec models (fp16) + dictionary — required build assets,
 # compiled into lege-ocr via include_bytes!. Override the *.onnx rule above.

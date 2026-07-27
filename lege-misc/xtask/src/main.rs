@@ -74,6 +74,6 @@ fn workspace_root() -> Result<PathBuf, String> {
 
 fn print_help() {
     println!(
-        "Lege packaging tasks\n\n  cargo appimage\n      Build target/appimage/Lege-<version>-<arch>.AppImage\n\nEnvironment forwarded to scripts/build-appimage.sh:\n  LEGE_PACKAGE_INPUT_DIR      External runtime asset directory\n  APPIMAGETOOL                appimagetool executable/path\n  APPIMAGE_UPDATE_INFORMATION AppImage update metadata string\n  LEGE_CARGO_FEATURES         Additional Cargo features"
+        "Lege packaging tasks\n\n  cargo appimage\n      Build target/appimage/Lege-<version>-<arch>.AppImage\n\nEnvironment forwarded to scripts/build-appimage.sh:\n  APPIMAGETOOL                appimagetool executable/path\n  APPIMAGE_UPDATE_INFORMATION AppImage update metadata string\n  LEGE_CARGO_FEATURES         Additional Cargo features"
     );
 }

@@ -60,14 +60,11 @@ worker.
 
 ### Linux release packaging
 
-Lege has first-pass `.deb` and AppImage packaging metadata. Download the
-existing Linux `.tar.gz` from the
-[GitHub releases](https://github.com/LegeApp/Lege/releases), extract it to a
-folder of your choice, and point packaging at the folder containing the
-remaining runtime asset (`sauvola.onnx`):
+Lege has first-pass `.deb` and AppImage packaging metadata. The layout,
+PaddleOCR, and heavy Sauvola models are embedded in the executables, so no
+external model staging directory is needed:
 
 ```bash
-export LEGE_PACKAGE_INPUT_DIR=/path/to/extracted/linux64
 cargo appimage
 ```
 
@@ -78,9 +75,8 @@ Ubuntu repositories; download the official AppImage from
 it with `APPIMAGETOOL=/path/to/appimagetool cargo appimage`. You can also build
 a `.deb` with `cargo deb`.
 
-PaddleOCR and layout detection are enabled by default and their models are
-embedded in both Linux executables. See `docs/linux-packaging.md` for the full
-flow and the real-GPU OCR release gate.
+See `docs/linux-packaging.md` for the full flow and the real-GPU OCR release
+gate.
 
 ### Run
 
@@ -116,12 +112,8 @@ the CLI also supports an interactive guided mode when run without arguments.
 
 ### External Dependencies
 
-Lege requires several external files to be placed alongside the executables:
-
-#### Required for all platforms:
-
-**ONNX Models** (AI inference, loaded at runtime):
-- `sauvola.onnx` — Heavy neural binarization model
+The default layout, PaddleOCR, and heavy neural binarization models are
+embedded. Runtime model files are optional development overrides.
 
 **Platform data:**
 

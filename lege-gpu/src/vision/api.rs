@@ -400,6 +400,18 @@ impl SauvolaCpuProcessor {
                 config.model_path.display()
             )
         })?;
+        Self::from_model(model, config)
+    }
+
+    /// Build from an in-memory ONNX payload, such as a model embedded with
+    /// `include_bytes!`.
+    pub fn from_model_bytes(bytes: &[u8]) -> Result<Self> {
+        let model =
+            load_model_from_bytes(bytes).context("failed to load embedded sauvola model")?;
+        Self::from_model(model, SauvolaConfig::new(PathBuf::new()))
+    }
+
+    fn from_model(model: ModelProto, config: SauvolaConfig) -> Result<Self> {
         let report = ModelReport::from_model(&model).context("failed to inspect sauvola model")?;
         if !report.rejection_reasons.is_empty() {
             bail!(

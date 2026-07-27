@@ -174,8 +174,6 @@ assets = [
     # Install CLI and GUI binaries directly into PATH
     ["target/release/lege", "usr/bin/lege", "755"],
     ["target/release/lege-gui", "usr/bin/lege-gui", "755"],
-    # Heavy binarization remains a runtime model. Layout and PaddleOCR are embedded.
-    ["/home/dk/Desktop/lege-run/installer/linux64/sauvola.onnx", "usr/share/lege/models/", "644"],
     # Desktop integration
     ["lege.desktop", "usr/share/applications/", "644"],
     ["../lege-misc/assets/icon.png", "usr/share/icons/hicolor/256x256/apps/lege.png", "644"],

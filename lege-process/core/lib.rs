@@ -8,6 +8,11 @@
 #[cfg(feature = "layout-detection")]
 pub static EMBEDDED_LAYOUT_MODEL: &[u8] = include_bytes!("../models/doclayout.onnx");
 
+/// Heavy-binarization Sauvola model embedded in every full Lege executable.
+/// A `sauvola.prepared.onnx` or `sauvola.onnx` runtime asset still overrides
+/// this payload for development and model rollouts.
+pub static EMBEDDED_SAUVOLA_MODEL: &[u8] = include_bytes!("../models/sauvola.onnx");
+
 pub mod accumulator;
 pub mod app_dirs;
 pub mod bbox_trace;

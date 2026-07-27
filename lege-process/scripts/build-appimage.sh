@@ -6,7 +6,6 @@ VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/lege-process/Car
 ARCH="${ARCH:-x86_64}"
 APPDIR="${APPDIR:-$ROOT/target/appimage/Lege.AppDir}"
 OUT_DIR="${OUT_DIR:-$ROOT/target/appimage}"
-INPUT_DIR="${LEGE_PACKAGE_INPUT_DIR:-}"
 REPO_APPIMAGETOOL="$ROOT/lege-misc/packaging/appimage/tools/appimagetool-x86_64.AppImage"
 if [[ -n "${APPIMAGETOOL:-}" ]]; then
   APPIMAGETOOL="$APPIMAGETOOL"
@@ -22,14 +21,7 @@ if [[ "$PROFILE" != "release" ]]; then
   exit 1
 fi
 
-if [[ -z "$INPUT_DIR" ]]; then
-  echo "Set LEGE_PACKAGE_INPUT_DIR to the folder containing sauvola.onnx." >&2
-  echo "Tip: extract the existing Linux .tar.gz from GitHub releases to a folder of your choice." >&2
-  exit 1
-fi
-
 required_inputs=(
-  "$INPUT_DIR/sauvola.onnx"
   "$ROOT/lege-process/lege.desktop"
   "$ROOT/lege-misc/assets/icon.png"
 )
@@ -37,7 +29,6 @@ required_inputs=(
 for input in "${required_inputs[@]}"; do
   if [[ ! -f "$input" ]]; then
     echo "Missing packaging input: $input" >&2
-    echo "Extract the Linux release .tar.gz and set LEGE_PACKAGE_INPUT_DIR to that folder." >&2
     exit 1
   fi
 done
@@ -62,14 +53,12 @@ rm -rf "$APPDIR"
 mkdir -p \
   "$APPDIR/usr/bin" \
   "$APPDIR/usr/lib/lege" \
-  "$APPDIR/usr/share/lege/models" \
   "$APPDIR/usr/share/applications" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
   "$APPDIR/usr/share/metainfo"
 
 install -Dm755 "$ROOT/target/release/lege" "$APPDIR/usr/bin/lege"
 install -Dm755 "$ROOT/target/release/lege-gui" "$APPDIR/usr/bin/lege-gui"
-install -Dm644 "$INPUT_DIR/sauvola.onnx" "$APPDIR/usr/share/lege/models/sauvola.onnx"
 install -Dm644 "$ROOT/lege-process/lege.desktop" "$APPDIR/usr/share/applications/lege.desktop"
 install -Dm644 "$ROOT/lege-process/lege.desktop" "$APPDIR/lege.desktop"
 install -Dm644 "$ROOT/lege-misc/assets/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/lege.png"
