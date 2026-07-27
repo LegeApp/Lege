@@ -535,9 +535,9 @@ impl WgpuResizer {
             0,
             dst_bytes as u64,
         );
-        self.ctx.queue.submit(Some(encoder.finish()));
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
 
-        let bytes = self.read_mapped_bytes(&buffers.readback, dst_bytes)?;
+        let bytes = self.read_mapped_bytes(&buffers.readback, dst_bytes, submission)?;
         let mut out = Vec::with_capacity(bytes.len() / size_of::<f32>());
         for chunk in bytes.chunks_exact(size_of::<f32>()) {
             out.push(f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
@@ -917,7 +917,7 @@ impl WgpuResizer {
             );
         }
 
-        self.ctx.queue.submit(Some(encoder.finish()));
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
 
         if self.verbose {
             log::debug!(
@@ -933,11 +933,16 @@ impl WgpuResizer {
             return Ok(None);
         }
 
-        self.read_mapped_bytes(&buffers.readback, gpu_dst_size)
+        self.read_mapped_bytes(&buffers.readback, gpu_dst_size, submission)
             .map(Some)
     }
 
-    fn read_mapped_bytes(&self, buffer: &wgpu::Buffer, size: usize) -> Result<Vec<u8>> {
+    fn read_mapped_bytes(
+        &self,
+        buffer: &wgpu::Buffer,
+        size: usize,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<Vec<u8>> {
         let slice = buffer.slice(0..size as u64);
         let (tx, rx) = mpsc::channel();
 
@@ -947,7 +952,7 @@ impl WgpuResizer {
 
         self.ctx
             .shared
-            .wait()
+            .wait_for_submission(submission)
             .map_err(|e| WgpuResizeError::Execution(format!("device poll failed: {e:#}")))?;
 
         rx.recv()

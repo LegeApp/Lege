@@ -757,7 +757,7 @@ impl GpuSession {
             checked_pixels(layout.final_width, layout.final_height)? * 4
         };
         encoder.copy_buffer_to_buffer(current, 0, &buffers.readback, 0, transfer_bytes as u64);
-        context.queue().submit(std::iter::once(encoder.finish()));
+        let submission = context.queue().submit(std::iter::once(encoder.finish()));
 
         let slice = buffers.readback.slice(..transfer_bytes as u64);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -765,7 +765,7 @@ impl GpuSession {
             let _ = sender.send(result);
         });
         context
-            .wait()
+            .wait_for_submission(submission)
             .map_err(|error| PostprocessError::Failed(format!("GPU poll failed: {error}")))?;
         receiver
             .recv()

@@ -578,6 +578,7 @@ impl WgpuBinarizer {
         self.ensure_readback(total_rb);
 
         // --- Pass 3: per-page write → encode → submit (no poll yet) ---
+        let mut last_submission = None;
         for (i, &(gray, params)) in pages.iter().enumerate() {
             let pixel_count = params.width as usize * params.height as usize;
             let packed_words = pixel_count.div_ceil(4) as u32;
@@ -602,7 +603,12 @@ impl WgpuBinarizer {
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     self.encode_fixed_passes(&mut enc, params);
-                    self.encode_pack_copy_submit(enc, packed_words, packed_bytes, rb_offset);
+                    last_submission = Some(self.encode_pack_copy_submit(
+                        enc,
+                        packed_words,
+                        packed_bytes,
+                        rb_offset,
+                    ));
                 }
                 BinarizationMode::Adaptive => {
                     let r = (params.adaptive.sauvola_window / 2) as usize;
@@ -627,27 +633,31 @@ impl WgpuBinarizer {
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     self.encode_adaptive_passes(&mut enc, params, pw, ph, iw);
-                    self.encode_pack_copy_submit(enc, packed_words, packed_bytes, rb_offset);
+                    last_submission = Some(self.encode_pack_copy_submit(
+                        enc,
+                        packed_words,
+                        packed_bytes,
+                        rb_offset,
+                    ));
                 }
             }
         }
 
-        // --- Pass 4: single poll for all N page submissions ---
-        self.ctx
-            .shared
-            .wait()
-            .map_err(|e| GpuBinarizationError::Execution(format!("device poll failed: {e:#}")))?;
-
-        // --- Pass 5: single map of the full readback buffer ---
+        // --- Pass 4: map once, then wait only for this batch's final
+        // submission. Queue ordering guarantees all earlier page copies are
+        // complete without coupling the batch to unrelated later work.
         let rb = self.readback.as_ref().unwrap();
         let slice = rb.slice(0..total_rb as u64);
         let (tx, rx) = mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.ctx.shared.wait().map_err(|e| {
-            GpuBinarizationError::Execution(format!("device poll (map) failed: {e:#}"))
-        })?;
+        self.ctx
+            .shared
+            .wait_for_submission(last_submission.expect("non-empty batch submitted no GPU work"))
+            .map_err(|e| {
+                GpuBinarizationError::Execution(format!("device poll (map) failed: {e:#}"))
+            })?;
         rx.recv()
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?
             .map_err(|e| GpuBinarizationError::Execution(format!("map_async failed: {e:?}")))?;
@@ -1097,7 +1107,7 @@ impl WgpuBinarizer {
         packed_words: u32,
         packed_bytes: usize,
         rb_offset: u64,
-    ) {
+    ) -> wgpu::SubmissionIndex {
         let bufs = self.buffers.as_ref().unwrap();
         let rb = self.readback.as_ref().unwrap();
 
@@ -1134,7 +1144,7 @@ impl WgpuBinarizer {
             pass.dispatch_workgroups(packed_words.div_ceil(256), 1, 1);
         }
         enc.copy_buffer_to_buffer(&bufs.packed_dst, 0, rb, rb_offset, packed_bytes as u64);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.ctx.queue.submit(Some(enc.finish()))
     }
 
     // Submit, poll, map readback[0..packed_bytes], process with callback.
@@ -1152,7 +1162,7 @@ impl WgpuBinarizer {
         let packed_bytes = packed_words as usize * size_of::<u32>();
 
         self.ensure_readback(packed_bytes);
-        self.encode_pack_copy_submit(enc, packed_words, packed_bytes, 0);
+        let submission = self.encode_pack_copy_submit(enc, packed_words, packed_bytes, 0);
 
         let rb = self.readback.as_ref().unwrap();
         let slice = rb.slice(0..packed_bytes as u64);
@@ -1162,7 +1172,7 @@ impl WgpuBinarizer {
         });
         self.ctx
             .shared
-            .wait()
+            .wait_for_submission(submission)
             .map_err(|e| GpuBinarizationError::Execution(format!("device poll failed: {e:#}")))?;
         rx.recv()
             .map_err(|_| GpuBinarizationError::Execution("map_async channel failed".into()))?

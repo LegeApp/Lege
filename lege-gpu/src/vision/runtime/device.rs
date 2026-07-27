@@ -1,5 +1,6 @@
 //! wgpu device context and core GPU dispatch primitives.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail};
@@ -7,22 +8,33 @@ use async_lock::Mutex;
 
 #[derive(Clone)]
 struct GpuPoller {
-    sender: std::sync::mpsc::Sender<std::sync::mpsc::Sender<Result<(), String>>>,
+    sender: std::sync::mpsc::Sender<PollRequest>,
+}
+
+struct PollRequest {
+    submission: Option<crate::vision::wgpu::SubmissionIndex>,
+    done: std::sync::mpsc::Sender<Result<(), String>>,
 }
 
 impl GpuPoller {
     fn new(device: Arc<crate::vision::wgpu::Device>) -> Result<Self> {
-        let (sender, receiver) =
-            std::sync::mpsc::channel::<std::sync::mpsc::Sender<Result<(), String>>>();
+        let (sender, receiver) = std::sync::mpsc::channel::<PollRequest>();
         std::thread::Builder::new()
             .name("gpu-poll".to_string())
             .spawn(move || {
-                while let Ok(done) = receiver.recv() {
+                while let Ok(request) = receiver.recv() {
+                    let poll_type = match request.submission {
+                        Some(submission_index) => crate::vision::wgpu::PollType::Wait {
+                            submission_index: Some(submission_index),
+                            timeout: None,
+                        },
+                        None => crate::vision::wgpu::PollType::wait_indefinitely(),
+                    };
                     let result = device
-                        .poll(crate::vision::wgpu::PollType::wait_indefinitely())
+                        .poll(poll_type)
                         .map(|_| ())
                         .map_err(|error| format!("{error:?}"));
-                    let _ = done.send(result);
+                    let _ = request.done.send(result);
                 }
             })
             .context("failed to spawn shared GPU poll thread")?;
@@ -30,14 +42,47 @@ impl GpuPoller {
     }
 
     fn wait(&self) -> Result<()> {
+        self.wait_for(None)
+    }
+
+    fn wait_for_submission(&self, submission: crate::vision::wgpu::SubmissionIndex) -> Result<()> {
+        self.wait_for(Some(submission))
+    }
+
+    fn wait_for(&self, submission: Option<crate::vision::wgpu::SubmissionIndex>) -> Result<()> {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         self.sender
-            .send(done_tx)
+            .send(PollRequest {
+                submission,
+                done: done_tx,
+            })
             .context("shared GPU poll thread stopped")?;
         done_rx
             .recv()
             .context("shared GPU poll thread dropped completion")?
             .map_err(anyhow::Error::msg)
+    }
+}
+
+#[derive(Default)]
+struct DeviceHealth {
+    lost: AtomicBool,
+    reason: std::sync::Mutex<Option<Arc<str>>>,
+}
+
+impl DeviceHealth {
+    fn mark_lost(&self, reason: crate::vision::wgpu::DeviceLostReason, message: String) {
+        let detail: Arc<str> = Arc::from(if message.is_empty() {
+            format!("{reason:?}")
+        } else {
+            format!("{reason:?}: {message}")
+        });
+        *self
+            .reason
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(Arc::clone(&detail));
+        self.lost.store(true, Ordering::Release);
+        eprintln!("wgpu: shared device lost: {detail}");
     }
 }
 
@@ -51,6 +96,7 @@ pub(crate) struct GpuContext {
     pub(crate) adapter_backend: crate::vision::wgpu::Backend,
     pub(crate) adapter_device_type: crate::vision::wgpu::DeviceType,
     poller: GpuPoller,
+    health: Arc<DeviceHealth>,
 }
 
 impl GpuContext {
@@ -192,6 +238,11 @@ impl GpuContext {
                             info.name
                         );
                     }
+                    let health = Arc::new(DeviceHealth::default());
+                    let callback_health = Arc::clone(&health);
+                    device.set_device_lost_callback(move |reason, message| {
+                        callback_health.mark_lost(reason, message);
+                    });
                     let device = Arc::new(device);
                     let poller = GpuPoller::new(Arc::clone(&device))?;
                     return Ok(Self {
@@ -203,6 +254,7 @@ impl GpuContext {
                         adapter_backend: info.backend,
                         adapter_device_type: info.device_type,
                         poller,
+                        health,
                     });
                 }
                 Err(e) => {
@@ -220,33 +272,62 @@ impl GpuContext {
     }
 
     pub(crate) async fn shared() -> Result<Self> {
-        static SHARED: OnceLock<GpuContext> = OnceLock::new();
+        static SHARED: OnceLock<std::sync::Mutex<Option<GpuContext>>> = OnceLock::new();
         static INITIALIZING: Mutex<()> = Mutex::new(());
 
-        if let Some(ctx) = SHARED.get() {
-            return Ok(ctx.clone());
+        let shared = SHARED.get_or_init(|| std::sync::Mutex::new(None));
+        if let Some(ctx) = shared
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|ctx| !ctx.is_lost())
+            .cloned()
+        {
+            return Ok(ctx);
         }
 
-        // OnceLock::set alone is not an initializer: concurrent first callers
-        // would each create a device, then immediately drop every device but the
-        // winner. Besides wasting substantial work, concurrent Vulkan device
-        // creation/destruction has proven unstable on software adapters. Hold a
-        // narrow process-wide initialization lock and check again after waiting.
+        // Concurrent first callers or recovery callers must not each create a
+        // device. Hold a narrow async lock, but never a synchronous slot lock
+        // across adapter/device discovery.
         let _initializing = INITIALIZING.lock().await;
-        if let Some(ctx) = SHARED.get() {
-            return Ok(ctx.clone());
+        if let Some(ctx) = shared
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|ctx| !ctx.is_lost())
+            .cloned()
+        {
+            return Ok(ctx);
         }
 
         let ctx = Self::new().await?;
-        let _ = SHARED.set(ctx.clone());
-        Ok(SHARED
-            .get()
-            .expect("shared GPU context was just initialized")
-            .clone())
+        *shared.lock().unwrap_or_else(|error| error.into_inner()) = Some(ctx.clone());
+        Ok(ctx)
     }
 
     pub(crate) fn wait(&self) -> Result<()> {
         self.poller.wait()
+    }
+
+    /// Wait for one caller's submission without also waiting for unrelated
+    /// work that another shared-device client queued afterward.
+    pub(crate) fn wait_for_submission(
+        &self,
+        submission: crate::vision::wgpu::SubmissionIndex,
+    ) -> Result<()> {
+        self.poller.wait_for_submission(submission)
+    }
+
+    pub(crate) fn is_lost(&self) -> bool {
+        self.health.lost.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn device_loss_reason(&self) -> Option<Arc<str>> {
+        self.health
+            .reason
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 }
 
@@ -378,9 +459,9 @@ pub(crate) async fn dispatch_compute(
     }
     let out_buf = &buffers[n_inputs];
     encoder.copy_buffer_to_buffer(out_buf, 0, &readback, 0, output_bytes as u64);
-    ctx.queue.submit(Some(encoder.finish()));
+    let submission = ctx.queue.submit(Some(encoder.finish()));
 
-    map_readback(ctx, &readback, output_bytes).await
+    map_readback(ctx, &readback, output_bytes, submission).await
 }
 
 pub(crate) fn storage_bgl_entries(
@@ -408,13 +489,14 @@ pub(crate) async fn map_readback(
     ctx: &GpuContext,
     buf: &crate::vision::wgpu::Buffer,
     bytes: usize,
+    submission: crate::vision::wgpu::SubmissionIndex,
 ) -> Result<Vec<u8>> {
     let slice = buf.slice(..);
     let (sender, receiver) = std::sync::mpsc::channel();
     slice.map_async(crate::vision::wgpu::MapMode::Read, move |r| {
         let _ = sender.send(r);
     });
-    ctx.wait()?;
+    ctx.wait_for_submission(submission)?;
     receiver
         .recv()
         .context("readback callback was not called")?
@@ -433,4 +515,28 @@ pub(crate) async fn map_readback(
     drop(mapped);
     buf.unmap();
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_health_retains_driver_loss_detail() {
+        let health = DeviceHealth::default();
+        health.mark_lost(
+            crate::vision::wgpu::DeviceLostReason::Unknown,
+            "simulated driver reset".to_owned(),
+        );
+
+        assert!(health.lost.load(Ordering::Acquire));
+        assert_eq!(
+            health
+                .reason
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+            Some("Unknown: simulated driver reset")
+        );
+    }
 }

@@ -110,6 +110,7 @@ pub(crate) struct CompiledGraph {
 pub(crate) struct SubmittedRun<'a> {
     graph: &'a CompiledGraph,
     submit_elapsed: Duration,
+    submission: crate::vision::wgpu::SubmissionIndex,
 }
 
 impl CompiledGraph {
@@ -644,9 +645,9 @@ impl CompiledGraph {
                 pass.set_bind_group(0, &step.bind_group, &[]);
                 pass.dispatch_workgroups(step.dispatch[0], step.dispatch[1], step.dispatch[2]);
             }
-            self.ctx.queue.submit(Some(encoder.finish()));
+            let submission = self.ctx.queue.submit(Some(encoder.finish()));
             if self.ctx.is_cpu_adapter {
-                self.ctx.wait()?;
+                self.ctx.wait_for_submission(submission)?;
             }
         }
 
@@ -670,11 +671,12 @@ impl CompiledGraph {
                 self.output_bytes[i] as u64,
             );
         }
-        self.ctx.queue.submit(Some(encoder.finish()));
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
 
         Ok(SubmittedRun {
             graph: self,
             submit_elapsed: t0.elapsed(),
+            submission,
         })
     }
 
@@ -699,7 +701,7 @@ impl CompiledGraph {
             receivers.push((i, name, receiver));
         }
 
-        self.ctx.wait()?;
+        self.ctx.wait_for_submission(submitted.submission.clone())?;
 
         for (i, name, receiver) in receivers {
             receiver
@@ -823,9 +825,9 @@ impl CompiledGraph {
         }
         encoder.resolve_query_set(&query_set, 0..query_count, &resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(&resolve_buffer, 0, &readback_buffer, 0, query_bytes as u64);
-        self.ctx.queue.submit(Some(encoder.finish()));
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
 
-        let raw = map_readback(&self.ctx, &readback_buffer, query_bytes).await?;
+        let raw = map_readback(&self.ctx, &readback_buffer, query_bytes, submission).await?;
         let ticks: Vec<u64> = bytemuck::cast_slice(&raw).to_vec();
         let period_ns = self.ctx.queue.get_timestamp_period() as f64;
         let mut profiles = Vec::with_capacity(self.steps.len());
@@ -931,8 +933,8 @@ impl CompiledGraph {
         }
         encoder.resolve_query_set(&query_set, 0..query_count, &resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(&resolve_buffer, 0, &readback_buffer, 0, query_bytes as u64);
-        self.ctx.queue.submit(Some(encoder.finish()));
-        let raw = map_readback(&self.ctx, &readback_buffer, query_bytes).await?;
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
+        let raw = map_readback(&self.ctx, &readback_buffer, query_bytes, submission).await?;
         let ticks: Vec<u64> = bytemuck::cast_slice(&raw).to_vec();
         let period_ns = self.ctx.queue.get_timestamp_period() as f64;
         let to_ms = |ticks: u64| ticks as f64 * period_ns / 1_000_000.0;

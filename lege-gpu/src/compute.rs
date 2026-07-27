@@ -76,8 +76,26 @@ impl SharedGpuContext {
         }
     }
 
+    /// Whether the driver has reported this device lost.
+    pub fn is_lost(&self) -> bool {
+        self.inner.is_lost()
+    }
+
+    /// Driver-provided loss reason, when available.
+    pub fn device_loss_reason(&self) -> Option<Arc<str>> {
+        self.inner.device_loss_reason()
+    }
+
     /// Wait for all work submitted before this call to complete.
     pub fn wait(&self) -> Result<()> {
         self.inner.wait()
+    }
+
+    /// Wait for a specific queue submission to complete.
+    ///
+    /// Unlike [`Self::wait`], this does not turn later submissions from other
+    /// Lege GPU clients into an accidental dependency of the caller.
+    pub fn wait_for_submission(&self, submission: wgpu::SubmissionIndex) -> Result<()> {
+        self.inner.wait_for_submission(submission)
     }
 }
