@@ -1862,7 +1862,6 @@ fn PagesDeviceCard(
             AttachedPosition::Left,
             bool_tile("Crop margins".to_string(), options.crop_margins, {
                 let mut state = state;
-                let mut target_height_input = target_height_input;
                 move |_| {
                     let mut s = state.write();
                     let enable = !s.options.crop_margins;
@@ -1871,10 +1870,6 @@ fn PagesDeviceCard(
                         s.options.center_margins = false;
                         s.options.reflow = false;
                         s.options.crop_free_aspect = true;
-                        s.options.target_width = None;
-                        s.options.target_device = None;
-                        s.target_height_input = resolution_input_from_options(&s.options);
-                        target_height_input.set(s.target_height_input.clone());
                     } else {
                         s.options.crop_free_aspect = false;
                     }
