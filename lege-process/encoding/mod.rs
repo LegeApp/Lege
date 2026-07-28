@@ -34,8 +34,8 @@ pub mod jp2 {
     }
 }
 
-// TooJPEG encoder module
-pub mod toojpeg;
+// JPEG encoder adapter (vstroebel/jpeg-encoder).
+pub mod jpeg;
 
 // Colorquant modules removed - were only used by deleted indexed8 encoder
 

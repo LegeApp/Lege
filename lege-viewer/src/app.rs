@@ -100,6 +100,7 @@ struct ChromeSurfacePlacement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolbarAction {
+    OpenDocument,
     ZoomOut,
     ZoomIn,
     FitWidth,
@@ -109,17 +110,32 @@ enum ToolbarAction {
     SetColorMode(ColorMode),
 }
 
+// Toolbar groups are laid out left to right at fixed widths. Hit testing and
+// surface placement both derive from these origins so the two cannot drift.
+const OPEN_GROUP_X: f64 = 0.0;
+const OPEN_GROUP_WIDTH: f64 = 64.0;
+const ZOOM_GROUP_X: f64 = OPEN_GROUP_X + OPEN_GROUP_WIDTH;
+const ZOOM_GROUP_WIDTH: f64 = 214.0;
+const DOCUMENT_GROUP_X: f64 = ZOOM_GROUP_X + ZOOM_GROUP_WIDTH;
+const DOCUMENT_GROUP_WIDTH: f64 = 140.0;
+const PALETTE_GROUP_X: f64 = DOCUMENT_GROUP_X + DOCUMENT_GROUP_WIDTH;
+const PALETTE_GROUP_WIDTH: f64 = 186.0;
+const SEARCH_FIELD_X: f64 = PALETTE_GROUP_X + PALETTE_GROUP_WIDTH + 10.0;
+
 fn toolbar_action_at(x: f64) -> Option<ToolbarAction> {
     match x {
-        x if x < 34.0 => Some(ToolbarAction::ZoomOut),
-        x if x < 68.0 => Some(ToolbarAction::ZoomIn),
-        x if x < 146.0 => Some(ToolbarAction::FitWidth),
-        x if x < 214.0 => Some(ToolbarAction::FitPage),
-        x if x < 292.0 => Some(ToolbarAction::ToggleSidebar),
-        x if x < 354.0 => Some(ToolbarAction::ToggleTrim),
-        x if x < 416.0 => Some(ToolbarAction::SetColorMode(ColorMode::Original)),
-        x if x < 468.0 => Some(ToolbarAction::SetColorMode(ColorMode::Night)),
-        x if x < 540.0 => Some(ToolbarAction::SetColorMode(ColorMode::WarmPaper)),
+        x if x < ZOOM_GROUP_X => Some(ToolbarAction::OpenDocument),
+        x if x < ZOOM_GROUP_X + 34.0 => Some(ToolbarAction::ZoomOut),
+        x if x < ZOOM_GROUP_X + 68.0 => Some(ToolbarAction::ZoomIn),
+        x if x < ZOOM_GROUP_X + 146.0 => Some(ToolbarAction::FitWidth),
+        x if x < ZOOM_GROUP_X + 214.0 => Some(ToolbarAction::FitPage),
+        x if x < DOCUMENT_GROUP_X + 78.0 => Some(ToolbarAction::ToggleSidebar),
+        x if x < DOCUMENT_GROUP_X + 140.0 => Some(ToolbarAction::ToggleTrim),
+        x if x < PALETTE_GROUP_X + 62.0 => Some(ToolbarAction::SetColorMode(ColorMode::Original)),
+        x if x < PALETTE_GROUP_X + 114.0 => Some(ToolbarAction::SetColorMode(ColorMode::Night)),
+        x if x < PALETTE_GROUP_X + 186.0 => {
+            Some(ToolbarAction::SetColorMode(ColorMode::WarmPaper))
+        }
         _ => None,
     }
 }
@@ -1405,6 +1421,7 @@ impl ViewerApp {
                     .contains(self.input.pointer_position)
                 {
                     match toolbar_action_at(self.input.pointer_position.x) {
+                        Some(ToolbarAction::OpenDocument) => self.prompt_for_document(),
                         Some(ToolbarAction::ZoomOut) => {
                             self.set_zoom(self.zoom / std::f64::consts::SQRT_2, ZoomMode::Manual);
                         }
@@ -1550,9 +1567,12 @@ impl ViewerApp {
     }
 
     fn search_field_rect(&self) -> RectF {
-        let width = (self.app_layout.toolbar.width - 580.0).clamp(80.0, 250.0);
+        // Narrow windows pull the field back over the palette rather than off
+        // the right edge, where it would be unreachable.
+        let x = SEARCH_FIELD_X.min((self.app_layout.toolbar.width - 110.0).max(0.0));
+        let width = (self.app_layout.toolbar.width - x - 30.0).clamp(80.0, 250.0);
         RectF {
-            x: 550.0,
+            x,
             y: 7.0,
             width,
             height: (self.app_layout.toolbar.height - 14.0).max(24.0),
@@ -1637,6 +1657,12 @@ impl ViewerApp {
 
     fn handle_key(&mut self, key: &Key, state: ElementState) {
         if state != ElementState::Pressed {
+            return;
+        }
+        if self.input.modifiers.control_key()
+            && matches!(key, Key::Character(character) if character.as_str().eq_ignore_ascii_case("o"))
+        {
+            self.prompt_for_document();
             return;
         }
         if self.input.modifiers.control_key()
@@ -1900,6 +1926,117 @@ impl ViewerApp {
         }
     }
 
+    /// Ask the user for a document and open it. The dialog is modal on the
+    /// viewer window, so the event loop simply resumes once it closes.
+    fn prompt_for_document(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Open a PDF document")
+            .add_filter("PDF documents", &["pdf"]);
+        if let Some(directory) = self
+            .engine
+            .source_path()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+        {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(window) = &self.window {
+            dialog = dialog.set_parent(window.as_ref());
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        self.open_document(&path);
+    }
+
+    /// Open `path`, reporting any failure where a user who launched the viewer
+    /// by double-clicking it can actually see it.
+    fn open_document(&mut self, path: &std::path::Path) {
+        match open_pdf_engine(path) {
+            Ok(engine) => {
+                if let Err(error) = self.adopt_engine(engine) {
+                    report_document_error(path, &error.to_string());
+                }
+            }
+            Err(error) => report_document_error(path, &error),
+        }
+    }
+
+    /// Replace the current document wholesale. Every per-document cache,
+    /// index, and history is rebuilt; only the window, presenter, and user
+    /// preferences (theme, trim, colour mode) survive the swap.
+    fn adopt_engine(&mut self, engine: Arc<dyn DocumentEngine>) -> Result<(), ViewerStartError> {
+        let page_count = engine.descriptor().page_count;
+        let content_extents = vec![None; page_count as usize];
+        self.render_variant = self.render_variant.wrapping_add(1);
+        let layout = Arc::new(PageLayoutIndex::build_with_options(
+            &engine.descriptor().page_geometries,
+            &content_extents,
+            self.trim_enabled,
+            self.color_mode,
+            self.render_variant,
+            &self.theme.metrics,
+        ));
+        let tiles = Arc::new(TileCache::new(engine.descriptor().id, self.memory.clone()));
+        let conductor = ConductorHandle::spawn(
+            engine.clone(),
+            layout.clone(),
+            self.updates.clone(),
+            self.memory.clone(),
+            tiles.clone(),
+        )?;
+        // Joining the previous conductor first guarantees nothing else can
+        // publish into the shared update queue while it is drained. The new
+        // conductor stays idle until the first intent is published below.
+        drop(std::mem::replace(&mut self.conductor, conductor));
+        drop(self.updates.drain());
+
+        self.previews = self.conductor.previews();
+        self.engine = engine;
+        self.layout = layout;
+        self.tiles = tiles;
+        self.content_extents = content_extents;
+        self.tile_snapshot = self.tiles.frame_snapshot();
+        self.tile_scratch.clear();
+        self.painted_tiles.clear();
+        self.page_artifacts.clear();
+        self.page_errors.clear();
+        self.search = SearchIndex::with_memory(self.memory.clone());
+        self.search_request = self.search_request.wrapping_add(1).max(1);
+        self.search_index_revision = 0;
+        self.search_ui = SearchUiState {
+            total_pages: page_count,
+            ..SearchUiState::default()
+        };
+        self.selection = SelectionModel::default();
+        self.outline_synthesizer = OutlineSynthesizer::default();
+        self.outline = Arc::clone(&self.engine.descriptor().outline);
+        self.history = NavigationHistory::default();
+        self.last_click = None;
+        self.pointer_warm = None;
+        self.hovered_link = None;
+        self.status = StatusState::default();
+        self.scroll = ScrollModel::new();
+        self.presented_scroll = Vec2d::ZERO;
+        self.outline_scroll_start = None;
+        self.navigation_mode = NavigationMode::Idle;
+        self.navigation_settle_deadline = None;
+        self.intent = ViewportIntent::empty();
+        self.zoom_mode = ZoomMode::Automatic;
+        self.update_scroll_extents();
+        self.zoom = self.zoom_for_mode(ZoomMode::Automatic);
+        self.update_scroll_extents();
+        if let Some(window) = &self.window {
+            window.set_ime_allowed(false);
+            window.set_title(&format!(
+                "Lege Viewer — {}",
+                self.engine.descriptor().display_name
+            ));
+        }
+        self.bump_generation();
+        Ok(())
+    }
+
     fn toggle_sidebar(&mut self) {
         let anchor = self.reading_anchor();
         self.sidebar_visible = !self.sidebar_visible;
@@ -2133,9 +2270,56 @@ impl ViewerApp {
     fn render_chrome_surfaces(&mut self, memory_bytes: u64) -> Vec<ChromeSurfacePlacement> {
         let mut surfaces = Vec::new();
         let toolbar_height = self.app_layout.toolbar.height.round().max(1.0) as u32;
+        let open_button = self.ui_text.render(
+            [0x4c45_4745, 9, 0, 0],
+            OPEN_GROUP_WIDTH as u32,
+            toolbar_height.min(256),
+            self.theme.colors.chrome,
+            // An outlined chip reads as a button in every palette; a filled
+            // one would fight the active-colour highlight further along.
+            &[
+                RectPaint {
+                    rect: RectI {
+                        x: 4,
+                        y: 5,
+                        width: OPEN_GROUP_WIDTH as u32 - 10,
+                        height: toolbar_height.saturating_sub(10).min(246),
+                    },
+                    color: self.theme.colors.muted_text,
+                },
+                RectPaint {
+                    rect: RectI {
+                        x: 5,
+                        y: 6,
+                        width: OPEN_GROUP_WIDTH as u32 - 12,
+                        height: toolbar_height.saturating_sub(12).min(244),
+                    },
+                    color: self.theme.colors.chrome,
+                },
+            ],
+            &[TextPaint {
+                text: "Open…".to_owned(),
+                x: 12,
+                y: 10,
+                max_width: OPEN_GROUP_WIDTH as u32 - 16,
+                size: 14.0,
+                color: self.theme.colors.text,
+                bold: true,
+            }],
+        );
+        surfaces.push(ChromeSurfacePlacement {
+            surface: open_button,
+            destination: RectF {
+                x: OPEN_GROUP_X,
+                y: 0.0,
+                width: OPEN_GROUP_WIDTH,
+                height: f64::from(toolbar_height.min(256)),
+            },
+        });
+
         let navigation = self.ui_text.render(
             [0x4c45_4745, 5, 0, 0],
-            214,
+            ZOOM_GROUP_WIDTH as u32,
             toolbar_height.min(256),
             self.theme.colors.chrome,
             &[],
@@ -2152,16 +2336,16 @@ impl ViewerApp {
         surfaces.push(ChromeSurfacePlacement {
             surface: navigation,
             destination: RectF {
-                x: 0.0,
+                x: ZOOM_GROUP_X,
                 y: 0.0,
-                width: 214.0,
+                width: ZOOM_GROUP_WIDTH,
                 height: f64::from(toolbar_height.min(256)),
             },
         });
 
         let document_controls = self.ui_text.render(
             [0x4c45_4745, 7, self.trim_enabled as u64, 0],
-            140,
+            DOCUMENT_GROUP_WIDTH as u32,
             toolbar_height.min(256),
             self.theme.colors.chrome,
             &[],
@@ -2181,9 +2365,9 @@ impl ViewerApp {
         surfaces.push(ChromeSurfacePlacement {
             surface: document_controls,
             destination: RectF {
-                x: 214.0,
+                x: DOCUMENT_GROUP_X,
                 y: 0.0,
-                width: 140.0,
+                width: DOCUMENT_GROUP_WIDTH,
                 height: f64::from(toolbar_height.min(256)),
             },
         });
@@ -2200,7 +2384,7 @@ impl ViewerApp {
         };
         let palette = self.ui_text.render(
             [0x4c45_4745, 8, self.color_mode as u64, 0],
-            186,
+            PALETTE_GROUP_WIDTH as u32,
             toolbar_height.min(256),
             self.theme.colors.chrome,
             &[RectPaint {
@@ -2245,9 +2429,9 @@ impl ViewerApp {
         surfaces.push(ChromeSurfacePlacement {
             surface: palette,
             destination: RectF {
-                x: 354.0,
+                x: PALETTE_GROUP_X,
                 y: 0.0,
-                width: 186.0,
+                width: PALETTE_GROUP_WIDTH,
                 height: f64::from(toolbar_height.min(256)),
             },
         });
@@ -2446,7 +2630,58 @@ impl ViewerApp {
                 height: f64::from(status_height.min(256)),
             },
         });
+
+        if self.engine.descriptor().page_count == 0 {
+            self.render_empty_state(&mut surfaces);
+        }
         surfaces
+    }
+
+    /// The canvas stays blank until a document is chosen, so say why and point
+    /// at the control that fixes it rather than showing an unexplained void.
+    fn render_empty_state(&mut self, output: &mut Vec<ChromeSurfacePlacement>) {
+        const WIDTH: u32 = 420;
+        const HEIGHT: u32 = 62;
+        let canvas = self.app_layout.canvas;
+        if canvas.width < f64::from(WIDTH) || canvas.height < f64::from(HEIGHT) {
+            return;
+        }
+        let surface = self.ui_text.render(
+            [0x4c45_4745, 10, 0, 0],
+            WIDTH,
+            HEIGHT,
+            self.theme.colors.canvas,
+            &[],
+            &[
+                TextPaint {
+                    text: "No document open".to_owned(),
+                    x: 0,
+                    y: 0,
+                    max_width: WIDTH,
+                    size: 20.0,
+                    color: self.theme.colors.text,
+                    bold: true,
+                },
+                TextPaint {
+                    text: "Choose a PDF with the Open button above, or press Ctrl+O.".to_owned(),
+                    x: 0,
+                    y: 34,
+                    max_width: WIDTH,
+                    size: 14.0,
+                    color: self.theme.colors.muted_text,
+                    bold: false,
+                },
+            ],
+        );
+        output.push(ChromeSurfacePlacement {
+            surface,
+            destination: RectF {
+                x: (canvas.x + (canvas.width - f64::from(WIDTH)) * 0.5).round(),
+                y: (canvas.y + (canvas.height - f64::from(HEIGHT)) * 0.5).round(),
+                width: f64::from(WIDTH),
+                height: f64::from(HEIGHT),
+            },
+        });
     }
 
     fn render_outline_surfaces(&mut self, output: &mut Vec<ChromeSurfacePlacement>) {
@@ -2702,6 +2937,30 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
+}
+
+#[cfg(feature = "pdf-engine")]
+fn open_pdf_engine(path: &std::path::Path) -> Result<Arc<dyn DocumentEngine>, String> {
+    crate::document::pdf_engine::PdfEngine::open(path, None)
+        .map(|engine| Arc::new(engine) as Arc<dyn DocumentEngine>)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(feature = "pdf-engine"))]
+fn open_pdf_engine(_path: &std::path::Path) -> Result<Arc<dyn DocumentEngine>, String> {
+    Err("this build does not include the PDF engine".to_owned())
+}
+
+/// A Windows build has no console of its own, so a failed open has to be shown
+/// on screen as well as written to stderr.
+fn report_document_error(path: &std::path::Path, message: &str) {
+    let text = format!("Could not open {}\n\n{message}", path.display());
+    eprintln!("lege-viewer: {text}");
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Lege Viewer")
+        .set_description(text)
+        .show();
 }
 
 fn previous_boundary(text: &str, cursor: usize) -> usize {
@@ -3207,18 +3466,31 @@ mod tests {
     #[test]
     fn toolbar_exposes_each_paper_color_as_a_direct_action() {
         assert_eq!(
-            toolbar_action_at(385.0),
+            toolbar_action_at(PALETTE_GROUP_X + 31.0),
             Some(ToolbarAction::SetColorMode(ColorMode::Original))
         );
         assert_eq!(
-            toolbar_action_at(442.0),
+            toolbar_action_at(PALETTE_GROUP_X + 88.0),
             Some(ToolbarAction::SetColorMode(ColorMode::Night))
         );
         assert_eq!(
-            toolbar_action_at(504.0),
+            toolbar_action_at(PALETTE_GROUP_X + 150.0),
             Some(ToolbarAction::SetColorMode(ColorMode::WarmPaper))
         );
-        assert_eq!(toolbar_action_at(550.0), None);
+        assert_eq!(
+            toolbar_action_at(PALETTE_GROUP_X + PALETTE_GROUP_WIDTH),
+            None
+        );
+    }
+
+    #[test]
+    fn toolbar_opens_a_document_from_its_leading_button() {
+        assert_eq!(
+            toolbar_action_at(OPEN_GROUP_WIDTH / 2.0),
+            Some(ToolbarAction::OpenDocument)
+        );
+        // The button must not swallow the zoom controls beside it.
+        assert_eq!(toolbar_action_at(ZOOM_GROUP_X), Some(ToolbarAction::ZoomOut));
     }
 
     fn compose_synthetic_frame() -> Vec<u32> {

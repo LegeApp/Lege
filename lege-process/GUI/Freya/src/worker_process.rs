@@ -481,27 +481,23 @@ pub fn gui_options_to_cli_args(
         args.push(options.k_factor.to_string().into());
     }
 
-    // Trailing positionals.  ORDER MATTERS: the CLI's trailing-argument parser
-    // only prioritises a *target* on the very last token; the second-to-last
-    // token is re-checked solely as a page range.  A numeric target height
-    // (e.g. "1200") sitting in the second-to-last slot is therefore misread as
-    // a malformed page range ("must be in format 'start-end'") and the worker
-    // aborts before emitting any event.  So emit the page range FIRST and the
-    // target LAST: `<input> [page_range] [target]`.
-
-    // Page range (must come before the target).
-    if let Some(ref range) = options.page_range {
-        if !range.trim().is_empty() {
-            args.push(OsString::from(range.as_str()));
+    // Target dimensions via explicit flags. The trailing-positional form is
+    // ambiguous: the CLI reads a bare number below 500 as a *page number*, so a
+    // small target height (e.g. a stale preset "300") silently became the page
+    // range "300-300" and processed nothing (or crashed on short documents).
+    if let Some(height) = options.target_height {
+        args.push("--target-height".into());
+        args.push(OsString::from(height.to_string()));
+        if let Some(width) = options.target_width.filter(|_| !options.crop_free_aspect) {
+            args.push("--target-width".into());
+            args.push(OsString::from(width.to_string()));
         }
     }
 
-    // Target dimensions / height (must be the final positional).
-    if let Some(height) = options.target_height {
-        if let Some(width) = options.target_width.filter(|_| !options.crop_free_aspect) {
-            args.push(OsString::from(format!("{height}x{width}")));
-        } else {
-            args.push(OsString::from(height.to_string()));
+    // Page range stays positional (its format is unambiguous).
+    if let Some(ref range) = options.page_range {
+        if !range.trim().is_empty() {
+            args.push(OsString::from(range.as_str()));
         }
     }
 
@@ -656,6 +652,26 @@ fn configure_cli_command(cmd: &mut std::process::Command, cli_path: &Path) {
     }
 }
 
+/// Append a timestamped line to a run's own full log file. Best-effort like
+/// `append_worker_log`; the file is what a click on the run's history row
+/// opens, so it must never block or fail processing.
+fn append_run_log(path: &std::path::Path, line: &str) {
+    use std::io::Write;
+
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(file, "[{timestamp}] {line}");
+}
+
 /// Spawn a hidden `lege --gui-worker` child process and stream its
 /// newline-delimited JSON progress events into `events_tx`.
 pub fn spawn_lege_worker(
@@ -669,7 +685,17 @@ pub fn spawn_lege_worker(
     let cli_path = resolve_cli_path()?;
     let cli_args = gui_options_to_cli_args(&input_path, &output_path, options, true);
 
-    append_worker_log(&format!(
+    // One full log file per run, keyed by the (unique) output name. History
+    // rows in the log viewer open this file; pruned with the entry list.
+    let run_log_path =
+        lege_ipc::processing_log::run_log_path_for_output(&output_path.to_string_lossy());
+    if let Some(parent) = run_log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Fresh file per run: a rerun to the same output replaces the stale log.
+    let _ = std::fs::remove_file(&run_log_path);
+
+    let spawn_line = format!(
         "task {gui_task_id}: spawning {} {}",
         cli_path.display(),
         cli_args
@@ -677,7 +703,9 @@ pub fn spawn_lege_worker(
             .map(|a| a.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join(" ")
-    ));
+    );
+    append_worker_log(&spawn_line);
+    append_run_log(&run_log_path, &spawn_line);
 
     let mut cmd = std::process::Command::new(&cli_path);
     configure_cli_command(&mut cmd, &cli_path);
@@ -709,6 +737,7 @@ pub fn spawn_lege_worker(
     let stdout = child.stdout.take().expect("stdout piped");
     let stdout_events_tx = events_tx.clone();
     let stdout_terminal_seen = terminal_seen.clone();
+    let stdout_run_log_path = run_log_path.clone();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             match line {
@@ -722,9 +751,9 @@ pub fn spawn_lege_worker(
                             stdout_terminal_seen.store(true, Ordering::SeqCst);
                         }
                         if let WorkerProgressUpdate::Error { ref error, .. } = update {
-                            append_worker_log(&format!(
-                                "task {gui_task_id} reported error: {error}"
-                            ));
+                            let line = format!("task {gui_task_id} reported error: {error}");
+                            append_worker_log(&line);
+                            append_run_log(&stdout_run_log_path, &line);
                         }
                         let _ = stdout_events_tx.send(update.with_task_id(gui_task_id));
                     }
@@ -737,11 +766,13 @@ pub fn spawn_lege_worker(
     // Dedicated thread: drain stderr (forward to log or discard).
     let stderr = child.stderr.take().expect("stderr piped");
     let stderr_lines_for_thread = stderr_lines.clone();
+    let stderr_run_log_path = run_log_path.clone();
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             match line {
                 Ok(line) => {
                     append_worker_log(&format!("task {gui_task_id} stderr: {line}"));
+                    append_run_log(&stderr_run_log_path, &format!("stderr: {line}"));
                     if let Ok(mut lines) = stderr_lines_for_thread.lock() {
                         if lines.len() >= 50 {
                             lines.pop_front();
@@ -760,6 +791,7 @@ pub fn spawn_lege_worker(
     let wait_events_tx = events_tx.clone();
     let wait_terminal_seen = terminal_seen.clone();
     let wait_stderr_lines = stderr_lines.clone();
+    let wait_run_log_path = run_log_path.clone();
     std::thread::spawn(move || {
         let wait_result = child.wait();
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -781,6 +813,7 @@ pub fn spawn_lege_worker(
             error.push_str(stderr_tail.trim());
         }
         append_worker_log(&format!("task {gui_task_id}: {error}"));
+        append_run_log(&wait_run_log_path, &error);
 
         let _ = wait_events_tx.send(WorkerProgressUpdate::Error {
             task_id: gui_task_id,

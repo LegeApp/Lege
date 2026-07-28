@@ -3,12 +3,15 @@ use std::path::PathBuf;
 
 use crate::present::PresenterPreference;
 
-pub const USAGE: &str = "Usage: lege-viewer [--presenter auto|gpu|software] <document.pdf>\n       lege-viewer [--presenter auto|gpu|software] --synthetic [PAGE_COUNT]";
+pub const USAGE: &str = "Usage: lege-viewer [--presenter auto|gpu|software] [document.pdf]\n       lege-viewer [--presenter auto|gpu|software] --synthetic [PAGE_COUNT]\n\nWithout a document the viewer opens an empty window; use its Open button\n(or Ctrl+O) to choose a PDF.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchMode {
     Pdf(PathBuf),
     Synthetic { page_count: u32 },
+    /// No document was named. The viewer opens on its empty state and waits
+    /// for the user to pick a file.
+    Empty,
     Help,
 }
 
@@ -20,8 +23,6 @@ pub struct LaunchConfig {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CliError {
-    #[error("no document was specified")]
-    MissingDocument,
     #[error("unknown option: {0}")]
     UnknownOption(String),
     #[error("--synthetic accepts at most one page count")]
@@ -54,9 +55,6 @@ where
     S: Into<OsString>,
 {
     let arguments = arguments.into_iter().map(Into::into).collect::<Vec<_>>();
-    if arguments.is_empty() {
-        return Err(CliError::MissingDocument);
-    }
     let mut presenter = None;
     let mut synthetic = false;
     let mut synthetic_count = None;
@@ -127,7 +125,7 @@ where
     } else if let Some(path) = document {
         LaunchMode::Pdf(path)
     } else {
-        return Err(CliError::MissingDocument);
+        LaunchMode::Empty
     };
     Ok(LaunchConfig {
         mode,

@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.7"
+version = "1.4.71"
 edition = "2024"
 description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -32,6 +32,7 @@ log = { workspace = true }
 fontdue = "0.9.3"
 png = "0.18.1"
 image = { workspace = true }
+jpeg-encoder = { workspace = true }
 # Enhanced CLI dependencies
 dialoguer = { workspace = true }
 config = { workspace = true }

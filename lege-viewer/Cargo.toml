@@ -36,6 +36,8 @@ copypasta.workspace = true
 pdf-font.workspace = true
 tempfile.workspace = true
 open.workspace = true
+# The same vendored dialog crate both Lege GUIs use.
+rfd = { path = "../lege-process/GUI/rfd" }
 serde.workspace = true
 serde_json.workspace = true
 softbuffer = { workspace = true, optional = true }

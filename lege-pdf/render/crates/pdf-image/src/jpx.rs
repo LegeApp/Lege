@@ -49,6 +49,10 @@ thread_local! {
 /// 0.000096 (jpx-scan) and 0.003781 (mrc) — both well under the 0.005 budget,
 /// and the mrc figure is below its full-resolution baseline. A larger margin
 /// (measured up through 1.35) foregoes the mrc reduction for no severity gain.
+/// NOTE: the renderer-side hint (`codec_target_size`) additionally applies a
+/// supersampling headroom before this margin — see
+/// `pdf-render-cpu/src/prepared.rs` — so the decoded raster the resampler sees
+/// stays comfortably above the destination footprint.
 /// See corpus/perf/optimization-jpx-integration-20260720.md.
 const JPX_QUALITY_MARGIN: f32 = 1.0;
 

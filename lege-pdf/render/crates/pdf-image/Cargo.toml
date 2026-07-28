@@ -11,6 +11,7 @@ pdf-object = { workspace = true }
 pdf-color = { workspace = true }
 pdf-page-ir = { workspace = true }
 jp2lam = { workspace = true }
+jpeg-encoder = { workspace = true }
 # JBIG2 decoder (decode-only). Confined to src/jbig2.rs.
 jbig2enc-rust = { workspace = true }
 pdf-profiling = { workspace = true, optional = true }

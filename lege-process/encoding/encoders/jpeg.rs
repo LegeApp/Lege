@@ -1,4 +1,4 @@
-use crate::encoding::toojpeg::{EncodeOptions, ImageFormat as TooJpegFormat, encode_jpeg};
+use crate::encoding::jpeg::{EncodeOptions, ImageFormat, encode_jpeg};
 use crate::encoding::{EncodingError, Result, streamline::JpegSettings};
 
 pub fn encode(
@@ -20,16 +20,16 @@ pub fn encode(
         ));
     }
 
-    let toojpeg_format = if channels == 1 {
-        TooJpegFormat::Gray
+    let format = if channels == 1 {
+        ImageFormat::Gray
     } else {
-        TooJpegFormat::RGB
+        ImageFormat::Rgb
     };
 
     let options = EncodeOptions {
         width,
         height,
-        format: toojpeg_format,
+        format,
         quality: settings.quality,
         baseline: settings.baseline,
         optimized: settings.optimized,

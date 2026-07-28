@@ -97,10 +97,11 @@ fn pdf_links_reach_viewer_space_with_destination_geometry() {
 }
 
 #[test]
-fn launch_mode_requires_an_explicit_document_or_synthetic_mode() {
+fn launch_mode_falls_back_to_the_empty_document_state() {
+    assert_eq!(parse_launch_mode::<_, &str>([]).unwrap(), LaunchMode::Empty);
     assert_eq!(
-        parse_launch_mode::<_, &str>([]),
-        Err(CliError::MissingDocument)
+        parse_launch_config(["--presenter", "software"]).unwrap().mode,
+        LaunchMode::Empty
     );
     assert_eq!(
         parse_launch_mode(["--synthetic"]).unwrap(),

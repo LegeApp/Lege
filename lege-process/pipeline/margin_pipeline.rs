@@ -450,9 +450,25 @@ pub(crate) fn adjust_page_with_margin_analysis(
         && !non_crop_content;
     let standard_dimensions =
         if analysis.effective_margin_setting == crate::margin::MarginSettings::CropAndResize {
-            StandardPageDimensions {
-                width: scaled_crop.width().max(1),
-                height: scaled_crop.height().max(1),
+            if effective_setting == crate::margin::MarginSettings::StandardizeAndCenter
+                && config.target_width().is_none()
+            {
+                // Fallback page inside a crop job (blank page, full-page image,
+                // or content larger than the document crop window). With no
+                // fixed output width the canvas aspect is free — letterboxing
+                // onto the crop-window aspect would ADD white margin around
+                // the page, the opposite of what cropping promises. Use the
+                // page's own bounds aspect so the scaled content fills the
+                // canvas edge-to-edge.
+                StandardPageDimensions {
+                    width: bounds.width().max(1),
+                    height: bounds.height().max(1),
+                }
+            } else {
+                StandardPageDimensions {
+                    width: scaled_crop.width().max(1),
+                    height: scaled_crop.height().max(1),
+                }
             }
         } else {
             StandardPageDimensions {

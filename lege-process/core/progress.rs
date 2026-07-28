@@ -1344,10 +1344,7 @@ impl ProcessingQueue {
         });
         let worker = queue.clone();
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .max_blocking_threads(crate::runtime_stats::MAX_BLOCKING_THREADS)
-                .enable_all()
-                .build()
+            let runtime = crate::runtime_stats::build_control_runtime()
                 .expect("failed to create processing queue runtime");
             runtime.block_on(async move {
                 worker.worker_loop().await;

@@ -103,6 +103,8 @@ pub fn region_target(
             y: y1,
             width,
             height,
+            page_width: output_width,
+            page_height: output_height,
         }),
     })
 }

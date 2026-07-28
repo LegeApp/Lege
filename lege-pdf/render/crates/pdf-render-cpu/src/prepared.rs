@@ -2334,15 +2334,18 @@ fn lower_image(
 
     let sample_lut =
         crate::image::build_sample_lut(bpc, &color_space, ir.decode.as_deref(), ir.is_stencil);
-    // PDFium and MuPDF both smooth continuous-tone DCT images while
-    // magnifying them, including when `/Interpolate` is absent/false. Keeping
-    // the raw-image Nearest policy is important for bilevel and deliberately
-    // pixelated samples, but applying it to JPEG scans produces hard 2×2
-    // sample blocks and materially overstates thresholded scan-tone deltas.
-    // Scope the compatibility policy to decoded DCT images; minification still
-    // takes the area-average branch regardless of this value.
-    let interpolation = if ir.codec == Some(pdf_page_ir::ImageCodecKind::Dct)
-        && !ir.is_stencil
+    // PDFium and MuPDF both smooth continuous-tone images while magnifying
+    // them, including when `/Interpolate` is absent/false. Keeping the
+    // raw-image Nearest policy is important for bilevel and deliberately
+    // pixelated samples, but applying it to continuous-tone scans produces
+    // hard 2×2 sample blocks and materially overstates thresholded scan-tone
+    // deltas. Scope the compatibility policy to decoded continuous-tone codecs
+    // (JPEG and JPEG 2000); JBIG2/CCITT stay Nearest so bilevel ink keeps hard
+    // edges. Minification still takes the area-average branch regardless.
+    let interpolation = if matches!(
+        ir.codec,
+        Some(pdf_page_ir::ImageCodecKind::Dct | pdf_page_ir::ImageCodecKind::Jpx)
+    ) && !ir.is_stencil
         && ir.interpolation == pdf_page_ir::InterpolationMode::Nearest
     {
         pdf_page_ir::InterpolationMode::Bilinear
@@ -4778,7 +4781,18 @@ fn codec_target_size(ctm: Matrix) -> Option<(u32, u32)> {
     if !w.is_finite() || !h.is_finite() || w < 1.0 || h < 1.0 {
         return None;
     }
-    Some((w as u32, h as u32))
+    // Ask the codec for a full extra octave above the device footprint. The
+    // codecs reduce to the smallest scale that still covers the hint, so
+    // hinting the bare footprint can hand the resampler as little as ~1 source
+    // texel per device pixel — near point-sampling. PDFium always decoded at
+    // full resolution and box-filtered down; 2x headroom restores that edge
+    // detail (visibly sharper binarized text at moderate target heights) while
+    // keeping the reduced-decode savings for heavily minified draws.
+    const SUPERSAMPLE_HEADROOM: u32 = 2;
+    Some((
+        (w as u32).saturating_mul(SUPERSAMPLE_HEADROOM),
+        (h as u32).saturating_mul(SUPERSAMPLE_HEADROOM),
+    ))
 }
 
 /// Device-space integer bounds of `points`, culled to the output size.

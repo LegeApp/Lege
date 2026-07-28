@@ -73,6 +73,7 @@ log = "0.4.33"
 once_cell = "1.21.4"
 rayon = "1.11.0"
 image = { version = "0.25.10", features = ["png", "jpeg", "tiff"] }
+jpeg-encoder = { version = "=0.7.1", features = ["simd"] }
 flume = "0.11"
 # Native renderer crates. Their single canonical source tree is in
 # `lege-pdf/render`; the viewer consumes these APIs directly.

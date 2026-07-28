@@ -249,10 +249,7 @@ pub fn run_layout_visualize_mode(
         total_pages
     );
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .max_blocking_threads(crate::runtime_stats::MAX_BLOCKING_THREADS)
-        .enable_all()
-        .build()?;
+    let rt = crate::runtime_stats::build_control_runtime()?;
 
     for &page_num in &pages_to_render {
         println!("  Page {}/{}  (page {})", page_num, total_pages, page_num);

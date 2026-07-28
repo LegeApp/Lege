@@ -3253,6 +3253,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "jpeg-encoder"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6"
+
+[[package]]
 name = "js-sys"
 version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3321,7 +3327,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lege"
-version = "1.4.7"
+version = "1.4.71"
 dependencies = [
  "anyhow",
  "app_dirs2",
@@ -3352,6 +3358,7 @@ dependencies = [
  "indicatif",
  "jbig2enc-rust",
  "jp2lam",
+ "jpeg-encoder",
  "lazy_static",
  "lege-gpu",
  "lege-ipc",
@@ -3540,6 +3547,7 @@ dependencies = [
  "pdf-source",
  "pdf-test-support",
  "pdf-text",
+ "rfd 0.17.2",
  "serde",
  "serde_json",
  "softbuffer",
@@ -4723,6 +4731,7 @@ dependencies = [
  "hayro-ccitt",
  "jbig2enc-rust",
  "jp2lam",
+ "jpeg-encoder",
  "pdf-color",
  "pdf-object",
  "pdf-page-ir",

@@ -689,7 +689,7 @@ pub fn run_pdf_to_images_mode(
                 let options = EncodeOptions {
                     width,
                     height,
-                    format: ImageFormat::RGB,
+                    format: ImageFormat::Rgb,
                     quality: 90,
                     baseline: true,
                     optimized: true,
@@ -880,7 +880,7 @@ fn process_single_image_to_image(
             let options = EncodeOptions {
                 width,
                 height,
-                format: ImageFormat::RGB,
+                format: ImageFormat::Rgb,
                 quality: 90,
                 baseline: true,
                 optimized: true,

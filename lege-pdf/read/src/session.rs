@@ -158,6 +158,12 @@ pub struct DeviceCrop {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// Full-page raster size the crop coordinates are expressed in. The render
+    /// matrix must scale the page to THIS size before translating by (x, y);
+    /// it cannot be inferred from the crop rect (that only works for a crop
+    /// anchored at the page's bottom-right corner).
+    pub page_width: u32,
+    pub page_height: u32,
 }
 
 /// One final-size raster requested by the Lege processing pipeline.
@@ -545,9 +551,8 @@ fn product_matrix(page: &CompiledPage, product: &RasterProduct) -> Matrix {
     let Some(crop) = product.crop else {
         return page_to_device_matrix(page, product.width, product.height);
     };
-    let full_width = crop.x.max(0) as u32 + crop.width;
-    let full_height = crop.y.max(0) as u32 + crop.height;
-    let mut matrix = page_to_device_matrix(page, full_width.max(1), full_height.max(1));
+    let mut matrix =
+        page_to_device_matrix(page, crop.page_width.max(1), crop.page_height.max(1));
     let sx = product.width as f64 / crop.width.max(1) as f64;
     let sy = product.height as f64 / crop.height.max(1) as f64;
     matrix.a *= sx;

@@ -10,6 +10,11 @@ const STATUS_STARTED: &str = "started";
 const STATUS_COMPLETED: &str = "completed";
 const STATUS_FAILED: &str = "failed";
 
+/// How many history entries (and matching per-run log files) are retained.
+/// Pruning happens when a terminal entry is recorded — the end of a run, when
+/// the log is being written anyway — never at startup, so launches stay cheap.
+pub const MAX_LOG_ENTRIES: usize = 30;
+
 /// Output container format.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OutputFormat {
@@ -353,7 +358,53 @@ pub fn get_log_file_path() -> PathBuf {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // Earlier versions kept the log in the Windows ROAMING app-data dir;
+    // pull an existing history over the first time the new location is used.
+    crate::migrate_legacy_roaming_file(LOG_FILE_NAME, &path);
     path
+}
+
+/// Directory holding one full worker log per run.
+pub fn run_logs_dir() -> PathBuf {
+    log_directory().join("run-logs")
+}
+
+/// Path of the full per-run worker log for a run's output path. Keyed by the
+/// output file stem: GUI jobs suffix outputs with a unique id, so this maps one
+/// history entry to one log file without storing extra state in the entry.
+pub fn run_log_path_for_output(output_path: &str) -> PathBuf {
+    let stem = std::path::Path::new(output_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("run");
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    run_logs_dir().join(format!("{sanitized}.log"))
+}
+
+/// Drop history entries beyond [`MAX_LOG_ENTRIES`], deleting each dropped
+/// entry's per-run log file alongside it.
+fn prune_log_entries(entries: &mut Vec<LogEntry>) {
+    if entries.len() <= MAX_LOG_ENTRIES {
+        return;
+    }
+    let excess = entries.len() - MAX_LOG_ENTRIES;
+    for dropped in entries.drain(0..excess) {
+        let _ = fs::remove_file(run_log_path_for_output(&dropped.output_path));
+    }
+}
+
+/// Remove every per-run log file (used by the GUI's "clear log" action).
+pub fn clear_run_logs() {
+    let _ = fs::remove_dir_all(run_logs_dir());
 }
 
 /// Load existing log entries from the JSON file.
@@ -395,6 +446,7 @@ pub fn add_log_entry(result: &ProcessingResult, options: &ProcessingOptions) -> 
         entries.push(entry.clone());
     }
 
+    prune_log_entries(&mut entries);
     save_log_entries(&entries)?;
     Ok(entry)
 }
@@ -445,6 +497,7 @@ pub fn add_failed_log_entry(
         entries.push(entry.clone());
     }
 
+    prune_log_entries(&mut entries);
     save_log_entries(&entries)?;
     Ok(entry)
 }
@@ -533,4 +586,45 @@ pub fn get_recent_entries(count: usize) -> Vec<LogEntry> {
         .rev()
         .take(count)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(output: &str) -> LogEntry {
+        LogEntry::started(
+            PathBuf::from("in.pdf"),
+            PathBuf::from(output),
+            0,
+            &ProcessingOptions::new(),
+        )
+    }
+
+    #[test]
+    fn run_log_path_uses_sanitized_output_stem() {
+        let path = run_log_path_for_output(r"D:\out\Book_processed_123.pdf");
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("Book_processed_123.log")
+        );
+
+        let odd = run_log_path_for_output("a/b:c*d.pdf");
+        let name = odd.file_name().and_then(|n| n.to_str()).unwrap();
+        assert!(!name.contains(':') && !name.contains('*') && !name.contains('/'));
+    }
+
+    #[test]
+    fn prune_keeps_only_the_newest_max_entries() {
+        let mut entries: Vec<LogEntry> = (0..MAX_LOG_ENTRIES + 5)
+            .map(|i| entry(&format!("out_{i}.pdf")))
+            .collect();
+        prune_log_entries(&mut entries);
+        assert_eq!(entries.len(), MAX_LOG_ENTRIES);
+        assert_eq!(entries[0].output_filename, "out_5.pdf");
+
+        let mut short: Vec<LogEntry> = (0..3).map(|i| entry(&format!("out_{i}.pdf"))).collect();
+        prune_log_entries(&mut short);
+        assert_eq!(short.len(), 3);
+    }
 }

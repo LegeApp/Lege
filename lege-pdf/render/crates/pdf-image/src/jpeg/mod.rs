@@ -1,9 +1,8 @@
 //! In-house JPEG (DCT) codec — the decoder side of `/DCTDecode`.
 //!
-//! Built as the mirror image of the bundled TooJpeg encoder port
-//! ([`encoder`]): the same zigzag table, the same canonical Huffman code
-//! assignment, and the AAN DCT constants shared between the forward
-//! transform (encoder) and this inverse. One file, scalar baseline —
+//! The test encoder uses vstroebel's `jpeg-encoder` crate while this decoder
+//! retains the standard zigzag table and AAN DCT constants used by its inverse
+//! transform. The decoder is scalar baseline with targeted SIMD paths —
 //! optimization seams (fixed-point color convert, SIMD IDCT, MCU-row
 //! streaming for baseline scans) are marked where they apply.
 //!

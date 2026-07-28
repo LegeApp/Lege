@@ -3274,7 +3274,15 @@ pub async fn create_and_run_pdf_source_pipeline(
     let document_pages = source.page_count();
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
     let page_end = page_range.as_ref().map(|r| r.end).unwrap_or(document_pages);
-    let total_pages = page_end - page_start;
+    // Saturate: an inverted range must not underflow into a huge page count
+    // (vec![None; total_pages] in the PDF writer would abort the process).
+    let total_pages = page_end.saturating_sub(page_start);
+    if total_pages == 0 {
+        return Err(anyhow::anyhow!(
+            "No pages selected to process (document has {} pages)",
+            document_pages
+        ));
+    }
     let document_session = source.document_session();
 
     // Gate the GPU resize backend by document size: cold-start cost only pays

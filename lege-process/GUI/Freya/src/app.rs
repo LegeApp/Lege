@@ -433,6 +433,9 @@ pub struct AppState {
     pub show_warning_popup: bool,
     pub show_log_viewer: bool,
     pub processing_log: Vec<LogEntry>,
+    /// Index (within the rendered rows) of the log-viewer row under the
+    /// pointer, for the clickable-row hover effect.
+    pub hovered_log_row: Option<usize>,
     pub show_about: bool,
     pub show_theme_chooser: bool,
     pub show_queue_viewer: bool,
@@ -447,18 +450,7 @@ impl Default for AppState {
     fn default() -> Self {
         let defaults = ProcessingOptions::new();
         let saved = backend::load_saved_settings().ok().flatten();
-        let mut options = saved.clone().unwrap_or_else(|| defaults.clone());
-        // Restore the resolution preset saved by the last processing run (the
-        // resolution field persists itself; there are no save/load buttons).
-        if let Ok(Some(preset)) = backend::load_resolution_preset() {
-            options.target_device = None;
-            options.target_height = Some(preset.height);
-            options.target_width = if options.crop_free_aspect {
-                None
-            } else {
-                preset.width
-            };
-        }
+        let options = saved.clone().unwrap_or_else(|| defaults.clone());
         let _ = logging::reconcile_started_entries();
         let mut state = Self {
             queue: VecDeque::new(),
@@ -506,6 +498,7 @@ impl Default for AppState {
             show_warning_popup: false,
             show_log_viewer: false,
             processing_log: logging::load_log_entries().unwrap_or_default(),
+            hovered_log_row: None,
             show_about: false,
             show_theme_chooser: false,
             show_queue_viewer: false,
@@ -517,6 +510,23 @@ impl Default for AppState {
 
         if let Some(saved) = saved {
             sync_state_from_options(&mut state, &saved);
+        }
+
+        // Restore the resolution preset saved by the last processing run (the
+        // resolution field persists itself; there are no save/load buttons).
+        // This must run AFTER sync_state_from_options — the settings sync
+        // replaces state.options wholesale and used to silently discard the
+        // preset, leaving the displayed resolution out of step with the value
+        // actually sent to the worker.
+        if let Ok(Some(preset)) = backend::load_resolution_preset() {
+            state.options.target_device = None;
+            state.options.target_height = Some(preset.height);
+            state.options.target_width = if state.options.crop_free_aspect {
+                None
+            } else {
+                preset.width
+            };
+            state.target_height_input = resolution_input_from_options(&state.options);
         }
 
         state
@@ -920,7 +930,14 @@ fn sync_text_inputs(
 
         if s.target_height_input != target_height_val {
             s.target_height_input = target_height_val.clone();
-            if let Some((height, width)) = parse_resolution_field(&target_height_val) {
+            if target_height_val.trim().is_empty() {
+                // The field was cleared (clicking it wipes the text via
+                // replace_on_focus). Clear the target instead of keeping the
+                // stale value: what is displayed is what gets used.
+                s.options.target_device = None;
+                s.options.target_height = None;
+                s.options.target_width = None;
+            } else if let Some((height, width)) = parse_resolution_field(&target_height_val) {
                 s.options.target_device = None;
                 s.options.target_height = Some(height);
                 s.options.target_width = width;
@@ -1284,7 +1301,9 @@ fn square_input(input: Input) -> Input {
 fn parse_resolution_field(value: &str) -> Option<(u32, Option<u32>)> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Some((1200, None));
+        // An empty field is "no explicit target", not a silent 1200: the
+        // caller clears the option so the worker's own default applies.
+        return None;
     }
 
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -1624,7 +1643,13 @@ fn PagesDeviceCard(
                         let mut state = state;
                         let mut target_height_input = target_height_input;
                         move |text: String| {
-                            if let Some((height, width)) = parse_resolution_field(&text) {
+                            if text.trim().is_empty() {
+                                let mut s = state.write();
+                                s.options.target_device = None;
+                                s.options.target_height = None;
+                                s.options.target_width = None;
+                                s.target_height_input = String::new();
+                            } else if let Some((height, width)) = parse_resolution_field(&text) {
                                 let normalized;
                                 {
                                     let mut s = state.write();
@@ -2376,24 +2401,63 @@ fn StatusBar(state: State<AppState>) -> Element {
     widgets::lege_status_panel(main_content, top_left, top_right, bottom_left, bottom_right)
 }
 
-fn render_log_rows(entries: &[LogEntry]) -> Vec<Element> {
+fn render_log_rows(mut state: State<AppState>, entries: &[LogEntry]) -> Vec<Element> {
+    let hovered = state.read().hovered_log_row;
     entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(index, entry)| {
             let text = format_log_entry_text(entry);
-            rect()
+            // Rows whose run produced a full worker log open it on click; the
+            // subtle hover darken marks exactly those rows as clickable.
+            let run_log = logging::run_log_path(entry);
+            let clickable = run_log.is_some();
+            let background = if clickable && hovered == Some(index) {
+                crate::colors::hover_shade(panel_bg())
+            } else {
+                panel_bg()
+            };
+            let row = rect()
                 .width(Size::fill())
                 .padding((6., 4., 6., 4.))
-                .background(panel_bg())
+                .background(background)
                 .corner_radius(4.)
                 .child(
-                    SelectableText::new(text)
+                    label()
+                        .text(text)
                         .width(Size::fill())
                         .font_size(11.)
                         .color(text_fg())
                         .line_height(1.25),
-                )
+                );
+            if let Some(run_log) = run_log {
+                row.on_pointer_over(move |_| {
+                    let mut s = state.write();
+                    if s.hovered_log_row != Some(index) {
+                        s.hovered_log_row = Some(index);
+                    }
+                })
+                .on_pointer_out(move |_| {
+                    let mut s = state.write();
+                    if s.hovered_log_row == Some(index) {
+                        s.hovered_log_row = None;
+                    }
+                })
+                .on_all_press(move |e: Event<PressEventData>| {
+                    let left_click = match e.data() {
+                        PressEventData::Mouse(data) => {
+                            matches!(data.button, Some(MouseButton::Left))
+                        }
+                        _ => true,
+                    };
+                    if left_click {
+                        let _ = backend::open_with_system(&run_log.to_string_lossy());
+                    }
+                })
                 .into()
+            } else {
+                row.into()
+            }
         })
         .collect()
 }
@@ -2606,12 +2670,14 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
         return rect().into();
     }
 
+    // The stored history is pruned to MAX_LOG_ENTRIES (30) at end-of-run, so
+    // this shows every retained entry.
     let recent_entries = state
         .read()
         .processing_log
         .iter()
         .rev()
-        .take(20)
+        .take(lege_ipc::processing_log::MAX_LOG_ENTRIES)
         .cloned()
         .collect::<Vec<_>>();
 
@@ -2643,7 +2709,7 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
                         rect()
                             .width(Size::fill())
                             .spacing(8.)
-                            .children(render_log_rows(&recent_entries)),
+                            .children(render_log_rows(state, &recent_entries)),
                     ),
             )
             .into(),

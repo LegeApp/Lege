@@ -14,7 +14,10 @@ pub struct ResolutionPreset {
 }
 
 pub fn preset_path() -> PathBuf {
-    app_dirs::data_dir().join(RESOLUTION_PRESET_FILE_NAME)
+    let path = app_dirs::data_dir().join(RESOLUTION_PRESET_FILE_NAME);
+    // Earlier versions kept the preset in the Windows ROAMING app-data dir.
+    app_dirs::migrate_legacy_roaming_file(RESOLUTION_PRESET_FILE_NAME, &path);
+    path
 }
 
 pub fn load() -> Result<Option<ResolutionPreset>> {

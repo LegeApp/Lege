@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics are the assertion mechanism
 
-//! JPEG codec round-trips: the bundled TooJpeg-port encoder produces real
+//! JPEG codec round-trips: vstroebel's encoder produces real
 //! baseline streams; the decoder must reconstruct them within lossy-codec
 //! tolerance. This pins the Huffman tables, the forward/inverse AAN DCT
 //! pair, quantization scaling, and the sampling geometry against each

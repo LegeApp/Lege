@@ -11,8 +11,13 @@ fn ensure_directory(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Application data directory. On Windows this is the LOCAL (non-roaming)
+/// app-data dir: the tree holds logs and scratch data, which are
+/// machine-specific and must not roam, and it keeps all Lege state in the one
+/// folder the GUI already uses. Must stay in sync with `lege_ipc::data_dir`.
 pub fn data_dir() -> PathBuf {
-    let base = dirs::data_dir()
+    let base = dirs::data_local_dir()
+        .or_else(dirs::data_dir)
         .or_else(|| {
             dirs::home_dir().map(|mut dir| {
                 dir.push(".local");
@@ -23,6 +28,28 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."));
 
     ensure_directory(&base.join("Lege"))
+}
+
+/// One-time, lazy migration of a file this app historically wrote to the
+/// Windows ROAMING app-data dir. No-op when the target already exists, when
+/// there is no legacy copy, or on platforms where both dirs coincide.
+pub fn migrate_legacy_roaming_file(file_name: &str, target: &Path) {
+    if target.exists() {
+        return;
+    }
+    let Some(legacy_base) = dirs::data_dir() else {
+        return;
+    };
+    let legacy = legacy_base.join("Lege").join(file_name);
+    if legacy == target || !legacy.is_file() {
+        return;
+    }
+    if std::fs::rename(&legacy, target).is_err() {
+        // Cross-volume fallback (e.g. redirected profile folders).
+        if std::fs::copy(&legacy, target).is_ok() {
+            let _ = std::fs::remove_file(&legacy);
+        }
+    }
 }
 
 pub fn logs_dir() -> PathBuf {

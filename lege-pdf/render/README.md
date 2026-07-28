@@ -129,8 +129,8 @@ Phases 1–6 (CPU path) and Font Phases 1–2 are implemented and tested.
   (`pdf_render_api::contract`), hardened resource recursion, and the frozen
   DeviceCMYK conversion policy.
 - **JPEG (`/DCTDecode`) codec.** A native single-file decoder in
-  `pdf-image/src/jpeg/` (built as the mirror of the bundled TooJpeg encoder
-  port): baseline + progressive, restart markers, gray/YCbCr/RGB/CMYK/YCCK
+  `pdf-image/src/jpeg/`: baseline + progressive, restart markers,
+  gray/YCbCr/RGB/CMYK/YCCK
   with the Adobe APP14 conventions, verified against libjpeg ground truth.
   Injected via `CpuBackendOptions::codecs` (never global).
 - **Font Phase 3 — non-embedded text renders as glyphs.** All 14 standard

@@ -11,9 +11,10 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 const RESOLUTION_PRESET_FILE_NAME: &str = "resolution_preset.json";
 
 fn settings_directory() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Lege")
+    // Single source of truth for the app folder (%LOCALAPPDATA%\Lege on
+    // Windows): settings, worker logs, run logs, and the processing log all
+    // live in the one consolidated directory.
+    lege_ipc::data_dir()
 }
 
 /// Get the path to the settings file in the user data directory

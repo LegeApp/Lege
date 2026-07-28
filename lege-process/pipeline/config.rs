@@ -150,7 +150,22 @@ impl ProcessingPipeline {
 
         // Determine which pages to process
         let page_range = match &self.config.page_range {
-            Some(range) => Some((range.start.saturating_sub(1))..range.end.min(self.page_count)),
+            Some(range) => {
+                let start = range.start.saturating_sub(1);
+                let end = range.end.min(self.page_count);
+                // An out-of-document range must fail here: passing an inverted
+                // range (start > end) downstream underflows page arithmetic in
+                // release builds and aborts with a capacity-overflow panic.
+                if start >= end {
+                    return Err(anyhow!(
+                        "Requested page range {}-{} is outside the document ({} pages)",
+                        range.start,
+                        range.end,
+                        self.page_count
+                    ));
+                }
+                Some(start..end)
+            }
             None => Some(0..self.page_count),
         };
 

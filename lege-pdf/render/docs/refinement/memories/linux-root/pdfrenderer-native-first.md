@@ -16,8 +16,8 @@ goal; small owned implementations give full control (SIMD seams, fixed-point
 rewrites) that dependency crates don't.
 
 **How to apply:** Default to writing the component natively (as done for the
-font semantics layer and the JPEG decoder built from the TooJpeg encoder port
-at `crates/pdf-image/src/jpeg/`). Exceptions are deliberate, user-supplied
+font semantics layer and the JPEG decoder at `crates/pdf-image/src/jpeg/`).
+Exceptions are deliberate, user-supplied
 choices only: Skrifa for font outline parsing, and a JPEG 2000 decoder the
 user already has for JPX. Don't suggest crates.io codecs/parsers as
 the first option.

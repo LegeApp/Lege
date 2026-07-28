@@ -56,6 +56,30 @@ pub fn hover_bg() -> Rgb {
     active_palette().hover_bg
 }
 
+/// Mouseover shade for interactive surfaces, derived from the surface's own
+/// base color: light surfaces darken slightly, dark surfaces lighten by the
+/// same amount, so the effect reads identically in light and dark themes.
+/// General rule — use this for any hand-rolled hover effect instead of a
+/// fixed darken/lighten.
+pub fn hover_shade(base: Rgb) -> Rgb {
+    const STEP: u8 = 8;
+    let (r, g, b) = base;
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    if luma < 128.0 {
+        (
+            r.saturating_add(STEP),
+            g.saturating_add(STEP),
+            b.saturating_add(STEP),
+        )
+    } else {
+        (
+            r.saturating_sub(STEP),
+            g.saturating_sub(STEP),
+            b.saturating_sub(STEP),
+        )
+    }
+}
+
 pub fn focus_bg() -> Rgb {
     active_palette().focus_bg
 }

@@ -387,6 +387,12 @@ struct CliOptions {
     djvu_quality: Option<u8>, // --djvu-quality 100
     high_quality: bool,       // --high-quality
 
+    // --- Target sizing (explicit flags; unambiguous alternative to the trailing
+    // positional, which cannot distinguish a small target height from a page
+    // number. The GUI worker always uses these.) ---
+    target_height: Option<u32>, // --target-height 1200
+    target_width: Option<u32>,  // --target-width 800
+
     // --- Output ---
     output_dir: Option<PathBuf>,          // --output <dir>
     epub_sidecar_output: Option<PathBuf>, // internal GUI-only --epub-sidecar-output <file>
@@ -562,6 +568,32 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     bail!("--sauvola-k must be between 0.0 and 1.0, got: {}", k);
                 }
                 opts.sauvola_k = Some(k);
+                i += 2;
+            }
+            "--target-height" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --target-height"))?;
+                let h: u32 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid --target-height '{}'. Must be a pixel height", val))?;
+                if h == 0 {
+                    bail!("--target-height must be greater than 0");
+                }
+                opts.target_height = Some(h);
+                i += 2;
+            }
+            "--target-width" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("Missing value after --target-width"))?;
+                let w: u32 = val
+                    .parse()
+                    .map_err(|_| anyhow!("Invalid --target-width '{}'. Must be a pixel width", val))?;
+                if w == 0 {
+                    bail!("--target-width must be greater than 0");
+                }
+                opts.target_width = Some(w);
                 i += 2;
             }
             "--djvu-quality" => {
@@ -2077,11 +2109,21 @@ fn handle_simple_processing(
 
     // ----- Target sizing -----
 
-    let target_selection = target_spec
-        .as_deref()
-        .map(parse_target_argument)
-        .transpose()?
-        .flatten();
+    // Explicit flags win over the trailing positional: a bare number below 500
+    // is interpreted as a page, so the GUI worker always passes the target via
+    // --target-height/--target-width to avoid that ambiguity entirely.
+    let target_selection = if let Some(height) = cli_opts.target_height {
+        Some(TargetSelection {
+            width: cli_opts.target_width,
+            height,
+        })
+    } else {
+        target_spec
+            .as_deref()
+            .map(parse_target_argument)
+            .transpose()?
+            .flatten()
+    };
 
     let mut target_description = format!(
         "{}px height (proportional width)",

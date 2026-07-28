@@ -80,7 +80,7 @@ pub use pnginference::{
 
 // Re-export common image-encoding functionality.
 pub use color::DEFAULT_K_FACTOR;
-pub use encoding::toojpeg::{EncodeOptions, ImageFormat, encode_jpeg};
+pub use encoding::jpeg::{EncodeOptions, ImageFormat, encode_jpeg};
 
 // Re-export key types from pipeline submodules for convenience
 pub use pipeline::{

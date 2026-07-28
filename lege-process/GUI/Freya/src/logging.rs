@@ -21,7 +21,14 @@ pub fn reconcile_started_entries() -> Result<Vec<LogEntry>> {
 }
 
 pub fn clear_log_entries() -> Result<()> {
+    shared_log::clear_run_logs();
     shared_log::save_log_entries(&[])
+}
+
+/// Full per-run worker log file for a history entry, if one was written.
+pub fn run_log_path(entry: &LogEntry) -> Option<PathBuf> {
+    let path = shared_log::run_log_path_for_output(&entry.output_path);
+    path.is_file().then_some(path)
 }
 
 pub fn add_failed_log_entry(

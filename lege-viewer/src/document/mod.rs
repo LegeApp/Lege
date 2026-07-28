@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod conductor;
+pub mod empty;
 pub mod engine;
 pub mod features;
 pub mod layout;
@@ -13,6 +14,7 @@ pub mod viewport;
 
 pub use cache::{CacheCategory, MemoryArbiter, MemoryLease, TileCache, TileFrameSnapshot};
 pub use conductor::{ConductorCommand, ConductorHandle, WarmHint, WarmReason};
+pub use empty::EmptyEngine;
 pub use engine::{
     CancellationFlag, CompiledArtifact, CompiledArtifacts, DocumentCompileWorker,
     DocumentDescriptor, DocumentEngine, DocumentEngineError, DocumentRasterWorker, PageGeometry,
