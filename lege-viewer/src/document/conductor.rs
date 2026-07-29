@@ -174,6 +174,20 @@ enum WorkKey {
     Raster(TileKey),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkClass {
+    InteractiveVisible,
+    VisibleFallback,
+    Predictive,
+    Background,
+}
+
+#[derive(Debug)]
+struct InFlightWork {
+    cancellation: CancellationFlag,
+    class: WorkClass,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct CompileNeeds {
     interactive_generation: Option<u64>,
@@ -227,6 +241,7 @@ enum RasterJob {
         demand: TileDemand,
         bucket: super::ZoomBucket,
         pass: RasterPass,
+        class: WorkClass,
         generation: u64,
         cancellation: CancellationFlag,
     },
@@ -235,6 +250,7 @@ enum RasterJob {
         artifacts: Arc<CompiledArtifacts>,
         demand: TileDemand,
         bucket: super::ZoomBucket,
+        class: WorkClass,
         cancellation: CancellationFlag,
     },
 }
@@ -312,7 +328,7 @@ struct Conductor {
     compile_states: HashMap<PageIndex, CompileState>,
     published_pages: HashSet<PageIndex>,
     queued: HashSet<WorkKey>,
-    in_flight: HashMap<WorkKey, CancellationFlag>,
+    in_flight: HashMap<WorkKey, InFlightWork>,
     quarantined_pages: HashSet<PageIndex>,
     indexed_pages: HashSet<PageIndex>,
     index_cursor: u32,
@@ -432,6 +448,7 @@ impl Conductor {
 
     fn replan(&mut self) {
         let intent = self.intent.load_full();
+        let latency_critical = latency_critical_navigation(intent.navigation_mode);
         let now = Instant::now();
         self.warm_hints.retain(|_, hint| hint.expires_at > now);
         self.cancel_irrelevant(&intent);
@@ -450,25 +467,36 @@ impl Conductor {
             .iter()
             .map(|demand| demand.page)
             .collect::<HashSet<_>>();
+        if latency_critical {
+            for page in &visible_pages {
+                if let Some(state) = self.compile_states.get_mut(page) {
+                    state.needs.interactive_generation = Some(intent.generation);
+                    state.needs.text_index = false;
+                    state.needs.preview = false;
+                }
+            }
+        }
         for (order, page) in intent.compile_pages.iter().copied().enumerate() {
+            let visible = visible_pages.contains(&page);
+            if latency_critical && !visible {
+                continue;
+            }
             let priority = 1_250 - order.min(500) as i32;
             self.request_compile(
                 page,
                 CompileNeeds {
-                    interactive_generation: visible_pages
-                        .contains(&page)
-                        .then_some(intent.generation),
-                    text_index: true,
-                    preview: true,
+                    interactive_generation: visible.then_some(intent.generation),
+                    text_index: !latency_critical,
+                    preview: !latency_critical,
                 },
-                priority,
+                if visible { 1_400 } else { priority },
             );
         }
 
-        if intent.navigation_mode != NavigationMode::Skimming {
-            for demand in intent.visible_tiles.iter().copied() {
-                self.schedule_visible_tile(&intent, demand);
-            }
+        for demand in intent.visible_tiles.iter().copied() {
+            self.schedule_visible_tile(&intent, demand, latency_critical);
+        }
+        if !latency_critical {
             for demand in intent.overscan_tiles.iter().copied() {
                 self.schedule_structural_tile(&intent, demand, 850);
             }
@@ -476,40 +504,42 @@ impl Conductor {
                 self.schedule_raster(&intent, demand, RasterPass::Final, 900);
             }
         }
-        for (order, page) in intent.preview_pages.iter().copied().enumerate() {
-            self.request_compile(
-                page,
-                CompileNeeds {
-                    preview: true,
-                    text_index: true,
-                    ..CompileNeeds::default()
-                },
-                650 - order.min(25) as i32,
-            );
-        }
-        for (order, page) in intent.thumbnail_pages.iter().copied().enumerate() {
-            self.request_compile(
-                page,
-                CompileNeeds {
-                    preview: true,
-                    text_index: true,
-                    ..CompileNeeds::default()
-                },
-                975 - order.min(25) as i32,
-            );
-        }
-        let mut warm_hints = self.warm_hints.values().cloned().collect::<Vec<_>>();
-        warm_hints.sort_by_key(|hint| std::cmp::Reverse(warm_priority(hint)));
-        for hint in warm_hints {
-            self.request_compile(
-                hint.page,
-                CompileNeeds {
-                    text_index: true,
-                    preview: true,
-                    ..CompileNeeds::default()
-                },
-                warm_priority(&hint),
-            );
+        if !latency_critical {
+            for (order, page) in intent.preview_pages.iter().copied().enumerate() {
+                self.request_compile(
+                    page,
+                    CompileNeeds {
+                        preview: true,
+                        text_index: true,
+                        ..CompileNeeds::default()
+                    },
+                    650 - order.min(25) as i32,
+                );
+            }
+            for (order, page) in intent.thumbnail_pages.iter().copied().enumerate() {
+                self.request_compile(
+                    page,
+                    CompileNeeds {
+                        preview: true,
+                        text_index: true,
+                        ..CompileNeeds::default()
+                    },
+                    975 - order.min(25) as i32,
+                );
+            }
+            let mut warm_hints = self.warm_hints.values().cloned().collect::<Vec<_>>();
+            warm_hints.sort_by_key(|hint| std::cmp::Reverse(warm_priority(hint)));
+            for hint in warm_hints {
+                self.request_compile(
+                    hint.page,
+                    CompileNeeds {
+                        text_index: true,
+                        preview: true,
+                        ..CompileNeeds::default()
+                    },
+                    warm_priority(&hint),
+                );
+            }
         }
         self.schedule_text_index(&intent);
         self.dispatch();
@@ -541,7 +571,12 @@ impl Conductor {
             .is_some_and(|hint| hint.expires_at > Instant::now())
     }
 
-    fn schedule_visible_tile(&mut self, intent: &ViewportIntent, demand: TileDemand) {
+    fn schedule_visible_tile(
+        &mut self,
+        intent: &ViewportIntent,
+        demand: TileDemand,
+        exact_only: bool,
+    ) {
         let Some(artifacts) = self
             .compiled
             .get(&demand.page)
@@ -551,20 +586,19 @@ impl Conductor {
                 demand.page,
                 CompileNeeds {
                     interactive_generation: Some(intent.generation),
-                    text_index: true,
-                    preview: true,
+                    text_index: !exact_only,
+                    preview: !exact_only,
                 },
                 1_400,
             );
             return;
         };
-        let text_first = self.engine.supports_text_first(&artifacts);
-        if text_first {
+        // Exact work owns the foreground lane. Text-first is useful only when
+        // interaction is not latency-critical and always ranks below Final.
+        self.schedule_raster(intent, demand, RasterPass::Final, 1_500);
+        if !exact_only && self.engine.supports_text_first(&artifacts) {
             self.schedule_raster(intent, demand, RasterPass::TextFirst, 1_350);
         }
-        // Draft and Final are currently identical renderer work. Scheduling
-        // both only makes the visible page visibly render twice.
-        self.schedule_raster(intent, demand, RasterPass::Final, 1_250);
     }
 
     fn schedule_structural_tile(
@@ -764,6 +798,11 @@ impl Conductor {
                 artifacts,
                 demand,
                 bucket,
+                class: if priority >= 1_000 {
+                    WorkClass::VisibleFallback
+                } else {
+                    WorkClass::Background
+                },
                 cancellation,
             },
         });
@@ -802,12 +841,6 @@ impl Conductor {
         };
         let tile_key = demand.key(self.engine.descriptor().id, bucket, tier);
         let key = WorkKey::Raster(tile_key);
-        if self.tiles.contains_at_or_above(tile_key)
-            || self.queued.contains(&key)
-            || self.in_flight.contains_key(&key)
-        {
-            return;
-        }
         let exposure_bias = match intent.direction {
             ScrollDirection::Down if pass != RasterPass::Thumbnail => demand.coord.y,
             ScrollDirection::Up if pass != RasterPass::Thumbnail => -demand.coord.y,
@@ -818,10 +851,35 @@ impl Conductor {
         } else {
             demand.distance_from_viewport.min(1000.0) as i32
         };
+        let priority = base_priority + exposure_bias - distance_penalty;
+        if self.tiles.contains_at_or_above(tile_key) || self.in_flight.contains_key(&key) {
+            return;
+        }
+        if self.queued.contains(&key) {
+            let current_priority = self
+                .raster_pending
+                .iter()
+                .filter(|job| raster_job_identity(&job.value).0 == key)
+                .map(|job| job.priority)
+                .max();
+            if current_priority.is_some_and(|current| current >= priority) {
+                return;
+            }
+            self.raster_pending
+                .retain(|job| raster_job_identity(&job.value).0 != key);
+            self.queued.remove(&key);
+        }
         let cancellation = CancellationFlag::default();
+        let class = if demand.visible && pass == RasterPass::Final {
+            WorkClass::InteractiveVisible
+        } else if demand.visible {
+            WorkClass::VisibleFallback
+        } else {
+            WorkClass::Predictive
+        };
         self.queued.insert(key);
         self.raster_pending.push(Prioritized {
-            priority: base_priority + exposure_bias - distance_penalty,
+            priority,
             sequence: self.next_sequence(),
             value: RasterJob::Tile {
                 key,
@@ -829,6 +887,7 @@ impl Conductor {
                 demand,
                 bucket,
                 pass,
+                class,
                 generation: intent.generation,
                 cancellation,
             },
@@ -848,6 +907,11 @@ impl Conductor {
                 self.compile_states.remove(&page);
                 continue;
             };
+            let class = if state.needs.interactive_generation.is_some() {
+                WorkClass::InteractiveVisible
+            } else {
+                WorkClass::Background
+            };
             let cancellation = state.cancellation.clone();
             let job = CompileJob {
                 page,
@@ -859,7 +923,13 @@ impl Conductor {
                     if let Some(state) = self.compile_states.get_mut(&page) {
                         state.phase = CompilePhase::InFlight;
                     }
-                    self.in_flight.insert(WorkKey::Compile(page), cancellation);
+                    self.in_flight.insert(
+                        WorkKey::Compile(page),
+                        InFlightWork {
+                            cancellation,
+                            class,
+                        },
+                    );
                 }
                 Err(TrySendError::Full(_)) => {
                     self.compile_pending.push(Prioritized {
@@ -873,11 +943,17 @@ impl Conductor {
             }
         }
         while let Some(job) = self.raster_pending.pop() {
-            let (key, cancellation) = raster_job_identity(&job.value);
+            let (key, cancellation, class) = raster_job_identity(&job.value);
             match self.raster_tx.try_send(job.value) {
                 Ok(()) => {
                     self.queued.remove(&key);
-                    self.in_flight.insert(key, cancellation);
+                    self.in_flight.insert(
+                        key,
+                        InFlightWork {
+                            cancellation,
+                            class,
+                        },
+                    );
                 }
                 Err(TrySendError::Full(value)) => {
                     self.raster_pending.push(Prioritized {
@@ -897,13 +973,24 @@ impl Conductor {
         match result {
             WorkerResult::Compiled { page, result } => {
                 self.in_flight.remove(&WorkKey::Compile(page));
-                let needs = self
+                let mut needs = self
                     .compile_states
                     .remove(&page)
                     .map_or_else(CompileNeeds::default, |state| state.needs);
                 match result {
                     Ok(artifacts) => {
                         let current = self.intent.load_full();
+                        if latency_critical_navigation(current.navigation_mode) {
+                            needs.text_index = false;
+                            needs.preview = false;
+                            if !current
+                                .visible_tiles
+                                .iter()
+                                .any(|demand| demand.page == page)
+                            {
+                                needs.interactive_generation = None;
+                            }
+                        }
                         if current.page_is_relevant(page) || self.page_is_warm(page) {
                             let compiled_lease = self.memory.reserve(
                                 CacheCategory::Compiled,
@@ -1050,37 +1137,65 @@ impl Conductor {
     }
 
     fn cancel_irrelevant(&mut self, intent: &ViewportIntent) {
+        let latency_critical = latency_critical_navigation(intent.navigation_mode);
+        let visible_pages = intent
+            .visible_tiles
+            .iter()
+            .map(|demand| demand.page)
+            .collect::<HashSet<_>>();
         let warm_pages = self
             .warm_hints
             .iter()
             .filter(|(_, hint)| hint.expires_at > Instant::now())
             .map(|(page, _)| *page)
             .collect::<HashSet<_>>();
-        for (key, cancellation) in &self.in_flight {
-            let relevant = match key {
-                WorkKey::Compile(page) => {
-                    intent.page_is_relevant(*page)
-                        || warm_pages.contains(page)
-                        || intent.navigation_mode == NavigationMode::Idle
+        for (key, work) in &self.in_flight {
+            let relevant = if latency_critical {
+                match key {
+                    WorkKey::Compile(page) => visible_pages.contains(page),
+                    WorkKey::Preview(_) => false,
+                    WorkKey::Raster(tile) => {
+                        tile.tier == TileTier::Final
+                            && intent.tile_is_visible(tile.page, tile.coord)
+                            && matches!(
+                                work.class,
+                                WorkClass::InteractiveVisible | WorkClass::Predictive
+                            )
+                    }
                 }
-                WorkKey::Preview(page) => {
-                    intent.page_is_relevant(*page)
-                        || intent.thumbnail_page_is_relevant(*page)
-                        || warm_pages.contains(page)
-                        || intent.navigation_mode == NavigationMode::Idle
-                }
-                WorkKey::Raster(tile) => {
-                    intent.raster_tile_is_relevant(tile.page, tile.bucket, tile.coord, tile.tier)
+            } else {
+                match key {
+                    WorkKey::Compile(page) => {
+                        intent.page_is_relevant(*page)
+                            || warm_pages.contains(page)
+                            || intent.navigation_mode == NavigationMode::Idle
+                    }
+                    WorkKey::Preview(page) => {
+                        intent.page_is_relevant(*page)
+                            || intent.thumbnail_page_is_relevant(*page)
+                            || warm_pages.contains(page)
+                            || intent.navigation_mode == NavigationMode::Idle
+                    }
+                    WorkKey::Raster(tile) => intent.raster_tile_is_relevant(
+                        tile.page,
+                        tile.bucket,
+                        tile.coord,
+                        tile.tier,
+                    ),
                 }
             };
             if !relevant {
-                cancellation.cancel();
+                work.cancellation.cancel();
             }
         }
         self.compile_states.retain(|page, state| {
-            let relevant = intent.page_is_relevant(*page)
-                || warm_pages.contains(page)
-                || intent.navigation_mode == NavigationMode::Idle;
+            let relevant = if latency_critical {
+                visible_pages.contains(page)
+            } else {
+                intent.page_is_relevant(*page)
+                    || warm_pages.contains(page)
+                    || intent.navigation_mode == NavigationMode::Idle
+            };
             if !relevant {
                 state.cancellation.cancel();
             }
@@ -1097,37 +1212,61 @@ impl Conductor {
             RasterJob::Tile {
                 key: WorkKey::Raster(tile),
                 demand,
+                class,
                 ..
-            } => intent.raster_tile_is_relevant(demand.page, tile.bucket, demand.coord, tile.tier),
+            } => {
+                if latency_critical {
+                    tile.tier == TileTier::Final
+                        && intent.tile_is_visible(demand.page, demand.coord)
+                        && *class == WorkClass::InteractiveVisible
+                } else {
+                    intent.raster_tile_is_relevant(
+                        demand.page,
+                        tile.bucket,
+                        demand.coord,
+                        tile.tier,
+                    )
+                }
+            }
             RasterJob::Tile { .. } => false,
             RasterJob::PagePreview { demand, .. } => {
-                intent.page_is_relevant(demand.page)
-                    || intent.thumbnail_page_is_relevant(demand.page)
-                    || warm_pages.contains(&demand.page)
-                    || intent.navigation_mode == NavigationMode::Idle
+                !latency_critical
+                    && (intent.page_is_relevant(demand.page)
+                        || intent.thumbnail_page_is_relevant(demand.page)
+                        || warm_pages.contains(&demand.page)
+                        || intent.navigation_mode == NavigationMode::Idle)
             }
         });
         self.queued.retain(|key| match key {
             WorkKey::Compile(page) => {
-                intent.page_is_relevant(*page)
-                    || warm_pages.contains(page)
-                    || intent.navigation_mode == NavigationMode::Idle
+                if latency_critical {
+                    visible_pages.contains(page)
+                } else {
+                    intent.page_is_relevant(*page)
+                        || warm_pages.contains(page)
+                        || intent.navigation_mode == NavigationMode::Idle
+                }
             }
             WorkKey::Preview(page) => {
-                intent.page_is_relevant(*page)
-                    || intent.thumbnail_page_is_relevant(*page)
-                    || warm_pages.contains(page)
-                    || intent.navigation_mode == NavigationMode::Idle
+                !latency_critical
+                    && (intent.page_is_relevant(*page)
+                        || intent.thumbnail_page_is_relevant(*page)
+                        || warm_pages.contains(page)
+                        || intent.navigation_mode == NavigationMode::Idle)
             }
             WorkKey::Raster(tile) => {
-                intent.raster_tile_is_relevant(tile.page, tile.bucket, tile.coord, tile.tier)
+                if latency_critical {
+                    tile.tier == TileTier::Final && intent.tile_is_visible(tile.page, tile.coord)
+                } else {
+                    intent.raster_tile_is_relevant(tile.page, tile.bucket, tile.coord, tile.tier)
+                }
             }
         });
     }
 
     fn cancel_all(&mut self) {
-        for cancellation in self.in_flight.values() {
-            cancellation.cancel();
+        for work in self.in_flight.values() {
+            work.cancellation.cancel();
         }
         self.in_flight.clear();
         self.queued.clear();
@@ -1213,6 +1352,7 @@ fn spawn_raster_worker(
                         pass,
                         generation,
                         cancellation,
+                        ..
                     } => {
                         let current = intent.load();
                         let tier = match pass {
@@ -1255,6 +1395,7 @@ fn spawn_raster_worker(
                         demand,
                         bucket,
                         cancellation,
+                        ..
                     } => {
                         let result = catch_unwind(AssertUnwindSafe(|| {
                             worker.raster_tile(
@@ -1280,15 +1421,25 @@ fn spawn_raster_worker(
         });
 }
 
-fn raster_job_identity(job: &RasterJob) -> (WorkKey, CancellationFlag) {
+fn raster_job_identity(job: &RasterJob) -> (WorkKey, CancellationFlag, WorkClass) {
     match job {
         RasterJob::Tile {
-            key, cancellation, ..
+            key,
+            cancellation,
+            class,
+            ..
         }
         | RasterJob::PagePreview {
-            key, cancellation, ..
-        } => (*key, cancellation.clone()),
+            key,
+            cancellation,
+            class,
+            ..
+        } => (*key, cancellation.clone(), *class),
     }
+}
+
+fn latency_critical_navigation(mode: NavigationMode) -> bool {
+    matches!(mode, NavigationMode::JumpLikely | NavigationMode::Skimming)
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {

@@ -1146,4 +1146,25 @@ mod tests {
                 .any(|arg| arg == OsStr::new("--crop-free-aspect"))
         );
     }
+
+    #[test]
+    fn target_resolution_is_forwarded_as_an_explicit_worker_flag() {
+        for height in [1200, 4800] {
+            let mut options = ProcessingOptions::new();
+            options.target_height = Some(height);
+
+            let args = gui_options_to_cli_args(
+                &PathBuf::from("input.pdf"),
+                &PathBuf::from("output.pdf"),
+                &options,
+                true,
+            );
+            let expected = height.to_string();
+
+            assert_eq!(
+                cli_arg_after(&args, "--target-height").as_deref(),
+                Some(expected.as_str())
+            );
+        }
+    }
 }

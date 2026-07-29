@@ -1031,7 +1031,7 @@ pub fn app() -> impl IntoElement {
                     k_factor_input,
                     threshold_input,
                 ),
-                ProcessDashboardRow(state, page_range_input, theme),
+                ProcessDashboardRow(state, target_height_input, page_range_input, theme),
                 StatusBar(state),
             ))
             // Transient notifications float above ALL window content (high
@@ -1173,6 +1173,7 @@ fn SettingsDashboard(
 
 fn ProcessDashboardRow(
     state: State<AppState>,
+    target_height_input: State<String>,
     page_range_input: State<String>,
     theme: State<Theme>,
 ) -> Element {
@@ -1221,7 +1222,9 @@ fn ProcessDashboardRow(
             Button::new()
                 .width(Size::percent(45.))
                 .height(Size::px(36.))
-                .on_press(move |_| start_or_cancel_processing(state, page_range_input, theme))
+                .on_press(move |_| {
+                    start_or_cancel_processing(state, target_height_input, page_range_input, theme)
+                })
                 .child(button_text),
         )
         .child(
@@ -1326,6 +1329,32 @@ fn parse_resolution_field(value: &str) -> Option<(u32, Option<u32>)> {
         .ok()
         .filter(|height| *height > 0)
         .map(|height| (height, None))
+}
+
+/// Apply the editor's live resolution value to a worker-options snapshot.
+///
+/// Text inputs use their own reactive state, so `AppState::options` can lag by
+/// one render. The processing boundary calls this directly instead of relying
+/// on the deferred `sync_text_inputs` side effect.
+fn apply_resolution_field(options: &mut ProcessingOptions, value: &str) -> bool {
+    if value.trim().is_empty() {
+        options.target_device = None;
+        options.target_height = None;
+        options.target_width = None;
+        return true;
+    }
+
+    let Some((height, width)) = parse_resolution_field(value) else {
+        return false;
+    };
+    options.target_device = None;
+    options.target_height = Some(height);
+    options.target_width = if options.crop_free_aspect {
+        None
+    } else {
+        width
+    };
+    true
 }
 
 fn resolution_input_from_options(options: &ProcessingOptions) -> String {
@@ -1628,7 +1657,7 @@ fn PagesDeviceCard(
 
     // The resolution field persists itself: it is saved as the resolution
     // preset when a job runs with it and restored on startup. Clicking the
-    // field clears it — no explicit save/load buttons.
+    // field clears its contents so a replacement value can be typed directly.
     let resolution_control = tooltip_wrap_at(
         state,
         TooltipArea::PagesDeviceCard,
@@ -3134,6 +3163,7 @@ fn choose_output_folder(mut state: State<AppState>) {
 
 fn start_or_cancel_processing(
     mut state: State<AppState>,
+    target_height_input: State<String>,
     page_range_input: State<String>,
     theme: State<Theme>,
 ) {
@@ -3150,6 +3180,15 @@ fn start_or_cancel_processing(
 
     let queue = state.read().queue.clone();
     let mut options = state.read().options.clone();
+    let live_resolution = target_height_input.read().trim().to_string();
+    if !apply_resolution_field(&mut options, &live_resolution) {
+        let message =
+            "Invalid target resolution. Use a height such as 1200 or dimensions such as 1200x800."
+                .to_string();
+        state.write().set_status_message(message.clone());
+        schedule_popup(state, PopupKind::Warning, message, 5);
+        return;
+    }
     let live_page_range = page_range_input.read().trim().to_string();
     options.page_range = if live_page_range.is_empty() {
         None
@@ -3158,6 +3197,10 @@ fn start_or_cancel_processing(
     };
     {
         let mut s = state.write();
+        s.target_height_input = live_resolution;
+        s.options.target_device = options.target_device.clone();
+        s.options.target_height = options.target_height;
+        s.options.target_width = options.target_width;
         s.page_range_input = live_page_range.clone();
         s.options.page_range = options.page_range.clone();
     }
@@ -3566,6 +3609,44 @@ fn start_or_cancel_processing(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod resolution_field_tests {
+    use super::*;
+
+    #[test]
+    fn live_resolution_overrides_the_stale_options_snapshot() {
+        let mut options = ProcessingOptions::new();
+        options.target_height = Some(1200);
+
+        assert!(apply_resolution_field(&mut options, "4800"));
+        assert_eq!(options.target_height, Some(4800));
+        assert_eq!(options.target_width, None);
+    }
+
+    #[test]
+    fn live_fixed_dimensions_are_forwarded_unless_crop_is_free_aspect() {
+        let mut fixed = ProcessingOptions::new();
+        assert!(apply_resolution_field(&mut fixed, "4800x3200"));
+        assert_eq!(fixed.target_height, Some(4800));
+        assert_eq!(fixed.target_width, Some(3200));
+
+        let mut cropped = ProcessingOptions::new();
+        cropped.crop_free_aspect = true;
+        assert!(apply_resolution_field(&mut cropped, "4800x3200"));
+        assert_eq!(cropped.target_height, Some(4800));
+        assert_eq!(cropped.target_width, None);
+    }
+
+    #[test]
+    fn invalid_live_resolution_is_rejected_instead_of_using_a_stale_value() {
+        let mut options = ProcessingOptions::new();
+        options.target_height = Some(1200);
+
+        assert!(!apply_resolution_field(&mut options, "not-a-resolution"));
+        assert_eq!(options.target_height, Some(1200));
+    }
 }
 
 #[cfg(test)]

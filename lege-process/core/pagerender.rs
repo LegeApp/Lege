@@ -212,6 +212,10 @@ mod render_engine_tests {
             render_dimensions(612.0, 792.0, 1200, Some(800)).unwrap(),
             (800, 1200)
         );
+        assert_eq!(
+            render_dimensions(612.0, 792.0, 4800, None).unwrap(),
+            (3709, 4800)
+        );
         assert!(render_dimensions(0.0, 792.0, 1200, None).is_err());
         assert!(render_dimensions(612.0, 792.0, 0, None).is_err());
     }

@@ -347,6 +347,37 @@ pub fn merge_overlapping_image_detections(
     }
 }
 
+/// Return true when an image-class box covers a substantial amount of
+/// substantive text. Such boxes are layout false positives: preserving them as
+/// color overlays produces the visible "half a text column in color" seam.
+pub fn image_detection_overlaps_substantive_text(
+    image: &Detection,
+    detections: &[Detection],
+    classifier: &crate::types::LabelClassifier,
+) -> bool {
+    if !classifier.is_image_label(image) {
+        return false;
+    }
+    let image_area = detection_bbox_area(&image.bbox);
+    if image_area <= 0.0 {
+        return true;
+    }
+
+    let overlap_area: f32 = detections
+        .iter()
+        .filter(|detection| classifier.is_substantive_text(detection))
+        .map(|text| {
+            let x1 = image.bbox[0].max(text.bbox[0]);
+            let y1 = image.bbox[1].max(text.bbox[1]);
+            let x2 = image.bbox[2].min(text.bbox[2]);
+            let y2 = image.bbox[3].min(text.bbox[3]);
+            (x2 - x1).max(0.0) * (y2 - y1).max(0.0)
+        })
+        .sum();
+
+    overlap_area.min(image_area) / image_area >= 0.20
+}
+
 // Helper to encode a small image region; used by image overlays in the page pipeline
 /// Build the `(EncodingSettings, format_tag)` pair for a region overlay.
 ///
@@ -1273,11 +1304,25 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::{
-        PdfWriterHandle, WriterMessage, bookmarks_to_outline, drain_ready_values, merge_outline,
-        should_preserve_cover_page, should_treat_as_cover_page,
+        PdfWriterHandle, WriterMessage, bookmarks_to_outline, drain_ready_values,
+        image_detection_overlaps_substantive_text, merge_outline, should_preserve_cover_page,
+        should_treat_as_cover_page,
     };
+    use crate::engine::Detection;
     use crate::pipeline::config::{PageRange, PipelineConfig};
-    use crate::types::CoverFormat;
+    use crate::types::{CoverFormat, LABEL_CLASSIFIER, category_for_class, class_id_for};
+
+    fn detection(class_name: &str, bbox: [f32; 4]) -> Detection {
+        let class_id = class_id_for(class_name).expect("known layout class");
+        Detection {
+            class_id,
+            class_name: Some(class_name.to_string()),
+            confidence: 0.9,
+            bbox,
+            category: category_for_class(class_id),
+            context: None,
+        }
+    }
 
     fn empty_page(index: usize) -> crate::accumulator::Page {
         crate::accumulator::Page {
@@ -1320,6 +1365,28 @@ mod tests {
         );
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].title, "Preface");
+    }
+
+    #[test]
+    fn image_box_covering_text_is_not_kept_as_a_color_overlay() {
+        let image = detection("image", [0.0, 0.0, 100.0, 100.0]);
+        let text = detection("text", [50.0, 0.0, 100.0, 100.0]);
+        assert!(image_detection_overlaps_substantive_text(
+            &image,
+            &[image.clone(), text],
+            &LABEL_CLASSIFIER,
+        ));
+    }
+
+    #[test]
+    fn small_caption_overlap_does_not_discard_a_real_image() {
+        let image = detection("image", [0.0, 0.0, 100.0, 100.0]);
+        let caption = detection("text", [0.0, 95.0, 100.0, 105.0]);
+        assert!(!image_detection_overlaps_substantive_text(
+            &image,
+            &[image.clone(), caption],
+            &LABEL_CLASSIFIER,
+        ));
     }
 
     #[test]

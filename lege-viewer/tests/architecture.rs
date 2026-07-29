@@ -100,7 +100,9 @@ fn pdf_links_reach_viewer_space_with_destination_geometry() {
 fn launch_mode_falls_back_to_the_empty_document_state() {
     assert_eq!(parse_launch_mode::<_, &str>([]).unwrap(), LaunchMode::Empty);
     assert_eq!(
-        parse_launch_config(["--presenter", "software"]).unwrap().mode,
+        parse_launch_config(["--presenter", "software"])
+            .unwrap()
+            .mode,
         LaunchMode::Empty
     );
     assert_eq!(
@@ -720,7 +722,7 @@ fn synthetic_conductor_delivers_compiled_artifacts_and_tiles() {
 }
 
 #[test]
-fn explicit_warm_hint_prepares_a_far_off_preview_during_skimming() {
+fn explicit_warm_hint_is_deferred_until_skimming_settles() {
     use lege_viewer::document::{
         ConductorHandle, MemoryArbiter, NavigationMode, TileCache, UpdateQueue, ViewportPlanner,
         WarmHint, WarmReason,
@@ -759,6 +761,23 @@ fn explicit_warm_hint_prepares_a_far_off_preview_during_skimming() {
         Duration::from_secs(2),
     ));
     let previews = conductor.previews();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !previews.contains(destination),
+        "active skimming must not spend raster workers on predicted previews"
+    );
+    conductor.publish_intent(ViewportPlanner::default().build(
+        2,
+        &layout,
+        Vec2d::ZERO,
+        Vec2d::ZERO,
+        SizeF {
+            width: 800.0,
+            height: 600.0,
+        },
+        1.0,
+        None,
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline && !previews.contains(destination) {
         std::thread::sleep(Duration::from_millis(2));
@@ -814,7 +833,7 @@ fn idle_conductor_builds_the_document_wide_canonical_preview_layer() {
 }
 
 #[test]
-fn skim_intent_builds_a_preview_without_starting_exact_tiles() {
+fn skim_intent_renders_exact_tiles_without_building_a_new_preview() {
     use lege_viewer::document::{
         ConductorHandle, MemoryArbiter, NavigationMode, TileCache, TileTier, UpdateQueue,
         ViewportPlanner,
@@ -865,13 +884,16 @@ fn skim_intent_builds_a_preview_without_starting_exact_tiles() {
     conductor.publish_intent(intent);
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && !previews.contains(destination) {
+    while Instant::now() < deadline && !tiles.contains(exact) {
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert!(previews.contains(destination));
     assert!(
-        !tiles.contains(exact),
-        "thumb dragging should spend work on L0, not transient exact tiles"
+        tiles.contains(exact),
+        "thumb dragging should render the latest exact viewport without waiting for release"
+    );
+    assert!(
+        !previews.contains(destination),
+        "active skimming should use only previews that were already cached"
     );
     drop(conductor);
 }

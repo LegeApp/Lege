@@ -574,9 +574,9 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 let val = args
                     .get(i + 1)
                     .ok_or_else(|| anyhow!("Missing value after --target-height"))?;
-                let h: u32 = val
-                    .parse()
-                    .map_err(|_| anyhow!("Invalid --target-height '{}'. Must be a pixel height", val))?;
+                let h: u32 = val.parse().map_err(|_| {
+                    anyhow!("Invalid --target-height '{}'. Must be a pixel height", val)
+                })?;
                 if h == 0 {
                     bail!("--target-height must be greater than 0");
                 }
@@ -587,9 +587,9 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 let val = args
                     .get(i + 1)
                     .ok_or_else(|| anyhow!("Missing value after --target-width"))?;
-                let w: u32 = val
-                    .parse()
-                    .map_err(|_| anyhow!("Invalid --target-width '{}'. Must be a pixel width", val))?;
+                let w: u32 = val.parse().map_err(|_| {
+                    anyhow!("Invalid --target-width '{}'. Must be a pixel width", val)
+                })?;
                 if w == 0 {
                     bail!("--target-width must be greater than 0");
                 }
@@ -3563,6 +3563,20 @@ mod cli_parser_tests {
         .expect("runtime stats flag should parse");
 
         assert!(opts.debug_runtime_stats);
+        assert_eq!(remaining, vec!["lege".to_string(), "book.pdf".to_string()]);
+    }
+
+    #[test]
+    fn explicit_target_resolution_is_consumed_without_becoming_positional() {
+        let (remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "--target-height".to_string(),
+            "4800".to_string(),
+            "book.pdf".to_string(),
+        ])
+        .expect("target height should parse");
+
+        assert_eq!(opts.target_height, Some(4800));
         assert_eq!(remaining, vec!["lege".to_string(), "book.pdf".to_string()]);
     }
 

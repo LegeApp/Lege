@@ -5,8 +5,9 @@ use crate::pipeline::config::{
     ImageRegionDitherMode, InferenceResult, PipelineConfig, RenderedPageData,
 };
 use crate::pipeline::helper_functions::{
-    build_hocr_from_positioned_words, init_encode_semaphore, merge_overlapping_image_detections,
-    rounded_clamped_bbox, should_preserve_cover_page, spawn_pdf_writer_actor,
+    build_hocr_from_positioned_words, image_detection_overlaps_substantive_text,
+    init_encode_semaphore, merge_overlapping_image_detections, rounded_clamped_bbox,
+    should_preserve_cover_page, spawn_pdf_writer_actor,
 };
 use crate::pipeline::margin_pipeline::{
     CachedDetections, adjust_page_with_margin_analysis, cached_inference_result,
@@ -797,17 +798,29 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let classifier = &crate::types::LABEL_CLASSIFIER;
 
-    // Grayscale/MRC mode: image-labeled regions that are actually line art
-    // (sheet-music systems, diagrams, ruled tables — a common YOLO
-    // misclassification) must NOT be overlaid as original raster crops: the
-    // crop carries the un-cleaned gray paper and covers the cleaned page.
-    // Dropping the detection routes the region through the ink-mask +
-    // cleaned-background path, which renders line art far better. True
-    // continuous-tone regions keep their overlay.
-    if config.is_grayscale_mode() && config.text_format() != "jpeg" {
+    // False image detections over text/line art must not become raster
+    // overlays. Besides covering a cleaned MRC background, they create the
+    // conspicuous "half a text column in color" seam in ordinary bilevel mode.
+    if config.text_format() != "jpeg" {
+        let all_detections = adjusted_detections.clone();
         adjusted_detections.retain(|det| {
             if !classifier.is_image_label(det) {
                 return true;
+            }
+            if image_detection_overlaps_substantive_text(
+                det,
+                &all_detections,
+                classifier,
+            ) {
+                crate::bbox_trace!(
+                    "PAGE {}: dropping image region overlapping substantive text ({:.0},{:.0},{:.0},{:.0})",
+                    page_index,
+                    det.bbox[0],
+                    det.bbox[1],
+                    det.bbox[2],
+                    det.bbox[3]
+                );
+                return false;
             }
             let line_art = crate::clean_gray::region_is_line_art(
                 adjusted_image.as_raw(),
@@ -817,7 +830,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             );
             if line_art {
                 crate::bbox_trace!(
-                    "PAGE {} grayscale: dropping line-art image region ({:.0},{:.0},{:.0},{:.0})",
+                    "PAGE {} bilevel: dropping line-art image region ({:.0},{:.0},{:.0},{:.0})",
                     page_index,
                     det.bbox[0],
                     det.bbox[1],
@@ -2777,6 +2790,18 @@ fn scale_detections_to_output(
     let sx = output_width as f32 / source_width.max(1) as f32;
     let sy = output_height as f32 / source_height.max(1) as f32;
     let mut detections = inference_data.inference_result.detections.clone();
+    if !inference_data.inference_result.detections_are_page_space {
+        let inference = inference_data.rendered.inference_image.as_ref();
+        detections.retain(|detection| {
+            !crate::types::LABEL_CLASSIFIER.is_image_label(detection)
+                || !crate::clean_gray::region_is_line_art(
+                    inference.as_raw(),
+                    inference.width() as usize,
+                    inference.height() as usize,
+                    detection.bbox,
+                )
+        });
+    }
     for detection in &mut detections {
         detection.scale_bbox(sx, sy);
     }
@@ -2786,6 +2811,14 @@ fn scale_detections_to_output(
         output_width,
         output_height,
     );
+    let all_detections = detections.clone();
+    detections.retain(|detection| {
+        !image_detection_overlaps_substantive_text(
+            detection,
+            &all_detections,
+            &crate::types::LABEL_CLASSIFIER,
+        )
+    });
     detections
 }
 

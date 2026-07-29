@@ -133,9 +133,7 @@ fn toolbar_action_at(x: f64) -> Option<ToolbarAction> {
         x if x < DOCUMENT_GROUP_X + 140.0 => Some(ToolbarAction::ToggleTrim),
         x if x < PALETTE_GROUP_X + 62.0 => Some(ToolbarAction::SetColorMode(ColorMode::Original)),
         x if x < PALETTE_GROUP_X + 114.0 => Some(ToolbarAction::SetColorMode(ColorMode::Night)),
-        x if x < PALETTE_GROUP_X + 186.0 => {
-            Some(ToolbarAction::SetColorMode(ColorMode::WarmPaper))
-        }
+        x if x < PALETTE_GROUP_X + 186.0 => Some(ToolbarAction::SetColorMode(ColorMode::WarmPaper)),
         _ => None,
     }
 }
@@ -200,6 +198,7 @@ pub struct ViewerApp {
     _gpu_memory_lease: Option<MemoryLease>,
     gpu_memory_bytes: u64,
     gpu_diagnostics: bool,
+    seek_diagnostics: bool,
     last_gpu_diagnostics: Instant,
 
     theme: Theme,
@@ -385,6 +384,10 @@ impl ViewerApp {
             gpu_memory_bytes: 0,
             gpu_diagnostics: matches!(
                 std::env::var("LEGE_VIEWER_GPU_DIAGNOSTICS").as_deref(),
+                Ok("1")
+            ),
+            seek_diagnostics: matches!(
+                std::env::var("LEGE_VIEWER_SEEK_DIAGNOSTICS").as_deref(),
                 Ok("1")
             ),
             last_gpu_diagnostics: Instant::now() - Duration::from_secs(1),
@@ -2178,7 +2181,13 @@ impl ViewerApp {
                         TileTier::Final,
                     ))
                 });
-            self.seek_trace.mark_presented(exact);
+            let exact_just_presented = self.seek_trace.mark_presented(exact);
+            if self.seek_diagnostics
+                && exact_just_presented
+                && let Some(report) = self.seek_trace.report_line(&self.metrics)
+            {
+                eprintln!("{report}");
+            }
         }
         self.sync_presenter_stats();
         self.presented_scroll = Vec2d {
@@ -3490,7 +3499,10 @@ mod tests {
             Some(ToolbarAction::OpenDocument)
         );
         // The button must not swallow the zoom controls beside it.
-        assert_eq!(toolbar_action_at(ZOOM_GROUP_X), Some(ToolbarAction::ZoomOut));
+        assert_eq!(
+            toolbar_action_at(ZOOM_GROUP_X),
+            Some(ToolbarAction::ZoomOut)
+        );
     }
 
     fn compose_synthetic_frame() -> Vec<u32> {

@@ -13,8 +13,8 @@ use crate::engine::Detection;
 use crate::margin::DocumentMarginAnalysis;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, merge_overlapping_image_detections, rounded_clamped_bbox,
-    should_preserve_cover_page,
+    build_hocr_from_pdf_text, image_detection_overlaps_substantive_text,
+    merge_overlapping_image_detections, rounded_clamped_bbox, should_preserve_cover_page,
 };
 use crate::pipeline::margin_pipeline::{
     CachedDetections, adjust_page_with_margin_analysis, cached_inference_result,
@@ -979,13 +979,16 @@ fn process_djvu_cpu_intensive_work(
         );
     }
 
-    // Grayscale/MRC mode: drop image-labeled regions that are actually line
-    // art so they route through the JB2 mask + cleaned IW44 background instead
-    // of being pasted as un-cleaned gray crops (mirrors the PDF pipeline).
-    if config.is_grayscale_mode() && config.text_format() != "jpeg" {
+    // Drop false image boxes over text/line art so they do not create a color
+    // seam through a column (mirrors the PDF pipeline).
+    if config.text_format() != "jpeg" {
+        let all_detections = adjusted_detections.clone();
         adjusted_detections.retain(|det| {
-            !classifier.is_image_label(det)
-                || !crate::clean_gray::region_is_line_art(
+            if !classifier.is_image_label(det) {
+                return true;
+            }
+            !image_detection_overlaps_substantive_text(det, &all_detections, classifier)
+                && !crate::clean_gray::region_is_line_art(
                     adjusted_image.as_raw(),
                     width,
                     height,

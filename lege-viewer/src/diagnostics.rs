@@ -27,11 +27,16 @@ impl SeekTrace {
         self.first_pixels_ready.get_or_insert_with(Instant::now);
     }
 
-    pub fn mark_presented(&mut self, exact: bool) {
-        self.first_pixels_presented.get_or_insert_with(Instant::now);
-        if exact {
-            self.exact_viewport_presented
-                .get_or_insert_with(Instant::now);
+    /// Returns `true` exactly once, when this generation first reaches an
+    /// exact viewport. Callers use that edge to emit one seek report.
+    pub fn mark_presented(&mut self, exact: bool) -> bool {
+        let now = Instant::now();
+        self.first_pixels_presented.get_or_insert(now);
+        if exact && self.exact_viewport_presented.is_none() {
+            self.exact_viewport_presented = Some(now);
+            true
+        } else {
+            false
         }
     }
 
@@ -48,6 +53,34 @@ impl SeekTrace {
                 .duration_since(self.input_received?),
         )
     }
+
+    pub fn report_line(&self, frame: &FrameMetrics) -> Option<String> {
+        let input = self.input_received?;
+        let intent = self.intent_published?;
+        let pixels = self.first_pixels_ready?;
+        let first_present = self.first_pixels_presented?;
+        let exact_present = self.exact_viewport_presented?;
+        Some(format!(
+            "viewer-seek generation={} input_intent_us={} intent_pixels_us={} \
+             pixels_present_us={} first_exact_us={} total_exact_us={} \
+             compose_us={} present_us={} queues={}/{}/{}",
+            self.generation,
+            micros(intent.saturating_duration_since(input)),
+            micros(pixels.saturating_duration_since(intent)),
+            micros(first_present.saturating_duration_since(pixels)),
+            micros(exact_present.saturating_duration_since(first_present)),
+            micros(exact_present.saturating_duration_since(input)),
+            frame.compose_time.as_micros(),
+            frame.present_time.as_micros(),
+            frame.compile_pending,
+            frame.raster_pending,
+            frame.in_flight,
+        ))
+    }
+}
+
+fn micros(duration: Duration) -> u128 {
+    duration.as_micros()
 }
 
 #[derive(Debug, Clone)]
@@ -134,12 +167,18 @@ mod tests {
         trace.begin(7, start);
         trace.mark_intent_published();
         trace.mark_pixels_ready();
-        trace.mark_presented(false);
+        assert!(!trace.mark_presented(false));
         let first = trace.first_pixels_presented;
-        trace.mark_presented(true);
+        assert!(trace.mark_presented(true));
+        assert!(!trace.mark_presented(true));
         assert_eq!(trace.generation, 7);
         assert_eq!(trace.first_pixels_presented, first);
         assert!(trace.input_to_first_present().is_some());
         assert!(trace.input_to_exact_present().is_some());
+        assert!(
+            trace
+                .report_line(&FrameMetrics::default())
+                .is_some_and(|line| line.contains("generation=7"))
+        );
     }
 }
