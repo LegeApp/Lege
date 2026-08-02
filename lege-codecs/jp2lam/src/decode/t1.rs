@@ -218,17 +218,30 @@ fn block_params(
         .steps
         .get(block.band_index % comp_quant.steps.len())
         .ok_or_else(|| invalid("missing quantization step for decoded subband"))?;
+    let precision = header
+        .siz
+        .components
+        .get(block.component)
+        .ok_or_else(|| invalid("decoded code-block references invalid component"))?
+        .precision;
+    if matches!(
+        header.transform_for(block.component),
+        WaveletTransform::Reversible53
+    ) {
+        let maximum_exponent =
+            crate::dwt::norms::reversible_exponent(u32::from(precision), block.band);
+        if quant.exponent > maximum_exponent {
+            return Err(invalid(format!(
+                "reversible subband exponent {} exceeds the {}-bit component bound {maximum_exponent}",
+                quant.exponent, precision
+            )));
+        }
+    }
     let max_bitplanes = comp_quant.guard_bits.saturating_sub(1) + quant.exponent;
     let step = if matches!(
         header.transform_for(block.component),
         WaveletTransform::Irreversible97
     ) {
-        let precision = header
-            .siz
-            .components
-            .get(block.component)
-            .ok_or_else(|| invalid("decoded code-block references invalid component"))?
-            .precision;
         Some(super::reconstruct::quant_step(
             u32::from(precision),
             block.band,
@@ -565,6 +578,16 @@ fn decode_codeblock_segments_into(
         .ok_or_else(|| invalid("zero-bitplane count exceeds subband bit-plane count"))?;
     if magnitude_bitplanes == 0 {
         return Err(invalid("non-empty code-block has no magnitude bit-planes"));
+    }
+    // Coefficients are represented as signed i32 magnitudes throughout this
+    // decoder. A 32nd magnitude bit would make `1i32 << bitplane` negative,
+    // and any still-higher bit would overflow the shift entirely. Reject such
+    // signaling before entering the coding passes instead of panicking or
+    // silently wrapping on malformed QCD/QCC metadata.
+    if magnitude_bitplanes > 31 {
+        return Err(invalid(format!(
+            "code-block magnitude bit-plane count {magnitude_bitplanes} exceeds the i32 decoder limit of 31"
+        )));
     }
     let max_passes = 1u32 + 3u32 * u32::from(magnitude_bitplanes.saturating_sub(1));
     if pass_count > max_passes {
@@ -1217,5 +1240,14 @@ mod tests {
             .to_string();
 
         assert!(err.contains("exceeds maximum"), "{err}");
+    }
+
+    #[test]
+    fn magnitude_bitplanes_that_do_not_fit_i32_fail_fast() {
+        let err = decode_codeblock(1, 1, BandOrientation::Ll, 32, 0, 1, false, &[0])
+            .expect_err("32 magnitude bits cannot be represented by i32")
+            .to_string();
+
+        assert!(err.contains("i32 decoder limit"), "{err}");
     }
 }

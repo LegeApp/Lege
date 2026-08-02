@@ -6,7 +6,7 @@
 //! never corrupts another's.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use pdf_document::{DocumentLimits, DocumentSnapshot, PageIndex, ParseContext};
@@ -30,6 +30,18 @@ struct MockBackend {
     concurrent: AtomicUsize,
     peak: AtomicUsize,
     sleep: Duration,
+    /// Width of the deliberately slow page used by the reorder-window test.
+    slow_width: Option<u32>,
+    /// Optional duration for the deliberately slow page. Keeping this
+    /// separate from `sleep` lets the remaining pages complete while it is
+    /// still in flight.
+    slow_sleep: Option<Duration>,
+    slow_started: AtomicBool,
+    slow_finished: AtomicBool,
+    /// Fast pages that reached the backend while the slow first page was
+    /// outstanding. This measures completed-surface admission, not worker
+    /// capacity.
+    fast_started_before_slow_finished: AtomicUsize,
     /// Panic when the request output width equals this (isolation test).
     panic_width: Option<u32>,
     /// Requests that arrived carrying a cancellation token.
@@ -70,8 +82,21 @@ impl RenderBackend for MockBackend {
         let c = self.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(c, Ordering::SeqCst);
         let _guard = ConcGuard(&self.concurrent); // decrements even on panic
-        std::thread::sleep(self.sleep);
         let w = request.output_size.width;
+        if self.slow_width == Some(w) {
+            self.slow_started.store(true, Ordering::SeqCst);
+            std::thread::sleep(self.slow_sleep.unwrap_or(self.sleep));
+            self.slow_finished.store(true, Ordering::SeqCst);
+        } else {
+            while self.slow_width.is_some() && !self.slow_started.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            if self.slow_width.is_some() && !self.slow_finished.load(Ordering::SeqCst) {
+                self.fast_started_before_slow_finished
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+            std::thread::sleep(self.sleep);
+        }
         if self.panic_width == Some(w) {
             panic!("mock backend panic on width {w}");
         }
@@ -85,6 +110,57 @@ impl RenderBackend for MockBackend {
         let _ = tx.send(Ok(RenderedPage::Host(host)));
         Ok(ticket)
     }
+}
+
+#[test]
+fn slow_first_page_bounds_reorder_admission_without_deadlock() {
+    let snap = snapshot(9);
+    let backend = Arc::new(MockBackend {
+        // Page zero's width is 4. The other pages finish promptly while it is
+        // held, reproducing the pathological out-of-order completion case.
+        sleep: Duration::ZERO,
+        slow_width: Some(4),
+        slow_sleep: Some(Duration::from_millis(80)),
+        ..Default::default()
+    });
+    let make = make_requester(
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        None,
+    );
+    let scheduler = RenderScheduler::new(
+        backend.clone(),
+        SchedulerOptions {
+            // A single compiler preserves page-zero-first admission to the
+            // backend. The render workers still complete later pages while
+            // that first page is intentionally held.
+            compile_workers: 1,
+            render_workers: 3,
+            compiled_queue_depth: 3,
+            reorder_window_depth: 3,
+            memory_limit_bytes: 1 << 30,
+        },
+    );
+
+    let out = collect(&scheduler, &snap, 9, &make, None);
+
+    // The slow head does not deadlock the feeder: it eventually unlocks the
+    // next window and every page is emitted in order.
+    assert_eq!(out.len(), 9);
+    assert_eq!(
+        out.iter().map(|(page, _)| *page).collect::<Vec<_>>(),
+        (0..9).collect::<Vec<_>>()
+    );
+    // Only the two slots after the missing head were admitted before it
+    // completed. The old unbounded result path admitted all eight fast pages.
+    let admitted = backend
+        .fast_started_before_slow_finished
+        .load(Ordering::SeqCst);
+    assert!(admitted > 0, "fast pages exercised out-of-order completion");
+    assert!(
+        admitted <= 2,
+        "window=3 retains at most two later completed surfaces, got {admitted}"
+    );
 }
 
 fn snapshot(pages: u32) -> DocumentSnapshot {
@@ -167,6 +243,7 @@ fn six_pages_compile_and_render_concurrently_in_order() {
         compile_workers: 6,
         render_workers: 6,
         compiled_queue_depth: 6,
+        reorder_window_depth: 6,
         memory_limit_bytes: 1 << 30,
     };
     let scheduler = RenderScheduler::new(backend.clone(), opts);
@@ -208,6 +285,7 @@ fn output_is_deterministic_across_worker_counts() {
             compile_workers: cw,
             render_workers: rw,
             compiled_queue_depth: 4,
+            reorder_window_depth: 4,
             memory_limit_bytes: 1 << 30,
         };
         collect(&RenderScheduler::new(backend, opts), &snap, 8, &make, None)
@@ -235,6 +313,7 @@ fn one_page_failure_does_not_affect_others() {
         compile_workers: 4,
         render_workers: 4,
         compiled_queue_depth: 4,
+        reorder_window_depth: 4,
         memory_limit_bytes: 1 << 30,
     };
     let out = collect(&RenderScheduler::new(backend, opts), &snap, 5, &make, None);
@@ -264,6 +343,7 @@ fn backend_panic_on_one_page_is_isolated() {
         compile_workers: 4,
         render_workers: 4,
         compiled_queue_depth: 4,
+        reorder_window_depth: 4,
         memory_limit_bytes: 1 << 30,
     };
     let out = collect(&RenderScheduler::new(backend, opts), &snap, 4, &make, None);
@@ -303,6 +383,7 @@ fn pipeline_token_is_injected_into_backend_requests() {
         compile_workers: 2,
         render_workers: 2,
         compiled_queue_depth: 2,
+        reorder_window_depth: 2,
         memory_limit_bytes: 1 << 30,
     };
     let token = CancellationToken::new(); // live — never cancelled
@@ -342,6 +423,7 @@ fn cancellation_stops_the_pipeline() {
         compile_workers: 2,
         render_workers: 2,
         compiled_queue_depth: 2,
+        reorder_window_depth: 2,
         memory_limit_bytes: 1 << 30,
     };
     let token = CancellationToken::new();

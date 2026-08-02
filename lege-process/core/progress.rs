@@ -1288,6 +1288,7 @@ struct ProcessingJob {
     output_path: PathBuf,
     config: crate::PipelineConfig,
     tracker: ProgressTracker,
+    shutdown_rx: tokio::sync::broadcast::Receiver<ShutdownSignal>,
 }
 
 impl ProcessingJob {
@@ -1306,19 +1307,13 @@ impl ProcessingJob {
             tracker.set_update_throttle(100);
         }
 
-        // Create shutdown signal channel for cancellation support
-        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
-
-        // Register the cancel sender so GUI can signal cancellation
-        register_cancel_sender(task_id, shutdown_tx);
-
         // Process the file with cancellation support
         match process_file_with_tracker(
             self.input_path,
             self.output_path,
             self.config,
             tracker.clone(),
-            shutdown_rx,
+            self.shutdown_rx,
         )
         .await
         {
@@ -1366,6 +1361,7 @@ impl ProcessingQueue {
         let mut guard = self.queue.lock().expect("processing queue mutex poisoned");
         if let Some(pos) = guard.iter().position(|j| j.tracker.task_id() == task_id) {
             let job = guard.remove(pos).expect("queue removal failed");
+            clear_cancel_sender(task_id);
             job.tracker
                 .finish_with_error(anyhow::anyhow!("Operation aborted"));
             true
@@ -1380,6 +1376,7 @@ impl ProcessingQueue {
         let count = jobs.len();
         drop(guard);
         for job in jobs {
+            clear_cancel_sender(job.tracker.task_id());
             job.tracker
                 .finish_with_error(anyhow::anyhow!("Operation aborted"));
         }
@@ -1408,8 +1405,8 @@ static CANCEL_REGISTRY: std::sync::OnceLock<
     Mutex<HashMap<u64, broadcast::Sender<ShutdownSignal>>>,
 > = std::sync::OnceLock::new();
 static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
-static SIGTERM_PENDING: AtomicBool = AtomicBool::new(false);
-static SIGTERM_HANDLER_INSTALLED: std::sync::Once = std::sync::Once::new();
+static TERMINATION_SIGNAL_PENDING: AtomicBool = AtomicBool::new(false);
+static TERMINATION_HANDLER_INSTALLED: std::sync::Once = std::sync::Once::new();
 
 pub fn get_progress_manager() -> &'static ProgressManager {
     PROGRESS_MANAGER.get_or_init(ProgressManager::new)
@@ -1472,6 +1469,13 @@ pub fn termination_requested() -> bool {
     TERMINATION_REQUESTED.load(AtomicOrdering::Acquire)
 }
 
+pub fn cancellation_checkpoint(stage: &str) -> anyhow::Result<()> {
+    if termination_requested() {
+        anyhow::bail!("Processing cancelled {stage}");
+    }
+    Ok(())
+}
+
 pub fn request_global_shutdown(message: &str) -> usize {
     TERMINATION_REQUESTED.store(true, AtomicOrdering::Release);
     let senders = {
@@ -1490,36 +1494,85 @@ pub fn request_global_shutdown(message: &str) -> usize {
 }
 
 #[cfg(unix)]
-extern "C" fn mark_sigterm(_signal: libc::c_int) {
+extern "C" fn mark_termination_signal(_signal: libc::c_int) {
     TERMINATION_REQUESTED.store(true, AtomicOrdering::Release);
-    SIGTERM_PENDING.store(true, AtomicOrdering::Release);
+    TERMINATION_SIGNAL_PENDING.store(true, AtomicOrdering::Release);
 }
 
-/// Install the CLI SIGTERM bridge. The signal handler only flips an atomic;
-/// a normal Rust thread performs channel sends and cleanup requests.
-pub fn install_sigterm_handler() {
+#[cfg(windows)]
+unsafe extern "system" fn mark_console_termination(control_type: u32) -> windows_core::BOOL {
+    use windows::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+
+    if matches!(
+        control_type,
+        CTRL_C_EVENT
+            | CTRL_BREAK_EVENT
+            | CTRL_CLOSE_EVENT
+            | CTRL_LOGOFF_EVENT
+            | CTRL_SHUTDOWN_EVENT
+    ) {
+        TERMINATION_REQUESTED.store(true, AtomicOrdering::Release);
+        TERMINATION_SIGNAL_PENDING.store(true, AtomicOrdering::Release);
+        true.into()
+    } else {
+        false.into()
+    }
+}
+
+/// Install the CLI termination bridge. The platform callback only flips
+/// atomics; a normal Rust thread performs channel sends and cleanup requests.
+pub fn install_termination_handler() {
     #[cfg(unix)]
-    SIGTERM_HANDLER_INSTALLED.call_once(|| {
-        // SAFETY: `mark_sigterm` is an async-signal-safe handler that only
+    TERMINATION_HANDLER_INSTALLED.call_once(|| {
+        // SAFETY: `mark_termination_signal` is an async-signal-safe handler that only
         // stores to a lock-free atomic.
         unsafe {
-            libc::signal(
-                libc::SIGTERM,
-                mark_sigterm as *const () as libc::sighandler_t,
-            );
+            let handler = mark_termination_signal as *const () as libc::sighandler_t;
+            libc::signal(libc::SIGINT, handler);
+            libc::signal(libc::SIGTERM, handler);
         }
         std::thread::Builder::new()
-            .name("lege-sigterm".to_string())
+            .name("lege-signal".to_string())
             .spawn(|| {
                 loop {
-                    if SIGTERM_PENDING.swap(false, AtomicOrdering::AcqRel) {
-                        let _ = request_global_shutdown("Processing cancelled by SIGTERM");
+                    if TERMINATION_SIGNAL_PENDING.swap(false, AtomicOrdering::AcqRel) {
+                        let _ = request_global_shutdown("Processing cancelled by shutdown signal");
                     }
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
             })
-            .expect("failed to spawn SIGTERM bridge");
+            .expect("failed to spawn termination bridge");
     });
+
+    #[cfg(windows)]
+    TERMINATION_HANDLER_INSTALLED.call_once(|| {
+        // SAFETY: the callback only performs lock-free atomic stores and stays
+        // registered for the lifetime of the process.
+        unsafe {
+            let _ = windows::Win32::System::Console::SetConsoleCtrlHandler(
+                Some(mark_console_termination),
+                true,
+            );
+        }
+        std::thread::Builder::new()
+            .name("lege-signal".to_string())
+            .spawn(|| {
+                loop {
+                    if TERMINATION_SIGNAL_PENDING.swap(false, AtomicOrdering::AcqRel) {
+                        let _ = request_global_shutdown("Processing cancelled by shutdown signal");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            })
+            .expect("failed to spawn termination bridge");
+    });
+}
+
+/// Compatibility name retained for callers outside the workspace.
+pub fn install_sigterm_handler() {
+    install_termination_handler();
 }
 
 pub fn spawn_file_processing_task(
@@ -1530,12 +1583,18 @@ pub fn spawn_file_processing_task(
     let manager = get_progress_manager();
     let tracker = manager.create_tracker();
     let task_id = tracker.task_id();
+    // Register before enqueueing. Otherwise cancellation can land after the
+    // queue worker pops the job but before `ProcessingJob::run` registers its
+    // sender, losing the request entirely.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    register_cancel_sender(task_id, shutdown_tx);
 
     let job = ProcessingJob {
         input_path,
         output_path,
         config,
         tracker,
+        shutdown_rx,
     };
     get_processing_queue().enqueue(job);
 
@@ -1547,8 +1606,15 @@ async fn process_file_with_tracker(
     output_path: PathBuf,
     config: crate::PipelineConfig,
     tracker: ProgressTracker,
-    shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
 ) -> Result<String> {
+    if let Ok(signal) = shutdown_rx.try_recv() {
+        return Err(anyhow::anyhow!(
+            "Processing cancelled before startup: {:?}",
+            signal
+        ));
+    }
+
     tracker.update(ProcessingStatus::Initializing);
 
     crate::debug_log::clear_debug_log();
@@ -1715,6 +1781,19 @@ mod tests {
         .to_cli_display_lines();
         assert!(ocr_line.contains("OCR"));
         assert!(!ocr_line.contains("Encode"));
+    }
+
+    #[test]
+    fn cancellation_sender_is_live_before_a_job_starts() {
+        let task_id = u64::MAX - 17;
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        register_cancel_sender(task_id, sender);
+
+        assert!(cancel_task(task_id));
+        let signal = receiver.try_recv().expect("queued cancellation signal");
+        assert_eq!(signal.reason, crate::ShutdownReason::UserCancellation);
+
+        clear_cancel_sender(task_id);
     }
 }
 

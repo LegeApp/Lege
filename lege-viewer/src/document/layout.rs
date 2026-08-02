@@ -218,6 +218,8 @@ fn page_transform(geometry: &PageGeometry, x: f64, y: f64) -> Affine {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

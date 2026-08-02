@@ -551,8 +551,7 @@ fn product_matrix(page: &CompiledPage, product: &RasterProduct) -> Matrix {
     let Some(crop) = product.crop else {
         return page_to_device_matrix(page, product.width, product.height);
     };
-    let mut matrix =
-        page_to_device_matrix(page, crop.page_width.max(1), crop.page_height.max(1));
+    let mut matrix = page_to_device_matrix(page, crop.page_width.max(1), crop.page_height.max(1));
     let sx = product.width as f64 / crop.width.max(1) as f64;
     let sy = product.height as f64 / crop.height.max(1) as f64;
     matrix.a *= sx;

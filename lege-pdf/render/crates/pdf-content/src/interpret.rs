@@ -394,44 +394,53 @@ impl<'a> Interpreter<'a> {
     /// [`ContentError::is_fatal`].
     pub(crate) fn run(&mut self, content: &[u8]) -> Result<(), ContentError> {
         let mut lexer = ContentLexer::new(content, &self.limits.syntax);
+        let mut lexemes_seen = 0_u64;
         loop {
+            if lexemes_seen & 0xff == 0 && self.ctx.is_cancelled() {
+                return Err(ContentError::Cancelled);
+            }
             let pos_before = lexer.pos();
             match lexer.next_lexeme() {
                 Ok(None) => break,
-                Ok(Some(lex)) => match lex {
-                    Lexeme::Operand(o) => {
-                        if self.operands.len() >= MAX_OPERAND_STACK {
-                            // DoS guard: unbounded operand accumulation. Fatal.
-                            return Err(ContentError::OperandStackOverflow(self.operands.len()));
-                        }
-                        self.operands.push(o);
-                    }
-                    Lexeme::Operator(op) => {
-                        self.ops_executed += 1;
-                        if self.ops_executed > self.limits.max_ops {
-                            return Err(ContentError::OperatorBudget(self.ops_executed));
-                        }
-                        if let Err(e) = self.dispatch(&op) {
-                            if e.is_fatal() {
-                                return Err(e);
+                Ok(Some(lex)) => {
+                    lexemes_seen = lexemes_seen.saturating_add(1);
+                    match lex {
+                        Lexeme::Operand(o) => {
+                            if self.operands.len() >= MAX_OPERAND_STACK {
+                                // DoS guard: unbounded operand accumulation. Fatal.
+                                return Err(ContentError::OperandStackOverflow(
+                                    self.operands.len(),
+                                ));
                             }
-                            // Drop the bad operator and reset the operand stack,
-                            // then continue at the next lexeme.
-                            self.ctx.note_recovery(format!(
-                                "content operator {} dropped ({e})",
-                                String::from_utf8_lossy(&op)
-                            ));
+                            self.operands.push(o);
                         }
-                        self.operands.clear();
-                    }
-                    Lexeme::InlineImage { dict, data } => {
-                        // Suppressed inside an OC-hidden span.
-                        if !self.oc_hidden() {
-                            self.inline_image(&dict, data);
+                        Lexeme::Operator(op) => {
+                            self.ops_executed += 1;
+                            if self.ops_executed > self.limits.max_ops {
+                                return Err(ContentError::OperatorBudget(self.ops_executed));
+                            }
+                            if let Err(e) = self.dispatch(&op) {
+                                if e.is_fatal() {
+                                    return Err(e);
+                                }
+                                // Drop the bad operator and reset the operand stack,
+                                // then continue at the next lexeme.
+                                self.ctx.note_recovery(format!(
+                                    "content operator {} dropped ({e})",
+                                    String::from_utf8_lossy(&op)
+                                ));
+                            }
+                            self.operands.clear();
                         }
-                        self.operands.clear();
+                        Lexeme::InlineImage { dict, data } => {
+                            // Suppressed inside an OC-hidden span.
+                            if !self.oc_hidden() {
+                                self.inline_image(&dict, data);
+                            }
+                            self.operands.clear();
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     if e.is_fatal() {
                         return Err(e);

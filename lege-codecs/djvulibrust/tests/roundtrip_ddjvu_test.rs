@@ -129,3 +129,23 @@ fn encode_decode_roundtrip_via_ddjvu() {
     );
     eprintln!("round-trip PSNR: {quality_db:.2} dB");
 }
+
+#[test]
+fn lossless_iw44_is_rejected_before_writing_a_lossy_stream() {
+    let page = PageComponents::new_with_dimensions(48, 36)
+        .with_background(Pixmap::from_pixel(48, 36, Pixel::white()))
+        .expect("with_background");
+    let params = PageEncodeParams {
+        lossless: true,
+        ..PageEncodeParams::default()
+    };
+
+    let error = page
+        .encode(&params, 1, 300, 1, Some(2.2))
+        .expect_err("IW44 cannot promise a bit-exact lossless raster");
+    assert!(
+        error
+            .to_string()
+            .contains("Lossless IW44 raster encoding is not supported")
+    );
+}

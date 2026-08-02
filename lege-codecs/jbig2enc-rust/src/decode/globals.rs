@@ -26,6 +26,15 @@ pub struct DecodedGlobals {
 }
 
 impl DecodedGlobals {
+    /// Approximate decoded bytes retained by the globals segment store.
+    ///
+    /// Renderer caches use this to keep shared dictionaries only when their
+    /// decoded footprint fits the cache's explicit budget.
+    #[inline]
+    pub fn retained_bytes(&self) -> usize {
+        self.store.retained_bytes()
+    }
+
     /// The decoded segment store (for referred-segment resolution).
     #[inline]
     pub fn store(&self) -> &SegmentStore {

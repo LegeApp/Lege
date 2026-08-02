@@ -69,7 +69,7 @@
       "target_width": "Optional fixed output width in pixels.",
       "width_proportional": "Keep output width proportional to the page aspect ratio.",
       "sauvola_window_size": "Local analysis window size - larger: smoother, smaller: more detail-sensitive",
-      "sauvola_k_factor": "Contrast sensitivity - lower: more text preserved, higher: cleaner backgrounds. benefits from layout detection.",
+      "sauvola_k_factor": "Contrast sensitivity (0.0-1.0) - lower: more text preserved, higher: cleaner backgrounds. Benefits from layout detection.",
       "sauvola_r": "Variance scaling - lower: less aggressive, higher: stronger adaptation to noise",
       "threshold_value": "One cutoff for the whole page: pixels with luma below this value (0-255) become black, the rest white.",
       "margin_centering": "Centers content area within page dimensions",

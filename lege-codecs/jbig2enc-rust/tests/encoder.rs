@@ -175,7 +175,7 @@ fn encode_and_decode(img: &BitImage, temp_dir: &TempDir) -> Result<(), Box<dyn E
         }
     }
 
-    encoder.add_page(&array);
+    encoder.add_page(&array).unwrap();
     let encoded = encoder.flush()?;
 
     // Debug info about encoded data
@@ -456,7 +456,7 @@ fn test_encode_page_with_symbol_dictionary() -> Result<(), Box<dyn Error>> {
     array[[1, 2]] = 1;
     array[[2, 1]] = 1;
 
-    let img = array_to_bitimage(&array);
+    let img = array_to_bitimage(&array).unwrap();
 
     let cfg = Jbig2Config::default();
 
@@ -468,7 +468,7 @@ fn test_encode_page_with_symbol_dictionary() -> Result<(), Box<dyn Error>> {
             array[[y, x]] = if img.get(x as u32, y as u32) { 255 } else { 0 };
         }
     }
-    encoder.add_page(&array);
+    encoder.add_page(&array).unwrap();
     let result = encoder.flush();
     assert!(result.is_ok(), "Failed to encode page with single symbol");
 
@@ -482,7 +482,7 @@ fn test_encode_page_with_symbol_dictionary() -> Result<(), Box<dyn Error>> {
                 array[[y, x]] = if img.get(x as u32, y as u32) { 255 } else { 0 };
             }
         }
-        encoder.add_page(&array);
+        encoder.add_page(&array).unwrap();
     }
     let result = encoder.flush();
     assert!(
@@ -535,7 +535,9 @@ fn test_arithmetic_coder_annex_h2() {
     #[cfg(any(feature = "trace_encoder", feature = "trace_arith"))]
     debug_with_time!(start, "Starting encoding of test data");
     let cx = 0;
-    for (_index, &byte) in test_data.iter().enumerate() {
+    for (index, &byte) in test_data.iter().enumerate() {
+        #[cfg(not(any(feature = "trace_encoder", feature = "trace_arith")))]
+        let _ = index;
         for bit in 0..8 {
             let bit_val = (byte >> (7 - bit)) & 1 != 0;
             #[cfg(any(feature = "trace_encoder", feature = "trace_arith"))]

@@ -199,6 +199,7 @@ pub async fn create_and_run_epub_pipeline(
     let render_count = Arc::new(AtomicUsize::new(0));
     let detect_count = Arc::new(AtomicUsize::new(0));
     let encode_count = Arc::new(AtomicUsize::new(0));
+    let cancellation = lege_pdf_read::CancellationToken::new();
 
     let (render_tx, render_rx) = mpsc::channel(limits.render_buffer);
     let (infer_tx, infer_rx) = mpsc::channel(limits.inference_buffer);
@@ -208,6 +209,7 @@ pub async fn create_and_run_epub_pipeline(
         source.clone(),
         config.clone(),
         page_start..page_end,
+        cancellation.clone(),
         render_tx,
         render_count.clone(),
         detect_count.clone(),
@@ -256,15 +258,18 @@ pub async fn create_and_run_epub_pipeline(
     };
 
     // Drive stages, aborting downstream on cancellation.
-    use crate::pipeline::helper_functions::await_stage_or_cancel;
+    use crate::pipeline::helper_functions::{
+        await_stage_or_cancel, await_stage_or_cancel_with_token,
+    };
     let h_infer = infer_task.abort_handle();
     let h_ocr = ocr_task.abort_handle();
 
-    await_stage_or_cancel(
+    await_stage_or_cancel_with_token(
         &mut render_task,
         &mut shutdown_rx,
         "render",
         &[h_infer.clone(), h_ocr.clone()],
+        Some(&cancellation),
     )
     .await?;
     // Note: render/inference/OCR are pipelined, so these stage joins complete in
@@ -290,6 +295,7 @@ pub async fn create_and_run_epub_pipeline(
             joined.map_err(|e| anyhow!("[EPUB] OCR stage panicked: {e}"))??
         }
         signal = shutdown_rx.recv() => {
+            cancellation.cancel();
             ocr_task.abort();
             let msg = signal
                 .ok()
@@ -321,11 +327,32 @@ pub async fn create_and_run_epub_pipeline(
         .to_string();
     let output_path_buf = output_path.to_path_buf();
     progress_tracker.update(ProcessingStatus::AssemblingOutput);
-    crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Writer, move || {
-        build_epub(&pages, &title, &output_path_buf)
-    })
-    .await
-    .map_err(|e| anyhow!("[EPUB] packaging task panicked: {e}"))??;
+    let packaging_cancellation = cancellation.clone();
+    let mut packaging_task = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Writer,
+        move || {
+            build_epub_cancellable(
+                &pages,
+                &title,
+                &output_path_buf,
+                Some(&packaging_cancellation),
+            )
+        },
+    );
+    tokio::select! {
+        result = &mut packaging_task => {
+            result.map_err(|e| anyhow!("[EPUB] packaging task panicked: {e}"))??;
+        }
+        signal = shutdown_rx.recv() => {
+            cancellation.cancel();
+            packaging_task.abort();
+            let message = signal
+                .ok()
+                .and_then(|signal| signal.message)
+                .unwrap_or_else(|| "User requested cancellation".to_string());
+            return Err(anyhow!("Processing cancelled during EPUB packaging: {message}"));
+        }
+    }
 
     success_log!("EPUB pipeline complete: {}", output_path.display());
     Ok(())
@@ -336,13 +363,22 @@ pub fn build_epub_from_hocr_pages(
     title: &str,
     output_path: &Path,
 ) -> Result<()> {
+    build_epub_from_hocr_pages_cancellable(hocr_pages, title, output_path, None)
+}
+
+pub(crate) fn build_epub_from_hocr_pages_cancellable(
+    hocr_pages: &[HocrPage],
+    title: &str,
+    output_path: &Path,
+    cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> Result<()> {
     let mut pages: Vec<PageText> = hocr_pages
         .iter()
         .filter_map(page_text_from_hocr)
         .filter(|page| !page.blocks.is_empty())
         .collect();
     pages.sort_by_key(|page| page.page_index);
-    build_epub(&pages, title, output_path)
+    build_epub_cancellable(&pages, title, output_path, cancellation)
 }
 
 fn page_text_from_hocr(page: &HocrPage) -> Option<PageText> {
@@ -824,6 +860,15 @@ fn render_xhtml(chapter: &Chapter) -> String {
 
 /// Package chapters into an EPUB file at `output_path`.
 fn build_epub(pages: &[PageText], title: &str, output_path: &Path) -> Result<()> {
+    build_epub_cancellable(pages, title, output_path, None)
+}
+
+fn build_epub_cancellable(
+    pages: &[PageText],
+    title: &str,
+    output_path: &Path,
+    cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> Result<()> {
     let chapters = assemble_chapters(pages);
     if chapters.is_empty() {
         return Err(anyhow!(
@@ -843,6 +888,9 @@ fn build_epub(pages: &[PageText], title: &str, output_path: &Path) -> Result<()>
     let _ = builder.metadata("lang", "en");
 
     for (i, chapter) in chapters.iter().enumerate() {
+        if cancellation.is_some_and(lege_pdf_read::CancellationToken::is_cancelled) {
+            return Err(anyhow!("[EPUB] packaging cancelled"));
+        }
         let filename = format!("chapter_{:04}.xhtml", i + 1);
         let content = render_xhtml(chapter);
         let mut item = EpubContent::new(filename, content.as_bytes()).reftype(ReferenceType::Text);
@@ -857,11 +905,28 @@ fn build_epub(pages: &[PageText], title: &str, output_path: &Path) -> Result<()>
     // Inline a navigation TOC at the start of the book.
     builder.inline_toc();
 
-    let mut file = std::fs::File::create(output_path)
-        .map_err(|e| anyhow!("[EPUB] cannot create {}: {e}", output_path.display()))?;
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|e| anyhow!("[EPUB] cannot create {}: {e}", parent.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| anyhow!("[EPUB] cannot create temporary output: {e}"))?;
     builder
-        .generate(&mut file)
+        .generate(temporary.as_file_mut())
         .map_err(|e| anyhow!("[EPUB] generate failed: {e}"))?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .map_err(|e| anyhow!("[EPUB] sync failed: {e}"))?;
+    if cancellation.is_some_and(lege_pdf_read::CancellationToken::is_cancelled) {
+        return Err(anyhow!("[EPUB] packaging cancelled"));
+    }
+    temporary.persist(output_path).map_err(|e| {
+        anyhow!(
+            "[EPUB] cannot publish {}: {}",
+            output_path.display(),
+            e.error
+        )
+    })?;
     Ok(())
 }
 
@@ -1086,6 +1151,24 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_epub_packaging_preserves_the_destination() {
+        let pages = vec![page(vec![blk(BlockKind::Paragraph, "Last good book")])];
+        let directory = tempfile::tempdir().expect("temporary EPUB directory");
+        let path = directory.path().join("book.epub");
+        std::fs::write(&path, b"last-good-output").expect("seed destination");
+        let cancellation = lege_pdf_read::CancellationToken::new();
+        cancellation.cancel();
+
+        let error = build_epub_cancellable(&pages, "Cancelled Book", &path, Some(&cancellation))
+            .expect_err("pre-cancelled packaging must stop");
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(
+            std::fs::read(path).expect("preserved destination"),
+            b"last-good-output"
+        );
+    }
+
+    #[test]
     fn escapes_xml_special_chars() {
         assert_eq!(xml_escape("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
     }
@@ -1098,6 +1181,7 @@ mod tests {
         ])];
         let mut path = std::env::temp_dir();
         path.push(format!("lege_epub_test_{}.epub", std::process::id()));
+        std::fs::write(&path, b"stale-output").expect("seed replaceable destination");
 
         build_epub(&pages, "Test Book", &path).expect("epub generation should succeed");
 

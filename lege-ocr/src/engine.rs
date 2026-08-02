@@ -47,6 +47,28 @@ pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// Validate a tightly packed grayscale/binary or RGB image and return its
+/// bytes-per-pixel. Keeping this check shared prevents platform backends from
+/// evaluating unchecked attacker-controlled dimension products.
+pub(crate) fn raw_image_bpp(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    is_binary: bool,
+) -> Option<usize> {
+    if width == 0 || height == 0 || width > 65535 || height > 65535 {
+        return None;
+    }
+    let pixels = width.checked_mul(height)?;
+    if data.len() == pixels {
+        Some(1)
+    } else if !is_binary && pixels.checked_mul(3) == Some(data.len()) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
 // ── Platform engine constructors ─────────────────────────────────────────────
 
 /// Return the platform default engine.
@@ -165,16 +187,7 @@ impl OcrEngine for TesseractEngine {
     ) -> Option<OcrResult> {
         use tesseract::PageSegMode;
 
-        if width == 0 || height == 0 || width > 65535 || height > 65535 {
-            return None;
-        }
-        let bpp = if data.len() == width * height {
-            1
-        } else if !is_binary && data.len() == width * height * 3 {
-            3
-        } else {
-            return None;
-        };
+        let bpp = raw_image_bpp(data, width, height, is_binary)?;
         if data.iter().all(|&b| b == data[0]) {
             return Some(OcrResult {
                 hocr: String::new(),
@@ -183,7 +196,7 @@ impl OcrEngine for TesseractEngine {
         }
 
         const MAX_PIXELS: usize = 2_000_000;
-        let pixels = width * height;
+        let pixels = width.checked_mul(height)?;
         let (final_data, final_w, final_h, _scale_x, _scale_y): (Vec<u8>, usize, usize, f32, f32) =
             if pixels > MAX_PIXELS {
                 let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
@@ -353,7 +366,18 @@ fn set_image_with_downscale(
     bpp: usize,
 ) -> Result<(tesseract::Tesseract, usize, usize, f32, f32)> {
     const MAX_PIXELS: usize = 2_000_000;
-    let pixels = w * h;
+    let pixels = w
+        .checked_mul(h)
+        .ok_or_else(|| anyhow::anyhow!("OCR image dimensions overflow"))?;
+    let expected = pixels
+        .checked_mul(bpp)
+        .ok_or_else(|| anyhow::anyhow!("OCR image byte length overflow"))?;
+    if data.len() != expected {
+        anyhow::bail!(
+            "invalid OCR image buffer: expected {expected} bytes, got {}",
+            data.len()
+        );
+    }
     if pixels > MAX_PIXELS {
         let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
         let nw = ((w as f64 * scale).round() as usize).max(1);
@@ -375,7 +399,7 @@ fn set_image_with_downscale(
     }
 }
 
-fn resize_cpu(
+pub(crate) fn resize_cpu(
     data: &[u8],
     sw: usize,
     sh: usize,
@@ -583,11 +607,34 @@ fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Ve
     use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
     use windows_core::Interface;
 
+    if raw_image_bpp(data, width, height, false)? != 1 {
+        return None;
+    }
+    if data.iter().all(|&byte| byte == data[0]) {
+        return Some(Vec::new());
+    }
+
+    // WinRT requires a four-byte BGRA staging image. Bound the grayscale input
+    // first so a page-sized fallback does not transiently allocate four times
+    // an arbitrarily large region.
+    const MAX_PIXELS: usize = 1_500_000;
+    let pixels = width.checked_mul(height)?;
+    let resized;
+    let (data, final_width, final_height) = if pixels > MAX_PIXELS {
+        let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
+        let resized_width = ((width as f64 * scale).round() as usize).max(1);
+        let resized_height = ((height as f64 * scale).round() as usize).max(1);
+        resized = resize_cpu(data, width, height, resized_width, resized_height, 1);
+        (resized.as_slice(), resized_width, resized_height)
+    } else {
+        (data, width, height)
+    };
+
     let _com = initialize_com().ok()?;
     // Convert grayscale → BGRA
     let bgra: Vec<u8> = data.iter().flat_map(|&p| [p, p, p, 255u8]).collect();
-    let w = width as i32;
-    let h = height as i32;
+    let w = final_width as i32;
+    let h = final_height as i32;
 
     let bitmap = SoftwareBitmap::Create(BitmapPixelFormat::Bgra8, w, h).ok()?;
     {
@@ -618,8 +665,8 @@ fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Ve
         };
         let mut line_words = Vec::new();
         let mut line_text = String::new();
-        let mut lx1 = width as u32;
-        let mut ly1 = height as u32;
+        let mut lx1 = final_width as u32;
+        let mut ly1 = final_height as u32;
         let mut lx2 = 0u32;
         let mut ly2 = 0u32;
 
@@ -635,10 +682,16 @@ fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Ve
             if text.trim().is_empty() {
                 continue;
             }
-            let wx1 = rect.X.floor().max(0.0).min(width as f32) as u32;
-            let wy1 = rect.Y.floor().max(0.0).min(height as f32) as u32;
-            let wx2 = (rect.X + rect.Width).ceil().max(0.0).min(width as f32) as u32;
-            let wy2 = (rect.Y + rect.Height).ceil().max(0.0).min(height as f32) as u32;
+            let wx1 = rect.X.floor().max(0.0).min(final_width as f32) as u32;
+            let wy1 = rect.Y.floor().max(0.0).min(final_height as f32) as u32;
+            let wx2 = (rect.X + rect.Width)
+                .ceil()
+                .max(0.0)
+                .min(final_width as f32) as u32;
+            let wy2 = (rect.Y + rect.Height)
+                .ceil()
+                .max(0.0)
+                .min(final_height as f32) as u32;
             if wx2 <= wx1 || wy2 <= wy1 {
                 continue;
             }
@@ -676,6 +729,15 @@ fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Ve
         });
     }
 
+    if final_width != width || final_height != height {
+        crate::coordinate::scale_lines(
+            &mut results,
+            width as f32 / final_width as f32,
+            height as f32 / final_height as f32,
+            width as u32,
+            height as u32,
+        );
+    }
     Some(results)
 }
 
@@ -687,20 +749,11 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
     use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
     use windows_core::Interface;
 
-    if width == 0 || height == 0 || width > 65535 || height > 65535 {
-        return None;
-    }
-
     const MAX_PIXELS: usize = 1_500_000;
-    let source_bpp = if data.len() == width * height {
-        1
-    } else if !is_binary && data.len() == width * height * 3 {
-        3
-    } else {
-        return None;
-    };
-    let (processed, final_w, final_h): (Vec<u8>, usize, usize) = if width * height > MAX_PIXELS {
-        let scale = (MAX_PIXELS as f64 / (width * height) as f64).sqrt();
+    let source_bpp = raw_image_bpp(data, width, height, is_binary)?;
+    let pixels = width.checked_mul(height)?;
+    let (processed, final_w, final_h): (Vec<u8>, usize, usize) = if pixels > MAX_PIXELS {
+        let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
         let nw = ((width as f64 * scale) as usize).max(1);
         let nh = ((height as f64 * scale) as usize).max(1);
         let resized = resize_cpu(data, width, height, nw, nh, source_bpp);
@@ -897,6 +950,16 @@ impl OcrEngine for TrOcrEngine {
     fn name(&self) -> &'static str {
         "trocr"
     }
+    fn run_image(
+        &self,
+        _data: &[u8],
+        _width: usize,
+        _height: usize,
+        _is_binary: bool,
+        _lang: &str,
+    ) -> Option<OcrResult> {
+        None
+    }
     fn ocr_line(&self, _image: &GrayImage, _lang: &str) -> Result<OcrLineResult> {
         anyhow::bail!("TrOCR is not yet implemented")
     }
@@ -923,17 +986,13 @@ pub fn parse_hocr_words(hocr: &str, scale_x: f32, scale_y: f32) -> Vec<OcrWord> 
         // Extract text between > and </span>
         let text_opt = extract_span_text(rest);
 
-        if let (Some([x1, y1, x2, y2]), Some(text)) = (bbox_opt, text_opt)
+        if let (Some(raw_bbox), Some(text)) = (bbox_opt, text_opt)
             && !text.trim().is_empty()
+            && let Some(bbox) = scale_hocr_bbox(raw_bbox, scale_x, scale_y, None)
         {
             words.push(OcrWord {
                 text,
-                bbox_crop_local: [
-                    (x1 as f32 * scale_x) as u32,
-                    (y1 as f32 * scale_y) as u32,
-                    (x2 as f32 * scale_x) as u32,
-                    (y2 as f32 * scale_y) as u32,
-                ],
+                bbox_crop_local: bbox,
                 confidence: extract_word_confidence(rest),
             });
         }
@@ -944,8 +1003,8 @@ pub fn parse_hocr_words(hocr: &str, scale_x: f32, scale_y: f32) -> Vec<OcrWord> 
 /// Parse Tesseract HOCR into per-line `OcrLineResult` entries.
 pub fn parse_hocr_lines(
     hocr: &str,
-    _image_w: u32,
-    _image_h: u32,
+    image_w: u32,
+    image_h: u32,
     scale_x: f32,
     scale_y: f32,
 ) -> Vec<OcrLineResult> {
@@ -958,22 +1017,19 @@ pub fn parse_hocr_lines(
         // Collect all words until </span> for this line
         let (mut words, line_text) = collect_words_in_line(rest, scale_x, scale_y);
         if !line_text.trim().is_empty() {
-            let bbox = bbox_opt
-                .map(|[x1, y1, x2, y2]| {
-                    [
-                        (x1 as f32 * scale_x) as u32,
-                        (y1 as f32 * scale_y) as u32,
-                        (x2 as f32 * scale_x) as u32,
-                        (y2 as f32 * scale_y) as u32,
-                    ]
-                })
-                .unwrap_or([0, 0, 0, 0]);
+            let Some(bbox) = bbox_opt
+                .and_then(|bbox| scale_hocr_bbox(bbox, scale_x, scale_y, Some((image_w, image_h))))
+            else {
+                continue;
+            };
+            let line_w = bbox[2].saturating_sub(bbox[0]);
+            let line_h = bbox[3].saturating_sub(bbox[1]);
             for word in &mut words {
                 word.bbox_crop_local = [
-                    word.bbox_crop_local[0].saturating_sub(bbox[0]),
-                    word.bbox_crop_local[1].saturating_sub(bbox[1]),
-                    word.bbox_crop_local[2].saturating_sub(bbox[0]),
-                    word.bbox_crop_local[3].saturating_sub(bbox[1]),
+                    word.bbox_crop_local[0].saturating_sub(bbox[0]).min(line_w),
+                    word.bbox_crop_local[1].saturating_sub(bbox[1]).min(line_h),
+                    word.bbox_crop_local[2].saturating_sub(bbox[0]).min(line_w),
+                    word.bbox_crop_local[3].saturating_sub(bbox[1]).min(line_h),
                 ];
             }
             let confidence = mean_word_confidence(&words);
@@ -1001,20 +1057,16 @@ fn collect_words_in_line(hocr: &str, scale_x: f32, scale_y: f32) -> (Vec<OcrWord
             break;
         }
         rest = &rest[pos + "ocrx_word".len()..];
-        if let (Some([x1, y1, x2, y2]), Some(word_text)) =
+        if let (Some(raw_bbox), Some(word_text)) =
             (extract_bbox_from_title(rest), extract_span_text(rest))
             && !word_text.trim().is_empty()
+            && let Some(bbox) = scale_hocr_bbox(raw_bbox, scale_x, scale_y, None)
         {
             text.push_str(&word_text);
             text.push(' ');
             words.push(OcrWord {
                 text: word_text,
-                bbox_crop_local: [
-                    (x1 as f32 * scale_x) as u32,
-                    (y1 as f32 * scale_y) as u32,
-                    (x2 as f32 * scale_x) as u32,
-                    (y2 as f32 * scale_y) as u32,
-                ],
+                bbox_crop_local: bbox,
                 confidence: extract_word_confidence(rest),
             });
         }
@@ -1022,27 +1074,12 @@ fn collect_words_in_line(hocr: &str, scale_x: f32, scale_y: f32) -> (Vec<OcrWord
     (words, text)
 }
 
-#[cfg(test)]
-mod line_parser_tests {
-    use super::parse_hocr_lines;
-
-    #[test]
-    fn region_hocr_words_are_made_line_local() {
-        let hocr = r#"
-            <span class="ocr_line" title="bbox 10 20 100 40">
-              <span class="ocrx_word" title="bbox 12 22 30 38">word</span>
-            </span>
-        "#;
-        let lines = parse_hocr_lines(hocr, 100, 100, 1.0, 1.0);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].bbox_highres, [10, 20, 100, 40]);
-        assert_eq!(lines[0].words[0].bbox_crop_local, [2, 2, 20, 18]);
-    }
-}
-
 fn extract_bbox_from_title(s: &str) -> Option<[i32; 4]> {
-    let title_pos = s.find("title=")?;
-    let after = &s[title_pos + 6..];
+    // Bound the search to this element's opening tag. Otherwise a line with no
+    // bbox can accidentally inherit the first descendant word's coordinates.
+    let tag = &s[..s.find('>')?];
+    let title_pos = tag.find("title=")?;
+    let after = &tag[title_pos + 6..];
     let bbox_pos = after.find("bbox ")?;
     let coords_str = &after[bbox_pos + 5..];
     // Read up to 4 integers
@@ -1063,6 +1100,31 @@ fn extract_bbox_from_title(s: &str) -> Option<[i32; 4]> {
         rest = rest[end..].trim_start();
     }
     if found == 4 { Some(nums) } else { None }
+}
+
+fn scale_hocr_bbox(
+    [x1, y1, x2, y2]: [i32; 4],
+    scale_x: f32,
+    scale_y: f32,
+    bounds: Option<(u32, u32)>,
+) -> Option<[u32; 4]> {
+    if !scale_x.is_finite() || !scale_y.is_finite() || scale_x < 0.0 || scale_y < 0.0 {
+        return None;
+    }
+    let max_w = bounds.map_or(u32::MAX, |(width, _)| width);
+    let max_h = bounds.map_or(u32::MAX, |(_, height)| height);
+    let scale = |value: i32, factor: f32, max: u32| {
+        (value as f64 * factor as f64)
+            .round()
+            .clamp(0.0, max as f64) as u32
+    };
+    let bbox = [
+        scale(x1, scale_x, max_w),
+        scale(y1, scale_y, max_h),
+        scale(x2, scale_x, max_w),
+        scale(y2, scale_y, max_h),
+    ];
+    (bbox[2] > bbox[0] && bbox[3] > bbox[1]).then_some(bbox)
 }
 
 fn extract_word_confidence(s: &str) -> Option<f32> {
@@ -1092,12 +1154,61 @@ fn extract_span_text(s: &str) -> Option<String> {
     let after = &s[gt + 1..];
     let close = after.find("</span>")?;
     let raw = &after[..close];
-    // Unescape basic HTML entities
-    Some(
-        raw.replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'"),
-    )
+    Some(html_escape::decode_html_entities(raw).into_owned())
+}
+
+#[cfg(test)]
+mod line_parser_tests {
+    use super::{parse_hocr_lines, parse_hocr_words, raw_image_bpp};
+
+    #[test]
+    fn region_hocr_words_are_made_line_local() {
+        let hocr = r#"
+            <span class="ocr_line" title="bbox 10 20 100 40">
+              <span class="ocrx_word" title="bbox 12 22 30 38">word</span>
+            </span>
+        "#;
+        let lines = parse_hocr_lines(hocr, 100, 100, 1.0, 1.0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].bbox_highres, [10, 20, 100, 40]);
+        assert_eq!(lines[0].words[0].bbox_crop_local, [2, 2, 20, 18]);
+    }
+
+    #[test]
+    fn line_without_bbox_does_not_inherit_word_bbox() {
+        let hocr = r#"
+            <span class="ocr_line">
+              <span class="ocrx_word" title="bbox 12 22 30 38">word</span>
+            </span>
+        "#;
+        assert!(parse_hocr_lines(hocr, 100, 100, 1.0, 1.0).is_empty());
+    }
+
+    #[test]
+    fn parser_rejects_invalid_geometry_and_decodes_numeric_entities() {
+        let hocr = r#"
+            <span class="ocrx_word" title="bbox 30 20 10 40">bad</span>
+            <span class="ocrx_word" title="bbox 1 2 10 20">A&#x2014;B</span>
+        "#;
+        let words = parse_hocr_words(hocr, 1.0, 1.0);
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "A—B");
+    }
+
+    #[test]
+    fn raw_geometry_validation_uses_checked_products() {
+        assert_eq!(raw_image_bpp(&[0; 12], 2, 2, false), Some(3));
+        assert_eq!(raw_image_bpp(&[0; 11], 2, 2, false), None);
+        assert_eq!(raw_image_bpp(&[], usize::MAX, 2, false), None);
+    }
+
+    #[cfg(feature = "trocr")]
+    #[test]
+    fn placeholder_trocr_engine_fails_without_panicking() {
+        use super::{OcrEngine, TrOcrEngine};
+
+        let engine = TrOcrEngine;
+        assert!(engine.run_image(&[], 0, 0, false, "eng").is_none());
+        assert_eq!(engine.name(), "trocr");
+    }
 }

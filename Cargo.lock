@@ -3247,6 +3247,7 @@ dependencies = [
 name = "jp2lam"
 version = "0.3.0"
 dependencies = [
+ "memmap2",
  "rayon",
  "tempfile",
  "wide 0.7.33",
@@ -4646,6 +4647,9 @@ name = "pdf-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "crossbeam-channel",
+ "flate2",
  "jp2lam",
  "pdf-content",
  "pdf-document",

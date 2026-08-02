@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use crate::document::{CacheCategory, MemoryArbiter, MemoryLease, PageIndex};
 use crate::document::{SessionUpdate, UpdateQueue};
 use crate::geometry::RectF;
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
 use super::TextSubstrate;
 
@@ -130,13 +130,18 @@ enum SearchRequest {
 #[derive(Debug)]
 pub struct SearchService {
     requests: Sender<SearchRequest>,
+    pending: Receiver<SearchRequest>,
     latest_request: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl SearchService {
     pub fn spawn(updates: Arc<UpdateQueue>) -> std::io::Result<Self> {
-        let (requests, receiver) = unbounded();
+        // A query owns a snapshot of the whole index. Only the latest query is
+        // useful, so retaining an unbounded sequence while the worker is busy
+        // can waste substantial memory during rapid typing.
+        let (requests, receiver) = bounded(1);
+        let pending = receiver.clone();
         let latest_request = Arc::new(AtomicU64::new(0));
         let worker_latest = Arc::clone(&latest_request);
         let thread = std::thread::Builder::new()
@@ -144,6 +149,7 @@ impl SearchService {
             .spawn(move || search_worker(receiver, worker_latest, updates))?;
         Ok(Self {
             requests,
+            pending,
             latest_request,
             thread: Some(thread),
         })
@@ -151,7 +157,7 @@ impl SearchService {
 
     pub fn submit(&self, request: u64, index_revision: u64, index: SearchIndex, query: String) {
         self.latest_request.store(request, Ordering::Release);
-        let _ = self.requests.send(SearchRequest::Query {
+        self.send_latest(SearchRequest::Query {
             request,
             index_revision,
             index,
@@ -162,12 +168,26 @@ impl SearchService {
     pub fn cancel(&self, request: u64) {
         self.latest_request.store(request, Ordering::Release);
     }
+
+    fn send_latest(&self, mut request: SearchRequest) {
+        loop {
+            match self.requests.try_send(request) {
+                Ok(()) | Err(TrySendError::Disconnected(_)) => return,
+                Err(TrySendError::Full(returned)) => {
+                    request = returned;
+                    // The worker may win this race and empty the slot first;
+                    // retrying then sends directly into the newly free slot.
+                    let _ = self.pending.try_recv();
+                }
+            }
+        }
+    }
 }
 
 impl Drop for SearchService {
     fn drop(&mut self) {
         self.latest_request.store(u64::MAX, Ordering::Release);
-        let _ = self.requests.send(SearchRequest::Shutdown);
+        self.send_latest(SearchRequest::Shutdown);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -278,7 +298,7 @@ impl SearchIndex {
             let Some(text) = indexed.text.load() else {
                 continue;
             };
-            append_folded_hits(page, &text, &needle, limit, &mut hits);
+            append_folded_hits(page, &text, &needle, limit, &mut hits, &cancelled)?;
             if hits.len() == limit {
                 return Some(hits);
             }
@@ -306,7 +326,7 @@ impl SearchIndex {
             return Vec::new();
         };
         let mut hits = Vec::new();
-        append_folded_hits(page, &text, &needle, limit, &mut hits);
+        let _ = append_folded_hits(page, &text, &needle, limit, &mut hits, &|| false);
         hits
     }
 
@@ -437,12 +457,22 @@ fn fold_string(text: &str) -> Vec<u16> {
         .collect()
 }
 
-fn fold_utf16(text: &[u16]) -> (Vec<u16>, Vec<usize>) {
-    let decoded = String::from_utf16_lossy(text);
+fn fold_utf16_cancellable(
+    text: &[u16],
+    cancelled: &impl Fn() -> bool,
+) -> Option<(Vec<u16>, Vec<usize>)> {
     let mut folded = Vec::with_capacity(text.len());
     let mut offsets = Vec::with_capacity(text.len() + 1);
-    let mut source_offset = 0;
-    for source in decoded.chars() {
+    let mut source_offset = 0_usize;
+    let mut next_cancel_check = 0_usize;
+    for decoded in char::decode_utf16(text.iter().copied()) {
+        if source_offset >= next_cancel_check {
+            if cancelled() {
+                return None;
+            }
+            next_cancel_check = source_offset.saturating_add(4_096);
+        }
+        let source = decoded.unwrap_or(char::REPLACEMENT_CHARACTER);
         for lower in source.to_lowercase() {
             let mut buffer = [0_u16; 2];
             for unit in lower.encode_utf16(&mut buffer).iter().copied() {
@@ -453,7 +483,7 @@ fn fold_utf16(text: &[u16]) -> (Vec<u16>, Vec<usize>) {
         source_offset += source.len_utf16();
     }
     offsets.push(text.len());
-    (folded, offsets)
+    Some((folded, offsets))
 }
 
 fn append_folded_hits(
@@ -462,12 +492,22 @@ fn append_folded_hits(
     needle: &[u16],
     limit: usize,
     output: &mut Vec<SearchHit>,
-) {
+    cancelled: &impl Fn() -> bool,
+) -> Option<()> {
     if output.len() >= limit {
-        return;
+        return Some(());
     }
-    let (haystack, source_offsets) = fold_utf16(text);
-    for start in find_all(&haystack, needle) {
+    let (haystack, source_offsets) = fold_utf16_cancellable(text, cancelled)?;
+    let Some(last_start) = haystack.len().checked_sub(needle.len()) else {
+        return Some(());
+    };
+    for start in 0..=last_start {
+        if start.is_multiple_of(4_096) && cancelled() {
+            return None;
+        }
+        if haystack[start..start + needle.len()] != *needle {
+            continue;
+        }
         let folded_end = start + needle.len();
         let source_start = source_offsets.get(start).copied().unwrap_or(0);
         let source_end = source_offsets
@@ -480,9 +520,10 @@ fn append_folded_hits(
             overlays: Arc::from([]),
         });
         if output.len() == limit {
-            return;
+            return Some(());
         }
     }
+    Some(())
 }
 
 fn find_all<'a>(haystack: &'a [u16], needle: &'a [u16]) -> impl Iterator<Item = usize> + 'a {
@@ -499,6 +540,7 @@ mod tests {
     use super::*;
     use crate::document::WakeSink;
     use crate::text::{LineSource, PageLineSet};
+    use std::cell::Cell;
     use std::time::{Duration, Instant};
 
     #[derive(Debug)]
@@ -543,6 +585,22 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_is_checked_while_scanning_a_single_large_page() {
+        let mut index = SearchIndex::default();
+        index.insert(PageIndex(0), substrate(&"a".repeat(12_000)));
+        let checks = Cell::new(0_u32);
+        let result = index.search_case_insensitive_cancellable("z", 10, || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            // One page-level check and three folding checks complete first;
+            // cancellation then fires during the no-match scan.
+            next >= 6
+        });
+        assert!(result.is_none());
+        assert!(checks.get() >= 6);
+    }
+
+    #[test]
     fn large_index_spills_without_changing_search_or_copy_text() {
         let mut index = SearchIndex {
             resident_limit: 4,
@@ -584,6 +642,43 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "search worker timed out");
             std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn search_mailbox_keeps_only_the_latest_pending_snapshot() {
+        let (requests, pending) = bounded(1);
+        let service = SearchService {
+            requests,
+            pending,
+            latest_request: Arc::new(AtomicU64::new(0)),
+            thread: None,
+        };
+        service.send_latest(SearchRequest::Query {
+            request: 1,
+            index_revision: 1,
+            index: SearchIndex::default(),
+            query: "old".to_owned(),
+        });
+        service.send_latest(SearchRequest::Query {
+            request: 2,
+            index_revision: 2,
+            index: SearchIndex::default(),
+            query: "new".to_owned(),
+        });
+
+        let message = service.pending.try_recv();
+        assert!(matches!(
+            &message,
+            Ok(SearchRequest::Query {
+                request: 2,
+                query,
+                ..
+            }) if query == "new"
+        ));
+        if let Ok(SearchRequest::Query { request, query, .. }) = message {
+            assert_eq!(request, 2);
+            assert_eq!(query, "new");
         }
     }
 }

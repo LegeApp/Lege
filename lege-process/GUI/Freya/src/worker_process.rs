@@ -559,7 +559,7 @@ fn kill_pid(pid: u32) {
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .status();
     }
     #[cfg(unix)]

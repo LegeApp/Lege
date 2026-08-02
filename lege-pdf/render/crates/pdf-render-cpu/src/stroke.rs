@@ -8,9 +8,10 @@
 //! same winding sign so a non-zero fill unions them correctly. Overlap at
 //! joins is harmless — non-zero coverage saturates.
 //!
-//! Stroking is done in device space with a scalar half-width (exact for
-//! uniform-scale CTMs; anisotropic/rotated pens are approximated until a
-//! user-space stroker lands — documented).
+//! The lowering stage decomposes the full CTM into path and pen transforms.
+//! This module expands the normalized pen in that intermediate space, after
+//! which lowering applies the residual transform. Anisotropic and rotated
+//! pens therefore retain their elliptical device-space geometry.
 
 use pdf_page_ir::{LineCap, LineJoin};
 

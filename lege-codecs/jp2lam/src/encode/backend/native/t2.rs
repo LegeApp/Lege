@@ -348,9 +348,20 @@ fn build_packet_header(
     selected_bands: Option<&[&super::t1::NativeTier1SelectionBand]>,
 ) -> Vec<u8> {
     let mut bio = PacketBio::new();
-    // Match OpenJPEG's current packet-header walk: emit the packet-present
-    // bit and inclusion information for each non-empty band even when this
-    // layer contributes no passes in that packet.
+    let packet_has_data = bands.iter().enumerate().any(|(band_index, band)| {
+        let selected_band = selected_bands.and_then(|bands| bands.get(band_index).copied());
+        band.blocks
+            .iter()
+            .enumerate()
+            .any(|(block_index, block)| selected_pass_count(block, selected_band, block_index) > 0)
+    });
+    if !packet_has_data {
+        bio.putbit(0);
+        let header = bio.flush();
+        crate::encode::counters::record_packet_header(header.len());
+        return header;
+    }
+
     bio.putbit(1);
 
     for (band_index, band) in bands.iter().enumerate() {
@@ -1164,6 +1175,27 @@ mod tests {
         assert_eq!(
             encoded, original,
             "selection must not mutate encoded layout"
+        );
+    }
+
+    #[test]
+    fn packet_with_no_selected_passes_uses_empty_packet_bit() {
+        let encoded = encoded_fixture_with_tile_index(0);
+        let bands = encoded.bands.iter().collect::<Vec<_>>();
+        let selection = encoded
+            .bands
+            .iter()
+            .map(|band| NativeTier1SelectionBand {
+                resolution: band.resolution,
+                band: band.band,
+                selected_passes: vec![0; band.blocks.len()],
+            })
+            .collect::<Vec<_>>();
+        let selected_bands = selection.iter().collect::<Vec<_>>();
+
+        assert_eq!(
+            super::build_packet_header(&bands, Some(&selected_bands)),
+            vec![0x00]
         );
     }
 }

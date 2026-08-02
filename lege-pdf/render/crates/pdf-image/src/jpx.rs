@@ -22,8 +22,8 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use jp2lam::{
-    ColorSpace, DecodeConcurrency, DecodeOutputFormat, DecodeRequest, DecodeResolution,
-    DecodeResult,
+    ColorSpace, DecodeConcurrency, DecodeLimits as Jp2DecodeLimits, DecodeOutputFormat,
+    DecodeRequest, DecodeResolution, DecodeResult,
 };
 
 use crate::codec::{DecodeLimits, DecodedFormat, DecodedImage, ImageCodec};
@@ -157,11 +157,16 @@ impl ImageCodec for JpxCodec {
         params: &DecodeParameters,
         limits: &DecodeLimits,
     ) -> Result<DecodedImage, ImageError> {
+        limits.check_input(data.len())?;
         // Inspect the container/codestream header first: it is cheap relative to
         // the full decode and tells us the output colour space and component
         // precision, which decide the packed-vs-native path below.
-        let meta =
-            jp2lam::inspect_jp2(data).map_err(|e| ImageError::Decode(format!("JPX: {e}")))?;
+        let codec_limits = decoder_limits(limits);
+        let meta = jp2lam::inspect_jp2_with_limits(data, &codec_limits)
+            .map_err(|e| ImageError::Decode(format!("JPX: {e}")))?;
+        if limits.is_cancelled() {
+            return Err(ImageError::Cancelled);
+        }
 
         let (width, height) = (meta.width, meta.height);
         if width == 0 || height == 0 {
@@ -292,6 +297,9 @@ impl ImageCodec for JpxCodec {
             )
         };
         drop(in_flight);
+        if limits.is_cancelled() {
+            return Err(ImageError::Cancelled);
+        }
         result
     }
 }
@@ -331,10 +339,14 @@ impl JpxCodec {
             region: None,
             concurrency,
             ignore_container_palette,
+            limits: decoder_limits(limits),
         };
         let result = JPX_DECODER
             .with(|decoder| decoder.borrow_mut().decode(data, &request))
             .map_err(|e| ImageError::Decode(format!("JPX: {e}")))?;
+        if limits.is_cancelled() {
+            return Err(ImageError::Cancelled);
+        }
 
         let raster = match result {
             DecodeResult::Raster(raster) => raster,
@@ -393,10 +405,14 @@ impl JpxCodec {
             region: None,
             concurrency,
             ignore_container_palette,
+            limits: decoder_limits(limits),
         };
         let result = JPX_DECODER
             .with(|decoder| decoder.borrow_mut().decode(data, &request))
             .map_err(|e| ImageError::Decode(format!("JPX: {e}")))?;
+        if limits.is_cancelled() {
+            return Err(ImageError::Cancelled);
+        }
         let image = match result {
             DecodeResult::Native(image) => image,
             DecodeResult::Raster(_) => {
@@ -431,7 +447,9 @@ impl JpxCodec {
 
         // jp2lam yields planar i32 samples at each component's own precision;
         // interleave and scale to 8-bit.
-        let pixels = width as usize * height as usize;
+        let pixels = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| ImageError::Decode("JPX: pixel count overflow".into()))?;
         let mut out = vec![0u8; bytes];
         // When the PDF declares `/Indexed`, ignoring a JP2 container palette
         // leaves the codestream's samples as literal PDF palette indices. A
@@ -459,14 +477,21 @@ impl JpxCodec {
             // already follows. Flip both branches together if PDFium parity is
             // ever traded for spec-literal colour mapping.
             let max_sample = (1u32 << comp.precision.clamp(1, 31)) - 1;
-            for i in 0..pixels {
-                out[i * ncomp + ci] = component_sample_to_u8(
-                    comp.data[i],
-                    comp.precision,
-                    max_sample,
-                    shift,
-                    preserve_palette_indices,
-                );
+            for y in 0..height as usize {
+                if y & 31 == 0 && limits.is_cancelled() {
+                    return Err(ImageError::Cancelled);
+                }
+                let row = y * width as usize;
+                for x in 0..width as usize {
+                    let i = row + x;
+                    out[i * ncomp + ci] = component_sample_to_u8(
+                        comp.data[i],
+                        comp.precision,
+                        max_sample,
+                        shift,
+                        preserve_palette_indices,
+                    );
+                }
             }
         }
 
@@ -477,6 +502,20 @@ impl JpxCodec {
             stride,
             data: Arc::from(out),
         })
+    }
+}
+
+fn decoder_limits(limits: &DecodeLimits) -> Jp2DecodeLimits {
+    let defaults = Jp2DecodeLimits::default();
+    Jp2DecodeLimits {
+        max_input_bytes: defaults
+            .max_input_bytes
+            .min(usize::try_from(limits.max_input_bytes).unwrap_or(usize::MAX)),
+        max_pixels: limits.max_pixels,
+        max_working_bytes: defaults
+            .max_working_bytes
+            .min(usize::try_from(limits.max_working_bytes).unwrap_or(usize::MAX)),
+        ..defaults
     }
 }
 
@@ -504,7 +543,8 @@ fn component_sample_to_u8(
 
 #[cfg(test)]
 mod tests {
-    use super::component_sample_to_u8;
+    use super::{component_sample_to_u8, decoder_limits};
+    use crate::codec::DecodeLimits;
 
     #[test]
     fn sub8_pdf_palette_indices_are_not_color_widened() {
@@ -514,5 +554,20 @@ mod tests {
             240,
             "ordinary 4-bit color components retain PDFium's widening"
         );
+    }
+
+    #[test]
+    fn renderer_limits_are_pushed_into_jp2_decode() {
+        let renderer = DecodeLimits {
+            max_input_bytes: 2048,
+            max_pixels: 1234,
+            max_output_bytes: 4096,
+            max_working_bytes: 3072,
+            ..DecodeLimits::default()
+        };
+        let mapped = decoder_limits(&renderer);
+        assert_eq!(mapped.max_pixels, 1234);
+        assert_eq!(mapped.max_input_bytes, 2048);
+        assert_eq!(mapped.max_working_bytes, 3072);
     }
 }

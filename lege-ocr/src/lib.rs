@@ -131,12 +131,15 @@ impl OcrPipeline {
     ) -> Result<SlowOcrPage> {
         let page_w = high_res.width();
         let page_h = high_res.height();
-        let expected = page_w as usize * page_h as usize;
-        let analysis_binary = if self.config.binary_is_analysis_mask && binary.len() == expected {
-            binary.to_vec()
-        } else {
-            normalize::build_analysis_binary(binary, high_res)
-        };
+        let expected = high_res.as_raw().len() / 3;
+        let analysis_storage;
+        let analysis_binary: &[u8] =
+            if self.config.binary_is_analysis_mask && binary.len() == expected {
+                binary
+            } else {
+                analysis_storage = normalize::build_analysis_binary(binary, high_res);
+                &analysis_storage
+            };
 
         let debug_dir = if self.config.debug {
             let base = self
@@ -154,14 +157,23 @@ impl OcrPipeline {
         // regions (column-aware) without interleaving columns.
         let mut per_region_lines: Vec<Vec<OcrLineResult>> = Vec::with_capacity(regions.len());
         for region in regions {
-            let region_lines = self.process_region(
+            let region_lines = match self.process_region(
                 high_res,
-                &analysis_binary,
+                analysis_binary,
                 region,
                 page_w,
                 page_h,
                 debug_dir.as_deref(),
-            )?;
+            ) {
+                Ok(lines) => lines,
+                Err(error) => {
+                    log::warn!(
+                        "Skipping invalid OCR region {} on page {page_index}: {error}",
+                        region.region_id
+                    );
+                    Vec::new()
+                }
+            };
             per_region_lines.push(region_lines);
         }
 
@@ -263,9 +275,22 @@ impl OcrPipeline {
     ) -> Result<Vec<OcrLineResult>> {
         let rid = region.region_id;
         let bbox = region.bbox_highres;
+        let [x1, y1, x2, y2] = bbox;
+        if x2 <= x1 || y2 <= y1 || x2 > page_w || y2 > page_h {
+            anyhow::bail!(
+                "invalid OCR region bbox [{x1},{y1},{x2},{y2}] for page {page_w}x{page_h}"
+            );
+        }
+        let rw = x2 - x1;
+        let rh = y2 - y1;
 
-        // 1. Extract binary region crop for segmentation
-        let (region_bin, rw, rh) = normalize::extract_binary_crop(binary, page_w, page_h, bbox)?;
+        // Segmentation reads the page mask directly. Materialize a duplicate
+        // region crop only when debug artifacts actually need one.
+        let region_bin = if debug_dir.is_some() {
+            Some(normalize::extract_binary_crop(binary, page_w, page_h, bbox)?.0)
+        } else {
+            None
+        };
 
         // 2. Line segmentation on binary crop
         // The segmentation operates in the coordinate space of the full page binary image
@@ -276,10 +301,10 @@ impl OcrPipeline {
                 .confidence
                 .meets_minimum(&self.config.min_segment_confidence);
 
-        if let Some(dir) = debug_dir {
+        if let (Some(dir), Some(region_bin)) = (debug_dir, region_bin.as_deref()) {
             let _ = debug::save_binary_crop(
                 &dir.join(format!("region_{rid:03}_binary.png")),
-                &region_bin,
+                region_bin,
                 rw,
                 rh,
             );
@@ -299,8 +324,8 @@ impl OcrPipeline {
                 (0..n)
                     .map(|i| {
                         let lo = i.saturating_sub(r);
-                        let hi = (i + r + 1).min(n);
-                        let s: u32 = proj[lo..hi].iter().sum();
+                        let hi = i.saturating_add(r).saturating_add(1).min(n);
+                        let s: u64 = proj[lo..hi].iter().map(|&value| value as u64).sum();
                         s as f32 / (hi - lo) as f32
                     })
                     .collect()
@@ -312,7 +337,7 @@ impl OcrPipeline {
             );
             let _ = debug::save_lines_annotated(
                 &dir.join(format!("region_{rid:03}_lines.png")),
-                &region_bin,
+                region_bin,
                 rw,
                 rh,
                 &seg,
@@ -927,6 +952,52 @@ mod tests {
         assert_eq!(result.lines.len(), 2);
         assert_eq!(result.lines[0].bbox_highres, [12, 13, 40, 22]);
         assert_eq!(result.lines[1].bbox_highres, [12, 30, 40, 39]);
+    }
+
+    #[test]
+    fn malformed_region_is_skipped_without_losing_the_page() {
+        let line_calls = Arc::new(AtomicUsize::new(0));
+        let region_calls = Arc::new(AtomicUsize::new(0));
+        let pipeline = OcrPipeline::with_engine(
+            Box::new(MockEngine {
+                line_calls: line_calls.clone(),
+                region_calls: region_calls.clone(),
+                binary_line_text: None,
+                region_lines: vec![line("valid", [1, 1, 5, 5])],
+            }),
+            SlowOcrConfig::default(),
+        );
+        let image = RgbImage::from_pixel(20, 20, Rgb([255, 255, 255]));
+        let regions = [
+            TextRegion {
+                page_index: 0,
+                region_id: 0,
+                class_name: Some("page".to_string()),
+                bbox_highres: [30, 0, 40, 10],
+                confidence: 1.0,
+            },
+            TextRegion {
+                page_index: 0,
+                region_id: 1,
+                class_name: Some("page".to_string()),
+                bbox_highres: [0, 0, 20, 20],
+                confidence: 1.0,
+            },
+        ];
+
+        let result = pipeline
+            .process_page(
+                &image,
+                &[255; 400],
+                &regions,
+                &CoordinateMap::identity(20, 20, 20.0, 20.0),
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(region_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(result.lines.len(), 1);
+        assert_eq!(result.lines[0].text, "valid");
     }
 
     #[test]

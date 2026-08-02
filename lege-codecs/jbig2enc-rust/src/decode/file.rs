@@ -5,7 +5,7 @@
 
 use crate::decode::context::{DecodeStrictness, RecoveryEvent};
 use crate::decode::error::{DecodeError, ParseError, UnsupportedFeature};
-use crate::decode::segment::{SegmentHeader, ensure_known_length, parse_segment_header};
+use crate::decode::segment::{SegmentHeader, ensure_known_length, parse_segment_header_limited};
 use crate::shared::limits::DecodeLimits;
 use crate::shared::reader::Reader;
 use crate::shared::segment::SegmentType;
@@ -18,6 +18,8 @@ pub const FILE_MAGIC: [u8; 8] = [0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A]
 pub enum FileOrganization {
     /// Sequential: each segment header is immediately followed by its data.
     Sequential,
+    /// Random access: all segment headers precede all segment data (T.88 §D.2).
+    RandomAccess,
     /// Embedded/PDF: a bare segment sequence with no file header.
     Embedded,
 }
@@ -63,21 +65,53 @@ pub fn parse_file_with<'a>(
     // this crate's encoder and jbig2dec 0.20); clear => random access. Bit 1 =>
     // number of pages unknown (the 4-byte page count is then omitted).
     let flags = reader.read_u8()?;
+    let reserved = flags & 0xFC;
+    let mut recovery = Vec::new();
+    if reserved != 0 {
+        if strictness == DecodeStrictness::Strict {
+            return Err(DecodeError::Malformed {
+                reason: "reserved standalone file-header flags are non-zero",
+            });
+        }
+        recovery.push(RecoveryEvent::ReservedFileHeaderBits { bits: reserved });
+    }
     let sequential = flags & 0x01 != 0;
     let unknown_pages = flags & 0x02 != 0;
-    if !unknown_pages {
+    let declared_pages = if !unknown_pages {
         // 4-byte number of pages; parsed but unused here.
-        let _n_pages = reader.read_u32_be()?;
-    }
+        Some(reader.read_u32_be()?)
+    } else {
+        None
+    };
 
-    let mut recovery = Vec::new();
     let segments = if sequential {
         parse_segment_sequence(&mut reader, limits, strictness, &mut recovery)?
     } else {
         parse_random_access(&mut reader, limits)?
     };
+    if let Some(declared) = declared_pages {
+        let actual = segments
+            .iter()
+            .filter(|s| matches!(s.header.segment_type(), Some(SegmentType::PageInformation)))
+            .count();
+        let actual = u32::try_from(actual).map_err(|_| DecodeError::Overflow {
+            operation: "decoded page count",
+        })?;
+        if declared != actual {
+            if strictness == DecodeStrictness::Strict {
+                return Err(DecodeError::Malformed {
+                    reason: "declared page count does not match page-information segments",
+                });
+            }
+            recovery.push(RecoveryEvent::DeclaredPageCountMismatch { declared, actual });
+        }
+    }
     Ok(ParsedDocument {
-        organization: FileOrganization::Sequential,
+        organization: if sequential {
+            FileOrganization::Sequential
+        } else {
+            FileOrganization::RandomAccess
+        },
         segments,
         recovery,
     })
@@ -102,16 +136,7 @@ fn parse_random_access<'a>(
                 },
             ));
         }
-        let header = parse_segment_header(reader).map_err(DecodeError::Parse)?;
-        if header.referred_to.len() > limits.max_referred_segments {
-            return Err(DecodeError::limit(
-                crate::decode::error::LimitError::Count {
-                    what: "referred-to segments",
-                    value: header.referred_to.len() as u64,
-                    limit: limits.max_referred_segments as u64,
-                },
-            ));
-        }
+        let header = parse_segment_header_limited(reader, limits.max_referred_segments)?;
         let is_eof = matches!(header.segment_type(), Some(SegmentType::EndOfFile));
         headers.push(header);
         if is_eof {
@@ -189,9 +214,9 @@ fn parse_segment_sequence<'a>(
         }
         let seg_start = reader.position();
         let remaining_at_start = reader.remaining();
-        let header = match parse_segment_header(reader) {
+        let header = match parse_segment_header_limited(reader, limits.max_referred_segments) {
             Ok(h) => h,
-            Err(e) => {
+            Err(DecodeError::Parse(e)) => {
                 // A malformed header after at least one good segment, in
                 // Compatible mode, is treated as trailing garbage.
                 if strictness == DecodeStrictness::Compatible && !segments.is_empty() {
@@ -203,16 +228,8 @@ fn parse_segment_sequence<'a>(
                 }
                 return Err(DecodeError::Parse(e));
             }
+            Err(e) => return Err(e),
         };
-        if header.referred_to.len() > limits.max_referred_segments {
-            return Err(DecodeError::limit(
-                crate::decode::error::LimitError::Count {
-                    what: "referred-to segments",
-                    value: header.referred_to.len() as u64,
-                    limit: limits.max_referred_segments as u64,
-                },
-            ));
-        }
         // §7.2.7 unknown data length: legal only for immediate generic regions,
         // whose length is recovered by scanning for the terminator sequence.
         let data = if header.is_unknown_length() {
@@ -364,6 +381,39 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn reserved_file_flags_respect_strictness() {
+        let mut bytes = minimal_file();
+        bytes[8] |= 0x80;
+        assert!(matches!(
+            parse_file_with(&bytes, &limits(), DecodeStrictness::Strict),
+            Err(DecodeError::Malformed {
+                reason: "reserved standalone file-header flags are non-zero"
+            })
+        ));
+
+        let doc = parse_file_with(&bytes, &limits(), DecodeStrictness::Compatible).unwrap();
+        assert_eq!(
+            doc.recovery,
+            vec![RecoveryEvent::ReservedFileHeaderBits { bits: 0x80 }]
+        );
+    }
+
+    #[test]
+    fn declared_page_count_respects_strictness() {
+        let mut bytes = minimal_file();
+        bytes[9..13].copy_from_slice(&2u32.to_be_bytes());
+        assert!(parse_file(&bytes, &limits()).is_err());
+        let doc = parse_file_with(&bytes, &limits(), DecodeStrictness::Compatible).unwrap();
+        assert!(matches!(
+            doc.recovery.as_slice(),
+            [RecoveryEvent::DeclaredPageCountMismatch {
+                declared: 2,
+                actual: 1
+            }]
+        ));
+    }
+
     /// A minimal random-access file (§D.2): magic + flags (random access) +
     /// n_pages + [page-info header][EOF header] + [page-info data].
     fn minimal_random_access_file() -> Vec<u8> {
@@ -392,6 +442,7 @@ mod tests {
     fn random_access_parses_headers_then_data() {
         let bytes = minimal_random_access_file();
         let doc = parse_file(&bytes, &limits()).unwrap();
+        assert_eq!(doc.organization, FileOrganization::RandomAccess);
         assert_eq!(doc.segments.len(), 2);
         assert_eq!(
             doc.segments[0].header.segment_type(),
@@ -445,5 +496,26 @@ mod tests {
         let mut bytes = minimal_file();
         bytes.truncate(bytes.len() - 6); // cut into the first segment payload/EOF
         assert!(parse_file(&bytes, &limits()).is_err());
+    }
+
+    #[test]
+    fn referred_segment_limit_is_checked_before_long_form_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.push(48); // page information
+        // Long form marker plus an encoded referred-to count of 65,537.
+        bytes.extend_from_slice(&0xE001_0001u32.to_be_bytes());
+
+        let mut constrained = limits();
+        constrained.max_referred_segments = 4;
+        let err = parse_embedded(&bytes, &constrained).unwrap_err();
+        assert!(matches!(
+            err,
+            DecodeError::Limit(crate::decode::error::LimitError::Count {
+                what: "referred-to segments",
+                value: 65_537,
+                limit: 4,
+            })
+        ));
     }
 }

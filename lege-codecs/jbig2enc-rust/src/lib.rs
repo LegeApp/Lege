@@ -385,9 +385,13 @@ fn validate_and_build_bitimage(
     width: u32,
     height: u32,
 ) -> Result<jbig2sym::BitImage, Jbig2Error> {
-    let expected_len = width as usize * height as usize;
-    if input.len() < expected_len {
-        let packed_size = (width as usize * height as usize).div_ceil(8);
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| Jbig2Error::EncodingFailed {
+            message: "image dimensions overflow the platform address space".to_string(),
+        })?;
+    if input.len() != expected_len {
+        let packed_size = expected_len.div_ceil(8);
         if input.len() == packed_size {
             return Err(Jbig2Error::PackedDataDetected);
         }
@@ -397,7 +401,11 @@ fn validate_and_build_bitimage(
             actual: input.len(),
             width,
             height,
-            ratio: input.len() as f64 / expected_len as f64,
+            ratio: if expected_len == 0 {
+                0.0
+            } else {
+                input.len() as f64 / expected_len as f64
+            },
         });
     }
 
@@ -491,4 +499,39 @@ pub fn active_backend_info() -> String {
         "serial"
     };
     format!("portable-simd=wide, parallel={parallel}")
+}
+
+#[cfg(all(test, feature = "encode"))]
+mod api_validation_tests {
+    use super::*;
+
+    #[test]
+    fn unpacked_input_length_must_match_exactly() {
+        let err = encode_single_image(&[0, 1, 0, 1, 0], 2, 2, false).unwrap_err();
+        assert!(matches!(
+            err,
+            Jbig2Error::BufferSizeMismatch {
+                expected: 4,
+                actual: 5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn zero_sized_images_are_rejected() {
+        let err = encode_single_image(&[], 0, 0, false).unwrap_err();
+        assert!(matches!(err, Jbig2Error::EncodingFailed { .. }));
+    }
+
+    #[test]
+    fn invalid_direct_encoder_config_is_fallible_not_panicking() {
+        let mut config = Jbig2Config::default();
+        config.symbol_mode = false;
+        config.refine = true;
+        assert!(Jbig2Encoder::try_new(&config).is_err());
+        let mut encoder = Jbig2Encoder::new(&config);
+        let image = jbig2sym::BitImage::new(1, 1).unwrap();
+        assert!(encoder.add_page_bitimage(image).is_err());
+    }
 }

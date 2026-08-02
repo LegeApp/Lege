@@ -78,6 +78,7 @@ pub(crate) fn try_fold(
     if !is_foldable_op(op) {
         return Ok(None);
     }
+    validate_fold_arity(node)?;
     if op == "Shape" {
         return Ok(Some(fold_shape(node, known_shapes)?));
     }
@@ -160,6 +161,28 @@ pub(crate) fn try_fold(
     Ok(Some(folded))
 }
 
+fn validate_fold_arity(node: &NodeProto) -> Result<()> {
+    let op = node.get_op_type();
+    let required_inputs = match op {
+        "Shape" | "Cast" | "Concat" | "Split" | "Unsqueeze" | "Squeeze" | "Neg" | "Not"
+        | "ConstantOfShape" => 1,
+        "Gather" | "Reshape" | "Equal" | "Add" | "Sub" | "Mul" | "Div" => 2,
+        "Slice" => 3,
+        _ => return Ok(()),
+    };
+    if node.get_input().len() < required_inputs
+        || node.get_input()[..required_inputs]
+            .iter()
+            .any(String::is_empty)
+    {
+        bail!("shape-fold {op} is missing a required input");
+    }
+    if node.get_output().iter().all(String::is_empty) {
+        bail!("shape-fold {op} has no non-empty output");
+    }
+    Ok(())
+}
+
 fn fold_shape(node: &NodeProto, known_shapes: &BTreeMap<String, Vec<i64>>) -> Result<Vec<Folded>> {
     let input = &node.get_input()[0];
     let shape = known_shapes
@@ -233,7 +256,10 @@ fn fold_slice(
     let mut index = start;
     while index < end {
         values.push(data[index as usize]);
-        index += step;
+        let Some(next) = index.checked_add(step) else {
+            break;
+        };
+        index = next;
     }
     Ok(Folded {
         name: outputs[0].clone(),
@@ -300,16 +326,26 @@ fn fold_split(
     if sizes.len() != outputs.len() {
         bail!("shape-fold Split size count does not match outputs");
     }
+    if sizes.iter().any(|size| *size < 0) {
+        bail!("shape-fold Split sizes must be non-negative");
+    }
     let mut folded = Vec::with_capacity(outputs.len());
     let mut offset = 0usize;
     for (out, size) in outputs.iter().zip(sizes) {
-        let end = offset + size as usize;
+        let size = usize::try_from(size).context("shape-fold Split size exceeds usize")?;
+        let end = offset
+            .checked_add(size)
+            .filter(|end| *end <= data.len())
+            .context("shape-fold Split sizes exceed input length")?;
         folded.push(Folded {
             name: out.clone(),
-            shape: vec![size],
+            shape: vec![size as i64],
             value: TensorConst::Int64(data[offset..end].to_vec()),
         });
         offset = end;
+    }
+    if offset != data.len() {
+        bail!("shape-fold Split sizes do not cover the input");
     }
     Ok(folded)
 }
@@ -328,14 +364,24 @@ fn fold_gather(
     }
     let data = as_i64(&tensor_consts[inputs[0]]);
     let dim = data.len() as i64;
+    if dim == 0 && !as_i64(&tensor_consts[inputs[1]]).is_empty() {
+        bail!("shape-fold Gather cannot index an empty tensor");
+    }
     let indices = as_i64(&tensor_consts[inputs[1]]);
     let gathered = indices
         .iter()
         .map(|index| {
-            let resolved = normalize_index(*index, dim).clamp(0, dim - 1);
-            data[resolved as usize]
+            let resolved = if *index < 0 {
+                index.saturating_add(dim)
+            } else {
+                *index
+            };
+            if resolved < 0 || resolved >= dim {
+                bail!("shape-fold Gather index {index} is out of bounds for {dim}");
+            }
+            Ok(data[resolved as usize])
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     // A scalar index (rank-0 indices) yields a scalar result.
     let indices_rank = known_shapes.get(inputs[1]).map(Vec::len).unwrap_or(0);
     let shape = if indices_rank == 0 {
@@ -363,7 +409,10 @@ fn fold_unsqueeze(
         .cloned()
         .unwrap_or_else(|| vec![const_len(&value) as i64]);
     let axes = fold_axes(node, inputs, tensor_consts, 1)?;
-    let new_rank = shape.len() + axes.len();
+    let new_rank = shape
+        .len()
+        .checked_add(axes.len())
+        .context("shape-fold Unsqueeze rank overflow")?;
     let mut axes = axes
         .into_iter()
         .map(|axis| {
@@ -372,12 +421,18 @@ fn fold_unsqueeze(
             } else {
                 axis
             };
-            axis.clamp(0, new_rank as i64) as usize
+            if axis < 0 || axis >= new_rank as i64 {
+                bail!("shape-fold Unsqueeze axis {axis} is out of range");
+            }
+            Ok(axis as usize)
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     axes.sort_unstable();
+    if axes.windows(2).any(|pair| pair[0] == pair[1]) {
+        bail!("shape-fold Unsqueeze axes must be unique");
+    }
     for axis in axes {
-        shape.insert(axis.min(shape.len()), 1);
+        shape.insert(axis, 1);
     }
     Ok(Folded {
         name: outputs[0].clone(),
@@ -403,6 +458,9 @@ fn fold_squeeze(
             .into_iter()
             .map(|axis| normalize_axis(axis, shape.len()))
             .collect::<Result<Vec<_>>>()?;
+        if axes.iter().any(|axis| shape[*axis] != 1) {
+            bail!("shape-fold Squeeze can only remove dimensions of size 1");
+        }
         shape
             .into_iter()
             .enumerate()
@@ -425,7 +483,12 @@ fn fold_neg(
     outputs: &[String],
 ) -> Result<Folded> {
     let value = match &tensor_consts[inputs[0]] {
-        TensorConst::Int64(values) => TensorConst::Int64(values.iter().map(|v| -v).collect()),
+        TensorConst::Int64(values) => TensorConst::Int64(
+            values
+                .iter()
+                .map(|value| value.checked_neg().context("shape-fold Neg overflow"))
+                .collect::<Result<Vec<_>>>()?,
+        ),
         TensorConst::Float32(values) => TensorConst::Float32(values.iter().map(|v| -v).collect()),
     };
     Ok(Folded {
@@ -462,6 +525,9 @@ fn fold_equal(
 ) -> Result<Folded> {
     let lhs = as_i64(&tensor_consts[inputs[0]]);
     let rhs = as_i64(&tensor_consts[inputs[1]]);
+    if lhs.is_empty() != rhs.is_empty() {
+        bail!("shape-fold Equal cannot broadcast an empty and non-empty tensor");
+    }
     let len = lhs.len().max(rhs.len());
     let at = |values: &[i64], index: usize| {
         if values.len() == 1 {
@@ -496,16 +562,37 @@ fn fold_constant_of_shape(
     if shape.iter().any(|dim| *dim < 0) {
         bail!("ConstantOfShape shape has negative dims: {shape:?}");
     }
-    let count = shape.iter().product::<i64>().max(0) as usize;
+    let count = shape.iter().try_fold(1i64, |count, dim| {
+        count
+            .checked_mul(*dim)
+            .context("ConstantOfShape element count overflow")
+    })?;
+    let count = usize::try_from(count).context("ConstantOfShape element count exceeds usize")?;
+    let fill_f32 = |fill: f32| -> Result<Vec<f32>> {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .context("ConstantOfShape allocation failed")?;
+        values.resize(count, fill);
+        Ok(values)
+    };
+    let fill_i64 = |fill: i64| -> Result<Vec<i64>> {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .context("ConstantOfShape allocation failed")?;
+        values.resize(count, fill);
+        Ok(values)
+    };
     // `value` is a 1-element tensor attribute; default is float 0.
     let value = match attr_tensor(node, "value").and_then(tensor_const) {
         Some(TensorConst::Float32(values)) => {
-            TensorConst::Float32(vec![values.first().copied().unwrap_or(0.0); count])
+            TensorConst::Float32(fill_f32(values.first().copied().unwrap_or(0.0))?)
         }
         Some(TensorConst::Int64(values)) => {
-            TensorConst::Int64(vec![values.first().copied().unwrap_or(0); count])
+            TensorConst::Int64(fill_i64(values.first().copied().unwrap_or(0))?)
         }
-        None => TensorConst::Float32(vec![0.0; count]),
+        None => TensorConst::Float32(fill_f32(0.0)?),
     };
     Ok(Folded {
         name: outputs[0].clone(),
@@ -527,23 +614,7 @@ fn fold_reshape(
         .get(inputs[0])
         .cloned()
         .unwrap_or_else(|| vec![const_len(&value) as i64]);
-    let elems = const_len(&value) as i64;
-    let mut target = as_i64(&tensor_consts[inputs[1]]);
-    let mut infer = None;
-    for (index, dim) in target.iter_mut().enumerate() {
-        if *dim == 0 {
-            *dim = *input_shape.get(index).unwrap_or(&1);
-        } else if *dim == -1 {
-            if infer.is_some() {
-                bail!("shape-fold Reshape has more than one inferred dim");
-            }
-            infer = Some(index);
-        }
-    }
-    if let Some(index) = infer {
-        let known: i64 = target.iter().filter(|d| **d != -1).product();
-        target[index] = if known == 0 { 0 } else { elems / known };
-    }
+    let target = super::shape::infer_reshape(&input_shape, &as_i64(&tensor_consts[inputs[1]]))?;
     Ok(Folded {
         name: outputs[0].clone(),
         shape: target,
@@ -567,6 +638,9 @@ fn fold_binary(
         matches!(lhs, TensorConst::Float32(_)) || matches!(rhs, TensorConst::Float32(_));
     let (la, ra) = (as_i64(lhs), as_i64(rhs));
     let len = la.len().max(ra.len());
+    if la.is_empty() != ra.is_empty() {
+        bail!("shape-fold {op} cannot broadcast an empty and non-empty tensor");
+    }
     if la.len() != ra.len() && la.len() != 1 && ra.len() != 1 {
         bail!("shape-fold {op} requires equal lengths or a scalar operand");
     }
@@ -603,16 +677,17 @@ fn fold_binary(
         TensorConst::Float32(values)
     } else {
         let values = (0..len)
-            .map(|i| {
+            .map(|i| -> Result<i64> {
                 let (a, b) = (pick(&la, i), pick(&ra, i));
-                match op {
-                    "Add" => a + b,
-                    "Sub" => a - b,
-                    "Mul" => a * b,
-                    _ => a / b,
-                }
+                let value = match op {
+                    "Add" => a.checked_add(b),
+                    "Sub" => a.checked_sub(b),
+                    "Mul" => a.checked_mul(b),
+                    _ => a.checked_div(b),
+                };
+                value.with_context(|| format!("shape-fold integer {op} overflow"))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         TensorConst::Int64(values)
     };
     // Result shape follows the operand whose flat length matches the result.
@@ -621,7 +696,13 @@ fn fold_binary(
         .find_map(|name| {
             known_shapes
                 .get(*name)
-                .filter(|s| s.iter().product::<i64>().max(1) as usize == len)
+                .filter(|shape| {
+                    shape
+                        .iter()
+                        .try_fold(1i64, |count, dim| count.checked_mul(*dim))
+                        .and_then(|count| usize::try_from(count.max(1)).ok())
+                        == Some(len)
+                })
                 .cloned()
         })
         .unwrap_or_else(|| vec![len as i64]);
@@ -675,5 +756,82 @@ fn const_len(value: &TensorConst) -> usize {
     match value {
         TensorConst::Int64(values) => values.len(),
         TensorConst::Float32(values) => values.len(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use super::*;
+
+    #[test]
+    fn malformed_foldable_nodes_never_panic() {
+        let constants = HashMap::from([
+            (
+                "a".to_owned(),
+                TensorConst::Int64(vec![i64::MIN, i64::MAX, 0, -1, 1]),
+            ),
+            ("b".to_owned(), TensorConst::Int64(Vec::new())),
+            ("c".to_owned(), TensorConst::Int64(vec![0])),
+        ]);
+        let known_shapes = BTreeMap::from([
+            ("a".to_owned(), vec![5]),
+            ("b".to_owned(), vec![0]),
+            ("c".to_owned(), vec![1]),
+        ]);
+        let ops = [
+            "Shape",
+            "Cast",
+            "Slice",
+            "Concat",
+            "Split",
+            "Gather",
+            "Unsqueeze",
+            "Squeeze",
+            "Neg",
+            "Not",
+            "Equal",
+            "ConstantOfShape",
+            "Reshape",
+            "Add",
+            "Sub",
+            "Mul",
+            "Div",
+        ];
+        let names = ["a", "b", "c", ""];
+        let mut state = 0x92d6_8ca2_1f04_7b31u64;
+
+        for case in 0..2_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let op = ops[(state as usize) % ops.len()];
+            let input_count = ((state >> 8) as usize) % 6;
+            let output_count = ((state >> 16) as usize) % 4;
+            let mut node = NodeProto {
+                op_type: Some(op.to_owned()),
+                ..NodeProto::new()
+            };
+            for index in 0..input_count {
+                let choice = ((state >> (index * 7 % 48)) as usize) % names.len();
+                node.input.push(names[choice].to_owned());
+            }
+            for index in 0..output_count {
+                node.output.push(if (state >> (index + 40)) & 1 == 0 {
+                    String::new()
+                } else {
+                    format!("out_{index}")
+                });
+            }
+
+            let outcome = std::panic::catch_unwind(|| try_fold(&node, &known_shapes, &constants));
+            assert!(
+                outcome.is_ok(),
+                "shape folding panicked for generated case {case}: op={op}, inputs={:?}, outputs={:?}",
+                node.get_input(),
+                node.get_output()
+            );
+        }
     }
 }

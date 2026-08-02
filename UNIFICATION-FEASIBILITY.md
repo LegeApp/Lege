@@ -373,3 +373,113 @@ The thing most likely to go wrong is not technical. It is letting per-page
 preview grow into per-page *approval*. Keep the preview passive, keep the
 default path at three clicks, and the merged application is strictly better than
 the three separate ones.
+
+---
+
+## 7. Follow-up audit and integration second opinion (2026-08-02)
+
+A focused audit of `lege-render`, `lege-viewer`, JP2LAM, jbig2enc-rust, and the
+DjVu encoder found and corrected several issues that matter to the proposed
+integration:
+
+- The render scheduler could overflow its byte-admission arithmetic, eagerly
+  materialize an arbitrary page range in an unbounded channel, and overflow its
+  peak-byte estimate. Admission arithmetic is now subtraction-based, page
+  feeding is bounded, and estimates saturate.
+- Viewer GPU image identity omitted the render variant, so a same-sized crop or
+  processing preview could retain stale atlas pixels. The variant is now part
+  of the identity. Viewer text geometry also now indexes the same retained
+  UTF-16 substrate used by selection/search, including synthetic newlines.
+- JP2LAM could silently omit tiles beyond the 16-bit `Isot` range, describe an
+  empty PCRD packet as present, under-budget lossy RGB tile preparation, and
+  report full-image quality metrics for a differently tiled output. Oversized
+  grids are rejected, empty packets are encoded correctly, RGB memory estimates
+  account for four live planes, and non-tile-aware metrics fail explicitly.
+- The JBIG2 generic-region API accepted MMR, templates 1–3, and TPGDON while
+  always writing a template-0 arithmetic payload. Unsupported declarations are
+  now rejected rather than producing header/payload-incompatible streams.
+- DjVu positioned layers were compared for equality with the full page extent,
+  breaking partial layers. They now use checked in-bounds validation. Lossless
+  IW44 and shared JB2 dictionaries were exposed but incomplete or ignored; they
+  now fail before emitting misleading partial output pending full support.
+
+The direction of this assessment remains sound: `lege-viewer` should be the
+application shell, `lege-render` the visual engine, and `lege-process` the
+processing service. The API boundary should, however, be stronger than simply
+making `process_page_cpu_work` public. That function still combines private
+pipeline inputs, layout/margin state, resize/binarization policy, and output
+encoding. Introduce a stable, page-keyed `ProcessSession`/`PreviewService`
+instead:
+
+```text
+Viewer UI
+   +-- immediate crop/transform preview through lege-render
+   `-- ProcessSession
+        +-- background document analysis
+        +-- revisioned per-page exact processing
+        +-- atomic temporary preview artifacts
+        `-- ordered final export
+```
+
+The processing UI should be a compact inspector, not a second application
+inside the viewer:
+
+- One **Process** toolbar action opens a roughly 340 px right drawer, changing
+  to a bottom sheet on narrow windows.
+- Profile, crop, output type, and OCR stay visible as quick controls. Less
+  common settings live in an Advanced accordion.
+- Crop editing happens on the document canvas with handles, a dimmed exterior,
+  numeric fine adjustment, and original/processed split or swipe preview.
+- Keep a document crop default plus normalized per-page overrides, with
+  apply-to-all/even/odd/selected operations. Thumbnail badges expose pages with
+  overrides, draft previews, failures, or completed exact previews.
+
+Per-page processing should be revisioned. Crop dragging updates the renderer
+immediately; after a short debounce, `lege-process` produces the exact preview.
+Every result carries the source fingerprint, page, configuration hash, analysis
+stage, and revision, and the viewer discards stale revisions. Document-wide
+margin/TOC analysis remains a background phase: local previews can be marked
+draft and silently upgraded once global analysis completes.
+
+Temporary files are useful as a bounded cache, recovery aid, and process
+boundary, but must not become authoritative application state. Publish preview
+artifacts with write-then-rename in a per-session directory, enforce restrictive
+permissions and LRU cleanup, and prefer an in-memory surface for the selected
+page's lowest-latency preview.
+
+For the first integration, use a hybrid execution model: renderer-side crop and
+transform feedback stays in-process; a long-lived isolated processing worker
+produces exact page previews; final batch export retains subprocess isolation.
+This avoids one process launch per slider/crop adjustment without prematurely
+exposing pipeline-private types. Exact previews can move in-process later after
+`ProcessSession` is a genuinely stable library boundary.
+
+Likewise, build a small retained `lege-ui` layer over the viewer scene system,
+but do not assume all 11.6k lines of the Freya-adjacent stack should be carried
+forward. Extract Torin only if the control/layout implementation demonstrates
+the need; do not import the reactive runtime or recreate Freya under a new name.
+Also do not count on a single GPU context while final processing remains in a
+subprocess—context consolidation becomes real only when those GPU stages share
+the viewer process.
+
+The follow-up implementation pass completed the remaining actionable work:
+
+1. Renderer admission now uses a credit-driven sliding window, bounding
+   out-of-order completed surfaces without putting the missing early page behind
+   a full result queue.
+2. JP2LAM loads each lossy RGB tile once for all three MCT outputs. Quality
+   metrics decode and measure the exact returned J2K/JP2 bytes, making fixed and
+   automatic multi-tile metrics genuinely tile-aware.
+3. Document-level shared JB2 dictionaries now emit `FORM:DJVI`/`Djbz`, directory
+   include records, and page `INCL` references, with independent `ddjvu`
+   round-trip coverage. IW44's canonical threshold-to-zero schedule now
+   terminates, but it is not pixel-exact even at full refinement; the page API
+   therefore continues to reject the misleading `lossless + IW44` combination
+   while JB2 remains the true lossless bilevel path.
+4. Viewer character geometry coalesces valid UTF-16 surrogate pairs, records
+   their two-unit span, and advances hit testing, selection overlays, and line
+   ranges across the complete scalar value.
+
+These changes strengthen the same page boundary the unified application will
+depend on. They are now implementation groundwork rather than prerequisites
+left outstanding.

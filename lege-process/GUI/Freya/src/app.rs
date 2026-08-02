@@ -615,11 +615,17 @@ fn panel_card(title: impl Into<String>, fill_height: bool, children: Vec<Element
 
 fn tooltip_wrap(
     state: State<AppState>,
-    _area: TooltipArea,
+    area: TooltipArea,
     text: impl Into<String>,
     child: Element,
 ) -> Element {
-    tooltip_wrap_side(state, TooltipSide::Left, text, child)
+    let side = match area {
+        TooltipArea::FileActions | TooltipArea::OutputCard | TooltipArea::BinarizationCard => {
+            TooltipSide::Right
+        }
+        TooltipArea::PagesDeviceCard => TooltipSide::Left,
+    };
+    tooltip_wrap_side(state, side, text, child)
 }
 
 fn tooltip_wrap_side(
@@ -662,8 +668,10 @@ fn tooltip_wrap_at(
         AttachedPosition::Left => TooltipSide::Left,
         AttachedPosition::Right => TooltipSide::Right,
         AttachedPosition::Top | AttachedPosition::Bottom => match area {
-            TooltipArea::OutputCard | TooltipArea::FileActions => TooltipSide::Right,
-            TooltipArea::PagesDeviceCard | TooltipArea::BinarizationCard => TooltipSide::Left,
+            TooltipArea::OutputCard | TooltipArea::FileActions | TooltipArea::BinarizationCard => {
+                TooltipSide::Right
+            }
+            TooltipArea::PagesDeviceCard => TooltipSide::Left,
         },
     };
     tooltip_wrap_side(state, side, text, child)
@@ -927,20 +935,22 @@ fn sync_text_inputs(
 
     use_side_effect(move || {
         let mut s = state.write();
+        let mut resolution_to_persist = None;
 
         if s.target_height_input != target_height_val {
             s.target_height_input = target_height_val.clone();
-            if target_height_val.trim().is_empty() {
-                // The field was cleared (clicking it wipes the text via
-                // replace_on_focus). Clear the target instead of keeping the
-                // stale value: what is displayed is what gets used.
-                s.options.target_device = None;
-                s.options.target_height = None;
-                s.options.target_width = None;
-            } else if let Some((height, width)) = parse_resolution_field(&target_height_val) {
+            // `replace_on_focus` temporarily clears the editor. Keep the last
+            // committed resolution until the replacement becomes valid so a
+            // click can never silently restore the 1200 default.
+            if let Some((height, width)) = parse_resolution_field(&target_height_val) {
                 s.options.target_device = None;
                 s.options.target_height = Some(height);
-                s.options.target_width = width;
+                s.options.target_width = if s.options.crop_free_aspect {
+                    None
+                } else {
+                    width
+                };
+                resolution_to_persist = Some(ResolutionPreset::from_options(&s.options));
             }
         }
 
@@ -955,7 +965,9 @@ fn sync_text_inputs(
 
         if s.k_factor_input != k_factor_val {
             s.k_factor_input = k_factor_val.clone();
-            if let Ok(value) = k_factor_val.trim().parse::<f32>() {
+            if let Ok(value) = k_factor_val.trim().parse::<f32>()
+                && (0.0..=1.0).contains(&value)
+            {
                 s.options.k_factor = value;
             }
         }
@@ -964,6 +976,13 @@ fn sync_text_inputs(
             s.threshold_input = threshold_val.clone();
             if let Ok(value) = threshold_val.trim().parse::<u16>() {
                 s.options.threshold_value = value.min(255) as u8;
+            }
+        }
+
+        drop(s);
+        if let Some(preset) = resolution_to_persist {
+            if let Err(error) = backend::save_resolution_preset(&preset) {
+                eprintln!("Failed to save resolution preset: {error}");
             }
         }
     });
@@ -1338,9 +1357,9 @@ fn parse_resolution_field(value: &str) -> Option<(u32, Option<u32>)> {
 /// on the deferred `sync_text_inputs` side effect.
 fn apply_resolution_field(options: &mut ProcessingOptions, value: &str) -> bool {
     if value.trim().is_empty() {
-        options.target_device = None;
-        options.target_height = None;
-        options.target_width = None;
+        // Clicking the replace-on-focus editor produces an empty transient
+        // value. Preserve the last committed target rather than falling back
+        // to the pipeline's 1200px default.
         return true;
     }
 
@@ -1655,9 +1674,9 @@ fn PagesDeviceCard(
             .into(),
     );
 
-    // The resolution field persists itself: it is saved as the resolution
-    // preset when a job runs with it and restored on startup. Clicking the
-    // field clears its contents so a replacement value can be typed directly.
+    // Every valid replacement is persisted immediately and restored on the
+    // next launch. 1200 is the initial value, not placeholder text that
+    // reappears after the editor is cleared.
     let resolution_control = tooltip_wrap_at(
         state,
         TooltipArea::PagesDeviceCard,
@@ -1666,18 +1685,13 @@ fn PagesDeviceCard(
         settings_row(
                 GUI_TEXT.interactive.labels.target_height.clone(),
                 square_input(Input::new(target_height_input))
-                    .placeholder("1200")
                     .replace_on_focus(true)
                     .on_submit({
                         let mut state = state;
                         let mut target_height_input = target_height_input;
                         move |text: String| {
                             if text.trim().is_empty() {
-                                let mut s = state.write();
-                                s.options.target_device = None;
-                                s.options.target_height = None;
-                                s.options.target_width = None;
-                                s.target_height_input = String::new();
+                                return;
                             } else if let Some((height, width)) = parse_resolution_field(&text) {
                                 let normalized;
                                 {
@@ -2146,6 +2160,17 @@ fn binarization_subcard(
                         square_input(Input::new(k_factor_input))
                             .compact()
                             .placeholder("0.05")
+                            .on_validate(|validator: InputValidator| {
+                                let text = validator.text();
+                                let trimmed = text.trim();
+                                validator.set_valid(
+                                    trimmed.is_empty()
+                                        || trimmed == "."
+                                        || trimmed
+                                            .parse::<f32>()
+                                            .is_ok_and(|value| (0.0..=1.0).contains(&value)),
+                                );
+                            })
                             // Clear on click for fresh entry, like the
                             // target-resolution field — no prepending.
                             .replace_on_focus(true)
@@ -3623,6 +3648,17 @@ mod resolution_field_tests {
         assert!(apply_resolution_field(&mut options, "4800"));
         assert_eq!(options.target_height, Some(4800));
         assert_eq!(options.target_width, None);
+    }
+
+    #[test]
+    fn transient_empty_editor_keeps_the_committed_resolution() {
+        let mut options = ProcessingOptions::new();
+        options.target_height = Some(4800);
+        options.target_width = Some(3200);
+
+        assert!(apply_resolution_field(&mut options, ""));
+        assert_eq!(options.target_height, Some(4800));
+        assert_eq!(options.target_width, Some(3200));
     }
 
     #[test]

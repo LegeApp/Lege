@@ -127,7 +127,11 @@ impl ResidentMemoryPlan {
                 .get(&name)
                 .with_context(|| format!("missing known shape for resident buffer `{name}`"))?;
             let shape = shape_i64_to_usize(shape_i64)?;
-            let elements = shape.iter().product::<usize>();
+            let elements = shape.iter().try_fold(1usize, |elements, &dim| {
+                elements.checked_mul(dim).with_context(|| {
+                    format!("resident buffer `{name}` element count overflows usize")
+                })
+            })?;
             let bytes = (elements as u64)
                 .checked_mul(std::mem::size_of::<f32>() as u64)
                 .with_context(|| format!("resident buffer `{name}` byte size overflow"))?;
@@ -357,7 +361,9 @@ fn assign_reuse_slots(entries: &mut [BufferPlanEntry]) -> Vec<ReuseSlot> {
         let best_slot = slots
             .iter()
             .enumerate()
-            .filter(|(_, slot)| slot.last_use.saturating_add(1) < first_use)
+            // Lifetimes are inclusive, so a slot whose final use is step N can
+            // be reused by a tensor whose first use is step N + 1.
+            .filter(|(_, slot)| slot.last_use < first_use)
             .min_by_key(|(_, slot)| {
                 let growth = bytes.saturating_sub(slot.bytes);
                 let waste = slot.bytes.saturating_sub(bytes);
@@ -376,4 +382,42 @@ fn assign_reuse_slots(entries: &mut [BufferPlanEntry]) -> Vec<ReuseSlot> {
         entries[entry_index].reuse_slot = Some(slot_index);
     }
     slots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn intermediate(id: usize, first_use: usize, last_use: usize, bytes: u64) -> BufferPlanEntry {
+        BufferPlanEntry {
+            id,
+            name: format!("tensor_{id}"),
+            role: BufferRole::Intermediate,
+            reuse_slot: None,
+            shape: vec![bytes as usize / std::mem::size_of::<f32>()],
+            elements: bytes as usize / std::mem::size_of::<f32>(),
+            bytes,
+            first_use: Some(first_use),
+            last_use: Some(last_use),
+        }
+    }
+
+    #[test]
+    fn adjacent_non_overlapping_lifetimes_reuse_a_slot() {
+        let mut entries = vec![intermediate(0, 0, 2, 16), intermediate(1, 3, 4, 32)];
+        let slots = assign_reuse_slots(&mut entries);
+
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].bytes, 32);
+        assert_eq!(entries[0].reuse_slot, entries[1].reuse_slot);
+    }
+
+    #[test]
+    fn lifetimes_used_by_the_same_step_do_not_alias() {
+        let mut entries = vec![intermediate(0, 0, 2, 16), intermediate(1, 2, 4, 32)];
+        let slots = assign_reuse_slots(&mut entries);
+
+        assert_eq!(slots.len(), 2);
+        assert_ne!(entries[0].reuse_slot, entries[1].reuse_slot);
+    }
 }

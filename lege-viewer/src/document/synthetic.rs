@@ -131,8 +131,11 @@ fn compile_synthetic_page(
         }
         let text = format!("Page {} — synthetic line {:02}", page.0 + 1, line + 1);
         for (column, ch) in text.chars().enumerate() {
-            let index = characters.len();
-            utf16.extend(ch.encode_utf16(&mut [0; 2]).iter().copied());
+            let index = utf16.len();
+            let mut encoded = [0; 2];
+            let units = ch.encode_utf16(&mut encoded);
+            let utf16_len = units.len();
+            utf16.extend_from_slice(units);
             characters.push(CharacterGeometry {
                 unicode: Some(ch),
                 origin: PointF {
@@ -150,6 +153,7 @@ fn compile_synthetic_page(
                 bold: line == 0,
                 object_id: line as u32,
                 char_index: index,
+                utf16_len,
             });
         }
         utf16.push(b'\n' as u16);
@@ -264,4 +268,29 @@ fn raster_synthetic_tile(
         },
         degraded: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_line_geometry_indexes_the_utf16_substrate_after_newline() {
+        let engine = SyntheticEngine::new(1);
+        let artifacts = engine
+            .compile_page(PageIndex(0), Affine::IDENTITY, &CancellationFlag::default())
+            .expect("synthetic page");
+        let substrate = artifacts.text.substrate();
+        let second_line = substrate
+            .characters
+            .iter()
+            .find(|character| character.object_id == 1)
+            .expect("second line character");
+
+        assert_eq!(
+            substrate.utf16[second_line.char_index],
+            'P'.encode_utf16(&mut [0; 2])[0]
+        );
+        assert_eq!(substrate.utf16[second_line.char_index - 1], b'\n' as u16);
+    }
 }

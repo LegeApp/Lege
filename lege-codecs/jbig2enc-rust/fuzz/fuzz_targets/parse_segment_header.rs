@@ -8,14 +8,16 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use jbig2enc_rust::decode::segment::parse_segment_header;
+use jbig2enc_rust::decode::{segment::parse_segment_header_with_limits, DecodeLimits};
 use jbig2enc_rust::shared::reader::Reader;
 
 fuzz_target!(|data: &[u8]| {
     let mut r = Reader::new(data);
+    let mut limits = DecodeLimits::default();
+    limits.max_referred_segments = 1024;
     // Parse until exhausted or error; must never panic or loop unboundedly.
     while !r.is_empty() {
-        match parse_segment_header(&mut r) {
+        match parse_segment_header_with_limits(&mut r, &limits) {
             Ok(h) => {
                 // Skip the (bounded) declared payload if it is a known length.
                 if !h.is_unknown_length() {

@@ -957,19 +957,21 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
         // ── ResizeNearest ─────────────────────────────────────────────────
         PlannedOpKind::ResizeNearest { scales } => {
             let s = &in_shapes[0];
-            let channels = s[1];
+            let planes = s[0] * s[1];
             let hin = s[2];
             let win = s[3];
-            let hout = (hin as f32 * scales[2]).round() as usize;
-            let wout = (win as f32 * scales[3]).round() as usize;
-            let num_out = channels * hout * wout;
+            let hout = (hin as f32 * scales[2]).floor() as usize;
+            let wout = (win as f32 * scales[3]).floor() as usize;
+            let num_out = planes * hout * wout;
             let p = [
                 num_out as u32,
-                channels as u32,
+                planes as u32,
                 hin as u32,
                 win as u32,
                 hout as u32,
                 wout as u32,
+                scales[2].to_bits(),
+                scales[3].to_bits(),
             ];
             Ok(vec![StepSpec {
                 wgsl: super::resize::RESIZE_NEAREST_WGSL,
@@ -1282,5 +1284,27 @@ mod tests {
         assert_eq!(num_out, 2 * 3 * 4 * 4);
         assert_eq!(steps[0].dispatch, [1, 1, 1]);
         assert!(steps[0].wgsl.contains("num_workgroups"));
+    }
+
+    #[test]
+    fn nearest_resize_preserves_fractional_scales_and_batch_planes() {
+        let op = PlannedOp {
+            name: "resize".to_string(),
+            inputs: vec!["input".to_string()],
+            outputs: vec!["output".to_string()],
+            input_shapes: vec![vec![2, 1, 5, 5]],
+            output_shapes: vec![vec![2, 1, 3, 3]],
+            kind: PlannedOpKind::ResizeNearest {
+                scales: vec![1.0, 1.0, 0.7, 0.7],
+            },
+        };
+        let steps = op_steps(&op, "zero").unwrap();
+        let params = bytemuck::cast_slice::<u8, u32>(&steps[0].params);
+
+        assert_eq!(params[0], 2 * 3 * 3);
+        assert_eq!(params[1], 2);
+        assert_eq!((params[4], params[5]), (3, 3));
+        assert_eq!(f32::from_bits(params[6]), 0.7);
+        assert_eq!(f32::from_bits(params[7]), 0.7);
     }
 }

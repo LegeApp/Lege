@@ -36,7 +36,7 @@ use crate::doc::page_encoder::{EncodedPage, PageComponents, Rect};
 use crate::encode::symbol_dict::BitImage;
 use crate::image::image_formats::{Bitmap, Pixmap};
 use crate::{DjvuError, Result};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // ============================================================================
 // Image Layers
@@ -151,6 +151,7 @@ pub struct PageBuilder {
     layers: Vec<ImageLayer>,
     text_layer: Option<HiddenText>,
     annotations: Option<Annotations>,
+    shared_dict: Option<Arc<crate::encode::jb2::symbol_dict::SharedDict>>,
 }
 
 impl PageBuilder {
@@ -167,6 +168,7 @@ impl PageBuilder {
             layers: Vec::new(),
             text_layer: None,
             annotations: None,
+            shared_dict: None,
         }
     }
 
@@ -305,6 +307,17 @@ impl PageBuilder {
         self
     }
 
+    /// Attach a document-shared JB2 dictionary.  Local shapes remain local to
+    /// this page; an empty local shape list may contain blits referring directly
+    /// to dictionary indices.
+    pub fn with_shared_dict(
+        mut self,
+        dict: Arc<crate::encode::jb2::symbol_dict::SharedDict>,
+    ) -> Self {
+        self.shared_dict = Some(dict);
+        self
+    }
+
     /// Consumes the builder and returns the constructed page
     pub fn build(self) -> Result<Page> {
         if self.layers.is_empty() {
@@ -315,7 +328,13 @@ impl PageBuilder {
 
         // Validate all layers fit within page bounds
         for layer in &self.layers {
-            if layer.x + layer.width > self.width || layer.y + layer.height > self.height {
+            let right = layer.x.checked_add(layer.width).ok_or_else(|| {
+                DjvuError::InvalidOperation("Layer horizontal extent overflows u32".to_string())
+            })?;
+            let bottom = layer.y.checked_add(layer.height).ok_or_else(|| {
+                DjvuError::InvalidOperation("Layer vertical extent overflows u32".to_string())
+            })?;
+            if right > self.width || bottom > self.height {
                 return Err(DjvuError::InvalidOperation(format!(
                     "Layer at ({}, {}) with size {}x{} exceeds page bounds {}x{}",
                     layer.x, layer.y, layer.width, layer.height, self.width, self.height
@@ -330,6 +349,7 @@ impl PageBuilder {
             layers: self.layers,
             text_layer: self.text_layer,
             annotations: self.annotations,
+            shared_dict: self.shared_dict,
         })
     }
 }
@@ -343,6 +363,7 @@ pub struct Page {
     layers: Vec<ImageLayer>,
     text_layer: Option<HiddenText>,
     annotations: Option<Annotations>,
+    shared_dict: Option<Arc<crate::encode::jb2::symbol_dict::SharedDict>>,
 }
 
 impl Page {
@@ -388,6 +409,7 @@ impl Page {
         if let Some(ref annot) = self.annotations {
             components.annotations = Some(annot.clone());
         }
+        components.shared_dict = self.shared_dict.clone();
 
         Ok(components)
     }
@@ -423,6 +445,7 @@ pub struct DjvuBuilder {
     params: PageEncodeParams,
     dpi: u32,
     gamma: Option<f32>,
+    shared_dicts: Arc<Mutex<Vec<Arc<crate::encode::jb2::symbol_dict::SharedDict>>>>,
 }
 
 impl DjvuBuilder {
@@ -436,6 +459,7 @@ impl DjvuBuilder {
             params: PageEncodeParams::default(),
             dpi: 300,
             gamma: Some(2.2),
+            shared_dicts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -484,6 +508,7 @@ impl DjvuBuilder {
             params: self.params,
             dpi: self.dpi,
             gamma: self.gamma,
+            shared_dicts: self.shared_dicts,
         }
     }
 }
@@ -496,6 +521,7 @@ pub struct DjvuDocument {
     params: PageEncodeParams,
     dpi: u32,
     gamma: Option<f32>,
+    shared_dicts: Arc<Mutex<Vec<Arc<crate::encode::jb2::symbol_dict::SharedDict>>>>,
 }
 
 impl DjvuDocument {
@@ -537,7 +563,25 @@ impl DjvuDocument {
     ) -> Result<EncodedPage> {
         let page_num = page.page_number();
         let components = page.to_components()?;
-        EncodedPage::from_components(page_num, components, params, self.dpi, self.gamma)
+        let shared_dict_id = components.shared_dict.as_ref().map(|dict| {
+            let mut dicts = self.shared_dicts.lock().unwrap();
+            let idx = dicts
+                .iter()
+                .position(|known| Arc::ptr_eq(known, dict))
+                .unwrap_or_else(|| {
+                    dicts.push(Arc::clone(dict));
+                    dicts.len() - 1
+                });
+            format!("dict{:04}.iff", idx + 1)
+        });
+        EncodedPage::from_components_with_shared_dict_id(
+            page_num,
+            components,
+            params,
+            self.dpi,
+            self.gamma,
+            shared_dict_id.as_deref(),
+        )
     }
 
     /// Insert an already-encoded page into the document (thread-safe, out-of-order).
@@ -575,6 +619,7 @@ impl DjvuDocument {
             .ok_or_else(|| DjvuError::InvalidOperation("Failed to collect pages".to_string()))?;
 
         // Use internal encoder to assemble the document
-        DocumentEncoder::assemble_pages(&pages)
+        let shared_dicts = self.shared_dicts.lock().unwrap().clone();
+        DocumentEncoder::assemble_pages_with_shared_dictionaries(&pages, &shared_dicts)
     }
 }

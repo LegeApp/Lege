@@ -37,6 +37,7 @@ pub(crate) struct Jp2Header {
     pub(crate) height: u32,
     pub(crate) component_count: u16,
     pub(crate) bits_per_component: u8,
+    pub(crate) component_depths: Vec<(u8, bool)>,
     pub(crate) colorspace: ColorSpace,
     pub(crate) color_encoding: ColorEncoding,
     pub(crate) has_ipr_metadata: bool,
@@ -180,17 +181,14 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
     let mut cursor = BoxCursor::new(payload);
     let mut image_header = None;
     let mut colr_payload = None;
+    let mut bpcc_payload = None;
     let mut pclr_payload = None;
     let mut cmap_payload = None;
     let mut alpha = None;
     while let Some(box_) = cursor.next_box()? {
         match box_.box_type {
             BOX_IMAGE_HEADER => image_header = Some(parse_image_header(box_.payload)?),
-            BOX_BITS_PER_COMPONENT => {
-                return Err(unsupported(
-                    "unsupported JP2 feature: per-component bit-depth box (bpcc)",
-                ));
-            }
+            BOX_BITS_PER_COMPONENT => bpcc_payload = Some(box_.payload),
             // The colr box is captured raw and resolved after the loop: methods
             // 3 (any-ICC fallback) and 4 (vendor colour) infer the colour space
             // from the component count and channel definitions, which are not
@@ -209,6 +207,26 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
     }
 
     let mut header = image_header.ok_or_else(|| invalid("JP2 header lacks ihdr box"))?;
+    match (header.bits_per_component, bpcc_payload) {
+        (0, Some(payload)) => {
+            header.component_depths =
+                parse_component_depths(payload, usize::from(header.component_count))?;
+            header.bits_per_component = header
+                .component_depths
+                .first()
+                .map(|&(precision, _)| precision)
+                .ok_or_else(|| invalid("JP2 bpcc box has no component entries"))?;
+        }
+        (0, None) => {
+            return Err(invalid(
+                "JP2 ihdr BPC=255 requires a bits-per-component box (bpcc)",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(invalid("JP2 bpcc box is only valid when ihdr BPC is 255"));
+        }
+        (_, None) => {}
+    }
     header.alpha = alpha;
     let colr = colr_payload.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
     let (colorspace, color_encoding) = parse_color_spec(colr, header.component_count)?;
@@ -317,22 +335,44 @@ fn parse_image_header(payload: &[u8]) -> Result<Jp2Header> {
     if compression_type != JP2_COMPRESSION_TYPE_J2K {
         return Err(invalid("JP2 ihdr compression type is not JPEG 2000"));
     }
-    if bpc == 0xff {
-        return Err(unsupported(
-            "unsupported JP2 feature: per-component bit depths require bpcc",
-        ));
-    }
+    let bits_per_component = (bpc != 0xff).then_some((bpc & 0x7f) + 1);
+    let component_depths = bits_per_component
+        .map(|precision| vec![(precision, bpc & 0x80 != 0); usize::from(component_count)])
+        .unwrap_or_default();
     Ok(Jp2Header {
         width,
         height,
         component_count,
-        bits_per_component: (bpc & 0x7f) + 1,
+        bits_per_component: bits_per_component.unwrap_or(0),
+        component_depths,
         colorspace: ColorSpace::Gray,
         color_encoding: ColorEncoding::Gray,
         has_ipr_metadata: payload[13] != 0,
         palette: None,
         alpha: None,
     })
+}
+
+fn parse_component_depths(payload: &[u8], component_count: usize) -> Result<Vec<(u8, bool)>> {
+    if payload.len() != component_count {
+        return Err(invalid(format!(
+            "JP2 bpcc entry count {} does not match ihdr component count {component_count}",
+            payload.len()
+        )));
+    }
+    payload
+        .iter()
+        .enumerate()
+        .map(|(index, &value)| {
+            let precision = (value & 0x7f) + 1;
+            if !(1..=16).contains(&precision) {
+                return Err(unsupported(format!(
+                    "unsupported JP2 bpcc precision {precision} for component {index}"
+                )));
+            }
+            Ok((precision, value & 0x80 != 0))
+        })
+        .collect()
 }
 
 /// Resolve a `colr` colour-specification box (ISO/IEC 15444-1 I.5.3.3) to a
@@ -645,14 +685,37 @@ mod tests {
     }
 
     #[test]
-    fn bpcc_box_fails_fast_with_feature_name() {
+    fn bpcc_is_rejected_when_ihdr_declares_a_shared_depth() {
         let bytes = jp2_with_extra_header_box(BOX_BITS_PER_COMPONENT, &[7]);
 
         let err = parse_jp2(&bytes)
-            .expect_err("bpcc should be rejected")
+            .expect_err("redundant bpcc should be rejected")
             .to_string();
 
-        assert!(err.contains("per-component bit-depth box (bpcc)"), "{err}");
+        assert!(err.contains("only valid when ihdr BPC is 255"), "{err}");
+    }
+
+    #[test]
+    fn bpcc_preserves_mixed_component_depths() {
+        let mut ihdr = ihdr_payload();
+        ihdr[8..10].copy_from_slice(&4u16.to_be_bytes());
+        ihdr[10] = 0xff;
+        let mut header = Vec::new();
+        push_box(&mut header, BOX_IMAGE_HEADER, &ihdr);
+        push_box(&mut header, BOX_BITS_PER_COMPONENT, &[7, 9, 11, 15]);
+        push_box(
+            &mut header,
+            BOX_COLOR_SPEC,
+            &enumerated_colr_payload(ENUM_CMYK),
+        );
+
+        let bytes = wrap_with_header_and_codestream(header);
+        let parsed = parse_jp2(&bytes).expect("mixed-depth JP2 header");
+        assert_eq!(parsed.header.bits_per_component, 8);
+        assert_eq!(
+            parsed.header.component_depths,
+            vec![(8, false), (10, false), (12, false), (16, false)]
+        );
     }
 
     #[test]

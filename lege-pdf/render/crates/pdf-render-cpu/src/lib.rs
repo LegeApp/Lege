@@ -36,8 +36,8 @@ use std::sync::{Arc, Mutex};
 use pdf_page_ir::{CompiledPage, DeviceSize, ImageMask, Matrix, PageFeatures};
 use pdf_render_api::{
     BackendCapabilities, BackendId, HostPage, OutputFormat, PostprocessCapabilities, RenderBackend,
-    RenderError, RenderRequest, RenderTicket, RenderedPage, SubmitError, SupportLevel,
-    UnsupportedFeature,
+    RenderError, RenderLimits, RenderRequest, RenderTicket, RenderedPage, SubmitError,
+    SupportLevel, UnsupportedFeature,
 };
 
 pub mod attribution;
@@ -63,6 +63,22 @@ use {
     mask::{ClipGeom, build_clip_mask_cancellable},
     raster::RasterKernel,
 };
+
+fn image_decode_limits(limits: &RenderLimits) -> pdf_image::DecodeLimits {
+    let defaults = pdf_image::DecodeLimits::default();
+    pdf_image::DecodeLimits {
+        // A request may tighten the codec defaults, but must not silently raise
+        // their defensive encoded-input or scratch-memory ceilings.
+        max_input_bytes: defaults.max_input_bytes.min(limits.max_page_bytes),
+        max_pixels: defaults.max_pixels,
+        max_output_bytes: defaults.max_output_bytes.min(limits.max_page_bytes),
+        max_working_bytes: defaults.max_working_bytes.min(limits.max_page_bytes),
+        should_cancel: limits.cancellation.clone().map(|token| {
+            std::sync::Arc::new(move || token.is_cancelled())
+                as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
+        }),
+    }
+}
 
 /// One image draw lowered to RGB8 plus optional independent opacity for a
 /// non-CPU raster backend.
@@ -1041,7 +1057,7 @@ impl Default for CpuBackendOptions {
         let codecs = pdf_image::CodecRegistry::new([
             std::sync::Arc::new(pdf_image::JpegCodec) as std::sync::Arc<dyn pdf_image::ImageCodec>,
             std::sync::Arc::new(pdf_image::JpxCodec),
-            std::sync::Arc::new(pdf_image::Jbig2Codec),
+            std::sync::Arc::new(pdf_image::Jbig2Codec::default()),
             std::sync::Arc::new(pdf_image::CcittCodec),
         ]);
         Self {
@@ -1187,19 +1203,12 @@ impl CpuBackend {
         if surface_bytes as u64 > request.limits.max_page_bytes {
             return Err(RenderError::LimitExceeded("max_page_bytes"));
         }
-        let decode_limits = pdf_image::DecodeLimits {
-            max_output_bytes: request.limits.max_page_bytes,
-            should_cancel: request.limits.cancellation.clone().map(|token| {
-                std::sync::Arc::new(move || token.is_cancelled())
-                    as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
-            }),
-            ..pdf_image::DecodeLimits::default()
-        };
+        let decode_limits = image_decode_limits(&request.limits);
         let mut worker = CpuWorkerContext::new();
         let shared_fonts = shared_font_cache_enabled().then_some(self.shared_fonts.as_ref());
         let shared_images = image_cache_enabled().then_some(&self.shared_images);
-        if use_rendered_glyph_cache {
-            Ok(prepared::lower_with_font_cache(
+        let prepared = if use_rendered_glyph_cache {
+            prepared::lower_with_font_cache(
                 &request.page,
                 request.transform.matrix,
                 request.output_size,
@@ -1211,9 +1220,9 @@ impl CpuBackend {
                 shared_fonts,
                 glyph_cache_enabled().then_some(self.shared_glyphs.as_ref()),
                 shared_images,
-            ))
+            )
         } else {
-            Ok(prepared::lower_for_external_raster(
+            prepared::lower_for_external_raster(
                 &request.page,
                 request.transform.matrix,
                 request.output_size,
@@ -1224,8 +1233,17 @@ impl CpuBackend {
                 &mut worker.fonts,
                 shared_fonts,
                 shared_images,
-            ))
+            )
+        };
+        if request
+            .limits
+            .cancellation
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            return Err(RenderError::Cancelled);
         }
+        Ok(prepared)
     }
 
     /// Decode and lower an image-only request into the narrow RGB8 + optional
@@ -1733,14 +1751,7 @@ impl CpuBackend {
         // Request-specific lowering: transform, flatten, cull, classify, once.
         #[cfg(feature = "profiling")]
         let lower_start = std::time::Instant::now();
-        let decode_limits = pdf_image::DecodeLimits {
-            max_output_bytes: request.limits.max_page_bytes,
-            should_cancel: request.limits.cancellation.clone().map(|t| {
-                std::sync::Arc::new(move || t.is_cancelled())
-                    as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
-            }),
-            ..pdf_image::DecodeLimits::default()
-        };
+        let decode_limits = image_decode_limits(&request.limits);
         let prepared = prepared::lower_with_font_cache(
             &request.page,
             transform_matrix,
@@ -1853,14 +1864,7 @@ impl CpuBackend {
             return Err(RenderError::LimitExceeded("max_page_bytes"));
         }
         let start = std::time::Instant::now();
-        let decode_limits = pdf_image::DecodeLimits {
-            max_output_bytes: request.limits.max_page_bytes,
-            should_cancel: request.limits.cancellation.clone().map(|t| {
-                std::sync::Arc::new(move || t.is_cancelled())
-                    as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
-            }),
-            ..pdf_image::DecodeLimits::default()
-        };
+        let decode_limits = image_decode_limits(&request.limits);
         let prepared = prepared::lower(
             &request.page,
             request.transform.matrix,
@@ -1869,6 +1873,9 @@ impl CpuBackend {
             &decode_limits,
             self.options.hinting,
         );
+        if decode_limits.is_cancelled() {
+            return Err(RenderError::Cancelled);
+        }
         let mut profile = prepared.profile_report();
         profile.add_duration("render.prepare", start.elapsed());
         Ok((prepared, profile))
@@ -1891,14 +1898,7 @@ impl CpuBackend {
             return Err(RenderError::LimitExceeded("max_page_bytes"));
         }
         let start = std::time::Instant::now();
-        let decode_limits = pdf_image::DecodeLimits {
-            max_output_bytes: request.limits.max_page_bytes,
-            should_cancel: request.limits.cancellation.clone().map(|t| {
-                std::sync::Arc::new(move || t.is_cancelled())
-                    as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
-            }),
-            ..pdf_image::DecodeLimits::default()
-        };
+        let decode_limits = image_decode_limits(&request.limits);
         let prepared = prepared::lower_with_decode_cache(
             &request.page,
             request.transform.matrix,
@@ -1908,6 +1908,9 @@ impl CpuBackend {
             self.options.hinting,
             cache,
         );
+        if decode_limits.is_cancelled() {
+            return Err(RenderError::Cancelled);
+        }
         let mut profile = prepared.profile_report();
         profile.add_duration("render.prepare", start.elapsed());
         Ok((prepared, profile))
@@ -1920,20 +1923,17 @@ impl CpuBackend {
         &self,
         request: &RenderRequest,
     ) -> Result<pdf_profiling::ProfileReport, RenderError> {
-        let decode_limits = pdf_image::DecodeLimits {
-            max_output_bytes: request.limits.max_page_bytes,
-            should_cancel: request.limits.cancellation.clone().map(|t| {
-                std::sync::Arc::new(move || t.is_cancelled())
-                    as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
-            }),
-            ..pdf_image::DecodeLimits::default()
-        };
-        Ok(prepared::decode_page(
+        let decode_limits = image_decode_limits(&request.limits);
+        let profile = prepared::decode_page(
             &request.page,
             &self.options.codecs,
             &decode_limits,
             self.options.hinting,
-        ))
+        );
+        if decode_limits.is_cancelled() {
+            return Err(RenderError::Cancelled);
+        }
+        Ok(profile)
     }
 
     /// Execute a page previously returned by [`Self::prepare_profiled`].
@@ -1959,6 +1959,9 @@ impl CpuBackend {
         };
         stats.prep = surface_start.elapsed();
         exec::execute(prepared, &mut surface, ctx, &mut stats);
+        if stats.cancelled {
+            return Err(RenderError::Cancelled);
+        }
         stats.absorb_diagnostics(&prepared.diagnostics);
         let output_start = std::time::Instant::now();
         let (stride, pixels) = surface.into_output(request.output_format);
@@ -2124,6 +2127,28 @@ impl RenderBackend for CpuBackend {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn image_limits_tighten_defaults_and_share_cancellation() {
+        let token = pdf_render_api::CancellationToken::new();
+        let limits = RenderLimits {
+            max_page_bytes: 4096,
+            cancellation: Some(token.clone()),
+            ..RenderLimits::default()
+        };
+        let codec = image_decode_limits(&limits);
+        assert_eq!(codec.max_input_bytes, 4096);
+        assert_eq!(codec.max_output_bytes, 4096);
+        assert_eq!(codec.max_working_bytes, 4096);
+        assert!(!codec.is_cancelled());
+        token.cancel();
+        assert!(codec.is_cancelled());
+
+        let loose = image_decode_limits(&RenderLimits::default());
+        let defaults = pdf_image::DecodeLimits::default();
+        assert_eq!(loose.max_input_bytes, defaults.max_input_bytes);
+        assert_eq!(loose.max_working_bytes, defaults.max_working_bytes);
+    }
 
     #[test]
     fn clamp_leaves_within_budget_pages_untouched() {

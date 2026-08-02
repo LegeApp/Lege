@@ -190,34 +190,47 @@ impl super::engine::OcrEngine for PaddleOcrEngine {
         is_binary: bool,
         _lang: &str,
     ) -> Option<OcrResult> {
-        if width == 0 || height == 0 || width > 65535 || height > 65535 {
-            return None;
-        }
+        let bpp = super::engine::raw_image_bpp(data, width, height, is_binary)?;
         // Uniform image → nothing to OCR (but not a failure).
-        if data.first().is_some_and(|&f| data.iter().all(|&b| b == f)) {
+        if data.iter().all(|&b| b == data[0]) {
             return Some(OcrResult {
                 hocr: String::new(),
                 plain_text: String::new(),
             });
         }
-        let rgb = if data.len() == width * height {
-            let _ = is_binary;
-            let gray = GrayImage::from_raw(width as u32, height as u32, data.to_vec())?;
-            let lines = self.ocr_gray(&gray).ok()?;
-            let hocr = crate::hocr::build_page_hocr(&lines, width as u32, height as u32);
-            let plain_text = lines
-                .iter()
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Some(OcrResult { hocr, plain_text });
-        } else if data.len() == width * height * 3 {
-            RgbImage::from_raw(width as u32, height as u32, data.to_vec())?
+
+        // The detector normalizes to its own model size. Avoid first cloning an
+        // arbitrarily large source raster only to resize it during preprocessing.
+        const MAX_INPUT_PIXELS: usize = 4_000_000;
+        let pixels = width.checked_mul(height)?;
+        let resized;
+        let (data, final_width, final_height) = if pixels > MAX_INPUT_PIXELS {
+            let scale = (MAX_INPUT_PIXELS as f64 / pixels as f64).sqrt();
+            let resized_width = ((width as f64 * scale).round() as usize).max(1);
+            let resized_height = ((height as f64 * scale).round() as usize).max(1);
+            resized =
+                super::engine::resize_cpu(data, width, height, resized_width, resized_height, bpp);
+            (resized, resized_width, resized_height)
         } else {
-            return None;
+            (data.to_vec(), width, height)
         };
 
-        let lines = self.ocr_rgb(&rgb).ok()?;
+        let mut lines = if bpp == 1 {
+            let gray = GrayImage::from_raw(final_width as u32, final_height as u32, data)?;
+            self.ocr_gray(&gray).ok()?
+        } else {
+            let rgb = RgbImage::from_raw(final_width as u32, final_height as u32, data)?;
+            self.ocr_rgb(&rgb).ok()?
+        };
+        if final_width != width || final_height != height {
+            crate::coordinate::scale_lines(
+                &mut lines,
+                width as f32 / final_width as f32,
+                height as f32 / final_height as f32,
+                width as u32,
+                height as u32,
+            );
+        }
         let hocr = crate::hocr::build_page_hocr(&lines, width as u32, height as u32);
         let plain_text = lines
             .iter()

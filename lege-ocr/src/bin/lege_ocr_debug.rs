@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     for (i, line) in result.lines.iter().enumerate() {
         println!(
             "    line {i:3}: {:?}",
-            &line.text.chars().take(60).collect::<String>()
+            line.text.chars().take(60).collect::<String>()
         );
     }
 

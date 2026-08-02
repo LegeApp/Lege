@@ -378,8 +378,14 @@ impl GenericRegionParams {
 
     /// Validation to ensure compliance with JBIG2 spec
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.template > 3 {
-            return Err("Template ID must be 0–3");
+        if self.mmr {
+            return Err("MMR generic-region encoding is not implemented");
+        }
+        if self.template != 0 {
+            return Err("Only generic-region arithmetic template 0 is implemented");
+        }
+        if self.tpgdon {
+            return Err("TPGDON generic prediction encoding is not implemented");
         }
         if self.at_pixels.len() > 4 {
             return Err("Maximum 4 AT pixels allowed");
@@ -474,6 +480,15 @@ impl GenericRegionConfig {
 
     /// Validation to ensure compliance with JBIG2 spec
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.mmr {
+            return Err("MMR generic-region payloads are not implemented");
+        }
+        if self.template != 0 {
+            return Err("only generic-region arithmetic template 0 is implemented");
+        }
+        if self.tpgdon {
+            return Err("TPGDON generic-region prediction is not implemented");
+        }
         if self.template > 3 {
             return Err("Template ID must be 0–3");
         }
@@ -490,6 +505,26 @@ impl GenericRegionConfig {
 impl Default for GenericRegionConfig {
     fn default() -> Self {
         Self::new(0, 0, 300)
+    }
+}
+
+#[cfg(test)]
+mod generic_region_config_tests {
+    use super::GenericRegionConfig;
+
+    #[test]
+    fn unsupported_payload_modes_fail_validation() {
+        let mut cfg = GenericRegionConfig::new(16, 16, 300);
+        cfg.mmr = true;
+        assert!(cfg.validate().unwrap_err().contains("MMR"));
+
+        cfg.mmr = false;
+        cfg.template = 1;
+        assert!(cfg.validate().unwrap_err().contains("template 0"));
+
+        cfg.template = 0;
+        cfg.tpgdon = true;
+        assert!(cfg.validate().unwrap_err().contains("TPGDON"));
     }
 }
 
@@ -796,7 +831,12 @@ impl Segment {
             w.write_u8(page_num_val as u8)?;
         }
 
-        let payload_len = self.payload.len() as u32;
+        let payload_len = u32::try_from(self.payload.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "segment payload exceeds the JBIG2 32-bit length field",
+            )
+        })?;
         debug!("Segment {} payload length: {}", self.number, payload_len);
         w.write_u32::<BigEndian>(payload_len)?;
         w.write_all(&self.payload)?;

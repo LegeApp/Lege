@@ -78,6 +78,7 @@ impl ImageCodec for CcittCodec {
         params: &DecodeParameters,
         limits: &DecodeLimits,
     ) -> Result<DecodedImage, ImageError> {
+        limits.check_input(data.len())?;
         let p = params.ccitt.unwrap_or_default();
         // /Columns and /Rows describe the encoded data; the image dictionary's
         // /Width and /Height are authoritative for the raster, and producers
@@ -586,9 +587,11 @@ fn decode_ccitt(
     let mut rows_decoded = 0usize;
 
     for row in 0..rows {
-        // Cooperative cancellation at a row boundary (salvages prior rows).
+        // Cooperative cancellation at a row boundary. Cancellation is not
+        // truncation salvage: returning the already-decoded prefix with white
+        // tail rows would cache and paint a corrupt partial page.
         if limits.is_cancelled() {
-            break;
+            return Err(ImageError::Cancelled);
         }
         skip_eol(data, bitsize, &mut bitpos);
         // Reset the working line to all-white before decoding.
@@ -1120,6 +1123,16 @@ mod tests {
             &DecodeLimits::default(),
         );
         assert!(matches!(err, Err(ImageError::Decode(_))), "{err:?}");
+    }
+
+    #[test]
+    fn cancellation_does_not_return_a_partial_white_raster() {
+        let limits = DecodeLimits {
+            should_cancel: Some(Arc::new(|| true)),
+            ..DecodeLimits::default()
+        };
+        let result = CcittCodec.decode(&[0xff; 8], &descriptor(24, 4), &params(-1, 24, 4), &limits);
+        assert!(matches!(result, Err(ImageError::Cancelled)));
     }
 
     #[test]

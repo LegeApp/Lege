@@ -647,7 +647,11 @@ pub fn should_force_blank_page_threshold(
 
     let visual_blank_with_no_real_layout = page_is_visually_blank && has_no_filtered_detections;
 
-    let tiny_post_nms_noise = !post_nms_detections.is_empty()
+    // Tiny layout boxes are only supporting evidence. YOLO can reduce a real
+    // sparse page to one small heading/number box, so layout output alone must
+    // never erase pixels that the visual check says are nonblank.
+    let tiny_post_nms_noise = page_is_visually_blank
+        && !post_nms_detections.is_empty()
         && evidence.total_area_fraction <= MAX_LAYOUT_BLANK_TOTAL_FRACTION
         && evidence.text_area_fraction <= MAX_LAYOUT_BLANK_TEXT_FRACTION
         && evidence.image_area_fraction <= MAX_LAYOUT_BLANK_IMAGE_FRACTION
@@ -746,6 +750,26 @@ mod tests {
         )];
 
         assert!(should_force_blank_page_threshold(
+            &config,
+            false,
+            true,
+            &detections,
+            1000,
+            1000,
+            &LABEL_CLASSIFIER,
+        ));
+    }
+
+    #[test]
+    fn tiny_layout_boxes_do_not_erase_a_nonblank_page() {
+        let mut config = PipelineConfig::default();
+        config.set_enable_layout_detection(true);
+        let detections = vec![test_detection(
+            ContentCategory::Abandon,
+            [10.0, 10.0, 14.0, 16.0],
+        )];
+
+        assert!(!should_force_blank_page_threshold(
             &config,
             false,
             false,

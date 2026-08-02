@@ -1483,6 +1483,12 @@ fn lower_impl(
     let mut origin_stack: Vec<pdf_page_ir::PaintOrigin> = Vec::new();
 
     for op in page.operations.iter() {
+        // Lowering may include a long codec decode. Once its cooperative probe
+        // fires, do not continue lowering the rest of a large display list;
+        // the caller's post-lowering token check converts this to Cancelled.
+        if out.decode_limits.is_cancelled() {
+            break;
+        }
         let ops_before = out.ops.len();
         match op {
             DisplayOp::BeginPaintOrigin(o) => origin_stack.push(*o),
@@ -2563,6 +2569,9 @@ fn decode_codec_samples(
     declared_space: Option<&pdf_page_ir::ImageColorSpace>,
 ) -> Option<CodecSamples> {
     use pdf_image::{DecodeParameters, DecodedFormat, ImageDescriptor, StreamFilter};
+    if out.decode_limits.is_cancelled() {
+        return None;
+    }
     #[cfg(feature = "profiling")]
     let cache_key = DecodeCacheKey {
         data_ptr: data.as_ptr() as usize,
@@ -2664,6 +2673,7 @@ fn decode_codec_samples(
     let decode_start = std::time::Instant::now();
     let img = match codec.decode(data, &descriptor, &params, &out.decode_limits) {
         Ok(img) => img,
+        Err(pdf_image::ImageError::Cancelled) => return None,
         Err(e) => {
             // The decode failed: this draw is silently dropped (blank). Record
             // it so a page left blank by an undecodable image is never mistaken
@@ -2675,6 +2685,15 @@ fn decode_codec_samples(
             return None;
         }
     };
+    if let Err(e) = img.validate(&out.decode_limits) {
+        if !matches!(e, pdf_image::ImageError::Cancelled) {
+            out.diagnostics.note_degraded(format!(
+                "{filter:?} {} codec returned an invalid raster, draw skipped: {e}",
+                if is_mask { "mask" } else { "base" }
+            ));
+        }
+        return None;
+    }
     #[cfg(feature = "profiling")]
     {
         let mut profile = out.profile.borrow_mut();

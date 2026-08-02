@@ -15,6 +15,7 @@ use libfuzzer_sys::fuzz_target;
 
 use jbig2enc_rust::decode::iaid::IaidContexts;
 use jbig2enc_rust::decode::integer::IntegerContexts;
+use jbig2enc_rust::decode::refinement::REFINEMENT_CONTEXT_COUNT;
 use jbig2enc_rust::decode::text_region::decode_text_region;
 use jbig2enc_rust::decode::DecodeLimits;
 use jbig2enc_rust::shared::bitmap::MonoBitmap;
@@ -38,6 +39,14 @@ fuzz_target!(|data: &[u8]| {
 
     let mut int_ctx = IntegerContexts::default();
     let mut iaid_ctx = IaidContexts::default();
-    let mut refine_ctx = vec![MqContext::default(); 1usize << 13];
-    let _ = decode_text_region(data, &symbols, &limits, &mut int_ctx, &mut iaid_ctx, &mut refine_ctx);
+    let mut refine_ctx = vec![MqContext::default(); REFINEMENT_CONTEXT_COUNT];
+    let _ = decode_text_region(
+        data,
+        &symbols,
+        &[],
+        &limits,
+        &mut int_ctx,
+        &mut iaid_ctx,
+        &mut refine_ctx,
+    );
 });

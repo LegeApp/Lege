@@ -172,7 +172,8 @@ pub struct EncodeMetrics {
 
 /// Encode and compute internal quality metrics (PSNR + SSIM) in one call.
 ///
-/// Simulates decoder reconstruction internally — no external decoder needed.
+/// Decodes the returned bytes with the crate's internal decoder, so the
+/// metrics include the actual tile layout and rate selection.
 /// For lossless encodes (quality == 100), returns `psnr_db = f64::INFINITY`
 /// and `ssim = 1.0`.
 pub fn encode_with_psnr(
@@ -182,13 +183,13 @@ pub fn encode_with_psnr(
     let bytes = encode(image, options)?;
     let context = EncodeContext::new(image, options)?;
     let native = NativeBackend;
-    let metrics = native.compute_quality_metrics(&context)?;
+    let metrics = native.compute_quality_metrics(&context, &bytes)?;
     Ok((bytes, metrics))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, encode_to_writer, encode_view, encode_view_to_writer};
+    use super::{encode, encode_to_writer, encode_view, encode_view_to_writer, encode_with_psnr};
     use crate::model::{
         EncodeOptions, Image, ImageView, OutputFormat, RateControl, ResourceLimits, TilePolicy,
     };
@@ -334,6 +335,43 @@ mod tests {
     }
 
     #[test]
+    fn tiled_quality_metrics_match_the_returned_codestream_decode() {
+        let width = 16;
+        let height = 16;
+        let source = gray_samples(width, height);
+        let image = Image::from_gray_bytes(width, height, &source).expect("image");
+        for format in [OutputFormat::J2k, OutputFormat::Jp2] {
+            let options = EncodeOptions {
+                quality: 55,
+                format,
+                tile_policy: TilePolicy::Fixed {
+                    width: 7,
+                    height: 5,
+                },
+                resource_limits: ResourceLimits {
+                    encoded_store_memory_limit: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let (encoded, metrics) =
+                encode_with_psnr(&image, &options).expect("tiled quality metrics");
+            let decoded = crate::decode::decode_jp2(&encoded).expect("decode returned bytes");
+            let reconstructed = &decoded.components[0].data;
+            let expected_psnr = psnr_from_gray(&source, reconstructed);
+            let expected_ssim =
+                ssim_from_gray(&source, reconstructed, width as usize, height as usize);
+
+            assert!(
+                (metrics.psnr_db - expected_psnr).abs() < 1e-10,
+                "{format:?}"
+            );
+            assert!((metrics.ssim - expected_ssim).abs() < 1e-12, "{format:?}");
+        }
+    }
+
+    #[test]
     fn exact_rate_modes_target_complete_jp2_output() {
         let width = 128;
         let height = 96;
@@ -414,5 +452,65 @@ mod tests {
             }
         }
         samples
+    }
+
+    fn psnr_from_gray(source: &[u8], reconstructed: &[i32]) -> f64 {
+        assert_eq!(source.len(), reconstructed.len());
+        let sse = source
+            .iter()
+            .zip(reconstructed)
+            .map(|(&expected, &actual)| {
+                let difference = f64::from(actual) - f64::from(expected);
+                difference * difference
+            })
+            .sum::<f64>();
+        let mse = sse / source.len() as f64;
+        if mse < 1e-10 {
+            100.0
+        } else {
+            20.0 * (255.0 / mse.sqrt()).log10()
+        }
+    }
+
+    fn ssim_from_gray(source: &[u8], reconstructed: &[i32], width: usize, height: usize) -> f64 {
+        const BLOCK: usize = 8;
+        const C1: f64 = (0.01 * 255.0) * (0.01 * 255.0);
+        const C2: f64 = (0.03 * 255.0) * (0.03 * 255.0);
+        let mut total = 0.0;
+        let mut blocks = 0usize;
+        for block_y in (0..height / BLOCK).map(|index| index * BLOCK) {
+            for block_x in (0..width / BLOCK).map(|index| index * BLOCK) {
+                let mut sum_source = 0.0;
+                let mut sum_reconstructed = 0.0;
+                let mut sum_source_squared = 0.0;
+                let mut sum_reconstructed_squared = 0.0;
+                let mut sum_product = 0.0;
+                for y in block_y..block_y + BLOCK {
+                    for x in block_x..block_x + BLOCK {
+                        let index = y * width + x;
+                        let expected = f64::from(source[index]);
+                        let actual = f64::from(reconstructed[index]);
+                        sum_source += expected;
+                        sum_reconstructed += actual;
+                        sum_source_squared += expected * expected;
+                        sum_reconstructed_squared += actual * actual;
+                        sum_product += expected * actual;
+                    }
+                }
+                let n = (BLOCK * BLOCK) as f64;
+                let mean_source = sum_source / n;
+                let mean_reconstructed = sum_reconstructed / n;
+                let variance_source = (sum_source_squared / n - mean_source * mean_source).max(0.0);
+                let variance_reconstructed = (sum_reconstructed_squared / n
+                    - mean_reconstructed * mean_reconstructed)
+                    .max(0.0);
+                let covariance = sum_product / n - mean_source * mean_reconstructed;
+                total += ((2.0 * mean_source * mean_reconstructed + C1) * (2.0 * covariance + C2))
+                    / ((mean_source * mean_source + mean_reconstructed * mean_reconstructed + C1)
+                        * (variance_source + variance_reconstructed + C2));
+                blocks += 1;
+            }
+        }
+        total / blocks as f64
     }
 }

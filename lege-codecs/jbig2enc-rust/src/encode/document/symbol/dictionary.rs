@@ -524,7 +524,7 @@ pub fn encode_symbol_dict_with_order(
         let h = symbols_in_class[0].height; // All symbols in class have same height
         // A. Encode Delta Height
         let delta_h = h as i32 - last_height as i32;
-        let _ = coder.encode_integer(crate::jbig2arith::IntProc::Iadh, delta_h);
+        coder.encode_integer(crate::jbig2arith::IntProc::Iadh, delta_h)?;
         last_height = h;
 
         let mut last_width = 0;
@@ -553,7 +553,7 @@ pub fn encode_symbol_dict_with_order(
                 h, i, symbol.width, last_width, delta_w
             );
 
-            let _ = coder.encode_integer(crate::jbig2arith::IntProc::Iadw, delta_w);
+            coder.encode_integer(crate::jbig2arith::IntProc::Iadw, delta_w)?;
             last_width = symbol.width as i32; // last_width becomes current width
 
             // II. Encode Symbol Bitmap using Generic Region Procedure
@@ -602,15 +602,17 @@ pub fn encode_symbol_dict_with_order(
         }
 
         // OOB marks the end of this height class.
-        let _ = coder.encode_oob(IntProc::Iadw);
+        coder.encode_oob(IntProc::Iadw)?;
     }
 
     // Export flags come after the symbol bitmap data (run-length form).
     // T.88 §7.4.2.2: the run-length must cover SDNUMINSYMS + SDNUMNEWSYMS slots.
     // We export every symbol (both imported and new), so the sequence is a single
     // "all exported" run covering num_export_syms = num_imported + num_new.
-    let _ = coder.encode_integer(IntProc::Iaex, 0);
-    let _ = coder.encode_integer(IntProc::Iaex, num_export_syms as i32);
+    coder.encode_integer(IntProc::Iaex, 0)?;
+    let num_export_syms =
+        i32::try_from(num_export_syms).map_err(|_| anyhow!("too many exported symbols"))?;
+    coder.encode_integer(IntProc::Iaex, num_export_syms)?;
 
     // 5. flush the coder ONCE
     coder.flush(true);

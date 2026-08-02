@@ -11,7 +11,7 @@
 
 use crate::pipeline::config::PipelineConfig;
 use crate::pipeline::helper_functions::{
-    await_stage_or_cancel, init_encode_semaphore, spawn_pdf_writer_actor,
+    await_stage_or_cancel_with_token, init_encode_semaphore, spawn_pdf_writer_actor,
 };
 use crate::pipeline::pdf_tokio_pipeline::encode_base_layer_for_jpeg_mode;
 use crate::pipeline::policies::build_inference_image;
@@ -216,8 +216,10 @@ struct ReflowPlan {
 
 fn cancelled_if_signalled(
     shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    cancellation: &lege_pdf_read::CancellationToken,
 ) -> Result<()> {
     if let Ok(signal) = shutdown_rx.try_recv() {
+        cancellation.cancel();
         return Err(anyhow!(
             "Processing cancelled: {}",
             signal
@@ -226,6 +228,25 @@ fn cancelled_if_signalled(
         ));
     }
     Ok(())
+}
+
+async fn await_reflow_step<T>(
+    future: impl std::future::Future<Output = Result<T>>,
+    shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    cancellation: &lege_pdf_read::CancellationToken,
+    stage: &str,
+) -> Result<T> {
+    tokio::select! {
+        result = future => result,
+        signal = shutdown_rx.recv() => {
+            cancellation.cancel();
+            let message = signal
+                .ok()
+                .and_then(|signal| signal.message)
+                .unwrap_or_else(|| "User requested cancellation".to_string());
+            Err(anyhow!("Processing cancelled during {stage}: {message}"))
+        }
+    }
 }
 
 /// Render one source page, run layout detection on it, and map the detections
@@ -240,12 +261,18 @@ async fn analyze_source_page(
     page_index: usize,
     local_index: usize,
     want_rgb: bool,
+    cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<AnalyzedPage> {
     let crate::pipeline::source::SourcePage {
         image,
         original_width_pts,
         original_height_pts,
-    } = source.load_page(page_index).await?;
+    } = source
+        .load_page_cancellable(page_index, cancellation.clone())
+        .await?;
+    if cancellation.is_cancelled() {
+        return Err(anyhow!("Raster reflow cancelled after source render"));
+    }
 
     crate::pipeline::set_standard_dimensions_once(image.width(), image.height());
     let render_dpi = (image.width() as f32 / original_width_pts.max(1.0)) * 72.0;
@@ -381,6 +408,7 @@ impl SourcePageWindow {
     async fn load(
         &mut self,
         needed: &std::collections::BTreeSet<usize>,
+        cancellation: lege_pdf_read::CancellationToken,
     ) -> Result<crate::reflow::SourcePageSet> {
         for &local_index in needed {
             if !self.pages.contains_key(&local_index) {
@@ -390,6 +418,7 @@ impl SourcePageWindow {
                     self.page_start + local_index,
                     local_index,
                     self.color_pages.contains(&local_index),
+                    cancellation.clone(),
                 )
                 .await?;
                 self.renders += 1;
@@ -432,6 +461,7 @@ async fn analyze_and_plan(
     page_range: &Option<std::ops::Range<usize>>,
     progress_tracker: &ProgressTracker,
     shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    cancellation: &lege_pdf_read::CancellationToken,
 ) -> Result<ReflowPlan> {
     if !config.enable_layout_detection() {
         return Err(anyhow!(
@@ -467,13 +497,19 @@ async fn analyze_and_plan(
     let mut body_samples: Vec<u32> = Vec::with_capacity(sample_indices.len());
     let mut sampled_heights: Vec<u32> = Vec::with_capacity(sample_indices.len());
     for &local_index in &sample_indices {
-        cancelled_if_signalled(shutdown_rx)?;
-        let analyzed = analyze_source_page(
-            source,
-            Some((&inference_handle, &spec)),
-            page_start + local_index,
-            local_index,
-            false,
+        cancelled_if_signalled(shutdown_rx, cancellation)?;
+        let analyzed = await_reflow_step(
+            analyze_source_page(
+                source,
+                Some((&inference_handle, &spec)),
+                page_start + local_index,
+                local_index,
+                false,
+                cancellation.clone(),
+            ),
+            shutdown_rx,
+            cancellation,
+            "reflow calibration",
         )
         .await?;
         let cfg =
@@ -535,13 +571,19 @@ async fn analyze_and_plan(
     let mut confidence: Vec<crate::reflow::ReflowConfidence> =
         Vec::with_capacity(total_source_pages);
     for local_index in 0..total_source_pages {
-        cancelled_if_signalled(shutdown_rx)?;
-        let analyzed = analyze_source_page(
-            source,
-            Some((&inference_handle, &spec)),
-            page_start + local_index,
-            local_index,
-            false,
+        cancelled_if_signalled(shutdown_rx, cancellation)?;
+        let analyzed = await_reflow_step(
+            analyze_source_page(
+                source,
+                Some((&inference_handle, &spec)),
+                page_start + local_index,
+                local_index,
+                false,
+                cancellation.clone(),
+            ),
+            shutdown_rx,
+            cancellation,
+            "reflow flow analysis",
         )
         .await?;
         let (flow, conf) =
@@ -611,6 +653,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
 
     let runtime_limits = PipelineRuntimeLimits::from_config(&config);
     init_encode_semaphore(runtime_limits.page_workers);
+    let cancellation = lege_pdf_read::CancellationToken::new();
 
     let ReflowPlan {
         cfg: reflow_cfg,
@@ -622,6 +665,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
         &page_range,
         progress_tracker,
         &mut shutdown_rx,
+        &cancellation,
     )
     .await?;
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
@@ -650,7 +694,13 @@ pub(crate) async fn run_raster_reflow_pipeline(
         }
 
         // Load only the source pages this output page draws from, then compose.
-        let source_pages = window.load(&source_pages_for(reflow_page)).await?;
+        let source_pages = await_reflow_step(
+            window.load(&source_pages_for(reflow_page), cancellation.clone()),
+            &mut shutdown_rx,
+            &cancellation,
+            "reflow source loading",
+        )
+        .await?;
         let canvas = Arc::new(compose_reflow_page_raster(
             reflow_page,
             &source_pages,
@@ -663,16 +713,29 @@ pub(crate) async fn run_raster_reflow_pipeline(
         // composed reflow raster block-by-block. Either way the hOCR lands in
         // output-page coordinates so the text overlays the reflowed bitmaps.
         let hocr_text = if config.enable_ocr() {
-            let result = if config.slow_ocr_enabled() {
-                crate::ocr::slow::perform_reflow_page_ocr(reflow_page, &source_pages, &config).await
-            } else {
-                crate::ocr::fast::perform_reflow_page_fast_ocr(
-                    reflow_page,
-                    &canvas,
-                    config.ocr_language(),
-                )
-                .await
-            };
+            let result = await_reflow_step(
+                async {
+                    if config.slow_ocr_enabled() {
+                        crate::ocr::slow::perform_reflow_page_ocr(
+                            reflow_page,
+                            &source_pages,
+                            &config,
+                        )
+                        .await
+                    } else {
+                        crate::ocr::fast::perform_reflow_page_fast_ocr(
+                            reflow_page,
+                            &canvas,
+                            config.ocr_language(),
+                        )
+                        .await
+                    }
+                },
+                &mut shutdown_rx,
+                &cancellation,
+                "reflow OCR",
+            )
+            .await;
             match result {
                 Ok(hocr) => hocr,
                 Err(e) => {
@@ -688,7 +751,13 @@ pub(crate) async fn run_raster_reflow_pipeline(
             None
         };
 
-        let encoded = encode_base_layer_for_jpeg_mode(canvas, &config, reflow_page.index).await?;
+        let encoded = await_reflow_step(
+            encode_base_layer_for_jpeg_mode(canvas, &config, reflow_page.index),
+            &mut shutdown_rx,
+            &cancellation,
+            "reflow page encoding",
+        )
+        .await?;
 
         let page = crate::accumulator::Page {
             width: reflow_page.width as f32,
@@ -730,9 +799,21 @@ pub(crate) async fn run_raster_reflow_pipeline(
                 .and_modify(|e| *e = (*e).min(placement.out_page))
                 .or_insert(placement.out_page);
         }
-        let bookmarks =
-            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
-                .await?;
+        let mut outline_task =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session));
+        let bookmarks = tokio::select! {
+            result = &mut outline_task => result?,
+            signal = shutdown_rx.recv() => {
+                cancellation.cancel();
+                outline_task.abort();
+                pdf_writer_task.abort();
+                let message = signal
+                    .ok()
+                    .and_then(|signal| signal.message)
+                    .unwrap_or_else(|| "User requested cancellation".to_string());
+                return Err(anyhow!("Processing cancelled during reflow outline extraction: {message}"));
+            }
+        };
         if !bookmarks.is_empty() {
             pdf_writer_handle
                 .send_bookmarks(bookmarks, src_to_out)
@@ -741,7 +822,14 @@ pub(crate) async fn run_raster_reflow_pipeline(
     }
 
     pdf_writer_handle.finalize().await?;
-    await_stage_or_cancel(&mut pdf_writer_task, &mut shutdown_rx, "PDF writer", &[]).await?;
+    await_stage_or_cancel_with_token(
+        &mut pdf_writer_task,
+        &mut shutdown_rx,
+        "PDF writer",
+        &[],
+        Some(&cancellation),
+    )
+    .await?;
 
     success_log!("Raster reflow pipeline complete: {}", output_path.display());
     Ok(())
@@ -769,6 +857,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
     crate::pipeline::reset_standard_dimensions();
 
     let runtime_limits = PipelineRuntimeLimits::djvu_from_config(&config);
+    let cancellation = lege_pdf_read::CancellationToken::new();
 
     let ReflowPlan {
         cfg: reflow_cfg,
@@ -780,6 +869,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         &page_range,
         progress_tracker,
         &mut shutdown_rx,
+        &cancellation,
     )
     .await?;
     let page_start = page_range.as_ref().map(|r| r.start).unwrap_or(0);
@@ -815,6 +905,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
 
     for reflow_page in &doc.pages {
         if let Ok(signal) = shutdown_rx.try_recv() {
+            cancellation.cancel();
             writer_task.abort();
             return Err(anyhow!(
                 "Processing cancelled: {}",
@@ -825,10 +916,43 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         }
 
         // Load only the source pages this output page draws from, then compose.
-        let source_pages = window.load(&source_pages_for(reflow_page)).await?;
+        let source_pages = await_reflow_step(
+            window.load(&source_pages_for(reflow_page), cancellation.clone()),
+            &mut shutdown_rx,
+            &cancellation,
+            "reflow source loading",
+        )
+        .await?;
         let canvas = compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg);
-        let binarized =
-            crate::pipeline::djvu_pipeline::binarize_djvu_image(&canvas, &config, false);
+        let binarize_config = config.clone();
+        let binarize_cancellation = cancellation.clone();
+        let (canvas, binarized) = await_reflow_step(
+            async move {
+                crate::runtime_stats::spawn_blocking_stage(
+                    crate::runtime_stats::Stage::Processing,
+                    move || -> Result<_> {
+                        if binarize_cancellation.is_cancelled() {
+                            return Err(anyhow!("Reflow binarization cancelled before CPU work"));
+                        }
+                        let binarized = crate::pipeline::djvu_pipeline::binarize_djvu_image(
+                            &canvas,
+                            &binarize_config,
+                            false,
+                        );
+                        if binarize_cancellation.is_cancelled() {
+                            return Err(anyhow!("Reflow binarization cancelled after CPU work"));
+                        }
+                        Ok((canvas, binarized))
+                    },
+                )
+                .await
+                .map_err(|error| anyhow!("DjVu binarization task panicked: {error}"))?
+            },
+            &mut shutdown_rx,
+            &cancellation,
+            "reflow binarization",
+        )
+        .await?;
 
         // Map figure placements to image-category detections so the DJVU
         // orchestrator routes them to the IW44 color background layer.
@@ -862,12 +986,30 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         };
 
         let orchestrator = orchestrator.clone();
-        let entry = crate::runtime_stats::spawn_blocking_stage(
-            crate::runtime_stats::Stage::Encode,
-            move || -> Result<_> { orchestrator.process_page(page_data) },
+        let compose_cancellation = cancellation.clone();
+        let entry = await_reflow_step(
+            async move {
+                crate::runtime_stats::spawn_blocking_stage(
+                    crate::runtime_stats::Stage::Encode,
+                    move || -> Result<_> {
+                        if compose_cancellation.is_cancelled() {
+                            return Err(anyhow!("DjVu composition cancelled before CPU work"));
+                        }
+                        let entry = orchestrator.process_page(page_data)?;
+                        if compose_cancellation.is_cancelled() {
+                            return Err(anyhow!("DjVu composition cancelled after CPU work"));
+                        }
+                        Ok(entry)
+                    },
+                )
+                .await
+                .map_err(|error| anyhow!("DjVu compose task panicked: {error}"))?
+            },
+            &mut shutdown_rx,
+            &cancellation,
+            "reflow DjVu composition",
         )
-        .await
-        .map_err(|e| anyhow!("DjVu compose task panicked: {}", e))??;
+        .await?;
 
         djvu_writer.append_entry(entry).await?;
 
@@ -884,7 +1026,14 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
     );
 
     djvu_writer.finalize().await?;
-    await_stage_or_cancel(&mut writer_task, &mut shutdown_rx, "DJVU writer", &[]).await?;
+    await_stage_or_cancel_with_token(
+        &mut writer_task,
+        &mut shutdown_rx,
+        "DJVU writer",
+        &[],
+        Some(&cancellation),
+    )
+    .await?;
 
     success_log!(
         "Raster reflow DJVU pipeline complete: {}",
@@ -959,6 +1108,10 @@ mod tests {
         SourcePageWindow::new(source, 0, doc)
     }
 
+    fn active_cancellation() -> lege_pdf_read::CancellationToken {
+        lege_pdf_read::CancellationToken::new()
+    }
+
     #[tokio::test]
     async fn compose_window_stays_bounded_and_renders_each_page_once() {
         let doc = document(
@@ -969,7 +1122,10 @@ mod tests {
         let mut window = window_for(&doc, loads.clone(), 6);
 
         for page in &doc.pages {
-            let set = window.load(&source_pages_for(page)).await.expect("load");
+            let set = window
+                .load(&source_pages_for(page), active_cancellation())
+                .await
+                .expect("load");
             assert_eq!(set.len(), 1);
             assert!(
                 window.pages.len() <= SOURCE_PAGE_WINDOW,
@@ -988,7 +1144,7 @@ mod tests {
         let mut window = window_for(&doc, loads, 2);
 
         let set = window
-            .load(&source_pages_for(&doc.pages[0]))
+            .load(&source_pages_for(&doc.pages[0]), active_cancellation())
             .await
             .expect("load");
         assert!(set.get(0).is_some() && set.get(1).is_some());
@@ -1001,7 +1157,10 @@ mod tests {
         let mut window = window_for(&doc, loads.clone(), 2);
 
         for page in &doc.pages {
-            window.load(&source_pages_for(page)).await.expect("load");
+            window
+                .load(&source_pages_for(page), active_cancellation())
+                .await
+                .expect("load");
         }
         assert_eq!(loads.load(Ordering::Relaxed), 2);
     }
@@ -1011,7 +1170,7 @@ mod tests {
         let text_doc = document(&[vec![0]], PlacedKind::Word);
         let mut text_window = window_for(&text_doc, Arc::new(AtomicUsize::new(0)), 1);
         let text_set = text_window
-            .load(&source_pages_for(&text_doc.pages[0]))
+            .load(&source_pages_for(&text_doc.pages[0]), active_cancellation())
             .await
             .expect("load");
         assert!(text_set.get(0).expect("page").rgb.is_none());
@@ -1019,7 +1178,10 @@ mod tests {
         let figure_doc = document(&[vec![0]], PlacedKind::Figure);
         let mut figure_window = window_for(&figure_doc, Arc::new(AtomicUsize::new(0)), 1);
         let figure_set = figure_window
-            .load(&source_pages_for(&figure_doc.pages[0]))
+            .load(
+                &source_pages_for(&figure_doc.pages[0]),
+                active_cancellation(),
+            )
             .await
             .expect("load");
         assert!(figure_set.get(0).expect("page").rgb.is_some());

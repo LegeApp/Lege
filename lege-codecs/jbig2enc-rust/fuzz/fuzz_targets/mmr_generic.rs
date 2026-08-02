@@ -10,6 +10,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
+use jbig2enc_rust::decode::generic::GenericScratch;
 use jbig2enc_rust::decode::mmr::{decode_mmr_bitmap, decode_mmr_plane};
 use jbig2enc_rust::decode::pattern_dictionary::decode_pattern_dictionary;
 use jbig2enc_rust::decode::DecodeLimits;
@@ -34,5 +35,6 @@ fuzz_target!(|data: &[u8]| {
     // Also drive the pattern-dictionary parser (MMR + arithmetic collective
     // bitmaps) over the raw bytes.
     let mut generic_ctx = vec![MqContext::default(); 1usize << 16];
-    let _ = decode_pattern_dictionary(data, &limits, &mut generic_ctx);
+    let mut scratch = GenericScratch::default();
+    let _ = decode_pattern_dictionary(data, &limits, &mut generic_ctx, &mut scratch);
 });

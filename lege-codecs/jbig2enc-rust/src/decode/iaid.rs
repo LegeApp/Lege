@@ -115,4 +115,11 @@ mod tests {
         let mut dec = ArithmeticDecoder::new(&data);
         assert_eq!(ctx.decode(&mut dec, 0), 0);
     }
+
+    #[test]
+    fn encoder_rejects_ids_that_do_not_fit_code_length() {
+        let mut enc = Jbig2ArithCoder::new();
+        assert!(enc.encode_iaid(8, 3).is_err());
+        assert!(enc.encode_iaid(7, 3).is_ok());
+    }
 }

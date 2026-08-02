@@ -1094,12 +1094,17 @@ fn run_encoder(
     progress: &crate::progress::ProgressTracker,
     control: &DjvuEncoderControl,
 ) -> Result<()> {
+    let output_parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(output_parent)?;
+    let temporary_output = tempfile::NamedTempFile::new_in(output_parent)
+        .context("Failed to create temporary DjVu output")?
+        .into_temp_path();
     let mut child = Command::new(encoder_path)
         .arg("encode-document")
         .arg("--manifest")
         .arg(manifest_path)
         .arg("--output")
-        .arg(output_path)
+        .arg(temporary_output.as_os_str())
         .arg("--progress-json")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1181,6 +1186,16 @@ fn run_encoder(
             stderr_str.trim()
         ));
     }
+    if control.is_cancelled() {
+        return Err(anyhow!("djvu-encoder cancelled before output publish"));
+    }
+    temporary_output.persist(output_path).map_err(|error| {
+        anyhow!(
+            "Failed to publish DjVu output {}: {}",
+            output_path.display(),
+            error.error
+        )
+    })?;
 
     // Ensure the writer-side progress reaches 100% even if the encoder batched.
     progress.update(crate::progress::ProcessingStatus::PdfAppend {

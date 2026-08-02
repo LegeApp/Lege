@@ -21,7 +21,11 @@ pub struct CharacterGeometry {
     pub font_size: f64,
     pub bold: bool,
     pub object_id: u32,
+    /// Start of this scalar value in the page's UTF-16 substrate.
     pub char_index: usize,
+    /// Number of UTF-16 code units represented by this geometry (one for BMP
+    /// values, two for a valid surrogate pair).
+    pub utf16_len: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,7 +198,7 @@ fn build_line_box(
     let first = segment.first()?;
     let mut bounds = first.bounds;
     let mut min_index = first.char_index;
-    let mut max_index = first.char_index;
+    let mut max_end = first.char_index.saturating_add(first.utf16_len);
     for character in &segment[1..] {
         let x0 = bounds.x.min(character.bounds.x);
         let y0 = bounds.y.min(character.bounds.y);
@@ -207,7 +211,7 @@ fn build_line_box(
             height: y1 - y0,
         };
         min_index = min_index.min(character.char_index);
-        max_index = max_index.max(character.char_index);
+        max_end = max_end.max(character.char_index.saturating_add(character.utf16_len));
     }
     let doc_bounds = page_to_doc.apply_rect(bounds);
     let doc_baseline = page_to_doc
@@ -220,7 +224,7 @@ fn build_line_box(
         page,
         bounds: doc_bounds,
         baseline_y: doc_baseline,
-        char_range: (min_index, max_index.saturating_add(1)),
+        char_range: (min_index, max_end),
     })
 }
 

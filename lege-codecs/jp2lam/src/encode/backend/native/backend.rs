@@ -92,8 +92,33 @@ impl NativeBackend {
         height: u32,
     ) -> Result<NativeComponentCoefficients> {
         let _p = crate::encode::profile_enter("prepare_component_coefficients_97");
-        let mut data =
+        let data =
             irreversible_input_component_rect(context, component_index, x0, y0, width, height)?;
+        self.prepare_component_coefficients_97_from_input(
+            context,
+            component_index,
+            x0,
+            y0,
+            width,
+            height,
+            data,
+        )
+    }
+
+    /// Finish irreversible coefficient preparation from one already-built
+    /// level-shifted (and, where applicable, ICT-transformed) tile plane.
+    /// Keeping this boundary explicit lets the RGB path retain its three source
+    /// planes once while each ICT output is transformed and Tier-1 encoded.
+    fn prepare_component_coefficients_97_from_input(
+        &self,
+        context: &EncodeContext<'_>,
+        component_index: usize,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+        mut data: Vec<f32>,
+    ) -> Result<NativeComponentCoefficients> {
         crate::encode::counters::record_tile_samples(data.len() * std::mem::size_of::<f32>());
         crate::encode::counters::record_dwt_coefficients(data.len() * std::mem::size_of::<f32>());
 
@@ -135,24 +160,6 @@ impl NativeBackend {
             levels,
             data: quantized,
         })
-    }
-
-    /// Compute the 9/7 DWT coefficients (f32) WITHOUT quantizing them.
-    ///
-    /// Used by the Taubman masker to get pre-quantization coefficient magnitudes.
-    /// The coefficients are in the same spatial layout as `NativeComponentCoefficients.data`
-    /// (interleaved subbands in the full image array, row-major).
-    pub(crate) fn compute_dwt_97_f32(
-        &self,
-        context: &EncodeContext<'_>,
-        component_index: usize,
-    ) -> Result<Vec<f32>> {
-        let mut data = irreversible_input_component(context, component_index)?;
-        let width = context.plan.width as usize;
-        let height = context.plan.height as usize;
-        let levels = context.plan.decomposition_levels;
-        (PRIMITIVES.dwt.forward_97_2d)(&mut data, width, height, levels)?;
-        Ok(data)
     }
 
     pub(super) fn supports_lane(&self, context: &EncodeContext<'_>) -> bool {
@@ -356,6 +363,16 @@ impl NativeBackend {
             width,
             height,
         )?;
+        self.encode_tier1_coefficients(context, tile_index, component_index, &coefficients)
+    }
+
+    fn encode_tier1_coefficients(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_index: u16,
+        component_index: usize,
+        coefficients: &NativeComponentCoefficients,
+    ) -> Result<t1::NativeEncodedTier1Layout> {
         let precision = context
             .plan
             .components
@@ -406,6 +423,71 @@ impl NativeBackend {
         Ok(encoded)
     }
 
+    /// Prepare all irreversible-MCT tile components from one retained RGB input
+    /// triple. The live preparation set is R/G/B plus one ICT output plane,
+    /// exactly the four-plane budget used by the resource planner; it avoids
+    /// rebuilding the same R/G/B planes for every output component.
+    fn prepare_tier1_encoded_mct_components_rect(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_index: u16,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<t1::NativeEncodedTier1Layout>> {
+        let mut encoded = Vec::with_capacity(3);
+        self.visit_tier1_encoded_mct_components_rect(
+            context,
+            tile_index,
+            x0,
+            y0,
+            width,
+            height,
+            |_, layout| {
+                encoded.push(layout);
+                Ok(())
+            },
+        )?;
+        Ok(encoded)
+    }
+
+    /// Visit each Tier-1 layout while retaining the RGB source triple. The
+    /// store-backed path consumes a layout immediately through this method, so
+    /// sharing MCT inputs does not make it retain all three compressed layouts.
+    fn visit_tier1_encoded_mct_components_rect(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_index: u16,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+        mut visit: impl FnMut(usize, t1::NativeEncodedTier1Layout) -> Result<()>,
+    ) -> Result<()> {
+        let inputs = IctTileInputs::load(context, x0, y0, width, height)?;
+        for component_index in 0..3 {
+            let data = inputs.output_component(component_index)?;
+            let coefficients = self.prepare_component_coefficients_97_from_input(
+                context,
+                component_index,
+                x0,
+                y0,
+                width,
+                height,
+                data,
+            )?;
+            let layout = self.encode_tier1_coefficients(
+                context,
+                tile_index,
+                component_index,
+                &coefficients,
+            )?;
+            visit(component_index, layout)?;
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub(crate) fn prepare_tier1_encoded_layouts(
         &self,
@@ -414,6 +496,17 @@ impl NativeBackend {
         let _p = crate::encode::profile_enter("prepare_tier1_encoded_layouts");
 
         let component_count = context.plan.component_count as usize;
+
+        if native_use_mct(&context.plan) {
+            return self.prepare_tier1_encoded_mct_components_rect(
+                context,
+                0,
+                0,
+                0,
+                context.plan.width,
+                context.plan.height,
+            );
+        }
 
         // Phase 4 §8.3/§8.4: the default bounded-memory path encodes transformed
         // components sequentially so only one component coefficient plane is live
@@ -500,25 +593,37 @@ impl NativeBackend {
             ));
         }
 
-        let mut encoded = Vec::with_capacity(context.plan.component_count as usize);
-        for (component_index, component) in context.plan.components.iter().enumerate() {
-            let tc = tile_component_rect(&tile, component_index as u16, component);
-            if tc.width() == 0 || tc.height() == 0 {
-                return Err(Jp2LamError::EncodeFailed(format!(
-                    "tile {} component {component_index} has empty tile-component extent",
-                    tile.tile_index
-                )));
-            }
-            encoded.push(self.prepare_tier1_encoded_component_rect(
+        let encoded = if native_use_mct(&context.plan) {
+            self.prepare_tier1_encoded_mct_components_rect(
                 context,
                 tile.tile_index,
-                component_index,
-                tc.x0,
-                tc.y0,
-                tc.width(),
-                tc.height(),
-            )?);
-        }
+                tile.x0,
+                tile.y0,
+                tile.width(),
+                tile.height(),
+            )?
+        } else {
+            let mut encoded = Vec::with_capacity(context.plan.component_count as usize);
+            for (component_index, component) in context.plan.components.iter().enumerate() {
+                let tc = tile_component_rect(&tile, component_index as u16, component);
+                if tc.width() == 0 || tc.height() == 0 {
+                    return Err(Jp2LamError::EncodeFailed(format!(
+                        "tile {} component {component_index} has empty tile-component extent",
+                        tile.tile_index
+                    )));
+                }
+                encoded.push(self.prepare_tier1_encoded_component_rect(
+                    context,
+                    tile.tile_index,
+                    component_index,
+                    tc.x0,
+                    tc.y0,
+                    tc.width(),
+                    tc.height(),
+                )?);
+            }
+            encoded
+        };
 
         let selections = all_pass_selections(&encoded);
         t2::build_tile_part_payload_for_tile_components_owned(
@@ -544,6 +649,23 @@ impl NativeBackend {
             return Err(Jp2LamError::EncodeFailed(
                 "native stored tile encoding is not implemented for this lane".to_string(),
             ));
+        }
+
+        if native_use_mct(&context.plan) {
+            let mut stored = Vec::with_capacity(3);
+            self.visit_tier1_encoded_mct_components_rect(
+                context,
+                tile.tile_index,
+                tile.x0,
+                tile.y0,
+                tile.width(),
+                tile.height(),
+                |component_index, layout| {
+                    stored.push(store_tier1_layout(store, component_index as u16, layout)?);
+                    Ok(())
+                },
+            )?;
+            return Ok(stored);
         }
 
         let mut stored = Vec::with_capacity(context.plan.component_count as usize);
@@ -643,17 +765,15 @@ impl NativeBackend {
         parts.encode(&native_emit_plan(&context.plan))
     }
 
-    /// Compute an internal PSNR estimate by simulating decoder reconstruction.
+    /// Measure the encoded result using the crate's decoder.
     ///
-    /// Re-runs the encode pipeline to get PCRD-truncated layouts, applies inverse
-    /// quantization with per-block bit-plane truncation, runs the inverse DWT, undoes
-    /// MCT and DC level shift, and compares against the original pixels.
-    ///
-    /// Only valid for irreversible 9/7 lossy encodes. Returns infinity/1.0 for
-    /// lossless (quality == 100) encodes. Returns an error for unsupported configs.
+    /// Decoding the exact returned JP2/J2K bytes makes this valid for every tile
+    /// layout and rate-selection path, including tile-local transform boundaries.
+    /// This remains entirely in-process; it does not depend on an external tool.
     pub(crate) fn compute_quality_metrics(
         &self,
         context: &EncodeContext<'_>,
+        encoded: &[u8],
     ) -> Result<crate::encode::EncodeMetrics> {
         if context.plan.quality >= 100 {
             return Ok(crate::encode::EncodeMetrics {
@@ -674,152 +794,114 @@ impl NativeBackend {
                 "quality metrics require an enumerated Gray or sRGB color model".into(),
             ));
         }
-
-        let width = context.plan.width as usize;
-        let height = context.plan.height as usize;
-        let precision = context
-            .plan
-            .components
-            .first()
-            .map(|c| c.precision)
-            .unwrap_or(8);
-        let levels = context.plan.decomposition_levels;
-
-        // Re-run full PCRD pipeline to get the truncated pass selections.
-        let (encoded_layouts, selections) =
-            self.prepare_tier1_encoded_layouts_and_selections(context)?;
-        let num_components = encoded_layouts.len();
-
-        // Reconstruct each component in the DWT domain after per-block truncation.
-        let mut reconstructed: Vec<Vec<f32>> = Vec::with_capacity(num_components);
-        for (comp_idx, layout) in encoded_layouts.iter().enumerate() {
-            let dwt_f32 = self.compute_dwt_97_f32(context, comp_idx)?;
-            let quantized = quantize_97_coefficients(
-                &dwt_f32,
-                width,
-                height,
-                levels,
-                precision,
-                &context.plan.subband_quants,
-                0,
-                0,
-            )?;
-
-            let mut dequant = vec![0.0f32; width * height];
-            let selection = selections.get(comp_idx).ok_or_else(|| {
-                Jp2LamError::EncodeFailed("missing component PCRD selection".to_string())
-            })?;
-            for (band_index, band) in layout.bands.iter().enumerate() {
-                let step = subband_quant_step(
-                    precision,
-                    band.resolution,
-                    band.band,
-                    &context.plan.subband_quants,
-                )?;
-                let selected_band = selection.bands.get(band_index).ok_or_else(|| {
-                    Jp2LamError::EncodeFailed("missing band PCRD selection".to_string())
-                })?;
-                for (block_index, block) in band.blocks.iter().enumerate() {
-                    let selected_passes = selected_band
-                        .selected_passes
-                        .get(block_index)
-                        .copied()
-                        .map(usize::from)
-                        .unwrap_or(block.passes.len())
-                        .min(block.passes.len());
-                    let last_bp = if selected_passes == 0 {
-                        None
-                    } else {
-                        block.passes.get(selected_passes - 1).map(|p| p.bitplane)
-                    };
-                    for y in block.y0..block.y1 {
-                        for x in block.x0..block.x1 {
-                            let q = quantized[y * width + x];
-                            dequant[y * width + x] = dequantize_truncated_coeff(q, last_bp, step);
-                        }
-                    }
-                }
-            }
-
-            (PRIMITIVES.dwt.inverse_97_2d)(&mut dequant, width, height, levels)?;
-            reconstructed.push(dequant);
-        }
-
-        // Build decoded luma pixels for SSIM and per-channel pixels for PSNR.
-        let pixel_count = width * height;
-        let level_shift = (1u32 << (precision - 1)) as f32;
-        let max_sample = ((1u32 << precision) - 1) as f32;
-        let mut decoded_luma = vec![0.0f32; pixel_count];
-        let mut orig_luma = vec![0.0f32; pixel_count];
-        let mut total_sse = 0.0f64;
-        let n_samples: usize;
-
-        match context.image.colorspace {
-            crate::model::ColorSpace::Gray => {
-                n_samples = pixel_count;
-                let orig = context.load_component_i32(0)?;
-                let recon = &reconstructed[0];
-                for i in 0..pixel_count {
-                    let decoded = (recon[i] + level_shift).clamp(0.0, max_sample);
-                    let diff = decoded - orig[i] as f32;
-                    total_sse += (diff * diff) as f64;
-                    decoded_luma[i] = decoded;
-                    orig_luma[i] = orig[i] as f32;
-                }
-            }
-            crate::model::ColorSpace::Srgb if num_components == 3 && context.plan.use_mct => {
-                n_samples = pixel_count * 3;
-                let orig_r = context.load_component_i32(0)?;
-                let orig_g = context.load_component_i32(1)?;
-                let orig_b = context.load_component_i32(2)?;
-                for i in 0..pixel_count {
-                    let yc = reconstructed[0][i];
-                    let cb = reconstructed[1][i];
-                    let cr = reconstructed[2][i];
-                    // Inverse ICT (ISO 15444-1 Annex G.2) + undo DC shift
-                    let r = (yc + 1.402f32 * cr + level_shift).clamp(0.0, max_sample);
-                    let g = (yc - 0.344_13f32 * cb - 0.714_14f32 * cr + level_shift)
-                        .clamp(0.0, max_sample);
-                    let b = (yc + 1.772f32 * cb + level_shift).clamp(0.0, max_sample);
-                    let dr = r - orig_r[i] as f32;
-                    let dg = g - orig_g[i] as f32;
-                    let db = b - orig_b[i] as f32;
-                    total_sse += (dr * dr + dg * dg + db * db) as f64;
-                    // BT.601 luma for SSIM
-                    decoded_luma[i] = 0.299f32 * r + 0.587f32 * g + 0.114f32 * b;
-                    orig_luma[i] = 0.299f32 * orig_r[i] as f32
-                        + 0.587f32 * orig_g[i] as f32
-                        + 0.114f32 * orig_b[i] as f32;
-                }
-            }
-            _ => {
-                return Err(Jp2LamError::EncodeFailed(
-                    "quality metrics not implemented for this colorspace configuration".to_string(),
-                ));
-            }
-        }
-
-        let mse = total_sse / n_samples as f64;
-        let max_val = ((1u32 << precision) - 1) as f64;
-        let psnr_db = if mse < 1e-10 {
-            100.0
-        } else {
-            20.0 * (max_val / mse.sqrt()).log10()
-        };
-
-        let ssim = mssim_8x8(&orig_luma, &decoded_luma, width, height, max_val);
-
-        Ok(crate::encode::EncodeMetrics { psnr_db, ssim })
+        let decoded = crate::decode::decode_jp2(encoded)?;
+        metrics_from_decoded_image(context, &decoded)
     }
 }
 
-fn irreversible_input_component(
+fn metrics_from_decoded_image(
     context: &EncodeContext<'_>,
-    component_index: usize,
-) -> Result<Vec<f32>> {
-    let width = context.plan.width;
-    let height = context.plan.height;
-    irreversible_input_component_rect(context, component_index, 0, 0, width, height)
+    decoded: &crate::model::Image,
+) -> Result<crate::encode::EncodeMetrics> {
+    if decoded.width != context.image.width || decoded.height != context.image.height {
+        return Err(Jp2LamError::EncodeFailed(format!(
+            "quality-metric decode dimensions {}x{} do not match source {}x{}",
+            decoded.width, decoded.height, context.image.width, context.image.height
+        )));
+    }
+
+    let width = usize::try_from(context.image.width)
+        .map_err(|_| Jp2LamError::EncodeFailed("metric width exceeds usize".into()))?;
+    let height = usize::try_from(context.image.height)
+        .map_err(|_| Jp2LamError::EncodeFailed("metric height exceeds usize".into()))?;
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or_else(|| Jp2LamError::EncodeFailed("metric image area overflows usize".into()))?;
+    let precision = context
+        .plan
+        .components
+        .first()
+        .map(|component| component.precision)
+        .unwrap_or(8);
+    let max_val = ((1u32 << precision) - 1) as f64;
+    let mut original_luma = vec![0.0f32; pixel_count];
+    let mut decoded_luma = vec![0.0f32; pixel_count];
+    let mut total_sse = 0.0f64;
+    let sample_count;
+
+    match context.image.colorspace {
+        crate::model::ColorSpace::Gray => {
+            let original = context.load_component_i32(0)?;
+            let reconstructed = decoded.components.first().ok_or_else(|| {
+                Jp2LamError::EncodeFailed("quality-metric decode is missing grayscale data".into())
+            })?;
+            if original.len() != pixel_count || reconstructed.data.len() != pixel_count {
+                return Err(Jp2LamError::EncodeFailed(
+                    "quality-metric grayscale sample count does not match image area".into(),
+                ));
+            }
+            sample_count = pixel_count;
+            for index in 0..pixel_count {
+                let actual = reconstructed.data[index] as f32;
+                let expected = original[index] as f32;
+                let difference = actual - expected;
+                total_sse += f64::from(difference * difference);
+                original_luma[index] = expected;
+                decoded_luma[index] = actual;
+            }
+        }
+        crate::model::ColorSpace::Srgb if decoded.components.len() == 3 => {
+            let original_r = context.load_component_i32(0)?;
+            let original_g = context.load_component_i32(1)?;
+            let original_b = context.load_component_i32(2)?;
+            let reconstructed_r = &decoded.components[0].data;
+            let reconstructed_g = &decoded.components[1].data;
+            let reconstructed_b = &decoded.components[2].data;
+            if [
+                original_r.len(),
+                original_g.len(),
+                original_b.len(),
+                reconstructed_r.len(),
+                reconstructed_g.len(),
+                reconstructed_b.len(),
+            ]
+            .iter()
+            .any(|&len| len != pixel_count)
+            {
+                return Err(Jp2LamError::EncodeFailed(
+                    "quality-metric RGB sample count does not match image area".into(),
+                ));
+            }
+            sample_count = pixel_count * 3;
+            for index in 0..pixel_count {
+                let actual_r = reconstructed_r[index] as f32;
+                let actual_g = reconstructed_g[index] as f32;
+                let actual_b = reconstructed_b[index] as f32;
+                let expected_r = original_r[index] as f32;
+                let expected_g = original_g[index] as f32;
+                let expected_b = original_b[index] as f32;
+                total_sse += f64::from((actual_r - expected_r).powi(2))
+                    + f64::from((actual_g - expected_g).powi(2))
+                    + f64::from((actual_b - expected_b).powi(2));
+                original_luma[index] = 0.299 * expected_r + 0.587 * expected_g + 0.114 * expected_b;
+                decoded_luma[index] = 0.299 * actual_r + 0.587 * actual_g + 0.114 * actual_b;
+            }
+        }
+        _ => {
+            return Err(Jp2LamError::EncodeFailed(
+                "quality metrics not implemented for this colorspace configuration".into(),
+            ));
+        }
+    }
+
+    let mse = total_sse / sample_count as f64;
+    let psnr_db = if mse < 1e-10 {
+        100.0
+    } else {
+        20.0 * (max_val / mse.sqrt()).log10()
+    };
+    let ssim = mssim_8x8(&original_luma, &decoded_luma, width, height, max_val);
+    Ok(crate::encode::EncodeMetrics { psnr_db, ssim })
 }
 
 /// Level-shifted (and optionally ICT-transformed) irreversible input samples for
@@ -845,35 +927,67 @@ fn irreversible_input_component_rect(
         return Ok(out);
     }
 
-    if context.plan.component_count != 3 {
-        return Err(Jp2LamError::EncodeFailed(
-            "irreversible MCT requires exactly 3 components".to_string(),
-        ));
+    IctTileInputs::load(context, x0, y0, width, height)?.output_component(component_index)
+}
+
+/// Dense RGB source planes retained while all three irreversible-MCT outputs
+/// for a tile are derived. Keeping this state tile-scoped removes repeated
+/// deinterleave/load work without raising the four-plane peak already required
+/// for one ICT output.
+struct IctTileInputs {
+    r: Vec<i32>,
+    g: Vec<i32>,
+    b: Vec<i32>,
+    level_shift: i32,
+}
+
+impl IctTileInputs {
+    fn load(
+        context: &EncodeContext<'_>,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        if context.plan.component_count != 3 {
+            return Err(Jp2LamError::EncodeFailed(
+                "irreversible MCT requires exactly 3 components".to_string(),
+            ));
+        }
+        let r = context.load_component_rect_i32(0, x0, y0, width, height)?;
+        let g = context.load_component_rect_i32(1, x0, y0, width, height)?;
+        let b = context.load_component_rect_i32(2, x0, y0, width, height)?;
+        if r.len() != g.len() || r.len() != b.len() {
+            return Err(Jp2LamError::EncodeFailed(
+                "component sample lengths differ for irreversible MCT".to_string(),
+            ));
+        }
+        let precision = SamplePrecision::new(context.plan.components[0].precision)?;
+        Ok(Self {
+            r,
+            g,
+            b,
+            level_shift: precision.unsigned_level_shift(),
+        })
     }
-    let r = context.load_component_rect_i32(0, x0, y0, width, height)?;
-    let g = context.load_component_rect_i32(1, x0, y0, width, height)?;
-    let b = context.load_component_rect_i32(2, x0, y0, width, height)?;
-    if r.len() != g.len() || r.len() != b.len() {
-        return Err(Jp2LamError::EncodeFailed(
-            "component sample lengths differ for irreversible MCT".to_string(),
-        ));
+
+    fn output_component(&self, component_index: usize) -> Result<Vec<f32>> {
+        if component_index > 2 {
+            return Err(Jp2LamError::EncodeFailed(format!(
+                "irreversible MCT only supports component index 0..2, got {component_index}"
+            )));
+        }
+        let mut out = vec![0.0f32; self.r.len()];
+        (PRIMITIVES.color.forward_ict_component)(
+            &self.r,
+            &self.g,
+            &self.b,
+            component_index,
+            self.level_shift,
+            &mut out,
+        );
+        Ok(out)
     }
-    if component_index > 2 {
-        return Err(Jp2LamError::EncodeFailed(format!(
-            "irreversible MCT only supports component index 0..2, got {component_index}"
-        )));
-    }
-    let mut out = vec![0.0f32; r.len()];
-    let precision = SamplePrecision::new(context.plan.components[component_index].precision)?;
-    (PRIMITIVES.color.forward_ict_component)(
-        &r,
-        &g,
-        &b,
-        component_index,
-        precision.unsigned_level_shift(),
-        &mut out,
-    );
-    Ok(out)
 }
 
 /// Level-shifted (and optionally RCT-transformed) reversible input samples for a
@@ -1024,21 +1138,6 @@ fn native_pcrd_enabled() -> bool {
     true
 }
 
-/// Reconstruct the float value for a quantized integer coefficient truncated to
-/// `last_coded_bp` bit-planes. Uses the standard midpoint reconstruction.
-fn dequantize_truncated_coeff(q: i32, last_coded_bp: Option<u8>, step: f32) -> f32 {
-    let Some(b) = last_coded_bp else {
-        return 0.0;
-    };
-    let abs_q = q.unsigned_abs();
-    let abs_trunc = (abs_q >> b) << b;
-    if abs_trunc == 0 {
-        return 0.0;
-    }
-    let sign = if q >= 0 { 1.0f32 } else { -1.0f32 };
-    sign * (abs_trunc as f32 + 0.5) * step
-}
-
 fn all_pass_selections(
     layouts: &[t1::NativeEncodedTier1Layout],
 ) -> Vec<t1::NativeTier1SelectionLayout> {
@@ -1072,7 +1171,7 @@ fn select_layout_passes(
         return Ok(all_pass_selections(layouts));
     }
 
-    let pixel_count = context.image.width * context.image.height;
+    let pixel_count = u64::from(context.image.width) * u64::from(context.image.height);
     let contrast_mask = build_luma_contrast_mask(context);
     let document_trim = matches!(context.plan.rate_mode, crate::plan::RateMode::DocumentTrim);
 
@@ -1161,7 +1260,7 @@ fn select_stored_tile_passes(
         }
     }
 
-    let pixel_count = context.image.width * context.image.height;
+    let pixel_count = u64::from(context.image.width) * u64::from(context.image.height);
     let selection = if let Some(target_body_bytes) = target_body_bytes {
         crate::dwt::pcrd::select_for_target_bytes(&curves, target_body_bytes)
     } else if matches!(context.plan.rate_mode, crate::plan::RateMode::DocumentTrim) {
@@ -1600,7 +1699,8 @@ fn mssim_8x8(orig: &[f32], recon: &[f32], width: usize, height: usize, sample_pe
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeBackend, allow_component_parallelism, component_parallel_working_memory_floor,
+        IctTileInputs, NativeBackend, allow_component_parallelism,
+        component_parallel_working_memory_floor, irreversible_input_component_rect,
     };
     use crate::encode::block_store::EncodedBlockStore;
     use crate::encode::context::EncodeContext;
@@ -1771,6 +1871,48 @@ mod tests {
         assert_eq!(rect.width, 8);
         assert_eq!(rect.height, 8);
         assert_eq!(rect.data.len(), 64);
+    }
+
+    #[test]
+    fn shared_ict_inputs_match_per_component_preparation() {
+        let context = rgb_context(
+            16,
+            16,
+            Preset::DocumentHigh.quality(),
+            ResourceLimits::default(),
+        );
+        let inputs = IctTileInputs::load(&context, 4, 4, 8, 8).expect("shared RGB inputs");
+        for component in 0..3 {
+            assert_eq!(
+                inputs
+                    .output_component(component)
+                    .expect("shared ICT output"),
+                irreversible_input_component_rect(&context, component, 4, 4, 8, 8)
+                    .expect("per-component ICT output"),
+            );
+        }
+    }
+
+    #[test]
+    fn shared_ict_tile_encoding_matches_component_by_component_encoding() {
+        let context = rgb_context(
+            16,
+            16,
+            Preset::DocumentHigh.quality(),
+            ResourceLimits::default(),
+        );
+        let backend = NativeBackend;
+        let shared = backend
+            .prepare_tier1_encoded_mct_components_rect(&context, 2, 4, 4, 8, 8)
+            .expect("shared ICT tile encoding");
+        let individual = (0..3)
+            .map(|component| {
+                backend
+                    .prepare_tier1_encoded_component_rect(&context, 2, component, 4, 4, 8, 8)
+                    .expect("individual ICT tile encoding")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(shared, individual);
     }
 
     #[test]

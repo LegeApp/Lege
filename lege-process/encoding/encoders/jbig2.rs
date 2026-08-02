@@ -10,9 +10,16 @@ use jbig2enc_rust::{
 /// **0 = white (background), non-zero = black (foreground)**.
 ///
 /// Accepts:
-/// - channels=0: packed logical buffer (same rules as grayscale below)
-/// - channels=1: grayscale 0–255 or already 0/1
+/// - channels=0: logical buffer where 0 is background and non-zero is ink
+/// - channels=1: grayscale/bilevel luma where dark values are ink
 fn normalize_binary_data(input: &[u8], width: u32, height: u32, channels: u8) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(EncodingError::InvalidDimensions {
+            format: "JBIG2",
+            width,
+            height,
+        });
+    }
     let expected_len = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| EncodingError::InvalidInput("Dimensions too large".to_string()))?;
@@ -23,28 +30,14 @@ fn normalize_binary_data(input: &[u8], width: u32, height: u32, channels: u8) ->
 
     let slice = &input[..expected_len];
 
-    /// Map buffers to JBIG2 convention: **0 = background (white), non-zero = foreground (ink)**.
-    ///
-    /// `jbig2enc_rust::binary_pixels_to_bitimage` treats **non-zero** as **set** (ink).
-    ///
-    /// **Default adaptive binarization** (`improved_binarize` / `sauvola_via_integral`): dark text is
-    /// **0**, paper is **255** (`px > thr → 255` marks bright pixels). Same convention as
-    /// `encoders/ccitt4` (`is_black = pixel <= 128`).
-    ///
-    /// **Heavy ONNX** path is normalized to that convention in `apply_heavy_duty_binarization_raw`
-    /// (invert after the model) so all encoders agree.
-    fn from_grayscale_like(slice: &[u8]) -> Vec<u8> {
-        let already_binary = slice.iter().all(|&b| b <= 1);
-        if already_binary {
-            // 0=background, 1=foreground (ink)
-            return slice.to_vec();
-        }
-        // Match CCITT: paper (high) -> 0 jbig2 white, ink (low) -> 1 jbig2 black
-        slice.iter().map(|&b| if b > 128 { 0 } else { 1 }).collect()
-    }
-
     match channels {
-        0 | 1 => Ok(from_grayscale_like(slice)),
+        // Logical data is already in jbig2enc-rust's convention.
+        0 => Ok(slice.iter().map(|&value| u8::from(value != 0)).collect()),
+        // Pipeline bilevel pages use the image convention (0=black, 255=white).
+        // Never infer the convention from the values: an all-black page is a
+        // valid all-zero grayscale buffer and must not turn into an all-white
+        // JBIG2 page.
+        1 => Ok(slice.iter().map(|&value| u8::from(value <= 128)).collect()),
         _ => Err(EncodingError::UnsupportedChannels {
             format: "JBIG2",
             channels,
@@ -205,4 +198,30 @@ pub fn encode(
     ));
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_binary_data;
+    use crate::encoding::EncodingError;
+
+    #[test]
+    fn all_black_grayscale_is_not_misread_as_logical_background() {
+        let normalized = normalize_binary_data(&[0, 0, 0, 0], 2, 2, 1).expect("normalize");
+        assert_eq!(normalized, vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn logical_binary_input_keeps_zero_as_background() {
+        let normalized = normalize_binary_data(&[0, 1, 255, 0], 2, 2, 0).expect("normalize");
+        assert_eq!(normalized, vec![0, 1, 1, 0]);
+    }
+
+    #[test]
+    fn zero_sized_page_is_rejected() {
+        assert!(matches!(
+            normalize_binary_data(&[], 0, 1, 1),
+            Err(EncodingError::InvalidDimensions { .. })
+        ));
+    }
 }

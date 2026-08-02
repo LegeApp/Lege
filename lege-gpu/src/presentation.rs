@@ -216,12 +216,13 @@ struct ResidentImage {
 
 #[allow(missing_debug_implementations)]
 pub struct GpuCompositor {
-    _instance: wgpu::Instance,
+    _instance: Arc<wgpu::Instance>,
     surface: wgpu::Surface<'static>,
     adapter_name: String,
     backend_name: String,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    shared_context: Option<crate::vision::runtime::device::GpuContext>,
     surface_config: wgpu::SurfaceConfiguration,
     width: u32,
     height: u32,
@@ -262,38 +263,64 @@ impl GpuCompositor {
         height: u32,
         config: PresentationConfig,
     ) -> Result<Self, PresentationError> {
-        let instance = crate::wgpu_setup::create_instance();
+        // Create the surface from the shared compute context's Instance whenever
+        // possible. WGPU adapters and surfaces are instance-scoped on some
+        // backends, so checking a surface created by an unrelated Instance can
+        // produce a false compatibility result.
+        let shared_candidate = crate::vision::runtime::device::GpuContext::shared()
+            .await
+            .ok();
+        let instance = shared_candidate
+            .as_ref()
+            .map(|context| Arc::clone(&context.instance))
+            .unwrap_or_else(|| Arc::new(crate::wgpu_setup::create_instance()));
         let surface = instance
             .create_surface(window)
             .map_err(|error| PresentationError::CreateSurface(error.to_string()))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .map_err(|error| PresentationError::Adapter(error.to_string()))?;
+        let shared =
+            shared_candidate.filter(|context| context.adapter.is_surface_supported(&surface));
+        let (adapter, device, queue, shared_context) = if let Some(context) = shared {
+            (
+                Arc::clone(&context.adapter),
+                Arc::clone(&context.device),
+                Arc::clone(&context.queue),
+                Some(context),
+            )
+        } else {
+            let adapter = Arc::new(
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: false,
+                        apply_limit_buckets: false,
+                    })
+                    .await
+                    .map_err(|error| PresentationError::Adapter(error.to_string()))?,
+            );
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("lege-presentation"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: adapter.limits(),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| PresentationError::Device(error.to_string()))?;
+            (adapter, Arc::new(device), Arc::new(queue), None)
+        };
         let info = adapter.get_info();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("lege-presentation"),
-                required_features: wgpu::Features::empty(),
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| PresentationError::Device(error.to_string()))?;
         let device_failed = Arc::new(AtomicBool::new(false));
-        let lost_flag = device_failed.clone();
-        device.set_device_lost_callback(move |_reason, _message| {
-            lost_flag.store(true, Ordering::Release);
-        });
-        let error_flag = device_failed.clone();
-        device.on_uncaptured_error(Arc::new(move |_error| {
-            error_flag.store(true, Ordering::Release);
-        }));
+        if shared_context.is_none() {
+            let lost_flag = device_failed.clone();
+            device.set_device_lost_callback(move |_reason, _message| {
+                lost_flag.store(true, Ordering::Release);
+            });
+            let error_flag = device_failed.clone();
+            device.on_uncaptured_error(Arc::new(move |_error| {
+                error_flag.store(true, Ordering::Release);
+            }));
+        }
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
             .ok_or(PresentationError::UnsupportedSurface)?;
@@ -443,6 +470,7 @@ impl GpuCompositor {
             backend_name: format!("{:?}", info.backend),
             device,
             queue,
+            shared_context,
             surface_config,
             width,
             height,
@@ -556,7 +584,12 @@ impl GpuCompositor {
     }
 
     pub fn present(&mut self) -> Result<PresentOutcome, PresentationError> {
-        if self.device_failed.load(Ordering::Acquire) {
+        if self.device_failed.load(Ordering::Acquire)
+            || self
+                .shared_context
+                .as_ref()
+                .is_some_and(|context| context.is_lost())
+        {
             return Err(PresentationError::DeviceLost);
         }
         if self.width == 0 || self.height == 0 {

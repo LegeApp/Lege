@@ -131,6 +131,20 @@ pub struct PageText {
     pub height_px: u32,
 }
 
+impl PageText {
+    pub fn plain_text(&self) -> String {
+        let mut out = String::new();
+        for block in &self.blocks {
+            for line in &block.lines {
+                out.push_str(&line.text);
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,19 +206,5 @@ mod tests {
             BlockKind::from_class_name("table_footnote"),
             BlockKind::Footnote
         );
-    }
-}
-
-impl PageText {
-    pub fn plain_text(&self) -> String {
-        let mut out = String::new();
-        for block in &self.blocks {
-            for line in &block.lines {
-                out.push_str(&line.text);
-                out.push('\n');
-            }
-            out.push('\n');
-        }
-        out
     }
 }

@@ -100,14 +100,57 @@ pub(crate) struct BinarizeParamsStd140 {
 }
 
 impl BinarizationParams {
-    pub fn validate_gray(&self, gray: &[u8]) -> Result<()> {
+    fn validated_pixel_count(&self) -> Result<usize> {
         if self.width == 0 || self.height == 0 {
             return Err(GpuBinarizationError::InvalidDimensions {
                 width: self.width,
                 height: self.height,
             });
         }
-        let expected = self.width as usize * self.height as usize;
+        let pixel_count = self.width.checked_mul(self.height).ok_or_else(|| {
+            GpuBinarizationError::Unsupported(
+                "image dimensions overflow the GPU shader's u32 pixel indexing".into(),
+            )
+        })?;
+
+        if self.mode == BinarizationMode::Adaptive {
+            let window = self.adaptive.sauvola_window;
+            if window == 0 || window.is_multiple_of(2) {
+                return Err(GpuBinarizationError::Unsupported(
+                    "Sauvola window must be a positive odd value".into(),
+                ));
+            }
+            let bg_window = self.adaptive.bg_window;
+            if bg_window == 0 || bg_window.is_multiple_of(2) {
+                return Err(GpuBinarizationError::Unsupported(
+                    "background window must be a positive odd value".into(),
+                ));
+            }
+            if !self.k_factor.is_finite() {
+                return Err(GpuBinarizationError::Unsupported(
+                    "Sauvola k-factor must be finite".into(),
+                ));
+            }
+
+            // The squared summed-area table intentionally wraps modulo 2^32,
+            // but its queried window sum must itself fit in u32 for the modular
+            // subtraction to recover the exact value.
+            let max_squared_sum = u64::from(window)
+                .checked_mul(u64::from(window))
+                .and_then(|area| area.checked_mul(255 * 255))
+                .unwrap_or(u64::MAX);
+            if max_squared_sum > u64::from(u32::MAX) {
+                return Err(GpuBinarizationError::Unsupported(
+                    "Sauvola window is too large for the u32 squared integral".into(),
+                ));
+            }
+        }
+
+        Ok(pixel_count as usize)
+    }
+
+    pub fn validate_gray(&self, gray: &[u8]) -> Result<()> {
+        let expected = self.validated_pixel_count()?;
         if gray.len() != expected {
             return Err(GpuBinarizationError::BufferSizeMismatch {
                 expected,
@@ -327,6 +370,156 @@ mod tests {
 
     fn gpu_test_guard() -> MutexGuard<'static, ()> {
         GPU_TEST_LOCK.lock().expect("GPU test lock poisoned")
+    }
+
+    fn adaptive_params(width: u32, height: u32) -> BinarizationParams {
+        BinarizationParams {
+            width,
+            height,
+            mode: BinarizationMode::Adaptive,
+            invert_output: false,
+            k_factor: DEFAULT_K_FACTOR,
+            fixed_threshold: 127,
+            adaptive: AdaptiveBinarizeGpuConstants {
+                sauvola_window: 31,
+                bg_window: 31,
+                percentile_c: 230,
+                otsu_threshold: 127,
+            },
+            debug_mode: 0,
+        }
+    }
+
+    #[test]
+    fn validation_rejects_shader_index_overflow() {
+        let params = adaptive_params(u32::MAX, 2);
+        assert!(matches!(
+            params.validate_gray(&[]),
+            Err(GpuBinarizationError::Unsupported(message))
+                if message.contains("u32 pixel indexing")
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_adaptive_windows_and_nonfinite_k() {
+        let mut params = adaptive_params(1, 1);
+        params.adaptive.sauvola_window = 0;
+        assert!(matches!(
+            params.validate_gray(&[0]),
+            Err(GpuBinarizationError::Unsupported(message))
+                if message.contains("positive odd")
+        ));
+
+        params.adaptive.sauvola_window = 258;
+        assert!(matches!(
+            params.validate_gray(&[0]),
+            Err(GpuBinarizationError::Unsupported(message))
+                if message.contains("positive odd")
+        ));
+
+        params.adaptive.sauvola_window = 259;
+        assert!(matches!(
+            params.validate_gray(&[0]),
+            Err(GpuBinarizationError::Unsupported(message))
+                if message.contains("squared integral")
+        ));
+
+        params.adaptive.sauvola_window = 31;
+        params.k_factor = f32::NAN;
+        assert!(matches!(
+            params.validate_gray(&[0]),
+            Err(GpuBinarizationError::Unsupported(message))
+                if message.contains("finite")
+        ));
+    }
+
+    #[test]
+    fn parallel_integral_matches_cpu_mean_across_scan_tiles() {
+        let _guard = gpu_test_guard();
+        let (w, h) = (300usize, 270usize);
+        let gray = (0..w * h)
+            .map(|index| {
+                let x = index % w;
+                let y = index / w;
+                ((x * 13 + y * 29 + x * y) & 255) as u8
+            })
+            .collect::<Vec<_>>();
+        let mut params = adaptive_params(w as u32, h as u32);
+        params.debug_mode = 5;
+        let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
+        let gpu = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("parallel integral mean");
+
+        let radius = (params.adaptive.sauvola_window / 2) as isize;
+        let reflect = |mut coordinate: isize, len: usize| -> usize {
+            let period = 2 * len as isize;
+            coordinate %= period;
+            if coordinate < 0 {
+                coordinate += period;
+            }
+            if coordinate >= len as isize {
+                coordinate = period - coordinate - 1;
+            }
+            coordinate as usize
+        };
+        for y in (0..h).step_by(17) {
+            for x in (0..w).step_by(19) {
+                let mut sum = 0u32;
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        sum += u32::from(
+                            gray[reflect(y as isize + dy, h) * w + reflect(x as isize + dx, w)],
+                        );
+                    }
+                }
+                let expected = (sum / params.adaptive.sauvola_window.pow(2)) as u8;
+                assert!(
+                    gpu[y * w + x].abs_diff(expected) <= 1,
+                    "mean mismatch at ({x},{y}): GPU={} CPU={expected}",
+                    gpu[y * w + x]
+                );
+            }
+        }
+    }
+
+    /// Manual end-to-end throughput evidence for the tiled integral scan.
+    ///
+    /// Includes upload, every adaptive pass, and readback, so the reported
+    /// number is deliberately more conservative than an isolated shader timer.
+    #[test]
+    #[ignore = "manual GPU throughput benchmark"]
+    fn benchmark_parallel_integral_large_page() {
+        let _guard = gpu_test_guard();
+        let (w, h) = (2048usize, 2048usize);
+        let gray = (0..w * h)
+            .map(|index| ((index * 73 + index / w * 29) & 255) as u8)
+            .collect::<Vec<_>>();
+        let params = adaptive_params(w as u32, h as u32);
+        let mut binarizer = wgpu::WgpuBinarizer::new().expect("WGPU binarizer");
+
+        // Warm buffer allocation, pipeline creation, and driver caches.
+        let warm = binarizer
+            .binarize_gray_raw(&gray, &params)
+            .expect("adaptive benchmark warm-up");
+        assert_eq!(warm.len(), w * h);
+
+        let mut elapsed = Vec::new();
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            let output = binarizer
+                .binarize_gray_raw(&gray, &params)
+                .expect("adaptive benchmark iteration");
+            elapsed.push(started.elapsed());
+            assert_eq!(output.len(), w * h);
+        }
+        elapsed.sort_unstable();
+        let median = elapsed[elapsed.len() / 2];
+        let megapixels_per_second = (w * h) as f64 / median.as_secs_f64() / 1_000_000.0;
+        eprintln!(
+            "adaptive 2048x2048 median={:.2}ms throughput={megapixels_per_second:.1} MP/s",
+            median.as_secs_f64() * 1_000.0
+        );
     }
 
     #[test]

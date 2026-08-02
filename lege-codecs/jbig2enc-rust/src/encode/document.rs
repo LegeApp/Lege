@@ -28,9 +28,9 @@ pub use symbol::text_region_refine::encode_text_region_with_refinement;
 pub use symbol::types::SymbolInstance;
 
 use crate::jbig2arith::Jbig2ArithCoder;
-use crate::jbig2classify::{
-    SymbolSignature, family_bucket_key_for_symbol, family_bucket_neighbors,
-};
+use crate::jbig2classify::SymbolSignature;
+#[cfg(feature = "symboldict")]
+use crate::jbig2classify::{family_bucket_key_for_symbol, family_bucket_neighbors};
 use crate::jbig2comparator::Comparator;
 // Symbol extraction using CC analysis
 #[cfg(feature = "symboldict")]
@@ -39,7 +39,9 @@ use crate::jbig2structs::{
     FileHeader, GenericRegionParams, Jbig2Config, LossySymbolMode, PageInfo, Segment, SegmentType,
 };
 
-use crate::jbig2sym::{BitImage, Rect};
+use crate::jbig2sym::BitImage;
+#[cfg(feature = "symboldict")]
+use crate::jbig2sym::Rect;
 use anyhow::{Result, anyhow};
 
 // Define debug and trace macros at the crate root
@@ -70,9 +72,13 @@ macro_rules! trace {
 use crate::{debug, trace};
 
 use ndarray::Array2;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
+#[cfg(feature = "symboldict")]
+use rustc_hash::FxHashSet;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "symboldict")]
+use std::time::Instant;
 
 /// A key type for hashing bitmaps efficiently
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,10 +217,6 @@ impl<'a> Jbig2Encoder<'a> {
     /// # Arguments
     /// * `config` - Configuration for the encoder
     pub fn new(config: &'a Jbig2Config) -> Self {
-        if config.refine && !config.symbol_mode {
-            panic!("Refinement requires symbol mode to be enabled.");
-        }
-
         Self {
             config,
             state: EncoderState {
@@ -240,6 +242,14 @@ impl<'a> Jbig2Encoder<'a> {
             global_dict_segment_numbers: Vec::new(),
             metrics: EncoderMetrics::default(),
         }
+    }
+
+    /// Fallible constructor for callers accepting external configuration.
+    pub fn try_new(config: &'a Jbig2Config) -> Result<Self> {
+        if config.refine && !config.symbol_mode {
+            return Err(anyhow!("refinement requires symbol mode to be enabled"));
+        }
+        Ok(Self::new(config))
     }
 
     pub fn dict_only(mut self) -> Self {
@@ -289,7 +299,7 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     pub fn add_page(&mut self, image: &Array2<u8>) -> Result<()> {
-        let bitimage = crate::jbig2sym::array_to_bitimage(image);
+        let bitimage = crate::jbig2sym::array_to_bitimage(image).map_err(|error| anyhow!(error))?;
         self.add_page_bitimage(bitimage)
     }
 
@@ -310,6 +320,9 @@ impl<'a> Jbig2Encoder<'a> {
     // `Jbig2Encoder`, and `mod symbol` is a private module, so relocating it
     // there would make it externally unreachable.
     pub fn add_page_bitimage(&mut self, bitimage: BitImage) -> Result<()> {
+        if self.config.refine && !self.config.symbol_mode {
+            return Err(anyhow!("refinement requires symbol mode to be enabled"));
+        }
         let page_num = self.pages.len();
         self.page_symbol_indices.push(Vec::new());
         let mut symbol_instances = Vec::new();
@@ -857,7 +870,7 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     pub fn collect_symbols(&mut self, roi: &Array2<u8>) -> Result<()> {
-        let bitimage = crate::jbig2sym::array_to_bitimage(roi);
+        let bitimage = crate::jbig2sym::array_to_bitimage(roi).map_err(|error| anyhow!(error))?;
         let (_, trimmed) = bitimage.trim();
         let key = hash_key(&trimmed);
         let page_num = self.pages.len();
@@ -919,11 +932,19 @@ impl<'a> Jbig2Encoder<'a> {
 /// Encodes a generic region, optionally wrapping it in a complete JBIG2 file.
 /// This function is intended to be the top-level entry point for encoding a single generic region.
 pub fn encode_generic_region(img: &BitImage, cfg: &Jbig2Config) -> Result<Vec<u8>> {
+    cfg.generic
+        .validate()
+        .map_err(|e: &'static str| anyhow!(e))?;
     // Build generic region config from high-level parameters
     let mut gr_cfg = GenericRegionParams::new(img.width as u32, img.height as u32, cfg.generic.dpi);
     gr_cfg.comb_operator = cfg.generic.comb_operator;
     gr_cfg.mmr = cfg.generic.mmr;
+    gr_cfg.template = cfg.generic.template;
     gr_cfg.tpgdon = cfg.generic.tpgdon;
+    for (slot, value) in gr_cfg.at.iter_mut().zip(&cfg.generic.at_pixels) {
+        *slot = *value;
+    }
+    gr_cfg.at_pixels = cfg.generic.at_pixels.clone();
     gr_cfg.validate().map_err(|e: &'static str| anyhow!(e))?;
 
     let coder_data =

@@ -11,8 +11,8 @@ use crate::model::ResourceLimits;
 use crate::plan::BandOrientation;
 use crate::profile::BlockClass;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+use std::io::{Seek, SeekFrom, Write};
+use std::sync::Arc;
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -120,7 +120,7 @@ impl EncodedBlockStore {
     }
 
     pub(crate) fn write_prefix_to<W: Write>(
-        &mut self,
+        &self,
         payload: PayloadRef,
         prefix_len: usize,
         writer: &mut W,
@@ -139,17 +139,20 @@ impl EncodedBlockStore {
                 writer.write_all(&bytes[..prefix_len]).map_err(io_error)
             }
             PayloadLocation::Spill { offset } => {
-                let spill = self.spill.as_mut().ok_or_else(|| {
+                let spill = self.spill.as_ref().ok_or_else(|| {
                     Jp2LamError::EncodeFailed("missing spill backing file".into())
                 })?;
-                spill.seek(SeekFrom::Start(offset)).map_err(io_error)?;
                 let mut remaining = prefix_len;
+                let mut read_offset = offset;
                 let mut buffer = [0u8; COPY_BUFFER_BYTES];
                 while remaining > 0 {
                     let chunk = remaining.min(buffer.len());
-                    spill.read_exact(&mut buffer[..chunk]).map_err(io_error)?;
+                    read_exact_at(spill, &mut buffer[..chunk], read_offset).map_err(io_error)?;
                     writer.write_all(&buffer[..chunk]).map_err(io_error)?;
                     remaining -= chunk;
+                    read_offset = read_offset.checked_add(chunk as u64).ok_or_else(|| {
+                        Jp2LamError::EncodeFailed("spill read offset overflow".into())
+                    })?;
                 }
                 Ok(())
             }
@@ -166,7 +169,7 @@ impl EncodedBlockStore {
     }
 
     pub(crate) fn into_shared(self) -> SharedEncodedBlockStore {
-        Arc::new(Mutex::new(self))
+        Arc::new(self)
     }
 
     fn spill_file(&mut self) -> Result<&mut File> {
@@ -184,7 +187,9 @@ impl EncodedBlockStore {
     }
 }
 
-pub(crate) type SharedEncodedBlockStore = Arc<Mutex<EncodedBlockStore>>;
+/// Immutable after construction; positional reads avoid a shared file cursor,
+/// so independent tile payload writers do not serialize on a global mutex.
+pub(crate) type SharedEncodedBlockStore = Arc<EncodedBlockStore>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StoredCodeBlock {
@@ -296,6 +301,38 @@ fn io_error(error: std::io::Error) -> Jp2LamError {
     Jp2LamError::EncodeFailed(format!("encoded block store I/O failed: {error}"))
 }
 
+fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    while !buffer.is_empty() {
+        #[cfg(unix)]
+        let read = {
+            use std::os::unix::fs::FileExt;
+            file.read_at(buffer, offset)?
+        };
+        #[cfg(windows)]
+        let read = {
+            use std::os::windows::fs::FileExt;
+            file.seek_read(buffer, offset)?
+        };
+        #[cfg(not(any(unix, windows)))]
+        let read = {
+            let mut cloned = file.try_clone()?;
+            cloned.seek(SeekFrom::Start(offset))?;
+            std::io::Read::read(&mut cloned, buffer)?
+        };
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "spill payload ended before selected prefix",
+            ));
+        }
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or_else(|| std::io::Error::other("spill read offset overflow"))?;
+        buffer = &mut buffer[read..];
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +394,37 @@ mod tests {
             .write_prefix_to(payload, 3, &mut Vec::new())
             .expect_err("oversized prefix");
         assert!(error.to_string().contains("exceeds stored length"));
+    }
+
+    #[test]
+    fn spilled_payloads_support_concurrent_positional_reads() {
+        let mut store = EncodedBlockStore::from_resource_limits(&limits(0, None));
+        let first_bytes = (0..100_000).map(|index| index as u8).collect::<Vec<_>>();
+        let second_bytes = (0..90_000)
+            .map(|index| (index as u8).wrapping_mul(17))
+            .collect::<Vec<_>>();
+        let first = store.insert(first_bytes.clone()).expect("first spill");
+        let second = store.insert(second_bytes.clone()).expect("second spill");
+        let shared = store.into_shared();
+
+        let first_store = Arc::clone(&shared);
+        let first_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            first_store
+                .write_prefix_to(first, first.len(), &mut output)
+                .expect("first positional read");
+            output
+        });
+        let second_store = Arc::clone(&shared);
+        let second_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            second_store
+                .write_prefix_to(second, second.len(), &mut output)
+                .expect("second positional read");
+            output
+        });
+
+        assert_eq!(first_thread.join().expect("first reader"), first_bytes);
+        assert_eq!(second_thread.join().expect("second reader"), second_bytes);
     }
 }

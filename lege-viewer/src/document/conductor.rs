@@ -184,6 +184,7 @@ enum WorkClass {
 
 #[derive(Debug)]
 struct InFlightWork {
+    id: u64,
     cancellation: CancellationFlag,
     class: WorkClass,
 }
@@ -228,6 +229,7 @@ struct CompileTicket {
 
 #[derive(Debug)]
 struct CompileJob {
+    id: u64,
     page: PageIndex,
     page_to_doc: crate::geometry::Affine,
     cancellation: CancellationFlag,
@@ -236,6 +238,7 @@ struct CompileJob {
 #[derive(Debug)]
 enum RasterJob {
     Tile {
+        id: u64,
         key: WorkKey,
         artifacts: Arc<CompiledArtifacts>,
         demand: TileDemand,
@@ -246,6 +249,7 @@ enum RasterJob {
         cancellation: CancellationFlag,
     },
     PagePreview {
+        id: u64,
         key: WorkKey,
         artifacts: Arc<CompiledArtifacts>,
         demand: TileDemand,
@@ -258,15 +262,18 @@ enum RasterJob {
 #[derive(Debug)]
 enum WorkerResult {
     Compiled {
+        id: u64,
         page: PageIndex,
         result: Result<Arc<CompiledArtifacts>, DocumentEngineError>,
     },
     Rastered {
+        id: u64,
         key: WorkKey,
         demand: TileDemand,
         result: Result<super::TileSurface, DocumentEngineError>,
     },
     Previewed {
+        id: u64,
         key: WorkKey,
         page: PageIndex,
         result: Result<super::TileSurface, DocumentEngineError>,
@@ -794,6 +801,7 @@ impl Conductor {
             priority,
             sequence: self.next_sequence(),
             value: RasterJob::PagePreview {
+                id: self.next_sequence(),
                 key,
                 artifacts,
                 demand,
@@ -859,14 +867,14 @@ impl Conductor {
             let current_priority = self
                 .raster_pending
                 .iter()
-                .filter(|job| raster_job_identity(&job.value).0 == key)
+                .filter(|job| raster_job_identity(&job.value).1 == key)
                 .map(|job| job.priority)
                 .max();
             if current_priority.is_some_and(|current| current >= priority) {
                 return;
             }
             self.raster_pending
-                .retain(|job| raster_job_identity(&job.value).0 != key);
+                .retain(|job| raster_job_identity(&job.value).1 != key);
             self.queued.remove(&key);
         }
         let cancellation = CancellationFlag::default();
@@ -882,6 +890,7 @@ impl Conductor {
             priority,
             sequence: self.next_sequence(),
             value: RasterJob::Tile {
+                id: self.next_sequence(),
                 key,
                 artifacts,
                 demand,
@@ -913,7 +922,9 @@ impl Conductor {
                 WorkClass::Background
             };
             let cancellation = state.cancellation.clone();
+            let id = self.next_sequence();
             let job = CompileJob {
+                id,
                 page,
                 page_to_doc: placement.page_to_doc,
                 cancellation: cancellation.clone(),
@@ -926,6 +937,7 @@ impl Conductor {
                     self.in_flight.insert(
                         WorkKey::Compile(page),
                         InFlightWork {
+                            id,
                             cancellation,
                             class,
                         },
@@ -943,13 +955,14 @@ impl Conductor {
             }
         }
         while let Some(job) = self.raster_pending.pop() {
-            let (key, cancellation, class) = raster_job_identity(&job.value);
+            let (id, key, cancellation, class) = raster_job_identity(&job.value);
             match self.raster_tx.try_send(job.value) {
                 Ok(()) => {
                     self.queued.remove(&key);
                     self.in_flight.insert(
                         key,
                         InFlightWork {
+                            id,
                             cancellation,
                             class,
                         },
@@ -971,8 +984,12 @@ impl Conductor {
     fn handle_result(&mut self, result: WorkerResult) {
         let mut needs_replan = false;
         match result {
-            WorkerResult::Compiled { page, result } => {
-                self.in_flight.remove(&WorkKey::Compile(page));
+            WorkerResult::Compiled { id, page, result } => {
+                if !remove_matching_in_flight(&mut self.in_flight, WorkKey::Compile(page), id) {
+                    self.dispatch();
+                    self.publish_depths();
+                    return;
+                }
                 let mut needs = self
                     .compile_states
                     .remove(&page)
@@ -1029,11 +1046,16 @@ impl Conductor {
                 }
             }
             WorkerResult::Rastered {
+                id,
                 key,
                 demand,
                 result,
             } => {
-                self.in_flight.remove(&key);
+                if !remove_matching_in_flight(&mut self.in_flight, key, id) {
+                    self.dispatch();
+                    self.publish_depths();
+                    return;
+                }
                 match result {
                     Ok(tile) => {
                         let current = self.intent.load();
@@ -1061,8 +1083,17 @@ impl Conductor {
                     Err(error) => self.report_page_error(demand.page, error),
                 }
             }
-            WorkerResult::Previewed { key, page, result } => {
-                self.in_flight.remove(&key);
+            WorkerResult::Previewed {
+                id,
+                key,
+                page,
+                result,
+            } => {
+                if !remove_matching_in_flight(&mut self.in_flight, key, id) {
+                    self.dispatch();
+                    self.publish_depths();
+                    return;
+                }
                 match result {
                     Ok(surface) => {
                         self.previews.insert(Arc::new(surface));
@@ -1318,6 +1349,7 @@ fn spawn_compile_worker(
             let mut worker = engine.create_compile_worker();
             while let Ok(job) = jobs.recv() {
                 let CompileJob {
+                    id,
                     page,
                     page_to_doc,
                     cancellation,
@@ -1326,7 +1358,7 @@ fn spawn_compile_worker(
                     worker.compile_page(page, page_to_doc, &cancellation)
                 }))
                 .unwrap_or_else(|payload| Err(DocumentEngineError::Panic(panic_message(payload))));
-                let _ = results.send(WorkerResult::Compiled { page, result });
+                let _ = results.send(WorkerResult::Compiled { id, page, result });
             }
         });
 }
@@ -1345,6 +1377,7 @@ fn spawn_raster_worker(
             while let Ok(job) = jobs.recv() {
                 match job {
                     RasterJob::Tile {
+                        id,
                         key,
                         artifacts,
                         demand,
@@ -1384,12 +1417,14 @@ fn spawn_raster_worker(
                             Err(DocumentEngineError::Panic(panic_message(payload)))
                         });
                         let _ = results.send(WorkerResult::Rastered {
+                            id,
                             key,
                             demand,
                             result,
                         });
                     }
                     RasterJob::PagePreview {
+                        id,
                         key,
                         artifacts,
                         demand,
@@ -1411,6 +1446,7 @@ fn spawn_raster_worker(
                             Err(DocumentEngineError::Panic(panic_message(payload)))
                         });
                         let _ = results.send(WorkerResult::Previewed {
+                            id,
                             key,
                             page: demand.page,
                             result,
@@ -1421,20 +1457,35 @@ fn spawn_raster_worker(
         });
 }
 
-fn raster_job_identity(job: &RasterJob) -> (WorkKey, CancellationFlag, WorkClass) {
+fn raster_job_identity(job: &RasterJob) -> (u64, WorkKey, CancellationFlag, WorkClass) {
     match job {
         RasterJob::Tile {
+            id,
             key,
             cancellation,
             class,
             ..
         }
         | RasterJob::PagePreview {
+            id,
             key,
             cancellation,
             class,
             ..
-        } => (*key, cancellation.clone(), *class),
+        } => (*id, *key, cancellation.clone(), *class),
+    }
+}
+
+fn remove_matching_in_flight(
+    in_flight: &mut HashMap<WorkKey, InFlightWork>,
+    key: WorkKey,
+    id: u64,
+) -> bool {
+    if in_flight.get(&key).is_some_and(|work| work.id == id) {
+        in_flight.remove(&key);
+        true
+    } else {
+        false
     }
 }
 
@@ -1480,5 +1531,23 @@ mod tests {
         assert_eq!(needs.interactive_generation, Some(42));
         assert!(needs.text_index);
         assert!(needs.preview);
+    }
+
+    #[test]
+    fn stale_worker_result_cannot_remove_replacement_work() {
+        let key = WorkKey::Compile(PageIndex(7));
+        let mut in_flight = HashMap::from([(
+            key,
+            InFlightWork {
+                id: 12,
+                cancellation: CancellationFlag::default(),
+                class: WorkClass::InteractiveVisible,
+            },
+        )]);
+
+        assert!(!remove_matching_in_flight(&mut in_flight, key, 11));
+        assert_eq!(in_flight.get(&key).map(|work| work.id), Some(12));
+        assert!(remove_matching_in_flight(&mut in_flight, key, 12));
+        assert!(!in_flight.contains_key(&key));
     }
 }

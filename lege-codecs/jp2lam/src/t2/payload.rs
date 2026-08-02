@@ -80,9 +80,6 @@ impl TilePartPayload {
         match self {
             Self::PacketSequence(sequence) => sequence.write_to_writer(writer),
             Self::StoredPacketSequence { store, packets } => {
-                let mut store = store.lock().map_err(|_| {
-                    Jp2LamError::EncodeFailed("encoded block store lock was poisoned".into())
-                })?;
                 for packet in packets {
                     writer.write_all(&packet.header).map_err(|error| {
                         Jp2LamError::EncodeFailed(format!("packet header write failed: {error}"))

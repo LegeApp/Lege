@@ -35,6 +35,7 @@ fn lower_node(
     known_shapes: &BTreeMap<String, Vec<i64>>,
     tensor_consts: &HashMap<String, TensorConst>,
 ) -> Result<PlannedOp> {
+    validate_lowering_arity(node)?;
     let inputs = node
         .get_input()
         .iter()
@@ -65,9 +66,23 @@ fn lower_node(
                 .with_context(|| format!("missing planned output shape for `{name}`"))
         })
         .collect::<Result<Vec<_>>>()?;
+    if input_shapes
+        .iter()
+        .chain(&output_shapes)
+        .flatten()
+        .any(|dim| *dim < 0)
+    {
+        bail!("lowering requires fully resolved non-negative shapes");
+    }
 
     let kind = match node.get_op_type() {
         "Conv" => {
+            if input_shapes[0].len() != 4
+                || input_shapes[1].len() != 4
+                || output_shapes[0].len() != 4
+            {
+                bail!("Conv2d plan requires rank-4 input, weight, and output");
+            }
             let strides = attr_i64_array::<2>(node, "strides", [1, 1])?;
             let dilations = attr_i64_array::<2>(node, "dilations", [1, 1])?;
             let kernel_shape = attr_i64_array::<2>(
@@ -75,9 +90,6 @@ fn lower_node(
                 "kernel_shape",
                 [input_shapes[1][2], input_shapes[1][3]],
             )?;
-            if input_shapes[0].len() != 4 {
-                bail!("Conv2d plan requires rank-4 input");
-            }
             // Resolve auto_pad (SAME_*/VALID) into explicit pads for the kernel.
             let pads = super::shape::resolve_auto_pad(
                 attr_string(node, "auto_pad").as_deref().unwrap_or("NOTSET"),
@@ -94,8 +106,8 @@ fn lower_node(
                 dilations,
                 kernel_shape,
             };
-            if input_shapes[0].len() != 4 || input_shapes[1].len() != 4 {
-                bail!("Conv2d plan requires rank-4 input and weight");
+            if plan.group <= 0 {
+                bail!("Conv group must be positive");
             }
             if input_shapes[0][1] % plan.group != 0 || output_shapes[0][1] % plan.group != 0 {
                 bail!("Conv group does not divide input/output channels");
@@ -138,7 +150,7 @@ fn lower_node(
                 axes: axes
                     .into_iter()
                     .map(|axis| normalize_axis_for_insert(axis, new_rank))
-                    .collect(),
+                    .collect::<Result<Vec<_>>>()?,
             }
         }
         "Squeeze" => {
@@ -166,6 +178,12 @@ fn lower_node(
                     .context("Split sizes must be constant for lowering")?
                     .to_vec()
             } else {
+                if output_shapes
+                    .iter()
+                    .any(|shape| shape.len() != input_shapes[0].len())
+                {
+                    bail!("Split output ranks must match the input rank");
+                }
                 output_shapes.iter().map(|shape| shape[axis]).collect()
             };
             PlannedOpKind::Split { axis, sizes }
@@ -275,12 +293,40 @@ fn lower_node(
                 if coord != "asymmetric" {
                     bail!("Resize nearest lowering only supports asymmetric coordinate mode");
                 }
-                PlannedOpKind::ResizeNearest {
-                    scales: const_f32(tensor_consts, &node.get_input()[2])
-                        .context("Resize scales must be constant for lowering")?
-                        .to_vec(),
+                if attr_string(node, "nearest_mode")
+                    .as_deref()
+                    .unwrap_or("round_prefer_floor")
+                    != "floor"
+                {
+                    bail!("Resize nearest lowering only supports nearest_mode=floor");
                 }
+                if input_shapes[0].len() != 4 || output_shapes[0].len() != 4 {
+                    bail!("Resize nearest requires rank-4 input and output");
+                }
+                let scales_name = node
+                    .get_input()
+                    .get(2)
+                    .filter(|name| !name.is_empty())
+                    .context("Resize nearest scales input is missing")?;
+                let scales = const_f32(tensor_consts, scales_name)
+                    .context("Resize scales must be constant for lowering")?
+                    .to_vec();
+                if scales.len() != 4 || scales[0] != 1.0 || scales[1] != 1.0 {
+                    bail!("Resize nearest only supports spatial scaling of rank-4 tensors");
+                }
+                PlannedOpKind::ResizeNearest { scales }
             } else if mode == "linear" {
+                if coord != "half_pixel" && coord != "align_corners" {
+                    bail!(
+                        "Resize linear lowering only supports half_pixel or align_corners coordinate mode"
+                    );
+                }
+                if output_shapes[0].len() != 4
+                    || output_shapes[0][0] != input_shapes[0][0]
+                    || output_shapes[0][1] != input_shapes[0][1]
+                {
+                    bail!("Resize linear only supports spatial scaling of rank-4 tensors");
+                }
                 PlannedOpKind::ResizeLinear {
                     sizes: output_shapes[0].clone(),
                     align_corners: coord == "align_corners",
@@ -355,17 +401,24 @@ fn lower_node(
             }
         }
         "SpaceToDepth" => PlannedOpKind::SpaceToDepth {
-            blocksize: attr_i64(node, "blocksize").context("SpaceToDepth blocksize is required")?
-                as usize,
+            blocksize: usize::try_from(
+                attr_i64(node, "blocksize")
+                    .filter(|value| *value > 0)
+                    .context("SpaceToDepth blocksize must be positive")?,
+            )
+            .context("SpaceToDepth blocksize exceeds usize")?,
         },
         "DepthToSpace" => {
             if attr_string(node, "mode").as_deref().unwrap_or("DCR") != "DCR" {
                 bail!("DepthToSpace only supports DCR mode");
             }
             PlannedOpKind::DepthToSpace {
-                blocksize: attr_i64(node, "blocksize")
-                    .context("DepthToSpace blocksize is required")?
-                    as usize,
+                blocksize: usize::try_from(
+                    attr_i64(node, "blocksize")
+                        .filter(|value| *value > 0)
+                        .context("DepthToSpace blocksize must be positive")?,
+                )
+                .context("DepthToSpace blocksize exceeds usize")?,
             }
         }
         op => bail!("lowering is not implemented for op {op}"),
@@ -410,8 +463,114 @@ fn lower_node(
     })
 }
 
-fn normalize_axis_for_insert(axis: i64, rank: usize) -> usize {
+fn validate_lowering_arity(node: &NodeProto) -> Result<()> {
+    let op = node.get_op_type();
+    let required_positions: &[usize] = match op {
+        "Conv" | "Add" | "Mul" | "Sub" | "Div" | "Max" | "Pow" | "PRelu" | "MatMul" | "Gemm"
+        | "GridSample" | "CumSum" | "ReduceSum" | "Reshape" | "Pad" => &[0, 1],
+        "Slice" => &[0, 1, 2],
+        "Identity" | "Sigmoid" | "Relu" | "Sqrt" | "HardSwish" | "HardSigmoid"
+        | "GlobalAveragePool" | "Unsqueeze" | "Squeeze" | "Concat" | "Split" | "Transpose"
+        | "MaxPool" | "AveragePool" | "Resize" | "Softmax" | "ReduceMean" | "SpaceToDepth"
+        | "DepthToSpace" => &[0],
+        _ => &[],
+    };
+    for &index in required_positions {
+        if node.get_input().get(index).is_none_or(String::is_empty) {
+            bail!("{op} is missing required input {index}");
+        }
+    }
+    if node.get_output().iter().all(String::is_empty) {
+        bail!("{op} has no non-empty outputs");
+    }
+    Ok(())
+}
+
+fn normalize_axis_for_insert(axis: i64, rank: usize) -> Result<usize> {
     let rank = rank as i64;
     let axis = if axis < 0 { axis + rank } else { axis };
-    axis.clamp(0, rank) as usize
+    if axis < 0 || axis >= rank {
+        bail!("insertion axis {axis} is out of range for rank {rank}");
+    }
+    Ok(axis as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_nodes_never_panic_during_lowering() {
+        let mut known_shapes = BTreeMap::from([
+            ("a".to_owned(), vec![1]),
+            ("b".to_owned(), vec![1]),
+            ("c".to_owned(), vec![1]),
+        ]);
+        for index in 0..4 {
+            known_shapes.insert(format!("out_{index}"), vec![1]);
+        }
+        let constants = HashMap::from([
+            ("a".to_owned(), TensorConst::Int64(vec![i64::MIN])),
+            ("b".to_owned(), TensorConst::Int64(Vec::new())),
+            ("c".to_owned(), TensorConst::Float32(vec![f32::NAN])),
+        ]);
+        let ops = [
+            "Conv",
+            "Add",
+            "Pow",
+            "PRelu",
+            "Unsqueeze",
+            "Squeeze",
+            "Concat",
+            "Split",
+            "Slice",
+            "Reshape",
+            "Transpose",
+            "MaxPool",
+            "AveragePool",
+            "Pad",
+            "Resize",
+            "GridSample",
+            "MatMul",
+            "Gemm",
+            "Softmax",
+            "CumSum",
+            "ReduceSum",
+            "ReduceMean",
+            "SpaceToDepth",
+            "DepthToSpace",
+        ];
+        let names = ["a", "b", "c", ""];
+        let mut state = 0x243f_6a88_85a3_08d3u64;
+
+        for case in 0..2_000 {
+            state = state
+                .wrapping_mul(2_862_933_555_777_941_757)
+                .wrapping_add(3_037_000_493);
+            let op = ops[(state as usize) % ops.len()];
+            let mut node = NodeProto {
+                op_type: Some(op.to_owned()),
+                ..NodeProto::new()
+            };
+            for index in 0..((state >> 8) as usize % 6) {
+                node.input
+                    .push(names[((state >> (index * 7 % 48)) as usize) % names.len()].to_owned());
+            }
+            for index in 0..((state >> 16) as usize % 4) {
+                node.output.push(if (state >> (index + 40)) & 1 == 0 {
+                    String::new()
+                } else {
+                    format!("out_{index}")
+                });
+            }
+
+            let result = std::panic::catch_unwind(|| lower_node(&node, &known_shapes, &constants));
+            assert!(
+                result.is_ok(),
+                "lowering panicked for generated case {case}: op={op}, inputs={:?}, outputs={:?}",
+                node.get_input(),
+                node.get_output()
+            );
+        }
+    }
 }

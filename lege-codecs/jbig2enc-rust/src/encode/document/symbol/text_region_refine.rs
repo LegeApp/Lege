@@ -167,12 +167,12 @@ pub fn encode_text_region_with_refinement(
     let grat: [(i8, i8); 1] = [(-1, -1)];
 
     // §6.4.5 step 1: initial STRIPT value (decoder reads one IADT before the loop)
-    let _ = coder.encode_integer(IntProc::Iadt, 0);
+    coder.encode_integer(IntProc::Iadt, 0)?;
 
     while idx < encoded_instances.len() {
         let current_strip = encoded_instances[idx].strip_base;
         let delta_t = current_strip - strip_t;
-        let _ = coder.encode_integer(IntProc::Iadt, delta_t / strip_width);
+        coder.encode_integer(IntProc::Iadt, delta_t / strip_width)?;
         strip_t = current_strip;
 
         let mut first_symbol_in_strip = true;
@@ -182,28 +182,28 @@ pub fn encode_text_region_with_refinement(
             let item = &encoded_instances[idx];
             if first_symbol_in_strip {
                 let delta_fs = item.x - first_s;
-                let _ = coder.encode_integer(IntProc::Iafs, delta_fs);
+                coder.encode_integer(IntProc::Iafs, delta_fs)?;
                 first_s += delta_fs;
                 current_s = first_s;
                 first_symbol_in_strip = false;
             } else {
                 let delta_s = item.x - current_s;
-                let _ = coder.encode_integer(IntProc::Iads, delta_s);
+                coder.encode_integer(IntProc::Iads, delta_s)?;
                 current_s += delta_s;
             }
 
             if strip_width > 1 {
-                let _ = coder.encode_integer(IntProc::Iait, item.t_offset);
+                coder.encode_integer(IntProc::Iait, item.t_offset)?;
             }
 
             // Symbol ID
             if symbol_id_bits > 0 {
-                let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+                coder.encode_iaid(item.symbol_id, symbol_id_bits as u8)?;
             }
 
             // ── SPM: Refinement indicator (RI) ──
             let ri = if item.needs_refinement { 1i32 } else { 0i32 };
-            let _ = coder.encode_integer(IntProc::Iari, ri);
+            coder.encode_integer(IntProc::Iari, ri)?;
 
             if item.needs_refinement {
                 // Get the original instance data and the prototype
@@ -217,8 +217,8 @@ pub fn encode_text_region_with_refinement(
                 let rdwi = trimmed_instance.width as i32 - prototype.width as i32;
                 let rdhi = trimmed_instance.height as i32 - prototype.height as i32;
 
-                let _ = coder.encode_integer(IntProc::Iardw, rdwi);
-                let _ = coder.encode_integer(IntProc::Iardh, rdhi);
+                coder.encode_integer(IntProc::Iardw, rdwi)?;
+                coder.encode_integer(IntProc::Iardh, rdhi)?;
 
                 // Position offsets for aligning the reference within the target.
                 // Per §6.4.11.3.2: GRDX = (RDWI/2) + RDXI, GRDY = (RDHI/2) + RDYI
@@ -226,8 +226,8 @@ pub fn encode_text_region_with_refinement(
                 let rdxi = orig_instance.refinement_dx;
                 let rdyi = orig_instance.refinement_dy;
 
-                let _ = coder.encode_integer(IntProc::Iardx, rdxi);
-                let _ = coder.encode_integer(IntProc::Iardy, rdyi);
+                coder.encode_integer(IntProc::Iardx, rdxi)?;
+                coder.encode_integer(IntProc::Iardy, rdyi)?;
 
                 // Compute GRDX/GRDY for the refinement region.
                 // §6.4.11.3.2 / §6.3: GRREFERENCEDX = floor(RDW/2) + RDX. Rust's `/`
@@ -260,7 +260,7 @@ pub fn encode_text_region_with_refinement(
             current_s += item.placed_width - 1;
             idx += 1;
         }
-        let _ = coder.encode_oob(IntProc::Iads);
+        coder.encode_oob(IntProc::Iads)?;
     }
 
     coder.flush(true);

@@ -46,14 +46,38 @@ pub fn segment_region(
     params: &SegmentParams,
 ) -> SegmentationResult {
     let [rx1, ry1, rx2, ry2] = region_bbox;
+    let fallback = || SegmentationResult {
+        line_bboxes: Vec::new(),
+        confidence: SegmentationConfidence::Low,
+    };
+    let Some(expected) = (image_width as usize).checked_mul(image_height as usize) else {
+        return fallback();
+    };
+    if image_width == 0
+        || image_height == 0
+        || rx2 <= rx1
+        || ry2 <= ry1
+        || rx1 >= image_width
+        || ry1 >= image_height
+        || binary.len() < expected
+    {
+        return fallback();
+    }
+    let rx2 = rx2.min(image_width);
+    let ry2 = ry2.min(image_height);
 
     // Expand by expand_pct, clamped to image bounds
-    let dw = ((rx2.saturating_sub(rx1)) as f32 * params.expand_pct) as u32;
-    let dh = ((ry2.saturating_sub(ry1)) as f32 * params.expand_pct) as u32;
+    let expand_pct = if params.expand_pct.is_finite() {
+        params.expand_pct.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let dw = ((rx2.saturating_sub(rx1)) as f32 * expand_pct) as u32;
+    let dh = ((ry2.saturating_sub(ry1)) as f32 * expand_pct) as u32;
     let x1 = rx1.saturating_sub(dw);
     let y1 = ry1.saturating_sub(dh);
-    let x2 = (rx2 + dw).min(image_width);
-    let y2 = (ry2 + dh).min(image_height);
+    let x2 = rx2.saturating_add(dw).min(image_width);
+    let y2 = ry2.saturating_add(dh).min(image_height);
 
     if x2 <= x1 || y2 <= y1 {
         return SegmentationResult {
@@ -71,7 +95,12 @@ pub fn segment_region(
     let adaptive_min_gap = estimate_ink_band_height(&projection)
         .map(|height| (height / 2).max(params.min_line_height_px as usize))
         .unwrap_or(params.min_line_height_px as usize);
-    let valleys = find_valleys(&smoothed, params.valley_threshold, adaptive_min_gap);
+    let valley_threshold = if params.valley_threshold.is_finite() {
+        params.valley_threshold.clamp(0.0, 1.0)
+    } else {
+        SegmentParams::default().valley_threshold
+    };
+    let valleys = find_valleys(&smoothed, valley_threshold, adaptive_min_gap);
     let raw_bboxes = valleys_to_bboxes(&valleys, x1, x2, y1, y2);
 
     // Drop empty/noise bands only after every interval has had an opportunity
@@ -107,18 +136,28 @@ pub fn horizontal_projection(
     w: usize,
     h: usize,
 ) -> Vec<u32> {
-    let mut proj = vec![0u32; h];
+    if image_width == 0 || w == 0 || x1 >= image_width || binary.is_empty() {
+        return Vec::new();
+    }
+    let available_rows = binary.len() / image_width;
+    if y1 >= available_rows {
+        return Vec::new();
+    }
+    let actual_h = h.min(available_rows - y1);
+    let actual_w = w.min(image_width - x1);
+    let mut proj = vec![0u32; actual_h];
     for (row, row_ink) in proj.iter_mut().enumerate() {
-        let abs_y = y1 + row;
-        let row_start = abs_y * image_width + x1;
-        let row_end = row_start + w;
-        if row_start >= binary.len() {
+        let abs_y = y1.saturating_add(row);
+        let Some(row_start) = abs_y
+            .checked_mul(image_width)
+            .and_then(|offset| offset.checked_add(x1))
+        else {
             break;
-        }
-        let row_end = row_end.min(binary.len());
+        };
+        let row_end = row_start + actual_w;
         for &px in &binary[row_start..row_end] {
             if px == 0 {
-                *row_ink += 1;
+                *row_ink = row_ink.saturating_add(1);
             }
         }
     }
@@ -127,11 +166,24 @@ pub fn horizontal_projection(
 
 fn smooth_box(proj: &[u32], radius: usize) -> Vec<f32> {
     let n = proj.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut prefix = Vec::with_capacity(n + 1);
+    prefix.push(0u64);
+    for &value in proj {
+        let next = prefix
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(value as u64);
+        prefix.push(next);
+    }
     let mut out = vec![0.0f32; n];
     for (i, value) in out.iter_mut().enumerate() {
         let lo = i.saturating_sub(radius);
-        let hi = (i + radius + 1).min(n);
-        let sum: u32 = proj[lo..hi].iter().sum();
+        let hi = i.saturating_add(radius).saturating_add(1).min(n);
+        let sum = prefix[hi].saturating_sub(prefix[lo]);
         *value = sum as f32 / (hi - lo) as f32;
     }
     out
@@ -167,15 +219,13 @@ fn find_valleys(smoothed: &[f32], threshold: f32, min_gap_rows: usize) -> Vec<us
         return Vec::new();
     }
     let cut = global_max * threshold;
-    let is_valley: Vec<bool> = smoothed.iter().map(|&v| v <= cut).collect();
-
     // Collect midpoints of valley runs
     let mut valleys = Vec::new();
     let mut i = 0;
-    while i < is_valley.len() {
-        if is_valley[i] {
+    while i < smoothed.len() {
+        if smoothed[i] <= cut {
             let start = i;
-            while i < is_valley.len() && is_valley[i] {
+            while i < smoothed.len() && smoothed[i] <= cut {
                 i += 1;
             }
             valleys.push(start + (i - start) / 2);
@@ -187,7 +237,10 @@ fn find_valleys(smoothed: &[f32], threshold: f32, min_gap_rows: usize) -> Vec<us
     // Enforce minimum spacing between split points
     let mut filtered: Vec<usize> = Vec::new();
     for v in valleys {
-        if filtered.is_empty() || v - *filtered.last().unwrap() >= min_gap_rows {
+        if filtered
+            .last()
+            .is_none_or(|previous| v.saturating_sub(*previous) >= min_gap_rows)
+        {
             filtered.push(v);
         }
     }
@@ -220,15 +273,20 @@ fn count_ink(binary: &[u8], image_width: usize, bbox: &[u32; 4]) -> u32 {
     let h = (bbox[3].saturating_sub(bbox[1])) as usize;
     let mut count = 0u32;
     for row in 0..h {
-        let abs_y = y1 + row;
-        let start = abs_y * image_width + x1;
-        let end = (start + w).min(binary.len());
-        if start >= binary.len() {
+        let Some(start) = y1
+            .checked_add(row)
+            .and_then(|abs_y| abs_y.checked_mul(image_width))
+            .and_then(|offset| offset.checked_add(x1))
+        else {
+            break;
+        };
+        let end = start.saturating_add(w).min(binary.len());
+        if start >= end {
             break;
         }
         for &px in &binary[start..end] {
             if px == 0 {
-                count += 1;
+                count = count.saturating_add(1);
             }
         }
     }
@@ -378,5 +436,25 @@ mod tests {
     fn estimates_typical_ink_band_height() {
         let projection = vec![0, 4, 4, 4, 0, 0, 5, 5, 5, 5, 0];
         assert_eq!(estimate_ink_band_height(&projection), Some(4));
+    }
+
+    #[test]
+    fn malformed_region_and_truncated_buffer_return_no_lines() {
+        let params = SegmentParams::default();
+        assert!(
+            segment_region(&[255; 10], 10, 10, [0, 0, 10, 10], &params)
+                .line_bboxes
+                .is_empty()
+        );
+        assert!(
+            segment_region(&[255; 100], 10, 10, [20, 0, 30, 5], &params)
+                .line_bboxes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn smoothing_handles_extreme_radius_in_linear_time() {
+        assert_eq!(smooth_box(&[1, 2, 3], usize::MAX), vec![2.0, 2.0, 2.0]);
     }
 }

@@ -7,6 +7,9 @@ use crate::types::OcrLineResult;
 /// their line origin. Both are scaled by the same factors, so a word's absolute
 /// position (line_origin + local) scales consistently.
 pub fn scale_lines(lines: &mut [OcrLineResult], sx: f32, sy: f32, max_w: u32, max_h: u32) {
+    if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
+        return;
+    }
     if (sx - 1.0).abs() < f32::EPSILON && (sy - 1.0).abs() < f32::EPSILON {
         return;
     }
@@ -64,18 +67,48 @@ impl CoordinateMap {
 
     /// Map [x1, y1, x2, y2] from analysis-image space to high-res-image space.
     pub fn analysis_to_highres(&self, rect: [f32; 4]) -> [u32; 4] {
-        let sx = self.highres_width as f32 / self.analysis_width as f32;
-        let sy = self.highres_height as f32 / self.analysis_height as f32;
+        if self.analysis_width == 0 || self.analysis_height == 0 {
+            return [0; 4];
+        }
+        let sx = self.highres_width as f64 / self.analysis_width as f64;
+        let sy = self.highres_height as f64 / self.analysis_height as f64;
+        let x = |value: f32, round_up: bool| {
+            if !value.is_finite() {
+                return 0;
+            }
+            let scaled = value as f64 * sx;
+            let rounded = if round_up {
+                scaled.ceil()
+            } else {
+                scaled.floor()
+            };
+            rounded.clamp(0.0, self.highres_width as f64) as u32
+        };
+        let y = |value: f32, round_up: bool| {
+            if !value.is_finite() {
+                return 0;
+            }
+            let scaled = value as f64 * sy;
+            let rounded = if round_up {
+                scaled.ceil()
+            } else {
+                scaled.floor()
+            };
+            rounded.clamp(0.0, self.highres_height as f64) as u32
+        };
         [
-            (rect[0] * sx).floor() as u32,
-            (rect[1] * sy).floor() as u32,
-            ((rect[2] * sx).ceil() as u32).min(self.highres_width),
-            ((rect[3] * sy).ceil() as u32).min(self.highres_height),
+            x(rect[0], false),
+            y(rect[1], false),
+            x(rect[2], true),
+            y(rect[3], true),
         ]
     }
 
     /// Map [x1, y1, x2, y2] from high-res pixel space to PDF point space.
     pub fn highres_to_pdf_pts(&self, rect: [u32; 4]) -> [f32; 4] {
+        if self.highres_width == 0 || self.highres_height == 0 {
+            return [0.0; 4];
+        }
         let sx = self.pdf_width_pts / self.highres_width as f32;
         let sy = self.pdf_height_pts / self.highres_height as f32;
         [
@@ -89,10 +122,10 @@ impl CoordinateMap {
     /// Translate a crop-local rect by the crop's page-global origin.
     pub fn line_local_to_page(&self, rect: [u32; 4], origin: [u32; 2]) -> [u32; 4] {
         [
-            (rect[0] + origin[0]).min(self.highres_width),
-            (rect[1] + origin[1]).min(self.highres_height),
-            (rect[2] + origin[0]).min(self.highres_width),
-            (rect[3] + origin[1]).min(self.highres_height),
+            rect[0].saturating_add(origin[0]).min(self.highres_width),
+            rect[1].saturating_add(origin[1]).min(self.highres_height),
+            rect[2].saturating_add(origin[0]).min(self.highres_width),
+            rect[3].saturating_add(origin[1]).min(self.highres_height),
         ]
     }
 }
@@ -166,5 +199,25 @@ mod tests {
         let m = CoordinateMap::identity(500, 500, 612.0, 792.0);
         let r = m.line_local_to_page([0, 0, 100, 100], [450, 450]);
         assert_eq!(r, [450, 450, 500, 500]);
+    }
+
+    #[test]
+    fn malformed_coordinate_inputs_do_not_overflow_or_escape_bounds() {
+        let m = CoordinateMap {
+            highres_width: 100,
+            highres_height: 200,
+            analysis_width: 0,
+            analysis_height: 0,
+            pdf_width_pts: 612.0,
+            pdf_height_pts: 792.0,
+        };
+        assert_eq!(
+            m.analysis_to_highres([f32::NAN, -1.0, f32::INFINITY, 4.0]),
+            [0; 4]
+        );
+        assert_eq!(
+            m.line_local_to_page([u32::MAX; 4], [u32::MAX; 2]),
+            [100, 200, 100, 200]
+        );
     }
 }

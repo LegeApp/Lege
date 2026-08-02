@@ -225,8 +225,9 @@ pub(crate) fn normalize_axis(axis: i64, rank: usize) -> Result<usize> {
 }
 
 pub(crate) fn normalize_index(index: i64, dim: i64) -> i64 {
+    let dim = dim.max(0);
     if index < 0 {
-        (index + dim).clamp(0, dim)
+        index.saturating_add(dim).clamp(0, dim)
     } else {
         index.clamp(0, dim)
     }
@@ -354,10 +355,14 @@ pub(crate) fn input_shape(
         .get_input()
         .get(index)
         .with_context(|| format!("missing input {index}"))?;
-    known_shapes
+    let shape = known_shapes
         .get(name)
         .cloned()
-        .with_context(|| format!("missing shape for input `{name}`"))
+        .with_context(|| format!("missing shape for input `{name}`"))?;
+    if shape.iter().any(|dim| *dim < 0) {
+        bail!("input `{name}` has an unresolved negative dimension");
+    }
+    Ok(shape)
 }
 
 // ── Model loading ─────────────────────────────────────────────────────────────

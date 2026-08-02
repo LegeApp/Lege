@@ -52,7 +52,15 @@ fuzz_target!(|data: &[u8]| {
         let mut ctx = vec![MqContext::default(); REFINEMENT_CONTEXT_COUNT];
         let mut dec = ArithmeticDecoder::new(data);
         let _ = decode_refinement_region(
-            &mut dec, &reference, 12, 16, 0, 0, (-1, -1), &mut ctx, &limits,
+            &mut dec,
+            &reference,
+            12,
+            16,
+            0,
+            0,
+            (-1, -1),
+            &mut ctx,
+            &limits,
         );
     }
 });

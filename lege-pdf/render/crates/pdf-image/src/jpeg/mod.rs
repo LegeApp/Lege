@@ -91,6 +91,7 @@ pub fn decode_jpeg_scaled(
     descriptor: Option<&ImageDescriptor>,
     target_size: Option<(u32, u32)>,
 ) -> Result<DecodedImage, ImageError> {
+    limits.check_input(data.len())?;
     let mut d = Decoder::new(data, limits);
     d.expected_size = descriptor
         .filter(|desc| desc.width > 0 && desc.height > 0)
@@ -1032,7 +1033,7 @@ impl<'a> Decoder<'a> {
         let mut to_restart = self.restart_interval;
         for mcu in 0..geom.mcus {
             if mcu % geom.row_len == 0 && self.limits.is_cancelled() {
-                return Err(err("decode cancelled"));
+                return Err(ImageError::Cancelled);
             }
             if self.restart_interval > 0 {
                 if to_restart == 0 {
@@ -1201,7 +1202,7 @@ impl<'a> Decoder<'a> {
 
         for my in 0..mcus_y {
             if self.limits.is_cancelled() {
-                return Err(err("decode cancelled"));
+                return Err(ImageError::Cancelled);
             }
             for mx in 0..mcus_x {
                 if self.restart_interval > 0 {
@@ -1383,7 +1384,7 @@ impl<'a> Decoder<'a> {
 
         for b in 0..bw_used * bh_used {
             if b % bw_used == 0 && self.limits.is_cancelled() {
-                return Err(err("decode cancelled"));
+                return Err(ImageError::Cancelled);
             }
             if self.restart_interval > 0 {
                 if to_restart == 0 {
@@ -1522,7 +1523,7 @@ impl<'a> Decoder<'a> {
             let mut block = [0f32; 64];
             for brow in 0..c.bh {
                 if self.limits.is_cancelled() {
-                    return Err(err("decode cancelled"));
+                    return Err(ImageError::Cancelled);
                 }
                 for bcol in 0..c.bw {
                     let off = (brow * c.bw + bcol) * 64;

@@ -11,7 +11,7 @@ use pdf_document::{DocumentLimits, DocumentSnapshot, PageIndex, ParseContext};
 use pdf_page_ir::{DeviceSize, Matrix};
 use pdf_render_api::{
     AnnotationMode, Background, OutputFormat, OutputResidency, PageTransform, RenderLimits,
-    RenderQuality, RenderRequest,
+    RenderColorPolicy, RenderQuality, RenderRequest,
 };
 use pdf_render_cpu::CpuBackend;
 use pdf_source::{OwnedBytesSource, PdfSource};
@@ -56,6 +56,7 @@ fuzz_target!(|data: &[u8]| {
         output_size: DeviceSize { width: dim, height: dim },
         output_format: OutputFormat::Rgba8PremultipliedSrgb,
         background: Background::White,
+        color_policy: RenderColorPolicy::default(),
         annotations: AnnotationMode::None,
         quality: RenderQuality::Normal,
         limits: RenderLimits {

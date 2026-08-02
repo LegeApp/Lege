@@ -499,6 +499,13 @@ impl Jbig2ArithCoder {
         if bits == 0 || bits > 24 {
             return Err(anyhow!("encode_iaid: invalid symbol id bit width {}", bits));
         }
+        if value >= (1u32 << bits) {
+            return Err(anyhow!(
+                "encode_iaid: symbol id {} does not fit in {} bits",
+                value,
+                bits
+            ));
+        }
         let needed = 1usize << bits;
         if self.iaid_ctx.len() < needed {
             self.iaid_ctx.resize(needed, 0);

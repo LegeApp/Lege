@@ -13,7 +13,7 @@ pub(crate) mod t2;
 
 use crate::error::Result;
 use crate::model::{ColorEncoding, ColorSpace, Image};
-use std::io::Read;
+use std::io::{Read, Write};
 
 pub use stats::Jp2DecodeStats;
 use stats::StatsSink;
@@ -154,6 +154,43 @@ pub struct DecodeRequest {
     /// be applied. Applying it yields channels the consumer will misread — a
     /// 3-column `pclr` looks like RGB but may hold DeviceN inks.
     pub ignore_container_palette: bool,
+    /// Hard ceilings applied before header-driven allocation and packet work.
+    pub limits: DecodeLimits,
+}
+
+/// Resource ceilings for decoding untrusted JP2/J2K data.
+///
+/// The defaults accommodate large document pages while preventing a tiny
+/// marker stream from requesting effectively unbounded image, precinct,
+/// packet, or code-block state. Callers processing trusted archival imagery
+/// may raise individual ceilings explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeLimits {
+    /// Maximum encoded JP2/J2K source length.
+    pub max_input_bytes: usize,
+    /// Maximum full-resolution reference-grid pixels (`width * height`).
+    pub max_pixels: u64,
+    /// Maximum precincts across all components and resolutions of one tile.
+    pub max_precincts: usize,
+    /// Maximum packets across all layers of one tile.
+    pub max_packets: usize,
+    /// Maximum code-block states across all subbands of one tile.
+    pub max_code_blocks: usize,
+    /// Conservative ceiling for decoded planes and transform working storage.
+    pub max_working_bytes: usize,
+}
+
+impl Default for DecodeLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: 512 * 1024 * 1024,
+            max_pixels: 100_000_000,
+            max_precincts: 4_000_000,
+            max_packets: 16_000_000,
+            max_code_blocks: 8_000_000,
+            max_working_bytes: 1024 * 1024 * 1024,
+        }
+    }
 }
 
 impl Default for DecodeRequest {
@@ -164,6 +201,7 @@ impl Default for DecodeRequest {
             region: None,
             concurrency: DecodeConcurrency::Serial,
             ignore_container_palette: false,
+            limits: DecodeLimits::default(),
         }
     }
 }
@@ -224,6 +262,7 @@ impl Jp2Decoder {
     /// Decode one image while retaining bounded Tier-1 scratch for later calls.
     pub fn decode(&mut self, bytes: &[u8], request: &DecodeRequest) -> Result<DecodeResult> {
         validate_decode_request(request)?;
+        validate_input_bytes(bytes.len(), &request.limits)?;
         let thread_count = decode_thread_count(request.concurrency)?;
         if self
             .pool
@@ -244,9 +283,16 @@ impl Jp2Decoder {
 /// extracts the first `jp2c` codestream box, and decodes the SIZ/COD/QCD marker
 /// segments needed by packet and Tier-1 decoding.
 pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
+    let limits = DecodeLimits::default();
+    inspect_jp2_with_limits(bytes, &limits)
+}
+
+/// Inspect JP2/J2K metadata under caller-supplied resource ceilings.
+pub fn inspect_jp2_with_limits(bytes: &[u8], limits: &DecodeLimits) -> Result<DecodeMetadata> {
+    validate_input_bytes(bytes.len(), limits)?;
     let mut stats = StatsSink::disabled();
     // Metadata describes the file as authored, palette and all.
-    let core = parse_jp2_core(bytes, &mut stats, false, false)?;
+    let core = parse_jp2_core(bytes, &mut stats, false, false, limits)?;
     let first_payload = core.parts.tile_parts[0].payload;
     Ok(DecodeMetadata {
         width: core.header.width,
@@ -279,6 +325,8 @@ pub fn inspect_jp2(bytes: &[u8]) -> Result<DecodeMetadata> {
 /// vertical-causal contexts, predictable termination, and segmentation symbols
 /// are supported; selective arithmetic bypass remains outside this slice.
 pub fn decode_jp2(bytes: &[u8]) -> Result<Image> {
+    let limits = DecodeLimits::default();
+    validate_input_bytes(bytes.len(), &limits)?;
     let mut stats = StatsSink::disabled();
     let mut scratch = DecodeScratch::new();
     decode_jp2_impl(
@@ -288,6 +336,7 @@ pub fn decode_jp2(bytes: &[u8]) -> Result<Image> {
         &mut stats,
         &mut scratch,
         false,
+        &limits,
     )
 }
 
@@ -296,6 +345,8 @@ pub fn decode_jp2(bytes: &[u8]) -> Result<Image> {
 /// The compatibility [`decode_jp2`] path does not start timers or update
 /// counters; callers opt into the small profiling cost through this function.
 pub fn decode_jp2_with_stats(bytes: &[u8]) -> Result<(Image, Jp2DecodeStats)> {
+    let limits = DecodeLimits::default();
+    validate_input_bytes(bytes.len(), &limits)?;
     let mut stats = Jp2DecodeStats::default();
     let mut scratch = DecodeScratch::new();
     let total_start = std::time::Instant::now();
@@ -308,6 +359,7 @@ pub fn decode_jp2_with_stats(bytes: &[u8]) -> Result<(Image, Jp2DecodeStats)> {
             &mut sink,
             &mut scratch,
             false,
+            &limits,
         )?
     };
     stats.total_ns = u64::try_from(total_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -316,6 +368,7 @@ pub fn decode_jp2_with_stats(bytes: &[u8]) -> Result<(Image, Jp2DecodeStats)> {
 
 pub fn decode_jp2_request(bytes: &[u8], request: &DecodeRequest) -> Result<DecodeResult> {
     validate_decode_request(request)?;
+    validate_input_bytes(bytes.len(), &request.limits)?;
     let thread_count = decode_thread_count(request.concurrency)?;
     let pool = build_decode_pool(thread_count)?;
     let mut scratch = DecodeScratch::new();
@@ -338,6 +391,16 @@ fn validate_decode_request(request: &DecodeRequest) -> Result<()> {
             })?;
     }
     decode_thread_count(request.concurrency)?;
+    Ok(())
+}
+
+fn validate_input_bytes(length: usize, limits: &DecodeLimits) -> Result<()> {
+    if length > limits.max_input_bytes {
+        return Err(crate::Jp2LamError::DecodeFailed(format!(
+            "JP2/J2K input length {length} exceeds decode limit {}",
+            limits.max_input_bytes
+        )));
+    }
     Ok(())
 }
 
@@ -417,6 +480,7 @@ fn decode_jp2_request_with_scratch(
             None,
             scratch,
             request.ignore_container_palette,
+            &request.limits,
         )? {
             return Ok(DecodeResult::Raster(raster));
         }
@@ -429,6 +493,7 @@ fn decode_jp2_request_with_scratch(
         &mut stats,
         scratch,
         request.ignore_container_palette,
+        &request.limits,
     )?;
     match request.output {
         DecodeOutputFormat::NativePlanarI32 => Ok(DecodeResult::Native(image)),
@@ -443,9 +508,10 @@ fn decode_packed_direct(
     region: Option<RegionSpatial>,
     scratch: &mut DecodeScratch,
     ignore_container_palette: bool,
+    limits: &DecodeLimits,
 ) -> Result<Option<DecodedRaster>> {
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette, true)?;
+    let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette, true, limits)?;
     let expected_space = match format {
         DecodeOutputFormat::Gray8 | DecodeOutputFormat::GrayA8 => ColorSpace::Gray,
         DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 => ColorSpace::Srgb,
@@ -480,6 +546,7 @@ fn decode_packed_direct(
             region,
             &mut stats,
             scratch,
+            limits,
         )?;
         let data = reconstruct::reconstruct_packed_u8_profiled(
             &header,
@@ -547,6 +614,7 @@ fn decode_packed_direct(
             region,
             &mut stats,
             scratch,
+            limits,
         )?;
         let tile_data = reconstruct::reconstruct_packed_u8_profiled(
             &header,
@@ -670,7 +738,13 @@ fn decode_region_request(
 ) -> Result<DecodeResult> {
     let region = request.region.expect("region decode requires a region");
     let mut stats = StatsSink::disabled();
-    let core = parse_jp2_core(bytes, &mut stats, request.ignore_container_palette, true)?;
+    let core = parse_jp2_core(
+        bytes,
+        &mut stats,
+        request.ignore_container_palette,
+        true,
+        &request.limits,
+    )?;
     let reduce_levels = select_reduce_levels(&core.codestream, request.resolution)?;
     let (region_spatial, crop) = project_region(&core.codestream.siz, region, reduce_levels)?;
     drop(core);
@@ -684,6 +758,7 @@ fn decode_region_request(
             Some(region_spatial),
             scratch,
             request.ignore_container_palette,
+            &request.limits,
         )? {
             return Ok(DecodeResult::Raster(crop_raster(&raster, crop)?));
         }
@@ -697,6 +772,7 @@ fn decode_region_request(
         &mut stats,
         scratch,
         request.ignore_container_palette,
+        &request.limits,
     )?;
     let cropped = crop_image(&image, crop)?;
     match request.output {
@@ -786,8 +862,9 @@ fn decode_jp2_impl(
     stats: &mut StatsSink<'_>,
     scratch: &mut DecodeScratch,
     ignore_container_palette: bool,
+    limits: &DecodeLimits,
 ) -> Result<Image> {
-    let core = parse_jp2_core(bytes, stats, ignore_container_palette, true)?;
+    let core = parse_jp2_core(bytes, stats, ignore_container_palette, true, limits)?;
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
     // A palettized image decodes as its single index component (grayscale-like)
     // and is expanded to the container's channels afterwards; the codestream
@@ -812,6 +889,7 @@ fn decode_jp2_impl(
             region,
             stats,
             scratch,
+            limits,
         )?;
         if let Some(palette) = &core.header.palette {
             image = expand_palette(&image, palette, core.header.colorspace)?;
@@ -859,6 +937,7 @@ fn decode_jp2_impl(
             None,
             stats,
             scratch,
+            limits,
         )?;
         let stitch_start = stats.start();
         stitch_tile(
@@ -888,6 +967,7 @@ fn decode_tile(
     region: Option<RegionSpatial>,
     stats: &mut StatsSink<'_>,
     scratch: &mut DecodeScratch,
+    limits: &DecodeLimits,
 ) -> Result<Image> {
     let (reconstruction_header, components) = decode_tile_components(
         core,
@@ -897,6 +977,7 @@ fn decode_tile(
         region,
         stats,
         scratch,
+        limits,
     )?;
     reconstruct::reconstruct_image_profiled(&reconstruction_header, colorspace, components, stats)
 }
@@ -909,6 +990,7 @@ fn decode_tile_components(
     region: Option<RegionSpatial>,
     stats: &mut StatsSink<'_>,
     scratch: &mut DecodeScratch,
+    limits: &DecodeLimits,
 ) -> Result<(CodestreamHeader, Vec<t1::DecodedTileCoefficients>)> {
     let (x0, y0, width, height) = tile_rect(&core.codestream, tile_index)?;
     // Fold this tile's tile-part header overrides (QCD/QCC/COC, or a redundant
@@ -932,10 +1014,11 @@ fn decode_tile_components(
             ))
         })?;
     let setup_start = stats.start();
-    let mut packet_decoder = t2::TilePacketDecoder::new_with_options(
+    let mut packet_decoder = t2::TilePacketDecoder::new_with_limits(
         &full_tile_header,
         stats.is_enabled(),
         highest_resolution,
+        limits,
     )?;
     stats.finish(setup_start, |stats, elapsed| {
         stats.tier2_setup_ns = stats.tier2_setup_ns.saturating_add(elapsed);
@@ -1062,7 +1145,9 @@ fn parse_jp2_core<'a>(
     stats: &mut StatsSink<'_>,
     ignore_container_palette: bool,
     validate: bool,
+    limits: &DecodeLimits,
 ) -> Result<ParsedJp2Core<'a>> {
+    validate_input_bytes(bytes.len(), limits)?;
     // Raw J2K codestream (no JP2 boxes): decode the codestream directly and
     // synthesize the container-level header from SIZ.
     let (header, codestream_bytes) = if bytes.starts_with(&MARKER_SOC) {
@@ -1121,6 +1206,7 @@ fn parse_jp2_core<'a>(
         Some(header) => header,
         None => synthesize_header_from_codestream(&codestream)?,
     };
+    validate_codestream_resource_limits(&codestream, limits)?;
     // Inspection only describes the file (palette, dimensions, colour space);
     // the decode-scope preconditions — including the palette channel-count
     // check — belong to an actual decode. A container whose `pclr` produces a
@@ -1145,6 +1231,56 @@ fn parse_jp2_core<'a>(
         parts,
         tile_parts_by_tile,
     })
+}
+
+fn validate_codestream_resource_limits(
+    codestream: &CodestreamHeader,
+    limits: &DecodeLimits,
+) -> Result<()> {
+    let siz = &codestream.siz;
+    let pixels = u64::from(siz.width)
+        .checked_mul(u64::from(siz.height))
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("image pixel count overflow".into()))?;
+    if pixels > limits.max_pixels {
+        return Err(crate::Jp2LamError::DecodeFailed(format!(
+            "image pixel count {pixels} exceeds decode limit {}",
+            limits.max_pixels
+        )));
+    }
+
+    let x1 = siz
+        .x_origin
+        .checked_add(siz.width)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("image x extent overflow".into()))?;
+    let y1 = siz
+        .y_origin
+        .checked_add(siz.height)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("image y extent overflow".into()))?;
+    let component_samples = siz.components.iter().try_fold(0u64, |total, component| {
+        let dx = u32::from(component.dx.max(1));
+        let dy = u32::from(component.dy.max(1));
+        let width = u64::from(x1.div_ceil(dx) - siz.x_origin.div_ceil(dx));
+        let height = u64::from(y1.div_ceil(dy) - siz.y_origin.div_ceil(dy));
+        total
+            .checked_add(width.checked_mul(height).ok_or_else(|| {
+                crate::Jp2LamError::DecodeFailed("component sample count overflow".into())
+            })?)
+            .ok_or_else(|| {
+                crate::Jp2LamError::DecodeFailed("component sample count overflow".into())
+            })
+    })?;
+    // The native pipeline can concurrently hold the destination plane, Tier-1
+    // coefficient plane, inverse-DWT scratch/fallback, and packed/canvas output.
+    let estimated_working = component_samples
+        .checked_mul(20)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("working-set estimate overflow".into()))?;
+    if estimated_working > limits.max_working_bytes as u64 {
+        return Err(crate::Jp2LamError::DecodeFailed(format!(
+            "estimated decode working set {estimated_working} bytes exceeds limit {}",
+            limits.max_working_bytes
+        )));
+    }
+    Ok(())
 }
 
 /// Build a JP2 container header from a bare codestream's SIZ: dimensions and
@@ -1175,6 +1311,11 @@ fn synthesize_header_from_codestream(
         height: siz.height,
         component_count: ncomp as u16,
         bits_per_component,
+        component_depths: siz
+            .components
+            .iter()
+            .map(|component| (component.precision, component.signed))
+            .collect(),
         colorspace,
         color_encoding,
         has_ipr_metadata: false,
@@ -1547,6 +1688,20 @@ fn validate_jp2_decode_scope(
             codestream.siz.components.len()
         )));
     }
+    if codestream.siz.components.len() != header.component_depths.len()
+        || codestream
+            .siz
+            .components
+            .iter()
+            .zip(&header.component_depths)
+            .any(|(component, &(precision, signed))| {
+                component.precision != precision || component.signed != signed
+            })
+    {
+        return Err(crate::Jp2LamError::DecodeFailed(
+            "JP2 ihdr/bpcc component depths do not match SIZ components".into(),
+        ));
+    }
     // A palettized image carries exactly one index component in the codestream;
     // the palette expands it to the container colorspace's channel count. The
     // remaining checks apply to that post-expansion channel count.
@@ -1575,16 +1730,6 @@ fn validate_jp2_decode_scope(
             )));
         }
         return Ok(());
-    }
-    if codestream
-        .siz
-        .components
-        .iter()
-        .any(|component| component.precision != header.bits_per_component)
-    {
-        return Err(crate::Jp2LamError::DecodeFailed(
-            "JP2 ihdr bit depth does not match SIZ component precision".into(),
-        ));
     }
     if header.colorspace == ColorSpace::Gray && header.component_count != 1 {
         // Grayscale + one auxiliary plane on component 1 is accepted: with a
@@ -1649,18 +1794,70 @@ fn validate_jp2_decode_scope(
     Ok(())
 }
 
-/// Read a complete JP2 stream from memory-backed or file-backed input and
-/// decode it into an [`Image`].
+/// Incrementally spool a JP2/J2K stream to an anonymous file and decode it
+/// through a read-only memory mapping.
 ///
 /// Prefer [`decode_jp2`] when the bytes are already available; it borrows the
 /// input buffer through JP2 parsing, codestream framing, and Tier-2 packet
-/// parsing instead of copying tile payload bytes.
+/// parsing. This reader path keeps encoded input off the Rust heap and reads it
+/// in fixed-size chunks, while still presenting the stable byte ranges required
+/// by the zero-copy container and packet parsers.
 pub fn decode_from_reader<R: Read>(reader: &mut R) -> Result<Image> {
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|err| crate::Jp2LamError::Io(format!("failed to read JP2 input: {err}")))?;
-    decode_jp2(&bytes)
+    let request = DecodeRequest::default();
+    match decode_from_reader_request(reader, &request)? {
+        DecodeResult::Native(image) => Ok(image),
+        DecodeResult::Raster(_) => unreachable!("default reader decode returns a native image"),
+    }
+}
+
+/// Reader counterpart to [`decode_jp2_request`].
+///
+/// Input is copied to an anonymous spill file with at most 64 KiB resident in
+/// the ingestion buffer. The file remains immutable and open for the lifetime
+/// of the mapping and decode.
+pub fn decode_from_reader_request<R: Read>(
+    reader: &mut R,
+    request: &DecodeRequest,
+) -> Result<DecodeResult> {
+    validate_decode_request(request)?;
+    let mut spill = tempfile::tempfile()
+        .map_err(|err| crate::Jp2LamError::Io(format!("failed to create JP2 spill file: {err}")))?;
+    let mut buffer = [0u8; 64 * 1024];
+    let mut length = 0usize;
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(crate::Jp2LamError::Io(format!(
+                    "failed to read JP2 input: {error}"
+                )));
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        length = length.checked_add(read).ok_or_else(|| {
+            crate::Jp2LamError::DecodeFailed("JP2/J2K input length overflow".into())
+        })?;
+        validate_input_bytes(length, &request.limits)?;
+        spill.write_all(&buffer[..read]).map_err(|err| {
+            crate::Jp2LamError::Io(format!("failed to write JP2 spill file: {err}"))
+        })?;
+    }
+    spill
+        .flush()
+        .map_err(|err| crate::Jp2LamError::Io(format!("failed to flush JP2 spill file: {err}")))?;
+    if length == 0 {
+        return Err(crate::Jp2LamError::DecodeFailed(
+            "JP2/J2K input is empty".into(),
+        ));
+    }
+    // SAFETY: `spill` remains open and is never mutated after this point. The
+    // mapping is dropped before the file, and no other handle is exposed.
+    let mapped = unsafe { memmap2::MmapOptions::new().len(length).map(&spill) }
+        .map_err(|err| crate::Jp2LamError::Io(format!("failed to map JP2 spill file: {err}")))?;
+    decode_jp2_request(&mapped, request)
 }
 
 #[cfg(test)]
@@ -2680,6 +2877,162 @@ mod tests {
         );
     }
 
+    struct ObservedReader<'a> {
+        bytes: &'a [u8],
+        offset: usize,
+        reads: usize,
+        largest_request: usize,
+    }
+
+    impl Read for ObservedReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            self.largest_request = self.largest_request.max(buffer.len());
+            let remaining = &self.bytes[self.offset..];
+            let count = remaining.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&remaining[..count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn reader_decode_spools_in_fixed_chunks_without_heap_buffering_the_source() {
+        let mut state = 0x1234_5678u32;
+        let samples = (0..512 * 512)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect::<Vec<_>>();
+        let image = Image::from_gray_bytes(512, 512, &samples).expect("reader fixture");
+        let bytes = crate::encode(
+            &image,
+            &crate::EncodeOptions {
+                quality: 100,
+                ..Default::default()
+            },
+        )
+        .expect("reader fixture encode");
+        assert!(bytes.len() > 64 * 1024, "fixture must span several chunks");
+        let mut reader = ObservedReader {
+            bytes: &bytes,
+            offset: 0,
+            reads: 0,
+            largest_request: 0,
+        };
+        let decoded = decode_from_reader(&mut reader).expect("spill-backed reader decode");
+        assert_eq!((decoded.width, decoded.height), (512, 512));
+        assert!(reader.reads >= 3, "expected multiple source reads");
+        assert_eq!(reader.largest_request, 64 * 1024);
+    }
+
+    #[test]
+    fn reader_input_limit_stops_ingestion_before_the_complete_source() {
+        let source = vec![0u8; 256 * 1024];
+        let mut reader = ObservedReader {
+            bytes: &source,
+            offset: 0,
+            reads: 0,
+            largest_request: 0,
+        };
+        let request = DecodeRequest {
+            limits: DecodeLimits {
+                max_input_bytes: 64 * 1024,
+                ..DecodeLimits::default()
+            },
+            ..DecodeRequest::default()
+        };
+        let error = decode_from_reader_request(&mut reader, &request)
+            .expect_err("input ceiling must stop the reader")
+            .to_string();
+        assert!(error.contains("input length"), "{error}");
+        assert!(reader.offset < source.len());
+    }
+
+    #[test]
+    fn decode_limits_reject_pixels_packets_precincts_and_codeblocks() {
+        let (bytes, _) = gray_ramp_jp2(32, 32);
+        for (name, expected, limits) in [
+            (
+                "pixels",
+                "pixel",
+                DecodeLimits {
+                    max_pixels: 100,
+                    ..DecodeLimits::default()
+                },
+            ),
+            (
+                "packets",
+                "packet",
+                DecodeLimits {
+                    max_packets: 0,
+                    ..DecodeLimits::default()
+                },
+            ),
+            (
+                "precincts",
+                "precinct",
+                DecodeLimits {
+                    max_precincts: 0,
+                    ..DecodeLimits::default()
+                },
+            ),
+            (
+                "code-block",
+                "code-block",
+                DecodeLimits {
+                    max_code_blocks: 0,
+                    ..DecodeLimits::default()
+                },
+            ),
+        ] {
+            let request = DecodeRequest {
+                limits,
+                ..DecodeRequest::default()
+            };
+            let error = decode_jp2_request(&bytes, &request)
+                .expect_err(name)
+                .to_string();
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn inspection_honors_input_pixel_and_working_set_limits() {
+        let (bytes, _) = gray_ramp_jp2(32, 32);
+        for (name, limits) in [
+            (
+                "input length",
+                DecodeLimits {
+                    max_input_bytes: bytes.len() - 1,
+                    ..DecodeLimits::default()
+                },
+            ),
+            (
+                "pixel count",
+                DecodeLimits {
+                    max_pixels: 100,
+                    ..DecodeLimits::default()
+                },
+            ),
+            (
+                "working set",
+                DecodeLimits {
+                    max_working_bytes: 1,
+                    ..DecodeLimits::default()
+                },
+            ),
+        ] {
+            let error = inspect_jp2_with_limits(&bytes, &limits)
+                .expect_err(name)
+                .to_string();
+            assert!(error.contains(name), "{name}: {error}");
+        }
+    }
+
     fn maybe_read_archive_org_sample() -> Option<Vec<u8>> {
         read_optional_fixture(&archive_org_gray_path(), "Archive.org grayscale JP2")
     }
@@ -2732,6 +3085,7 @@ mod tests {
                     region: None,
                     concurrency: DecodeConcurrency::Serial,
                     ignore_container_palette: false,
+                    limits: DecodeLimits::default(),
                 },
             )
             .expect("rgba decode")
@@ -2770,6 +3124,7 @@ mod tests {
                     region: None,
                     concurrency: DecodeConcurrency::Serial,
                     ignore_container_palette: false,
+                    limits: DecodeLimits::default(),
                 },
             )
             .expect("rgb decode")
@@ -3113,6 +3468,7 @@ mod tests {
             region: None,
             concurrency: DecodeConcurrency::Serial,
             ignore_container_palette: false,
+            limits: DecodeLimits::default(),
         };
         let full = decode_jp2_request(encoded, &base).expect("full decode");
         let roi = decode_jp2_request(
@@ -3343,6 +3699,7 @@ mod tests {
                         region: None,
                         concurrency: DecodeConcurrency::Serial,
                         ignore_container_palette: false,
+                        limits: DecodeLimits::default(),
                     },
                 )
                 .expect("packed multi-tile decode");
@@ -3354,6 +3711,7 @@ mod tests {
                         region: None,
                         concurrency: DecodeConcurrency::Serial,
                         ignore_container_palette: false,
+                        limits: DecodeLimits::default(),
                     },
                 )
                 .expect("native multi-tile decode");

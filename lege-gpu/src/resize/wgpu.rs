@@ -53,9 +53,12 @@ impl UseCase {
     pub fn default_parameters(self, src_width: u32, src_height: u32) -> ResizeParameters {
         match self {
             Self::OCR => {
-                let aspect_ratio = src_height as f32 / src_width as f32;
                 let dst_width = 1200;
-                let dst_height = (dst_width as f32 * aspect_ratio).round() as u32;
+                let dst_height = if src_width == 0 {
+                    0
+                } else {
+                    (dst_width as f32 * src_height as f32 / src_width as f32).round() as u32
+                };
                 ResizeParameters {
                     src_width,
                     src_height,
@@ -69,9 +72,12 @@ impl UseCase {
                 }
             }
             Self::MarginCalculation => {
-                let aspect_ratio = src_height as f32 / src_width as f32;
                 let dst_width = 1024;
-                let dst_height = (dst_width as f32 * aspect_ratio).round() as u32;
+                let dst_height = if src_width == 0 {
+                    0
+                } else {
+                    (dst_width as f32 * src_height as f32 / src_width as f32).round() as u32
+                };
                 ResizeParameters {
                     src_width,
                     src_height,
@@ -105,6 +111,7 @@ impl ConversionType {
 pub enum WgpuResizeError {
     InvalidDimensions { width: u32, height: u32 },
     InvalidChannelCount(u32),
+    DimensionOverflow { width: u32, height: u32 },
     BufferSizeMismatch { expected: usize, actual: usize },
     Initialization(String),
     Shader(String),
@@ -118,6 +125,9 @@ impl std::fmt::Display for WgpuResizeError {
                 write!(f, "Invalid dimensions: {}x{}", width, height)
             }
             Self::InvalidChannelCount(ch) => write!(f, "Invalid channel count: {}", ch),
+            Self::DimensionOverflow { width, height } => {
+                write!(f, "Dimensions overflow GPU u32 indexing: {width}x{height}")
+            }
             Self::BufferSizeMismatch { expected, actual } => {
                 write!(
                     f,
@@ -180,16 +190,41 @@ impl ResizeParameters {
         if !matches!(self.channel_count, 1 | 3 | 4) {
             return Err(WgpuResizeError::InvalidChannelCount(self.channel_count));
         }
+        if self.src_width > i32::MAX as u32 || self.src_height > i32::MAX as u32 {
+            return Err(WgpuResizeError::DimensionOverflow {
+                width: self.src_width,
+                height: self.src_height,
+            });
+        }
+        pixel_count(self.src_width, self.src_height)?;
+        pixel_count(self.dst_width, self.dst_height)?;
         Ok(())
     }
 
-    fn src_buffer_size(&self) -> usize {
-        (self.src_width * self.src_height * self.channel_count) as usize
+    fn src_buffer_size(&self) -> Result<usize> {
+        pixel_count(self.src_width, self.src_height)?
+            .checked_mul(self.channel_count as usize)
+            .ok_or(WgpuResizeError::DimensionOverflow {
+                width: self.src_width,
+                height: self.src_height,
+            })
     }
 
-    fn dst_buffer_size(&self) -> usize {
-        (self.dst_width * self.dst_height * self.channel_count) as usize
+    fn dst_buffer_size(&self) -> Result<usize> {
+        pixel_count(self.dst_width, self.dst_height)?
+            .checked_mul(self.channel_count as usize)
+            .ok_or(WgpuResizeError::DimensionOverflow {
+                width: self.dst_width,
+                height: self.dst_height,
+            })
     }
+}
+
+fn pixel_count(width: u32, height: u32) -> Result<usize> {
+    width
+        .checked_mul(height)
+        .map(|pixels| pixels as usize)
+        .ok_or(WgpuResizeError::DimensionOverflow { width, height })
 }
 
 #[derive(Clone)]
@@ -302,6 +337,54 @@ fn compact_from_rgba(gpu_out: &[u8], channel_count: u32, dst_size: usize) -> Vec
     out
 }
 
+fn conversion_layout(input: &WgpuResizeOutput, batch_size: usize) -> Result<(u32, usize)> {
+    if input.channel_count != 4 || input.bytes_per_pixel != 4 {
+        return Err(WgpuResizeError::Execution(
+            "WGPU conversion expects RGBA8 GPU resize output".to_string(),
+        ));
+    }
+    if input.width == 0 || input.height == 0 {
+        return Err(WgpuResizeError::InvalidDimensions {
+            width: input.width,
+            height: input.height,
+        });
+    }
+    let pixels = pixel_count(input.width, input.height)?;
+    let expected_input_bytes = pixels
+        .checked_mul(4)
+        .ok_or(WgpuResizeError::DimensionOverflow {
+            width: input.width,
+            height: input.height,
+        })?;
+    if input.size_in_bytes != expected_input_bytes {
+        return Err(WgpuResizeError::BufferSizeMismatch {
+            expected: expected_input_bytes,
+            actual: input.size_in_bytes,
+        });
+    }
+    if input.buffer.size() < expected_input_bytes as u64 {
+        return Err(WgpuResizeError::BufferSizeMismatch {
+            expected: expected_input_bytes,
+            actual: input.buffer.size() as usize,
+        });
+    }
+    let batch_u32 = u32::try_from(batch_size)
+        .map_err(|_| WgpuResizeError::Execution("conversion batch size exceeds u32".to_string()))?;
+    if batch_u32 == 0 {
+        return Err(WgpuResizeError::Execution(
+            "conversion batch size must be positive".to_string(),
+        ));
+    }
+    let dst_bytes = batch_size
+        .checked_mul(3)
+        .and_then(|elements| elements.checked_mul(pixels))
+        .and_then(|elements| elements.checked_mul(size_of::<f32>()))
+        .ok_or_else(|| {
+            WgpuResizeError::Execution("conversion output byte size overflows usize".to_string())
+        })?;
+    Ok((batch_u32, dst_bytes))
+}
+
 impl WgpuContext {
     async fn new_async(_verbose: bool) -> Result<Self> {
         let shared = crate::vision::runtime::device::GpuContext::shared()
@@ -322,6 +405,7 @@ impl WgpuContext {
 pub struct WgpuResizer {
     ctx: WgpuContext,
     resize_pipelines: HashMap<FilterType, WgpuPipelineState>,
+    resize_bind_groups: HashMap<FilterType, wgpu::BindGroup>,
     resize_buffers: Option<WgpuResizeBuffers>,
     convert_pipelines: HashMap<ConversionType, WgpuPipelineState>,
     convert_buffers: Option<WgpuConvertBuffers>,
@@ -335,6 +419,7 @@ impl WgpuResizer {
         let mut resizer = Self {
             ctx,
             resize_pipelines: HashMap::new(),
+            resize_bind_groups: HashMap::new(),
             resize_buffers: None,
             convert_pipelines: HashMap::new(),
             convert_buffers: None,
@@ -352,6 +437,7 @@ impl WgpuResizer {
         Self {
             ctx: self.ctx.clone(),
             resize_pipelines: self.resize_pipelines.clone(),
+            resize_bind_groups: HashMap::new(),
             resize_buffers: None,
             convert_pipelines: self.convert_pipelines.clone(),
             convert_buffers: None,
@@ -362,7 +448,7 @@ impl WgpuResizer {
     pub fn resize(&mut self, src_data: &[u8], params: &ResizeParameters) -> Result<Vec<u8>> {
         params.validate()?;
 
-        let src_size = params.src_buffer_size();
+        let src_size = params.src_buffer_size()?;
         if src_data.len() != src_size {
             return Err(WgpuResizeError::BufferSizeMismatch {
                 expected: src_size,
@@ -383,7 +469,7 @@ impl WgpuResizer {
         Ok(compact_from_rgba(
             &gpu_out,
             params.channel_count,
-            params.dst_buffer_size(),
+            params.dst_buffer_size()?,
         ))
     }
 
@@ -393,9 +479,10 @@ impl WgpuResizer {
         params: &ResizeParameters,
     ) -> Result<WgpuResizeOutput> {
         params.validate()?;
-        if src_data.len() != params.src_buffer_size() {
+        let expected = params.src_buffer_size()?;
+        if src_data.len() != expected {
             return Err(WgpuResizeError::BufferSizeMismatch {
-                expected: params.src_buffer_size(),
+                expected,
                 actual: src_data.len(),
             });
         }
@@ -426,15 +513,9 @@ impl WgpuResizer {
         input: &WgpuResizeOutput,
         batch_size: usize,
     ) -> Result<wgpu::Buffer> {
-        if input.channel_count != 4 || input.bytes_per_pixel != 4 {
-            return Err(WgpuResizeError::Execution(
-                "WGPU conversion expects RGBA8 GPU resize output".to_string(),
-            ));
-        }
+        let (batch_u32, dst_bytes) = conversion_layout(input, batch_size)?;
 
         self.ensure_convert_pipeline(ConversionType::Rgba8ToNchwF32)?;
-        let dst_bytes =
-            batch_size * 3 * input.width as usize * input.height as usize * size_of::<f32>();
         self.ensure_convert_buffers(dst_bytes)?;
 
         let buffers = self.convert_buffers.as_ref().ok_or_else(|| {
@@ -448,7 +529,7 @@ impl WgpuResizer {
         let convert_params = ConvertParamsStd140 {
             width: input.width,
             height: input.height,
-            batch_size: batch_size as u32,
+            batch_size: batch_u32,
             _pad: 0,
         };
         self.ctx
@@ -493,7 +574,7 @@ impl WgpuResizer {
             pass.set_bind_group(0, &bind_group, &[]);
             let groups_x = input.width.div_ceil(16);
             let groups_y = input.height.div_ceil(16);
-            pass.dispatch_workgroups(groups_x, groups_y, batch_size as u32);
+            pass.dispatch_workgroups(groups_x, groups_y, batch_u32);
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));
@@ -515,13 +596,11 @@ impl WgpuResizer {
         input: &WgpuResizeOutput,
         batch_size: usize,
     ) -> Result<Vec<f32>> {
+        let (_, dst_bytes) = conversion_layout(input, batch_size)?;
         let _output = self.convert_to_nchw_f32_on_gpu(input, batch_size)?;
         let buffers = self.convert_buffers.as_ref().ok_or_else(|| {
             WgpuResizeError::Execution("converter buffers not initialized".to_string())
         })?;
-        let dst_bytes =
-            batch_size * 3 * input.width as usize * input.height as usize * size_of::<f32>();
-
         let mut encoder = self
             .ctx
             .device
@@ -695,6 +774,7 @@ impl WgpuResizer {
             src_capacity: src_aligned,
             dst_capacity: dst_aligned,
         });
+        self.resize_bind_groups.clear();
 
         Ok(())
     }
@@ -865,27 +945,34 @@ impl WgpuResizer {
             .queue
             .write_buffer(&buffers.params, 0, bytemuck::bytes_of(&resize_params));
 
+        if !self.resize_bind_groups.contains_key(&params.filter) {
+            let bind_group = self
+                .ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("lege-wgpu-resize-bind-group"),
+                    layout: &pipeline.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffers.params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: buffers.gpu_src.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: buffers.gpu_dst.as_entire_binding(),
+                        },
+                    ],
+                });
+            self.resize_bind_groups.insert(params.filter, bind_group);
+        }
         let bind_group = self
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lege-wgpu-resize-bind-group"),
-                layout: &pipeline.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffers.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.gpu_src.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffers.gpu_dst.as_entire_binding(),
-                    },
-                ],
-            });
+            .resize_bind_groups
+            .get(&params.filter)
+            .expect("resize bind group inserted above");
 
         let mut encoder = self
             .ctx
@@ -900,7 +987,7 @@ impl WgpuResizer {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&pipeline.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(0, bind_group, &[]);
             let (tgx, tgy, _) = params.filter.thread_group_size();
             let groups_x = params.dst_width.div_ceil(tgx);
             let groups_y = params.dst_height.div_ceil(tgy);
@@ -967,5 +1054,34 @@ impl WgpuResizer {
         drop(data);
         buffer.unmap();
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_parameters_reject_u32_shader_index_overflow() {
+        let params = ResizeParameters::new(u32::MAX, 2, 1, 1);
+        assert!(matches!(
+            params.validate(),
+            Err(WgpuResizeError::DimensionOverflow {
+                width: u32::MAX,
+                height: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn default_parameters_keep_zero_width_invalid() {
+        for use_case in [UseCase::OCR, UseCase::MarginCalculation] {
+            let params = use_case.default_parameters(0, 100);
+            assert_eq!(params.dst_height, 0);
+            assert!(matches!(
+                params.validate(),
+                Err(WgpuResizeError::InvalidDimensions { .. })
+            ));
+        }
     }
 }

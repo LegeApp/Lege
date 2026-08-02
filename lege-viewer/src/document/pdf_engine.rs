@@ -17,7 +17,7 @@ use pdf_render_wgpu::{
     ImageRendererTelemetry,
 };
 use pdf_source::MmapSource;
-use pdf_text::{TextPage, TextPageOptions};
+use pdf_text::{CharType, TextPage, TextPageOptions};
 
 use crate::geometry::{Affine, PointF, RectF};
 use crate::paint::PixelSurface;
@@ -312,9 +312,14 @@ fn compile_pdf_page(
         .get(page.0 as usize)
         .ok_or(DocumentEngineError::PageOutOfRange(page))?;
     context.begin_job();
-    let compilation = compiler
-        .compile_artifacts(snapshot, pdf_document::PageIndex(page.0), context)
-        .map_err(|error| DocumentEngineError::Engine(error.to_string()))?;
+    context.set_cancellation_flag(Some(cancellation.shared_flag()));
+    let compilation =
+        compiler.compile_artifacts(snapshot, pdf_document::PageIndex(page.0), context);
+    context.set_cancellation_flag(None);
+    let compilation = compilation.map_err(|error| match error {
+        pdf_content::ContentError::Cancelled => DocumentEngineError::Cancelled,
+        other => DocumentEngineError::Engine(other.to_string()),
+    })?;
     if cancellation.is_cancelled() {
         return Err(DocumentEngineError::Cancelled);
     }
@@ -326,46 +331,72 @@ fn compile_pdf_page(
             ..TextPageOptions::default()
         },
     ));
-    let mut characters: Vec<CharacterGeometry> = text_page
+    let retained: Vec<_> = text_page
         .chars()
         .iter()
-        .enumerate()
-        .map(|(index, info)| {
-            let run = compilation
-                .semantic
-                .text_runs
-                .get(info.text_object.0 as usize);
-            let font_size = run.map_or(info.char_box.height().abs().max(1.0), |run| {
-                run.font_size.abs().max(1.0)
-            });
-            let bold = run
-                .and_then(|run| compilation.semantic.fonts.get(run.font.0 as usize))
-                .is_some_and(|font| {
-                    font.synthesis.embolden
-                        || String::from_utf8_lossy(&font.base_font)
-                            .to_ascii_lowercase()
-                            .contains("bold")
-                });
-            CharacterGeometry {
-                unicode: char::from_u32(info.unicode),
-                origin: PointF {
-                    x: info.origin.x,
-                    y: info.origin.y,
-                },
-                bounds: RectF {
-                    x: info.char_box.x0,
-                    y: info.char_box.y0,
-                    width: info.char_box.width(),
-                    height: info.char_box.height(),
-                },
-                nominal_height: info.char_box.height().abs().max(1.0),
-                font_size,
-                bold,
-                object_id: info.text_object.0,
-                char_index: index,
-            }
-        })
+        .filter(|info| !matches!(info.char_type, CharType::NotUnicode | CharType::Hyphen))
         .collect();
+    let mut characters = Vec::with_capacity(retained.len());
+    let mut cursor = 0usize;
+    let mut utf16_index = 0usize;
+    while cursor < retained.len() {
+        let info = retained[cursor];
+        let (unicode, utf16_len) = decode_geometry_scalar(
+            info.unicode as u16,
+            retained.get(cursor + 1).map(|next| next.unicode as u16),
+        );
+        let paired = utf16_len == 2;
+        let mut bounds = RectF {
+            x: info.char_box.x0,
+            y: info.char_box.y0,
+            width: info.char_box.width(),
+            height: info.char_box.height(),
+        };
+        if paired {
+            let continuation = retained[cursor + 1].char_box;
+            let x0 = bounds.x.min(continuation.x0);
+            let y0 = bounds.y.min(continuation.y0);
+            let x1 = bounds.right().max(continuation.x1);
+            let y1 = bounds.bottom().max(continuation.y1);
+            bounds = RectF {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            };
+        }
+        let run = compilation
+            .semantic
+            .text_runs
+            .get(info.text_object.0 as usize);
+        let font_size = run.map_or(info.char_box.height().abs().max(1.0), |run| {
+            run.font_size.abs().max(1.0)
+        });
+        let bold = run
+            .and_then(|run| compilation.semantic.fonts.get(run.font.0 as usize))
+            .is_some_and(|font| {
+                font.synthesis.embolden
+                    || String::from_utf8_lossy(&font.base_font)
+                        .to_ascii_lowercase()
+                        .contains("bold")
+            });
+        characters.push(CharacterGeometry {
+            unicode: Some(unicode),
+            origin: PointF {
+                x: info.origin.x,
+                y: info.origin.y,
+            },
+            bounds,
+            nominal_height: bounds.height.abs().max(1.0),
+            font_size,
+            bold,
+            object_id: info.text_object.0,
+            char_index: utf16_index,
+            utf16_len,
+        });
+        utf16_index += utf16_len;
+        cursor += utf16_len;
+    }
     let lines = Arc::new(cluster_lines(page, &characters, page_to_doc));
     transform_characters_to_document(&mut characters, page_to_doc);
     let substrate = Arc::new(TextSubstrate {
@@ -416,6 +447,21 @@ fn compile_pdf_page(
         },
         lowering_degraded,
     }))
+}
+
+fn decode_geometry_scalar(first: u16, second: Option<u16>) -> (char, usize) {
+    if (0xd800..=0xdbff).contains(&first)
+        && let Some(second) = second.filter(|unit| (0xdc00..=0xdfff).contains(unit))
+        && let Some(character) = char::decode_utf16([first, second])
+            .next()
+            .and_then(Result::ok)
+    {
+        return (character, 2);
+    }
+    (
+        char::from_u32(u32::from(first)).unwrap_or(char::REPLACEMENT_CHARACTER),
+        1,
+    )
 }
 
 fn user_rect_to_display(geometry: PageGeometry, rect: [f64; 4]) -> Option<RectF> {
@@ -720,10 +766,36 @@ fn ingest_rgba_to_xrgb(
             "viewer ingestion expected RGBA8 output".to_owned(),
         ));
     }
+
+    let width = host.width as usize;
+    let height = host.height as usize;
+    let source_row_bytes = width.checked_mul(4).ok_or_else(|| {
+        DocumentEngineError::Engine("renderer output row size overflowed".to_owned())
+    })?;
+    if host.stride < source_row_bytes {
+        return Err(DocumentEngineError::Engine(format!(
+            "renderer output stride {} is smaller than the {source_row_bytes}-byte RGBA row",
+            host.stride
+        )));
+    }
+    let required_source_bytes = host.stride.checked_mul(height).ok_or_else(|| {
+        DocumentEngineError::Engine("renderer output buffer size overflowed".to_owned())
+    })?;
+    if host.pixels.len() < required_source_bytes {
+        return Err(DocumentEngineError::Engine(format!(
+            "renderer output is truncated: expected at least {required_source_bytes} bytes, got {}",
+            host.pixels.len()
+        )));
+    }
+    let output_pixels = width.checked_mul(height).ok_or_else(|| {
+        DocumentEngineError::Engine("viewer output surface size overflowed".to_owned())
+    })?;
+
     let stride = host.width as usize;
-    let mut pixels = vec![0_u32; stride * host.height as usize];
-    for y in 0..host.height as usize {
-        let source_row = &host.pixels[y * host.stride..y * host.stride + host.width as usize * 4];
+    let mut pixels = vec![0_u32; output_pixels];
+    for y in 0..height {
+        let source_start = y * host.stride;
+        let source_row = &host.pixels[source_start..source_start + source_row_bytes];
         let destination = &mut pixels[y * stride..(y + 1) * stride];
         for (rgba, output) in source_row.chunks_exact(4).zip(destination) {
             *output = (u32::from(rgba[0]) << 16) | (u32::from(rgba[1]) << 8) | u32::from(rgba[2]);
@@ -735,4 +807,61 @@ fn ingest_rgba_to_xrgb(
         stride,
         pixels: pixels.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::sync::Arc;
+
+    use pdf_render_api::{HostPage, OutputFormat};
+
+    use super::{decode_geometry_scalar, ingest_rgba_to_xrgb};
+
+    fn host_page(width: u32, height: u32, stride: usize, pixels: Vec<u8>) -> HostPage {
+        HostPage {
+            width,
+            height,
+            stride,
+            format: OutputFormat::Rgba8PremultipliedSrgb,
+            pixels: Arc::from(pixels),
+        }
+    }
+
+    #[test]
+    fn ingest_rejects_short_stride_without_panicking() {
+        let host = host_page(2, 1, 7, vec![0; 7]);
+        let error = ingest_rgba_to_xrgb(&host).expect_err("short stride must be rejected");
+        assert!(error.to_string().contains("stride"));
+    }
+
+    #[test]
+    fn ingest_rejects_truncated_padded_rows_without_panicking() {
+        let host = host_page(2, 2, 12, vec![0; 23]);
+        let error = ingest_rgba_to_xrgb(&host).expect_err("truncated buffer must be rejected");
+        assert!(error.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn ingest_accepts_padding_and_ignores_alpha() {
+        let host = host_page(
+            2,
+            1,
+            12,
+            vec![0x12, 0x34, 0x56, 0x78, 0xaa, 0xbb, 0xcc, 0xdd, 1, 2, 3, 4],
+        );
+        let surface = ingest_rgba_to_xrgb(&host).expect("valid padded row");
+        assert_eq!(&*surface.pixels, &[0x0012_3456, 0x00aa_bbcc]);
+    }
+
+    #[test]
+    fn geometry_scalar_coalesces_valid_utf16_surrogate_pair() {
+        let units: Vec<u16> = "😀".encode_utf16().collect();
+        assert_eq!(decode_geometry_scalar(units[0], Some(units[1])), ('😀', 2));
+        assert_eq!(
+            decode_geometry_scalar(units[0], Some(b'A' as u16)),
+            (char::REPLACEMENT_CHARACTER, 1)
+        );
+    }
 }

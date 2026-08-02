@@ -63,6 +63,16 @@ pub(crate) fn decode(
     iou_threshold: f32,
     max_detections: usize,
 ) -> Result<Vec<Detection>> {
+    if !conf_threshold.is_finite() || !(0.0..=1.0).contains(&conf_threshold) {
+        bail!("PicoDet confidence threshold must be finite and in 0..=1");
+    }
+    if !iou_threshold.is_finite() || !(0.0..=1.0).contains(&iou_threshold) {
+        bail!("PicoDet IoU threshold must be finite and in 0..=1");
+    }
+    if max_detections == 0 {
+        return Ok(Vec::new());
+    }
+
     // boxes: [1, N, 4]; scores: [1, C, N].
     if boxes.shape.len() != 3 || boxes.shape[0] != 1 || boxes.shape[2] != 4 {
         bail!("PicoDet boxes must be [1,N,4], got {:?}", boxes.shape);
@@ -72,6 +82,12 @@ pub(crate) fn decode(
     }
     let num_anchors = boxes.shape[1];
     let num_classes = scores.shape[1];
+    if num_classes != CLASS_NAMES.len() {
+        bail!(
+            "PicoDet scores must contain {} classes, got {num_classes}",
+            CLASS_NAMES.len()
+        );
+    }
     if scores.shape[2] != num_anchors {
         bail!(
             "PicoDet boxes/scores anchor mismatch: {} vs {}",
@@ -129,6 +145,9 @@ fn class_aware_nms(
     iou_threshold: f32,
     max_detections: usize,
 ) -> Vec<Detection> {
+    if max_detections == 0 {
+        return Vec::new();
+    }
     let mut kept: Vec<Detection> = Vec::new();
     'candidate: for detection in detections {
         for existing in &kept {
@@ -153,4 +172,47 @@ fn iou(a: &Detection, b: &Detection) -> f32 {
     let area_a = (a.x2 - a.x1).max(0.0) * (a.y2 - a.y1).max(0.0);
     let area_b = (b.x2 - b.x1).max(0.0) * (b.y2 - b.y1).max(0.0);
     inter / (area_a + area_b - inter).max(1e-12)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_detection_heads() -> (reference::Tensor, reference::Tensor, PreprocessMeta) {
+        let boxes = reference::Tensor::new(vec![1, 1, 4], vec![1.0, 2.0, 5.0, 6.0]).unwrap();
+        let mut score_data = vec![0.0; CLASS_NAMES.len()];
+        score_data[2] = 0.9;
+        let scores = reference::Tensor::new(vec![1, CLASS_NAMES.len(), 1], score_data).unwrap();
+        let meta = PreprocessMeta {
+            orig_w: 10,
+            orig_h: 10,
+            input_w: 10,
+            input_h: 10,
+        };
+        (boxes, scores, meta)
+    }
+
+    #[test]
+    fn zero_detection_limit_returns_no_boxes() {
+        let (boxes, scores, meta) = one_detection_heads();
+        assert!(
+            decode(&boxes, &scores, &meta, 0.2, 0.5, 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn invalid_thresholds_are_rejected() {
+        let (boxes, scores, meta) = one_detection_heads();
+        assert!(decode(&boxes, &scores, &meta, f32::NAN, 0.5, 1).is_err());
+        assert!(decode(&boxes, &scores, &meta, 0.2, 1.1, 1).is_err());
+    }
+
+    #[test]
+    fn class_count_must_match_the_doclayout_dictionary() {
+        let (boxes, _, meta) = one_detection_heads();
+        let scores = reference::Tensor::new(vec![1, 1, 1], vec![0.9]).unwrap();
+        assert!(decode(&boxes, &scores, &meta, 0.2, 0.5, 1).is_err());
+    }
 }

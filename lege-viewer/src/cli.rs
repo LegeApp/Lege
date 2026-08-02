@@ -8,7 +8,9 @@ pub const USAGE: &str = "Usage: lege-viewer [--presenter auto|gpu|software] [doc
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchMode {
     Pdf(PathBuf),
-    Synthetic { page_count: u32 },
+    Synthetic {
+        page_count: u32,
+    },
     /// No document was named. The viewer opens on its empty state and waits
     /// for the user to pick a file.
     Empty,

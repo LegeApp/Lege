@@ -72,7 +72,7 @@ impl MemoryBudget {
             });
         }
         let mut state = self.lock_state();
-        while state.in_use + bytes > self.inner.limit {
+        while bytes > self.inner.limit - state.in_use {
             // Same poison-recovery rationale as `lock_state`.
             state = self
                 .inner
@@ -96,7 +96,7 @@ impl MemoryBudget {
             });
         }
         let mut state = self.lock_state();
-        if state.in_use + bytes > self.inner.limit {
+        if bytes > self.inner.limit - state.in_use {
             return Ok(None);
         }
         state.in_use += bytes;
@@ -169,5 +169,13 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         drop(p);
         assert_eq!(waiter.join().unwrap(), 50);
+    }
+
+    #[test]
+    fn admission_check_does_not_overflow_at_u64_limit() {
+        let b = MemoryBudget::new(u64::MAX);
+        let _almost_all = b.acquire(u64::MAX - 1).unwrap();
+        assert!(b.try_acquire(2).unwrap().is_none());
+        assert_eq!(b.in_use(), u64::MAX - 1);
     }
 }

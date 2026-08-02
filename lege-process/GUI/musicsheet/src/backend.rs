@@ -399,6 +399,21 @@ pub async fn start_async_processing(
                 pids.clear();
                 pids.push(handle.pid);
             }
+            // Cancellation can race the narrow interval between the scheduler's
+            // loop check and publishing the new PID. Re-check after publication
+            // so the just-spawned worker cannot escape the supervisor.
+            if scheduler_cancelled.load(Ordering::SeqCst) {
+                handle.kill();
+                if let Ok(mut pids) = scheduler_active_pids.lock() {
+                    pids.retain(|pid| *pid != handle.pid);
+                }
+                let _ = events_tx.send(WorkerProgressUpdate::Error {
+                    task_id: info.id,
+                    error: "Processing cancelled".to_string(),
+                    metrics: None,
+                });
+                break;
+            }
 
             // A healthy GUI worker emits its JSON "initializing" event as soon
             // as argument parsing completes. Do not leave the GUI spinning

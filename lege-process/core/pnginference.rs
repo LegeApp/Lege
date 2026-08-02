@@ -19,6 +19,14 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp", "jp2",
 ];
 
+struct CancelRegistrationGuard(u64);
+
+impl Drop for CancelRegistrationGuard {
+    fn drop(&mut self) {
+        crate::progress::clear_cancel_sender(self.0);
+    }
+}
+
 pub fn run_png_mode(folder: PathBuf, output: Option<PathBuf>, _config: AppConfig) -> Result<()> {
     let mut pipeline_config = PipelineConfig::default();
     pipeline_config.set_enable_layout_detection(true);
@@ -151,6 +159,8 @@ fn run_image_source_with_config(
     progress_tracker: Option<ProgressTracker>,
     adaptive: AdaptiveConcurrency,
 ) -> Result<()> {
+    crate::progress::cancellation_checkpoint("before image-source pipeline startup")?;
+
     let page_range = pipeline_config
         .page_range()
         .map(|range| (range.start.saturating_sub(1))..range.end.min(source.page_count()));
@@ -201,11 +211,14 @@ fn run_image_source_with_config(
         }
     };
 
+    let tracker = progress_tracker
+        .clone()
+        .unwrap_or_else(|| crate::progress::get_progress_manager().create_tracker());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    crate::progress::register_cancel_sender(tracker.task_id(), shutdown_tx);
+    let _cancel_registration = CancelRegistrationGuard(tracker.task_id());
+
     if pipeline_config.text_format() == "djvu" {
-        let tracker = progress_tracker
-            .clone()
-            .unwrap_or_else(|| crate::progress::get_progress_manager().create_tracker());
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
         runtime.block_on(
             crate::pipeline::djvu_pipeline::create_and_run_djvu_source_pipeline(
                 source,
@@ -221,10 +234,6 @@ fn run_image_source_with_config(
         return Ok(());
     }
 
-    let tracker = progress_tracker
-        .clone()
-        .unwrap_or_else(|| crate::progress::get_progress_manager().create_tracker());
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     runtime.block_on(
         crate::pipeline::pdf_tokio_pipeline::create_and_run_pdf_source_pipeline(
             source,
@@ -372,6 +381,7 @@ pub async fn run_pdf_layout_crop_debug(
     };
 
     for page_num in pages_to_render.iter() {
+        crate::progress::cancellation_checkpoint("before PDF crop-debug page")?;
         println!("Processing page {} of {}", page_num, total_pages);
         let rgb = renderer
             .render_page_rgb((*page_num - 1) as u32, target_height, None)
@@ -392,6 +402,7 @@ pub async fn run_pdf_layout_crop_debug(
         )
         .await?;
         info_println!("Saved {} regions from page {}", saved, page_num);
+        crate::progress::cancellation_checkpoint("after PDF crop-debug page")?;
     }
 
     info_println!("Region cropping complete: {}", output_dir.display());
@@ -529,6 +540,7 @@ pub async fn run_folder_layout_crop_debug(
     };
 
     for (page_idx, path) in image_files.iter().enumerate() {
+        crate::progress::cancellation_checkpoint("before folder crop-debug image")?;
         let page_num = page_idx + 1;
         println!(
             "Processing page {} of {} ({})",
@@ -552,6 +564,7 @@ pub async fn run_folder_layout_crop_debug(
         )
         .await?;
         info_println!("Saved {} regions from page {}", saved, page_num);
+        crate::progress::cancellation_checkpoint("after folder crop-debug image")?;
     }
 
     info_println!("Region cropping complete: {}", output_dir.display());
@@ -663,6 +676,7 @@ pub fn run_pdf_to_images_mode(
     let target_height = pipeline_config.high_res_render_height();
 
     for page_num in pages_to_render.iter() {
+        crate::progress::cancellation_checkpoint("before PDF-to-images page render")?;
         println!("Processing page {} of {}", page_num, total_pages);
 
         // Render PDF page to RGB (direct call without block_on to avoid task cancellation)
@@ -760,6 +774,7 @@ pub fn run_pdf_to_images_mode(
                 .with_context(|| format!("Failed to write PBM file: {}", output_path.display()))?;
             info_println!("Page {} saved as PBM: {}", page_num, output_path.display());
         }
+        crate::progress::cancellation_checkpoint("after PDF-to-images page write")?;
     }
 
     info_println!(
@@ -819,6 +834,7 @@ pub fn run_images_to_images_mode(
     }
 
     for (idx, image_path) in image_files.iter().enumerate() {
+        crate::progress::cancellation_checkpoint("before images-to-images page processing")?;
         println!(
             "Processing {} of {}: {}",
             idx + 1,
@@ -838,6 +854,7 @@ pub fn run_images_to_images_mode(
         } else {
             info_println!("Processed {}", image_path.display());
         }
+        crate::progress::cancellation_checkpoint("after images-to-images page processing")?;
     }
 
     info_println!(

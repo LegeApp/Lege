@@ -65,9 +65,9 @@ impl WgpuResizerPool {
             self.prototype.lock().unwrap().build_sibling()
         });
         let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
-        let previous_peak = self.peak_active.fetch_max(active, Ordering::Relaxed);
+        let _previous_peak = self.peak_active.fetch_max(active, Ordering::Relaxed);
         #[cfg(feature = "debug-logging")]
-        if active > previous_peak {
+        if active > _previous_peak {
             println!("WGPU resize pool concurrency reached {active}");
         }
         Ok(PooledResizer {
@@ -244,9 +244,6 @@ fn cpu_resize_bytes(
 ) -> Result<Vec<u8>, ResizeError> {
     let dst_width = params.target_width;
     let dst_height = params.target_height;
-    if dst_width == 0 || dst_height == 0 {
-        return Err(ResizeError::InvalidDimensions);
-    }
 
     let pixel_type = match channel_count {
         1 => PixelType::U8,
@@ -263,7 +260,8 @@ fn cpu_resize_bytes(
     let src_image = FirImage::from_slice_u8(src_width, src_height, &mut owned, pixel_type)
         .map_err(|e| ResizeError::BackendError(format!("Failed to create source image: {e:?}")))?;
 
-    let mut dst = vec![0u8; (dst_width * dst_height * channel_count) as usize];
+    let dst_len = image_buffer_len(dst_width, dst_height, channel_count)?;
+    let mut dst = vec![0u8; dst_len];
     let mut dst_image = FirImage::from_slice_u8(dst_width, dst_height, &mut dst, pixel_type)
         .map_err(|e| ResizeError::BackendError(format!("Failed to create dest image: {e:?}")))?;
 
@@ -315,6 +313,17 @@ fn wgpu_resize_bytes(
     Ok(data)
 }
 
+fn image_buffer_len(width: u32, height: u32, channel_count: u32) -> Result<usize, ResizeError> {
+    if width == 0 || height == 0 || channel_count == 0 {
+        return Err(ResizeError::InvalidDimensions);
+    }
+
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(channel_count as usize))
+        .ok_or(ResizeError::InvalidDimensions)
+}
+
 /// Resize image bytes using WGPU acceleration when available, with CPU fallback.
 pub fn resize_bytes(
     src_data: &[u8],
@@ -323,6 +332,15 @@ pub fn resize_bytes(
     params: &ResizeParams,
     channel_count: u32,
 ) -> Result<Vec<u8>, ResizeError> {
+    let expected_source_len = image_buffer_len(src_width, src_height, channel_count)?;
+    image_buffer_len(params.target_width, params.target_height, channel_count)?;
+    if src_data.len() < expected_source_len {
+        return Err(ResizeError::BackendError(format!(
+            "Source buffer is too small: expected at least {expected_source_len} bytes, got {}",
+            src_data.len()
+        )));
+    }
+
     if matches!(
         resize_backend_preference(),
         ResizeBackendPreference::FastCpu
@@ -474,5 +492,37 @@ mod tests {
         let out = resize_bytes(&src, 2, 2, &params, 3).expect("resize should succeed");
         assert_eq!(out.len(), 4 * 3 * 3);
         set_resize_backend_preference(ResizeBackendPreference::Auto);
+    }
+
+    #[test]
+    fn resize_bytes_rejects_short_source_before_backend_selection() {
+        let params = ResizeParams {
+            target_width: 1,
+            target_height: 1,
+            method: ResizeMethod::Nearest,
+            letterbox: false,
+            border_value: 0.0,
+            swap_rb: false,
+        };
+
+        let error = resize_bytes(&[0; 11], 2, 2, &params, 3).expect_err("short source");
+        assert!(matches!(error, ResizeError::BackendError(_)));
+    }
+
+    #[test]
+    fn resize_bytes_rejects_zero_sized_images() {
+        let params = ResizeParams {
+            target_width: 1,
+            target_height: 1,
+            method: ResizeMethod::Nearest,
+            letterbox: false,
+            border_value: 0.0,
+            swap_rb: false,
+        };
+
+        assert!(matches!(
+            resize_bytes(&[], 0, 1, &params, 3),
+            Err(ResizeError::InvalidDimensions)
+        ));
     }
 }

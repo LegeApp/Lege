@@ -348,7 +348,17 @@ fn validate_input(input: &[u8], width: u32, height: u32, channels: u8) -> Result
             "JP2 requires 1 (grayscale) or 3 (RGB) channels".to_string(),
         ));
     }
-    let expected_len = width as usize * height as usize * channels as usize;
+    if width == 0 || height == 0 {
+        return Err(EncodingError::InvalidDimensions {
+            format: "JP2",
+            width,
+            height,
+        });
+    }
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(channels as usize))
+        .ok_or_else(|| EncodingError::InvalidInput("JP2 dimensions are too large".to_string()))?;
     if input.len() < expected_len {
         return Err(EncodingError::InvalidInput(
             "Input buffer too small for JP2 dimensions".to_string(),
@@ -388,12 +398,68 @@ fn quality_to_rate(quality: u8) -> f32 {
     (100.0 / q).powi(2)
 }
 
+#[derive(Clone, Copy)]
+struct ComponentSampleScale {
+    levels: u64,
+    minimum: i64,
+}
+
+impl ComponentSampleScale {
+    fn new(component: &jp2lam::Component) -> crate::encoding::Result<Self> {
+        let precision = component.precision;
+        if !(1..=32).contains(&precision) {
+            return Err(crate::encoding::EncodingError::EncoderError(format!(
+                "JP2 component precision {precision} is unsupported"
+            )));
+        }
+
+        Ok(Self {
+            levels: (1u64 << precision) - 1,
+            minimum: if component.signed {
+                -(1i64 << (precision - 1))
+            } else {
+                0
+            },
+        })
+    }
+
+    #[inline]
+    fn to_u8(self, sample: i32) -> u8 {
+        let normalized = (i64::from(sample) - self.minimum).clamp(0, self.levels as i64) as u64;
+        ((normalized * 255) / self.levels) as u8
+    }
+}
+
+fn validate_decoded_component(
+    component: &jp2lam::Component,
+    pixel_count: usize,
+    channel_name: &str,
+) -> crate::encoding::Result<()> {
+    if component.width == 0 || component.height == 0 || component.data.len() < pixel_count {
+        return Err(crate::encoding::EncodingError::EncoderError(format!(
+            "JP2 {channel_name} component is smaller than the decoded image"
+        )));
+    }
+    Ok(())
+}
+
 /// Convert a decoded `jp2lam::Image` to an interleaved RGB byte buffer.
 /// Grayscale is expanded to RGB. High-precision samples are scaled to 8-bit.
 fn jp2_image_to_rgb(img: jp2lam::Image) -> crate::encoding::Result<(u32, u32, Vec<u8>)> {
     let width = img.width;
     let height = img.height;
-    let pixel_count = (width as usize) * (height as usize);
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| {
+            crate::encoding::EncodingError::EncoderError(
+                "JP2 decoded dimensions are too large".into(),
+            )
+        })?;
+    let rgb_capacity = pixel_count.checked_mul(3).ok_or_else(|| {
+        crate::encoding::EncodingError::EncoderError(
+            "JP2 decoded RGB buffer would be too large".into(),
+        )
+    })?;
 
     match img.colorspace {
         jp2lam::ColorSpace::Gray => {
@@ -402,10 +468,11 @@ fn jp2_image_to_rgb(img: jp2lam::Image) -> crate::encoding::Result<(u32, u32, Ve
                     "JP2 gray image has no component".into(),
                 )
             })?;
-            let max_val = ((1u64 << comp.precision) - 1).max(1) as f64;
-            let mut rgb = Vec::with_capacity(pixel_count * 3);
+            validate_decoded_component(&comp, pixel_count, "gray")?;
+            let scale = ComponentSampleScale::new(&comp)?;
+            let mut rgb = Vec::with_capacity(rgb_capacity);
             for sample in comp.data.iter().take(pixel_count) {
-                let v = (((*sample as f64) / max_val) * 255.0).clamp(0.0, 255.0) as u8;
+                let v = scale.to_u8(*sample);
                 rgb.push(v);
                 rgb.push(v);
                 rgb.push(v);
@@ -429,12 +496,17 @@ fn jp2_image_to_rgb(img: jp2lam::Image) -> crate::encoding::Result<(u32, u32, Ve
                     "JP2 RGB image missing B component".into(),
                 )
             })?;
-            let max_val = ((1u64 << r_comp.precision) - 1).max(1) as f64;
-            let mut rgb = Vec::with_capacity(pixel_count * 3);
+            validate_decoded_component(&r_comp, pixel_count, "red")?;
+            validate_decoded_component(&g_comp, pixel_count, "green")?;
+            validate_decoded_component(&b_comp, pixel_count, "blue")?;
+            let r_scale = ComponentSampleScale::new(&r_comp)?;
+            let g_scale = ComponentSampleScale::new(&g_comp)?;
+            let b_scale = ComponentSampleScale::new(&b_comp)?;
+            let mut rgb = Vec::with_capacity(rgb_capacity);
             for i in 0..pixel_count {
-                let r = ((r_comp.data[i] as f64 / max_val) * 255.0).clamp(0.0, 255.0) as u8;
-                let g = ((g_comp.data[i] as f64 / max_val) * 255.0).clamp(0.0, 255.0) as u8;
-                let b = ((b_comp.data[i] as f64 / max_val) * 255.0).clamp(0.0, 255.0) as u8;
+                let r = r_scale.to_u8(r_comp.data[i]);
+                let g = g_scale.to_u8(g_comp.data[i]);
+                let b = b_scale.to_u8(b_comp.data[i]);
                 rgb.push(r);
                 rgb.push(g);
                 rgb.push(b);
@@ -524,5 +596,72 @@ impl Jp2BatchDecoder {
             crate::encoding::EncodingError::EncoderError(format!("JP2 batch decode: {e}"))
         })?;
         jp2_image_to_rgb(img)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn component(data: Vec<i32>, precision: u32, signed: bool) -> jp2lam::Component {
+        jp2lam::Component {
+            data,
+            width: 1,
+            height: 1,
+            precision,
+            signed,
+            dx: 1,
+            dy: 1,
+        }
+    }
+
+    #[test]
+    fn decoded_rgb_scales_each_component_at_its_own_precision() {
+        let image = jp2lam::Image {
+            width: 1,
+            height: 1,
+            components: vec![
+                component(vec![255], 8, false),
+                component(vec![15], 4, false),
+                component(vec![1023], 10, false),
+            ],
+            colorspace: jp2lam::ColorSpace::Rgb,
+        };
+
+        let (_, _, rgb) = jp2_image_to_rgb(image).expect("mixed precision RGB");
+        assert_eq!(rgb, vec![255, 255, 255]);
+    }
+
+    #[test]
+    fn decoded_component_length_is_validated_before_indexing() {
+        let image = jp2lam::Image {
+            width: 2,
+            height: 1,
+            components: vec![
+                jp2lam::Component {
+                    width: 2,
+                    ..component(vec![255], 8, false)
+                },
+                jp2lam::Component {
+                    width: 2,
+                    ..component(vec![255, 255], 8, false)
+                },
+                jp2lam::Component {
+                    width: 2,
+                    ..component(vec![255, 255], 8, false)
+                },
+            ],
+            colorspace: jp2lam::ColorSpace::Rgb,
+        };
+
+        assert!(jp2_image_to_rgb(image).is_err());
+    }
+
+    #[test]
+    fn jp2_input_rejects_zero_dimensions() {
+        assert!(matches!(
+            validate_input(&[], 0, 1, 1),
+            Err(EncodingError::InvalidDimensions { .. })
+        ));
     }
 }

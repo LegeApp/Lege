@@ -67,6 +67,8 @@ pub enum ContentError {
     NestingDepth(usize),
     #[error("malformed content stream: {0}")]
     Malformed(String),
+    #[error("page compilation cancelled")]
+    Cancelled,
     /// The inline-image framer could not locate the image's `EI` terminator.
     /// Recoverable: the run loop drops just the image and continues. This is a
     /// distinct variant (rather than reusing [`ContentError::Malformed`]) so the
@@ -84,8 +86,9 @@ pub enum ContentError {
 
 impl ContentError {
     /// Whether this error must abort the whole page rather than being recovered
-    /// past. Only the DoS guards are fatal — operator budget, XObject/pattern
-    /// recursion depth, operand-stack overflow, and operand nesting depth.
+    /// past. The DoS guards and explicit cancellation are fatal — operator
+    /// budget, XObject/pattern recursion depth, operand-stack overflow, operand
+    /// nesting depth, and cancellation.
     /// Everything else (content malformation, unparseable tokens, and
     /// resource/decode failures) is *recoverable*: the interpreter drops the
     /// offending construct, records a recovery note, and continues, matching
@@ -99,6 +102,7 @@ impl ContentError {
                 | ContentError::RecursionDepth(_)
                 | ContentError::OperandStackOverflow(_)
                 | ContentError::NestingDepth(_)
+                | ContentError::Cancelled
         )
     }
 }
@@ -183,6 +187,9 @@ impl PageCompiler {
         page: PageIndex,
         ctx: &mut ParseContext,
     ) -> Result<SemanticPage, ContentError> {
+        if ctx.is_cancelled() {
+            return Err(ContentError::Cancelled);
+        }
         let page_ref = snapshot.page(page)?.clone();
         let [x0, y0, x1, y1] = page_ref.crop_box;
         let bounds = PageBounds {
@@ -191,6 +198,9 @@ impl PageCompiler {
         };
 
         let content = interpret::gather_content(snapshot, page_ref.contents.as_ref(), ctx)?;
+        if ctx.is_cancelled() {
+            return Err(ContentError::Cancelled);
+        }
         let resources = interpret::resolve_resources(snapshot, page_ref.resources.as_ref(), ctx);
 
         let mut interp = interpret::Interpreter::new(
@@ -218,7 +228,13 @@ impl PageCompiler {
         ctx: &mut ParseContext,
     ) -> Result<PageCompilation, ContentError> {
         let semantic = std::sync::Arc::new(self.compile_semantic(snapshot, page, ctx)?);
+        if ctx.is_cancelled() {
+            return Err(ContentError::Cancelled);
+        }
         let compiled = std::sync::Arc::new(lower::lower(semantic.as_ref()));
+        if ctx.is_cancelled() {
+            return Err(ContentError::Cancelled);
+        }
         Ok(PageCompilation { semantic, compiled })
     }
 

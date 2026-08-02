@@ -124,12 +124,16 @@ fn build_margin_analysis_future(
     inference_handle: Option<Arc<crate::pipeline::inference::InferenceHandle>>,
     prepared: AnalysisPreparedPage,
     config: Arc<PipelineConfig>,
+    cancellation: lege_pdf_read::CancellationToken,
 ) -> BoxFuture<'static, Result<AnalysisPageResult>> {
     Box::pin(async move {
         let AnalysisPreparedPage {
             page_index,
             analysis_image,
         } = prepared;
+        if cancellation.is_cancelled() {
+            return Err(anyhow!("Margin analysis cancelled before inference"));
+        }
 
         let mut detections = if config.layout_detection_enabled_for_page(page_index) {
             if let Some(handle) = inference_handle {
@@ -148,6 +152,9 @@ fn build_margin_analysis_future(
         } else {
             Vec::new()
         };
+        if cancellation.is_cancelled() {
+            return Err(anyhow!("Margin analysis cancelled after inference"));
+        }
 
         crate::pipeline::policies::remap_detections_to_page(
             &mut detections,
@@ -175,6 +182,9 @@ fn build_margin_analysis_future(
             })
             .await
             .map_err(|error| anyhow!("Margin-analysis pixel guard task panicked: {}", error))?;
+        if cancellation.is_cancelled() {
+            return Err(anyhow!("Margin analysis cancelled after pixel bounds"));
+        }
 
         Ok(AnalysisPageResult {
             page_index,
@@ -194,6 +204,7 @@ pub(crate) async fn perform_document_margin_analysis(
     page_range: std::ops::Range<usize>,
     max_in_flight: usize,
     progress: &ProgressTracker,
+    cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<(DocumentMarginAnalysis, Vec<CachedDetections>)> {
     info_log!("[Margin-Analysis] Phase 1: Analyzing document margins (Low-Res Pass)...");
     progress.update(crate::progress::ProcessingStatus::MarginPass1Analyzing);
@@ -239,14 +250,21 @@ pub(crate) async fn perform_document_margin_analysis(
     let mut next_page = page_range.start;
     let page_end = page_range.end;
     while next_page < page_end || !pending.is_empty() {
+        if cancellation.is_cancelled() {
+            return Err(anyhow!("Margin analysis cancelled"));
+        }
         while next_page < page_end && pending.len() < analysis_concurrency {
             let page_index = next_page;
             next_page += 1;
             let source = source.clone();
             let config = config.clone();
             let inference_handle = inference_handle.clone();
+            let cancellation = cancellation.clone();
             pending.push(Box::pin(async move {
-                let source_page = match source.load_page(page_index).await {
+                let source_page = match source
+                    .load_page_cancellable(page_index, cancellation.clone())
+                    .await
+                {
                     Ok(page) => page,
                     Err(error) => {
                         return Ok(AnalysisJobResult::LoadFailed {
@@ -261,9 +279,12 @@ pub(crate) async fn perform_document_margin_analysis(
                 )
                 .await
                 .map_err(|error| anyhow!("Margin-analysis prep task panicked: {}", error))?;
+                if cancellation.is_cancelled() {
+                    return Err(anyhow!("Margin analysis cancelled after page preparation"));
+                }
                 let result = crate::runtime_stats::track_future(
                     crate::runtime_stats::Stage::Inference,
-                    build_margin_analysis_future(inference_handle, prepared, config),
+                    build_margin_analysis_future(inference_handle, prepared, config, cancellation),
                 )
                 .await?;
                 Ok(AnalysisJobResult::Completed(result))
@@ -351,6 +372,60 @@ fn scale_page_bounds(
     )
 }
 
+/// Ignore an oversized crop axis when its bounds also hug a page edge.
+///
+/// A detected header or scanner-edge shadow can span the full width/height and
+/// contaminate the per-page safety union. Treating that as genuine content
+/// switches the page to the larger centered fallback, which adds margins in a
+/// crop job. Interior oversized content remains protected by that fallback.
+fn constrain_edge_spanning_crop_axes(
+    safety: ContentBounds,
+    template: ContentBounds,
+    page_width: u32,
+    page_height: u32,
+) -> ContentBounds {
+    let edge_x = ((page_width as f32) * 0.01).round().max(6.0) as u32;
+    let edge_y = ((page_height as f32) * 0.01).round().max(6.0) as u32;
+    let constrain_x = safety.width() > template.width()
+        && (safety.min_x <= edge_x || page_width.saturating_sub(safety.max_x) <= edge_x);
+    let constrain_y = safety.height() > template.height()
+        && (safety.min_y <= edge_y || page_height.saturating_sub(safety.max_y) <= edge_y);
+
+    if !constrain_x && !constrain_y {
+        return safety;
+    }
+
+    let fitted = crate::margin::fit_crop_window_to_content(
+        &safety,
+        template.width().max(1),
+        template.height().max(1),
+        page_width,
+        page_height,
+    );
+    ContentBounds {
+        min_x: if constrain_x {
+            fitted.min_x
+        } else {
+            safety.min_x
+        },
+        min_y: if constrain_y {
+            fitted.min_y
+        } else {
+            safety.min_y
+        },
+        max_x: if constrain_x {
+            fitted.max_x
+        } else {
+            safety.max_x
+        },
+        max_y: if constrain_y {
+            fitted.max_y
+        } else {
+            safety.max_y
+        },
+    }
+}
+
 pub(crate) fn adjust_page_with_margin_analysis(
     page: &RenderedPageData,
     mut detections: Vec<crate::engine::Detection>,
@@ -410,7 +485,12 @@ pub(crate) fn adjust_page_with_margin_analysis(
             effective_setting = crate::margin::MarginSettings::StandardizeAndCenter;
             full_page
         } else {
-            let safety = safety_bounds.unwrap_or(scaled_crop);
+            let safety = constrain_edge_spanning_crop_axes(
+                safety_bounds.unwrap_or(scaled_crop),
+                scaled_crop,
+                page_width,
+                page_height,
+            );
             let pad_y = ((scaled_crop.height() as f32) * 0.015).round().max(4.0) as u32;
             let required_height = safety.height().saturating_add(pad_y.saturating_mul(2));
             let exceptional =
@@ -614,6 +694,47 @@ mod tests {
         config
     }
 
+    struct NeverLoadedSource;
+
+    #[async_trait::async_trait]
+    impl PageSource for NeverLoadedSource {
+        fn page_count(&self) -> usize {
+            1
+        }
+
+        fn source_concurrency(&self) -> usize {
+            1
+        }
+
+        async fn load_page(
+            &self,
+            _page_index: usize,
+        ) -> Result<crate::pipeline::source::SourcePage> {
+            panic!("pre-cancelled margin pass must not load a page");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_cancelled_margin_pass_stops_before_page_loading() {
+        let cancellation = lege_pdf_read::CancellationToken::new();
+        cancellation.cancel();
+        let progress = crate::progress::ProgressManager::new().create_tracker();
+
+        let result = perform_document_margin_analysis(
+            Arc::new(NeverLoadedSource),
+            Arc::new(PipelineConfig::default()),
+            None,
+            1,
+            0..1,
+            1,
+            &progress,
+            cancellation,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
     #[test]
     fn normal_page_keeps_free_aspect_crop() {
         let bounds = ContentBounds {
@@ -657,6 +778,50 @@ mod tests {
         assert!(!adjusted.free_aspect_crop);
         assert!(adjusted.centered_exception);
         assert_eq!(adjusted.image.height(), crop_config().target_height());
+    }
+
+    #[test]
+    fn page_edge_span_does_not_expand_the_document_crop() {
+        let bounds = ContentBounds {
+            min_x: 0,
+            min_y: 140,
+            max_x: 640,
+            max_y: 700,
+        };
+        let adjusted = adjust_page_with_margin_analysis(
+            &rendered_page(640, 900),
+            Vec::new(),
+            true,
+            &crop_config(),
+            &analysis(page_data(bounds, 640, 900)),
+            0,
+        )
+        .expect("edge-spanning artifact should use the stable crop");
+
+        assert!(adjusted.free_aspect_crop);
+        assert!(!adjusted.centered_exception);
+    }
+
+    #[test]
+    fn interior_oversized_content_still_uses_the_safe_fallback() {
+        let safety = ContentBounds {
+            min_x: 70,
+            min_y: 140,
+            max_x: 570,
+            max_y: 700,
+        };
+        let template = ContentBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: 400,
+            max_y: 600,
+        };
+
+        let constrained = constrain_edge_spanning_crop_axes(safety, template, 640, 900);
+        assert_eq!(constrained.min_x, safety.min_x);
+        assert_eq!(constrained.min_y, safety.min_y);
+        assert_eq!(constrained.max_x, safety.max_x);
+        assert_eq!(constrained.max_y, safety.max_y);
     }
 
     #[test]

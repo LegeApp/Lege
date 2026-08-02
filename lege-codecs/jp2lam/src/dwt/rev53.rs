@@ -144,6 +144,9 @@ pub(crate) fn inverse_53_2d_in_place_at(
         return Ok(());
     }
     let steps = phase_steps(x0, y0, width, height, levels);
+    if !inverse_fast_path_is_safe(data, levels) {
+        return inverse_53_checked_fallback(data, width, &steps);
+    }
     let max_span = width.max(height);
     let mut line = vec![0i32; max_span];
     let mut scratch = vec![0i32; max_span * 3];
@@ -241,6 +244,10 @@ fn inverse_53_2d_in_place_impl(
     if width == 0 || height == 0 || levels == 0 {
         return Ok(());
     }
+    if !inverse_fast_path_is_safe(data, levels) {
+        let steps = phase_steps(0, 0, width, height, levels);
+        return inverse_53_checked_fallback(data, width, &steps);
+    }
 
     let resolutions = encode_resolutions(width, height, levels);
     let max_span = width.max(height);
@@ -269,6 +276,118 @@ fn inverse_53_2d_in_place_impl(
     }
 
     Ok(())
+}
+
+/// The optimized inverse path stores every lifting intermediate in `i32`.
+/// Bound two one-dimensional lifting passes per level before entering SIMD or
+/// parallel arithmetic. Suspicious coefficient sets use the exact checked
+/// `i128` fallback below, so malformed streams cannot panic or wrap.
+fn inverse_fast_path_is_safe(data: &[i32], levels: u8) -> bool {
+    let mut bound = data
+        .iter()
+        .map(|value| i128::from(value.unsigned_abs()))
+        .max()
+        .unwrap_or(0);
+    for _ in 0..usize::from(levels).saturating_mul(2) {
+        let updated = bound + ((bound * 2 + 2) >> 2);
+        let predicted = bound + updated;
+        bound = updated.max(predicted);
+        if bound > i128::from(i32::MAX) {
+            return false;
+        }
+    }
+    true
+}
+
+fn inverse_53_checked_fallback(
+    data: &mut [i32],
+    stride: usize,
+    steps: &[(usize, usize, bool, bool)],
+) -> Result<()> {
+    let mut plane = Vec::new();
+    plane
+        .try_reserve_exact(data.len())
+        .map_err(|_| Jp2LamError::DecodeFailed("checked DWT plane allocation failed".into()))?;
+    plane.extend(data.iter().copied().map(i128::from));
+    let max_span = steps
+        .iter()
+        .map(|&(width, height, _, _)| width.max(height))
+        .max()
+        .unwrap_or(0);
+    let mut line = vec![0i128; max_span];
+    let mut out = vec![0i128; max_span];
+
+    for &(width, height, x_even, y_even) in steps.iter().rev() {
+        for y in 0..height {
+            let start = y
+                .checked_mul(stride)
+                .ok_or_else(|| Jp2LamError::DecodeFailed("checked DWT row overflow".into()))?;
+            inverse_53_1d_i128(&mut plane[start..start + width], x_even, &mut out[..width]);
+        }
+        for x in 0..width {
+            for y in 0..height {
+                line[y] = plane[y * stride + x];
+            }
+            inverse_53_1d_i128(&mut line[..height], y_even, &mut out[..height]);
+            for y in 0..height {
+                plane[y * stride + x] = line[y];
+            }
+        }
+    }
+
+    for (destination, value) in data.iter_mut().zip(plane) {
+        *destination = i32::try_from(value).map_err(|_| {
+            Jp2LamError::DecodeFailed(
+                "reversible 5/3 reconstruction exceeds signed 32-bit storage".into(),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn inverse_53_1d_i128(coefficients: &mut [i128], even: bool, out: &mut [i128]) {
+    let width = coefficients.len();
+    if width == 0 {
+        return;
+    }
+    if width == 1 {
+        if !even {
+            coefficients[0] /= 2;
+        }
+        return;
+    }
+
+    if even {
+        let low_count = width.div_ceil(2);
+        let high_count = width - low_count;
+        let (low, high) = coefficients.split_at(low_count);
+        for index in 0..low_count {
+            let left = high[index.saturating_sub(1).min(high_count - 1)];
+            let right = high[index.min(high_count - 1)];
+            out[2 * index] = low[index] - ((left + right + 2) >> 2);
+        }
+        for index in 0..high_count {
+            let left = out[2 * index];
+            let right = out[(2 * index + 2).min(width - 1)];
+            out[2 * index + 1] = high[index] + ((left + right) >> 1);
+        }
+    } else {
+        let low_count = width / 2;
+        let high_count = width - low_count;
+        let (low, high) = coefficients.split_at(low_count);
+        for index in 0..low_count {
+            let right = high[(index + 1).min(high_count - 1)];
+            out[2 * index + 1] = low[index] - ((high[index] + right + 2) >> 2);
+        }
+        out[0] = high[0] + out[1];
+        for index in 1..low_count {
+            out[2 * index] = high[index] + ((out[2 * index - 1] + out[2 * index + 1]) >> 1);
+        }
+        if !width.is_multiple_of(2) {
+            out[width - 1] = high[high_count - 1] + out[width - 2];
+        }
+    }
+    coefficients.copy_from_slice(&out[..width]);
 }
 
 fn forward_53_1d_in_place(samples: &mut [i32], even: bool) {
@@ -899,8 +1018,10 @@ fn inverse_53_vertical_even_in_place(
 /// instead: even rows (`2*i`) are only ever read here (the previous loop,
 /// `inverse_predict_row`/`_into`, finished writing them before this runs),
 /// and odd rows (`2*i+1`) are only ever written here, each by exactly one
-/// `i` — so no two rows accessed in this loop ever alias, and raw pointers
-/// into `scratch` can safely stand in for a borrow-checked split.
+/// `i` — so no two rows accessed in this loop ever alias. Each raw-pointer
+/// conversion is deliberately restricted to one row; creating an immutable
+/// slice over the whole scratch plane would itself alias the mutable odd-row
+/// slices, even if callers only indexed its even rows.
 #[allow(clippy::too_many_arguments)]
 fn inverse_update_rows_parallel(
     data: &[i32],
@@ -913,22 +1034,64 @@ fn inverse_update_rows_parallel(
     use_wide: bool,
 ) {
     debug_assert!(active_width * (sn + dn) <= scratch.len());
-    let base = scratch.as_mut_ptr() as usize;
+    let base = scratch.as_mut_ptr().expose_provenance();
     (0..dn).into_par_iter().for_each(|i| {
-        let high = (sn + i) * stride + x_offset;
-        let even = (2 * i) * active_width;
-        let right_even = if i + 1 < sn {
-            (2 * (i + 1)) * active_width
-        } else {
-            even
-        };
-        let odd = (2 * i + 1) * active_width;
-        let ptr = base as *mut i32;
-        // SAFETY: see the function-level doc comment above.
-        let snapshot = unsafe { std::slice::from_raw_parts(ptr, active_width * (sn + dn)) };
-        let odd_row = unsafe { std::slice::from_raw_parts_mut(ptr.add(odd), active_width) };
-        inverse_update_row_into(data, snapshot, high, even, right_even, odd_row, use_wide);
+        let ptr = std::ptr::with_exposed_provenance_mut(base);
+        // SAFETY: see the function-level doc comment above. The address was
+        // exposed from `scratch` immediately before Rayon was entered, and
+        // `scratch` remains live and exclusively borrowed until all jobs join.
+        unsafe {
+            inverse_update_row_from_scratch_ptr(
+                data,
+                stride,
+                x_offset,
+                ptr,
+                sn,
+                i,
+                active_width,
+                use_wide,
+            );
+        }
     });
+}
+
+/// Applies one inverse-update row using the disjoint even/odd row layout in
+/// `scratch`.
+///
+/// # Safety
+///
+/// `scratch` must point to at least `active_width * (sn + dn)` initialized
+/// `i32` values for the caller's transform, where `i < dn`. The even row for
+/// `i`, its clamped right neighbor, and the odd row for `i` must all be in
+/// bounds. During this call, no other access may write either even row and no
+/// other access may read or write the odd row.
+#[allow(clippy::too_many_arguments)]
+unsafe fn inverse_update_row_from_scratch_ptr(
+    data: &[i32],
+    stride: usize,
+    x_offset: usize,
+    scratch: *mut i32,
+    sn: usize,
+    i: usize,
+    active_width: usize,
+    use_wide: bool,
+) {
+    let high = (sn + i) * stride + x_offset;
+    let even = (2 * i) * active_width;
+    let right_even = if i + 1 < sn {
+        (2 * (i + 1)) * active_width
+    } else {
+        even
+    };
+    let odd = (2 * i + 1) * active_width;
+    // SAFETY: guaranteed by the caller. Each slice is restricted to its
+    // individual row so the two immutable even rows cannot overlap the
+    // mutable odd row.
+    let even_row = unsafe { std::slice::from_raw_parts(scratch.add(even), active_width) };
+    let right_even_row =
+        unsafe { std::slice::from_raw_parts(scratch.add(right_even), active_width) };
+    let odd_row = unsafe { std::slice::from_raw_parts_mut(scratch.add(odd), active_width) };
+    inverse_update_row_into(data, even_row, right_even_row, high, odd_row, use_wide);
 }
 
 /// `scratch[even+x] = data[low+x] - ((data[high_left+x] + data[high_right+x] + 2) >> 2)`.
@@ -1052,18 +1215,16 @@ fn inverse_predict_row_into(
     }
 }
 
-/// `odd_row[x] = data[high+x] + ((snapshot[even+x] + snapshot[right_even+x]) >> 1)`.
+/// `odd_row[x] = data[high+x] + ((even_row[x] + right_even_row[x]) >> 1)`.
 /// Same arithmetic as `inverse_update_row`, reading the (already-finalized)
-/// even rows from an immutable `snapshot` and writing to `odd_row` (relative
-/// indices) instead of `scratch[odd+x]` (absolute).
+/// even rows through disjoint row slices and writing to `odd_row`.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn inverse_update_row_into(
     data: &[i32],
-    snapshot: &[i32],
+    even_row: &[i32],
+    right_even_row: &[i32],
     high: usize,
-    even: usize,
-    right_even: usize,
     odd_row: &mut [i32],
     use_wide: bool,
 ) {
@@ -1073,16 +1234,8 @@ fn inverse_update_row_into(
     if use_wide {
         while x + 8 <= width {
             let h = i32x8::new(data[high + x..high + x + 8].try_into().expect("8 lanes"));
-            let e = i32x8::new(
-                snapshot[even + x..even + x + 8]
-                    .try_into()
-                    .expect("8 lanes"),
-            );
-            let re = i32x8::new(
-                snapshot[right_even + x..right_even + x + 8]
-                    .try_into()
-                    .expect("8 lanes"),
-            );
+            let e = i32x8::new(even_row[x..x + 8].try_into().expect("8 lanes"));
+            let re = i32x8::new(right_even_row[x..x + 8].try_into().expect("8 lanes"));
             let result = h + ((e + re) >> 1i32);
             odd_row[x..x + 8].copy_from_slice(&result.to_array());
             x += 8;
@@ -1091,7 +1244,7 @@ fn inverse_update_row_into(
     #[cfg(not(feature = "simd"))]
     let _ = use_wide;
     while x < width {
-        odd_row[x] = data[high + x] + ((snapshot[even + x] + snapshot[right_even + x]) >> 1);
+        odd_row[x] = data[high + x] + ((even_row[x] + right_even_row[x]) >> 1);
         x += 1;
     }
 }
@@ -1256,9 +1409,70 @@ mod tests {
     }
 
     #[test]
+    fn inverse_update_row_raw_helper_matches_safe_sequential_scalar() {
+        let width = 40usize;
+        let sn = 6usize;
+        let dn = 5usize;
+        let stride = width;
+        let scratch_len = width * (sn + dn);
+        let data: Vec<i32> = (0..(sn + dn) * stride)
+            .map(|i| ((i as i32 * 53) % 401) - 200)
+            .collect();
+        let original_scratch: Vec<i32> = (0..scratch_len)
+            .map(|i| ((i as i32 * 37) % 511) - 255)
+            .collect();
+
+        let mut expected = original_scratch.clone();
+        for i in 0..dn {
+            let high = (sn + i) * stride;
+            let even = (2 * i) * width;
+            let odd = (2 * i + 1) * width;
+            let right_even = if i + 1 < sn {
+                (2 * (i + 1)) * width
+            } else {
+                even
+            };
+            super::inverse_update_row(
+                &data,
+                &mut expected,
+                high,
+                even,
+                right_even,
+                odd,
+                width,
+                false,
+            );
+        }
+
+        let mut actual = original_scratch;
+        let scratch = actual.as_mut_ptr();
+        for i in 0..dn {
+            // SAFETY: `actual` has `width * (sn + dn)` initialized elements.
+            // Calls are sequential; the even rows are read-only here and each
+            // iteration writes a distinct odd row.
+            unsafe {
+                super::inverse_update_row_from_scratch_ptr(
+                    &data, stride, 0, scratch, sn, i, width, false,
+                );
+            }
+        }
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
     #[cfg(feature = "simd")]
     fn inverse_update_rows_parallel_matches_sequential_wide() {
         check_inverse_update_rows_parallel_matches_sequential(true);
+    }
+
+    #[test]
+    fn inverse_reversible_overflow_is_reported_without_panicking() {
+        let mut coefficients = [i32::MAX, i32::MAX];
+        let error = inverse_53_2d_in_place(&mut coefficients, 2, 1, 1)
+            .expect_err("malformed extreme coefficients must exceed i32 output")
+            .to_string();
+        assert!(error.contains("exceeds signed 32-bit"), "{error}");
     }
 
     #[test]

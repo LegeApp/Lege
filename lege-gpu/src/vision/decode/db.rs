@@ -108,7 +108,7 @@ pub(crate) fn boxes_from_prob(prob: &[f32], w: usize, h: usize, cfg: &DbConfig) 
 
         let bw = maxx - minx + 1;
         let bh = maxy - miny + 1;
-        if bw * bh < cfg.min_area {
+        if pcnt < cfg.min_area {
             continue;
         }
         let score = (psum / pcnt.max(1) as f64) as f32;
@@ -167,5 +167,24 @@ mod tests {
         assert!(boxes_from_prob(&[0.9], 2, 2, &cfg).is_empty());
         assert!(boxes_from_prob(&[f32::NAN; 4], 2, 2, &cfg).is_empty());
         assert!(boxes_from_prob(&[], usize::MAX, 2, &cfg).is_empty());
+    }
+
+    #[test]
+    fn minimum_area_counts_foreground_pixels_not_the_bounding_box() {
+        let mut prob = vec![0.0; 5 * 5];
+        for x in 0..5 {
+            prob[x] = 0.9;
+        }
+        for y in 1..5 {
+            prob[y * 5 + 4] = 0.9;
+        }
+        let cfg = DbConfig {
+            min_area: 10,
+            min_side: 1.0,
+            ..DbConfig::default()
+        };
+        // The connected L has only 9 foreground pixels but a 25-pixel
+        // bounding box. The configured minimum refers to component area.
+        assert!(boxes_from_prob(&prob, 5, 5, &cfg).is_empty());
     }
 }

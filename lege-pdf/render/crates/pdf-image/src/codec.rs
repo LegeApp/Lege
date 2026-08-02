@@ -73,18 +73,24 @@ pub struct DecodedImage {
 /// job; long-running codecs should additionally check `should_cancel`.
 #[derive(Clone)]
 pub struct DecodeLimits {
+    /// Maximum encoded source length accepted by one codec invocation.
+    pub max_input_bytes: u64,
     pub max_pixels: u64,
     pub max_output_bytes: u64,
-    /// Cooperative cancellation probe, checked at coding-pass boundaries.
-    /// `None` = never cancelled.
+    /// Maximum codec-owned scratch/retained state for one decode.
+    pub max_working_bytes: u64,
+    /// Cooperative cancellation probe, checked at codec-defined work
+    /// boundaries. `None` = never cancelled.
     pub should_cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl std::fmt::Debug for DecodeLimits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DecodeLimits")
+            .field("max_input_bytes", &self.max_input_bytes)
             .field("max_pixels", &self.max_pixels)
             .field("max_output_bytes", &self.max_output_bytes)
+            .field("max_working_bytes", &self.max_working_bytes)
             .field("should_cancel", &self.should_cancel.is_some())
             .finish()
     }
@@ -93,8 +99,10 @@ impl std::fmt::Debug for DecodeLimits {
 impl Default for DecodeLimits {
     fn default() -> Self {
         Self {
-            max_pixels: 1 << 28,       // 268 Mpx
-            max_output_bytes: 1 << 31, // 2 GiB
+            max_input_bytes: 1 << 29,   // 512 MiB
+            max_pixels: 1 << 28,        // 268 Mpx
+            max_output_bytes: 1 << 31,  // 2 GiB
+            max_working_bytes: 1 << 30, // 1 GiB
             should_cancel: None,
         }
     }
@@ -103,6 +111,20 @@ impl Default for DecodeLimits {
 impl DecodeLimits {
     pub fn is_cancelled(&self) -> bool {
         self.should_cancel.as_ref().is_some_and(|f| f())
+    }
+
+    /// Reject an encoded payload before a codec parses or allocates from it.
+    pub fn check_input(&self, input_len: usize) -> Result<(), ImageError> {
+        if self.is_cancelled() {
+            return Err(ImageError::Cancelled);
+        }
+        if input_len as u64 > self.max_input_bytes {
+            return Err(ImageError::Decode(format!(
+                "encoded image is {input_len} bytes, limit is {}",
+                self.max_input_bytes
+            )));
+        }
+        Ok(())
     }
 
     /// The pixel budget for a codec whose output is `bits_per_pixel` dense.
@@ -119,6 +141,65 @@ impl DecodeLimits {
         let bpp = bits_per_pixel.max(1);
         let scaled = self.max_pixels.saturating_mul(8) / u64::from(bpp);
         scaled.max(self.max_pixels)
+    }
+}
+
+impl DecodedImage {
+    /// Validate the codec boundary before renderer code indexes the raster.
+    ///
+    /// In-tree codecs perform their own checked allocation, but the registry is
+    /// intentionally injectable. A malformed third-party codec result must
+    /// degrade the draw, not panic later in the sampler.
+    pub fn validate(&self, limits: &DecodeLimits) -> Result<(), ImageError> {
+        if limits.is_cancelled() {
+            return Err(ImageError::Cancelled);
+        }
+        if self.width == 0 || self.height == 0 {
+            return Err(ImageError::Decode(
+                "codec returned a zero-sized raster".into(),
+            ));
+        }
+        let pixels = u64::from(self.width)
+            .checked_mul(u64::from(self.height))
+            .ok_or_else(|| ImageError::Decode("decoded pixel count overflow".into()))?;
+        if pixels > limits.max_pixels_at_bpp(self.format.bits_per_pixel()) {
+            return Err(ImageError::TooLarge {
+                width: self.width,
+                height: self.height,
+            });
+        }
+        let row_bits = u64::from(self.width)
+            .checked_mul(u64::from(self.format.bits_per_pixel()))
+            .ok_or_else(|| ImageError::Decode("decoded row size overflow".into()))?;
+        let min_stride_u64 = row_bits
+            .checked_add(7)
+            .ok_or_else(|| ImageError::Decode("decoded row size overflow".into()))?
+            / 8;
+        let min_stride = usize::try_from(min_stride_u64)
+            .map_err(|_| ImageError::Decode("decoded row stride exceeds usize".into()))?;
+        if self.stride < min_stride {
+            return Err(ImageError::Decode(format!(
+                "codec returned stride {} below minimum {min_stride}",
+                self.stride
+            )));
+        }
+        let required = self
+            .stride
+            .checked_mul(self.height as usize)
+            .ok_or_else(|| ImageError::Decode("decoded raster size overflow".into()))?;
+        if required > self.data.len() {
+            return Err(ImageError::Decode(format!(
+                "codec returned {} bytes, stride/height require {required}",
+                self.data.len()
+            )));
+        }
+        if self.data.len() as u64 > limits.max_output_bytes {
+            return Err(ImageError::TooLarge {
+                width: self.width,
+                height: self.height,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -152,15 +233,47 @@ mod limit_tests {
             "0 treated as 1 bpp"
         );
     }
+
+    #[test]
+    fn encoded_input_and_cancellation_are_checked_before_decode() {
+        let mut l = DecodeLimits {
+            max_input_bytes: 3,
+            ..DecodeLimits::default()
+        };
+        assert!(l.check_input(b"four".len()).is_err());
+        l.should_cancel = Some(Arc::new(|| true));
+        assert!(matches!(l.check_input(0), Err(ImageError::Cancelled)));
+    }
+
+    #[test]
+    fn decoded_raster_contract_rejects_short_stride_and_storage() {
+        let limits = DecodeLimits::default();
+        let short_stride = DecodedImage {
+            width: 4,
+            height: 1,
+            format: DecodedFormat::Rgb8,
+            stride: 11,
+            data: Arc::from([0; 12]),
+        };
+        assert!(short_stride.validate(&limits).is_err());
+
+        let short_storage = DecodedImage {
+            width: 4,
+            height: 2,
+            format: DecodedFormat::Gray8,
+            stride: 4,
+            data: Arc::from([0; 7]),
+        };
+        assert!(short_storage.validate(&limits).is_err());
+    }
 }
 
 /// One image codec: decodes exactly one [`StreamFilter`]'s bit-stream.
 ///
-/// Implementations must be pure with respect to `&self` — safe for
-/// unlimited concurrent decode calls (one call per worker). Any mutable
-/// decode state lives on the stack of `decode`; codecs needing shared
-/// tables (e.g. JBIG2 globals streams) receive them via `params`, not via
-/// interior mutability.
+/// Implementations must be semantically pure with respect to `&self` and safe
+/// for concurrent decode calls (one call per worker). Bounded, transparent
+/// scratch or dictionary caches are permitted when they do not affect output;
+/// document-owned inputs such as JBIG2 globals still arrive through `params`.
 pub trait ImageCodec: Send + Sync + std::fmt::Debug {
     /// The filter this codec implements.
     fn filter(&self) -> StreamFilter;

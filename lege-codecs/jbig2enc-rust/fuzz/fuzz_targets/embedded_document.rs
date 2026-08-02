@@ -28,21 +28,23 @@ fuzz_target!(|data: &[u8]| {
 
     // Split the input into a globals stream and a page stream, so the referred-
     // dictionary / retained-context / Huffman-table cross-segment paths are hit.
-    let split = if data.is_empty() { 0 } else { data[0] as usize % (data.len() + 1) };
+    let split = if data.is_empty() {
+        0
+    } else {
+        data[0] as usize % (data.len() + 1)
+    };
     let (globals_bytes, page_bytes) = data.split_at(split.min(data.len()));
 
     for strictness in [DecodeStrictness::Strict, DecodeStrictness::Compatible] {
-        let opts = DecodeOptions { limits: limits.clone(), strictness };
+        let opts = DecodeOptions {
+            limits: limits.clone(),
+            strictness,
+        };
 
         // Decode globals once, then a page against them (mirrors the PDF path).
         let mut ctx = DecoderContext::new();
         if let Ok(globals) = decode_globals(globals_bytes, &opts) {
-            let _ = decode_embedded_with_context(
-                Some(globals_bytes),
-                page_bytes,
-                &opts,
-                &mut ctx,
-            );
+            let _ = decode_embedded_with_context(Some(globals_bytes), page_bytes, &opts, &mut ctx);
             let _ = globals;
         }
         // Also decode the whole input as a bare page stream.

@@ -805,6 +805,20 @@ pub async fn await_stage_or_cancel(
     stage_name: &str,
     abort_remaining: &[tokio::task::AbortHandle],
 ) -> anyhow::Result<()> {
+    await_stage_or_cancel_with_token(task, shutdown_rx, stage_name, abort_remaining, None).await
+}
+
+/// Variant of [`await_stage_or_cancel`] that also trips the renderer/source
+/// cancellation token before aborting async stage tasks. This matters because
+/// aborting a Tokio task alone cannot stop blocking work it has already
+/// dispatched.
+pub async fn await_stage_or_cancel_with_token(
+    task: &mut tokio::task::JoinHandle<anyhow::Result<()>>,
+    shutdown_rx: &mut tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
+    stage_name: &str,
+    abort_remaining: &[tokio::task::AbortHandle],
+    cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             result = &mut *task => {
@@ -812,6 +826,9 @@ pub async fn await_stage_or_cancel(
             }
             signal = shutdown_rx.recv() => {
                 if let Ok(sig) = signal {
+                    if let Some(cancellation) = cancellation {
+                        cancellation.cancel();
+                    }
                     task.abort();
                     for handle in abort_remaining {
                         handle.abort();
@@ -1100,8 +1117,23 @@ pub fn spawn_pdf_writer_actor(
         use lege_pdf_write::writer::DocumentWriter;
         use std::io::{BufWriter, Write};
 
-        let file = std::fs::File::create(&output_path).map_err(|e| {
-            anyhow::anyhow!("Failed to create output {}: {}", output_path.display(), e)
+        let parent = output_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create temporary output for {}: {}",
+                output_path.display(),
+                e
+            )
+        })?;
+        let file = temporary.reopen().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to open temporary output for {}: {}",
+                output_path.display(),
+                e
+            )
         })?;
         // Pdf17 preserves the current live behavior (per-page text layers, no
         // PDF/A metadata). Switching to PdfProfile::PdfA1b would emit the
@@ -1236,6 +1268,18 @@ pub fn spawn_pdf_writer_actor(
             inner
                 .flush()
                 .map_err(|e| anyhow::anyhow!("Failed to flush output: {}", e))?;
+            inner
+                .get_ref()
+                .sync_all()
+                .map_err(|e| anyhow::anyhow!("Failed to sync output: {}", e))?;
+            drop(inner);
+            temporary.persist(&output_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to publish output {}: {}",
+                    output_path.display(),
+                    e.error
+                )
+            })?;
             crate::success_log!("[PdfWriterActor] PDF written to: {}", output_path.display());
         }
 
@@ -1306,7 +1350,7 @@ mod tests {
     use super::{
         PdfWriterHandle, WriterMessage, bookmarks_to_outline, drain_ready_values,
         image_detection_overlaps_substantive_text, merge_outline, should_preserve_cover_page,
-        should_treat_as_cover_page,
+        should_treat_as_cover_page, spawn_pdf_writer_actor,
     };
     use crate::engine::Detection;
     use crate::pipeline::config::{PageRange, PipelineConfig};
@@ -1506,5 +1550,24 @@ mod tests {
             .expect("send should finish")
             .expect("join");
         completed.expect("send ok");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn aborted_writer_never_truncates_the_destination() {
+        let directory = tempfile::tempdir().expect("temporary output directory");
+        let output = directory.path().join("result.pdf");
+        std::fs::write(&output, b"last-good-output").expect("seed destination");
+        let manager = crate::progress::ProgressManager::new();
+        let tracker = manager.create_tracker();
+
+        let (_handle, task) = spawn_pdf_writer_actor(output.clone(), 1, tracker, false, 1);
+        tokio::task::yield_now().await;
+        task.abort();
+        let _ = task.await;
+
+        assert_eq!(
+            std::fs::read(output).expect("preserved destination"),
+            b"last-good-output"
+        );
     }
 }

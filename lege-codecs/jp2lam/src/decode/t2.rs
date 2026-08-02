@@ -4,10 +4,12 @@
 //! B.6 precinct routing and all Annex B.12 progression orders.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::cmp::Reverse;
 use std::collections::hash_map::Entry;
+use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
+use crate::decode::DecodeLimits;
 use crate::error::{Jp2LamError, Result};
 use crate::j2k::decode_markers::{CodestreamHeader, ProgressionOrder};
 use crate::plan::BandOrientation;
@@ -107,7 +109,6 @@ struct PrecinctGrid {
     start_y: u32,
     width: usize,
     height: usize,
-    explicit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -140,8 +141,12 @@ struct Contribution {
 }
 
 impl Contribution {
-    fn length(&self) -> usize {
-        self.segment_lengths.iter().sum()
+    fn length(&self) -> Result<usize> {
+        self.segment_lengths.iter().try_fold(0usize, |total, &len| {
+            total
+                .checked_add(len)
+                .ok_or_else(|| invalid("codeword contribution length overflow"))
+        })
     }
 }
 
@@ -160,7 +165,7 @@ pub(crate) struct TilePacketDecoder<'a> {
     eph_markers: bool,
     terminate_each_pass: bool,
     next_sop_sequence: u16,
-    packet_positions: Vec<PacketPosition>,
+    packet_positions: PacketProgression,
     next_packet_index: usize,
     packets: Vec<DecodedPacket>,
     // Contributions accumulate per code-block across layers. `order` keeps
@@ -174,12 +179,234 @@ pub(crate) struct TilePacketDecoder<'a> {
     highest_resolution: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PacketPosition {
     layer: u16,
     resolution: u8,
     component: usize,
     precinct: usize,
+}
+
+#[derive(Debug)]
+struct PacketProgression {
+    header: CodestreamHeader,
+    grids: Vec<Vec<PrecinctGrid>>,
+    layers: u16,
+    state: PacketProgressionState,
+    emitted: usize,
+    total: usize,
+}
+
+#[derive(Debug)]
+enum PacketProgressionState {
+    Lrcp {
+        layer: u16,
+        resolution: u8,
+        component: usize,
+        precinct: usize,
+    },
+    Rlcp {
+        resolution: u8,
+        layer: u16,
+        component: usize,
+        precinct: usize,
+    },
+    Spatial {
+        order: ProgressionOrder,
+        streams: Vec<PacketPositionStream>,
+        heap: BinaryHeap<Reverse<SpatialHeapEntry>>,
+        pending: Option<(PacketPosition, u16)>,
+    },
+}
+
+#[derive(Debug)]
+struct PacketPositionStream {
+    resolution: u8,
+    component: usize,
+    next_precinct: usize,
+    precinct_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SpatialHeapEntry {
+    key: [u64; 4],
+    stream: usize,
+}
+
+impl PacketProgression {
+    fn new(header: &CodestreamHeader, grids: Vec<Vec<PrecinctGrid>>, total: usize) -> Result<Self> {
+        let state = match header.cod.progression_order {
+            ProgressionOrder::Lrcp => PacketProgressionState::Lrcp {
+                layer: 0,
+                resolution: 0,
+                component: 0,
+                precinct: 0,
+            },
+            ProgressionOrder::Rlcp => PacketProgressionState::Rlcp {
+                resolution: 0,
+                layer: 0,
+                component: 0,
+                precinct: 0,
+            },
+            order @ (ProgressionOrder::Rpcl | ProgressionOrder::Pcrl | ProgressionOrder::Cprl) => {
+                let mut streams = Vec::new();
+                streams
+                    .try_reserve_exact(
+                        header
+                            .siz
+                            .components
+                            .len()
+                            .checked_mul(usize::from(header.cod.decomposition_levels) + 1)
+                            .ok_or_else(|| invalid("packet-position stream count overflow"))?,
+                    )
+                    .map_err(|_| invalid("packet-position stream allocation failed"))?;
+                for component in 0..header.siz.components.len() {
+                    for resolution in 0..=header.cod.decomposition_levels {
+                        let grid = grids
+                            .get(component)
+                            .and_then(|component_grids| {
+                                component_grids.get(usize::from(resolution))
+                            })
+                            .ok_or_else(|| {
+                                invalid("packet plan references a missing precinct grid")
+                            })?;
+                        let precinct_count = grid
+                            .width
+                            .checked_mul(grid.height)
+                            .ok_or_else(|| invalid("precinct count overflow"))?;
+                        if precinct_count != 0 {
+                            streams.push(PacketPositionStream {
+                                resolution,
+                                component,
+                                next_precinct: 0,
+                                precinct_count,
+                            });
+                        }
+                    }
+                }
+                let mut heap = BinaryHeap::new();
+                heap.try_reserve(streams.len())
+                    .map_err(|_| invalid("spatial packet heap allocation failed"))?;
+                for (stream_index, stream) in streams.iter().enumerate() {
+                    heap.push(Reverse(SpatialHeapEntry {
+                        key: spatial_packet_key(
+                            header,
+                            &grids,
+                            order,
+                            stream.component,
+                            stream.resolution,
+                            0,
+                        )?,
+                        stream: stream_index,
+                    }));
+                }
+                PacketProgressionState::Spatial {
+                    order,
+                    streams,
+                    heap,
+                    pending: None,
+                }
+            }
+        };
+        Ok(Self {
+            header: header.clone(),
+            grids,
+            layers: header.cod.layers,
+            state,
+            emitted: 0,
+            total,
+        })
+    }
+
+    fn next(&mut self) -> Result<Option<PacketPosition>> {
+        let header = &self.header;
+        let packet = match &mut self.state {
+            PacketProgressionState::Lrcp {
+                layer,
+                resolution,
+                component,
+                precinct,
+            } => next_lrcp(
+                &self.grids,
+                self.layers,
+                header.cod.decomposition_levels,
+                layer,
+                resolution,
+                component,
+                precinct,
+            )?,
+            PacketProgressionState::Rlcp {
+                resolution,
+                layer,
+                component,
+                precinct,
+            } => next_rlcp(
+                &self.grids,
+                self.layers,
+                header.cod.decomposition_levels,
+                resolution,
+                layer,
+                component,
+                precinct,
+            )?,
+            PacketProgressionState::Spatial {
+                order,
+                streams,
+                heap,
+                pending,
+            } => {
+                if let Some((base, next_layer)) = pending {
+                    let packet = PacketPosition {
+                        layer: *next_layer,
+                        ..*base
+                    };
+                    *next_layer += 1;
+                    if *next_layer == self.layers {
+                        *pending = None;
+                    }
+                    Some(packet)
+                } else {
+                    let Some(Reverse(entry)) = heap.pop() else {
+                        return Ok(None);
+                    };
+                    let stream = &mut streams[entry.stream];
+                    let precinct = stream.next_precinct;
+                    let base = PacketPosition {
+                        layer: 0,
+                        resolution: stream.resolution,
+                        component: stream.component,
+                        precinct,
+                    };
+                    stream.next_precinct += 1;
+                    if stream.next_precinct < stream.precinct_count {
+                        heap.push(Reverse(SpatialHeapEntry {
+                            key: spatial_packet_key(
+                                header,
+                                &self.grids,
+                                *order,
+                                stream.component,
+                                stream.resolution,
+                                stream.next_precinct,
+                            )?,
+                            stream: entry.stream,
+                        }));
+                    }
+                    if self.layers > 1 {
+                        *pending = Some((base, 1));
+                    }
+                    Some(base)
+                }
+            }
+        };
+        if packet.is_some() {
+            self.emitted = self
+                .emitted
+                .checked_add(1)
+                .ok_or_else(|| invalid("emitted packet count overflow"))?;
+        }
+        debug_assert!(self.emitted <= self.total);
+        Ok(packet)
+    }
 }
 
 /// One axis of the packet-progression odometer.
@@ -208,13 +435,19 @@ fn packet_axis_order(order: ProgressionOrder) -> [PacketAxis; 3] {
 
 impl<'a> TilePacketDecoder<'a> {
     pub(crate) fn new(header: &CodestreamHeader) -> Result<Self> {
-        Self::new_with_options(header, false, header.cod.decomposition_levels)
+        Self::new_with_limits(
+            header,
+            false,
+            header.cod.decomposition_levels,
+            &DecodeLimits::default(),
+        )
     }
 
-    pub(crate) fn new_with_options(
+    pub(crate) fn new_with_limits(
         header: &CodestreamHeader,
         profile: bool,
         highest_resolution: u8,
+        limits: &DecodeLimits,
     ) -> Result<Self> {
         validate_packet_scope(header)?;
         if highest_resolution > header.cod.decomposition_levels {
@@ -223,9 +456,26 @@ impl<'a> TilePacketDecoder<'a> {
             ));
         }
         let precinct_grids = build_precinct_grids(header)?;
-        let bands = build_band_states(header, &precinct_grids)?;
+        let precinct_count = precinct_position_count(header, &precinct_grids)?;
+        if precinct_count > limits.max_precincts {
+            return Err(invalid(format!(
+                "tile precinct count {precinct_count} exceeds decode limit {}",
+                limits.max_precincts
+            )));
+        }
+        let packet_count = precinct_count
+            .checked_mul(usize::from(header.cod.layers))
+            .ok_or_else(|| invalid("packet-position count overflow"))?;
+        if packet_count > limits.max_packets {
+            return Err(invalid(format!(
+                "tile packet count {packet_count} exceeds decode limit {}",
+                limits.max_packets
+            )));
+        }
+        let bands = build_band_states(header, &precinct_grids, limits.max_code_blocks)?;
         let component_count = header.siz.components.len();
         let levels = header.cod.decomposition_levels;
+        let packet_positions = PacketProgression::new(header, precinct_grids, packet_count)?;
         Ok(Self {
             band_lookup: build_band_lookup(&bands, component_count, levels),
             bands,
@@ -233,7 +483,7 @@ impl<'a> TilePacketDecoder<'a> {
             eph_markers: header.cod.eph_markers,
             terminate_each_pass: header.cod.code_block_style.terminate_each_pass,
             next_sop_sequence: 0,
-            packet_positions: build_packet_positions(header, &precinct_grids)?,
+            packet_positions,
             next_packet_index: 0,
             packets: Vec::new(),
             merged: HashMap::new(),
@@ -267,7 +517,7 @@ impl<'a> TilePacketDecoder<'a> {
     pub(crate) fn push_tile_part(&mut self, payload: &'a [u8]) -> Result<()> {
         let mut pos = 0usize;
         while pos < payload.len() {
-            let Some(&packet) = self.packet_positions.get(self.next_packet_index) else {
+            let Some(packet) = self.packet_positions.next()? else {
                 return Err(invalid(format!(
                     "tile-part contains {} bytes after the tile's {}-packet sequence",
                     payload.len() - pos,
@@ -321,8 +571,11 @@ impl<'a> TilePacketDecoder<'a> {
                 .ok_or_else(|| invalid("packet header length overflow"))?;
             let body_len = contributions
                 .iter()
-                .map(Contribution::length)
-                .sum::<usize>();
+                .try_fold(0usize, |total, contribution| {
+                    total
+                        .checked_add(contribution.length()?)
+                        .ok_or_else(|| invalid("packet body length overflow"))
+                })?;
             let body_end = pos
                 .checked_add(body_len)
                 .ok_or_else(|| invalid("packet body offset overflow"))?;
@@ -427,7 +680,7 @@ impl<'a> TilePacketDecoder<'a> {
     }
 
     pub(crate) fn finish(mut self) -> Result<DecodedTilePackets<'a>> {
-        if let Some(next) = self.packet_positions.get(self.next_packet_index) {
+        if let Some(next) = self.packet_positions.next()? {
             return Err(invalid(format!(
                 "tile packet sequence ended early at layer {} resolution {} component {} precinct {}",
                 next.layer, next.resolution, next.component, next.precinct
@@ -595,7 +848,7 @@ struct MergedSegment<'a> {
 }
 
 fn validate_packet_scope(header: &CodestreamHeader) -> Result<()> {
-    // All five Annex B.12 progression orders are materialized into an explicit
+    // All five Annex B.12 progression orders are traversed by the stateful
     // packet plan, including the precinct-position axis.
     // The packet plan is component-count agnostic (it iterates the component
     // axis); 2 is admitted for Gray + in-data alpha.
@@ -679,7 +932,10 @@ fn read_band_contributions(
 
         let passes = read_numpasses(bio)?;
         let increment = read_commacode(bio)?;
-        band.blocks[block_index].numlenbits += increment;
+        band.blocks[block_index].numlenbits = band.blocks[block_index]
+            .numlenbits
+            .checked_add(increment)
+            .ok_or_else(|| invalid("codeword length-bit count overflow"))?;
         let segment_passes = if terminate_each_pass {
             vec![
                 1;
@@ -690,10 +946,11 @@ fn read_band_contributions(
         };
         let mut segment_lengths = Vec::with_capacity(segment_passes.len());
         for &passes_in_segment in &segment_passes {
-            let len_bits = band.blocks[block_index].numlenbits + floor_log2(passes_in_segment);
-            let length = bio.read_bits(len_bits)?;
-            let length = usize::try_from(length)
-                .map_err(|_| invalid("codeword-segment length exceeds usize"))?;
+            let len_bits = band.blocks[block_index]
+                .numlenbits
+                .checked_add(floor_log2(passes_in_segment))
+                .ok_or_else(|| invalid("codeword segment length-bit count overflow"))?;
+            let length = bio.read_bits_usize(len_bits)?;
             segment_lengths.push(length);
         }
         band.blocks[block_index].included = true;
@@ -728,13 +985,13 @@ fn build_precinct_grids(header: &CodestreamHeader) -> Result<Vec<Vec<PrecinctGri
         let resolution_bounds = resolution_bounds(header, component)?;
         let mut component_grids = Vec::with_capacity(resolution_bounds.len());
         for (resolution, &bounds) in resolution_bounds.iter().enumerate() {
-            let (pp_x, pp_y, explicit) = if header.cod.uses_precincts {
+            let (pp_x, pp_y) = if header.cod.uses_precincts {
                 let precinct = header.cod.precinct_sizes[resolution];
-                (precinct.pp_x, precinct.pp_y, true)
+                (precinct.pp_x, precinct.pp_y)
             } else {
                 // Scod=0 supplies the Part 1 default PPx=PPy=15 rather than
                 // removing the precinct partition altogether.
-                (15, 15, false)
+                (15, 15)
             };
             let precinct_width = 1u32 << pp_x;
             let precinct_height = 1u32 << pp_y;
@@ -752,7 +1009,6 @@ fn build_precinct_grids(header: &CodestreamHeader) -> Result<Vec<Vec<PrecinctGri
                     .map_err(|_| invalid("precinct-grid width exceeds usize"))?,
                 height: usize::try_from(end_y - start_y)
                     .map_err(|_| invalid("precinct-grid height exceeds usize"))?,
-                explicit,
             });
         }
         grids.push(component_grids);
@@ -760,75 +1016,183 @@ fn build_precinct_grids(header: &CodestreamHeader) -> Result<Vec<Vec<PrecinctGri
     Ok(grids)
 }
 
+#[cfg(test)]
 fn build_packet_positions(
     header: &CodestreamHeader,
     precinct_grids: &[Vec<PrecinctGrid>],
 ) -> Result<Vec<PacketPosition>> {
-    let mut keyed = Vec::new();
-    for layer in 0..header.cod.layers {
-        for resolution in 0..=header.cod.decomposition_levels {
-            for component in 0..header.siz.components.len() {
-                let grid = precinct_grids
-                    .get(component)
-                    .and_then(|grids| grids.get(usize::from(resolution)))
-                    .ok_or_else(|| invalid("packet plan references a missing precinct grid"))?;
-                let precinct_count = grid
-                    .width
-                    .checked_mul(grid.height)
-                    .ok_or_else(|| invalid("precinct count overflow"))?;
-                for precinct in 0..precinct_count {
-                    let packet = PacketPosition {
-                        layer,
-                        resolution,
-                        component,
-                        precinct,
-                    };
-                    let (position_x, position_y) =
-                        precinct_reference_position(header, *grid, resolution, precinct)?;
-                    let key = match header.cod.progression_order {
-                        ProgressionOrder::Lrcp => [
-                            u64::from(layer),
-                            u64::from(resolution),
-                            component as u64,
-                            precinct as u64,
-                            0,
-                        ],
-                        ProgressionOrder::Rlcp => [
-                            u64::from(resolution),
-                            u64::from(layer),
-                            component as u64,
-                            precinct as u64,
-                            0,
-                        ],
-                        ProgressionOrder::Rpcl => [
-                            u64::from(resolution),
-                            position_y,
-                            position_x,
-                            component as u64,
-                            u64::from(layer),
-                        ],
-                        ProgressionOrder::Pcrl => [
-                            position_y,
-                            position_x,
-                            component as u64,
-                            u64::from(resolution),
-                            u64::from(layer),
-                        ],
-                        ProgressionOrder::Cprl => [
-                            component as u64,
-                            position_y,
-                            position_x,
-                            u64::from(resolution),
-                            u64::from(layer),
-                        ],
-                    };
-                    keyed.push((key, packet));
+    let packet_count = packet_position_count(header, precinct_grids)?;
+    let mut progression = PacketProgression::new(header, precinct_grids.to_vec(), packet_count)?;
+    let mut packets = Vec::new();
+    packets
+        .try_reserve_exact(packet_count)
+        .map_err(|_| invalid("packet-position test plan allocation failed"))?;
+    while let Some(packet) = progression.next()? {
+        packets.push(packet);
+    }
+    Ok(packets)
+}
+
+#[cfg(test)]
+fn packet_position_count(
+    header: &CodestreamHeader,
+    precinct_grids: &[Vec<PrecinctGrid>],
+) -> Result<usize> {
+    precinct_position_count(header, precinct_grids)?
+        .checked_mul(usize::from(header.cod.layers))
+        .ok_or_else(|| invalid("packet-position count overflow"))
+}
+
+fn precinct_position_count(
+    header: &CodestreamHeader,
+    precinct_grids: &[Vec<PrecinctGrid>],
+) -> Result<usize> {
+    let mut precincts = 0usize;
+    for resolution in 0..=header.cod.decomposition_levels {
+        for component in 0..header.siz.components.len() {
+            let grid = precinct_grids
+                .get(component)
+                .and_then(|grids| grids.get(usize::from(resolution)))
+                .ok_or_else(|| invalid("packet plan references a missing precinct grid"))?;
+            let precinct_count = grid
+                .width
+                .checked_mul(grid.height)
+                .ok_or_else(|| invalid("precinct count overflow"))?;
+            precincts = precincts
+                .checked_add(precinct_count)
+                .ok_or_else(|| invalid("packet-position count overflow"))?;
+        }
+    }
+    Ok(precincts)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn next_lrcp(
+    grids: &[Vec<PrecinctGrid>],
+    layers: u16,
+    max_resolution: u8,
+    layer: &mut u16,
+    resolution: &mut u8,
+    component: &mut usize,
+    precinct: &mut usize,
+) -> Result<Option<PacketPosition>> {
+    while *layer < layers {
+        let grid = grids
+            .get(*component)
+            .and_then(|component_grids| component_grids.get(usize::from(*resolution)))
+            .ok_or_else(|| invalid("LRCP packet plan references a missing precinct grid"))?;
+        let precinct_count = grid
+            .width
+            .checked_mul(grid.height)
+            .ok_or_else(|| invalid("precinct count overflow"))?;
+        if *precinct < precinct_count {
+            let packet = PacketPosition {
+                layer: *layer,
+                resolution: *resolution,
+                component: *component,
+                precinct: *precinct,
+            };
+            *precinct += 1;
+            return Ok(Some(packet));
+        }
+        *precinct = 0;
+        *component += 1;
+        if *component == grids.len() {
+            *component = 0;
+            if *resolution == max_resolution {
+                *resolution = 0;
+                *layer += 1;
+            } else {
+                *resolution += 1;
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn next_rlcp(
+    grids: &[Vec<PrecinctGrid>],
+    layers: u16,
+    max_resolution: u8,
+    resolution: &mut u8,
+    layer: &mut u16,
+    component: &mut usize,
+    precinct: &mut usize,
+) -> Result<Option<PacketPosition>> {
+    while *resolution <= max_resolution {
+        let grid = grids
+            .get(*component)
+            .and_then(|component_grids| component_grids.get(usize::from(*resolution)))
+            .ok_or_else(|| invalid("RLCP packet plan references a missing precinct grid"))?;
+        let precinct_count = grid
+            .width
+            .checked_mul(grid.height)
+            .ok_or_else(|| invalid("precinct count overflow"))?;
+        if *precinct < precinct_count {
+            let packet = PacketPosition {
+                layer: *layer,
+                resolution: *resolution,
+                component: *component,
+                precinct: *precinct,
+            };
+            *precinct += 1;
+            return Ok(Some(packet));
+        }
+        *precinct = 0;
+        *component += 1;
+        if *component == grids.len() {
+            *component = 0;
+            *layer += 1;
+            if *layer == layers {
+                *layer = 0;
+                if *resolution == max_resolution {
+                    *resolution = max_resolution.saturating_add(1);
+                } else {
+                    *resolution += 1;
                 }
             }
         }
     }
-    keyed.sort_by_key(|(key, _)| *key);
-    Ok(keyed.into_iter().map(|(_, packet)| packet).collect())
+    Ok(None)
+}
+
+fn spatial_packet_key(
+    header: &CodestreamHeader,
+    precinct_grids: &[Vec<PrecinctGrid>],
+    order: ProgressionOrder,
+    component: usize,
+    resolution: u8,
+    precinct: usize,
+) -> Result<[u64; 4]> {
+    let grid = *precinct_grids
+        .get(component)
+        .and_then(|grids| grids.get(usize::from(resolution)))
+        .ok_or_else(|| invalid("spatial packet plan references a missing precinct grid"))?;
+    let (position_x, position_y) = precinct_reference_position(header, grid, resolution, precinct)?;
+    Ok(match order {
+        ProgressionOrder::Rpcl => [
+            u64::from(resolution),
+            position_y,
+            position_x,
+            component as u64,
+        ],
+        ProgressionOrder::Pcrl => [
+            position_y,
+            position_x,
+            component as u64,
+            u64::from(resolution),
+        ],
+        ProgressionOrder::Cprl => [
+            component as u64,
+            position_y,
+            position_x,
+            u64::from(resolution),
+        ],
+        ProgressionOrder::Lrcp | ProgressionOrder::Rlcp => {
+            unreachable!("spatial packet key requested for a linear progression")
+        }
+    })
 }
 
 fn precinct_reference_position(
@@ -837,12 +1201,6 @@ fn precinct_reference_position(
     resolution: u8,
     precinct: usize,
 ) -> Result<(u64, u64)> {
-    if !grid.explicit {
-        return Ok((
-            u64::from(header.siz.x_origin),
-            u64::from(header.siz.y_origin),
-        ));
-    }
     let x = precinct % grid.width;
     let y = precinct / grid.width;
     let precinct_x = u64::from(grid.start_x)
@@ -874,16 +1232,19 @@ fn precinct_reference_position(
 fn build_band_states(
     header: &CodestreamHeader,
     precinct_grids: &[Vec<PrecinctGrid>],
+    max_code_blocks: usize,
 ) -> Result<Vec<BandState>> {
-    build_precinct_band_states(header, precinct_grids)
+    build_precinct_band_states(header, precinct_grids, max_code_blocks)
 }
 
 fn build_precinct_band_states(
     header: &CodestreamHeader,
     precinct_grids: &[Vec<PrecinctGrid>],
+    max_code_blocks: usize,
 ) -> Result<Vec<BandState>> {
     let band_count = 1 + usize::from(header.cod.decomposition_levels) * 3;
     let mut bands = Vec::with_capacity(header.siz.components.len().saturating_mul(band_count));
+    let mut remaining_code_blocks = max_code_blocks;
     for component in 0..header.siz.components.len() {
         let geometries = band_geometries(header, component)?;
         for &geometry in &geometries {
@@ -891,7 +1252,13 @@ fn build_precinct_band_states(
                 .get(component)
                 .and_then(|grids| grids.get(usize::from(geometry.resolution)))
                 .ok_or_else(|| invalid("subband references a missing precinct grid"))?;
-            bands.push(build_precinct_band(header, component, geometry, grid)?);
+            bands.push(build_precinct_band(
+                header,
+                component,
+                geometry,
+                grid,
+                &mut remaining_code_blocks,
+            )?);
         }
     }
     Ok(bands)
@@ -902,6 +1269,7 @@ fn build_precinct_band(
     component: usize,
     geometry: BandGeometry,
     grid: PrecinctGrid,
+    remaining_code_blocks: &mut usize,
 ) -> Result<BandState> {
     let band_pp_x = if geometry.resolution == 0 {
         grid.pp_x
@@ -957,6 +1325,19 @@ fn build_precinct_band(
                 .map_err(|_| invalid("code-block column count exceeds usize"))?;
             rows = usize::try_from(block_grid_y1 - block_grid_y0)
                 .map_err(|_| invalid("code-block row count exceeds usize"))?;
+            let new_blocks = columns
+                .checked_mul(rows)
+                .ok_or_else(|| invalid("code-block count overflow"))?;
+            if new_blocks > *remaining_code_blocks {
+                return Err(invalid(format!(
+                    "tile code-block count exceeds remaining decode budget {}",
+                    *remaining_code_blocks
+                )));
+            }
+            blocks
+                .try_reserve(new_blocks)
+                .map_err(|_| invalid("code-block state allocation failed"))?;
+            *remaining_code_blocks -= new_blocks;
             for block_y in block_grid_y0..block_grid_y1 {
                 let nominal_y0 = block_y * code_block_height;
                 let y0 = nominal_y0.max(cell.y0).max(geometry.bounds.y0);
@@ -983,11 +1364,15 @@ fn build_precinct_band(
                 }
             }
         }
-        let block_indices = (first_block..blocks.len()).collect();
+        let mut block_indices = Vec::new();
+        block_indices
+            .try_reserve_exact(blocks.len() - first_block)
+            .map_err(|_| invalid("precinct code-block index allocation failed"))?;
+        block_indices.extend(first_block..blocks.len());
         precincts.push(BandPrecinctState {
             block_indices,
-            inclusion: TagTreeReader::new(columns.max(1), rows.max(1)),
-            zero_bitplanes: TagTreeReader::new(columns.max(1), rows.max(1)),
+            inclusion: TagTreeReader::try_new(columns.max(1), rows.max(1))?,
+            zero_bitplanes: TagTreeReader::try_new(columns.max(1), rows.max(1))?,
         });
     }
 
@@ -1237,6 +1622,18 @@ impl<'a> PacketBioReader<'a> {
         Ok(value)
     }
 
+    fn read_bits_usize(&mut self, count: u32) -> Result<usize> {
+        let mut value = 0usize;
+        for _ in 0..count {
+            let bit = self.read_bit()? as usize;
+            value = value
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(bit))
+                .ok_or_else(|| invalid("packet-header integer exceeds usize"))?;
+        }
+        Ok(value)
+    }
+
     pub(crate) fn bytes_consumed(&self) -> usize {
         self.pos
     }
@@ -1288,7 +1685,19 @@ struct TgtNode {
 }
 
 impl TagTreeReader {
+    #[cfg(test)]
     pub(crate) fn new(numleafsh: usize, numleafsv: usize) -> Self {
+        Self::try_new(numleafsh, numleafsv).expect("valid tag-tree dimensions")
+    }
+
+    pub(crate) fn try_new(numleafsh: usize, numleafsv: usize) -> Result<Self> {
+        if numleafsh == 0
+            || numleafsv == 0
+            || numleafsh > i32::MAX as usize
+            || numleafsv > i32::MAX as usize
+        {
+            return Err(invalid("tag-tree dimensions are out of range"));
+        }
         let mut nplh = [0i32; 32];
         let mut nplv = [0i32; 32];
         let mut numlvls = 0usize;
@@ -1299,24 +1708,31 @@ impl TagTreeReader {
             let n = (nplh[numlvls] * nplv[numlvls]) as usize;
             nplh[numlvls + 1] = (nplh[numlvls] + 1) / 2;
             nplv[numlvls + 1] = (nplv[numlvls] + 1) / 2;
-            numnodes += n;
+            numnodes = numnodes
+                .checked_add(n)
+                .ok_or_else(|| invalid("tag-tree node count overflow"))?;
             numlvls += 1;
             if n <= 1 {
                 break;
             }
         }
 
-        let mut nodes = vec![
-            TgtNode {
-                parent: TGT_NO_PARENT,
-                value: i32::MAX,
-                low: 0,
-                known: false,
-            };
-            numnodes
-        ];
+        if numnodes > u32::MAX as usize {
+            return Err(invalid("tag-tree node count exceeds u32 parent indices"));
+        }
+        let node = TgtNode {
+            parent: TGT_NO_PARENT,
+            value: i32::MAX,
+            low: 0,
+            known: false,
+        };
+        let mut nodes = Vec::new();
+        nodes
+            .try_reserve_exact(numnodes)
+            .map_err(|_| invalid("tag-tree node allocation failed"))?;
+        nodes.resize(numnodes, node);
         link_parents(&mut nodes, numleafsh, numleafsv, numlvls, &nplh, &nplv);
-        Self { nodes }
+        Ok(Self { nodes })
     }
 
     /// Decode whether `leafno` is included below `threshold`.
@@ -1462,9 +1878,10 @@ fn invalid(message: impl Into<String>) -> Jp2LamError {
 #[cfg(test)]
 mod tests {
     use super::{
-        PacketAxis, PacketBioReader, TagTreeReader, band_geometries, build_band_states,
-        build_packet_positions, build_precinct_grids, packet_axis_order, parse_tile_part_payload,
-        read_commacode, read_numpasses,
+        PacketAxis, PacketBioReader, PacketPosition, PacketProgression, PacketProgressionState,
+        PrecinctGrid, TagTreeReader, band_geometries, build_band_states, build_packet_positions,
+        build_precinct_grids, packet_axis_order, packet_position_count, parse_tile_part_payload,
+        precinct_reference_position, read_commacode, read_numpasses,
     };
     use crate::decode::{
         CodSegment, CodeBlockStyle, CodestreamHeader, ComponentSiz, PrecinctSize, ProgressionOrder,
@@ -1577,11 +1994,118 @@ mod tests {
         }
     }
 
+    fn materialized_packet_oracle(
+        header: &CodestreamHeader,
+        grids: &[Vec<PrecinctGrid>],
+    ) -> Vec<PacketPosition> {
+        let mut keyed = Vec::new();
+        for component in 0..header.siz.components.len() {
+            for resolution in 0..=header.cod.decomposition_levels {
+                let grid = grids[component][usize::from(resolution)];
+                for precinct in 0..grid.width * grid.height {
+                    let (x, y) =
+                        precinct_reference_position(header, grid, resolution, precinct).unwrap();
+                    for layer in 0..header.cod.layers {
+                        let packet = PacketPosition {
+                            layer,
+                            resolution,
+                            component,
+                            precinct,
+                        };
+                        let key = match header.cod.progression_order {
+                            ProgressionOrder::Lrcp => [
+                                u64::from(layer),
+                                u64::from(resolution),
+                                component as u64,
+                                precinct as u64,
+                                0,
+                                0,
+                            ],
+                            ProgressionOrder::Rlcp => [
+                                u64::from(resolution),
+                                u64::from(layer),
+                                component as u64,
+                                precinct as u64,
+                                0,
+                                0,
+                            ],
+                            ProgressionOrder::Rpcl => [
+                                u64::from(resolution),
+                                y,
+                                x,
+                                component as u64,
+                                u64::from(layer),
+                                precinct as u64,
+                            ],
+                            ProgressionOrder::Pcrl => [
+                                y,
+                                x,
+                                component as u64,
+                                u64::from(resolution),
+                                u64::from(layer),
+                                precinct as u64,
+                            ],
+                            ProgressionOrder::Cprl => [
+                                component as u64,
+                                y,
+                                x,
+                                u64::from(resolution),
+                                u64::from(layer),
+                                precinct as u64,
+                            ],
+                        };
+                        keyed.push((key, packet));
+                    }
+                }
+            }
+        }
+        keyed.sort_unstable_by_key(|(key, _)| *key);
+        keyed.into_iter().map(|(_, packet)| packet).collect()
+    }
+
+    #[test]
+    fn packet_iterators_match_materialized_oracle_for_all_progression_orders() {
+        for order in [
+            ProgressionOrder::Lrcp,
+            ProgressionOrder::Rlcp,
+            ProgressionOrder::Rpcl,
+            ProgressionOrder::Pcrl,
+            ProgressionOrder::Cprl,
+        ] {
+            let header = precinct_header(order);
+            let grids = build_precinct_grids(&header).expect("precinct grids");
+            let actual = build_packet_positions(&header, &grids).expect("packet iterator");
+            let oracle = materialized_packet_oracle(&header, &grids);
+            assert_eq!(actual, oracle, "{order:?}");
+        }
+    }
+
+    #[test]
+    fn spatial_progressions_keep_only_one_heap_entry_per_component_resolution() {
+        for order in [
+            ProgressionOrder::Rpcl,
+            ProgressionOrder::Pcrl,
+            ProgressionOrder::Cprl,
+        ] {
+            let header = precinct_header(order);
+            let grids = build_precinct_grids(&header).expect("precinct grids");
+            let total = packet_position_count(&header, &grids).expect("packet count");
+            let progression =
+                PacketProgression::new(&header, grids, total).expect("packet progression");
+            let PacketProgressionState::Spatial { streams, heap, .. } = &progression.state else {
+                panic!("{order:?} must use the spatial heap");
+            };
+            assert_eq!(streams.len(), 3 * 3);
+            assert_eq!(heap.len(), streams.len());
+            assert!(heap.len() * 10 < total);
+        }
+    }
+
     #[test]
     fn b6_b7_precinct_partition_covers_each_subband_once() {
         let header = precinct_header(ProgressionOrder::Lrcp);
         let grids = build_precinct_grids(&header).unwrap();
-        let bands = build_band_states(&header, &grids).unwrap();
+        let bands = build_band_states(&header, &grids, usize::MAX).unwrap();
         let geometries = band_geometries(&header, 0).unwrap();
 
         for (band, geometry) in bands[..geometries.len()].iter().zip(&geometries) {
@@ -1611,6 +2135,17 @@ mod tests {
         assert_eq!(bio.read_bit().unwrap(), 1);
         assert_eq!(bio.read_bit().unwrap(), 0);
         assert_eq!(bio.bytes_consumed(), 1);
+    }
+
+    #[test]
+    fn packet_bio_rejects_length_values_wider_than_usize() {
+        let mut bytes = vec![0u8; usize::BITS.div_ceil(8) as usize + 1];
+        bytes[0] = 0x80;
+        let mut bio = PacketBioReader::new(&bytes);
+        let error = bio
+            .read_bits_usize(usize::BITS + 1)
+            .expect_err("a set bit above usize width must be rejected");
+        assert!(error.to_string().contains("exceeds usize"), "{error}");
     }
 
     #[test]
@@ -1877,7 +2412,7 @@ mod tests {
         // The per-component precinct grids and band states build without the
         // whole tile being assumed full resolution.
         let grids = build_precinct_grids(&header).unwrap();
-        let bands = build_band_states(&header, &grids).unwrap();
+        let bands = build_band_states(&header, &grids, usize::MAX).unwrap();
         // 3 components x (1 + 3*levels) bands.
         assert_eq!(bands.len(), 3 * (1 + 3 * 2));
         let packets = build_packet_positions(&header, &grids).unwrap();

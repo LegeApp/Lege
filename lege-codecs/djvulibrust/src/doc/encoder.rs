@@ -4,6 +4,8 @@
 //! It is used internally by the public builder API and not exposed directly.
 
 use crate::doc::djvu_dir::{DjVmDir, File as DjVuFile, FileType};
+use crate::encode::jb2::{encoder::JB2Encoder, symbol_dict::SharedDict};
+use crate::iff::iff::IffWriter;
 // NAVM-related imports disabled for now - keep for future use
 // use crate::doc::djvu_dir::{Bookmark, DjVmNav};
 // use crate::iff::bs_byte_stream::bzz_compress;
@@ -16,6 +18,12 @@ use std::io::Write;
 ///
 /// Used by the public builder API to assemble pages into complete DjVu documents.
 pub(crate) struct DocumentEncoder;
+
+struct BundledComponent<'a> {
+    id: String,
+    file_type: FileType,
+    bytes: &'a [u8],
+}
 
 impl DocumentEncoder {
     /// Assembles encoded pages into a complete DjVu document
@@ -39,17 +47,93 @@ impl DocumentEncoder {
         Ok(output)
     }
 
+    /// Assemble pages plus their JB2 dictionaries as a bundled DjVu document.
+    /// Each dictionary becomes a FORM:DJVI component and pages refer to it by
+    /// the matching `dictNNNN.iff` INCL identifier written by PageComponents.
+    pub fn assemble_pages_with_shared_dictionaries(
+        pages: &[Vec<u8>],
+        dictionaries: &[std::sync::Arc<SharedDict>],
+    ) -> Result<Vec<u8>> {
+        if dictionaries.is_empty() {
+            return Self::assemble_pages(pages);
+        }
+
+        let mut dictionary_files = Vec::with_capacity(dictionaries.len());
+        for dictionary in dictionaries {
+            dictionary_files.push(Self::encode_shared_dictionary(dictionary)?);
+        }
+
+        let mut components = Vec::with_capacity(dictionary_files.len() + pages.len());
+        for (index, data) in dictionary_files.iter().enumerate() {
+            components.push(BundledComponent {
+                id: format!("dict{:04}.iff", index + 1),
+                file_type: FileType::Include,
+                bytes: data,
+            });
+        }
+        for (index, data) in pages.iter().enumerate() {
+            components.push(BundledComponent {
+                id: format!("p{:04}.djvu", index + 1),
+                file_type: FileType::Page,
+                bytes: data,
+            });
+        }
+
+        let mut output = Vec::new();
+        Self::assemble_djvm_components(&mut output, &components)?;
+        Ok(output)
+    }
+
+    fn encode_shared_dictionary(dictionary: &SharedDict) -> Result<Vec<u8>> {
+        let shapes = dictionary.shapes();
+        let parents = vec![-1; shapes.len()];
+        let mut encoder = JB2Encoder::new(Vec::new());
+        let data = encoder
+            .encode_dictionary(shapes, &parents, 0)
+            .map_err(|error| crate::DjvuError::EncodingError(error.to_string()))?;
+
+        let mut output = Vec::new();
+        {
+            let mut cursor = std::io::Cursor::new(&mut output);
+            let mut writer = IffWriter::new(&mut cursor);
+            writer.write_magic_bytes()?;
+            writer.put_chunk("FORM:DJVI")?;
+            writer.put_chunk("Djbz")?;
+            writer.write_all(&data)?;
+            writer.close_chunk()?;
+            writer.close_chunk()?;
+        }
+        Ok(output)
+    }
+
     /// Assembles a multi-page DJVM document
     fn assemble_djvm(writer: &mut Vec<u8>, pages: &[Vec<u8>]) -> Result<()> {
+        let components: Vec<_> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| BundledComponent {
+                id: format!("p{:04}.djvu", index + 1),
+                file_type: FileType::Page,
+                bytes,
+            })
+            .collect();
+        Self::assemble_djvm_components(writer, &components)
+    }
+
+    fn assemble_djvm_components(
+        writer: &mut Vec<u8>,
+        components: &[BundledComponent<'_>],
+    ) -> Result<()> {
         // Build cheap slice references, stripping the AT&T prefix where present.
         // No cloning — just pointer + length.
-        let page_chunks: Vec<&[u8]> = pages
+        let component_chunks: Vec<&[u8]> = components
             .iter()
-            .map(|p| {
+            .map(|component| {
+                let p = component.bytes;
                 if p.starts_with(b"AT&TFORM") {
                     &p[4..] // Slice — zero allocation
                 } else {
-                    p.as_slice()
+                    p
                 }
             })
             .collect();
@@ -70,7 +154,7 @@ impl DocumentEncoder {
         let dirm = DjVmDir::new();
 
         // Estimate DIRM size conservatively
-        let estimated_dirm_size = 3 + (4 * page_chunks.len()) + 80;
+        let estimated_dirm_size = 3 + (4 * component_chunks.len()) + 80;
         let dirm_chunk_size = 8 + estimated_dirm_size + (estimated_dirm_size % 2);
 
         // Calculate initial page offsets (after DIRM + NAVM chunks)
@@ -80,22 +164,20 @@ impl DocumentEncoder {
         let mut current_offset = base_offset + dirm_chunk_size as u32 + nav_chunk_size as u32;
         let mut file_offsets = Vec::new();
 
-        for (i, page_chunk) in page_chunks.iter().enumerate() {
+        for (component, chunk) in components.iter().zip(&component_chunks) {
             if current_offset % 2 != 0 {
                 current_offset += 1;
             }
 
             file_offsets.push(current_offset);
-            current_offset += page_chunk.len() as u32;
-
-            let page_id = format!("p{:04}.djvu", i + 1);
+            current_offset += chunk.len() as u32;
             let file = DjVuFile::new_with_offset(
-                &page_id,
-                &page_id,
+                &component.id,
+                &component.id,
                 "",
-                FileType::Page,
-                file_offsets[i],
-                page_chunk.len() as u32,
+                component.file_type,
+                *file_offsets.last().unwrap(),
+                chunk.len() as u32,
             );
             dirm.insert_file(file, -1)?;
         }
@@ -115,22 +197,20 @@ impl DocumentEncoder {
             current_offset = base_offset + actual_dirm_chunk_size as u32 + nav_chunk_size as u32;
             let mut corrected_offsets = Vec::new();
 
-            for (i, page_chunk) in page_chunks.iter().enumerate() {
+            for (component, chunk) in components.iter().zip(&component_chunks) {
                 if current_offset % 2 != 0 {
                     current_offset += 1;
                 }
 
                 corrected_offsets.push(current_offset);
-                current_offset += page_chunk.len() as u32;
-
-                let page_id = format!("p{:04}.djvu", i + 1);
+                current_offset += chunk.len() as u32;
                 let file = DjVuFile::new_with_offset(
-                    &page_id,
-                    &page_id,
+                    &component.id,
+                    &component.id,
                     "",
-                    FileType::Page,
-                    corrected_offsets[i],
-                    page_chunk.len() as u32,
+                    component.file_type,
+                    *corrected_offsets.last().unwrap(),
+                    chunk.len() as u32,
                 );
                 corrected_dirm.insert_file(file, -1)?;
             }
@@ -145,12 +225,12 @@ impl DocumentEncoder {
 
         // Calculate total size
         let total_dirm_chunk_size = 8 + final_dirm_data.len() + (final_dirm_data.len() % 2);
-        let pages_total_size: usize = page_chunks.iter().map(|p| p.len()).sum();
+        let pages_total_size: usize = component_chunks.iter().map(|p| p.len()).sum();
 
         // Calculate padding
         let mut padding_bytes = 0;
         let mut pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
-        for page_chunk in &page_chunks {
+        for page_chunk in &component_chunks {
             if pos % 2 != 0 {
                 padding_bytes += 1;
                 pos += 1;
@@ -187,7 +267,7 @@ impl DocumentEncoder {
 
         // Write page chunks with alignment
         let mut written_pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
-        for page_data in &page_chunks {
+        for page_data in &component_chunks {
             if written_pos % 2 != 0 {
                 writer.write_u8(0)?;
                 written_pos += 1;
@@ -216,4 +296,72 @@ impl DocumentEncoder {
     //
     //     Ok(nav)
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::doc::page_encoder::{PageComponents, PageEncodeParams};
+    use crate::encode::jb2::symbol_dict::BitImage;
+    use std::process::Command;
+
+    #[test]
+    fn shared_jb2_dictionary_is_a_djvi_component_referenced_by_the_page() {
+        let mut shape = BitImage::new(5, 7).unwrap();
+        shape.set_usize(2, 3, true);
+        let dictionary = std::sync::Arc::new(SharedDict::new(vec![shape]));
+
+        // With no local shapes, this blit refers directly to shared shape 0.
+        let page = PageComponents::new_with_dimensions(32, 32)
+            .with_jb2_manual(Vec::new(), vec![(8, 8, 0)])
+            .with_shared_dict(std::sync::Arc::clone(&dictionary));
+        let page = page
+            .encode_with_shared_dict_id(
+                &PageEncodeParams::default(),
+                1,
+                118,
+                1,
+                Some(2.2),
+                Some("dict0001.iff"),
+            )
+            .unwrap();
+
+        let document =
+            DocumentEncoder::assemble_pages_with_shared_dictionaries(&[page], &[dictionary])
+                .unwrap();
+
+        assert!(document.windows(4).any(|chunk| chunk == b"DJVI"));
+        assert!(document.windows(4).any(|chunk| chunk == b"Djbz"));
+        assert!(document.windows(4).any(|chunk| chunk == b"INCL"));
+        assert!(
+            document
+                .windows(b"dict0001.iff".len())
+                .any(|chunk| chunk == b"dict0001.iff")
+        );
+
+        // Verify the directory record, dictionary component, and INCL resolve
+        // together in an independent DjVuLibre decoder when it is available.
+        if Command::new("ddjvu").arg("--help").output().is_ok() {
+            let base = std::env::temp_dir()
+                .join(format!("djvulibrust-shared-dict-{}", std::process::id()));
+            let input = base.with_extension("djvu");
+            let output = base.with_extension("ppm");
+            std::fs::write(&input, &document).unwrap();
+            let result = Command::new("ddjvu")
+                .args([
+                    "-format=ppm",
+                    input.to_str().unwrap(),
+                    output.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_file(&input);
+            let _ = std::fs::remove_file(&output);
+            assert!(
+                result.status.success(),
+                "ddjvu could not resolve the shared dictionary: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
 }

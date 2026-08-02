@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use image::{GrayImage, RgbImage, imageops};
 
 use crate::vision::reference;
@@ -44,15 +44,10 @@ pub(crate) struct PreprocessMeta {
     pub(crate) orig_h: u32,
     pub(crate) input_w: u32,
     pub(crate) input_h: u32,
-    pub(crate) scale: f32,
-    pub(crate) pad_x: f32,
-    pub(crate) pad_y: f32,
 }
 
 pub(crate) struct PreprocessedImage {
     pub(crate) tensor: reference::Tensor,
-    pub(crate) letterboxed: RgbImage,
-    pub(crate) original: RgbImage,
     pub(crate) meta: PreprocessMeta,
 }
 
@@ -61,27 +56,28 @@ pub(crate) struct PreprocessedImage {
 /// `(pixel/255 - mean) / std` with the standard ImageNet mean/std. `scale`/`pad`
 /// in the returned meta are set for a non-letterbox stretch: the decoder scales
 /// boxes back per-axis from `orig_w/size`, `orig_h/size`.
-pub(crate) fn stretch_imagenet_rgb(original: RgbImage, size: u32) -> Result<PreprocessedImage> {
+pub(crate) fn stretch_imagenet_rgb(original: &RgbImage, size: u32) -> Result<PreprocessedImage> {
     let orig_w = original.width();
     let orig_h = original.height();
+    if orig_w == 0 || orig_h == 0 {
+        bail!("layout input image must be non-empty");
+    }
+    if size == 0 {
+        bail!("layout input size must be non-zero");
+    }
 
     // Stretch to a square; Triangle (bilinear) matches the PIL BILINEAR golden.
-    let resized = imageops::resize(&original, size, size, imageops::FilterType::Triangle);
+    let resized = imageops::resize(original, size, size, imageops::FilterType::Triangle);
 
     let nchw = normalize_rgb_nchw(&resized, IMAGENET_MEAN, IMAGENET_STD);
 
     Ok(PreprocessedImage {
         tensor: reference::Tensor::new(vec![1, 3, size as usize, size as usize], nchw)?,
-        letterboxed: resized,
-        original,
         meta: PreprocessMeta {
             orig_w,
             orig_h,
             input_w: size,
             input_h: size,
-            scale: 1.0,
-            pad_x: 0.0,
-            pad_y: 0.0,
         },
     })
 }
@@ -212,5 +208,11 @@ mod tests {
         assert_eq!(gray_det.tensor.data, rgb_det.tensor.data);
         assert_eq!(gray_det.scale_x, rgb_det.scale_x);
         assert_eq!(gray_det.scale_y, rgb_det.scale_y);
+    }
+
+    #[test]
+    fn layout_preprocess_rejects_empty_images_and_zero_target() {
+        assert!(stretch_imagenet_rgb(&RgbImage::new(0, 1), 640).is_err());
+        assert!(stretch_imagenet_rgb(&RgbImage::new(1, 1), 0).is_err());
     }
 }

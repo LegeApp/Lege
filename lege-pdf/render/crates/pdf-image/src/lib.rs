@@ -89,6 +89,8 @@ pub enum ImageMask {
 pub enum ImageError {
     #[error("image dimensions {width}x{height} exceed pixel limit")]
     TooLarge { width: u32, height: u32 },
+    #[error("image decode cancelled")]
+    Cancelled,
     #[error("unsupported filter {0:?}")]
     UnsupportedFilter(StreamFilter),
     #[error("malformed image dictionary: {0}")]

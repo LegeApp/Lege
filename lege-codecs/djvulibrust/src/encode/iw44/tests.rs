@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::encode::iw44::encoder::{CrcbMode, EncoderParams, rgb_to_ycbcr_planes};
+    use crate::encode::iw44::encoder::{CrcbMode, EncoderParams, IWEncoder, rgb_to_ycbcr_planes};
+    use crate::image::image_formats::{Bitmap, GrayPixel};
 
     /// Test color conversion with known values
     #[test]
@@ -168,5 +169,40 @@ mod tests {
         // Test default
         let default_mode = CrcbMode::default();
         assert!(matches!(default_mode, CrcbMode::None));
+    }
+
+    #[test]
+    fn lossless_encoding_reaches_a_finite_terminal_chunk() {
+        let mut image = Bitmap::from_pixel(32, 24, GrayPixel::white());
+        for y in 0..24 {
+            for x in 0..32 {
+                if (x * 7 + y * 11) % 13 == 0 {
+                    image.put_pixel(x, y, GrayPixel::new((x * 9 + y * 5) as u8));
+                }
+            }
+        }
+
+        let params = EncoderParams {
+            lossless: true,
+            slices: Some(3),
+            ..EncoderParams::default()
+        };
+        let mut encoder = IWEncoder::from_gray(&image, None, params).unwrap();
+        let mut saw_data = false;
+        let mut more = true;
+
+        // A finite bound catches the old threshold=1 livelock without baking
+        // in a fragile exact chunk count.
+        for _ in 0..256 {
+            let (chunk, next_more) = encoder.encode_chunk(3).unwrap();
+            saw_data |= !chunk.is_empty();
+            more = next_more;
+            if !more {
+                break;
+            }
+        }
+
+        assert!(saw_data, "lossless encoder emitted no IW44 data");
+        assert!(!more, "lossless IW44 encoder did not reach completion");
     }
 }

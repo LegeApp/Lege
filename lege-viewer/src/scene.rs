@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::document::TileSurface;
+use crate::document::{TileKey, TileSurface};
 use crate::geometry::{RectF, RectI};
 use crate::paint::PixelSurface;
 
@@ -209,20 +209,25 @@ impl SceneBuilder<'_> {
 }
 
 pub fn tile_image_words(tile: &TileSurface) -> [u64; 4] {
-    let bucket = u16::from_ne_bytes(tile.key.bucket.0.to_ne_bytes()) as u64;
-    let x = u32::from_ne_bytes(tile.key.coord.x.to_ne_bytes()) as u64;
-    let y = u32::from_ne_bytes(tile.key.coord.y.to_ne_bytes()) as u64;
+    tile_key_image_words(tile.key)
+}
+
+fn tile_key_image_words(key: TileKey) -> [u64; 4] {
+    let bucket = u16::from_ne_bytes(key.bucket.0.to_ne_bytes()) as u64;
+    let x = u32::from_ne_bytes(key.coord.x.to_ne_bytes()) as u64;
+    let y = u32::from_ne_bytes(key.coord.y.to_ne_bytes()) as u64;
     [
-        tile.key.document.0,
-        u64::from(tile.key.page.0) | (bucket << 32) | (u64::from(tile.key.tier.rank()) << 48),
-        x,
-        y,
+        key.document.0,
+        u64::from(key.page.0) | (bucket << 32) | (u64::from(key.tier.rank()) << 48),
+        x | (y << 32),
+        key.variant,
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::{DocumentId, PageIndex, TileCoord, TileKey, TileTier, ZoomBucket};
 
     #[test]
     fn scene_builder_records_effective_clip_without_a_widget_tree() {
@@ -258,5 +263,21 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn tile_image_identity_includes_render_variant() {
+        let key = TileKey {
+            document: DocumentId(7),
+            page: PageIndex(3),
+            bucket: ZoomBucket::ONE,
+            coord: TileCoord { x: -2, y: 5 },
+            tier: TileTier::Thumbnail,
+            variant: 11,
+        };
+        let mut changed = key;
+        changed.variant = 12;
+
+        assert_ne!(tile_key_image_words(key), tile_key_image_words(changed));
     }
 }

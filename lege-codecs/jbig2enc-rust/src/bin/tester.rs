@@ -173,7 +173,7 @@ fn main() -> Result<()> {
         encoder.flush()?
     } else {
         info!("Standalone mode: Using encode_generic_region to produce full JBIG2 file.");
-        let bit_image = array_to_bitimage(&image_array);
+        let bit_image = array_to_bitimage(&image_array).map_err(anyhow::Error::msg)?;
         encode_generic_region(&bit_image, &config)?
     };
 

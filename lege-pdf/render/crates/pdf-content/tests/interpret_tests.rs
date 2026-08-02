@@ -47,6 +47,19 @@ fn dump(snapshot: &DocumentSnapshot, page: &SemanticPage) -> String {
 }
 
 #[test]
+fn pre_cancelled_compilation_stops_before_page_interpretation() {
+    let snapshot = single_page(b"0 0 200 200 re f");
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut context = ParseContext::new();
+    context.set_cancellation_flag(Some(cancelled));
+
+    let error = PageCompiler::new()
+        .compile_artifacts(&snapshot, PageIndex(0), &mut context)
+        .expect_err("pre-cancelled compilation must stop");
+    assert!(matches!(error, pdf_content::ContentError::Cancelled));
+}
+
+#[test]
 fn truncated_content_stream_compiles_to_blank_not_error() {
     // A /FlateDecode content stream whose body is not valid deflate: decoding
     // fails, but the page must still compile (blank) rather than dropping the

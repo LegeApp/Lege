@@ -35,6 +35,12 @@ pub struct SchedulerOptions {
     pub render_workers: usize,
     /// Bound on compiled pages waiting for a render slot.
     pub compiled_queue_depth: usize,
+    /// Maximum number of pages admitted to the pipeline but not yet emitted.
+    ///
+    /// This is an ordered sliding window, not a bounded result channel: the
+    /// next expected page is always admitted, so a slow early page can still
+    /// complete and release later completed surfaces from the reorder buffer.
+    pub reorder_window_depth: usize,
     /// Total bytes all in-flight jobs may hold.
     pub memory_limit_bytes: u64,
 }
@@ -53,6 +59,7 @@ impl Default for SchedulerOptions {
             compile_workers,
             render_workers,
             compiled_queue_depth: 12,
+            reorder_window_depth: 12,
             memory_limit_bytes: 4 << 30,
         }
     }
@@ -129,12 +136,10 @@ impl RenderScheduler {
         #[cfg(feature = "profiling")]
         let pipeline_start = std::time::Instant::now();
 
-        // Stage 0: page indices to compile.
-        let (page_tx, page_rx) = unbounded::<u32>();
-        for n in pages {
-            let _ = page_tx.send(n);
-        }
-        drop(page_tx);
+        // Stage 0: page indices to compile. Keep this bounded too: eagerly
+        // enqueueing a caller-controlled `u32` range before any worker starts
+        // can otherwise consume gigabytes before the actual pipeline runs.
+        let (page_tx, page_rx) = bounded::<u32>(self.options.compiled_queue_depth.max(1));
 
         // Stage 1→2: bounded compiled queue (bounds compiled-page memory).
         type Compiled = (u32, Result<RenderRequest, RenderError>);
@@ -146,8 +151,40 @@ impl RenderScheduler {
         #[cfg(not(feature = "profiling"))]
         type PipelineResult = (u32, Result<RenderedPage, RenderError>);
         let (result_tx, result_rx) = unbounded::<PipelineResult>();
+        // Advancing this channel means one in-order output was emitted. The
+        // feeder uses it to extend the admission window. It only carries
+        // zero-sized completion credits, never rendered surfaces.
+        let (emitted_tx, emitted_rx) = unbounded::<()>();
+        let reorder_window = self.options.reorder_window_depth.max(1) as u64;
 
         std::thread::scope(|scope| {
+            // Admit an ordered sliding window. This bounds *all* pages that
+            // can reach the reorder buffer while reserving its first slot for
+            // the page the collector is waiting for. Bounding `result_tx`
+            // instead can deadlock when later workers fill it before that
+            // early page finishes.
+            scope.spawn(move || {
+                let mut pages = pages;
+                let mut admitted = 0_u64;
+                let mut emitted = 0_u64;
+                loop {
+                    let limit = emitted.saturating_add(reorder_window);
+                    while admitted < limit {
+                        let Some(n) = pages.next() else {
+                            return;
+                        };
+                        if page_tx.send(n).is_err() {
+                            return;
+                        }
+                        admitted += 1;
+                    }
+                    match emitted_rx.recv() {
+                        Ok(()) => emitted += 1,
+                        Err(_) => return,
+                    }
+                }
+            });
+
             // Compile workers.
             for _ in 0..self.options.compile_workers.max(1) {
                 let page_rx = page_rx.clone();
@@ -231,10 +268,12 @@ impl RenderScheduler {
                 );
                 for (_, out) in reorder.drain_ready() {
                     emit(out);
+                    let _ = emitted_tx.send(());
                 }
             }
             for (_, out) in reorder.drain_ready() {
                 emit(out);
+                let _ = emitted_tx.send(());
             }
         });
     }
@@ -338,10 +377,10 @@ fn render_job(
 /// Peak-byte estimate for budgeting. Refined in Phase 5 using
 /// `PageComplexity`; the output surface is the floor.
 pub fn estimate_job_bytes(request: &RenderRequest) -> u64 {
-    let surface = request.output_size.width as u64
-        * request.output_size.height as u64
-        * request.output_format.bytes_per_pixel() as u64;
-    surface + request.page.complexity.estimated_peak_bytes
+    let surface = (request.output_size.width as u64)
+        .saturating_mul(request.output_size.height as u64)
+        .saturating_mul(request.output_format.bytes_per_pixel() as u64);
+    surface.saturating_add(request.page.complexity.estimated_peak_bytes)
 }
 
 #[cfg(test)]

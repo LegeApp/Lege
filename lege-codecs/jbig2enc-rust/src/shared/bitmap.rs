@@ -203,6 +203,12 @@ impl MonoBitmap {
         self.stride_words
     }
 
+    /// Bytes occupied by the packed pixel backing store.
+    #[inline]
+    pub fn storage_bytes(&self) -> usize {
+        self.words.len().saturating_mul(core::mem::size_of::<u32>())
+    }
+
     /// The packed words of row `y`. Panics only on an out-of-range `y`, which
     /// is a caller bug (decoders validate `y` against `height` first).
     #[inline]
@@ -471,7 +477,16 @@ impl PackedRows<'_> {
     pub fn to_vec(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.bytes_per_row * self.bitmap.height as usize);
         for y in 0..self.bitmap.height {
-            out.extend_from_slice(&self.row(y));
+            let mut remaining = self.bytes_per_row;
+            for word in self.bitmap.row(y) {
+                let bytes = word.to_be_bytes();
+                let take = remaining.min(bytes.len());
+                out.extend_from_slice(&bytes[..take]);
+                remaining -= take;
+                if remaining == 0 {
+                    break;
+                }
+            }
         }
         out
     }

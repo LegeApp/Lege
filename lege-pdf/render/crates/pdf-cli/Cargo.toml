@@ -9,6 +9,13 @@ license.workspace = true
 name = "pdfr"
 path = "src/main.rs"
 
+# Standalone performance demonstrator, shipped to evaluators as a single exe.
+# Optional (`--features demo`) so ordinary builds of this crate skip it.
+[[bin]]
+name = "lege-render-demo"
+path = "src/bin/lege-render-demo.rs"
+required-features = ["demo"]
+
 [dependencies]
 anyhow = { workspace = true }
 pdf-source = { workspace = true }
@@ -23,8 +30,13 @@ pdf-render-scheduler = { workspace = true }
 pdf-read = { workspace = true }
 pdf-text = { workspace = true }
 png = "0.17"
+# `demo` binary only.
+chrono = { workspace = true, optional = true }
+crossbeam-channel = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 
 [features]
+demo = ["dep:chrono", "dep:crossbeam-channel", "dep:flate2"]
 profiling = ["pdf-document/profiling", "pdf-content/profiling", "pdf-image/profiling", "pdf-render-cpu/profiling", "pdf-render-scheduler/profiling"]
 
 [dev-dependencies]

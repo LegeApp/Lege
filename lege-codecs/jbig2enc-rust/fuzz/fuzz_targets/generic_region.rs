@@ -9,7 +9,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use jbig2enc_rust::decode::{DecodeOptions, DecodeLimits, decode_embedded, decode_file};
+use jbig2enc_rust::decode::{decode_embedded, decode_file, DecodeLimits, DecodeOptions};
 
 fuzz_target!(|data: &[u8]| {
     // Tight limits keep a malicious size field from attempting a huge alloc

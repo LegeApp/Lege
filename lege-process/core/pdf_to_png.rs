@@ -62,6 +62,7 @@ pub fn run_pdf_to_png_mode(
 
     // Render each page
     for (i, page_num) in pages_to_render.iter().enumerate() {
+        crate::progress::cancellation_checkpoint("before PDF-to-PNG page")?;
         let page_start = std::time::Instant::now();
 
         match render_pdf_page_to_png(
@@ -85,6 +86,7 @@ pub fn run_pdf_to_png_mode(
                 error_println!("Failed to render page {}: {}", page_num, e);
             }
         }
+        crate::progress::cancellation_checkpoint("after PDF-to-PNG page")?;
     }
 
     println!("PDF rendering complete");
@@ -288,6 +290,7 @@ pub fn run_pdf_to_jp2_debug_mode(
 
     let overall_start = std::time::Instant::now();
     for &page_num in &pages_to_render {
+        crate::progress::cancellation_checkpoint("before PDF-to-JP2 debug page")?;
         let page_start = std::time::Instant::now();
 
         let rgb = if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -354,6 +357,7 @@ pub fn run_pdf_to_jp2_debug_mode(
             fmt_bytes(gray80.len()),
             elapsed_ms,
         );
+        crate::progress::cancellation_checkpoint("after PDF-to-JP2 debug page")?;
     }
 
     let total_s = overall_start.elapsed().as_secs_f64();

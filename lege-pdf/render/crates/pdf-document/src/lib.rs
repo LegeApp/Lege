@@ -235,6 +235,10 @@ pub struct ParseContext {
     /// live on the snapshot's recovery log instead; post-open the snapshot
     /// is immutable, so lazy repairs surface here — observable, per-worker.
     pub recovery: Vec<RecoveryEvent>,
+    /// Optional cooperative cancellation shared with the caller that owns this
+    /// worker. Kept out of document-global state so independent page jobs can
+    /// be cancelled without affecting one another.
+    cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A decompressed object-stream container plus its parsed pair table.
@@ -261,6 +265,7 @@ impl ParseContext {
             cache: HashMap::new(),
             objstm: HashMap::new(),
             recovery: Vec::new(),
+            cancellation: None,
         }
     }
 
@@ -282,6 +287,20 @@ impl ParseContext {
             self.object_stream_inflates = 0;
         }
         self.recovery.clear();
+        self.cancellation = None;
+    }
+
+    pub fn set_cancellation_flag(
+        &mut self,
+        cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) {
+        self.cancellation = cancellation;
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Acquire))
     }
 
     fn cache_get(&self, id: ObjectId) -> Option<Arc<PdfObject>> {
@@ -983,5 +1002,16 @@ mod tests {
         assert_eq!(ctx.objects_visited, 0);
         assert!(ctx.recovery.is_empty());
         assert!(ctx.cache.contains_key(&id));
+    }
+
+    #[test]
+    fn begin_job_clears_a_previous_jobs_cancellation_flag() {
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut context = ParseContext::new();
+        context.set_cancellation_flag(Some(cancelled));
+        assert!(context.is_cancelled());
+
+        context.begin_job();
+        assert!(!context.is_cancelled());
     }
 }

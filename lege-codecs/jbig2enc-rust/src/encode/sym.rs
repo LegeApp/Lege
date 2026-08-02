@@ -9,10 +9,7 @@ use ndarray::Array2;
 use once_cell::sync::OnceCell;
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
-use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
-use std::io::{Read, Seek};
 use std::path::Path;
 
 use crate::jbig2shared::{u32_to_usize, usize_to_u32};
@@ -71,6 +68,21 @@ pub struct BitImage {
     packed_cache: OnceCell<Vec<u32>>,
 }
 
+fn checked_dimensions(width: usize, height: usize) -> Result<usize, String> {
+    if !(BitImage::MIN_DIMENSION..=BitImage::MAX_DIMENSION).contains(&width)
+        || !(BitImage::MIN_DIMENSION..=BitImage::MAX_DIMENSION).contains(&height)
+    {
+        return Err(format!(
+            "dimensions must each be between {} and {}",
+            BitImage::MIN_DIMENSION,
+            BitImage::MAX_DIMENSION
+        ));
+    }
+    width
+        .checked_mul(height)
+        .ok_or_else(|| "bitmap dimensions overflow".to_string())
+}
+
 impl BitImage {
     pub const MAX_DIMENSION: usize = 1 << 24; // 16M pixels
     pub const MIN_DIMENSION: usize = 1;
@@ -110,56 +122,71 @@ impl BitImage {
             ));
         }
 
-        let total_bits = u32_to_usize(width) * u32_to_usize(height);
+        let width = u32_to_usize(width);
+        let height = u32_to_usize(height);
+        let total_bits = width
+            .checked_mul(height)
+            .ok_or_else(|| "bitmap dimensions overflow".to_string())?;
         let mut bits = BitVec::with_capacity(total_bits);
         bits.resize(total_bits, false);
 
         Ok(Self {
-            width: u32_to_usize(width),
-            height: u32_to_usize(height),
+            width,
+            height,
             bits,
             packed_cache: OnceCell::new(),
         })
     }
 
     /// Creates a bitmap from raw bytes.
-    pub fn from_bytes(width: usize, height: usize, bytes: &[u8]) -> Self {
-        let expected_bytes = (width * height + 7) / 8;
-        assert_eq!(
-            bytes.len(),
-            expected_bytes,
-            "Expected {} bytes for {}x{} bitmap, got {}",
-            expected_bytes,
-            width,
-            height,
-            bytes.len()
-        );
-        let bits = bytes_to_bitvec(bytes, width * height);
-        Self {
+    pub fn from_bytes(width: usize, height: usize, bytes: &[u8]) -> Result<Self, String> {
+        let bit_count = checked_dimensions(width, height)?;
+        let expected_bytes = bit_count.div_ceil(8);
+        if bytes.len() != expected_bytes {
+            return Err(format!(
+                "expected {expected_bytes} bytes for {width}x{height} bitmap, got {}",
+                bytes.len()
+            ));
+        }
+        let bits = bytes_to_bitvec(bytes, bit_count);
+        Ok(Self {
             width,
             height,
             bits,
             packed_cache: OnceCell::new(),
-        }
+        })
     }
 
-    /// Creates a bitmap from a bit slice.
-    pub fn from_bits(width: usize, height: usize, bits: &BitSlice<u8, Msb0>) -> Self {
-        assert_eq!(
-            bits.len(),
-            width * height,
-            "Expected {} bits for {}x{} bitmap, got {}",
-            width * height,
-            width,
-            height,
-            bits.len()
-        );
-        Self {
+    pub fn try_from_bytes(width: usize, height: usize, bytes: &[u8]) -> Result<Self, String> {
+        Self::from_bytes(width, height, bytes)
+    }
+
+    pub fn from_bits(
+        width: usize,
+        height: usize,
+        bits: &BitSlice<u8, Msb0>,
+    ) -> Result<Self, String> {
+        let bit_count = checked_dimensions(width, height)?;
+        if bits.len() != bit_count {
+            return Err(format!(
+                "expected {bit_count} bits for {width}x{height} bitmap, got {}",
+                bits.len()
+            ));
+        }
+        Ok(Self {
             width,
             height,
             bits: bits.to_bitvec(),
             packed_cache: OnceCell::new(),
-        }
+        })
+    }
+
+    pub fn try_from_bits(
+        width: usize,
+        height: usize,
+        bits: &BitSlice<u8, Msb0>,
+    ) -> Result<Self, String> {
+        Self::from_bits(width, height, bits)
     }
 
     /// Converts the bitmap to a byte vector.
@@ -254,10 +281,21 @@ impl BitImage {
     }
 
     /// Creates a sub-image from a specified rectangle.
-    pub fn from_sub_image(source: &BitImage, rect: &Rect) -> Self {
+    pub fn from_sub_image(source: &BitImage, rect: &Rect) -> Result<Self, String> {
+        let right = rect
+            .x
+            .checked_add(rect.width)
+            .ok_or_else(|| "sub-image x extent overflow".to_string())?;
+        let bottom = rect
+            .y
+            .checked_add(rect.height)
+            .ok_or_else(|| "sub-image y extent overflow".to_string())?;
+        if right > usize_to_u32(source.width) || bottom > usize_to_u32(source.height) {
+            return Err("sub-image rectangle out of bounds".to_string());
+        }
         let width = u32_to_usize(rect.width);
         let height = u32_to_usize(rect.height);
-        let mut result = Self::new(rect.width, rect.height).expect("Failed to create sub-image");
+        let mut result = Self::new(rect.width, rect.height)?;
         for y in 0..height {
             for x in 0..width {
                 let src_x = rect.x + usize_to_u32(x);
@@ -268,7 +306,7 @@ impl BitImage {
                 }
             }
         }
-        result
+        Ok(result)
     }
 
     /// Sets a pixel value at (x, y).
@@ -292,17 +330,20 @@ impl BitImage {
     }
 
     /// Crops the bitmap to a specified rectangle.
-    pub fn crop(&self, rect: &Rect) -> Self {
-        assert!(
-            rect.x + rect.width <= usize_to_u32(self.width),
-            "crop x + width out of bounds"
-        );
-        assert!(
-            rect.y + rect.height <= usize_to_u32(self.height),
-            "crop y + height out of bounds"
-        );
+    pub fn crop(&self, rect: &Rect) -> Result<Self, String> {
+        let right = rect
+            .x
+            .checked_add(rect.width)
+            .ok_or_else(|| "crop x extent overflow".to_string())?;
+        let bottom = rect
+            .y
+            .checked_add(rect.height)
+            .ok_or_else(|| "crop y extent overflow".to_string())?;
+        if right > usize_to_u32(self.width) || bottom > usize_to_u32(self.height) {
+            return Err("crop rectangle out of bounds".to_string());
+        }
         let mut cropped =
-            Self::new(rect.width, rect.height).expect("Failed to create cropped image");
+            Self::new(rect.width, rect.height).map_err(|e| format!("invalid crop: {e}"))?;
         for dy in 0..rect.height {
             for dx in 0..rect.width {
                 let src_idx = u32_to_usize(rect.y + dy) * self.width + u32_to_usize(rect.x + dx);
@@ -312,7 +353,11 @@ impl BitImage {
                 }
             }
         }
-        cropped
+        Ok(cropped)
+    }
+
+    pub fn try_crop(&self, rect: &Rect) -> Result<Self, String> {
+        self.crop(rect)
     }
 
     /// Trims whitespace from edges, returning the bounding rectangle and cropped image.
@@ -395,7 +440,11 @@ impl BitImage {
             width: usize_to_u32(max_x - min_x + 1),
             height: usize_to_u32(max_y - min_y + 1),
         };
-        (rect, self.crop(&rect))
+        (
+            rect,
+            self.crop(&rect)
+                .expect("trimmed rectangle is within the source image"),
+        )
     }
 
     /// Inverts all bits in the bitmap.
@@ -539,9 +588,9 @@ pub fn compute_glyph_hash(image: &BitImage) -> u64 {
 }
 
 /// Converts an `ndarray::Array2<u8>` to a `BitImage`.
-pub fn array_to_bitimage(array: &Array2<u8>) -> BitImage {
+pub fn array_to_bitimage(array: &Array2<u8>) -> Result<BitImage, String> {
     let (height, width) = array.dim();
-    let total = width * height;
+    let total = checked_dimensions(width, height)?;
     let mut bits = bitvec::bitvec![u8, Msb0; 0; total];
 
     let mut idx = 0usize;
@@ -563,6 +612,20 @@ pub fn binary_pixels_to_bitimage(
     width: usize,
     height: usize,
 ) -> Result<BitImage, String> {
+    if !(BitImage::MIN_DIMENSION..=BitImage::MAX_DIMENSION).contains(&width) {
+        return Err(format!(
+            "width must be between {} and {}",
+            BitImage::MIN_DIMENSION,
+            BitImage::MAX_DIMENSION
+        ));
+    }
+    if !(BitImage::MIN_DIMENSION..=BitImage::MAX_DIMENSION).contains(&height) {
+        return Err(format!(
+            "height must be between {} and {}",
+            BitImage::MIN_DIMENSION,
+            BitImage::MAX_DIMENSION
+        ));
+    }
     let expected_len = width
         .checked_mul(height)
         .ok_or_else(|| "Dimensions too large".to_string())?;
@@ -579,60 +642,106 @@ pub fn binary_pixels_to_bitimage(
         .map(|&pixel| pixel > 0)
         .collect::<BitVec<u8, Msb0>>();
 
-    Ok(BitImage::from_bits(width, height, bits.as_bitslice()))
+    BitImage::from_bits(width, height, bits.as_bitslice())
 }
 
 /// Loads a PBM file into a BitImage
 pub fn load_pbm(path: &Path) -> Result<BitImage, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
-    let mut reader = BufReader::new(&mut file);
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|e| format!("Failed to read magic number: {}", e))?;
-    if line.trim() != "P4" {
-        return Err(format!("Unsupported PBM format: {}", line.trim()));
+    let data = std::fs::read(path).map_err(|e| format!("failed to read PBM: {e}"))?;
+    let mut offset = 0usize;
+    let magic = pbm_token(&data, &mut offset)?;
+    if magic != b"P4" {
+        return Err("unsupported PBM format (expected P4)".to_string());
     }
-
-    loop {
-        line.clear();
-        reader
-            .read_line(&mut line)
-            .map_err(|e| format!("Failed to read dimensions: {}", e))?;
-        let trimmed = line.trim();
-        if !trimmed.starts_with('#') && !trimmed.is_empty() {
-            break;
-        }
-    }
-
-    let dimensions: Vec<&str> = line.trim().split_whitespace().collect();
-    if dimensions.len() != 2 {
-        return Err("Invalid dimensions".to_string());
-    }
-    let width = dimensions[0]
+    let width = std::str::from_utf8(pbm_token(&data, &mut offset)?)
+        .map_err(|_| "invalid PBM width".to_string())?
         .parse::<usize>()
         .map_err(|_| "Invalid width".to_string())?;
-    let height = dimensions[1]
+    let height = std::str::from_utf8(pbm_token(&data, &mut offset)?)
+        .map_err(|_| "invalid PBM height".to_string())?
         .parse::<usize>()
         .map_err(|_| "Invalid height".to_string())?;
+    if !(BitImage::MIN_DIMENSION..=BitImage::MAX_DIMENSION).contains(&width)
+        || !(BitImage::MIN_DIMENSION..=BitImage::MAX_DIMENSION).contains(&height)
+    {
+        return Err(format!(
+            "PBM dimensions must each be between {} and {}",
+            BitImage::MIN_DIMENSION,
+            BitImage::MAX_DIMENSION
+        ));
+    }
 
-    let current_pos = reader
-        .stream_position()
-        .map_err(|e| format!("Failed to get position: {}", e))?;
-    let width_in_bytes = (width + 7) / 8;
-    let mut data = vec![0u8; width_in_bytes * height];
-    file.seek(std::io::SeekFrom::Start(current_pos))
-        .map_err(|e| format!("Seek failed: {}", e))?;
-    file.read_exact(&mut data)
-        .map_err(|e| format!("Read failed: {}", e))?;
+    let separator = *data
+        .get(offset)
+        .filter(|b| b.is_ascii_whitespace())
+        .ok_or_else(|| "PBM header is not terminated by whitespace".to_string())?;
+    offset += 1;
+    if separator == b'\r' && data.get(offset) == Some(&b'\n') {
+        offset += 1;
+    }
+    let width_in_bytes = width.div_ceil(8);
+    let data_len = width_in_bytes
+        .checked_mul(height)
+        .ok_or_else(|| "PBM dimensions are too large".to_string())?;
+    let raster = data
+        .get(offset..offset.saturating_add(data_len))
+        .filter(|r| r.len() == data_len)
+        .ok_or_else(|| "truncated PBM raster".to_string())?;
 
-    Ok(BitImage::from_bytes(width, height, &data))
+    // P4 pads every row to a byte boundary. `BitImage` itself is tightly
+    // packed, so copying the whole payload as one bit string would turn each
+    // row's padding into pixels on the next row whenever width % 8 != 0.
+    let mut image = BitImage::new(width as u32, height as u32)?;
+    for y in 0..height {
+        let row = &raster[y * width_in_bytes..(y + 1) * width_in_bytes];
+        for x in 0..width {
+            let black = row[x / 8] & (0x80 >> (x % 8)) != 0;
+            if black {
+                image.set_usize(x, y, true);
+            }
+        }
+    }
+    Ok(image)
+}
+
+fn skip_pbm_separators(data: &[u8], offset: &mut usize) {
+    loop {
+        while data.get(*offset).is_some_and(u8::is_ascii_whitespace) {
+            *offset += 1;
+        }
+        if data.get(*offset) != Some(&b'#') {
+            break;
+        }
+        while data
+            .get(*offset)
+            .is_some_and(|b| *b != b'\n' && *b != b'\r')
+        {
+            *offset += 1;
+        }
+    }
+}
+
+fn pbm_token<'a>(data: &'a [u8], offset: &mut usize) -> Result<&'a [u8], String> {
+    skip_pbm_separators(data, offset);
+    let start = *offset;
+    while data
+        .get(*offset)
+        .is_some_and(|b| !b.is_ascii_whitespace() && *b != b'#')
+    {
+        *offset += 1;
+    }
+    if start == *offset {
+        Err("missing PBM header token".to_string())
+    } else {
+        Ok(&data[start..*offset])
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{array_to_bitimage, binary_pixels_to_bitimage};
+    use super::{BitImage, Rect, array_to_bitimage, binary_pixels_to_bitimage, load_pbm};
     use ndarray::array;
+    use std::io::Write;
 
     #[test]
     fn binary_pixels_match_array_conversion() {
@@ -640,9 +749,73 @@ mod tests {
         let array = array![[0u8, 1, 0, 1, 1], [1u8, 0, 0, 0, 1], [0u8, 0, 1, 1, 0],];
 
         let from_pixels = binary_pixels_to_bitimage(&pixels, 5, 3).unwrap();
-        let from_array = array_to_bitimage(&array);
+        let from_array = array_to_bitimage(&array).unwrap();
 
         assert_eq!(from_pixels, from_array);
+    }
+
+    #[test]
+    fn p4_loader_discards_each_rows_padding_bits() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"P4\n9 2\n").unwrap();
+        // Row 0: x=0 and x=8. Row 1: x=1. The low seven bits of each
+        // second byte are padding and deliberately set to catch row bleed.
+        file.write_all(&[0x80, 0xFF, 0x40, 0x7F]).unwrap();
+        file.flush().unwrap();
+
+        let image = load_pbm(file.path()).unwrap();
+        assert_eq!((image.width, image.height), (9, 2));
+        assert!(image.get_usize(0, 0));
+        assert!(image.get_usize(8, 0));
+        assert!(image.get_usize(1, 1));
+        assert_eq!(image.count_ones(), 3);
+    }
+
+    #[test]
+    fn binary_pixels_reject_zero_dimensions() {
+        assert!(binary_pixels_to_bitimage(&[], 0, 0).is_err());
+    }
+
+    #[test]
+    fn fallible_bitmap_apis_reject_bad_geometry_without_panicking() {
+        assert!(BitImage::from_bytes(usize::MAX, 2, &[]).is_err());
+        let empty_bits = bitvec::vec::BitVec::<u8, bitvec::order::Msb0>::new();
+        assert!(BitImage::from_bits(2, 2, empty_bits.as_bitslice()).is_err());
+        let image = BitImage::new(2, 2).unwrap();
+        assert!(
+            image
+                .crop(&Rect {
+                    x: u32::MAX,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                })
+                .is_err()
+        );
+        assert!(
+            BitImage::from_sub_image(
+                &image,
+                &Rect {
+                    x: 1,
+                    y: 1,
+                    width: 2,
+                    height: 2,
+                },
+            )
+            .is_err()
+        );
+        assert!(array_to_bitimage(&ndarray::Array2::<u8>::zeros((0, 0))).is_err());
+    }
+
+    #[test]
+    fn p4_loader_accepts_split_tokens_and_comments_without_eating_raster_whitespace() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"P4 # magic comment\n8\n# size comment\n1\n")
+            .unwrap();
+        file.write_all(&[0x0A]).unwrap();
+        file.flush().unwrap();
+        let image = load_pbm(file.path()).unwrap();
+        assert_eq!(image.to_jbig2_format(), vec![0x0A]);
     }
 }
 

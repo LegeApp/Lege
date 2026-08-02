@@ -93,6 +93,8 @@ pub(crate) struct CompiledGraph {
     _dummy_bias_buffer: crate::vision::wgpu::Buffer,
     aliases: HashMap<String, String>,
     input_name: String,
+    input_shape: Vec<usize>,
+    input_elements: usize,
     steps: Vec<CompiledStep>,
     output_names: Vec<String>,
     output_buf_names: Vec<String>, // canonical (alias-resolved) names for output buffers
@@ -150,6 +152,13 @@ impl CompiledGraph {
     }
 
     pub(crate) fn build_sibling(&self, graph: &PreparedGraph) -> Result<Self> {
+        self.build_related(graph)
+    }
+
+    /// Build a graph from the same model at another dynamic input shape while
+    /// sharing immutable constant buffers and compatible shader pipelines by
+    /// tensor/shader identity.
+    pub(crate) fn build_related(&self, graph: &PreparedGraph) -> Result<Self> {
         Self::build_from_context(
             graph,
             self.ctx.clone(),
@@ -169,21 +178,23 @@ impl CompiledGraph {
         // ── Allocate GPU buffers ──────────────────────────────────────────
         let plan = ResidentMemoryPlan::from_graph(graph)?;
         let slot_sizes = plan.slot_sizes();
-        let constant_slots = plan
+        let constant_names_by_slot = plan
             .initializer_entries()
-            .filter_map(|entry| entry.reuse_slot)
-            .collect::<HashSet<_>>();
+            .filter_map(|entry| entry.reuse_slot.map(|slot| (slot, entry.name.clone())))
+            .collect::<HashMap<_, _>>();
+        let mut shared_constant_names = HashSet::new();
         #[cfg(feature = "debug-logging")]
         let total_slot_bytes = slot_sizes.iter().sum::<u64>();
         let mut slot_buffers = Vec::with_capacity(slot_sizes.len());
         for (slot, byte_size) in slot_sizes.iter().enumerate() {
-            if constant_slots.contains(&slot)
-                && let Some(parent) = shared_constants
+            if let (Some(name), Some(parent)) =
+                (constant_names_by_slot.get(&slot), shared_constants)
+                && let Some(&parent_slot) = parent.tensor_slots.get(name)
+                && let Some(parent_buffer) = parent.slot_buffers.get(parent_slot)
+                && parent_buffer.size() >= *byte_size
             {
-                let parent_buffer = parent.slot_buffers.get(slot).with_context(|| {
-                    format!("compiled sibling: parent is missing constant slot {slot}")
-                })?;
                 slot_buffers.push(Arc::clone(parent_buffer));
+                shared_constant_names.insert(name.clone());
                 continue;
             }
             let buf = Arc::new(
@@ -234,7 +245,7 @@ impl CompiledGraph {
             let slot = *tensor_slots.get(name).with_context(|| {
                 format!("compiled: missing resident slot for constant `{name}`")
             })?;
-            if shared_constants.is_some() && constant_slots.contains(&slot) {
+            if shared_constant_names.contains(name) {
                 continue;
             }
             let buf = slot_buffers
@@ -554,6 +565,17 @@ impl CompiledGraph {
 
         // ── Input info ────────────────────────────────────────────────────
         let input_name = graph.inputs.first().context("model has no inputs")?.clone();
+        let input_shape = shape_i64_to_usize(
+            graph
+                .known_shapes
+                .get(&input_name)
+                .with_context(|| format!("missing shape for input `{input_name}`"))?,
+        )?;
+        let input_elements = input_shape.iter().try_fold(1usize, |elements, &dim| {
+            elements.checked_mul(dim).with_context(|| {
+                format!("compiled input `{input_name}` element count overflows usize")
+            })
+        })?;
 
         // ── Readback buffers for model outputs ────────────────────────────
         let mut output_names = Vec::new();
@@ -567,7 +589,14 @@ impl CompiledGraph {
                 .get(name)
                 .with_context(|| format!("missing shape for output `{name}`"))?;
             let shape_u = shape_i64_to_usize(shape)?;
-            let bytes = shape_u.iter().product::<usize>() * 4;
+            let elements = shape_u.iter().try_fold(1usize, |elements, &dim| {
+                elements.checked_mul(dim).with_context(|| {
+                    format!("compiled output `{name}` element count overflows usize")
+                })
+            })?;
+            let bytes = elements
+                .checked_mul(std::mem::size_of::<f32>())
+                .with_context(|| format!("compiled output `{name}` byte size overflows usize"))?;
             let rb = ctx
                 .device
                 .create_buffer(&crate::vision::wgpu::BufferDescriptor {
@@ -592,6 +621,8 @@ impl CompiledGraph {
             _dummy_bias_buffer: dummy_bias_buffer,
             aliases,
             input_name,
+            input_shape,
+            input_elements,
             steps,
             output_names,
             output_buf_names,
@@ -613,6 +644,21 @@ impl CompiledGraph {
     /// until `await_result` completes, so one `CompiledGraph` remains single-flight.
     pub(crate) fn submit(&self, input: &reference::Tensor) -> Result<SubmittedRun<'_>> {
         let t0 = std::time::Instant::now();
+
+        if input.shape != self.input_shape {
+            bail!(
+                "compiled input shape mismatch: expected {:?}, got {:?}",
+                self.input_shape,
+                input.shape
+            );
+        }
+        if input.data.len() != self.input_elements {
+            bail!(
+                "compiled input data length mismatch: expected {}, got {}",
+                self.input_elements,
+                input.data.len()
+            );
+        }
 
         // Write input tensor to its GPU buffer
         let input_canonical = resolve_alias(&self.input_name, &self.aliases);
@@ -1090,4 +1136,71 @@ fn compiled_chunk_size(is_cpu_adapter: bool, step_count: usize) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&value| value > 0);
     env_value.unwrap_or_else(|| if is_cpu_adapter { 1 } else { step_count.max(1) })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+
+    use crate::vision::onnx::graph::PreparedGraph;
+    use crate::vision::onnx::shape::ShapeReport;
+    use crate::vision::onnx::types::{ElementwiseKind, PlannedOp, PlannedOpKind};
+    use crate::vision::reference::Tensor;
+
+    use super::CompiledGraph;
+
+    fn add_graph(elements: i64) -> PreparedGraph {
+        let shape = vec![elements];
+        PreparedGraph {
+            value_count: 3,
+            nodes: Vec::new(),
+            inputs: vec!["input".to_owned()],
+            outputs: vec!["output".to_owned()],
+            initializers: Vec::new(),
+            known_shapes: BTreeMap::from([
+                ("input".to_owned(), shape.clone()),
+                ("bias".to_owned(), vec![1]),
+                ("output".to_owned(), shape.clone()),
+            ]),
+            shape_report: ShapeReport::default(),
+            planned_ops: vec![PlannedOp {
+                name: "add".to_owned(),
+                inputs: vec!["input".to_owned(), "bias".to_owned()],
+                outputs: vec!["output".to_owned()],
+                input_shapes: vec![shape.clone(), vec![1]],
+                output_shapes: vec![shape],
+                kind: PlannedOpKind::Elementwise(ElementwiseKind::Add),
+            }],
+            constants: HashMap::from([(
+                "bias".to_owned(),
+                Tensor::new(vec![1], vec![3.5]).expect("test tensor"),
+            )]),
+        }
+    }
+
+    #[test]
+    fn related_dynamic_graph_shares_constant_buffers_and_pipelines() {
+        let parent_graph = add_graph(16);
+        let related_graph = add_graph(257);
+        let parent =
+            pollster::block_on(CompiledGraph::build(&parent_graph)).expect("compile parent graph");
+        let related = parent
+            .build_related(&related_graph)
+            .expect("compile related graph");
+
+        let parent_slot = parent.tensor_slots["bias"];
+        let related_slot = related.tensor_slots["bias"];
+        assert!(Arc::ptr_eq(
+            &parent.slot_buffers[parent_slot],
+            &related.slot_buffers[related_slot]
+        ));
+        assert!(!parent.pipeline_cache.is_empty());
+        for (shader, pipeline) in &parent.pipeline_cache {
+            assert!(
+                Arc::ptr_eq(pipeline, &related.pipeline_cache[shader]),
+                "pipeline for shared shader was rebuilt"
+            );
+        }
+    }
 }

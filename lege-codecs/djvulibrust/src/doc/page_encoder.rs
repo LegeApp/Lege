@@ -33,6 +33,37 @@ fn blit_bit_image(dst: &mut BitImage, src: &BitImage, x0: u32, y0: u32) {
     }
 }
 
+/// Page-local shape indices are zero-based independently of an inherited
+/// dictionary.  JB2 places inherited shapes before local shapes in one symbol
+/// library, so shift the generated/manual local blits before serialization.
+/// An empty local dictionary deliberately leaves indices untouched; that is
+/// how callers can make a page containing only copies from the shared dict.
+fn local_blits_after_inherited(
+    blits: &[(i32, i32, usize)],
+    local_shape_count: usize,
+    inherited_shape_count: usize,
+) -> Result<Vec<(i32, i32, usize)>> {
+    if inherited_shape_count == 0 || local_shape_count == 0 {
+        return Ok(blits.to_vec());
+    }
+
+    blits
+        .iter()
+        .map(|&(left, bottom, shape)| {
+            if shape >= local_shape_count {
+                return Err(DjvuError::InvalidOperation(format!(
+                    "Local JB2 shape index {shape} exceeds {} shapes",
+                    local_shape_count
+                )));
+            }
+            let shape = inherited_shape_count.checked_add(shape).ok_or_else(|| {
+                DjvuError::InvalidOperation("JB2 shared dictionary index overflow".to_string())
+            })?;
+            Ok((left, bottom, shape))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub x: u32,
@@ -93,10 +124,28 @@ impl EncodedPage {
         dpi: u32,
         gamma: Option<f32>,
     ) -> Result<Self> {
+        Self::from_components_with_shared_dict_id(page_num, components, params, dpi, gamma, None)
+    }
+
+    pub(crate) fn from_components_with_shared_dict_id(
+        page_num: usize,
+        components: PageComponents,
+        params: &PageEncodeParams,
+        dpi: u32,
+        gamma: Option<f32>,
+        shared_dict_id: Option<&str>,
+    ) -> Result<Self> {
         let (width, height) = components.dimensions();
         let dpm = (dpi * 100 / 254) as u32;
         let rotation = if width >= height { 1 } else { 1 };
-        let data = components.encode(params, (page_num + 1) as u32, dpm, rotation, gamma)?;
+        let data = components.encode_with_shared_dict_id(
+            params,
+            (page_num + 1) as u32,
+            dpm,
+            rotation,
+            gamma,
+            shared_dict_id,
+        )?;
         Ok(Self {
             page_num,
             data: Arc::new(data),
@@ -127,7 +176,9 @@ pub struct PageEncodeParams {
     pub bytes: Option<usize>,
     /// Fraction of blocks used for quality estimation (default: 0.35)
     pub db_frac: f32,
-    /// Lossless encoding mode (default: false)
+    /// Request lossless output. Lossless IW44 raster encoding is not available
+    /// in this encoder; a page with an IW44 background returns an explicit
+    /// error instead of silently producing a lossy image.
     pub lossless: bool,
     /// Quantization multiplier for IW44 (default: 1.0, range: 0.5-2.0)
     /// Lower = more coefficients = better quality but larger files
@@ -292,24 +343,29 @@ impl PageComponents {
         (self.width, self.height)
     }
 
-    /// Checks and sets the page dimensions if they are not already set.
-    /// Returns an error if the new dimensions conflict with existing ones.
-    fn check_and_set_dimensions(&mut self, new_dims: (u32, u32)) -> Result<()> {
+    /// Checks that a layer rectangle fits the page, deriving dimensions from
+    /// its extent only when this is an un-sized `PageComponents::new()`.
+    fn check_and_set_dimensions(&mut self, rect: Rect) -> Result<()> {
+        let right = rect.x.checked_add(rect.width).ok_or_else(|| {
+            DjvuError::InvalidOperation("Layer horizontal extent overflows u32".to_string())
+        })?;
+        let bottom = rect.y.checked_add(rect.height).ok_or_else(|| {
+            DjvuError::InvalidOperation("Layer vertical extent overflows u32".to_string())
+        })?;
         if self.width == 0 && self.height == 0 {
-            self.width = new_dims.0;
-            self.height = new_dims.1;
-        } else if self.width != new_dims.0 || self.height != new_dims.1 {
+            self.width = right;
+            self.height = bottom;
+        } else if right > self.width || bottom > self.height {
             return Err(DjvuError::InvalidOperation(format!(
-                "Dimension mismatch: expected {}x{}, got {}x{}",
-                self.width, self.height, new_dims.0, new_dims.1
+                "Layer at ({}, {}) with size {}x{} exceeds page bounds {}x{}",
+                rect.x, rect.y, rect.width, rect.height, self.width, self.height
             )));
         }
         Ok(())
     }
 
     pub fn add_iw44_background(mut self, image: Pixmap, rect: Rect) -> Result<Self> {
-        let new_dims = (rect.x + rect.width, rect.y + rect.height);
-        self.check_and_set_dimensions(new_dims)?;
+        self.check_and_set_dimensions(rect)?;
         if image.width() != rect.width || image.height() != rect.height {
             return Err(DjvuError::InvalidOperation(
                 "Background layer dimensions do not match rect".to_string(),
@@ -337,8 +393,7 @@ impl PageComponents {
     }
 
     pub fn add_jb2_foreground(mut self, image: BitImage, rect: Rect) -> Result<Self> {
-        let new_dims = (rect.x + rect.width, rect.y + rect.height);
-        self.check_and_set_dimensions(new_dims)?;
+        self.check_and_set_dimensions(rect)?;
         if image.width as u32 != rect.width || image.height as u32 != rect.height {
             return Err(DjvuError::InvalidOperation(
                 "Foreground layer dimensions do not match rect".to_string(),
@@ -358,8 +413,7 @@ impl PageComponents {
     }
 
     pub fn add_jb2_mask(mut self, image: BitImage, rect: Rect) -> Result<Self> {
-        let new_dims = (rect.x + rect.width, rect.y + rect.height);
-        self.check_and_set_dimensions(new_dims)?;
+        self.check_and_set_dimensions(rect)?;
         if image.width as u32 != rect.width || image.height as u32 != rect.height {
             return Err(DjvuError::InvalidOperation(
                 "Mask layer dimensions do not match rect".to_string(),
@@ -483,6 +537,28 @@ impl PageComponents {
         rotation: u8,       // 1=0°, 6=90°CCW, 2=180°, 5=90°CW
         gamma: Option<f32>, // If None, use 2.2
     ) -> Result<Vec<u8>> {
+        self.encode_with_shared_dict_id(params, page_num, dpm, rotation, gamma, None)
+    }
+
+    /// Internal page encoder used by the document builder when a shared JB2
+    /// dictionary has been promoted into a FORM:DJVI component.  Standalone
+    /// pages pass `None` and carry their Djbz chunk directly.
+    pub(crate) fn encode_with_shared_dict_id(
+        &self,
+        params: &PageEncodeParams,
+        page_num: u32,
+        dpm: u32,
+        rotation: u8,
+        gamma: Option<f32>,
+        shared_dict_id: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        if params.lossless && params.use_iw44 && self.background.is_some() {
+            return Err(DjvuError::InvalidOperation(
+                "Lossless IW44 raster encoding is not supported; use JB2 for bitonal lossless output"
+                    .to_string(),
+            ));
+        }
+
         let mut output = Vec::new();
         {
             let mut cursor = io::Cursor::new(&mut output);
@@ -503,6 +579,26 @@ impl PageComponents {
                 rotation,
                 gamma,
             )?;
+
+            let shared_shapes = self.shared_dict.as_deref().map(|dict| dict.shapes());
+            let inherited_shape_count = shared_shapes.map_or(0, <[BitImage]>::len);
+
+            if let Some(dict_id) = shared_dict_id {
+                writer.put_chunk("INCL")?;
+                writer.write_all(dict_id.as_bytes())?;
+                writer.close_chunk()?;
+            } else if let Some(shapes) = shared_shapes {
+                // A standalone FORM:DJVU cannot resolve an INCL component, so
+                // carry the dictionary locally before its Sjbz consumer.
+                let mut dict_encoder = JB2Encoder::new(Vec::new());
+                let parents = vec![-1; shapes.len()];
+                let djbz = dict_encoder
+                    .encode_dictionary(shapes, &parents, 0)
+                    .map_err(|e| DjvuError::EncodingError(e.to_string()))?;
+                writer.put_chunk("Djbz")?;
+                writer.write_all(&djbz)?;
+                writer.close_chunk()?;
+            }
 
             // --- BG44: Always emit a blank background for bitonal/JB2 pages ---
             let mut wrote_bg44 = false;
@@ -537,6 +633,8 @@ impl PageComponents {
 
             let _jb2_encoded =
                 if let (Some(shapes), Some(blits)) = (&self.jb2_shapes, &self.jb2_blits) {
+                    let blits =
+                        local_blits_after_inherited(blits, shapes.len(), inherited_shape_count)?;
                     num_blits = blits.len();
                     // Manual JB2 encoding (no feature required)
                     use crate::encode::jb2::encoder::JB2Encoder;
@@ -550,9 +648,9 @@ impl PageComponents {
                             self.height,
                             shapes,
                             &parents,
-                            blits,
-                            0,
-                            None,
+                            &blits,
+                            inherited_shape_count,
+                            shared_shapes,
                         )
                         .map_err(|e| DjvuError::EncodingError(e.to_string()))?;
 
@@ -579,6 +677,11 @@ impl PageComponents {
                     let shapes = cc_image.extract_shapes();
                     let (dictionary, parents, blits) =
                         shapes_to_encoder_format(shapes, self.height as i32);
+                    let blits = local_blits_after_inherited(
+                        &blits,
+                        dictionary.len(),
+                        inherited_shape_count,
+                    )?;
                     num_blits = blits.len();
 
                     // --- Sjbz ---
@@ -589,8 +692,8 @@ impl PageComponents {
                             &dictionary,
                             &parents,
                             &blits,
-                            0,
-                            None,
+                            inherited_shape_count,
+                            shared_shapes,
                         )
                         .map_err(|e| DjvuError::EncodingError(e.to_string()))?;
 
@@ -610,6 +713,11 @@ impl PageComponents {
                     let shapes = cc_image.extract_shapes();
                     let (dictionary, parents, blits) =
                         shapes_to_encoder_format(shapes, self.height as i32);
+                    let blits = local_blits_after_inherited(
+                        &blits,
+                        dictionary.len(),
+                        inherited_shape_count,
+                    )?;
                     num_blits = blits.len();
 
                     // --- Sjbz ---
@@ -620,8 +728,8 @@ impl PageComponents {
                             &dictionary,
                             &parents,
                             &blits,
-                            0,
-                            None,
+                            inherited_shape_count,
+                            shared_shapes,
                         )
                         .map_err(|e| DjvuError::EncodingError(e.to_string()))?;
 
@@ -927,10 +1035,10 @@ impl PageComponents {
         let mut chunk_count = 0;
         let slices_per_chunk = params.slices.unwrap_or(74);
         let mut total_slices_encoded = 0;
-        let total_slices_target = slices_per_chunk; // For now, match first chunk limit
+        let total_slices_target = slices_per_chunk;
 
         loop {
-            // Check if we've reached total slice target
+            // Check if we've reached total slice target.
             if total_slices_encoded >= total_slices_target {
                 debug!(
                     "Reached total slice target {}, stopping",
@@ -1068,9 +1176,21 @@ mod tests {
 
         assert!(result.is_err());
         if let Err(DjvuError::InvalidOperation(msg)) = result {
-            assert!(msg.contains("Dimension mismatch"));
+            assert!(msg.contains("exceeds page bounds"));
         } else {
-            panic!("Expected a DimensionMismatch error");
+            panic!("Expected an out-of-bounds layer error");
         }
+    }
+
+    #[test]
+    fn positioned_layer_fits_inside_preset_page_dimensions() {
+        let foreground = BitImage::new(100, 50).unwrap();
+        let page = PageComponents::new_with_dimensions(1000, 1400)
+            .add_jb2_foreground(foreground, Rect::new(20, 30, 100, 50))
+            .expect("positioned layer inside page bounds");
+
+        assert_eq!(page.dimensions(), (1000, 1400));
+        assert_eq!(page.foreground.as_ref().unwrap().width, 1000);
+        assert_eq!(page.foreground.as_ref().unwrap().height, 1400);
     }
 }

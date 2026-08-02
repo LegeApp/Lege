@@ -252,6 +252,7 @@ pub fn run_layout_visualize_mode(
     let rt = crate::runtime_stats::build_control_runtime()?;
 
     for &page_num in &pages_to_render {
+        crate::progress::cancellation_checkpoint("before layout-visualization page")?;
         println!("  Page {}/{}  (page {})", page_num, total_pages, page_num);
 
         let rgb =
@@ -281,6 +282,7 @@ pub fn run_layout_visualize_mode(
             img.save(&output_path)
                 .map_err(anyhow::Error::msg)
                 .with_context(|| format!("Failed to save PNG: {}", output_path.display()))?;
+            crate::progress::cancellation_checkpoint("after layout-visualization page")?;
             continue;
         }
 
@@ -296,6 +298,7 @@ pub fn run_layout_visualize_mode(
             detections.len(),
             output_path.display()
         );
+        crate::progress::cancellation_checkpoint("after layout-visualization page")?;
     }
 
     info_println!(

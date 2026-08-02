@@ -301,6 +301,7 @@ pub async fn source_stage(
     source: Arc<dyn PageSource>,
     config: Arc<PipelineConfig>,
     page_range: std::ops::Range<usize>,
+    cancellation: lege_pdf_read::CancellationToken,
     tx: mpsc::Sender<RenderedPageData>,
     render_count: Arc<AtomicUsize>,
     detect_count: Arc<AtomicUsize>,
@@ -324,6 +325,7 @@ pub async fn source_stage(
         while next_page < page_end && in_flight.len() < concurrency {
             let source = source.clone();
             let config = config.clone();
+            let cancellation = cancellation.clone();
             let page_index = next_page;
             next_page += 1;
 
@@ -332,15 +334,26 @@ pub async fn source_stage(
                 async move {
                     #[cfg(feature = "debug-logging")]
                     crate::info_log!("[SourceStage] Loading page {}", page_index);
-                    let source_page = source.load_page(page_index).await.map_err(|e| {
-                        #[cfg(feature = "debug-logging")]
-                        crate::error_println!(
-                            "[SourceStage] Page {} load failed: {:#}",
-                            page_index,
+                    if cancellation.is_cancelled() {
+                        return Err(anyhow!("Source stage cancelled before page {page_index}"));
+                    }
+                    let source_page = source
+                        .load_page_cancellable(page_index, cancellation.clone())
+                        .await
+                        .map_err(|e| {
+                            #[cfg(feature = "debug-logging")]
+                            crate::error_println!(
+                                "[SourceStage] Page {} load failed: {:#}",
+                                page_index,
+                                e
+                            );
                             e
-                        );
-                        e
-                    })?;
+                        })?;
+                    if cancellation.is_cancelled() {
+                        return Err(anyhow!(
+                            "Source stage cancelled after page {page_index} render"
+                        ));
+                    }
                     let SourcePage {
                         image,
                         original_width_pts,
@@ -361,6 +374,11 @@ pub async fn source_stage(
                     } else {
                         high_res_arc.clone()
                     };
+                    if cancellation.is_cancelled() {
+                        return Err(anyhow!(
+                            "Source stage cancelled after page {page_index} preparation"
+                        ));
+                    }
 
                     Ok::<_, anyhow::Error>(RenderedPageData {
                         index: page_index,

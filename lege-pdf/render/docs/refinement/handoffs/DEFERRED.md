@@ -15,6 +15,27 @@ cap). Adversarial fixtures (self-referential pattern, cyclic function, absurd
 sample count, missing pattern, deep form nesting) terminate without panic —
 `crates/pdf-content/tests/adversarial_tests.rs`.
 
+> **2026-07-30 codec-boundary and affine-ledger closure.** The renderer now
+> applies separate encoded-input, decoded-output, pixel, and codec-working-set
+> ceilings at every registered image-codec boundary. Returned rasters are
+> validated centrally (dimensions, stride, storage, and output budget) before
+> the sampler can index them, including results from injected codecs.
+> Cancellation is a typed `ImageError::Cancelled`: JPEG and CCITT poll inside
+> their long loops, JPX/JBIG2 poll before/after native decode and while
+> converting output, and cancelled CCITT no longer succeeds with a partial
+> white tail. JPX forwards the request ceilings into jp2lam inspection and
+> decode. JBIG2 reuses one decoder context per worker and shares one immutable,
+> explicitly byte-bounded decoded `/JBIG2Globals` entry per codec registry.
+>
+> The old JPX residual list below was stale. Current jp2lam already supports
+> degenerate DWT levels, mixed `bpcc`, sYCC, precinct/SOP/EPH streams, palettes,
+> CRG registration, and all five base progression orders. Its remaining
+> deliberate typed declines are POC progression-order changes, subsampled
+> components, arithmetic-bypass code-block style, and truncated-packet
+> salvage. Likewise, full-transform anisotropic/rotated stroke expansion had
+> already landed in `lower_stroke`; the stale scalar-pen claims are retired
+> and the existing ellipse/garbage-transform regressions remain the gate.
+
 > **2026-07-27 malformed page-tree closure.** The Sweep-15 wrong-page class is
 > closed with bounded recovery rather than a global `/Parent` scan:
 >
@@ -128,8 +149,9 @@ sample count, missing pattern, deep form nesting) terminate without panic —
 > 1. **WGPU backend (Phases 7–11)** — a whole project phase, by plan.
 > 2. **ICC CMM / profile parsing** — explicit future policy choice; arity
 >    approximation documented (flags now computed).
-> 3. **JPX residual classes** — live in the sibling `jp2lam` repo
->    (`HANDOFF-remaining-jpx-decode.md`), not this workspace.
+> 3. **JPX residual classes** — now narrowed to POC changes, subsampled
+>    components, arithmetic-bypass code blocks, and truncation salvage in the
+>    in-workspace `lege-codecs/jp2lam` crate.
 > 4. **JBIG2 defensive spec-edge rejections** — deliberate strictness, not
 >    missing features.
 > 5. **Embedded-file crypt filters + revision > 6 decline** — no corpus
@@ -857,9 +879,11 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
   **Done 2026-07-21 (production-readiness pass):** `/BC` luminosity backdrops
   render via `MaskKind::LuminosityBc`; `/TR` is applied as a `TransferLut`
   carried on `BeginSoftMask`.
-- **Stroking pen** — *approx*. Device-space scalar half-width (exact for
-  uniform scale; anisotropic/rotated pens approximated). A user-space stroker
-  is future work.
+- **Stroking pen** — *done*. `lower_stroke` decomposes the full CTM into path
+  and residual pen transforms, expands the normalized outline, and maps it
+  back with the residual matrix. This preserves elliptical pens under
+  anisotropic scale and rotation; `anisotropic_ctm_stretches_the_pen_into_an_ellipse`
+  and `garbage_anisotropic_ctm_does_not_flood` pin correctness and hardening.
 - **Curve/outline flattening** — *approx*. Fixed subdivision counts
   (`CURVE_SEGMENTS`, `OUTLINE_SEGMENTS`); an adaptive device-error flattener is
   a measurable optimization.
@@ -1133,20 +1157,20 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
     supplies `/Indexed` and therefore supersedes `pclr`, 1/2/4-bit decoded
     samples stay literal palette indices rather than undergoing component
     range expansion (`issue12213.pdf`).
-  *Still deferred within JPX* (each now a clean, B3-flagged failure, never a
-  silent blank — measured counts from the 424-doc census):
-  - **degenerate decomposition level** on power-of-two dimensions (a 5th
-    "1-sample" level on a 16-tall image): our inverse DWT drifts ~16/255 from
-    OpenJPEG on the trivial split, so it is rejected rather than mis-decoded —
-    a tracked DWT follow-up (~2 streams);
+  *Still deferred within JPX* (each is a clean, B3-flagged failure, never a
+  silent blank):
   - **truncated-codestream salvage**: OpenJPEG decodes a truncated stream's
     recovered packets ("Stream reached its end"); our strict bit-reader hits a
     `zero-length code-block contribution` and declines. Faithful salvage needs
     end-of-data awareness in `PacketBioReader` (~3 streams);
-  - `bpcc`; sYCC (EnumCS 18); POC; subsampled components; arithmetic-bypass
-    code-block styles. (Done since: raw J2K codestreams, precincts/SOP/EPH,
-    main-header COC transform override, per-tile QCD/QCC/COC/COD overrides, and
-    `cdef` JPX in-data alpha / `/SMaskInData` soft masks. **Premultiplied
+  - **POC progression-order changes**, **subsampled components**, and
+    **arithmetic-bypass code-block style**.
+
+    Done since the earlier census: degenerate one-sample DWT levels, mixed
+    `bpcc`, sYCC (EnumCS 18), raw J2K codestreams, precincts/SOP/EPH, CRG
+    component registration, main-header COC transform override, per-tile
+    QCD/QCC/COC/COD overrides, and `cdef` JPX in-data alpha /
+    `/SMaskInData` soft masks. **Premultiplied
     `/SMaskInData 2` done 2026-07-26:** backend preparation un-premultiplies
     GrayA/RGBA base samples with clamping and alpha-zero canonicalization, then
     uses the opacity plane as the ordinary soft mask. Test
@@ -1165,8 +1189,13 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
   wild by definition. The only remaining `Unsupported` returns are defensive
   spec-edge rejections (misplaced segment types in a globals stream, IAID
   width > 24 bits, unknown-length on non-generic segments), not features.
-  *Deferred*: adopt `decode_embedded_into` (zero-alloc destination API) when
-  the per-image decode cache / perf pass lands.
+  **Update 2026-07-30:** the renderer uses
+  `decode_embedded_with_globals` with a resettable worker-local
+  `DecoderContext`; decoded globals are immutable and shared through a
+  one-entry cache capped by both the request working-set limit and a 32 MiB
+  renderer ceiling. Encoded plus retained decoded bytes count toward the cap,
+  and cache misses decode outside the mutex so concurrent pages do not
+  serialize.
 - **CCITTFax** — *done, native*. From-scratch T.4/T.6 decoder in
   `pdf-image/src/ccitt.rs`, ported function-by-function from PDFium's
   `faxmodule.cpp` with line-cited provenance (run tables transcribed
@@ -1240,6 +1269,12 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
   coverage. `run_ops` stops immediately after an interrupted command. Tests:
   `cancellation_stops_inside_a_single_coverage_command` and
   `cancellable_fill_stops_inside_one_path_and_resets_worker_scratch`.
+  **Codec continuation 2026-07-30:** cancellation is propagated as the typed
+  `ImageError::Cancelled` and never recorded as malformed/degraded content.
+  JPEG and CCITT poll coding/row boundaries; JPX/JBIG2 poll adapter and output
+  conversion boundaries. jp2lam and jbig2enc-rust do not yet expose a
+  mid-codestream callback, so one native core decode remains the explicit
+  latency bound rather than an accidentally cached partial raster.
 
 ## Later phases
 - **WGPU backend (Phases 7–11)** — **Started 2026-07-26:** the first
@@ -1707,16 +1742,12 @@ First head-to-head timings vs PDFium (add `bench` subcommand to the oracle):
 §5 (scale-independent singularity) and §18 (non-finite guards) are done.
 The rest of the doc was audited against the code; what is left, and why:
 
-- **§13 — anisotropic and rotated stroke pens.** `lower_stroke` takes the
-  device half-width from `sqrt(|det|)`, the geometric mean of the CTM scale.
-  The doc names this exact shortcut as incomplete, and it is: under
-  `scale(10, 1)` the mean is 3.16, so a pen that should be 10 wide
-  horizontally and 1 vertically is drawn 3.16 wide both ways. Correct
-  handling means expanding the stroke against the full transform (an
-  elliptical pen), not one scalar. Real, visible on non-uniform CTMs, and
-  the largest remaining affine gap. `sqrt(|det|)` is exact for uniform
-  scale, which is the overwhelming majority of real content, so this is
-  ranked below whatever the corpus run turns up.
+- **§13 — anisotropic and rotated stroke pens — done.** `lower_stroke`
+  decomposes the full CTM into a path transform and residual pen transform,
+  expands the normalized pen, then maps the outline through the residual
+  matrix. Non-uniform scale therefore produces the required device-space
+  ellipse rather than a geometric-mean circle. Focused tests cover the
+  anisotropic shape, the uniform-scale control, and hostile transforms.
 
 - **§11 — incremental image stepping.** Implemented and *measured*: no
   gain (271 vs 279ms, 882 vs 862ms — noise both ways) and it moved 6479

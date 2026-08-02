@@ -40,6 +40,19 @@ pub fn save_lines_annotated(
     origin_x: u32,
     origin_y: u32,
 ) -> Result<()> {
+    if width == 0 || height == 0 {
+        anyhow::bail!("cannot annotate an empty binary crop");
+    }
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| anyhow::anyhow!("binary crop dimensions overflow"))?;
+    if binary.len() < expected {
+        anyhow::bail!(
+            "binary crop is truncated: expected at least {expected} bytes, got {}",
+            binary.len()
+        );
+    }
+
     // Convert binary to RGB so we can draw colored lines
     let mut rgb = RgbImage::new(width, height);
     for y in 0..height {
@@ -123,15 +136,15 @@ pub fn save_overlay_svg(
         // Word bboxes in orange
         for word in &line.words {
             let [wx1, wy1, wx2, wy2] = word.bbox_crop_local;
-            let (ww, wh) = (
-                (wx2 + x1).saturating_sub(wx1 + x1),
-                (wy2 + y1).saturating_sub(wy1 + y1),
-            );
+            let abs_x1 = wx1.saturating_add(x1);
+            let abs_y1 = wy1.saturating_add(y1);
+            let abs_x2 = wx2.saturating_add(x1);
+            let abs_y2 = wy2.saturating_add(y1);
+            let (ww, wh) = (abs_x2.saturating_sub(abs_x1), abs_y2.saturating_sub(abs_y1));
             writeln!(
                 svg,
                 r#"  <rect x="{}" y="{}" width="{ww}" height="{wh}" fill="none" stroke="orange" stroke-width="1" opacity="0.5"/>"#,
-                wx1 + x1,
-                wy1 + y1
+                abs_x1, abs_y1
             )?;
         }
     }
@@ -143,7 +156,28 @@ pub fn save_overlay_svg(
 
 /// Create a numbered debug directory for a page and return its path.
 pub fn make_page_debug_dir(out_dir: &Path, page_index: usize) -> Result<std::path::PathBuf> {
-    let dir = out_dir.join(format!("page_{:03}", page_index + 1));
+    let dir = out_dir.join(format!("page_{:03}", page_index.saturating_add(1)));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::save_lines_annotated;
+    use crate::types::{SegmentationConfidence, SegmentationResult};
+
+    fn empty_segmentation() -> SegmentationResult {
+        SegmentationResult {
+            line_bboxes: Vec::new(),
+            confidence: SegmentationConfidence::Low,
+        }
+    }
+
+    #[test]
+    fn annotated_crop_rejects_empty_or_truncated_buffers_before_drawing() {
+        let path = std::env::temp_dir().join("lege-ocr-invalid-annotation.png");
+        let segmentation = empty_segmentation();
+        assert!(save_lines_annotated(&path, &[], 0, 1, &segmentation, 0, 0).is_err());
+        assert!(save_lines_annotated(&path, &[255; 3], 2, 2, &segmentation, 0, 0).is_err());
+    }
 }

@@ -6,7 +6,7 @@ use jbig2enc_rust::jbig2sym::BitImage;
 use bitvec::prelude::*;
 fn make_bitimage_from_bits(width: usize, height: usize, bits: &[u8]) -> BitImage {
     let bv = BitVec::<u8, Msb0>::from_slice(bits);
-    BitImage::from_bits(width, height, bv.as_bitslice())
+    BitImage::from_bits(width, height, bv.as_bitslice()).unwrap()
 }
 /// Brute-force, byte-per-pixel reference implementation that
 /// mimics the algorithm used by `Comparator::distance`.

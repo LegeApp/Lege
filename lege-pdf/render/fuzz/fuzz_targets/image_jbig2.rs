@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
     let limits = DecodeLimits {
         max_pixels: 1 << 20,
         max_output_bytes: 1 << 24,
-        should_cancel: None,
+        ..DecodeLimits::default()
     };
-    let _ = Jbig2Codec.decode(body, &descriptor, &params, &limits);
+    let _ = Jbig2Codec::default().decode(body, &descriptor, &params, &limits);
 });

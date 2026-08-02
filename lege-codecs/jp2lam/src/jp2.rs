@@ -75,12 +75,12 @@ fn wrap_codestream_metadata(
     out.push(shared_bpc);
     out.push(JP2_COMPRESSION_TYPE_J2K);
     out.push(0);
+    out.push(0);
 
     if let Some(values) = bpcc {
         write_box_header(&mut out, 8 + values.len() as u32, b"bpcc");
         out.extend_from_slice(&values);
     }
-    out.push(0);
 
     write_color_spec(&mut out, color_encoding)?;
 
@@ -226,8 +226,8 @@ fn write_all<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::jp2_component_depths;
-    use crate::model::ComponentView;
+    use super::{jp2_component_depths, wrap_codestream_metadata};
+    use crate::model::{ColorEncoding, ComponentView};
 
     #[test]
     fn annex_i_5_3_component_depths_use_shared_bpc_or_bpcc() {
@@ -243,5 +243,32 @@ mod tests {
             jp2_component_depths(&[ten, twelve]).expect("mixed BPC"),
             (0xff, Some(vec![9, 11]))
         );
+    }
+
+    #[test]
+    fn buffered_mixed_precision_header_closes_ihdr_before_bpcc() {
+        let samples = [0u16];
+        let components = [8, 10, 12, 16]
+            .into_iter()
+            .map(|precision| {
+                ComponentView::planar_u16(1, 1, &samples, precision).expect("component view")
+            })
+            .collect::<Vec<_>>();
+        let bytes = wrap_codestream_metadata(
+            1,
+            1,
+            &components,
+            &ColorEncoding::Cmyk,
+            &[0xff, 0x4f, 0xff, 0xd9],
+        )
+        .expect("buffered JP2");
+
+        // Signature (12) + ftyp (20) + jp2h header (8) puts ihdr at 40.
+        assert_eq!(&bytes[40..44], &22u32.to_be_bytes());
+        assert_eq!(&bytes[44..48], b"ihdr");
+        assert_eq!(bytes[61], 0, "IPR must be the final ihdr payload byte");
+        assert_eq!(&bytes[62..66], &12u32.to_be_bytes());
+        assert_eq!(&bytes[66..70], b"bpcc");
+        assert_eq!(&bytes[70..74], &[7, 9, 11, 15]);
     }
 }

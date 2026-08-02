@@ -16,7 +16,11 @@ pub(crate) struct Tensor {
 
 impl Tensor {
     pub(crate) fn new(shape: Vec<usize>, data: Vec<f32>) -> Result<Self> {
-        let expected = shape.iter().product::<usize>();
+        let expected = shape.iter().try_fold(1usize, |elements, &dim| {
+            elements
+                .checked_mul(dim)
+                .context("tensor element count overflows usize")
+        })?;
         if expected != data.len() {
             bail!(
                 "tensor data length mismatch: shape {:?} expects {}, got {}",
@@ -1031,14 +1035,18 @@ fn avgpool2d(plan: &Pool2dPlan, input: &Tensor) -> Result<Tensor> {
 
 fn resize_nearest(input: &Tensor, scales: &[f32]) -> Result<Tensor> {
     require_rank(input, 4, "Resize input")?;
-    if scales.len() != 4 {
-        bail!("Resize nearest currently expects rank-4 scales");
+    if scales.len() != 4
+        || scales
+            .iter()
+            .any(|scale| !scale.is_finite() || *scale <= 0.0)
+    {
+        bail!("Resize nearest expects four finite positive scales");
     }
     let shape = input
         .shape
         .iter()
         .zip(scales)
-        .map(|(dim, scale)| ((*dim as f32) * scale).round() as usize)
+        .map(|(dim, scale)| ((*dim as f32) * scale).floor() as usize)
         .collect::<Vec<_>>();
     let mut output = Tensor::zeros(shape.clone());
     for out_index in 0..output.data.len() {
@@ -1445,6 +1453,16 @@ mod tests {
     }
 
     #[test]
+    fn tensor_rejects_overflowing_element_count() {
+        let error = Tensor::new(vec![usize::MAX, 2], Vec::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("tensor element count overflows usize")
+        );
+    }
+
+    #[test]
     fn elementwise_broadcasts_channel_bias() {
         let x = t(&[1, 2, 2, 2], &[1., 2., 3., 4., 10., 20., 30., 40.]);
         let bias = t(&[1, 2, 1, 1], &[100., 200.]);
@@ -1514,6 +1532,18 @@ mod tests {
                 1., 1., 2., 2., 1., 1., 2., 2., 3., 3., 4., 4., 3., 3., 4., 4.
             ]
         );
+    }
+
+    #[test]
+    fn resize_nearest_floors_fractional_output_dimensions() {
+        let x = t(
+            &[1, 1, 5, 5],
+            &(0..25).map(|value| value as f32).collect::<Vec<_>>(),
+        );
+        let resized = resize_nearest(&x, &[1.0, 1.0, 0.5, 0.5]).unwrap();
+        assert_eq!(resized.shape, vec![1, 1, 2, 2]);
+        assert_eq!(resized.data, vec![0.0, 2.0, 10.0, 12.0]);
+        assert!(resize_nearest(&x, &[1.0, 1.0, 0.0, 0.5]).is_err());
     }
 
     #[test]

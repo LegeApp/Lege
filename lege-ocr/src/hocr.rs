@@ -51,10 +51,10 @@ pub fn adjust_offsets(hocr_body: &str, dx: i32, dy: i32) -> String {
             match (p(1), p(2), p(3), p(4)) {
                 (Some(x1), Some(y1), Some(x2), Some(y2)) => format!(
                     "title={q}bbox {} {} {} {}{tail}{q}",
-                    x1 + dx,
-                    y1 + dy,
-                    x2 + dx,
-                    y2 + dy
+                    x1.saturating_add(dx),
+                    y1.saturating_add(dy),
+                    x2.saturating_add(dx),
+                    y2.saturating_add(dy)
                 ),
                 _ => c
                     .get(0)
@@ -107,13 +107,14 @@ pub fn build_line_hocr(line: &OcrLineResult) -> String {
         for word in &line.words {
             let [wx1, wy1, wx2, wy2] = word.bbox_crop_local;
             // Offset word bbox by the line's origin
-            let wx1 = wx1 + x1;
-            let wy1 = wy1 + y1;
-            let wx2 = wx2 + x1;
-            let wy2 = wy2 + y1;
+            let wx1 = wx1.saturating_add(x1);
+            let wy1 = wy1.saturating_add(y1);
+            let wx2 = wx2.saturating_add(x1);
+            let wy2 = wy2.saturating_add(y1);
             let conf_attr = word
                 .confidence
-                .map(|c| format!("; x_wconf {}", (c * 100.0) as u32))
+                .filter(|c| c.is_finite())
+                .map(|c| format!("; x_wconf {}", (c.clamp(0.0, 1.0) * 100.0).round() as u32))
                 .unwrap_or_default();
             s.push_str(&format!(
                 r#"<span class="ocrx_word" title="bbox {wx1} {wy1} {wx2} {wy2}{conf_attr}">{}</span> "#,
@@ -190,5 +191,27 @@ mod tests {
     fn html_escape_special_chars() {
         let escaped = html_escape("<b>AT&T</b>");
         assert_eq!(escaped, "&lt;b&gt;AT&amp;T&lt;/b&gt;");
+    }
+
+    #[test]
+    fn offset_and_word_coordinate_overflow_saturate() {
+        assert!(
+            adjust_offsets(r#"title="bbox 2147483647 0 1 2""#, 1, -1)
+                .contains("bbox 2147483647 -1 2 1")
+        );
+
+        let line = OcrLineResult {
+            text: "word".to_string(),
+            confidence: None,
+            words: vec![OcrWord {
+                text: "word".to_string(),
+                bbox_crop_local: [10, 10, u32::MAX, u32::MAX],
+                confidence: Some(2.0),
+            }],
+            bbox_highres: [u32::MAX - 5, u32::MAX - 5, u32::MAX, u32::MAX],
+        };
+        let rendered = build_line_hocr(&line);
+        assert!(rendered.contains("bbox 4294967295 4294967295 4294967295 4294967295"));
+        assert!(rendered.contains("x_wconf 100"));
     }
 }

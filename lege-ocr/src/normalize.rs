@@ -9,7 +9,7 @@ use lege_gpu::binarization::{AdaptiveBinarizeGpuConstants, BinarizationMode, Bin
 /// deliberately normalizes the input instead of trusting output-format buffers,
 /// because JPEG text output uses grayscale bytes rather than a binary mask.
 pub fn build_analysis_binary(source: &[u8], image: &RgbImage) -> Vec<u8> {
-    let expected = image.width() as usize * image.height() as usize;
+    let expected = image.as_raw().len() / 3;
     let gray;
     let pixels = if source.len() == expected {
         source
@@ -144,22 +144,31 @@ pub fn extract_binary_crop(
     let [x1, y1, x2, y2] = bbox;
     let iw = image_width as usize;
     let ih = image_height as usize;
+    let expected = iw
+        .checked_mul(ih)
+        .ok_or_else(|| anyhow::anyhow!("binary image dimensions overflow"))?;
 
     if x2 <= x1 || y2 <= y1 || x2 > image_width || y2 > image_height {
         anyhow::bail!("invalid binary crop bbox [{x1},{y1},{x2},{y2}] for {iw}x{ih}");
     }
+    if binary.len() < expected {
+        anyhow::bail!(
+            "binary image buffer is truncated: expected at least {expected} bytes, got {}",
+            binary.len()
+        );
+    }
 
     let w = (x2 - x1) as usize;
     let h = (y2 - y1) as usize;
-    let mut out = Vec::with_capacity(w * h);
+    let output_len = w
+        .checked_mul(h)
+        .ok_or_else(|| anyhow::anyhow!("binary crop dimensions overflow"))?;
+    let mut out = Vec::with_capacity(output_len);
 
     for row in 0..h {
         let abs_y = y1 as usize + row;
         let start = abs_y * iw + x1 as usize;
         let end = start + w;
-        if end > binary.len() {
-            break;
-        }
         out.extend_from_slice(&binary[start..end]);
     }
     Ok((out, x2 - x1, y2 - y1))
@@ -178,7 +187,10 @@ pub fn tighten_bbox_to_ink(
         || y2 <= y1
         || x2 > image_width
         || y2 > image_height
-        || binary.len() < image_width as usize * image_height as usize
+        || image_width
+            .checked_mul(image_height)
+            .and_then(|pixels| usize::try_from(pixels).ok())
+            .is_none_or(|pixels| binary.len() < pixels)
     {
         return None;
     }
@@ -329,6 +341,12 @@ mod tests {
         assert_eq!(w, 6);
         assert_eq!(h, 6);
         assert_eq!(crop.len(), 36);
+    }
+
+    #[test]
+    fn extract_binary_crop_rejects_truncated_buffer() {
+        let error = extract_binary_crop(&[255u8; 50], 10, 10, [0, 0, 5, 5]).unwrap_err();
+        assert!(error.to_string().contains("truncated"));
     }
 
     #[test]

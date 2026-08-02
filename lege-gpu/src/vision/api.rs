@@ -142,7 +142,7 @@ impl LayoutDetector {
     }
 
     pub fn detect_rgb(&self, image: &RgbImage) -> Result<Vec<LayoutDetection>> {
-        let preprocessed = preprocess::stretch_imagenet_rgb(image.clone(), PICODET_INPUT)
+        let preprocessed = preprocess::stretch_imagenet_rgb(image, PICODET_INPUT)
             .context("failed to preprocess layout input")?;
 
         // One-shot GPU timestamp profile to attribute per-page inference time to
@@ -316,7 +316,12 @@ impl SauvolaProcessor {
         &self.config.model_path
     }
 
-    fn build_for(&self, width: u32, height: u32) -> Result<SauvolaGraph> {
+    fn build_for(
+        &self,
+        width: u32,
+        height: u32,
+        related: Option<&CompiledGraph>,
+    ) -> Result<SauvolaGraph> {
         let dims = [1, height as i64, width as i64, 1];
         let graph = PreparedGraph::from_model_with_input_dims(&self.model, Some(&dims))
             .with_context(|| format!("failed to prepare sauvola graph for {width}x{height}"))?;
@@ -326,8 +331,11 @@ impl SauvolaProcessor {
                 graph.inputs
             );
         }
-        let compiled = pollster::block_on(CompiledGraph::build(&graph))
-            .with_context(|| format!("failed to compile sauvola graph for {width}x{height}"))?;
+        let compiled = match related {
+            Some(parent) => parent.build_related(&graph),
+            None => pollster::block_on(CompiledGraph::build(&graph)),
+        }
+        .with_context(|| format!("failed to compile sauvola graph for {width}x{height}"))?;
         Ok(SauvolaGraph {
             width,
             height,
@@ -359,7 +367,8 @@ impl SauvolaProcessor {
                 cache.insert(0, entry);
             }
             None => {
-                let entry = self.build_for(width, height)?;
+                let entry =
+                    self.build_for(width, height, cache.first().map(|entry| &entry.compiled))?;
                 cache.insert(0, entry);
                 cache.truncate(SAUVOLA_CACHE_CAP);
             }
@@ -582,12 +591,15 @@ impl RecRecognizer {
             .unwrap_or_else(|| width + (width & 1))
     }
 
-    fn build_for(&self, width: u32) -> Result<RecGraph> {
+    fn build_for(&self, width: u32, related: Option<&CompiledGraph>) -> Result<RecGraph> {
         let dims = [1, 3, REC_HEIGHT, width as i64];
         let graph = PreparedGraph::from_model_with_input_dims(&self.model, Some(&dims))
             .with_context(|| format!("failed to prepare rec graph for width {width}"))?;
-        let compiled = pollster::block_on(CompiledGraph::build(&graph))
-            .with_context(|| format!("failed to compile rec graph for width {width}"))?;
+        let compiled = match related {
+            Some(parent) => parent.build_related(&graph),
+            None => pollster::block_on(CompiledGraph::build(&graph)),
+        }
+        .with_context(|| format!("failed to compile rec graph for width {width}"))?;
         Ok(RecGraph {
             width,
             graph,
@@ -615,7 +627,8 @@ impl RecRecognizer {
                     cache.insert(0, entry);
                 }
                 None => {
-                    let entry = self.build_for(bucket)?;
+                    let entry =
+                        self.build_for(bucket, cache.first().map(|entry| &entry.compiled))?;
                     cache.insert(0, entry);
                     cache.truncate(REC_CACHE_CAP);
                 }
@@ -861,12 +874,15 @@ impl Detector {
         })
     }
 
-    fn build_for(&self, in_w: u32, in_h: u32) -> Result<DetGraph> {
+    fn build_for(&self, in_w: u32, in_h: u32, related: Option<&CompiledGraph>) -> Result<DetGraph> {
         let dims = [1, 3, in_h as i64, in_w as i64];
         let graph = PreparedGraph::from_model_with_input_dims(&self.model, Some(&dims))
             .with_context(|| format!("failed to prepare det graph for {in_w}x{in_h}"))?;
-        let compiled = pollster::block_on(CompiledGraph::build(&graph))
-            .with_context(|| format!("failed to compile det graph for {in_w}x{in_h}"))?;
+        let compiled = match related {
+            Some(parent) => parent.build_related(&graph),
+            None => pollster::block_on(CompiledGraph::build(&graph)),
+        }
+        .with_context(|| format!("failed to compile det graph for {in_w}x{in_h}"))?;
         Ok(DetGraph {
             in_w,
             in_h,
@@ -916,7 +932,11 @@ impl Detector {
                     cache.insert(0, entry);
                 }
                 None => {
-                    let entry = self.build_for(det.in_w, det.in_h)?;
+                    let entry = self.build_for(
+                        det.in_w,
+                        det.in_h,
+                        cache.first().map(|entry| &entry.compiled),
+                    )?;
                     cache.insert(0, entry);
                     cache.truncate(DET_CACHE_CAP);
                 }

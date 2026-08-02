@@ -63,6 +63,18 @@ struct WgpuBuffers {
     integral_bytes: usize, // capacity: row_prefix / row_prefix_sq / integral / integral_sq
 }
 
+struct BinarizeBindGroups {
+    linearize: wgpu::BindGroup,
+    fixed: wgpu::BindGroup,
+    build_padded: wgpu::BindGroup,
+    integral_rows: wgpu::BindGroup,
+    integral_cols: wgpu::BindGroup,
+    bg_max_h: wgpu::BindGroup,
+    bg_max_v: wgpu::BindGroup,
+    final_pass: wgpu::BindGroup,
+    pack: wgpu::BindGroup,
+}
+
 // ---------------------------------------------------------------------------
 // Main binarizer
 // ---------------------------------------------------------------------------
@@ -102,6 +114,7 @@ pub struct WgpuBinarizer {
     pack_bgl: wgpu::BindGroupLayout,
 
     buffers: Option<WgpuBuffers>,
+    bind_groups: Option<BinarizeBindGroups>,
 
     // Readback buffer — sized independently so batch mode can hold N pages at once.
     readback: Option<wgpu::Buffer>,
@@ -355,6 +368,7 @@ impl WgpuBinarizer {
             pack_pipeline,
             pack_bgl,
             buffers: None,
+            bind_groups: None,
             readback: None,
             readback_cap: 0,
             upload_staging: Vec::new(),
@@ -437,7 +451,10 @@ impl WgpuBinarizer {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let expected = params.width as usize * params.height as usize * 3;
+        let pixel_count = params.validated_pixel_count()?;
+        let expected = pixel_count.checked_mul(3).ok_or_else(|| {
+            GpuBinarizationError::Unsupported("RGB input byte size overflows usize".into())
+        })?;
         if rgb.len() != expected {
             return Err(GpuBinarizationError::BufferSizeMismatch {
                 expected,
@@ -789,71 +806,25 @@ impl WgpuBinarizer {
     // Pre-pass: read RGBA from gpu_src, write sRGB-perceptual gray to gray_buf.
     // Must run before any pass that reads gray_buf (build_padded, bg_max_h, final, fixed).
     fn encode_linearize_pass(&self, enc: &mut wgpu::CommandEncoder, params: &BinarizationParams) {
-        let bufs = self.buffers.as_ref().unwrap();
-        let bg = self
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.linearize_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: bufs.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: bufs.gpu_src.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: bufs.gray_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.srgb_lut.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = &self.bind_groups.as_ref().unwrap().linearize;
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: None,
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.linearize_pipeline);
-        pass.set_bind_group(0, &bg, &[]);
+        pass.set_bind_group(0, bg, &[]);
         pass.dispatch_workgroups(params.width.div_ceil(16), params.height.div_ceil(16), 1);
     }
 
     fn encode_fixed_passes(&self, enc: &mut wgpu::CommandEncoder, params: &BinarizationParams) {
         self.encode_linearize_pass(enc, params);
-        let bufs = self.buffers.as_ref().unwrap();
-        let bg = self
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.fixed_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: bufs.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: bufs.gray_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: bufs.gpu_dst.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = &self.bind_groups.as_ref().unwrap().fixed;
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: None,
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.fixed_pipeline);
-        pass.set_bind_group(0, &bg, &[]);
+        pass.set_bind_group(0, bg, &[]);
         pass.dispatch_workgroups(params.width.div_ceil(16), params.height.div_ceil(16), 1);
     }
 
@@ -868,7 +839,6 @@ impl WgpuBinarizer {
         // Pass 0: RGBA → linearize → sRGB gray (gray_buf), consumed by all passes below.
         self.encode_linearize_pass(enc, params);
 
-        let bufs = self.buffers.as_ref().unwrap();
         let cx_w = params.width.div_ceil(16);
         let cx_h = params.height.div_ceil(16);
         let cpw = (pw as u32).div_ceil(16);
@@ -876,225 +846,73 @@ impl WgpuBinarizer {
 
         // Pass 1: build reflected-padded image (reads gray_buf produced by linearize).
         {
-            let bg = self
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &self.build_padded_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: bufs.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: bufs.gray_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: bufs.padded_gray.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: bufs.padded_sq.as_entire_binding(),
-                        },
-                    ],
-                });
+            let bg = &self.bind_groups.as_ref().unwrap().build_padded;
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.build_padded_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg, &[]);
             pass.dispatch_workgroups(cpw, cph, 1);
         }
 
         // Pass 2: horizontal integral prefix sums.
         {
-            let bg = self
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &self.integral_rows_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: bufs.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: bufs.padded_gray.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: bufs.padded_sq.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: bufs.row_prefix.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: bufs.row_prefix_sq.as_entire_binding(),
-                        },
-                    ],
-                });
+            let bg = &self.bind_groups.as_ref().unwrap().integral_rows;
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.integral_rows_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(1, (ph as u32).div_ceil(64), 1);
+            pass.set_bind_group(0, bg, &[]);
+            pass.dispatch_workgroups(ph as u32, 1, 1);
         }
 
         // Pass 3: vertical accumulation to complete 2-D integrals.
         {
-            let bg = self
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &self.integral_cols_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: bufs.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: bufs.row_prefix.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: bufs.row_prefix_sq.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: bufs.integral.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: bufs.integral_sq.as_entire_binding(),
-                        },
-                    ],
-                });
+            let bg = &self.bind_groups.as_ref().unwrap().integral_cols;
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.integral_cols_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((iw as u32).div_ceil(64), 1, 1);
+            pass.set_bind_group(0, bg, &[]);
+            pass.dispatch_workgroups(iw as u32, 1, 1);
         }
 
         // Pass 4: background max filter — horizontal (reads gray_buf, not gpu_src).
         {
-            let bg = self
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &self.bg_max_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: bufs.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: bufs.gray_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: bufs.bg_tmp.as_entire_binding(),
-                        },
-                    ],
-                });
+            let bg = &self.bind_groups.as_ref().unwrap().bg_max_h;
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.bg_max_h_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg, &[]);
             pass.dispatch_workgroups(cx_w, cx_h, 1);
         }
 
         // Pass 5: background max filter — vertical.
         {
-            let bg = self
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &self.bg_max_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: bufs.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: bufs.bg_tmp.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: bufs.bg.as_entire_binding(),
-                        },
-                    ],
-                });
+            let bg = &self.bind_groups.as_ref().unwrap().bg_max_v;
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.bg_max_v_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg, &[]);
             pass.dispatch_workgroups(cx_w, cx_h, 1);
         }
 
         // Pass 6: final — Sauvola + Otsu + AND fusion (reads gray_buf for source pixel).
         {
-            let bg = self
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &self.final_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: bufs.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: bufs.gray_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: bufs.integral.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: bufs.integral_sq.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: bufs.bg.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: bufs.gpu_dst.as_entire_binding(),
-                        },
-                    ],
-                });
+            let bg = &self.bind_groups.as_ref().unwrap().final_pass;
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.final_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg, &[]);
             pass.dispatch_workgroups(cx_w, cx_h, 1);
         }
     }
@@ -1111,27 +929,7 @@ impl WgpuBinarizer {
         let bufs = self.buffers.as_ref().unwrap();
         let rb = self.readback.as_ref().unwrap();
 
-        let pack_bg = self
-            .ctx
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.pack_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: bufs.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: bufs.gpu_dst.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: bufs.packed_dst.as_entire_binding(),
-                    },
-                ],
-            });
+        let pack_bg = &self.bind_groups.as_ref().unwrap().pack;
 
         let mut enc = enc;
         {
@@ -1140,7 +938,7 @@ impl WgpuBinarizer {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pack_pipeline);
-            pass.set_bind_group(0, &pack_bg, &[]);
+            pass.set_bind_group(0, pack_bg, &[]);
             pass.dispatch_workgroups(packed_words.div_ceil(256), 1, 1);
         }
         enc.copy_buffer_to_buffer(&bufs.packed_dst, 0, rb, rb_offset, packed_bytes as u64);
@@ -1226,6 +1024,90 @@ impl WgpuBinarizer {
         }
     }
 
+    fn rebuild_bind_groups(&mut self) {
+        let bufs = self.buffers.as_ref().expect("buffers allocated");
+        let device = &self.ctx.device;
+        macro_rules! make_bg {
+            ($layout:expr, $($binding:literal => $buffer:expr),+ $(,)?) => {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: $layout,
+                    entries: &[
+                        $(wgpu::BindGroupEntry {
+                            binding: $binding,
+                            resource: $buffer.as_entire_binding(),
+                        }),+
+                    ],
+                })
+            };
+        }
+        self.bind_groups = Some(BinarizeBindGroups {
+            linearize: make_bg!(
+                &self.linearize_bgl,
+                0 => bufs.params,
+                1 => bufs.gpu_src,
+                2 => bufs.gray_buf,
+                3 => self.srgb_lut,
+            ),
+            fixed: make_bg!(
+                &self.fixed_bgl,
+                0 => bufs.params,
+                1 => bufs.gray_buf,
+                2 => bufs.gpu_dst,
+            ),
+            build_padded: make_bg!(
+                &self.build_padded_bgl,
+                0 => bufs.params,
+                1 => bufs.gray_buf,
+                2 => bufs.padded_gray,
+                3 => bufs.padded_sq,
+            ),
+            integral_rows: make_bg!(
+                &self.integral_rows_bgl,
+                0 => bufs.params,
+                1 => bufs.padded_gray,
+                2 => bufs.padded_sq,
+                3 => bufs.row_prefix,
+                4 => bufs.row_prefix_sq,
+            ),
+            integral_cols: make_bg!(
+                &self.integral_cols_bgl,
+                0 => bufs.params,
+                1 => bufs.row_prefix,
+                2 => bufs.row_prefix_sq,
+                3 => bufs.integral,
+                4 => bufs.integral_sq,
+            ),
+            bg_max_h: make_bg!(
+                &self.bg_max_bgl,
+                0 => bufs.params,
+                1 => bufs.gray_buf,
+                2 => bufs.bg_tmp,
+            ),
+            bg_max_v: make_bg!(
+                &self.bg_max_bgl,
+                0 => bufs.params,
+                1 => bufs.bg_tmp,
+                2 => bufs.bg,
+            ),
+            final_pass: make_bg!(
+                &self.final_bgl,
+                0 => bufs.params,
+                1 => bufs.gray_buf,
+                2 => bufs.integral,
+                3 => bufs.integral_sq,
+                4 => bufs.bg,
+                5 => bufs.gpu_dst,
+            ),
+            pack: make_bg!(
+                &self.pack_bgl,
+                0 => bufs.params,
+                1 => bufs.gpu_dst,
+                2 => bufs.packed_dst,
+            ),
+        });
+    }
+
     fn ensure_buffers(
         &mut self,
         img_bytes: usize, // pixel_count: one u8 per pixel (packed 4-per-u32 in gpu_src)
@@ -1287,6 +1169,7 @@ impl WgpuBinarizer {
             padded_bytes: pad_al,
             integral_bytes: int_al,
         });
+        self.rebuild_bind_groups();
         Ok(())
     }
 

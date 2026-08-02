@@ -264,14 +264,14 @@ pub fn encode_text_region_mapped(
     let mut idx = 0usize;
 
     // §6.4.5 step 1: initial STRIPT value (decoder reads one IADT before the loop)
-    let _ = coder.encode_integer(IntProc::Iadt, 0);
+    coder.encode_integer(IntProc::Iadt, 0)?;
 
     let sbdsoffset = params.ds_offset as i32;
 
     while idx < encoded_instances.len() {
         let current_strip = encoded_instances[idx].strip_base;
         let delta_t = current_strip - strip_t;
-        let _ = coder.encode_integer(IntProc::Iadt, delta_t / strip_width);
+        coder.encode_integer(IntProc::Iadt, delta_t / strip_width)?;
 
         if debug_encoding && delta_t != 0 {
             enc_debug_lines.push(format!(
@@ -288,7 +288,7 @@ pub fn encode_text_region_mapped(
             let delta_s;
             if first_symbol_in_strip {
                 delta_s = item.x - first_s;
-                let _ = coder.encode_integer(IntProc::Iafs, delta_s);
+                coder.encode_integer(IntProc::Iafs, delta_s)?;
                 first_s += delta_s;
                 current_s = first_s;
                 first_symbol_in_strip = false;
@@ -299,7 +299,7 @@ pub fn encode_text_region_mapped(
                 // no-op, but it makes the encoder behave correctly when callers set a
                 // non-zero text_ds_offset.
                 delta_s = item.x - current_s - sbdsoffset;
-                let _ = coder.encode_integer(IntProc::Iads, delta_s);
+                coder.encode_integer(IntProc::Iads, delta_s)?;
                 current_s += delta_s + sbdsoffset;
             }
 
@@ -318,15 +318,15 @@ pub fn encode_text_region_mapped(
             }
 
             if strip_width > 1 {
-                let _ = coder.encode_integer(IntProc::Iait, item.t_offset);
+                coder.encode_integer(IntProc::Iait, item.t_offset)?;
             }
             if symbol_id_bits > 0 {
-                let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+                coder.encode_iaid(item.symbol_id, symbol_id_bits as u8)?;
             }
             current_s += item.symbol_width - 1;
             idx += 1;
         }
-        let _ = coder.encode_oob(IntProc::Iads);
+        coder.encode_oob(IntProc::Iads)?;
     }
 
     // Decode simulation: replay §6.4.5 from the encoder's perspective
@@ -620,12 +620,12 @@ pub fn encode_text_region(
     let mut idx = 0usize;
 
     // §6.4.5 step 1: initial STRIPT value (decoder reads one IADT before the loop)
-    let _ = coder.encode_integer(IntProc::Iadt, 0);
+    coder.encode_integer(IntProc::Iadt, 0)?;
 
     while idx < encoded_instances.len() {
         let current_strip = encoded_instances[idx].strip_base;
         let delta_t = current_strip - strip_t;
-        let _ = coder.encode_integer(IntProc::Iadt, delta_t / strip_width);
+        coder.encode_integer(IntProc::Iadt, delta_t / strip_width)?;
         strip_t = current_strip;
 
         let mut first_symbol_in_strip = true;
@@ -634,26 +634,26 @@ pub fn encode_text_region(
             let item = encoded_instances[idx];
             if first_symbol_in_strip {
                 let delta_fs = item.x - first_s;
-                let _ = coder.encode_integer(IntProc::Iafs, delta_fs);
+                coder.encode_integer(IntProc::Iafs, delta_fs)?;
                 first_s += delta_fs;
                 current_s = first_s;
                 first_symbol_in_strip = false;
             } else {
                 let delta_s = item.x - current_s;
-                let _ = coder.encode_integer(IntProc::Iads, delta_s);
+                coder.encode_integer(IntProc::Iads, delta_s)?;
                 current_s += delta_s;
             }
 
             if strip_width > 1 {
-                let _ = coder.encode_integer(IntProc::Iait, item.t_offset);
+                coder.encode_integer(IntProc::Iait, item.t_offset)?;
             }
             if symbol_id_bits > 0 {
-                let _ = coder.encode_iaid(item.symbol_id, symbol_id_bits as u8);
+                coder.encode_iaid(item.symbol_id, symbol_id_bits as u8)?;
             }
             current_s += item.symbol_width - 1;
             idx += 1;
         }
-        let _ = coder.encode_oob(IntProc::Iads);
+        coder.encode_oob(IntProc::Iads)?;
     }
 
     coder.flush(true);

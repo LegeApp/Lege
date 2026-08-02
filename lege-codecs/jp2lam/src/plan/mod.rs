@@ -209,7 +209,10 @@ impl EncodingPlan {
         } else {
             WaveletTransform::Irreversible97
         };
-        let tile = derive_tile_plan(image, options, 0)?;
+        let use_mct = use_mct(encoding_colorspace);
+        let lossy_rgb_mct = !is_lossless && use_mct;
+        let tile = derive_tile_plan(image, options, 0, lossy_rgb_mct)?;
+        validate_tile_count(image.width, image.height, tile.width, tile.height)?;
         let decomposition_cap = max_target_decompositions(encoding_colorspace);
         let decomposition_levels = max_decompositions(image.width, image.height)
             .min(decomposition_cap)
@@ -219,7 +222,6 @@ impl EncodingPlan {
                 tile.width,
                 tile.height,
             )) as u8;
-        let use_mct = use_mct(encoding_colorspace);
         let target_rate = if is_lossless {
             None
         } else {
@@ -367,6 +369,7 @@ fn derive_tile_plan(
     image: &ImageView<'_>,
     options: &EncodeOptions,
     _decomposition_levels: u8,
+    lossy_rgb_mct: bool,
 ) -> Result<TilePlan> {
     match options.tile_policy {
         TilePolicy::Single => Ok(TilePlan {
@@ -390,7 +393,8 @@ fn derive_tile_plan(
             height,
         }),
         TilePolicy::Auto => {
-            let (width, height) = derive_auto_tile_dimensions(image, &options.resource_limits)?;
+            let (width, height) =
+                derive_auto_tile_dimensions(image, &options.resource_limits, lossy_rgb_mct)?;
             Ok(TilePlan {
                 index: 0,
                 width: width.min(image.width),
@@ -398,6 +402,25 @@ fn derive_tile_plan(
             })
         }
     }
+}
+
+fn validate_tile_count(
+    image_width: u32,
+    image_height: u32,
+    tile_width: u32,
+    tile_height: u32,
+) -> Result<()> {
+    let tiles_x = image_width.div_ceil(tile_width);
+    let tiles_y = image_height.div_ceil(tile_height);
+    let tile_count = tiles_x
+        .checked_mul(tiles_y)
+        .ok_or_else(|| Jp2LamError::InvalidInput("JPEG 2000 tile count overflow".to_string()))?;
+    if tile_count > u32::from(u16::MAX) + 1 {
+        return Err(Jp2LamError::InvalidInput(format!(
+            "JPEG 2000 tile grid has {tile_count} tiles; Isot can represent at most 65536"
+        )));
+    }
+    Ok(())
 }
 
 /// Maximum common decomposition count that keeps every actual tile's LL
@@ -439,6 +462,7 @@ fn max_tile_grid_decompositions(
 fn derive_auto_tile_dimensions(
     image: &ImageView<'_>,
     limits: &ResourceLimits,
+    lossy_rgb_mct: bool,
 ) -> Result<(u32, u32)> {
     const DEFAULT_EDGE: u32 = 2048;
     const LARGE_EDGE: u32 = 4096;
@@ -455,7 +479,7 @@ fn derive_auto_tile_dimensions(
     while edge >= MIN_EDGE {
         let tile_width = edge.min(image.width);
         let tile_height = edge.min(image.height);
-        let edge_bytes = estimate_auto_tile_working_bytes(image, tile_width, tile_height)?;
+        let edge_bytes = estimate_auto_tile_working_bytes(tile_width, tile_height, lossy_rgb_mct)?;
         if edge_bytes <= max_working_memory {
             return Ok((tile_width, tile_height));
         }
@@ -464,7 +488,8 @@ fn derive_auto_tile_dimensions(
 
     let minimum_width = MIN_EDGE.min(image.width);
     let minimum_height = MIN_EDGE.min(image.height);
-    let minimum_bytes = estimate_auto_tile_working_bytes(image, minimum_width, minimum_height)?;
+    let minimum_bytes =
+        estimate_auto_tile_working_bytes(minimum_width, minimum_height, lossy_rgb_mct)?;
     Err(Jp2LamError::InvalidInput(format!(
         "max_working_memory {max_working_memory} bytes is below the estimated \
          {minimum_bytes} bytes needed for a {minimum_width}x{minimum_height} active tile"
@@ -472,9 +497,9 @@ fn derive_auto_tile_dimensions(
 }
 
 fn estimate_auto_tile_working_bytes(
-    _image: &ImageView<'_>,
     tile_width: u32,
     tile_height: u32,
+    lossy_rgb_mct: bool,
 ) -> Result<usize> {
     let pixels = usize::try_from(tile_width)
         .ok()
@@ -486,9 +511,13 @@ fn estimate_auto_tile_working_bytes(
         .ok_or_else(|| Jp2LamError::InvalidInput("tile pixel count overflow".to_string()))?;
     // The public memory limit governs encoder-owned transient storage. Borrowed
     // source samples remain caller-owned and are deliberately excluded.
+    // Gray and non-MCT paths need an input and working/output plane. Lossy
+    // RGB ICT holds the three source i32 planes plus one f32 output plane
+    // concurrently while preparing each transformed component.
+    let active_planes = if lossy_rgb_mct { 4 } else { 2 };
     let active_component_work = pixels
         .checked_mul(std::mem::size_of::<i32>())
-        .and_then(|plane| plane.checked_mul(2))
+        .and_then(|plane| plane.checked_mul(active_planes))
         .ok_or_else(|| Jp2LamError::InvalidInput("tile working-memory overflow".to_string()))?;
 
     Ok(active_component_work)
@@ -679,6 +708,28 @@ mod tests {
         assert_eq!(plan.tile.width, 8);
         assert_eq!(plan.tile.height, 8);
         assert_eq!(crate::tiling::tile_grid(&plan).num_tiles(), 4);
+    }
+
+    #[test]
+    fn fixed_tile_grid_rejects_more_than_isot_can_address() {
+        let image = gray_image(257, 257);
+        let options = EncodeOptions {
+            tile_policy: TilePolicy::Fixed {
+                width: 1,
+                height: 1,
+            },
+            ..Default::default()
+        };
+
+        let err = EncodingPlan::build(&image, &options).expect_err("tile count must be bounded");
+        assert!(err.to_string().contains("65536"), "{err}");
+    }
+
+    #[test]
+    fn auto_memory_estimate_accounts_for_lossy_rgb_ict_planes() {
+        let bytes =
+            estimate_auto_tile_working_bytes(2048, 2048, true).expect("representable working set");
+        assert_eq!(bytes, 64 * 1024 * 1024);
     }
 
     #[test]

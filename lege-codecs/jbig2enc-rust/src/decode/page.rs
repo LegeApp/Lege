@@ -119,7 +119,17 @@ pub(crate) fn decode_symbol_dict_into(
     limits: &DecodeLimits,
     ctx: &mut DecoderContext,
 ) -> Result<Arc<SymbolDictionary>, DecodeError> {
-    let imported = local.gather_symbols(seg.header.number, &seg.header.referred_to, globals)?;
+    let mut imported = std::mem::take(&mut ctx.symbol_scratch);
+    imported.clear();
+    if let Err(err) = local.gather_symbols_into(
+        seg.header.number,
+        &seg.header.referred_to,
+        globals,
+        &mut imported,
+    ) {
+        ctx.symbol_scratch = imported;
+        return Err(err);
+    }
     let tables = local.gather_huffman_tables(&seg.header.referred_to, globals);
 
     // §7.4.2.1.1 bits 8/9: "bitmap coding context used" / "retained".
@@ -153,28 +163,34 @@ pub(crate) fn decode_symbol_dict_into(
     let iaid_ctx = &mut ctx.iaid_contexts;
     let refine_ctx = &mut ctx.refinement_contexts[..REFINEMENT_CONTEXT_COUNT];
     let scratch = &mut ctx.generic_scratch;
-    let dict = decode_symbol_dictionary(
+    let dict_result = decode_symbol_dictionary(
         seg.data, &imported, &tables, limits, int_ctx, iaid_ctx, generic, refine_ctx, scratch,
         !ctx_used,
-    )
-    .map_err(|source| annotate(seg.header.number, source))?;
+    );
+    imported.clear();
+    ctx.symbol_scratch = imported;
+    let dict = dict_result.map_err(|source| annotate(seg.header.number, source))?;
 
     // §6.5.5 step 7: preserve this dictionary's statistics for a later importer.
     if ctx_retained {
-        local.insert_retained(
+        local.insert_retained_limited(
             seg.header.number,
             crate::decode::store::RetainedContexts {
                 generic: ctx.generic_contexts[..crate::decode::context::GENERIC_CONTEXT_COUNT]
                     .to_vec(),
                 refine: ctx.refinement_contexts[..REFINEMENT_CONTEXT_COUNT].to_vec(),
             },
-        );
+            globals,
+            limits,
+        )?;
     }
 
     let arc = Arc::new(dict);
-    local.insert(
+    local.insert_limited(
         seg.header.number,
         DecodedSegment::SymbolDictionary(arc.clone()),
+        globals,
+        limits,
     )?;
     Ok(arc)
 }
@@ -191,9 +207,11 @@ pub(crate) fn decode_pattern_dict_into(
     let dict = decode_pattern_dictionary(seg.data, limits, generic, scratch)
         .map_err(|source| annotate(seg.header.number, source))?;
     let arc = Arc::new(dict);
-    local.insert(
+    local.insert_limited(
         seg.header.number,
         DecodedSegment::PatternDictionary(arc.clone()),
+        None,
+        limits,
     )?;
     Ok(arc)
 }
@@ -207,9 +225,11 @@ pub(crate) fn decode_tables_into(
 ) -> Result<(), DecodeError> {
     let table = crate::decode::huffman::parse_custom_table(seg.data, limits)
         .map_err(|source| annotate(seg.header.number, source))?;
-    local.insert(
+    local.insert_limited(
         seg.header.number,
         DecodedSegment::HuffmanTable(Arc::new(table)),
+        None,
+        limits,
     )
 }
 
@@ -379,6 +399,12 @@ fn run_segments(
     ctx.recovery_events.extend(doc.recovery.iter().cloned());
 
     for seg in &doc.segments {
+        store.record_dependency_depth(
+            seg.header.number,
+            &seg.header.referred_to,
+            globals_store,
+            limits,
+        )?;
         let ty = seg.header.segment_type();
         match ty {
             Some(SegmentType::SymbolDictionary) => {
@@ -390,11 +416,17 @@ fn run_segments(
                 | SegmentType::ImmediateLosslessTextRegion
                 | SegmentType::IntermediateTextRegion,
             ) => {
-                let symbols = store.gather_symbols(
+                let mut symbols = std::mem::take(&mut ctx.symbol_scratch);
+                symbols.clear();
+                if let Err(err) = store.gather_symbols_into(
                     seg.header.number,
                     &seg.header.referred_to,
                     globals_store,
-                )?;
+                    &mut symbols,
+                ) {
+                    ctx.symbol_scratch = symbols;
+                    return Err(err);
+                }
                 let tables = store.gather_huffman_tables(&seg.header.referred_to, globals_store);
                 // Ensure the refinement bank is sized, then split disjoint field
                 // borrows for the integer, IAID, and refinement context banks.
@@ -407,8 +439,10 @@ fn run_segments(
                 let refine_ctx = &mut ctx.refinement_contexts[..REFINEMENT_CONTEXT_COUNT];
                 let result = decode_text_region(
                     seg.data, &symbols, &tables, limits, int_ctx, iaid_ctx, refine_ctx,
-                )
-                .map_err(|source| annotate(seg.header.number, source))?;
+                );
+                symbols.clear();
+                ctx.symbol_scratch = symbols;
+                let result = result.map_err(|source| annotate(seg.header.number, source))?;
                 if let Some(spare) = place_or_store(
                     matches!(ty, Some(SegmentType::IntermediateTextRegion)),
                     seg.header.number,
@@ -768,7 +802,12 @@ fn place_or_store(
     limits: &DecodeLimits,
 ) -> Result<Option<MonoBitmap>, DecodeError> {
     if intermediate {
-        store.insert(seg_number, DecodedSegment::Region(Arc::new(region_bm)))?;
+        store.insert_limited(
+            seg_number,
+            DecodedSegment::Region(Arc::new(region_bm)),
+            None,
+            limits,
+        )?;
         Ok(None)
     } else {
         let target = resolve_page(pages, current, page_association)?;

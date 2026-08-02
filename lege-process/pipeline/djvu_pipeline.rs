@@ -208,13 +208,14 @@ pub async fn create_and_run_djvu_source_pipeline(
     // page pipeline. Inference itself is additionally bounded by the shared
     // GPU session pool.
     let pipeline_config = PipelineRuntimeLimits::djvu_from_config(&config);
+    let cancellation = lege_pdf_read::CancellationToken::new();
     let needs_margin_pass = matches!(
         config.margin_settings(),
         crate::margin::MarginSettings::StandardizeAndCenter
             | crate::margin::MarginSettings::CropAndResize
     );
     let (margin_analysis, detection_cache) = if needs_margin_pass {
-        let (analysis, cache) = perform_document_margin_analysis(
+        let analysis_future = perform_document_margin_analysis(
             source.clone(),
             config.clone(),
             shared_inference_handle.clone(),
@@ -222,8 +223,19 @@ pub async fn create_and_run_djvu_source_pipeline(
             page_index_offset..page_index_offset + total_pages,
             pipeline_config.page_workers,
             progress_tracker,
-        )
-        .await?;
+            cancellation.clone(),
+        );
+        let (analysis, cache) = tokio::select! {
+            result = analysis_future => result?,
+            signal = shutdown_rx.recv() => {
+                cancellation.cancel();
+                let message = signal
+                    .ok()
+                    .and_then(|signal| signal.message)
+                    .unwrap_or_else(|| "User requested cancellation".to_string());
+                return Err(anyhow!("Processing cancelled during margin analysis: {message}"));
+            }
+        };
         (Some(Arc::new(analysis)), Arc::new(cache))
     } else {
         (
@@ -275,6 +287,7 @@ pub async fn create_and_run_djvu_source_pipeline(
             source,
             config,
             page_start..page_end,
+            cancellation.clone(),
             render_tx,
             rc,
             dc,
@@ -374,6 +387,7 @@ pub async fn create_and_run_djvu_source_pipeline(
         let layout_enabled = layout_enabled;
         let concurrency = pipeline_config.process_workers;
         let margin_analysis = margin_analysis.clone();
+        let binarize_cancellation = cancellation.clone();
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
             info_log!(
@@ -420,6 +434,7 @@ pub async fn create_and_run_djvu_source_pipeline(
                         let config_clone = config.clone();
                         let document_session_clone = document_session.clone();
                         let margin_analysis = margin_analysis.clone();
+                        let page_cancellation = binarize_cancellation.clone();
                         // Spawn processing task
                         let task = tokio::spawn(async move {
                             process_single_djvu_page(
@@ -428,6 +443,7 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 inference_data,
                                 page_index_offset,
                                 margin_analysis,
+                                page_cancellation,
                             ).await
                         });
                         in_flight.push(task);
@@ -499,6 +515,7 @@ pub async fn create_and_run_djvu_source_pipeline(
         let concurrency = pipeline_config.djvu_encode_workers;
         let epub_sidecar_output = epub_sidecar_output.clone();
         let epub_hocr_pages = epub_hocr_pages.clone();
+        let encode_cancellation = cancellation.clone();
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
             info_log!(
@@ -533,7 +550,11 @@ pub async fn create_and_run_djvu_source_pipeline(
                             }
                         }
                         let orchestrator = orchestrator.clone();
+                        let page_cancellation = encode_cancellation.clone();
                         in_flight.push(Box::pin(async move {
+                            if page_cancellation.is_cancelled() {
+                                return Err(anyhow!("DjVu composition cancelled before page encode"));
+                            }
                             let page_data = PageData {
                                 index: binarized_data.index,
                                 preserve_full_color: binarized_data.preserve_full_color,
@@ -557,6 +578,9 @@ pub async fn create_and_run_djvu_source_pipeline(
                             )
                             .await
                             .map_err(|e| anyhow!("DjVu compose task panicked: {}", e))??;
+                            if page_cancellation.is_cancelled() {
+                                return Err(anyhow!("DjVu composition cancelled after page encode"));
+                            }
 
                             Ok(ComposedDjvuPage { entry })
                         }));
@@ -595,10 +619,11 @@ pub async fn create_and_run_djvu_source_pipeline(
                     crate::runtime_stats::spawn_blocking_stage(
                         crate::runtime_stats::Stage::Writer,
                         move || {
-                            crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
+                            crate::pipeline::epub_pipeline::build_epub_from_hocr_pages_cancellable(
                                 &hocr_pages,
                                 &title,
                                 &epub_path,
+                                Some(&encode_cancellation),
                             )
                         },
                     )
@@ -620,48 +645,65 @@ pub async fn create_and_run_djvu_source_pipeline(
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Waiting for pipeline stages to complete...");
 
-    use crate::pipeline::helper_functions::await_stage_or_cancel;
+    use crate::pipeline::helper_functions::await_stage_or_cancel_with_token;
     let h_infer = infer_task.abort_handle();
     let h_binarize = binarize_task.abort_handle();
     let h_encode = encode_task.abort_handle();
 
-    await_stage_or_cancel(
+    await_stage_or_cancel_with_token(
         &mut render_task,
         &mut shutdown_rx,
         "render",
         &[h_infer.clone(), h_binarize.clone(), h_encode.clone()],
+        Some(&cancellation),
     )
     .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Render stage complete");
 
-    await_stage_or_cancel(
+    await_stage_or_cancel_with_token(
         &mut infer_task,
         &mut shutdown_rx,
         "inference",
         &[h_binarize.clone(), h_encode.clone()],
+        Some(&cancellation),
     )
     .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Inference stage complete");
 
-    await_stage_or_cancel(
+    await_stage_or_cancel_with_token(
         &mut binarize_task,
         &mut shutdown_rx,
         "binarization",
         &[h_encode.clone()],
+        Some(&cancellation),
     )
     .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Binarization stage complete");
 
-    await_stage_or_cancel(&mut encode_task, &mut shutdown_rx, "encoding", &[]).await?;
+    await_stage_or_cancel_with_token(
+        &mut encode_task,
+        &mut shutdown_rx,
+        "encoding",
+        &[],
+        Some(&cancellation),
+    )
+    .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Encoding stage complete");
 
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Waiting for writer actor to complete document assembly...");
-    await_stage_or_cancel(&mut writer_task, &mut shutdown_rx, "document assembly", &[]).await?;
+    await_stage_or_cancel_with_token(
+        &mut writer_task,
+        &mut shutdown_rx,
+        "document assembly",
+        &[],
+        Some(&cancellation),
+    )
+    .await?;
     #[cfg(feature = "debug-logging")]
     info_log!(
         "[DJVU-Parallel] Document assembly complete: {}",
@@ -784,7 +826,11 @@ async fn process_single_djvu_page(
     inference_data: DjvuInferenceData,
     page_index_offset: usize,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
+    cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<Option<DjvuBinarizedData>> {
+    if cancellation.is_cancelled() {
+        return Err(anyhow!("DjVu page processing cancelled before CPU work"));
+    }
     let page_index = inference_data.rendered.index;
     let local_index = page_index.saturating_sub(page_index_offset);
     let preserve_full_color = should_preserve_cover_page(page_index, &config);
@@ -802,6 +848,9 @@ async fn process_single_djvu_page(
     )
     .await
     .map_err(|e| anyhow!("CPU task panicked: {}", e))??;
+    if cancellation.is_cancelled() {
+        return Err(anyhow!("DjVu page processing cancelled after CPU work"));
+    }
     let DjvuPageProcessingOutput {
         adjusted_image,
         adjusted_detections,
@@ -827,6 +876,9 @@ async fn process_single_djvu_page(
         page_index,
     )
     .await?;
+    if cancellation.is_cancelled() {
+        return Err(anyhow!("DjVu page processing cancelled after OCR"));
+    }
     Ok(Some(DjvuBinarizedData {
         index: local_index,
         preserve_full_color,

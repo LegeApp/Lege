@@ -7,7 +7,7 @@
 //! discrepancy, audited separately), 1/4-byte page association, and the
 //! unknown-data-length sentinel (flagged `Unsupported` for now).
 
-use crate::decode::error::{ParseError, UnsupportedFeature};
+use crate::decode::error::{DecodeError, LimitError, ParseError, UnsupportedFeature};
 use crate::shared::reader::Reader;
 use crate::shared::segment::SegmentType;
 
@@ -77,7 +77,14 @@ fn referred_size(number: u32) -> usize {
 
 /// Parse one segment header from `reader` (T.88 §7.2). On success the reader is
 /// positioned at the first byte of the segment *data*.
+#[deprecated(
+    note = "trusted-input helper; use parse_segment_header_with_limits for untrusted data"
+)]
 pub fn parse_segment_header(reader: &mut Reader<'_>) -> Result<SegmentHeader, ParseError> {
+    parse_segment_header_impl(reader)
+}
+
+fn parse_segment_header_impl(reader: &mut Reader<'_>) -> Result<SegmentHeader, ParseError> {
     let start = reader.position();
 
     // §7.2.2 Segment number.
@@ -114,9 +121,14 @@ pub fn parse_segment_header(reader: &mut Reader<'_>) -> Result<SegmentHeader, Pa
             })?;
         let retain = reader.take(retain_bytes_len)?.to_vec();
         (count, RetainFlags::Long(retain))
-    } else {
+    } else if short_count <= 4 {
         // Short form: low 5 bits are retention flags, count is 0..=4.
         (short_count as u32, RetainFlags::Short(count_byte & 0x1F))
+    } else {
+        return Err(ParseError::InvalidSegmentHeader {
+            offset: reader.position().saturating_sub(1),
+            reason: "reserved short-form referred-to count",
+        });
     };
 
     // §7.2.5 Referred-to segment numbers.
@@ -159,6 +171,54 @@ pub fn parse_segment_header(reader: &mut Reader<'_>) -> Result<SegmentHeader, Pa
     })
 }
 
+/// Parse one segment header while enforcing the caller's referred-segment
+/// limit before allocating either the retention flags or referred-number
+/// vector.
+///
+/// The low-level [`parse_segment_header`] remains available for tools that only
+/// parse trusted headers. Document decoding must use this bounded entry point:
+/// in the long form the encoded count can be as large as 2^29-1, so checking
+/// only after parsing allows an attacker-controlled allocation first.
+pub fn parse_segment_header_with_limits(
+    reader: &mut Reader<'_>,
+    limits: &crate::shared::limits::DecodeLimits,
+) -> Result<SegmentHeader, DecodeError> {
+    parse_segment_header_limited(reader, limits.max_referred_segments)
+}
+
+pub(crate) fn parse_segment_header_limited(
+    reader: &mut Reader<'_>,
+    max_referred_segments: usize,
+) -> Result<SegmentHeader, DecodeError> {
+    // Segment number (4), flags (1), then the count/retention byte.
+    let prefix = reader.peek(6)?;
+    let count_byte = prefix[5];
+    let short_count = (count_byte >> 5) & 0x07;
+    let count = if short_count == 7 {
+        // The first byte of the four-byte long-form count is the byte already
+        // at offset 5. Peek through the remaining three count bytes without
+        // advancing or allocating.
+        let long_prefix = reader.peek(9)?;
+        let raw = u32::from_be_bytes([
+            long_prefix[5],
+            long_prefix[6],
+            long_prefix[7],
+            long_prefix[8],
+        ]);
+        (raw & 0x1FFF_FFFF) as u64
+    } else {
+        short_count as u64
+    };
+    if count > max_referred_segments as u64 {
+        return Err(DecodeError::limit(LimitError::Count {
+            what: "referred-to segments",
+            value: count,
+            limit: max_referred_segments as u64,
+        }));
+    }
+    parse_segment_header_impl(reader).map_err(DecodeError::Parse)
+}
+
 /// Reject a header whose data length is unknown (T.88 §7.2.7). The self-decoder
 /// (Phase 1) never emits unknown-length segments, so this is `Unsupported`.
 pub fn ensure_known_length(header: &SegmentHeader) -> Result<u32, UnsupportedFeature> {
@@ -170,7 +230,7 @@ pub fn ensure_known_length(header: &SegmentHeader) -> Result<u32, UnsupportedFea
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(deprecated, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -255,6 +315,24 @@ mod tests {
         assert_eq!(referred_size(65_535), 2);
         assert_eq!(referred_size(65_536), 2);
         assert_eq!(referred_size(65_537), 4);
+    }
+
+    #[test]
+    fn reserved_short_form_counts_are_rejected() {
+        for count in [5u8, 6] {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&1u32.to_be_bytes());
+            bytes.push(48);
+            bytes.push(count << 5);
+            let mut r = Reader::new(&bytes);
+            assert!(matches!(
+                parse_segment_header(&mut r),
+                Err(ParseError::InvalidSegmentHeader {
+                    reason: "reserved short-form referred-to count",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

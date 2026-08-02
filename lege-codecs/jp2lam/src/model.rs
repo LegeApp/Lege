@@ -603,17 +603,8 @@ impl Image {
     ///
     /// `data.len()` must equal `width * height * 3`.
     pub fn from_rgb_bytes(width: u32, height: u32, data: &[u8]) -> crate::error::Result<Self> {
-        let expected = (width as usize) * (height as usize) * 3;
-        if data.len() != expected {
-            return Err(crate::error::Jp2LamError::InvalidInput(format!(
-                "RGB buffer length {} does not match {}×{}×3={}",
-                data.len(),
-                width,
-                height,
-                expected
-            )));
-        }
-        let pixel_count = (width * height) as usize;
+        validate_exact_len("RGB", data.len(), width, height, 3)?;
+        let pixel_count = data.len() / 3;
         let mut r = Vec::with_capacity(pixel_count);
         let mut g = Vec::with_capacity(pixel_count);
         let mut b = Vec::with_capacity(pixel_count);
@@ -638,16 +629,7 @@ impl Image {
     ///
     /// `data.len()` must equal `width * height`.
     pub fn from_gray_bytes(width: u32, height: u32, data: &[u8]) -> crate::error::Result<Self> {
-        let expected = (width as usize) * (height as usize);
-        if data.len() != expected {
-            return Err(crate::error::Jp2LamError::InvalidInput(format!(
-                "Gray buffer length {} does not match {}×{}={}",
-                data.len(),
-                width,
-                height,
-                expected
-            )));
-        }
+        validate_exact_len("Gray", data.len(), width, height, 1)?;
         let samples: Vec<i32> = data.iter().map(|&v| i32::from(v)).collect();
         Ok(Self {
             width,
@@ -961,5 +943,17 @@ mod tests {
         assert_eq!(view.colorspace, ColorSpace::Gray);
         assert_eq!(view.components[0].sample_at(0, 1), Some(3));
         assert_eq!(view.components[0].sample_at(1, 1), Some(4));
+    }
+
+    #[test]
+    fn owned_image_constructors_reject_zero_and_overflowing_dimensions() {
+        for result in [
+            Image::from_gray_bytes(0, 1, &[]),
+            Image::from_rgb_bytes(1, 0, &[]),
+            Image::from_gray_bytes(u32::MAX, u32::MAX, &[]),
+            Image::from_rgb_bytes(u32::MAX, u32::MAX, &[]),
+        ] {
+            assert!(result.is_err());
+        }
     }
 }

@@ -75,7 +75,10 @@ impl SelectionModel {
         substrate
             .characters
             .iter()
-            .filter(|character| selection.range.contains(&character.char_index))
+            .filter(|character| {
+                selection.range.start < character.char_index.saturating_add(character.utf16_len)
+                    && character.char_index < selection.range.end
+            })
             .map(|character| character.bounds)
             .collect::<Vec<_>>()
             .into()
@@ -171,7 +174,7 @@ pub fn hit_test(page: PageIndex, substrate: &TextSubstrate, point: PointF) -> Op
     let after = point.x >= character.bounds.center().x;
     Some(TextPosition {
         page,
-        utf16_index: character.char_index + usize::from(after),
+        utf16_index: character.char_index + if after { character.utf16_len } else { 0 },
     })
 }
 
@@ -245,6 +248,7 @@ mod tests {
                     bold: false,
                     object_id: 0,
                     char_index: index,
+                    utf16_len: 1,
                 })
                 .collect::<Vec<_>>()
                 .into(),
@@ -279,5 +283,36 @@ mod tests {
         );
         assert_eq!(selection.anchor.map(|p| p.utf16_index), Some(6));
         assert_eq!(selection.focus.map(|p| p.utf16_index), Some(11));
+    }
+
+    #[test]
+    fn surrogate_pair_geometry_advances_over_both_utf16_units() {
+        let utf16: Arc<[u16]> = "😀".encode_utf16().collect::<Vec<_>>().into();
+        let substrate = TextSubstrate {
+            utf16,
+            characters: vec![CharacterGeometry {
+                unicode: Some('😀'),
+                origin: PointF { x: 0.0, y: 10.0 },
+                bounds: RectF {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 12.0,
+                    height: 12.0,
+                },
+                nominal_height: 12.0,
+                font_size: 12.0,
+                bold: false,
+                object_id: 0,
+                char_index: 0,
+                utf16_len: 2,
+            }]
+            .into(),
+            lines: Arc::new(PageLineSet::none(PageIndex(0))),
+        };
+
+        let before = hit_test(PageIndex(0), &substrate, PointF { x: 1.0, y: 3.0 });
+        let after = hit_test(PageIndex(0), &substrate, PointF { x: 11.0, y: 3.0 });
+        assert_eq!(before.map(|p| p.utf16_index), Some(0));
+        assert_eq!(after.map(|p| p.utf16_index), Some(2));
     }
 }

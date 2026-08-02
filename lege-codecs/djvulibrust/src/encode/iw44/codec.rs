@@ -325,38 +325,20 @@ impl Codec {
     /// Finish processing a slice by reducing quantization thresholds (matches C44's finish_code_slice)
     /// Returns false if encoding should terminate (all thresholds became zero)
     pub fn finish_slice(&mut self, _cur_bit: i32, cur_band: i32) -> bool {
-        // Reduce quantization threshold for current band
-        // In lossless mode, keep thresholds at minimum of 1 (not 0)
-        let min_threshold = if self.lossless { 1 } else { 0 };
-
+        // IW44's wire format has no alternate lossless termination schedule:
+        // DjVuLibre always lets these thresholds reach zero before ending the
+        // final band.  Pinning them at one creates an invalid tail of slices.
         let new_hi = self.quant_hi[cur_band as usize] >> 1;
-        self.quant_hi[cur_band as usize] = new_hi.max(min_threshold);
+        self.quant_hi[cur_band as usize] = new_hi;
 
         if cur_band == 0 {
             for i in 0..16 {
                 let new_lo = self.quant_lo[i] >> 1;
-                self.quant_lo[i] = new_lo.max(min_threshold);
+                self.quant_lo[i] = new_lo;
             }
         }
 
-        // Lossless mode: continue until we've done multiple passes at threshold=1
-        if self.lossless {
-            // Check if all thresholds have reached the minimum (1)
-            let all_at_min = self.quant_hi[1..].iter().all(|&t| t <= min_threshold)
-                && self.quant_lo.iter().all(|&t| t <= min_threshold);
-
-            // In lossless mode, after all thresholds reach 1, do additional passes
-            // to ensure all coefficients with |value| >= 1 are encoded
-            if all_at_min {
-                // Continue for more slices to capture all coefficients
-                // We'll rely on the slice limit or bytes limit to stop
-                return true;
-            }
-            return true; // Keep encoding
-        }
-
-        // Lossy mode termination conditions
-        // Check if all quantization thresholds are zero (C44 termination condition)
+        // Check if all quantization thresholds are zero (IW44 termination condition)
         let all_zero =
             self.quant_hi[1..].iter().all(|&t| t == 0) && self.quant_lo.iter().all(|&t| t == 0);
         if all_zero {

@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
@@ -108,6 +109,10 @@ fn write_settings(settings: ViewerSettings) -> std::io::Result<()> {
     let Some(path) = settings_path() else {
         return Ok(());
     };
+    write_settings_to_path(settings, &path)
+}
+
+fn write_settings_to_path(settings: ViewerSettings, path: &std::path::Path) -> std::io::Result<()> {
     let stored = StoredSettings {
         version: SETTINGS_VERSION,
         trim_enabled: settings.trim_enabled,
@@ -117,30 +122,31 @@ fn write_settings(settings: ViewerSettings) -> std::io::Result<()> {
         return Ok(());
     };
     std::fs::create_dir_all(parent)?;
-    let temp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(&stored).map_err(std::io::Error::other)?;
-    std::fs::write(&temp, bytes)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    std::fs::rename(temp, path)
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(&bytes)?;
+    temp.as_file_mut().sync_all()?;
+    // `persist` atomically replaces an existing destination where the
+    // platform supports it. Most importantly, it never deletes the last good
+    // settings file before the replacement has been written successfully.
+    temp.persist(path).map(|_| ()).map_err(|error| error.error)
 }
 
 fn settings_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .map(|path| path.join("Lege").join("viewer-settings.json"));
+            .map(|path| path.join("Lege").join("viewer-settings.json"))
     }
     #[cfg(target_os = "macos")]
     {
-        return std::env::var_os("HOME").map(PathBuf::from).map(|path| {
+        std::env::var_os("HOME").map(PathBuf::from).map(|path| {
             path.join("Library")
                 .join("Application Support")
                 .join("Lege")
                 .join("viewer-settings.json")
-        });
+        })
     }
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
@@ -148,5 +154,41 @@ fn settings_path() -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
             .map(|path| path.join("lege").join("viewer-settings.json"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn settings_replace_keeps_a_complete_latest_document() {
+        let directory = tempfile::tempdir().expect("temporary settings directory");
+        let path = directory.path().join("viewer-settings.json");
+        write_settings_to_path(
+            ViewerSettings {
+                trim_enabled: false,
+                color_mode: ColorMode::Original,
+            },
+            &path,
+        )
+        .expect("initial settings");
+        write_settings_to_path(
+            ViewerSettings {
+                trim_enabled: true,
+                color_mode: ColorMode::Night,
+            },
+            &path,
+        )
+        .expect("replacement settings");
+
+        let stored: StoredSettings =
+            serde_json::from_slice(&std::fs::read(path).expect("saved settings"))
+                .expect("complete JSON document");
+        assert_eq!(stored.version, SETTINGS_VERSION);
+        assert!(stored.trim_enabled);
+        assert!(matches!(stored.color_mode, StoredColorMode::Night));
     }
 }

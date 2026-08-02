@@ -1542,7 +1542,7 @@ mod tests {
 ///   q=75 -> λ≈4.4e3 (light compression, minor artifacts)
 ///   q=99 -> λ≈1.2e3 (perceptually lossless)
 ///   q=100 -> λ=0    (mathematically lossless)
-pub fn quality_to_lambda(quality: u8, pixel_count: u32) -> f64 {
+pub fn quality_to_lambda(quality: u8, pixel_count: u64) -> f64 {
     if quality >= 100 {
         return 0.0;
     }
@@ -1617,7 +1617,7 @@ pub fn select_for_document_trim(
 pub fn select_for_quality(
     curves: &[CodeBlockPcrdCurve],
     quality: u8,
-    pixel_count: u32,
+    pixel_count: u64,
 ) -> Result<LayerSelection, PcrdError> {
     if curves.is_empty() {
         return Ok(LayerSelection {
@@ -1642,7 +1642,7 @@ pub fn select_for_quality(
 /// The scale factor is `min(1.0, (max_slope * 1.2) / quality_to_lambda(1))`,
 /// applied to all quality levels uniformly. This keeps the quality curve shape
 /// intact while ensuring q=1 produces at least a minimal non-trivial output.
-fn calibrate_lambda(curves: &[CodeBlockPcrdCurve], raw_lambda: f64, pixel_count: u32) -> f64 {
+fn calibrate_lambda(curves: &[CodeBlockPcrdCurve], raw_lambda: f64, pixel_count: u64) -> f64 {
     let max_slope = curves
         .iter()
         .flat_map(|c| c.points.iter().skip(1)) // skip origin (slope = ∞)
@@ -1663,4 +1663,17 @@ fn calibrate_lambda(curves: &[CodeBlockPcrdCurve], raw_lambda: f64, pixel_count:
     }
 
     raw_lambda * (target_floor / floor_lambda)
+}
+
+#[cfg(test)]
+mod quality_count_tests {
+    use super::quality_to_lambda;
+
+    #[test]
+    fn quality_calibration_accepts_pixel_counts_above_u32() {
+        let large = quality_to_lambda(75, u64::from(u32::MAX) + 1);
+        let wrapped = quality_to_lambda(75, 0);
+        assert!(large.is_finite());
+        assert_ne!(large, wrapped);
+    }
 }

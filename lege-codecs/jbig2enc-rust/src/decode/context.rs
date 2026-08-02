@@ -32,9 +32,20 @@ pub enum DecodeStrictness {
 /// caller can log or reject the stream after the fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryEvent {
+    /// Reserved bits in a standalone file header were non-zero and ignored.
+    ReservedFileHeaderBits {
+        bits: u8,
+    },
+    DeclaredPageCountMismatch {
+        declared: u32,
+        actual: u32,
+    },
     /// Trailing bytes after the last well-formed segment did not parse as a
     /// segment header; they were ignored. `offset` is where they began.
-    TrailingGarbage { offset: usize, bytes: usize },
+    TrailingGarbage {
+        offset: usize,
+        bytes: usize,
+    },
 }
 
 /// Options controlling a decode (jbig2decplan.md §5, §20).

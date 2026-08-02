@@ -88,6 +88,8 @@ impl DeviceHealth {
 
 #[derive(Clone)]
 pub(crate) struct GpuContext {
+    pub(crate) instance: Arc<crate::vision::wgpu::Instance>,
+    pub(crate) adapter: Arc<crate::vision::wgpu::Adapter>,
     pub(crate) device: Arc<crate::vision::wgpu::Device>,
     pub(crate) queue: Arc<crate::vision::wgpu::Queue>,
     pub(crate) is_cpu_adapter: bool,
@@ -108,7 +110,7 @@ impl GpuContext {
 
     pub(crate) async fn new() -> Result<Self> {
         let backends = crate::wgpu_setup::requested_backends();
-        let instance = crate::wgpu_setup::create_instance();
+        let instance = Arc::new(crate::wgpu_setup::create_instance());
         let adapter_name_filter = std::env::var("WGPU_ADAPTER_NAME").ok();
 
         let enumerated: Vec<crate::vision::wgpu::Adapter> =
@@ -246,6 +248,8 @@ impl GpuContext {
                     let device = Arc::new(device);
                     let poller = GpuPoller::new(Arc::clone(&device))?;
                     return Ok(Self {
+                        instance,
+                        adapter: Arc::new(adapter),
                         device,
                         queue: Arc::new(queue),
                         is_cpu_adapter: is_cpu,

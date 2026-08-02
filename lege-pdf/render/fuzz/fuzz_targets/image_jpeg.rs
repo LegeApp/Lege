@@ -24,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
     let limits = DecodeLimits {
         max_pixels: 1 << 20,       // 1 Mpx
         max_output_bytes: 1 << 24, // 16 MiB
-        should_cancel: None,
+        ..DecodeLimits::default()
     };
     let _ = JpegCodec.decode(data, &descriptor, &DecodeParameters::default(), &limits);
 });

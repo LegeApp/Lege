@@ -40,3 +40,12 @@ pub fn build_epub_from_hocr_pages(
 ) -> Result<()> {
     unavailable()
 }
+
+pub(crate) fn build_epub_from_hocr_pages_cancellable(
+    _hocr_pages: &[HocrPage],
+    _title: &str,
+    _output_path: &Path,
+    _cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> Result<()> {
+    unavailable()
+}

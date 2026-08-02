@@ -269,17 +269,19 @@ fn encode_single_bitimage(
     bitimage: crate::jbig2sym::BitImage,
     context: Jbig2Context,
 ) -> Result<Jbig2PdfSplitResult, Jbig2Error> {
-    let mut encoder = Jbig2Encoder::new(&context.config);
-    let page_array = bitimage_to_array(&bitimage);
+    let mut config = context.config.clone();
+    config.want_full_headers = !context.pdf_mode;
+    if !config.symbol_mode {
+        config.refine = false;
+        config.text_refine = false;
+    }
+
+    let mut encoder = Jbig2Encoder::new(&config);
     encoder
-        .add_page(&page_array)
+        .add_page_bitimage(bitimage)
         .map_err(|e| Jbig2Error::EncodingFailed {
             message: e.to_string(),
         })?;
-
-    let output = encoder.flush().map_err(|e| Jbig2Error::EncodingFailed {
-        message: e.to_string(),
-    })?;
 
     if context.pdf_mode {
         let split = encoder
@@ -293,21 +295,14 @@ fn encode_single_bitimage(
             page_streams: split.page_streams,
         })
     } else {
+        let output = encoder.flush().map_err(|e| Jbig2Error::EncodingFailed {
+            message: e.to_string(),
+        })?;
         Ok(Jbig2PdfSplitResult {
             global_segments: None,
             page_streams: vec![output],
         })
     }
-}
-
-fn bitimage_to_array(bitimage: &crate::jbig2sym::BitImage) -> Array2<u8> {
-    let mut out = Array2::<u8>::zeros((bitimage.height, bitimage.width));
-    for y in 0..bitimage.height {
-        for x in 0..bitimage.width {
-            out[[y, x]] = if bitimage.get_usize(x, y) { 255 } else { 0 };
-        }
-    }
-    out
 }
 
 pub fn init_logging() {
@@ -325,4 +320,20 @@ pub fn init_logging() {
         "JBIG2 library logging initialized. RUST_LOG={}",
         env::var("RUST_LOG").unwrap_or_else(|_| default_level.to_string())
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn legacy_pdf_api_matches_canonical_single_pass_api() {
+        let pixels: Vec<u8> = (0..32 * 16)
+            .map(|i| u8::from(i % 11 == 0 || i % 17 == 0))
+            .collect();
+
+        let legacy = super::encode_single_image(&pixels, 32, 16, true).unwrap();
+        let canonical = crate::encode_single_image(&pixels, 32, 16, true).unwrap();
+
+        assert_eq!(legacy.global_segments, canonical.global_data);
+        assert_eq!(legacy.page_streams, vec![canonical.page_data]);
+    }
 }

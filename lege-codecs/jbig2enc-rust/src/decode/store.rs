@@ -15,6 +15,7 @@ use crate::decode::pattern_dictionary::PatternDictionary;
 use crate::decode::symbol_dictionary::SymbolDictionary;
 use crate::shared::bitmap::MonoBitmap;
 use crate::shared::mq_table::MqContext;
+use crate::shared::{error::LimitError, limits::DecodeLimits};
 
 /// Generic + generic-refinement arithmetic statistics retained by a symbol
 /// dictionary segment (T.88 §6.5.5 steps 3/7, the "bitmap coding context
@@ -47,9 +48,17 @@ pub enum DecodedSegment {
 pub struct SegmentStore {
     values: FxHashMap<u32, DecodedSegment>,
     retained: FxHashMap<u32, Arc<RetainedContexts>>,
+    depths: FxHashMap<u32, usize>,
+    retained_bytes: usize,
+    external_retained_bytes: usize,
 }
 
 impl SegmentStore {
+    /// Bytes retained by this store for later segment references.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
@@ -61,6 +70,9 @@ impl SegmentStore {
     pub fn clear(&mut self) {
         self.values.clear();
         self.retained.clear();
+        self.depths.clear();
+        self.retained_bytes = 0;
+        self.external_retained_bytes = 0;
     }
 
     /// Insert a decoded segment, rejecting a duplicate segment number.
@@ -72,6 +84,56 @@ impl SegmentStore {
         Ok(())
     }
 
+    pub(crate) fn record_dependency_depth(
+        &mut self,
+        number: u32,
+        referred: &[u32],
+        globals: Option<&SegmentStore>,
+        limits: &DecodeLimits,
+    ) -> Result<(), DecodeError> {
+        self.external_retained_bytes = self
+            .external_retained_bytes
+            .max(globals.map_or(0, |g| g.retained_bytes));
+        let parent = referred
+            .iter()
+            .filter_map(|n| {
+                self.depths
+                    .get(n)
+                    .or_else(|| globals.and_then(|g| g.depths.get(n)))
+            })
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let depth = parent.checked_add(1).ok_or(DecodeError::Overflow {
+            operation: "segment dependency depth",
+        })?;
+        if depth > limits.max_dependency_depth {
+            return Err(DecodeError::limit(LimitError::Count {
+                what: "segment dependency depth",
+                value: depth as u64,
+                limit: limits.max_dependency_depth as u64,
+            }));
+        }
+        self.depths.insert(number, depth);
+        Ok(())
+    }
+
+    pub(crate) fn insert_limited(
+        &mut self,
+        number: u32,
+        seg: DecodedSegment,
+        globals: Option<&SegmentStore>,
+        limits: &DecodeLimits,
+    ) -> Result<(), DecodeError> {
+        let bytes = decoded_segment_bytes(&seg);
+        self.reserve_retained(bytes, globals, limits)?;
+        if let Err(err) = self.insert(number, seg) {
+            self.retained_bytes -= bytes;
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Look up a decoded segment by number.
     #[inline]
     pub fn get(&self, number: u32) -> Option<&DecodedSegment> {
@@ -79,8 +141,53 @@ impl SegmentStore {
     }
 
     /// Save the retained arithmetic contexts of a symbol dictionary segment.
-    pub fn insert_retained(&mut self, number: u32, ctx: RetainedContexts) {
+    pub(crate) fn insert_retained_limited(
+        &mut self,
+        number: u32,
+        ctx: RetainedContexts,
+        globals: Option<&SegmentStore>,
+        limits: &DecodeLimits,
+    ) -> Result<(), DecodeError> {
+        let bytes = ctx
+            .generic
+            .len()
+            .saturating_add(ctx.refine.len())
+            .saturating_mul(core::mem::size_of::<MqContext>());
+        self.reserve_retained(bytes, globals, limits)?;
         self.retained.insert(number, Arc::new(ctx));
+        Ok(())
+    }
+
+    fn reserve_retained(
+        &mut self,
+        bytes: usize,
+        globals: Option<&SegmentStore>,
+        limits: &DecodeLimits,
+    ) -> Result<(), DecodeError> {
+        let total = self
+            .retained_bytes
+            .checked_add(
+                self.external_retained_bytes
+                    .max(globals.map_or(0, |g| g.retained_bytes)),
+            )
+            .and_then(|v| v.checked_add(bytes))
+            .ok_or(DecodeError::Overflow {
+                operation: "retained decoded bytes",
+            })?;
+        if total > limits.max_retained_bytes {
+            return Err(DecodeError::limit(LimitError::Count {
+                what: "retained decoded bytes",
+                value: total as u64,
+                limit: limits.max_retained_bytes as u64,
+            }));
+        }
+        self.retained_bytes =
+            self.retained_bytes
+                .checked_add(bytes)
+                .ok_or(DecodeError::Overflow {
+                    operation: "retained decoded bytes",
+                })?;
+        Ok(())
     }
 
     /// Resolve an intermediate region's retained bitmap (auxiliary buffer,
@@ -174,6 +281,20 @@ impl SegmentStore {
         globals: Option<&SegmentStore>,
     ) -> Result<Vec<Arc<MonoBitmap>>, DecodeError> {
         let mut out: Vec<Arc<MonoBitmap>> = Vec::new();
+        self.gather_symbols_into(segment, referred, globals, &mut out)?;
+        Ok(out)
+    }
+
+    /// Append referred exported symbols into a caller-owned scratch vector.
+    /// Keeping this separate from [`Self::gather_symbols`] lets the decoder's
+    /// hot path reuse one allocation across every text region.
+    pub fn gather_symbols_into(
+        &self,
+        segment: u32,
+        referred: &[u32],
+        globals: Option<&SegmentStore>,
+        out: &mut Vec<Arc<MonoBitmap>>,
+    ) -> Result<(), DecodeError> {
         for &rn in referred {
             let dict = match self.values.get(&rn) {
                 Some(DecodedSegment::SymbolDictionary(d)) => Some(d),
@@ -193,7 +314,7 @@ impl SegmentStore {
                 out.extend(d.exported_symbols.iter().cloned());
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Gather the referred custom Huffman tables (segment type 53), in reference
@@ -220,5 +341,52 @@ impl SegmentStore {
             }
         }
         out
+    }
+}
+
+fn decoded_segment_bytes(seg: &DecodedSegment) -> usize {
+    match seg {
+        DecodedSegment::SymbolDictionary(d) => {
+            d.exported_symbols.iter().map(|b| b.storage_bytes()).sum()
+        }
+        DecodedSegment::PatternDictionary(d) => d.patterns.iter().map(|b| b.storage_bytes()).sum(),
+        DecodedSegment::Region(b) => b.storage_bytes(),
+        DecodedSegment::HuffmanTable(_) => core::mem::size_of::<HuffmanTable>(),
+        DecodedSegment::Metadata => 0,
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_retained_bytes_and_dependency_depth_are_enforced() {
+        let mut limits = DecodeLimits::default();
+        limits.max_retained_bytes = 4;
+        limits.max_dependency_depth = 2;
+        let mut store = SegmentStore::new();
+        store
+            .record_dependency_depth(1, &[], None, &limits)
+            .unwrap();
+        store
+            .record_dependency_depth(2, &[1], None, &limits)
+            .unwrap();
+        assert!(
+            store
+                .record_dependency_depth(3, &[2], None, &limits)
+                .is_err()
+        );
+
+        let bm = MonoBitmap::new(32, 1, false, &limits).unwrap();
+        store
+            .insert_limited(1, DecodedSegment::Region(Arc::new(bm)), None, &limits)
+            .unwrap();
+        let bm = MonoBitmap::new(32, 1, false, &limits).unwrap();
+        assert!(
+            store
+                .insert_limited(2, DecodedSegment::Region(Arc::new(bm)), None, &limits)
+                .is_err()
+        );
     }
 }

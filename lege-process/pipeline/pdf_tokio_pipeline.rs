@@ -3356,10 +3356,11 @@ pub async fn create_and_run_pdf_source_pipeline(
         crate::margin::MarginSettings::StandardizeAndCenter
             | crate::margin::MarginSettings::CropAndResize
     );
+    let cancellation = lege_pdf_read::CancellationToken::new();
 
     let (margin_analysis, detection_cache) = if needs_two_pass {
         info_log!("[PDF-Parallel] Margin mode enabled - running 2-pass document analysis");
-        let (analysis, cache) = perform_document_margin_analysis(
+        let analysis_future = perform_document_margin_analysis(
             source.clone(),
             config.clone(),
             inference_handle.clone(),
@@ -3367,8 +3368,19 @@ pub async fn create_and_run_pdf_source_pipeline(
             page_start..page_end,
             page_concurrency,
             progress_tracker,
-        )
-        .await?;
+            cancellation.clone(),
+        );
+        let (analysis, cache) = tokio::select! {
+            result = analysis_future => result?,
+            signal = shutdown_rx.recv() => {
+                cancellation.cancel();
+                let message = signal
+                    .ok()
+                    .and_then(|signal| signal.message)
+                    .unwrap_or_else(|| "User requested cancellation".to_string());
+                return Err(anyhow!("Processing cancelled during margin analysis: {message}"));
+            }
+        };
         (Some(analysis), cache)
     } else {
         (None, Vec::new())
@@ -3421,7 +3433,6 @@ pub async fn create_and_run_pdf_source_pipeline(
     let detection_cache_arc = Arc::new(detection_cache);
     let analysis_width = if needs_two_pass { 640 } else { 0 };
     let margin_analysis_arc = margin_analysis.map(Arc::new);
-    let cancellation = lege_pdf_read::CancellationToken::new();
     let memory_budget_mb = page_memory_budget_mb();
     let memory_budget = Arc::new(Semaphore::new(memory_budget_mb));
     info_log!(
@@ -3512,10 +3523,23 @@ pub async fn create_and_run_pdf_source_pipeline(
 
     // Await extraction so writer finalization cannot race bookmark delivery.
     if let Some(session) = document_session {
-        let bookmarks =
-            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
-                .await
-                .map_err(|error| anyhow!("Outline extraction task panicked: {error}"))?;
+        let mut outline_task =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session));
+        let bookmarks = tokio::select! {
+            result = &mut outline_task => {
+                result.map_err(|error| anyhow!("Outline extraction task panicked: {error}"))?
+            }
+            signal = shutdown_rx.recv() => {
+                cancellation.cancel();
+                outline_task.abort();
+                pdf_writer_task.abort();
+                let message = signal
+                    .ok()
+                    .and_then(|signal| signal.message)
+                    .unwrap_or_else(|| "User requested cancellation".to_string());
+                return Err(anyhow!("Processing cancelled during outline extraction: {message}"));
+            }
+        };
         if !bookmarks.is_empty() {
             let source_to_output = (page_start..page_end)
                 .enumerate()
@@ -3543,8 +3567,15 @@ pub async fn create_and_run_pdf_source_pipeline(
 
     info_log!("[PDF-Parallel] Finalizing PDF...");
     pdf_writer_handle.finalize().await?;
-    use crate::pipeline::helper_functions::await_stage_or_cancel;
-    await_stage_or_cancel(&mut pdf_writer_task, &mut shutdown_rx, "PDF writer", &[]).await?;
+    use crate::pipeline::helper_functions::await_stage_or_cancel_with_token;
+    await_stage_or_cancel_with_token(
+        &mut pdf_writer_task,
+        &mut shutdown_rx,
+        "PDF writer",
+        &[],
+        Some(&cancellation),
+    )
+    .await?;
     info_log!("[PDF-Parallel] PDF writer complete");
 
     if let Some(epub_path) = epub_sidecar_output {
@@ -3576,18 +3607,33 @@ pub async fn create_and_run_pdf_source_pipeline(
                 "[PDF-Parallel] Assembling EPUB sidecar from existing OCR: {}",
                 epub_path.display()
             );
-            crate::runtime_stats::spawn_blocking_stage(
+            let sidecar_cancellation = cancellation.clone();
+            let packaging_cancellation = sidecar_cancellation.clone();
+            let mut sidecar_task = crate::runtime_stats::spawn_blocking_stage(
                 crate::runtime_stats::Stage::Writer,
                 move || {
-                    crate::pipeline::epub_pipeline::build_epub_from_hocr_pages(
+                    crate::pipeline::epub_pipeline::build_epub_from_hocr_pages_cancellable(
                         &hocr_pages,
                         &title,
                         &epub_path,
+                        Some(&packaging_cancellation),
                     )
                 },
-            )
-            .await
-            .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
+            );
+            tokio::select! {
+                result = &mut sidecar_task => {
+                    result.map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
+                }
+                signal = shutdown_rx.recv() => {
+                    sidecar_cancellation.cancel();
+                    sidecar_task.abort();
+                    let message = signal
+                        .ok()
+                        .and_then(|signal| signal.message)
+                        .unwrap_or_else(|| "User requested cancellation".to_string());
+                    return Err(anyhow!("Processing cancelled during EPUB sidecar packaging: {message}"));
+                }
+            }
         } else {
             warn_log!("[PDF-Parallel] EPUB sidecar requested, but no OCR text was available");
         }
