@@ -13,6 +13,15 @@ publish = false
 [features]
 default = []
 dhat-heap = ["dep:dhat"]
+# Opt-in structured stage timers for `profile` / `pipeline-profile`. Leave off
+# for `bench` so Instant/counter instrumentation is not compiled into the
+# hot path (content / cpu / scheduler).
+bench-profiling = [
+    "pdf-content/profiling",
+    "pdf-document/profiling",
+    "pdf-render-cpu/profiling",
+    "pdf-render-scheduler/profiling",
+]
 renderer-pdfium = []
 renderer-hayro = []
 renderer-poppler = []
@@ -28,18 +37,29 @@ all-renderers = [
     "renderer-pdfjs",
 ]
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_Foundation",
+] }
+
 [dependencies]
 dhat = { version = "0.3.3", optional = true }
 libloading = "0.8"
 png = "0.17"
 font8x8 = "0.3"
-pdf-content = { path = "../../crates/pdf-content", features = ["profiling"] }
-pdf-document = { path = "../../crates/pdf-document", features = ["profiling"] }
+# Timing benches measure hot-path speed: leave `profiling` off so Instant/
+# counter instrumentation is not compiled into content/cpu/scheduler.
+# Re-enable for `profile` / `pipeline-profile` structured reports:
+#   cargo build --release --features bench-profiling
+pdf-content = { path = "../../crates/pdf-content" }
+pdf-document = { path = "../../crates/pdf-document" }
 pdf-source = { path = "../../crates/pdf-source" }
 pdf-page-ir = { path = "../../crates/pdf-page-ir" }
 pdf-render-api = { path = "../../crates/pdf-render-api" }
-pdf-render-cpu = { path = "../../crates/pdf-render-cpu", features = ["profiling"] }
-pdf-render-scheduler = { path = "../../crates/pdf-render-scheduler", features = ["profiling"] }
+pdf-render-cpu = { path = "../../crates/pdf-render-cpu" }
+pdf-render-scheduler = { path = "../../crates/pdf-render-scheduler" }
 pdf-font = { path = "../../crates/pdf-font" }
 pdf-profiling = { path = "../../crates/pdf-profiling" }
 

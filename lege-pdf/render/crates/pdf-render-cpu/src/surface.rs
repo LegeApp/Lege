@@ -112,6 +112,29 @@ impl Surface {
         &mut self.data[local * stride..(local + 1) * stride]
     }
 
+    /// Contiguous mutable rows for absolute device-Y range `[y0, y1)`, clipped
+    /// to this surface. Used by the axis-aligned image fast paths to paint
+    /// independent rows in parallel without re-borrowing the surface each row.
+    ///
+    /// Returns `(buffer, first_absolute_y, row_stride_bytes)`.
+    #[inline]
+    pub(crate) fn rows_mut_abs(
+        &mut self,
+        y0: usize,
+        y1: usize,
+    ) -> (&mut [u8], usize, usize) {
+        let stride = self.width * 4;
+        let local0 = y0.saturating_sub(self.origin_y).min(self.height);
+        let local1 = y1.saturating_sub(self.origin_y).min(self.height);
+        let local0 = local0.min(local1);
+        let first_abs_y = self.origin_y + local0;
+        (
+            &mut self.data[local0 * stride..local1 * stride],
+            first_abs_y,
+            stride,
+        )
+    }
+
     /// Immutable access to one row by **local** index (for compositing a group
     /// back onto its parent).
     #[inline]

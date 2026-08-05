@@ -24,7 +24,6 @@ mod renderers;
 static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -40,7 +39,12 @@ use pdf_render_api::{
 };
 use pdf_render_cpu::CpuBackend;
 use pdf_render_scheduler::{PipelineOutput, RenderScheduler, SchedulerOptions};
-use pdf_source::{MmapSource, OwnedBytesSource, PdfSource};
+use pdf_source::{OwnedBytesSource, PdfSource};
+
+#[cfg(feature = "bench-profiling")]
+use std::hash::{Hash, Hasher};
+#[cfg(feature = "bench-profiling")]
+use pdf_source::MmapSource;
 
 /// Pages sampled per document, spread across it.
 const SAMPLE: usize = 6;
@@ -162,16 +166,36 @@ fn main() {
         bench(&args[1..]);
         return;
     }
-    // Feature-enabled structured attribution. This intentionally does not
-    // load PDFium: its companion `bench`/diff modes retain the oracle timing
-    // path, while this command isolates our own pipeline stages.
+    // Structured stage attribution (opt-in: --features bench-profiling).
+    // Default release builds omit profiling Instant/counter code so `bench`
+    // measures production-shaped hot paths.
     if args.first().map(String::as_str) == Some("profile") {
-        profile(&args[1..]);
-        return;
+        #[cfg(feature = "bench-profiling")]
+        {
+            profile(&args[1..]);
+            return;
+        }
+        #[cfg(not(feature = "bench-profiling"))]
+        {
+            eprintln!(
+                "profile requires a rebuild with structured timers:\n  cargo build --release --features bench-profiling"
+            );
+            std::process::exit(2);
+        }
     }
     if args.first().map(String::as_str) == Some("pipeline-profile") {
-        pipeline_profile(&args[1..]);
-        return;
+        #[cfg(feature = "bench-profiling")]
+        {
+            pipeline_profile(&args[1..]);
+            return;
+        }
+        #[cfg(not(feature = "bench-profiling"))]
+        {
+            eprintln!(
+                "pipeline-profile requires a rebuild with structured timers:\n  cargo build --release --features bench-profiling"
+            );
+            std::process::exit(2);
+        }
     }
     // `--rerun-failures` mode: re-grade only the documents that a prior sweep
     // recorded as a drop of the named class, instead of the whole corpus. The
@@ -221,11 +245,17 @@ fn main() {
         eprintln!("usage: pdfium-diff <libpdfium.so> <scale> <file.pdf|dir>…");
         eprintln!("       pdfium-diff --rerun-failures <prior.csv> <class> <libpdfium.so> <scale>");
         eprintln!("       pdfium-diff --count <file.pdf|dir>…   (enumerate, no render)");
-        eprintln!("       pdfium-diff bench <libpdfium.so> <scale> <file.pdf> [per_page_n]");
-        eprintln!("       pdfium-diff profile <scale> <file.pdf> [page] [runs] [out.jsonl]");
+        eprintln!("       pdfium-diff bench <file.pdf> [scale] [per_page_n]");
+        eprintln!("       pdfium-diff bench <libpdfium.dll> <file.pdf> [scale] [per_page_n]");
+        eprintln!("       pdfium-diff profile <scale> <file.pdf> [page] [runs] [out.jsonl]   (needs --features bench-profiling)");
         eprintln!(
             "       pdfium-diff pipeline-profile <scale> <file.pdf> [runs] [out.jsonl] [compile-workers] [render-workers]"
         );
+        eprintln!();
+        eprintln!("bench: times your engine vs PDFium (per-page + whole-document throughput).");
+        eprintln!("  Default release build has profiling OFF (fair hot-path timing).");
+        eprintln!("  pdfium.dll auto-loaded from next to the exe if omitted.");
+        eprintln!("  scale defaults to 2.0 (144 dpi). Sample PNGs saved to bench-out/<stem>/.");
         std::process::exit(2);
     }
     let lib = PathBuf::from(&args[0]);
@@ -981,15 +1011,100 @@ fn run_diff(
 /// page: PDFium sequentially (its library is single-threaded), ours through
 /// the parallel `RenderScheduler`, which is how the engine is actually driven —
 /// so this is where our compile/render pipeline can make up ground.
+///
+/// Rendered PNGs are saved next to the exe under `bench-out/<stem>/` —
+/// `ours/page-N.png` and `pdfium/page-N.png` (sample pages only).
+///
+/// Timing rules (deliberately fair):
+/// - Per-page and whole-doc totals measure **compile/load + raster only**.
+/// - PNG encode/disk write is never inside a speed timer (sample dumps only).
+/// - Whole-doc may be capped with `whole_n` so large scanned books remain practical.
 fn bench(args: &[String]) {
-    if args.len() < 3 {
-        eprintln!("usage: pdfium-diff bench <libpdfium.so> <scale> <file.pdf> [per_page_n]");
-        std::process::exit(2);
-    }
-    let lib = PathBuf::from(&args[0]);
-    let scale: f64 = args[1].parse().expect("scale must be a number");
-    let file = PathBuf::from(&args[2]);
-    let per_page_n: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+    // pdfium.dll path: explicit arg → next to exe → error
+    // scale: explicit arg → 2.0 default
+    // Usage: bench [file.pdf] [scale] [per_page_n] [whole_n]
+    //         bench [pdfium.dll] [file.pdf] [scale] [per_page_n] [whole_n]
+    // Argument grammar (after optional leading pdfium.dll path):
+    //   <file.pdf> [scale] [per_page_n] [whole_n]
+    // Two-arg shorthand when the sole numeric is an integer >= 10 (or any
+    // integer when written without a decimal and clearly a page count): 
+    //   <file.pdf> <per_page_n>          — scale defaults to 2.0
+    // Scale is always accepted as a float (e.g. 1, 1.0, 2, 2.5). With two or
+    // more trailing numbers the first is always scale.
+    let (lib, file, scale, per_page_n, whole_n_arg) = match args.len() {
+        0 => {
+            eprintln!("usage: pdfium-diff bench <file.pdf> [scale] [per_page_n] [whole_n]");
+            eprintln!("       pdfium-diff bench <libpdfium.dll> <file.pdf> [scale] [per_page_n] [whole_n]");
+            eprintln!();
+            eprintln!("  <file.pdf>     input PDF file (required)");
+            eprintln!("  scale          pixels per point (default: 2.0 = 144 dpi). Use 1 or 1.0 for 72 dpi.");
+            eprintln!("  per_page_n     pages for single-thread per-page timing (default: 10)");
+            eprintln!("  whole_n        pages for parallel whole-doc throughput (default: all pages)");
+            eprintln!();
+            eprintln!("  Timing excludes PNG encode/write. Sample PNGs are written after timing.");
+            eprintln!("  Per-page reports compile vs raster split for ours.");
+            eprintln!();
+            eprintln!("  bench myfile.pdf              → scale 2.0, 10 sample pages, all pages whole-doc");
+            eprintln!("  bench myfile.pdf 50           → scale 2.0, 50 sample pages (integer-only = page count)");
+            eprintln!("  bench myfile.pdf 1.5          → scale 1.5, 10 sample pages");
+            eprintln!("  bench myfile.pdf 2 10 40      → scale 2, 10 per-page samples, 40 whole-doc pages");
+            eprintln!("  bench myfile.pdf 1 6 20       → scale 1, 6 samples, 20 whole-doc pages");
+            eprintln!();
+            eprintln!("If <libpdfium.dll> is omitted, loads pdfium.dll from next to this executable.");
+            eprintln!("Sample PNGs are saved to bench-out/<stem>/ next to the exe.");
+            std::process::exit(2);
+        }
+        1 => {
+            let lib = find_pdfium().expect("pdfium.dll not found next to exe; pass path explicitly");
+            (lib, PathBuf::from(&args[0]), 2.0, 10, None)
+        }
+        2 => {
+            let first = PathBuf::from(&args[0]);
+            let second = PathBuf::from(&args[1]);
+            if first.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) {
+                (first, second, 2.0, 10, None)
+            } else {
+                let lib = find_pdfium().expect("pdfium.dll not found next to exe; pass path explicitly");
+                // One trailing token: integer-only → per_page_n at default scale;
+                // any value with a decimal point (or non-integer float parse that
+                // is not a clean u32) → scale.
+                if args[1].contains('.') {
+                    let scale: f64 = args[1].parse().expect("scale must be a number");
+                    (lib, first, scale, 10, None)
+                } else if let Ok(n) = args[1].parse::<u32>() {
+                    // Ambiguous small integers: treat as page count (historical).
+                    // For scale-only use a decimal: `bench file 1.0`.
+                    (lib, first, 2.0, n, None)
+                } else {
+                    let scale: f64 = args[1].parse().expect("scale must be a number");
+                    (lib, first, scale, 10, None)
+                }
+            }
+        }
+        _ => {
+            // 3+ args: (pdfium, file, scale[, per_page_n[, whole_n]])
+            //        | (file, scale, per_page_n[, whole_n])
+            // First numeric after the file is ALWAYS scale.
+            let first = PathBuf::from(&args[0]);
+            let second = PathBuf::from(&args[1]);
+            if first.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) {
+                let scale: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2.0);
+                let per_page_n: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+                let whole_n = args.get(4).and_then(|s| s.parse().ok());
+                (first, second, scale, per_page_n, whole_n)
+            } else {
+                let lib = find_pdfium().expect("pdfium.dll not found next to exe; pass path explicitly");
+                let scale: f64 = args[1].parse().expect("scale must be a number");
+                let per_page_n: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+                let whole_n = args.get(3).and_then(|s| s.parse().ok());
+                (lib, first, scale, per_page_n, whole_n)
+            }
+        }
+    };
+
+    let out = exe_dir().join("bench-out").join(safe_stem(&file));
+    std::fs::create_dir_all(out.join("ours")).expect("create ours output dir");
+    std::fs::create_dir_all(out.join("pdfium")).expect("create pdfium output dir");
 
     // SAFETY: the caller names the library.
     let pdfium = match unsafe { pdfium::Pdfium::load(&lib) } {
@@ -1003,6 +1118,9 @@ fn bench(args: &[String]) {
     // Open once on our side and time it (PDFium's open is timed inside
     // render_doc_timed).
     let bytes = std::fs::read(&file).expect("read file");
+    // Cheap stream-filter census on the raw file (substring counts). Helps
+    // classify books as DCT-scan / JPX / MRC / text without a full parse.
+    let filters = filter_census(&bytes);
     let t_open = Instant::now();
     let source: Arc<dyn PdfSource> = Arc::new(OwnedBytesSource::new(bytes));
     let snap = DocumentSnapshot::open(source, DocumentLimits::default()).expect("open failed");
@@ -1010,61 +1128,175 @@ fn bench(args: &[String]) {
     let count = snap.page_count();
     let pcount = pdfium.page_count(&file).expect("pdfium page count").max(0) as u32;
 
+    let baseline_mem = mem_stats();
+
     println!("file: {}", file.display());
     println!("pages: ours={count} pdfium={pcount}   scale={scale}");
-    println!("open (ours): {:.1} ms\n", ms(our_open));
+    println!(
+        "filters: DCT={} JPX={} JBIG2={} CCITT={} Flate={}  ({})",
+        filters.dct,
+        filters.jpx,
+        filters.jbig2,
+        filters.ccitt,
+        filters.flate,
+        filters.classify()
+    );
+    println!("open (ours): {:.1} ms", ms(our_open));
+    println!("timing excludes PNG encode/write (sample dumps only)\n");
 
     // ---- Per-page (single-threaded both sides) --------------------------
     let n = per_page_n.min(count).min(pcount);
     let indices: Vec<i32> = (0..n as i32).collect();
+
     let (pdf_open, pdf_pp) = pdfium
         .render_doc_timed(&file, &indices, scale)
         .expect("pdfium render");
+
+    // Reuse one backend so setup cost is not re-paid every page (matches a
+    // realistic hot path; still single-threaded).
+    let backend = CpuBackend::default();
     let mut ours_pp: Vec<Duration> = Vec::with_capacity(n as usize);
+    let mut ours_compile: Vec<Duration> = Vec::with_capacity(n as usize);
+    let mut ours_raster: Vec<Duration> = Vec::with_capacity(n as usize);
+    let mut sample_hosts: Vec<Option<(Vec<u8>, u32, u32, usize)>> =
+        Vec::with_capacity(n as usize);
     for p in 0..n {
         let mut ctx = ParseContext::new();
-        let t = Instant::now();
-        if let Ok(req) = build_request(&snap, PageIndex(p), scale, &mut ctx) {
-            let _ = CpuBackend::default().render_to_host(&req);
-        }
-        ours_pp.push(t.elapsed());
+        let t_total = Instant::now();
+        let t_compile = Instant::now();
+        let req = match build_request(&snap, PageIndex(p), scale, &mut ctx) {
+            Ok(r) => r,
+            Err(_) => {
+                ours_compile.push(t_compile.elapsed());
+                ours_raster.push(Duration::ZERO);
+                ours_pp.push(t_total.elapsed());
+                sample_hosts.push(None);
+                continue;
+            }
+        };
+        let compile_d = t_compile.elapsed();
+        let t_raster = Instant::now();
+        let host = match backend.render_to_host(&req) {
+            Ok((h, _)) => {
+                // Keep a copy of the first-sample raster for untimed PNG dump
+                // so we do not re-render just to write files.
+                let pixels = h.pixels.to_vec();
+                std::hint::black_box(pixels.len());
+                sample_hosts.push(Some((pixels, h.width, h.height, h.stride)));
+                true
+            }
+            Err(_) => {
+                sample_hosts.push(None);
+                false
+            }
+        };
+        let raster_d = t_raster.elapsed();
+        let _ = host;
+        ours_compile.push(compile_d);
+        ours_raster.push(raster_d);
+        ours_pp.push(t_total.elapsed());
     }
 
-    println!("── per-page render (single-threaded) ──");
+    let post_render_mem = mem_stats();
+
+    // Untimed PNG dump of the per-page sample only (never whole-doc).
+    let t_png = Instant::now();
+    for (p, host) in sample_hosts.into_iter().enumerate() {
+        if let Some((pixels, width, height, stride)) = host {
+            save_rgba(
+                &out.join("ours"),
+                p as u32,
+                &pixels,
+                width,
+                height,
+                stride,
+            );
+        }
+    }
+    // PDFium sample dump re-uses a single open via render_doc_timed-style path
+    // only for the same indices; open cost is not charged to the render table.
+    for &p in &indices {
+        if let Ok(bmp) = pdfium.render(&file, p, scale) {
+            save_bgra(&out.join("pdfium"), p as u32, &bmp.bgra, bmp.width, bmp.height);
+        }
+    }
+    let png_phase = t_png.elapsed();
+
+    let post_png_mem = mem_stats();
+
+    println!("── per-page render (single-threaded, no PNG) ──");
     println!(
-        "{:>4}  {:>10}  {:>10}  {:>7}",
-        "page", "ours(ms)", "pdfium(ms)", "ratio"
+        "{:>4}  {:>10}  {:>10}  {:>10}  {:>10}  {:>7}",
+        "page", "ours(ms)", "compile", "raster", "pdfium(ms)", "ratio"
     );
     for i in 0..n as usize {
         let o = ms(ours_pp[i]);
+        let c = ms(ours_compile[i]);
+        let r = ms(ours_raster[i]);
         let p = ms(pdf_pp[i]);
         println!(
-            "{:>4}  {:>10.1}  {:>10.1}  {:>6.1}x",
+            "{:>4}  {:>10.1}  {:>10.1}  {:>10.1}  {:>10.1}  {:>6.1}x",
             i,
             o,
+            c,
+            r,
             p,
             safe_ratio(o, p)
         );
     }
     let ours_mean = mean_ms(&ours_pp);
+    let compile_mean = mean_ms(&ours_compile);
+    let raster_mean = mean_ms(&ours_raster);
     let pdf_mean = mean_ms(&pdf_pp);
     println!(
-        "mean  {:>10.1}  {:>10.1}  {:>6.1}x   (pdfium open {:.1} ms)\n",
+        "mean  {:>10.1}  {:>10.1}  {:>10.1}  {:>10.1}  {:>6.1}x   (pdfium open {:.1} ms)",
         ours_mean,
+        compile_mean,
+        raster_mean,
         pdf_mean,
         safe_ratio(ours_mean, pdf_mean),
         ms(pdf_open)
     );
+    // Page 0 usually pays one-shot costs (system-font provider, codec/tables).
+    // Warm mean excludes it so multi-page books are not dominated by cold start.
+    if n > 1 {
+        let warm_ours = mean_ms(&ours_pp[1..]);
+        let warm_compile = mean_ms(&ours_compile[1..]);
+        let warm_raster = mean_ms(&ours_raster[1..]);
+        let warm_pdf = mean_ms(&pdf_pp[1..]);
+        println!(
+            "warm  {:>10.1}  {:>10.1}  {:>10.1}  {:>10.1}  {:>6.1}x   (excludes page 0 cold start)",
+            warm_ours,
+            warm_compile,
+            warm_raster,
+            warm_pdf,
+            safe_ratio(warm_ours, warm_pdf)
+        );
+    }
+    println!(
+        "      ours total = compile + raster; ratio uses total vs pdfium (load+raster+copy)\n"
+    );
+    println!(
+        "untimed sample PNG encode+write ({} pages both engines): {:.1} ms\n",
+        n,
+        ms(png_phase)
+    );
 
-    // ---- Whole document -------------------------------------------------
-    // PDFium: sequential over every page.
-    let all: Vec<i32> = (0..pcount as i32).collect();
+    // ---- Whole document / multi-page throughput -------------------------
+    // Cap whole-doc page count when the caller asks (large scanned books).
+    let whole_pages = whole_n_arg
+        .unwrap_or(count.max(pcount))
+        .min(count)
+        .min(pcount)
+        .max(1);
+    let all: Vec<i32> = (0..whole_pages as i32).collect();
     let (_pdf_open2, pdf_all) = pdfium
         .render_doc_timed(&file, &all, scale)
         .expect("pdfium full render");
     let pdf_total: Duration = pdf_all.iter().sum();
 
-    // Ours: the parallel scheduler over every page.
+    // Ours: parallel scheduler. Emit callback is a pure counter — no PNG, no
+    // disk I/O — so wall time is compile+raster pipeline only.
     let backend: Arc<dyn RenderBackend> = Arc::new(CpuBackend::default());
     let opts = SchedulerOptions::default();
     let (cw, rw) = (opts.compile_workers, opts.render_workers);
@@ -1075,24 +1307,43 @@ fn bench(args: &[String]) {
             build_request(snap, page, scale, &mut ctx)
         };
     let mut ok = 0usize;
+    let mut last_pixels = 0usize;
     let t = Instant::now();
-    scheduler.render_range(&snap, 0..count, &make, None, &mut |out: PipelineOutput| {
-        if out.result.is_ok() {
-            ok += 1;
-        }
-    });
+    scheduler.render_range(
+        &snap,
+        0..whole_pages,
+        &make,
+        None,
+        &mut |pipeline_out: PipelineOutput| {
+            if let Ok(page) = &pipeline_out.result {
+                ok += 1;
+                if let Some(host) = page.as_host() {
+                    // Touch the buffer so the compiler cannot elide the render.
+                    last_pixels = last_pixels.wrapping_add(host.pixels.len());
+                }
+            }
+        },
+    );
     let our_total = t.elapsed();
+    std::hint::black_box(last_pixels);
 
-    println!("── whole document ──");
+    let final_mem = mem_stats();
+
+    let scope = if whole_pages < count.min(pcount) {
+        format!("first {whole_pages} of {count} pages")
+    } else {
+        format!("all {whole_pages} pages")
+    };
+    println!("── whole document ({scope}, no PNG) ──");
     println!(
-        "ours (parallel, {cw} compile + {rw} render workers): {:.2} s   {ok}/{count} pages rendered   {:.1} pages/s",
+        "ours (parallel, {cw} compile + {rw} render workers): {:.2} s   {ok}/{whole_pages} pages rendered   {:.1} pages/s",
         our_total.as_secs_f64(),
         ok as f64 / our_total.as_secs_f64().max(1e-9),
     );
     println!(
-        "pdfium (sequential):                                 {:.2} s   {pcount}/{pcount} pages rendered   {:.1} pages/s",
+        "pdfium (sequential):                                 {:.2} s   {whole_pages}/{whole_pages} pages rendered   {:.1} pages/s",
         pdf_total.as_secs_f64(),
-        pcount as f64 / pdf_total.as_secs_f64().max(1e-9),
+        whole_pages as f64 / pdf_total.as_secs_f64().max(1e-9),
     );
     if ok == 0 {
         println!(
@@ -1100,16 +1351,16 @@ fn bench(args: &[String]) {
         );
         return;
     }
-    if (ok as u32) < count {
+    if (ok as u32) < whole_pages {
         println!(
             "\n!! ours skipped {} page(s) that failed to compile/render — throughput below is over rendered pages only.",
-            count - ok as u32
+            whole_pages as usize - ok
         );
     }
     // Normalise both sides to per-page throughput so a page-count mismatch does
     // not flatter either engine.
     let ours_pps = ok as f64 / our_total.as_secs_f64().max(1e-9);
-    let pdf_pps = pcount as f64 / pdf_total.as_secs_f64().max(1e-9);
+    let pdf_pps = whole_pages as f64 / pdf_total.as_secs_f64().max(1e-9);
     let speedup = ours_pps / pdf_pps.max(1e-9);
     if speedup >= 1.0 {
         println!("\n=> ours is {speedup:.2}x FASTER than PDFium on whole-document throughput.");
@@ -1119,6 +1370,31 @@ fn bench(args: &[String]) {
             1.0 / speedup
         );
     }
+
+    // ---- Memory report --------------------------------------------------
+    if let (Some(base), Some(render), Some(png_enc), Some(fin)) =
+        (baseline_mem, post_render_mem, post_png_mem, final_mem)
+    {
+        println!("\n── memory (working set) ──");
+        println!("  baseline          : {}", format_bytes(base.current_bytes));
+        println!(
+            "  render phase Δ    : +{} (peak: {})",
+            format_bytes(render.peak_delta(&base)),
+            format_bytes(render.peak_bytes)
+        );
+        println!(
+            "  sample PNG phase Δ: +{} (peak: {})",
+            format_bytes(png_enc.peak_delta(&render)),
+            format_bytes(png_enc.peak_bytes)
+        );
+        println!(
+            "  final             : {} (peak: {})",
+            format_bytes(fin.current_bytes),
+            format_bytes(fin.peak_bytes)
+        );
+    }
+
+    println!("\nsample PNGs saved to: {}", out.display());
 }
 
 fn ms(d: Duration) -> f64 {
@@ -1138,8 +1414,167 @@ fn safe_ratio(ours: f64, pdfium: f64) -> f64 {
     }
 }
 
+/// Raw-byte counts of common PDF stream filters. Not a full COS parse: a
+/// filter name inside a comment or unused object still increments the counter,
+/// but for scanned-book triage this is more than enough.
+#[derive(Debug, Clone, Copy, Default)]
+struct FilterCensus {
+    dct: usize,
+    jpx: usize,
+    jbig2: usize,
+    ccitt: usize,
+    flate: usize,
+}
+
+impl FilterCensus {
+    fn classify(self) -> &'static str {
+        let imagey = self.dct + self.jpx + self.jbig2 + self.ccitt;
+        match (self.dct, self.jpx, self.jbig2, self.ccitt, imagey) {
+            (0, 0, 0, 0, 0) => "text/vector-ish (no image filters seen)",
+            (d, 0, 0, 0, _) if d > 0 => "DCT/JPEG-scan dominant",
+            (0, j, 0, 0, _) if j > 0 => "JPX/JPEG2000 dominant",
+            (0, 0, b, 0, _) if b > 0 => "JBIG2 dominant",
+            (0, 0, 0, c, _) if c > 0 => "CCITT dominant",
+            (d, j, b, _, _) if d > 0 && j > 0 && b > 0 => "MRC-like (DCT+JPX+JBIG2)",
+            (_, j, b, _, _) if j > 0 && b > 0 => "MRC-like (JPX+JBIG2)",
+            (d, _, b, _, _) if d > 0 && b > 0 => "mixed DCT+JBIG2",
+            (d, j, _, _, _) if d > 0 && j > 0 => "mixed DCT+JPX",
+            _ => "mixed image filters",
+        }
+    }
+}
+
+/// Count ASCII occurrences of `/FilterName` tokens in a PDF byte stream.
+fn filter_census(bytes: &[u8]) -> FilterCensus {
+    FilterCensus {
+        dct: count_ascii_needle(bytes, b"/DCTDecode"),
+        jpx: count_ascii_needle(bytes, b"/JPXDecode"),
+        jbig2: count_ascii_needle(bytes, b"/JBIG2Decode"),
+        ccitt: count_ascii_needle(bytes, b"/CCITTFaxDecode"),
+        flate: count_ascii_needle(bytes, b"/FlateDecode"),
+    }
+}
+
+fn count_ascii_needle(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut i = 0usize;
+    let last = haystack.len() - needle.len();
+    while i <= last {
+        if &haystack[i..i + needle.len()] == needle {
+            count += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+/// Directory containing the running executable.
+fn exe_dir() -> PathBuf {
+    let exe = std::env::current_exe().expect("locate exe");
+    exe.parent().unwrap_or(Path::new(".")).to_path_buf()
+}
+
+/// Find pdfium.dll: explicit path → next to exe → None.
+fn find_pdfium() -> Option<PathBuf> {
+    let candidate = exe_dir().join("pdfium.dll");
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Save an RGBA8 buffer (premultiplied or not) as a PNG next to the exe.
+fn save_rgba(dir: &Path, page: u32, pixels: &[u8], width: u32, height: u32, stride: usize) {
+    let path = dir.join(format!("page-{page}.png"));
+    let file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("write {}: {e}", path.display());
+            return;
+        }
+    };
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = match encoder.write_header() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("encode {}: {e}", path.display());
+            return;
+        }
+    };
+    // De-interleave rows if stride > width * 4.
+    if stride == width as usize * 4 {
+        if writer.write_image_data(pixels).is_err() {
+            eprintln!("encode {}: pixel write failed", path.display());
+        }
+    } else {
+        let mut contiguous = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height as usize {
+            let row_start = y * stride;
+            contiguous.extend_from_slice(&pixels[row_start..row_start + width as usize * 4]);
+        }
+        if writer.write_image_data(&contiguous).is_err() {
+            eprintln!("encode {}: pixel write failed", path.display());
+        }
+    }
+}
+
+/// Save a BGRA buffer (PDFium's native format) as a PNG.
+fn save_bgra(dir: &Path, page: u32, bgra: &[u8], width: u32, height: u32) {
+    let path = dir.join(format!("page-{page}.png"));
+    let file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("write {}: {e}", path.display());
+            return;
+        }
+    };
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = match encoder.write_header() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("encode {}: {e}", path.display());
+            return;
+        }
+    };
+    // Convert BGRA → RGBA for PNG.
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for px in bgra.chunks_exact(4) {
+        rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+    }
+    if writer.write_image_data(&rgba).is_err() {
+        eprintln!("encode {}: pixel write failed", path.display());
+    }
+}
+
+/// Sanitize a file stem for use as a directory name.
+fn safe_stem(path: &Path) -> String {
+    path.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Structured whole-document scheduler measurement. The snapshot is retained
 /// between runs; each run compiles and renders the full page range.
+#[cfg(feature = "bench-profiling")]
 fn pipeline_profile(args: &[String]) {
     if args.len() < 2 {
         eprintln!(
@@ -1191,6 +1626,7 @@ fn pipeline_profile(args: &[String]) {
     eprintln!("wrote structured pipeline profiles to {}", out.display());
 }
 
+#[cfg(feature = "bench-profiling")]
 fn write_pipeline_row(
     writer: &mut impl Write,
     path: &Path,
@@ -1217,6 +1653,7 @@ fn write_pipeline_row(
 
 /// Run the renderer's structured profile matrix for one representative page.
 /// Output is JSON Lines so a long corpus run remains useful if interrupted.
+#[cfg(feature = "bench-profiling")]
 fn profile(args: &[String]) {
     if args.len() < 2 {
         eprintln!(
@@ -1439,6 +1876,7 @@ fn profile(args: &[String]) {
     eprintln!("wrote structured profiles to {}", out.display());
 }
 
+#[cfg(feature = "bench-profiling")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProfileMode {
     Cold,
@@ -1449,6 +1887,7 @@ enum ProfileMode {
     Prepared,
 }
 
+#[cfg(feature = "bench-profiling")]
 impl ProfileMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
@@ -1474,6 +1913,7 @@ impl ProfileMode {
     }
 }
 
+#[cfg(feature = "bench-profiling")]
 fn profile_args(args: &[String]) -> (Vec<&String>, Option<ProfileMode>) {
     let mut positional = Vec::new();
     let mut mode = None;
@@ -1536,6 +1976,7 @@ fn request_for_compiled(compiled: Arc<pdf_page_ir::CompiledPage>, scale: f64) ->
     }
 }
 
+#[cfg(feature = "bench-profiling")]
 fn write_profile_row(
     writer: &mut impl Write,
     mode: &str,
@@ -1600,18 +2041,82 @@ fn write_profile_row(
     writer.write_all(json.as_bytes())
 }
 
+/// Cross-platform process memory snapshot.
+#[derive(Debug, Clone, Copy, Default)]
+struct MemStats {
+    /// Current working set / RSS in bytes.
+    current_bytes: u64,
+    /// Peak working set / high-water RSS in bytes.
+    peak_bytes: u64,
+}
+
+impl MemStats {
+    fn peak_delta(&self, baseline: &MemStats) -> u64 {
+        self.peak_bytes.saturating_sub(baseline.peak_bytes)
+    }
+}
+
+fn mem_stats() -> Option<MemStats> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let kib = |name: &str| {
+            status
+                .lines()
+                .find(|line| line.starts_with(name))
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
+                .and_then(|value| value.parse::<u64>().ok())
+        };
+        Some(MemStats {
+            current_bytes: kib("VmRSS:")? * 1024,
+            peak_bytes: kib("VmHWM:")? * 1024,
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        unsafe {
+            let process = GetCurrentProcess();
+            let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+            let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            if GetProcessMemoryInfo(process, &mut pmc, size) != 0 {
+                Some(MemStats {
+                    current_bytes: pmc.WorkingSetSize as u64,
+                    peak_bytes: pmc.PeakWorkingSetSize as u64,
+                })
+            } else {
+                None
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.2} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.2} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.2} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Linux current/high-water resident set. Each profile mode runs in its own
 /// process in the corpus driver, so `VmHWM` is a useful mode-level peak.
+#[cfg(feature = "bench-profiling")]
 fn linux_rss_bytes() -> Option<(u64, u64)> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let kib = |name: &str| {
-        status
-            .lines()
-            .find(|line| line.starts_with(name))
-            .and_then(|line| line.split_ascii_whitespace().nth(1))
-            .and_then(|value| value.parse::<u64>().ok())
-    };
-    Some((kib("VmRSS:")? * 1024, kib("VmHWM:")? * 1024))
+    mem_stats().map(|m| (m.current_bytes, m.peak_bytes))
 }
 
 /// Compile page `p` and build a render request at PDFium's page grid
