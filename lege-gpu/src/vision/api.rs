@@ -504,7 +504,8 @@ const REC_WIDTH_BUCKETS: [u32; 5] = [160, 320, 480, 640, 960];
 
 /// Distinct rec widths kept compiled at once (the buckets plus a couple of
 /// oversize exact-width graphs).
-const REC_CACHE_CAP: usize = REC_WIDTH_BUCKETS.len() + 3;
+const REC_CACHE_CAP: usize = 16;
+const REC_BATCH_SIZES: [usize; 4] = [1, 4, 8, 16];
 
 /// A recognized word with its horizontal pixel span in the source line crop.
 #[derive(Debug, Clone)]
@@ -513,6 +514,7 @@ pub struct RecWord {
     /// Left/right x in the ORIGINAL line-crop pixel coordinates.
     pub x0: u32,
     pub x1: u32,
+    pub confidence: f32,
 }
 
 /// Recognition result for one text-line crop: the full line text plus per-word
@@ -521,11 +523,13 @@ pub struct RecWord {
 pub struct RecLine {
     pub text: String,
     pub words: Vec<RecWord>,
+    pub confidence: Option<f32>,
 }
 
 /// A rec graph compiled for one specific input width `[1,3,48,W]`.
 struct RecGraph {
     width: u32,
+    batch: usize,
     graph: PreparedGraph,
     compiled: CompiledGraph,
 }
@@ -591,10 +595,17 @@ impl RecRecognizer {
             .unwrap_or_else(|| width + (width & 1))
     }
 
-    fn build_for(&self, width: u32, related: Option<&CompiledGraph>) -> Result<RecGraph> {
-        let dims = [1, 3, REC_HEIGHT, width as i64];
+    fn build_for(
+        &self,
+        width: u32,
+        batch: usize,
+        related: Option<&CompiledGraph>,
+    ) -> Result<RecGraph> {
+        let dims = [batch as i64, 3, REC_HEIGHT, width as i64];
         let graph = PreparedGraph::from_model_with_input_dims(&self.model, Some(&dims))
-            .with_context(|| format!("failed to prepare rec graph for width {width}"))?;
+            .with_context(|| {
+                format!("failed to prepare rec graph for batch {batch}, width {width}")
+            })?;
         let compiled = match related {
             Some(parent) => parent.build_related(&graph),
             None => pollster::block_on(CompiledGraph::build(&graph)),
@@ -602,6 +613,7 @@ impl RecRecognizer {
         .with_context(|| format!("failed to compile rec graph for width {width}"))?;
         Ok(RecGraph {
             width,
+            batch,
             graph,
             compiled,
         })
@@ -620,7 +632,10 @@ impl RecRecognizer {
                 .cache
                 .lock()
                 .map_err(|_| anyhow::anyhow!("rec cache poisoned"))?;
-            match cache.iter().position(|e| e.width == bucket) {
+            match cache
+                .iter()
+                .position(|entry| entry.width == bucket && entry.batch == 1)
+            {
                 Some(0) => {}
                 Some(index) => {
                     let entry = cache.remove(index);
@@ -628,7 +643,7 @@ impl RecRecognizer {
                 }
                 None => {
                     let entry =
-                        self.build_for(bucket, cache.first().map(|entry| &entry.compiled))?;
+                        self.build_for(bucket, 1, cache.first().map(|entry| &entry.compiled))?;
                     cache.insert(0, entry);
                     cache.truncate(REC_CACHE_CAP);
                 }
@@ -658,6 +673,92 @@ impl RecRecognizer {
             );
         }
         Ok(Some((logits, nw, bucket)))
+    }
+
+    fn run_preprocessed_batch(
+        &self,
+        inputs: Vec<(Tensor, u32)>,
+        bucket: u32,
+        graph_batch: usize,
+    ) -> Result<Vec<(Tensor, u32, u32)>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sample_elements = 3 * REC_HEIGHT as usize * bucket as usize;
+        let mut data = vec![0.0_f32; sample_elements * graph_batch];
+        for (index, (tensor, nw)) in inputs.iter().enumerate() {
+            let padded = pad_rec_width(tensor.clone(), *nw, bucket);
+            let start = index * sample_elements;
+            data[start..start + sample_elements].copy_from_slice(&padded.data);
+        }
+        let batch_tensor = Tensor {
+            shape: vec![graph_batch, 3, REC_HEIGHT as usize, bucket as usize],
+            data,
+        };
+        let (outputs, out_name) = {
+            let mut cache = self
+                .cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("rec cache poisoned"))?;
+            match cache
+                .iter()
+                .position(|entry| entry.width == bucket && entry.batch == graph_batch)
+            {
+                Some(0) => {}
+                Some(index) => {
+                    let entry = cache.remove(index);
+                    cache.insert(0, entry);
+                }
+                None => {
+                    let entry = self.build_for(
+                        bucket,
+                        graph_batch,
+                        cache.first().map(|entry| &entry.compiled),
+                    )?;
+                    cache.insert(0, entry);
+                    cache.truncate(REC_CACHE_CAP);
+                }
+            }
+            let out_name = cache[0]
+                .graph
+                .outputs
+                .first()
+                .context("batched rec graph has no output")?
+                .clone();
+            let outputs = pollster::block_on(cache[0].compiled.run(&batch_tensor))
+                .context("batched rec inference failed")?;
+            (outputs, out_name)
+        };
+        let logits = outputs
+            .get(&out_name)
+            .with_context(|| format!("batched rec output `{out_name}` missing"))?;
+        let (batch, timesteps, classes) = match logits.shape.as_slice() {
+            [batch, timesteps, classes] => (*batch, *timesteps, *classes),
+            shape => bail!("unexpected batched rec output shape {shape:?}"),
+        };
+        if batch != graph_batch || classes != self.dict.num_classes() {
+            bail!(
+                "batched rec output is [{batch}, {timesteps}, {classes}], expected batch {} and {} classes",
+                graph_batch,
+                self.dict.num_classes()
+            );
+        }
+        let line_elements = timesteps * classes;
+        inputs
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, nw))| {
+                let start = index * line_elements;
+                Ok((
+                    Tensor {
+                        shape: vec![1, timesteps, classes],
+                        data: logits.data[start..start + line_elements].to_vec(),
+                    },
+                    nw,
+                    bucket,
+                ))
+            })
+            .collect()
     }
 
     fn run_line(&self, line: &RgbImage) -> Result<Option<(Tensor, u32, u32)>> {
@@ -700,11 +801,72 @@ impl RecRecognizer {
         self.decode_words(line.width(), self.run_gray_line(line)?)
     }
 
+    /// Recognize page lines in fixed-shape width buckets. A full group is one
+    /// GPU submission instead of one submission per line. If a model/backend
+    /// rejects a dynamic batch shape, that group transparently falls back to
+    /// the established single-line path.
+    pub fn recognize_words_gray_batch(&self, lines: &[GrayImage]) -> Result<Vec<RecLine>> {
+        let mut groups = std::collections::BTreeMap::<u32, Vec<(usize, Tensor, u32, u32)>>::new();
+        let mut results = vec![
+            RecLine {
+                text: String::new(),
+                words: Vec::new(),
+                confidence: None,
+            };
+            lines.len()
+        ];
+        for (index, line) in lines.iter().enumerate() {
+            if line.width() == 0 || line.height() == 0 {
+                continue;
+            }
+            let (tensor, nw) = preprocess::rec_line_tensor_gray(line)
+                .context("grayscale batch rec preprocess failed")?;
+            groups
+                .entry(Self::bucket_for(nw))
+                .or_default()
+                .push((index, tensor, nw, line.width()));
+        }
+        for (bucket, group) in groups {
+            let mut offset = 0;
+            while offset < group.len() {
+                let remaining = group.len() - offset;
+                let graph_batch = REC_BATCH_SIZES
+                    .iter()
+                    .copied()
+                    .find(|batch| *batch >= remaining.min(16))
+                    .unwrap_or(16);
+                let count = remaining.min(graph_batch);
+                let chunk = &group[offset..offset + count];
+                let inputs = chunk
+                    .iter()
+                    .map(|(_, tensor, nw, _)| (tensor.clone(), *nw))
+                    .collect::<Vec<_>>();
+                match self.run_preprocessed_batch(inputs, bucket, graph_batch) {
+                    Ok(outputs) => {
+                        for ((index, _, _, crop_width), output) in
+                            chunk.iter().zip(outputs.into_iter())
+                        {
+                            results[*index] = self.decode_words(*crop_width, Some(output))?;
+                        }
+                    }
+                    Err(_) => {
+                        for (index, _, _, _) in chunk {
+                            results[*index] = self.recognize_words_gray(&lines[*index])?;
+                        }
+                    }
+                }
+                offset += count;
+            }
+        }
+        Ok(results)
+    }
+
     fn decode_words(&self, crop_w: u32, output: Option<(Tensor, u32, u32)>) -> Result<RecLine> {
         let Some((logits, nw, bucket)) = output else {
             return Ok(RecLine {
                 text: String::new(),
                 words: Vec::new(),
+                confidence: None,
             });
         };
         let (spans, timesteps) =
@@ -725,27 +887,45 @@ impl RecRecognizer {
         let mut cur = String::new();
         let mut cur_start: Option<usize> = None;
         let mut cur_last = 0usize;
-        let flush =
-            |cur: &mut String, start: Option<usize>, last: usize, words: &mut Vec<RecWord>| {
-                if let Some(s) = start {
-                    if !cur.is_empty() {
-                        let x0 = x_of(s).min(crop_w.saturating_sub(1));
-                        let x1 = (x_of(last) + step_px.ceil() as u32)
-                            .clamp(x0.saturating_add(1), crop_w);
-                        words.push(RecWord {
-                            text: std::mem::take(cur),
-                            x0,
-                            x1,
-                        });
-                    }
+        let mut cur_confidence = 0.0_f32;
+        let mut cur_glyphs = 0_u32;
+        let mut line_confidence = 0.0_f32;
+        let mut line_glyphs = 0_u32;
+        let flush = |cur: &mut String,
+                     start: Option<usize>,
+                     last: usize,
+                     confidence: &mut f32,
+                     glyphs: &mut u32,
+                     words: &mut Vec<RecWord>| {
+            if let Some(s) = start {
+                if !cur.is_empty() {
+                    let x0 = x_of(s).min(crop_w.saturating_sub(1));
+                    let x1 =
+                        (x_of(last) + step_px.ceil() as u32).clamp(x0.saturating_add(1), crop_w);
+                    words.push(RecWord {
+                        text: std::mem::take(cur),
+                        x0,
+                        x1,
+                        confidence: *confidence / (*glyphs).max(1) as f32,
+                    });
                 }
-                cur.clear();
-            };
+            }
+            cur.clear();
+            *confidence = 0.0;
+            *glyphs = 0;
+        };
         for span in &spans {
             let glyph = self.dict.char_at(span.class_index);
             text.push_str(glyph);
             if glyph == " " {
-                flush(&mut cur, cur_start, cur_last, &mut words);
+                flush(
+                    &mut cur,
+                    cur_start,
+                    cur_last,
+                    &mut cur_confidence,
+                    &mut cur_glyphs,
+                    &mut words,
+                );
                 cur_start = None;
             } else {
                 if cur_start.is_none() {
@@ -753,13 +933,25 @@ impl RecRecognizer {
                 }
                 cur_last = span.timestep;
                 cur.push_str(glyph);
+                cur_confidence += span.confidence;
+                cur_glyphs += 1;
+                line_confidence += span.confidence;
+                line_glyphs += 1;
             }
         }
-        flush(&mut cur, cur_start, cur_last, &mut words);
+        flush(
+            &mut cur,
+            cur_start,
+            cur_last,
+            &mut cur_confidence,
+            &mut cur_glyphs,
+            &mut words,
+        );
 
         Ok(RecLine {
             text: text.trim().to_string(),
             words,
+            confidence: (line_glyphs > 0).then_some(line_confidence / line_glyphs as f32),
         })
     }
 

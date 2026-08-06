@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::present::PresenterPreference;
 
-pub const USAGE: &str = "Usage: lege-viewer [--presenter auto|gpu|software] [document.pdf]\n       lege-viewer [--presenter auto|gpu|software] --synthetic [PAGE_COUNT]\n\nWithout a document the viewer opens an empty window; use its Open button\n(or Ctrl+O) to choose a PDF.";
+pub const USAGE: &str = "Usage: lege-gui [--presenter auto|gpu|software] [document.pdf]\n       lege-gui [--presenter auto|gpu|software] --synthetic [PAGE_COUNT]\n\nWithout a document the viewer opens an empty window; use its Open button\n(or Ctrl+O) to choose a PDF.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchMode {

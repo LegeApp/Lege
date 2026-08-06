@@ -57,9 +57,16 @@ pub(crate) struct CharSpan {
     pub(crate) class_index: usize,
     /// Timestep index (0..T) of the argmax that produced this character.
     pub(crate) timestep: usize,
+    /// Recognition confidence derived from the emitted class probability or,
+    /// for raw logits, the top-two margin.
+    pub(crate) confidence: f32,
 }
 
-fn for_each_emission(logits: &Tensor, dict: &CtcDict, mut emit: impl FnMut(usize, usize)) -> usize {
+fn for_each_emission(
+    logits: &Tensor,
+    dict: &CtcDict,
+    mut emit: impl FnMut(usize, usize, f32),
+) -> usize {
     let (timesteps, classes) = match logits.shape.as_slice() {
         [1, t, c] => (*t, *c),
         [t, c] => (*t, *c),
@@ -74,15 +81,24 @@ fn for_each_emission(logits: &Tensor, dict: &CtcDict, mut emit: impl FnMut(usize
         let base = t * classes;
         let mut best = 0usize;
         let mut best_val = f32::NEG_INFINITY;
+        let mut second_val = f32::NEG_INFINITY;
         for c in 0..classes {
             let value = logits.data[base + c];
             if value > best_val {
+                second_val = best_val;
                 best_val = value;
                 best = c;
+            } else if value > second_val {
+                second_val = value;
             }
         }
         if best != prev && best != 0 {
-            emit(best, t);
+            let confidence = if (0.0..=1.0).contains(&best_val) {
+                best_val
+            } else {
+                1.0 / (1.0 + (second_val - best_val).exp())
+            };
+            emit(best, t, confidence.clamp(0.0, 1.0));
         }
         prev = best;
     }
@@ -94,10 +110,11 @@ fn for_each_emission(logits: &Tensor, dict: &CtcDict, mut emit: impl FnMut(usize
 /// word boxes. Same collapse rule as [`ctc_greedy_decode`].
 pub(crate) fn ctc_greedy_decode_spans(logits: &Tensor, dict: &CtcDict) -> (Vec<CharSpan>, usize) {
     let mut spans = Vec::new();
-    let timesteps = for_each_emission(logits, dict, |class_index, timestep| {
+    let timesteps = for_each_emission(logits, dict, |class_index, timestep, confidence| {
         spans.push(CharSpan {
             class_index,
             timestep,
+            confidence,
         });
     });
     (spans, timesteps)
@@ -106,7 +123,7 @@ pub(crate) fn ctc_greedy_decode_spans(logits: &Tensor, dict: &CtcDict) -> (Vec<C
 /// Greedy CTC decode of recognition logits shaped `[1, T, C]` or `[T, C]`.
 pub(crate) fn ctc_greedy_decode(logits: &Tensor, dict: &CtcDict) -> String {
     let mut out = String::new();
-    for_each_emission(logits, dict, |class_index, _| {
+    for_each_emission(logits, dict, |class_index, _, _| {
         out.push_str(dict.char_at(class_index));
     });
     out

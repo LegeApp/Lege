@@ -99,57 +99,108 @@ impl PaddleOcrEngine {
 
     /// Detect text lines on `rgb`, recognize each, and return per-line results
     /// with page-global bboxes in column-aware reading order.
-    fn ocr_rgb(&self, rgb: &RgbImage) -> Result<Vec<OcrLineResult>> {
-        let (iw, ih) = rgb.dimensions();
+    fn ocr_rgb_linked(
+        &self,
+        detection_image: &RgbImage,
+        recognition_source: &RgbImage,
+    ) -> Result<Vec<OcrLineResult>> {
         let boxes = self
             .inner
             .detector
-            .detect(rgb)
+            .detect(detection_image)
             .context("detection failed")?;
-        self.recognize_boxes(boxes, iw, ih, |x, y, w, h| {
-            let crop = image::imageops::crop_imm(rgb, x, y, w, h).to_image();
-            self.inner.recognizer.recognize_words(&crop)
-        })
+        let crops = Self::ordered_source_crops(
+            boxes,
+            detection_image.dimensions(),
+            recognition_source.dimensions(),
+        );
+        let recognized = crops
+            .iter()
+            .map(|(_, [x, y, x1, y1])| {
+                let crop = image::imageops::crop_imm(recognition_source, *x, *y, x1 - x, y1 - y)
+                    .to_image();
+                self.inner.recognizer.recognize_words(&crop)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self::assemble_lines(crops, recognized))
     }
 
     /// Grayscale-native page path. Detection generates the model's replicated
     /// channels directly from luma, and only small recognized line crops are
     /// converted to RGB.
     fn ocr_gray(&self, gray: &GrayImage) -> Result<Vec<OcrLineResult>> {
-        let (iw, ih) = gray.dimensions();
+        self.ocr_gray_linked(gray, gray)
+    }
+
+    fn ocr_gray_linked(
+        &self,
+        detection_image: &GrayImage,
+        recognition_source: &GrayImage,
+    ) -> Result<Vec<OcrLineResult>> {
         let boxes = self
             .inner
             .detector
-            .detect_gray(gray)
+            .detect_gray(detection_image)
             .context("grayscale detection failed")?;
-        self.recognize_boxes(boxes, iw, ih, |x, y, w, h| {
-            let crop = image::imageops::crop_imm(gray, x, y, w, h).to_image();
-            self.inner.recognizer.recognize_words_gray(&crop)
-        })
+        let crops = Self::ordered_source_crops(
+            boxes,
+            detection_image.dimensions(),
+            recognition_source.dimensions(),
+        );
+        let line_images = crops
+            .iter()
+            .map(|(_, [x, y, x1, y1])| {
+                image::imageops::crop_imm(recognition_source, *x, *y, x1 - x, y1 - y).to_image()
+            })
+            .collect::<Vec<_>>();
+        let recognized = self
+            .inner
+            .recognizer
+            .recognize_words_gray_batch(&line_images)
+            .context("batched grayscale recognition failed")?;
+        Ok(Self::assemble_lines(crops, recognized))
     }
 
-    fn recognize_boxes(
-        &self,
+    fn ordered_source_crops(
         boxes: Vec<TextBox>,
-        iw: u32,
-        ih: u32,
-        mut recognize: impl FnMut(u32, u32, u32, u32) -> Result<RecLine>,
-    ) -> Result<Vec<OcrLineResult>> {
-        let crops: Vec<_> = boxes
+        detection_size: (u32, u32),
+        source_size: (u32, u32),
+    ) -> Vec<(TextBox, [u32; 4])> {
+        let (det_w, det_h) = detection_size;
+        let (source_w, source_h) = source_size;
+        let scale_x = source_w as f32 / det_w.max(1) as f32;
+        let scale_y = source_h as f32 / det_h.max(1) as f32;
+        let crops = boxes
             .into_iter()
             .filter_map(|b| {
-                let (x, y, w, h) = b.crop_rect(iw, ih);
+                let (dx, dy, dw, dh) = b.crop_rect(det_w, det_h);
+                let x = (dx as f32 * scale_x).floor().clamp(0.0, source_w as f32) as u32;
+                let y = (dy as f32 * scale_y).floor().clamp(0.0, source_h as f32) as u32;
+                let x1 = ((dx + dw) as f32 * scale_x)
+                    .ceil()
+                    .clamp(0.0, source_w as f32) as u32;
+                let y1 = ((dy + dh) as f32 * scale_y)
+                    .ceil()
+                    .clamp(0.0, source_h as f32) as u32;
+                let (w, h) = (x1.saturating_sub(x), y1.saturating_sub(y));
                 (w >= 2 && h >= 2).then_some((b, [x, y, x + w, y + h]))
             })
-            .collect();
+            .collect::<Vec<_>>();
         let crop_bboxes: Vec<_> = crops.iter().map(|(_, bbox)| *bbox).collect();
-        let reading_order = crate::reading_order::order_bboxes(&crop_bboxes, iw);
+        let reading_order = crate::reading_order::order_bboxes(&crop_bboxes, source_w);
+        reading_order
+            .into_iter()
+            .map(|index| crops[index])
+            .collect()
+    }
 
+    fn assemble_lines(
+        crops: Vec<(TextBox, [u32; 4])>,
+        recognized: Vec<RecLine>,
+    ) -> Vec<OcrLineResult> {
         let mut lines = Vec::with_capacity(crops.len());
-        for index in reading_order {
-            let (b, [x, y, x1, y1]) = crops[index];
+        for ((_detection, [x, y, x1, y1]), rec) in crops.into_iter().zip(recognized) {
             let (w, h) = (x1 - x, y1 - y);
-            let rec = recognize(x, y, w, h)?;
             if rec.text.trim().is_empty() {
                 continue;
             }
@@ -161,19 +212,20 @@ impl PaddleOcrEngine {
                     // Crop-local; hOCR builder offsets by the line origin. Word y
                     // spans the full line height (rec is line-level in y).
                     bbox_crop_local: [word.x0, 0, word.x1.min(w), h],
-                    // DBNet's score measures detection, not recognition. Do not
-                    // expose it as the hOCR word confidence.
-                    confidence: None,
+                    confidence: Some(word.confidence),
                 })
                 .collect();
             lines.push(OcrLineResult {
                 text: rec.text,
-                confidence: Some(b.score),
+                // Keep recognition evidence distinct from DBNet detection
+                // confidence. The latter remains useful for routing but must
+                // not masquerade as OCR certainty in hOCR.
+                confidence: rec.confidence,
                 words,
                 bbox_highres: [x, y, x1, y1],
             });
         }
-        Ok(lines)
+        lines
     }
 }
 
@@ -204,7 +256,7 @@ impl super::engine::OcrEngine for PaddleOcrEngine {
         const MAX_INPUT_PIXELS: usize = 4_000_000;
         let pixels = width.checked_mul(height)?;
         let resized;
-        let (data, final_width, final_height) = if pixels > MAX_INPUT_PIXELS {
+        let (detection_data, detection_width, detection_height) = if pixels > MAX_INPUT_PIXELS {
             let scale = (MAX_INPUT_PIXELS as f64 / pixels as f64).sqrt();
             let resized_width = ((width as f64 * scale).round() as usize).max(1);
             let resized_height = ((height as f64 * scale).round() as usize).max(1);
@@ -215,22 +267,23 @@ impl super::engine::OcrEngine for PaddleOcrEngine {
             (data.to_vec(), width, height)
         };
 
-        let mut lines = if bpp == 1 {
-            let gray = GrayImage::from_raw(final_width as u32, final_height as u32, data)?;
-            self.ocr_gray(&gray).ok()?
+        let lines = if bpp == 1 {
+            let source = GrayImage::from_raw(width as u32, height as u32, data.to_vec())?;
+            let detection = GrayImage::from_raw(
+                detection_width as u32,
+                detection_height as u32,
+                detection_data,
+            )?;
+            self.ocr_gray_linked(&detection, &source).ok()?
         } else {
-            let rgb = RgbImage::from_raw(final_width as u32, final_height as u32, data)?;
-            self.ocr_rgb(&rgb).ok()?
+            let source = RgbImage::from_raw(width as u32, height as u32, data.to_vec())?;
+            let detection = RgbImage::from_raw(
+                detection_width as u32,
+                detection_height as u32,
+                detection_data,
+            )?;
+            self.ocr_rgb_linked(&detection, &source).ok()?
         };
-        if final_width != width || final_height != height {
-            crate::coordinate::scale_lines(
-                &mut lines,
-                width as f32 / final_width as f32,
-                height as f32 / final_height as f32,
-                width as u32,
-                height as u32,
-            );
-        }
         let hocr = crate::hocr::build_page_hocr(&lines, width as u32, height as u32);
         let plain_text = lines
             .iter()
@@ -259,12 +312,12 @@ impl super::engine::OcrEngine for PaddleOcrEngine {
             .map(|word| OcrWord {
                 text: word.text.clone(),
                 bbox_crop_local: [word.x0, 0, word.x1.min(image.width()), h],
-                confidence: None,
+                confidence: Some(word.confidence),
             })
             .collect();
         Ok(OcrLineResult {
             text: rec.text,
-            confidence: None,
+            confidence: rec.confidence,
             words,
             bbox_highres: bbox,
         })
@@ -298,6 +351,23 @@ mod tests {
         let engine = PaddleOcrEngine::from_embedded().expect("embedded PP-OCR models must load");
         assert_eq!(engine.name(), "paddle");
         assert_eq!(engine.inner.recognizer.num_classes(), 18_385);
+    }
+
+    #[test]
+    fn detector_boxes_map_back_to_high_resolution_recognition_source() {
+        let crops = PaddleOcrEngine::ordered_source_crops(
+            vec![TextBox {
+                x0: 10.0,
+                y0: 20.0,
+                x1: 50.0,
+                y1: 30.0,
+                score: 0.9,
+            }],
+            (100, 100),
+            (400, 300),
+        );
+        assert_eq!(crops.len(), 1);
+        assert_eq!(crops[0].1, [40, 60, 200, 90]);
     }
 
     /// `run_image` on a downscaled grayscale page (the shape the fast pipeline

@@ -241,8 +241,11 @@ impl ViewportPlanner {
         let predicted_pages =
             predicted_pages(layout, first_visible, last_visible, navigation_mode, 10);
 
-        const FINAL_PREFETCH_TILE_BUDGET: usize = 32;
-        const FINAL_PREFETCH_PAGE_LIMIT: usize = 2;
+        // A PageDown should normally enter an already-rendered page.  Keep
+        // this strictly bounded, but give sequential reading three exact
+        // pages of runway before falling back to low-resolution previews.
+        const FINAL_PREFETCH_TILE_BUDGET: usize = 160;
+        const FINAL_PREFETCH_PAGE_LIMIT: usize = 5;
         let mut final_prefetch_tiles = Vec::new();
         for page in predicted_pages
             .iter()

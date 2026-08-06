@@ -13,8 +13,15 @@ use thiserror::Error;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-const TILE_EXTENT: u32 = 256;
-const LAYERS_PER_BANK: u32 = 256;
+// Document tiles remain 256px, but chrome surfaces (toolbars, dialogs, and
+// previews) are deliberately wider.  Keeping the atlas at 256px made the GPU
+// backend reject those otherwise-valid surfaces and fall back to softbuffer.
+// Halving the layer count keeps each bank at the same 64 MiB budget.
+const TILE_EXTENT: u32 = 512;
+/// Largest width or height accepted by [`GpuCompositor::push_image`]. Larger
+/// images must be split by the caller into sub-quads no bigger than this.
+pub const MAX_IMAGE_EXTENT: u32 = TILE_EXTENT;
+const LAYERS_PER_BANK: u32 = 64;
 const BYTES_PER_BANK: u64 = TILE_EXTENT as u64 * TILE_EXTENT as u64 * LAYERS_PER_BANK as u64 * 4;
 const DEFAULT_MAX_BANKS: usize = 4;
 
@@ -683,12 +690,19 @@ impl GpuCompositor {
         &mut self,
         source: ImageSource<'_>,
     ) -> Result<ResidentImage, PresentationError> {
+        // The final row only has to reach `width` pixels: callers slicing a
+        // sub-rectangle out of a larger surface pass the tail of the parent
+        // buffer, which ends exactly at the last row's right edge.
         if source.width == 0
             || source.height == 0
             || source.width > TILE_EXTENT
             || source.height > TILE_EXTENT
             || source.stride_pixels < source.width as usize
-            || source.pixels.len() < source.stride_pixels.saturating_mul(source.height as usize)
+            || source.pixels.len()
+                < source
+                    .stride_pixels
+                    .saturating_mul(source.height as usize - 1)
+                    + source.width as usize
         {
             return Err(PresentationError::InvalidImage);
         }

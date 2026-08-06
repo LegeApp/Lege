@@ -12,6 +12,11 @@ pub enum ColorMode {
     Original,
     Night,
     WarmPaper,
+    /// Curated native UI palette inspired by the retained Sanzo Wada work.
+    /// Page pixels stay original so a decorative palette never changes scans.
+    SanzoEarth,
+    /// A cooler companion palette with the same original-pixel policy.
+    SanzoSea,
 }
 
 impl ColorMode {
@@ -19,7 +24,9 @@ impl ColorMode {
         match self {
             Self::Original => Self::Night,
             Self::Night => Self::WarmPaper,
-            Self::WarmPaper => Self::Original,
+            Self::WarmPaper => Self::SanzoEarth,
+            Self::SanzoEarth => Self::SanzoSea,
+            Self::SanzoSea => Self::Original,
         }
     }
 
@@ -28,6 +35,8 @@ impl ColorMode {
             Self::Original => "Original",
             Self::Night => "Night",
             Self::WarmPaper => "Warm",
+            Self::SanzoEarth => "Earth",
+            Self::SanzoSea => "Sea",
         }
     }
 }

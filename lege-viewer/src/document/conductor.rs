@@ -494,7 +494,10 @@ impl Conductor {
                 CompileNeeds {
                     interactive_generation: visible.then_some(intent.generation),
                     text_index: !latency_critical,
-                    preview: !latency_critical,
+                    // Even a random seek should publish a small canonical page
+                    // immediately while the exact tiles finish. This is the
+                    // Sumatra-style "never show an empty loading page" path.
+                    preview: visible || !latency_critical,
                 },
                 if visible { 1_400 } else { priority },
             );
@@ -594,7 +597,7 @@ impl Conductor {
                 CompileNeeds {
                     interactive_generation: Some(intent.generation),
                     text_index: !exact_only,
-                    preview: !exact_only,
+                    preview: true,
                 },
                 1_400,
             );
@@ -1184,7 +1187,7 @@ impl Conductor {
             let relevant = if latency_critical {
                 match key {
                     WorkKey::Compile(page) => visible_pages.contains(page),
-                    WorkKey::Preview(_) => false,
+                    WorkKey::Preview(page) => visible_pages.contains(page),
                     WorkKey::Raster(tile) => {
                         tile.tier == TileTier::Final
                             && intent.tile_is_visible(tile.page, tile.coord)
@@ -1261,11 +1264,12 @@ impl Conductor {
             }
             RasterJob::Tile { .. } => false,
             RasterJob::PagePreview { demand, .. } => {
-                !latency_critical
-                    && (intent.page_is_relevant(demand.page)
-                        || intent.thumbnail_page_is_relevant(demand.page)
-                        || warm_pages.contains(&demand.page)
-                        || intent.navigation_mode == NavigationMode::Idle)
+                (latency_critical && visible_pages.contains(&demand.page))
+                    || (!latency_critical
+                        && (intent.page_is_relevant(demand.page)
+                            || intent.thumbnail_page_is_relevant(demand.page)
+                            || warm_pages.contains(&demand.page)
+                            || intent.navigation_mode == NavigationMode::Idle))
             }
         });
         self.queued.retain(|key| match key {
@@ -1279,11 +1283,12 @@ impl Conductor {
                 }
             }
             WorkKey::Preview(page) => {
-                !latency_critical
-                    && (intent.page_is_relevant(*page)
-                        || intent.thumbnail_page_is_relevant(*page)
-                        || warm_pages.contains(page)
-                        || intent.navigation_mode == NavigationMode::Idle)
+                (latency_critical && visible_pages.contains(page))
+                    || (!latency_critical
+                        && (intent.page_is_relevant(*page)
+                            || intent.thumbnail_page_is_relevant(*page)
+                            || warm_pages.contains(page)
+                            || intent.navigation_mode == NavigationMode::Idle))
             }
             WorkKey::Raster(tile) => {
                 if latency_critical {

@@ -1,6 +1,8 @@
 [package]
-name = "lege-viewer"
-description = "Reader-first viewer tightly integrated with the Lege PDF document engine"
+# `lege-gui` is the single native desktop application.  Keep the library name
+# below while the viewer internals are migrated in place.
+name = "lege-gui"
+description = "Native Lege document viewer and processing workspace"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +10,12 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "lege-viewer"
+name = "lege-gui"
 path = "src/main.rs"
+
+[lib]
+name = "lege_viewer"
+path = "src/lib.rs"
 
 [[example]]
 name = "pdf_parallel_profile"
@@ -67,3 +73,6 @@ workspace = true
 
 [dev-dependencies]
 pdf-test-support.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

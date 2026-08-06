@@ -3,7 +3,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use copypasta::{ClipboardContext, ClipboardProvider};
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::{
+    Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
+};
 use pdf_font::StandardFont;
 
 use crate::geometry::RectI;
@@ -19,6 +21,7 @@ pub struct TextPaint {
     pub size: f32,
     pub color: u32,
     pub bold: bool,
+    pub centered: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +119,11 @@ impl UiTextRenderer {
                     Weight::NORMAL
                 });
             borrowed.set_text(&paint.text, &attrs, Shaping::Advanced, None);
+            if paint.centered
+                && let Some(line) = borrowed.lines.first_mut()
+            {
+                line.set_align(Some(Align::Center));
+            }
             borrowed.shape_until_scroll(true);
         }
         let color = Color::rgb(
@@ -231,6 +239,7 @@ mod tests {
                 size: 15.0,
                 color: 0,
                 bold: false,
+                centered: false,
             }],
         );
         assert!(

@@ -89,6 +89,47 @@ impl Theme {
             },
         }
     }
+
+    /// Native, compact descendants of the Freya Sanzo Wada palettes. Keeping
+    /// them as theme tokens means the Winit UI retains the visual work without
+    /// importing a widget toolkit or a theme browser.
+    pub const fn sanzo_earth() -> Self {
+        Self {
+            metrics: Self::METRICS,
+            colors: ThemeColors {
+                window: 0x003a_3430,
+                chrome: 0x004c_443d,
+                canvas: 0x002c_2825,
+                paper: 0x00f2_e5d2,
+                page_border: 0x0098_765b,
+                text: 0x00f7_eee2,
+                muted_text: 0x00d1_b9a0,
+                selection: 0x00c7_8050,
+                error: 0x00e2_7160,
+                scrollbar_track: 0x0036_302c,
+                scrollbar_thumb: 0x009a_8068,
+            },
+        }
+    }
+
+    pub const fn sanzo_sea() -> Self {
+        Self {
+            metrics: Self::METRICS,
+            colors: ThemeColors {
+                window: 0x001d_3035,
+                chrome: 0x0026_4147,
+                canvas: 0x0017_272c,
+                paper: 0x00e9_f0e9,
+                page_border: 0x006a_9294,
+                text: 0x00e7_f3ef,
+                muted_text: 0x00af_cbc5,
+                selection: 0x004c_a5a0,
+                error: 0x00e7_7770,
+                scrollbar_track: 0x0020_373d,
+                scrollbar_thumb: 0x006d_9da0,
+            },
+        }
+    }
 }
 
 impl Default for Theme {

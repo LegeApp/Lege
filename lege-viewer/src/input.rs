@@ -43,11 +43,22 @@ pub struct ScrollbarDragState {
 
 #[derive(Debug, Clone, Copy)]
 pub enum PointerCapture {
-    CanvasPan { origin: PointF },
+    CanvasPan {
+        origin: PointF,
+    },
     VerticalThumb(ScrollbarDragState),
     HorizontalThumb(ScrollbarDragState),
-    SidebarResize { initial_width: f64 },
-    Selection { anchor: PointF },
+    SidebarResize {
+        initial_width: f64,
+    },
+    ProcessingPanelResize {
+        origin: PointF,
+        initial_width: f64,
+        initial_height: f64,
+    },
+    Selection {
+        anchor: PointF,
+    },
 }
 
 #[derive(Debug, Clone)]

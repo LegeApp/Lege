@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let mut app = ViewerApp::new_with_presenter(engine, updates, config.presenter)?;
+    app.set_event_proxy(event_loop.create_proxy());
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -63,10 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Startup failures still have to reach someone who launched the viewer from
 /// the desktop rather than a shell.
 fn report_startup_error(message: &str) {
-    eprintln!("lege-viewer: {message}");
+    eprintln!("lege-gui: {message}");
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title("Lege Viewer")
+        .set_title("Lege")
         .set_description(message)
         .show();
 }

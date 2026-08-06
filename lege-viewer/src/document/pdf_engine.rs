@@ -565,6 +565,7 @@ fn raster_pdf_tile(
         super::ColorMode::WarmPaper => RenderColorPolicy::WarmPaper {
             paper_rgb: [0xf2, 0xe8, 0xd2],
         },
+        super::ColorMode::SanzoEarth | super::ColorMode::SanzoSea => RenderColorPolicy::Original,
     };
     let paper = color_policy.paper_rgb();
     let renderer_cancel = CancellationToken::from_shared(cancellation.shared_flag());
@@ -654,6 +655,7 @@ fn raster_text_structure(
         super::ColorMode::Original => 0x00ff_ffff,
         super::ColorMode::Night => 0x0025_2525,
         super::ColorMode::WarmPaper => 0x00f2_e8d2,
+        super::ColorMode::SanzoEarth | super::ColorMode::SanzoSea => 0x00ff_ffff,
     };
     let mut pixels = vec![paper; stride.saturating_mul(height as usize)];
     let scale = bucket.scale();

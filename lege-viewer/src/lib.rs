@@ -17,6 +17,7 @@ pub mod geometry;
 pub mod input;
 pub mod paint;
 pub mod present;
+pub mod processing;
 pub mod scene;
 pub mod scroll;
 mod settings;

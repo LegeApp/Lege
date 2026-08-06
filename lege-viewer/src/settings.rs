@@ -17,6 +17,8 @@ enum StoredColorMode {
     Original,
     Night,
     WarmPaper,
+    SanzoEarth,
+    SanzoSea,
 }
 
 impl From<ColorMode> for StoredColorMode {
@@ -25,6 +27,8 @@ impl From<ColorMode> for StoredColorMode {
             ColorMode::Original => Self::Original,
             ColorMode::Night => Self::Night,
             ColorMode::WarmPaper => Self::WarmPaper,
+            ColorMode::SanzoEarth => Self::SanzoEarth,
+            ColorMode::SanzoSea => Self::SanzoSea,
         }
     }
 }
@@ -35,6 +39,8 @@ impl From<StoredColorMode> for ColorMode {
             StoredColorMode::Original => Self::Original,
             StoredColorMode::Night => Self::Night,
             StoredColorMode::WarmPaper => Self::WarmPaper,
+            StoredColorMode::SanzoEarth => Self::SanzoEarth,
+            StoredColorMode::SanzoSea => Self::SanzoSea,
         }
     }
 }
