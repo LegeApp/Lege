@@ -5,8 +5,8 @@ build {
     tool "akr 0.1.0"
     grammar "0.1"
     vocabulary "0.1"
-    commit git:5780178af9f0d10bc4a8457259dfa141c2f804de
-    source_graph "sha256:9ec999e6b6076ed870672d0f0838c5f75992a2a22bb4aca11aaaebb08611fe11"
+    commit git:c66f1cad9f227fca6ddcf0e3f52c1a0b7394c93d
+    source_graph "sha256:9e0f0f067f1d2887e356624fbb6a2515814a870e6dc6f37a4176944b853d27a1"
 }
 
 source ".akr/project.akr" {
@@ -14,8 +14,18 @@ source ".akr/project.akr" {
     records 0
 }
 
+source ".akr/records/lege-ecosystem-perf/assessments.akr" {
+    hash "sha256:bfd5a9433d015f5c57d3dda542df445455fdb01da17810f48722559ae2504c68"
+    records 1
+}
+
 source ".akr/records/lege-ecosystem-perf/evidence.akr" {
     hash "sha256:10a0aac0427b1aad65b1e59086a125867d4470ab984197a81e11a39f59063a9b"
+    records 1
+}
+
+source ".akr/records/lege-ecosystem-perf/observations.akr" {
+    hash "sha256:d86b4e161518090df58e50f18b6f44a4abb2cf3b63744d6ec97046e2d6097891"
     records 1
 }
 
@@ -54,9 +64,19 @@ source ".akr/records/lege-ecosystem/work.akr" {
     records 67
 }
 
+seal @lege-ecosystem-perf.assessment.fused-pack-simd-neutral/1 {
+    state verified
+    hash "sha256:7bab288cd54a1744739c590444c5b16375d7fd4101348913d94a37f23f95aa09"
+}
+
 seal @lege-ecosystem-perf.evidence.tier1-lpt-scheduling/1 {
     state verified
     hash "sha256:f47478e635dfd1dc926ed37d0cf564d1c88b942c2577d2cc320eac08743d3a3d"
+}
+
+seal @lege-ecosystem-perf.observation.decode-flamegraph-lear-2026-08-06/1 {
+    state verified
+    hash "sha256:6a6ad1721a6a0d1252c942d43b03636d796d951a9ea42ca68faf38e97f08f939"
 }
 
 seal @lege-ecosystem-perf.papercut.imported-lege-ecosystem-perf-audit-work-records/1 {

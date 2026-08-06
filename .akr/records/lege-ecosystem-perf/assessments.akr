@@ -1,0 +1,28 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem-perf.assessment.fused-pack-simd-neutral/1 : assessment {
+    title "Fused-pack SIMD is performance-neutral (memory/codegen-bound)"
+    state verified
+    statement """
+        Hypothesis from the 2026-08-06 decode flamegraph: the ~15% of cycles in
+        the scalar fused pack (finalize_centered_f32_u8 + <f32>::clamp +
+        ict_rgb_f32 + store_rgb_layout inside fuse_pack_f32_into) could be cut
+        with an 8-wide wide::f32x8 finalize/ICT. Implemented a bit-exact
+        f32x8 path for the tight parallel branch (output hash unchanged at
+        c1698aa01d9a325e; 339 lib tests pass). Interleaved A/B on lear q75 RGB
+        (4 P-core workers, two prebuilt binaries alternated to cancel thermal
+        drift) showed no difference: baseline 278.3-281.4 ms vs SIMD
+        278.5-281.3 ms. The "after" flamegraph cycle shares for finalize/clamp
+        were unchanged, indicating LLVM already auto-vectorizes the scalar
+        per-pixel loop under fat LTO, and the pack is memory-bandwidth-bound
+        (reads 3x ~37 MP f32 planes, writes ~37 MP x3 bytes). The change was
+        reverted as neutral-but-more-complex. Transferable lesson (from
+        jpegXL-rs): do layout/memory-traffic work before ISA SIMD; SIMD only
+        accelerates arithmetic between large allocations and copies.
+        Next real targets by the flamegraph: 9/7 inverse DWT vertical memory
+        traffic (apply_lift_wide 14% + band gather/scatter memcpy) and Tier-1
+        MQ/flag hot loop, not the pack arithmetic.
+        """
+    confidence high
+}
