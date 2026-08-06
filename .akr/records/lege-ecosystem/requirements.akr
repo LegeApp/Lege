@@ -1,0 +1,18 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.requirement.reduced-reconstruction-geometry/1 : requirement {
+    title "8. Reduced reconstruction geometry"
+    state proposed
+    scope [ all ]
+    statement """
+        Reconstruction must use the dimensions and reference-grid phase associated with the selected resolution, not simply divide the full dimensions by a power of two.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Reconstruction must use the dimensions and reference-grid phase associated with the selected resolution, not simply divide the full dimensions by a power of two.
+            """
+    }
+}

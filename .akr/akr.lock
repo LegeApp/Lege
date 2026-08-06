@@ -1,0 +1,30 @@
+akr-lock 0.1
+project lege-ecosystem
+
+build {
+    tool "akr 0.1.0"
+    grammar "0.1"
+    vocabulary "0.1"
+    commit git:991c54c46a92e9b891096ad8f2604544a7ba3ac7
+    source_graph "sha256:d977aa866c6041a16d9bd174d94e7d1e07425e839a4e855b31fe870a603ea056"
+}
+
+source ".akr/project.akr" {
+    hash "sha256:72c541063af82df8caa20665898fcc1dafca337c7d2300dd7c1566d6bf75c1f7"
+    records 0
+}
+
+source ".akr/records/lege-ecosystem/policies.akr" {
+    hash "sha256:9eb3c6f244b0febd891c1a46508f1bff557ce84291ebeb27dcfd6fe2619c6fae"
+    records 3
+}
+
+source ".akr/records/lege-ecosystem/requirements.akr" {
+    hash "sha256:fafadf0c92b8705e309338f18e42792c04cfbc56e58fdc498f72d7403a2aca3c"
+    records 1
+}
+
+source ".akr/records/lege-ecosystem/work.akr" {
+    hash "sha256:baab7d5d675a2bc978e01cd60a472da7f4b195b30066d9a736cdbdaeae1d59f3"
+    records 58
+}

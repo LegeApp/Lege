@@ -1,0 +1,9 @@
+akr 0.1
+project lege-ecosystem
+
+namespace lege-ecosystem "Project-wide knowledge."
+
+defaults {
+    review_after_days 90
+    view_output "docs/generated"
+}

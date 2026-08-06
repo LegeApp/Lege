@@ -1,0 +1,50 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.policy.renderer-integration-policy/1 : policy {
+    title "28. Renderer integration policy"
+    state proposed
+    scope [ all ]
+    rule """
+        The PDF renderer is already document-parallel. Hidden codec threading could reduce whole-document throughput through oversubscription.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The PDF renderer is already document-parallel. Hidden codec threading could reduce whole-document throughput through oversubscription.
+            """
+    }
+}
+
+record lege-ecosystem.policy.replace-eager-packet-position-sorting-where/1 : policy {
+    title "29. Replace eager packet-position sorting where worthwhile"
+    state proposed
+    scope [ all ]
+    rule """
+        `build_packet_positions()` currently constructs every packet position, pairs it with a five-element sort key, sorts the full vector, and then discards the keys.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            `build_packet_positions()` currently constructs every packet position, pairs it with a five-element sort key, sorts the full vector, and then discards the keys.
+            """
+    }
+}
+
+record lege-ecosystem.policy.reuse-per-packet-contribution-storage/1 : policy {
+    title "31. Reuse per-packet contribution storage"
+    state proposed
+    scope [ all ]
+    rule """
+        `push_tile_part()` creates a fresh `Vec<Contribution>` for every packet.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            `push_tile_part()` creates a fresh `Vec<Contribution>` for every packet.
+            """
+    }
+}

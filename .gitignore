@@ -62,3 +62,7 @@ lege-codecs/jp2lam/lear.png
 *.j2k
 *.jb2
 *.pbm
+
+# AKR: a rebuildable cache and disposable agent notes.
+.akr/cache/
+.agent/scratch/

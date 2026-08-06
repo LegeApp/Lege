@@ -1,0 +1,1266 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.decode-optimization/1 : work {
+    title "Import lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+    state proposed
+    intent """
+        Disposition every durable claim of lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md (docs/12-migration.md).
+        """
+    acceptance {
+        check add-jp2decodestats-claim {
+            statement """
+                "3. Add `Jp2DecodeStats`" is dispositioned: promoted as lege-ecosystem.work.add-jp2decodestats or declined with evidence
+                """
+            method manual
+        }
+        check add-region-of-interest-decode-only-after-claim {
+            statement """
+                "32. Add region-of-interest decode only after resolution reduction" is dispositioned: promoted as lege-ecosystem.work.add-region-of-interest-decode-only-after or declined with evidence
+                """
+            method manual
+        }
+        check approach-a-strided-vertical-kernels-claim {
+            statement """
+                "Approach A — Strided vertical kernels" is dispositioned: promoted as lege-ecosystem.work.approach-a-strided-vertical-kernels or declined with evidence
+                """
+            method manual
+        }
+        check approach-b-tiled-transpose-claim {
+            statement """
+                "Approach B — Tiled transpose" is dispositioned: promoted as lege-ecosystem.work.approach-b-tiled-transpose or declined with evidence
+                """
+            method manual
+        }
+        check approach-c-column-gather-into-reusable-lines-claim {
+            statement """
+                "Approach C — Column gather into reusable lines" is dispositioned: promoted as lege-ecosystem.work.approach-c-column-gather-into-reusable-lines or declined with evidence
+                """
+            method manual
+        }
+        check component-level-parallelism-claim {
+            statement """
+                "26. Component-level parallelism" is dispositioned: promoted as lege-ecosystem.work.component-level-parallelism or declined with evidence
+                """
+            method manual
+        }
+        check core-recommendation-claim {
+            statement """
+                "39. Core recommendation" is dispositioned: promoted as lege-ecosystem.work.core-recommendation or declined with evidence
+                """
+            method manual
+        }
+        check current-decoder-pipeline-claim {
+            statement """
+                "2. Current decoder pipeline" is dispositioned: promoted as lege-ecosystem.work.current-decoder-pipeline or declined with evidence
+                """
+            method manual
+        }
+        check dwt-row-and-column-parallelism-claim {
+            statement """
+                "27. DWT row and column parallelism" is dispositioned: promoted as lege-ecosystem.work.dwt-row-and-column-parallelism or declined with evidence
+                """
+            method manual
+        }
+        check eliminate-temporary-full-image-allocation-for-claim {
+            statement """
+                "9. Eliminate temporary full-image allocation for single-tile images" is dispositioned: promoted as lege-ecosystem.work.eliminate-temporary-full-image-allocation-for or declined with evidence
+                """
+            method manual
+        }
+        check fixed-point-9-7-is-a-later-experiment-claim {
+            statement """
+                "19. Fixed-point 9/7 is a later experiment" is dispositioned: promoted as lege-ecosystem.work.fixed-point-9-7-is-a-later-experiment or declined with evidence
+                """
+            method manual
+        }
+        check full-resolution-correctness-claim {
+            statement """
+                "34. Full-resolution correctness" is dispositioned: promoted as lege-ecosystem.work.full-resolution-correctness or declined with evidence
+                """
+            method manual
+        }
+        check full-resolution-path-claim {
+            statement """
+                "Full-resolution path" is dispositioned: promoted as lege-ecosystem.work.full-resolution-path or declined with evidence
+                """
+            method manual
+        }
+        check fuse-operations-where-useful-claim {
+            statement """
+                "18. Fuse operations where useful" is dispositioned: promoted as lege-ecosystem.work.fuse-operations-where-useful or declined with evidence
+                """
+            method manual
+        }
+        check fuse-tier-1-output-and-dequantization-claim {
+            statement """
+                "11. Fuse Tier-1 output and dequantization" is dispositioned: promoted as lege-ecosystem.work.fuse-tier-1-output-and-dequantization or declined with evidence
+                """
+            method manual
+        }
+        check horizontal-lifting-kernels-claim {
+            statement """
+                "15. Horizontal lifting kernels" is dispositioned: promoted as lege-ecosystem.work.horizontal-lifting-kernels or declined with evidence
+                """
+            method manual
+        }
+        check initial-target-results-claim {
+            statement """
+                "37. Initial target results" is dispositioned: promoted as lege-ecosystem.work.initial-target-results or declined with evidence
+                """
+            method manual
+        }
+        check jp2lam-jpeg-2000-decoder-optimization-plan-claim {
+            statement """
+                "jp2lam JPEG 2000 Decoder Optimization Plan" is dispositioned: promoted as lege-ecosystem.work.jp2lam-jpeg-2000-decoder-optimization-plan or declined with evidence
+                """
+            method manual
+        }
+        check level-local-operation-claim {
+            statement """
+                "17. Level-local operation" is dispositioned: promoted as lege-ecosystem.work.level-local-operation or declined with evidence
+                """
+            method manual
+        }
+        check material-needed-by-the-implementing-agent-claim {
+            statement """
+                "38. Material needed by the implementing agent" is dispositioned: promoted as lege-ecosystem.work.material-needed-by-the-implementing-agent or declined with evidence
+                """
+            method manual
+        }
+        check milestone-1-decoder-attribution-claim {
+            statement """
+                "Milestone 1 — Decoder attribution" is dispositioned: promoted as lege-ecosystem.work.milestone-1-decoder-attribution or declined with evidence
+                """
+            method manual
+        }
+        check milestone-2-remove-obvious-duplication-claim {
+            statement """
+                "Milestone 2 — Remove obvious duplication" is dispositioned: promoted as lege-ecosystem.work.milestone-2-remove-obvious-duplication or declined with evidence
+                """
+            method manual
+        }
+        check milestone-3-fused-tier-1-output-claim {
+            statement """
+                "Milestone 3 — Fused Tier-1 output" is dispositioned: promoted as lege-ecosystem.work.milestone-3-fused-tier-1-output or declined with evidence
+                """
+            method manual
+        }
+        check milestone-4-reduced-resolution-decode-claim {
+            statement """
+                "Milestone 4 — Reduced-resolution decode" is dispositioned: promoted as lege-ecosystem.work.milestone-4-reduced-resolution-decode or declined with evidence
+                """
+            method manual
+        }
+        check milestone-5-9-7-kernel-optimization-claim {
+            statement """
+                "Milestone 5 — 9/7 kernel optimization" is dispositioned: promoted as lege-ecosystem.work.milestone-5-9-7-kernel-optimization or declined with evidence
+                """
+            method manual
+        }
+        check milestone-6-tier-1-mq-optimization-claim {
+            statement """
+                "Milestone 6 — Tier-1/MQ optimization" is dispositioned: promoted as lege-ecosystem.work.milestone-6-tier-1-mq-optimization or declined with evidence
+                """
+            method manual
+        }
+        check milestone-7-packed-renderer-output-claim {
+            statement """
+                "Milestone 7 — Packed renderer output" is dispositioned: promoted as lege-ecosystem.work.milestone-7-packed-renderer-output or declined with evidence
+                """
+            method manual
+        }
+        check milestone-8-roi-decode-claim {
+            statement """
+                "Milestone 8 — ROI decode" is dispositioned: promoted as lege-ecosystem.work.milestone-8-roi-decode or declined with evidence
+                """
+            method manual
+        }
+        check objective-claim {
+            statement """
+                "1. Objective" is dispositioned: promoted as lege-ecosystem.work.objective or declined with evidence
+                """
+            method manual
+        }
+        check optimize-flaggrid-claim {
+            statement """
+                "23. Optimize `FlagGrid`" is dispositioned: promoted as lege-ecosystem.work.optimize-flaggrid or declined with evidence
+                """
+            method manual
+        }
+        check optimize-mqdecoder-only-after-direct-attribution-claim {
+            statement """
+                "24. Optimize `MqDecoder` only after direct attribution" is dispositioned: promoted as lege-ecosystem.work.optimize-mqdecoder-only-after-direct-attribution or declined with evidence
+                """
+            method manual
+        }
+        check performance-scoreboard-claim {
+            statement """
+                "36. Performance scoreboard" is dispositioned: promoted as lege-ecosystem.work.performance-scoreboard or declined with evidence
+                """
+            method manual
+        }
+        check permanent-decoder-corpus-claim {
+            statement """
+                "33. Permanent decoder corpus" is dispositioned: promoted as lege-ecosystem.work.permanent-decoder-corpus or declined with evidence
+                """
+            method manual
+        }
+        check produce-packed-output-directly-claim {
+            statement """
+                "12. Produce packed output directly" is dispositioned: promoted as lege-ecosystem.work.produce-packed-output-directly or declined with evidence
+                """
+            method manual
+        }
+        check reduced-reconstruction-geometry-claim {
+            statement """
+                "8. Reduced reconstruction geometry" is dispositioned: promoted as lege-ecosystem.requirement.reduced-reconstruction-geometry or declined with evidence
+                """
+            method manual
+        }
+        check reduced-resolution-correctness-claim {
+            statement """
+                "35. Reduced-resolution correctness" is dispositioned: promoted as lege-ecosystem.work.reduced-resolution-correctness or declined with evidence
+                """
+            method manual
+        }
+        check remove-redundant-state-and-traversals-claim {
+            statement """
+                "21. Remove redundant state and traversals" is dispositioned: promoted as lege-ecosystem.work.remove-redundant-state-and-traversals or declined with evidence
+                """
+            method manual
+        }
+        check renderer-integration-policy-claim {
+            statement """
+                "28. Renderer integration policy" is dispositioned: promoted as lege-ecosystem.policy.renderer-integration-policy or declined with evidence
+                """
+            method manual
+        }
+        check replace-eager-packet-position-sorting-where-claim {
+            statement """
+                "29. Replace eager packet-position sorting where worthwhile" is dispositioned: promoted as lege-ecosystem.policy.replace-eager-packet-position-sorting-where or declined with evidence
+                """
+            method manual
+        }
+        check replace-per-code-block-result-allocation-claim {
+            statement """
+                "10. Replace per-code-block result allocation" is dispositioned: promoted as lege-ecosystem.work.replace-per-code-block-result-allocation or declined with evidence
+                """
+            method manual
+        }
+        check replace-the-merged-block-hashmap-claim {
+            statement """
+                "30. Replace the merged-block `HashMap`" is dispositioned: promoted as lege-ecosystem.work.replace-the-merged-block-hashmap or declined with evidence
+                """
+            method manual
+        }
+        check replace-the-single-fixed-output-entry-point-claim {
+            statement """
+                "5. Replace the single fixed-output entry point internally" is dispositioned: promoted as lege-ecosystem.work.replace-the-single-fixed-output-entry-point or declined with evidence
+                """
+            method manual
+        }
+        check required-profiles-claim {
+            statement """
+                "4. Required profiles" is dispositioned: promoted as lege-ecosystem.work.required-profiles or declined with evidence
+                """
+            method manual
+        }
+        check resolution-aware-renderer-path-claim {
+            statement """
+                "Resolution-aware renderer path" is dispositioned: promoted as lege-ecosystem.work.resolution-aware-renderer-path or declined with evidence
+                """
+            method manual
+        }
+        check resolution-selection-in-the-pdf-renderer-claim {
+            statement """
+                "6. Resolution selection in the PDF renderer" is dispositioned: promoted as lege-ecosystem.work.resolution-selection-in-the-pdf-renderer or declined with evidence
+                """
+            method manual
+        }
+        check reusable-bounded-scratch-claim {
+            statement """
+                "13. Reusable bounded scratch" is dispositioned: promoted as lege-ecosystem.work.reusable-bounded-scratch or declined with evidence
+                """
+            method manual
+        }
+        check reuse-per-packet-contribution-storage-claim {
+            statement """
+                "31. Reuse per-packet contribution storage" is dispositioned: promoted as lege-ecosystem.policy.reuse-per-packet-contribution-storage or declined with evidence
+                """
+            method manual
+        }
+        check specialize-the-common-code-block-style-claim {
+            statement """
+                "20. Specialize the common code-block style" is dispositioned: promoted as lege-ecosystem.work.specialize-the-common-code-block-style or declined with evidence
+                """
+            method manual
+        }
+        check tier-1-code-block-parallelism-claim {
+            statement """
+                "25. Tier-1 code-block parallelism" is dispositioned: promoted as lege-ecosystem.work.tier-1-code-block-parallelism or declined with evidence
+                """
+            method manual
+        }
+        check tier-2-behavior-claim {
+            statement """
+                "7. Tier-2 behavior" is dispositioned: promoted as lege-ecosystem.work.tier-2-behavior or declined with evidence
+                """
+            method manual
+        }
+        check treat-9-7-as-the-first-arithmetic-kernel-target-claim {
+            statement """
+                "14. Treat 9/7 as the first arithmetic kernel target" is dispositioned: promoted as lege-ecosystem.work.treat-9-7-as-the-first-arithmetic-kernel-target or declined with evidence
+                """
+            method manual
+        }
+        check use-a-stripe-oriented-scratch-layout-claim {
+            statement """
+                "22. Use a stripe-oriented scratch layout" is dispositioned: promoted as lege-ecosystem.work.use-a-stripe-oriented-scratch-layout or declined with evidence
+                """
+            method manual
+        }
+        check vertical-lifting-layout-claim {
+            statement """
+                "16. Vertical lifting layout" is dispositioned: promoted as lege-ecosystem.work.vertical-lifting-layout or declined with evidence
+                """
+            method manual
+        }
+    }
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+    }
+}
+
+record lege-ecosystem.decode-optimization-audit/1 : work {
+    title "Import lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+    state proposed
+    intent """
+        Disposition every durable claim of lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md (docs/12-migration.md).
+        """
+    acceptance {
+        check do-not-start-with-claim {
+            statement """
+                "Do not start with" is dispositioned: promoted as lege-ecosystem.work.do-not-start-with or declined with evidence
+                """
+            method manual
+        }
+        check next-audit-phases-after-structural-dwt-openjpeg-claim {
+            statement """
+                "Next audit phases (after structural DWT + OpenJPEG baseline)" is dispositioned: promoted as lege-ecosystem.work.next-audit-phases-after-structural-dwt-openjpeg or declined with evidence
+                """
+            method manual
+        }
+        check pdf-renderer-follow-ups-outside-pure-codec-claim {
+            statement """
+                "PDF renderer follow-ups (outside pure codec)" is dispositioned: promoted as lege-ecosystem.work.pdf-renderer-follow-ups-outside-pure-codec or declined with evidence
+                """
+            method manual
+        }
+        check phase-3-fused-packed-finalization-done-2026-08-claim {
+            statement """
+                "Phase 3 — Fused packed finalization — DONE (2026-08-05)" is dispositioned: promoted as lege-ecosystem.work.phase-3-fused-packed-finalization-done-2026-08 or declined with evidence
+                """
+            method manual
+        }
+        check phase-4-tier-1-tier-2-refinement-claim {
+            statement """
+                "Phase 4 — Tier-1 / Tier-2 refinement" is dispositioned: promoted as lege-ecosystem.work.phase-4-tier-1-tier-2-refinement or declined with evidence
+                """
+            method manual
+        }
+        check phase-5-true-windowed-line-based-roi-claim {
+            statement """
+                "Phase 5 — True windowed / line-based ROI" is dispositioned: promoted as lege-ecosystem.work.phase-5-true-windowed-line-based-roi or declined with evidence
+                """
+            method manual
+        }
+        check phase-6-isa-pgo-optional-gpu-claim {
+            statement """
+                "Phase 6 — ISA / PGO / optional GPU" is dispositioned: promoted as lege-ecosystem.work.phase-6-isa-pgo-optional-gpu or declined with evidence
+                """
+            method manual
+        }
+    }
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+    }
+}
+
+record lege-ecosystem.work.add-jp2decodestats/1 : work {
+    title "3. Add `Jp2DecodeStats`"
+    state proposed
+    intent """
+        Do not start by optimizing `MqDecoder` merely because entropy decoding is normally expensive. The current profile identifies irreversible reconstruction, but Tier-1, dequantization, DWT, finalization, and copying are still combined too broadly.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Do not start by optimizing `MqDecoder` merely because entropy decoding is normally expensive. The current profile identifies irreversible reconstruction, but Tier-1, dequantization, DWT, finalization, and copying are still combined too broadly.
+            """
+    }
+}
+
+record lege-ecosystem.work.add-region-of-interest-decode-only-after/1 : work {
+    title "32. Add region-of-interest decode only after resolution reduction"
+    state proposed
+    intent """
+        A PDF image is often clipped or only partly visible. JPEG 2000 precincts and code-blocks make partial spatial decode possible, but inverse DWT requires support samples beyond the exact output rectangle.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            A PDF image is often clipped or only partly visible. JPEG 2000 precincts and code-blocks make partial spatial decode possible, but inverse DWT requires support samples beyond the exact output rectangle.
+            """
+    }
+}
+
+record lege-ecosystem.work.approach-a-strided-vertical-kernels/1 : work {
+    title "Approach A — Strided vertical kernels"
+    state proposed
+    intent """
+        Process several adjacent columns together so each cache line supplies useful samples for multiple independent columns.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Process several adjacent columns together so each cache line supplies useful samples for multiple independent columns.
+            """
+    }
+}
+
+record lege-ecosystem.work.approach-b-tiled-transpose/1 : work {
+    title "Approach B — Tiled transpose"
+    state proposed
+    intent """
+        For each working-resolution rectangle:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            For each working-resolution rectangle:
+            """
+    }
+}
+
+record lege-ecosystem.work.approach-c-column-gather-into-reusable-lines/1 : work {
+    title "Approach C — Column gather into reusable lines"
+    state proposed
+    intent """
+        Copy one or several columns into aligned line buffers, transform contiguously, then scatter them back.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Copy one or several columns into aligned line buffers, transform contiguously, then scatter them back.
+            """
+    }
+}
+
+record lege-ecosystem.work.component-level-parallelism/1 : work {
+    title "26. Component-level parallelism"
+    state proposed
+    intent """
+        Before inverse MCT, grayscale/RGB/CMYK component reconstruction is independent.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Before inverse MCT, grayscale/RGB/CMYK component reconstruction is independent.
+            """
+    }
+}
+
+record lege-ecosystem.work.core-recommendation/1 : work {
+    title "39. Core recommendation"
+    state proposed
+    intent """
+        The optimization should not begin as “add SIMD to the decoder.”
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The optimization should not begin as “add SIMD to the decoder.”
+            """
+    }
+}
+
+record lege-ecosystem.work.current-decoder-pipeline/1 : work {
+    title "2. Current decoder pipeline"
+    state proposed
+    intent """
+        The current top-level path is:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The current top-level path is:
+            """
+    }
+}
+
+record lege-ecosystem.work.do-not-start-with/1 : work {
+    title "Do not start with"
+    state proposed
+    intent """
+        - MQ symbol micro-opts
+        - Nested Rayon inside page-parallel renders without a global permit
+        - ROI as “decode full, crop”
+        - Changing 9/7 rounding for speed without OpenJPEG differential tests
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            - MQ symbol micro-opts
+            - Nested Rayon inside page-parallel renders without a global permit
+            - ROI as “decode full, crop”
+            - Changing 9/7 rounding for speed without OpenJPEG differential tests
+            """
+    }
+}
+
+record lege-ecosystem.work.dwt-row-and-column-parallelism/1 : work {
+    title "27. DWT row and column parallelism"
+    state proposed
+    intent """
+        Within one large component:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Within one large component:
+            """
+    }
+}
+
+record lege-ecosystem.work.eliminate-temporary-full-image-allocation-for/1 : work {
+    title "9. Eliminate temporary full-image allocation for single-tile images"
+    state proposed
+    intent """
+        The current `decode_jp2()` allocates the final image before decoding and then creates a complete temporary tile image, which is copied into it.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The current `decode_jp2()` allocates the final image before decoding and then creates a complete temporary tile image, which is copied into it.
+            """
+    }
+}
+
+record lege-ecosystem.work.fixed-point-9-7-is-a-later-experiment/1 : work {
+    title "19. Fixed-point 9/7 is a later experiment"
+    state proposed
+    intent """
+        A fixed-point inverse 9/7 implementation may improve speed and reproducibility, but it will probably change some output samples.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            A fixed-point inverse 9/7 implementation may improve speed and reproducibility, but it will probably change some output samples.
+            """
+    }
+}
+
+record lege-ecosystem.work.full-resolution-correctness/1 : work {
+    title "34. Full-resolution correctness"
+    state proposed
+    intent """
+        For the legacy `decode_jp2()` path require:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            For the legacy `decode_jp2()` path require:
+            """
+    }
+}
+
+record lege-ecosystem.work.full-resolution-path/1 : work {
+    title "Full-resolution path"
+    state proposed
+    intent """
+        * JPX decode below 220 ms without internal parallelism.
+        * JPX decode below 150–180 ms with a modest thread budget.
+        * At least 40–50% reduction in decoder-owned peak intermediate memory.
+        * Byte-identical legacy output.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            * JPX decode below 220 ms without internal parallelism.
+            * JPX decode below 150–180 ms with a modest thread budget.
+            * At least 40–50% reduction in decoder-owned peak intermediate memory.
+            * Byte-identical legacy output.
+            """
+    }
+}
+
+record lege-ecosystem.work.fuse-operations-where-useful/1 : work {
+    title "18. Fuse operations where useful"
+    state proposed
+    intent """
+        Potential fusions to benchmark:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Potential fusions to benchmark:
+            """
+    }
+}
+
+record lege-ecosystem.work.fuse-tier-1-output-and-dequantization/1 : work {
+    title "11. Fuse Tier-1 output and dequantization"
+    state proposed
+    intent """
+        The current irreversible flow is:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The current irreversible flow is:
+            """
+    }
+}
+
+record lege-ecosystem.work.horizontal-lifting-kernels/1 : work {
+    title "15. Horizontal lifting kernels"
+    state proposed
+    intent """
+        Horizontal rows are naturally contiguous. Implement specialized kernels for:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Horizontal rows are naturally contiguous. Implement specialized kernels for:
+            """
+    }
+}
+
+record lege-ecosystem.work.initial-target-results/1 : work {
+    title "37. Initial target results"
+    state proposed
+    intent """
+        Use the current measured values as the first scoreboard:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Use the current measured values as the first scoreboard:
+            """
+    }
+}
+
+record lege-ecosystem.work.jp2lam-jpeg-2000-decoder-optimization-plan/1 : work {
+    title "jp2lam JPEG 2000 Decoder Optimization Plan"
+    state proposed
+    intent """
+        > Implementation update (2026-07-20): stage profiling, encoder-SIMD reuse,
+        > single-tile copy removal, Tier-1 scratch reuse, native reduced-resolution
+        > decode, direct packed renderer output, reusable decoder sessions, and
+        > request-scoped worker budgets are implemented. See
+        > `llm-docs/decode-optimization-results-2026-07-20.md` for measurements,
+        > correctness gates, and the remaining work.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            > Implementation update (2026-07-20): stage profiling, encoder-SIMD reuse,
+            > single-tile copy removal, Tier-1 scratch reuse, native reduced-resolution
+            > decode, direct packed renderer output, reusable decoder sessions, and
+            > request-scoped worker budgets are implemented. See
+            > `llm-docs/decode-optimization-results-2026-07-20.md` for measurements,
+            > correctness gates, and the remaining work.
+            """
+    }
+}
+
+record lege-ecosystem.work.level-local-operation/1 : work {
+    title "17. Level-local operation"
+    state proposed
+    intent """
+        Do not run kernels over unused full-image regions.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Do not run kernels over unused full-image regions.
+            """
+    }
+}
+
+record lege-ecosystem.work.material-needed-by-the-implementing-agent/1 : work {
+    title "38. Material needed by the implementing agent"
+    state proposed
+    intent """
+        The supplied files expose the decoder orchestration, Tier-1 loops, Tier-2 packet handling, and reconstruction pipeline. The exact low-level optimization work also requires:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The supplied files expose the decoder orchestration, Tier-1 loops, Tier-2 packet handling, and reconstruction pipeline. The exact low-level optimization work also requires:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-1-decoder-attribution/1 : work {
+    title "Milestone 1 — Decoder attribution"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-2-remove-obvious-duplication/1 : work {
+    title "Milestone 2 — Remove obvious duplication"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-3-fused-tier-1-output/1 : work {
+    title "Milestone 3 — Fused Tier-1 output"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-4-reduced-resolution-decode/1 : work {
+    title "Milestone 4 — Reduced-resolution decode"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-5-9-7-kernel-optimization/1 : work {
+    title "Milestone 5 — 9/7 kernel optimization"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-6-tier-1-mq-optimization/1 : work {
+    title "Milestone 6 — Tier-1/MQ optimization"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-7-packed-renderer-output/1 : work {
+    title "Milestone 7 — Packed renderer output"
+    state proposed
+    intent """
+        Implement:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement:
+            """
+    }
+}
+
+record lege-ecosystem.work.milestone-8-roi-decode/1 : work {
+    title "Milestone 8 — ROI decode"
+    state proposed
+    intent """
+        Implement only after reduced-resolution decode is stable and measured.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Implement only after reduced-resolution decode is stable and measured.
+            """
+    }
+}
+
+record lege-ecosystem.work.next-audit-phases-after-structural-dwt-openjpeg/1 : work {
+    title "Next audit phases (after structural DWT + OpenJPEG baseline)"
+    state proposed
+    intent """
+        Prerequisite reading:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            Prerequisite reading:
+            """
+    }
+}
+
+record lege-ecosystem.work.objective/1 : work {
+    title "1. Objective"
+    state proposed
+    intent """
+        Optimize jp2lam’s decoder for two related but distinct uses:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Optimize jp2lam’s decoder for two related but distinct uses:
+            """
+    }
+}
+
+record lege-ecosystem.work.optimize-flaggrid/1 : work {
+    title "23. Optimize `FlagGrid`"
+    state proposed
+    intent """
+        The implementing agent needs the actual `FlagGrid` implementation before choosing changes. Measure:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The implementing agent needs the actual `FlagGrid` implementation before choosing changes. Measure:
+            """
+    }
+}
+
+record lege-ecosystem.work.optimize-mqdecoder-only-after-direct-attribution/1 : work {
+    title "24. Optimize `MqDecoder` only after direct attribution"
+    state proposed
+    intent """
+        The MQ arithmetic state is inherently serial within one codeword segment. SIMD is unlikely to help materially inside one MQ stream.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The MQ arithmetic state is inherently serial within one codeword segment. SIMD is unlikely to help materially inside one MQ stream.
+            """
+    }
+}
+
+record lege-ecosystem.work.pdf-renderer-follow-ups-outside-pure-codec/1 : work {
+    title "PDF renderer follow-ups (outside pure codec)"
+    state proposed
+    intent """
+        1. Keep using session `Jp2Decoder` + packed Rgb8 (already done)
+        2. When GPU compositing wants 4-byte pixels: map `DecodeOutputFormat::Bgra8`/`Rgbx8` through a new `DecodedFormat` and skip RGB→BGRA swizzle
+        3. Optional decode telemetry line (`JP2LAM_DECODE_TRACE`) for one-shot integration diagnosis
+        4. Re-run pdfium-diff on a JPX-heavy page after Phase 3
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            1. Keep using session `Jp2Decoder` + packed Rgb8 (already done)
+            2. When GPU compositing wants 4-byte pixels: map `DecodeOutputFormat::Bgra8`/`Rgbx8` through a new `DecodedFormat` and skip RGB→BGRA swizzle
+            3. Optional decode telemetry line (`JP2LAM_DECODE_TRACE`) for one-shot integration diagnosis
+            4. Re-run pdfium-diff on a JPX-heavy page after Phase 3
+            """
+    }
+}
+
+record lege-ecosystem.work.performance-scoreboard/1 : work {
+    title "36. Performance scoreboard"
+    state proposed
+    intent """
+        Record, per image:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Record, per image:
+            """
+    }
+}
+
+record lege-ecosystem.work.permanent-decoder-corpus/1 : work {
+    title "33. Permanent decoder corpus"
+    state proposed
+    intent """
+        Create a jp2lam-specific corpus containing:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Create a jp2lam-specific corpus containing:
+            """
+    }
+}
+
+record lege-ecosystem.work.phase-3-fused-packed-finalization-done-2026-08/1 : work {
+    title "Phase 3 — Fused packed finalization — DONE (2026-08-05)"
+    state proposed
+    intent """
+        **Landed:**
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            **Landed:**
+            """
+    }
+}
+
+record lege-ecosystem.work.phase-4-tier-1-tier-2-refinement/1 : work {
+    title "Phase 4 — Tier-1 / Tier-2 refinement"
+    state proposed
+    intent """
+        **Goal:** better core utilization once DWT memory traffic is no longer dominant.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            **Goal:** better core utilization once DWT memory traffic is no longer dominant.
+            """
+    }
+}
+
+record lege-ecosystem.work.phase-5-true-windowed-line-based-roi/1 : work {
+    title "Phase 5 — True windowed / line-based ROI"
+    state proposed
+    intent """
+        **Goal:** single-tile ROI cost proportional to ROI + filter halo, not full tile.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            **Goal:** single-tile ROI cost proportional to ROI + filter halo, not full tile.
+            """
+    }
+}
+
+record lege-ecosystem.work.phase-6-isa-pgo-optional-gpu/1 : work {
+    title "Phase 6 — ISA / PGO / optional GPU"
+    state proposed
+    intent """
+        Only after Phases 3–4:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/NEXT-audit-phases.md"
+        excerpt """
+            Only after Phases 3–4:
+            """
+    }
+}
+
+record lege-ecosystem.work.produce-packed-output-directly/1 : work {
+    title "12. Produce packed output directly"
+    state proposed
+    intent """
+        The PDF renderer ultimately needs 8-bit output. It should not receive three or four planar `Vec<i32>` components only to scale and interleave them later.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The PDF renderer ultimately needs 8-bit output. It should not receive three or four planar `Vec<i32>` components only to scale and interleave them later.
+            """
+    }
+}
+
+record lege-ecosystem.work.reduced-resolution-correctness/1 : work {
+    title "35. Reduced-resolution correctness"
+    state proposed
+    intent """
+        Compare against an independent decoder invoked at the same JPEG 2000 reduction level.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Compare against an independent decoder invoked at the same JPEG 2000 reduction level.
+            """
+    }
+}
+
+record lege-ecosystem.work.remove-redundant-state-and-traversals/1 : work {
+    title "21. Remove redundant state and traversals"
+    state proposed
+    intent """
+        Validate the following experimentally:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Validate the following experimentally:
+            """
+    }
+}
+
+record lege-ecosystem.work.replace-per-code-block-result-allocation/1 : work {
+    title "10. Replace per-code-block result allocation"
+    state proposed
+    intent """
+        The Tier-1 implementation currently allocates:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The Tier-1 implementation currently allocates:
+            """
+    }
+}
+
+record lege-ecosystem.work.replace-the-merged-block-hashmap/1 : work {
+    title "30. Replace the merged-block `HashMap`"
+    state proposed
+    intent """
+        The full band and code-block geometry is known when `TilePacketDecoder` is constructed.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The full band and code-block geometry is known when `TilePacketDecoder` is constructed.
+            """
+    }
+}
+
+record lege-ecosystem.work.replace-the-single-fixed-output-entry-point/1 : work {
+    title "5. Replace the single fixed-output entry point internally"
+    state proposed
+    intent """
+        Keep:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Keep:
+            """
+    }
+}
+
+record lege-ecosystem.work.required-profiles/1 : work {
+    title "4. Required profiles"
+    state proposed
+    intent """
+        Capture separate flamegraphs and hardware counters for:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Capture separate flamegraphs and hardware counters for:
+            """
+    }
+}
+
+record lege-ecosystem.work.resolution-aware-renderer-path/1 : work {
+    title "Resolution-aware renderer path"
+    state proposed
+    intent """
+        * JPX page compiled total below 150–200 ms initially.
+        * Longer-term target near 100 ms when one-level reduction is available.
+        * MRC compiled total below 180–220 ms.
+        * No material deterioration in PDFium differential severity.
+        * No whole-document throughput regression.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            * JPX page compiled total below 150–200 ms initially.
+            * Longer-term target near 100 ms when one-level reduction is available.
+            * MRC compiled total below 180–220 ms.
+            * No material deterioration in PDFium differential severity.
+            * No whole-document throughput regression.
+            """
+    }
+}
+
+record lege-ecosystem.work.resolution-selection-in-the-pdf-renderer/1 : work {
+    title "6. Resolution selection in the PDF renderer"
+    state proposed
+    intent """
+        The renderer should calculate the image’s destination footprint before JPX decode.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The renderer should calculate the image’s destination footprint before JPX decode.
+            """
+    }
+}
+
+record lege-ecosystem.work.reusable-bounded-scratch/1 : work {
+    title "13. Reusable bounded scratch"
+    state proposed
+    intent """
+        `Jp2Decoder` should retain:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            `Jp2Decoder` should retain:
+            """
+    }
+}
+
+record lege-ecosystem.work.specialize-the-common-code-block-style/1 : work {
+    title "20. Specialize the common code-block style"
+    state proposed
+    intent """
+        The general Tier-1 loop carries runtime decisions for:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The general Tier-1 loop carries runtime decisions for:
+            """
+    }
+}
+
+record lege-ecosystem.work.tier-1-code-block-parallelism/1 : work {
+    title "25. Tier-1 code-block parallelism"
+    state proposed
+    intent """
+        After reducing per-block allocation, decode independent code-blocks concurrently.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            After reducing per-block allocation, decode independent code-blocks concurrently.
+            """
+    }
+}
+
+record lege-ecosystem.work.tier-2-behavior/1 : work {
+    title "7. Tier-2 behavior"
+    state proposed
+    intent """
+        A reduced-resolution decoder still needs to parse packet headers sufficiently to locate packet bodies and preserve tag-tree state, but it need not retain or Tier-1-decode high-resolution code-block data.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            A reduced-resolution decoder still needs to parse packet headers sufficiently to locate packet bodies and preserve tag-tree state, but it need not retain or Tier-1-decode high-resolution code-block data.
+            """
+    }
+}
+
+record lege-ecosystem.work.treat-9-7-as-the-first-arithmetic-kernel-target/1 : work {
+    title "14. Treat 9/7 as the first arithmetic kernel target"
+    state proposed
+    intent """
+        The earlier flamegraph attributed about 34% of the original JPX page to irreversible 9/7 reconstruction. With renderer sampling reduced to approximately 35 ms, reconstruction is likely now the largest individual decoder stage.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            The earlier flamegraph attributed about 34% of the original JPX page to irreversible 9/7 reconstruction. With renderer sampling reduced to approximately 35 ms, reconstruction is likely now the largest individual decoder stage.
+            """
+    }
+}
+
+record lege-ecosystem.work.use-a-stripe-oriented-scratch-layout/1 : work {
+    title "22. Use a stripe-oriented scratch layout"
+    state proposed
+    intent """
+        JPEG 2000 Tier-1 processes four-row stripes. The current coefficient vectors are row-major while the inner scan repeatedly visits the four vertical samples at each `x`.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            JPEG 2000 Tier-1 processes four-row stripes. The current coefficient vectors are row-major while the inner scan repeatedly visits the four vertical samples at each `x`.
+            """
+    }
+}
+
+record lege-ecosystem.work.vertical-lifting-layout/1 : work {
+    title "16. Vertical lifting layout"
+    state proposed
+    intent """
+        Vertical DWT is likely less cache-friendly because samples are separated by the full image stride.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
+        excerpt """
+            Vertical DWT is likely less cache-friendly because samples are separated by the full image stride.
+            """
+    }
+}
