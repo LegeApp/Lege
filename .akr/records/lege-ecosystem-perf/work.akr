@@ -1,0 +1,1616 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem-perf.decode-optimization-audit/1 : work {
+    title "Import lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+    state proposed
+    intent """
+        Disposition every durable claim of lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md (docs/12-migration.md).
+        """
+    acceptance {
+        check add-direct-sycc-output-claim {
+            statement """
+                "7.3 Add direct sYCC output" is dispositioned: promoted as lege-ecosystem-perf.work.add-direct-sycc-output or declined with evidence
+                """
+            method manual
+        }
+        check audit-limitations-claim {
+            statement """
+                "Audit limitations" is dispositioned: promoted as lege-ecosystem-perf.work.audit-limitations or declined with evidence
+                """
+            method manual
+        }
+        check cache-architecture-claim {
+            statement """
+                "14. Cache architecture" is dispositioned: promoted as lege-ecosystem-perf.work.cache-architecture or declined with evidence
+                """
+            method manual
+        }
+        check common-output-format-fallback-claim {
+            statement """
+                "4.4 Common output-format fallback" is dispositioned: promoted as lege-ecosystem-perf.work.common-output-format-fallback or declined with evidence
+                """
+            method manual
+        }
+        check concrete-control-targets-on-this-host-claim {
+            statement """
+                "18.3 Concrete control targets on this host" is dispositioned: promoted as lege-ecosystem-perf.work.concrete-control-targets-on-this-host or declined with evidence
+                """
+            method manual
+        }
+        check correctness-and-performance-gates-claim {
+            statement """
+                "18. Correctness and performance gates" is dispositioned: promoted as lege-ecosystem-perf.work.correctness-and-performance-gates or declined with evidence
+                """
+            method manual
+        }
+        check current-state-claim {
+            statement """
+                "12.1 Current state" is dispositioned: promoted as lege-ecosystem-perf.work.current-state or declined with evidence
+                """
+            method manual
+        }
+        check dangerous-defaults-claim {
+            statement """
+                "4.1 Dangerous defaults" is dispositioned: promoted as lege-ecosystem-perf.work.dangerous-defaults or declined with evidence
+                """
+            method manual
+        }
+        check decode-directly-into-renderer-memory-claim {
+            statement """
+                "7.2 Decode directly into renderer memory" is dispositioned: promoted as lege-ecosystem-perf.work.decode-directly-into-renderer-memory or declined with evidence
+                """
+            method manual
+        }
+        check differential-correctness-claim {
+            statement """
+                "18.1 Differential correctness" is dispositioned: promoted as lege-ecosystem-perf.work.differential-correctness or declined with evidence
+                """
+            method manual
+        }
+        check evidence-from-the-existing-renderer-profiles-claim {
+            statement """
+                "2. Evidence from the existing renderer profiles" is dispositioned: promoted as lege-ecosystem-perf.work.evidence-from-the-existing-renderer-profiles or declined with evidence
+                """
+            method manual
+        }
+        check executive-verdict-claim {
+            statement """
+                "Executive verdict" is dispositioned: promoted as lege-ecosystem-perf.work.executive-verdict or declined with evidence
+                """
+            method manual
+        }
+        check fast-diagnosis-of-severe-3000-4000-outliers-claim {
+            statement """
+                "19. Fast diagnosis of severe 3000×4000+ outliers" is dispositioned: promoted as lege-ecosystem-perf.work.fast-diagnosis-of-severe-3000-4000-outliers or declined with evidence
+                """
+            method manual
+        }
+        check final-assessment-claim {
+            statement """
+                "21. Final assessment" is dispositioned: promoted as lege-ecosystem-perf.work.final-assessment or declined with evidence
+                """
+            method manual
+        }
+        check full-active-plane-temporary-per-vertical-level-claim {
+            statement """
+                "5.2 Full active-plane temporary per vertical level" is dispositioned: promoted as lege-ecosystem-perf.work.full-active-plane-temporary-per-vertical-level or declined with evidence
+                """
+            method manual
+        }
+        check full-resolution-decode-claim {
+            statement """
+                "Full-resolution decode" is dispositioned: promoted as lege-ecosystem-perf.work.full-resolution-decode or declined with evidence
+                """
+            method manual
+        }
+        check fuse-finalization-claim {
+            statement """
+                "7.1 Fuse finalization" is dispositioned: promoted as lege-ecosystem-perf.work.fuse-finalization or declined with evidence
+                """
+            method manual
+        }
+        check gpu-path-useful-but-only-with-renderer-claim {
+            statement """
+                "13. GPU path: useful, but only with renderer integration" is dispositioned: promoted as lege-ecosystem-perf.policy.gpu-path-useful-but-only-with-renderer or declined with evidence
+                """
+            method manual
+        }
+        check hybrid-native-path-claim {
+            statement """
+                "13.2 Hybrid native path" is dispositioned: promoted as lege-ecosystem-perf.work.hybrid-native-path or declined with evidence
+                """
+            method manual
+        }
+        check implementation-roadmap-claim {
+            statement """
+                "17. Implementation roadmap" is dispositioned: promoted as lege-ecosystem-perf.work.implementation-roadmap or declined with evidence
+                """
+            method manual
+        }
+        check independent-control-benchmark-claim {
+            statement """
+                "3. Independent control benchmark" is dispositioned: promoted as lege-ecosystem-perf.work.independent-control-benchmark or declined with evidence
+                """
+            method manual
+        }
+        check jp2lam-jpeg-2000-decoder-performance-audit-claim {
+            statement """
+                "`jp2lam` JPEG 2000 decoder performance audit" is dispositioned: promoted as lege-ecosystem-perf.work.jp2lam-jpeg-2000-decoder-performance-audit or declined with evidence
+                """
+            method manual
+        }
+        check large-image-memory-target-claim {
+            statement """
+                "5.4 Large-image memory target" is dispositioned: promoted as lege-ecosystem-perf.work.large-image-memory-target or declined with evidence
+                """
+            method manual
+        }
+        check memory-planning-and-resource-accounting-claim {
+            statement """
+                "15. Memory planning and resource accounting" is dispositioned: promoted as lege-ecosystem-perf.work.memory-planning-and-resource-accounting or declined with evidence
+                """
+            method manual
+        }
+        check mq-micro-optimization-only-after-attribution-claim {
+            statement """
+                "8.7 MQ micro-optimization only after attribution" is dispositioned: promoted as lege-ecosystem-perf.work.mq-micro-optimization-only-after-attribution or declined with evidence
+                """
+            method manual
+        }
+        check nvjpeg2000-backend-claim {
+            statement """
+                "13.1 nvJPEG2000 backend" is dispositioned: promoted as lege-ecosystem-perf.work.nvjpeg2000-backend or declined with evidence
+                """
+            method manual
+        }
+        check order-of-work-claim {
+            statement """
+                "12.2 Order of work" is dispositioned: promoted as lege-ecosystem-perf.work.order-of-work or declined with evidence
+                """
+            method manual
+        }
+        check p0-verify-the-renderer-is-not-bypassing-the-claim {
+            statement """
+                "4. P0: verify the renderer is not bypassing the optimized decoder" is dispositioned: promoted as lege-ecosystem-perf.work.p0-verify-the-renderer-is-not-bypassing-the or declined with evidence
+                """
+            method manual
+        }
+        check p1-irreversible-9-7-dwt-is-the-largest-claim {
+            statement """
+                "5. P1: irreversible 9/7 DWT is the largest structural gap" is dispositioned: promoted as lege-ecosystem-perf.work.p1-irreversible-9-7-dwt-is-the-largest or declined with evidence
+                """
+            method manual
+        }
+        check p1-nonzero-tile-origins-unnecessarily-disable-claim {
+            statement """
+                "6. P1: nonzero tile origins unnecessarily disable optimized DWT" is dispositioned: promoted as lege-ecosystem-perf.work.p1-nonzero-tile-origins-unnecessarily-disable or declined with evidence
+                """
+            method manual
+        }
+        check p1-p2-tier-1-work-scheduling-and-hot-loop-claim {
+            statement """
+                "8. P1/P2: Tier-1 work scheduling and hot-loop structure" is dispositioned: promoted as lege-ecosystem-perf.work.p1-p2-tier-1-work-scheduling-and-hot-loop or declined with evidence
+                """
+            method manual
+        }
+        check p1-packed-direct-still-creates-full-planar-claim {
+            statement """
+                "7. P1: “packed direct” still creates full planar staging" is dispositioned: promoted as lege-ecosystem-perf.work.p1-packed-direct-still-creates-full-planar or declined with evidence
+                """
+            method manual
+        }
+        check p2-current-roi-is-not-genuinely-windowed-claim {
+            statement """
+                "10. P2: current ROI is not genuinely windowed" is dispositioned: promoted as lege-ecosystem-perf.work.p2-current-roi-is-not-genuinely-windowed or declined with evidence
+                """
+            method manual
+        }
+        check p2-tier-2-metadata-and-allocation-churn-claim {
+            statement """
+                "9. P2: Tier-2 metadata and allocation churn" is dispositioned: promoted as lege-ecosystem-perf.work.p2-tier-2-metadata-and-allocation-churn or declined with evidence
+                """
+            method manual
+        }
+        check parallelism-policy-for-a-pdf-renderer-claim {
+            statement """
+                "11. Parallelism policy for a PDF renderer" is dispositioned: promoted as lege-ecosystem-perf.policy.parallelism-policy-for-a-pdf-renderer or declined with evidence
+                """
+            method manual
+        }
+        check peak-rss-single-representative-run-claim {
+            statement """
+                "Peak RSS, single representative run" is dispositioned: promoted as lege-ecosystem-perf.work.peak-rss-single-representative-run or declined with evidence
+                """
+            method manual
+        }
+        check performance-scoreboard-claim {
+            statement """
+                "18.2 Performance scoreboard" is dispositioned: promoted as lege-ecosystem-perf.work.performance-scoreboard or declined with evidence
+                """
+            method manual
+        }
+        check persistent-parallel-scratch-claim {
+            statement """
+                "8.1 Persistent parallel scratch" is dispositioned: promoted as lege-ecosystem-perf.work.persistent-parallel-scratch or declined with evidence
+                """
+            method manual
+        }
+        check pgo-claim {
+            statement """
+                "12.3 PGO" is dispositioned: promoted as lege-ecosystem-perf.work.pgo or declined with evidence
+                """
+            method manual
+        }
+        check phase-0-one-diagnostic-pass-claim {
+            statement """
+                "Phase 0 — one diagnostic pass" is dispositioned: promoted as lege-ecosystem-perf.work.phase-0-one-diagnostic-pass or declined with evidence
+                """
+            method manual
+        }
+        check phase-1-low-risk-structural-patches-claim {
+            statement """
+                "Phase 1 — low-risk structural patches" is dispositioned: promoted as lege-ecosystem-perf.work.phase-1-low-risk-structural-patches or declined with evidence
+                """
+            method manual
+        }
+        check phase-2-9-7-banded-reconstruction-claim {
+            statement """
+                "Phase 2 — 9/7 banded reconstruction" is dispositioned: promoted as lege-ecosystem-perf.work.phase-2-9-7-banded-reconstruction or declined with evidence
+                """
+            method manual
+        }
+        check phase-3-fused-packed-output-claim {
+            statement """
+                "Phase 3 — fused packed output" is dispositioned: promoted as lege-ecosystem-perf.work.phase-3-fused-packed-output or declined with evidence
+                """
+            method manual
+        }
+        check phase-4-tier-1-tier-2-refinement-claim {
+            statement """
+                "Phase 4 — Tier-1/Tier-2 refinement" is dispositioned: promoted as lege-ecosystem-perf.work.phase-4-tier-1-tier-2-refinement or declined with evidence
+                """
+            method manual
+        }
+        check phase-5-true-windowed-line-based-decode-claim {
+            statement """
+                "Phase 5 — true windowed/line-based decode" is dispositioned: promoted as lege-ecosystem-perf.policy.phase-5-true-windowed-line-based-decode or declined with evidence
+                """
+            method manual
+        }
+        check phase-6-isa-pgo-gpu-claim {
+            statement """
+                "Phase 6 — ISA/PGO/GPU" is dispositioned: promoted as lege-ecosystem-perf.work.phase-6-isa-pgo-gpu or declined with evidence
+                """
+            method manual
+        }
+        check port-the-banded-5-3-design-to-9-7-claim {
+            statement """
+                "5.3 Port the banded 5/3 design to 9/7" is dispositioned: promoted as lege-ecosystem-perf.work.port-the-banded-5-3-design-to-9-7 or declined with evidence
+                """
+            method manual
+        }
+        check precompute-block-parameters-claim {
+            statement """
+                "8.3 Precompute block parameters" is dispositioned: promoted as lege-ecosystem-perf.work.precompute-block-parameters or declined with evidence
+                """
+            method manual
+        }
+        check reader-api-is-inappropriate-for-resident-pdf-claim {
+            statement """
+                "4.3 Reader API is inappropriate for resident PDF stream bytes" is dispositioned: promoted as lege-ecosystem-perf.work.reader-api-is-inappropriate-for-resident-pdf or declined with evidence
+                """
+            method manual
+        }
+        check recommended-renderer-api-and-policy-claim {
+            statement """
+                "16. Recommended renderer API and policy" is dispositioned: promoted as lege-ecosystem-perf.policy.recommended-renderer-api-and-policy or declined with evidence
+                """
+            method manual
+        }
+        check reduced-resolution-decode-four-threads-claim {
+            statement """
+                "Reduced-resolution decode, four threads" is dispositioned: promoted as lege-ecosystem-perf.work.reduced-resolution-decode-four-threads or declined with evidence
+                """
+            method manual
+        }
+        check remove-the-final-sign-pass-claim {
+            statement """
+                "8.6 Remove the final sign pass" is dispositioned: promoted as lege-ecosystem-perf.work.remove-the-final-sign-pass or declined with evidence
+                """
+            method manual
+        }
+        check required-telemetry-before-optimization-claim {
+            statement """
+                "4.5 Required telemetry before optimization" is dispositioned: promoted as lege-ecosystem-perf.work.required-telemetry-before-optimization or declined with evidence
+                """
+            method manual
+        }
+        check schedule-by-estimated-cost-not-block-count-claim {
+            statement """
+                "8.2 Schedule by estimated cost, not block count" is dispositioned: promoted as lege-ecosystem-perf.work.schedule-by-estimated-cost-not-block-count or declined with evidence
+                """
+            method manual
+        }
+        check scratch-allocation-per-parallel-row-claim {
+            statement """
+                "5.1 Scratch allocation per parallel row" is dispositioned: promoted as lege-ecosystem-perf.policy.scratch-allocation-per-parallel-row or declined with evidence
+                """
+            method manual
+        }
+        check simd-architecture-dispatch-build-and-pgo-claim {
+            statement """
+                "12. SIMD, architecture dispatch, build, and PGO" is dispositioned: promoted as lege-ecosystem-perf.work.simd-architecture-dispatch-build-and-pgo or declined with evidence
+                """
+            method manual
+        }
+        check stats-mode-changes-the-program-being-measured-claim {
+            statement """
+                "4.2 Stats mode changes the program being measured" is dispositioned: promoted as lege-ecosystem-perf.work.stats-mode-changes-the-program-being-measured or declined with evidence
+                """
+            method manual
+        }
+        check stripe-oriented-state-claim {
+            statement """
+                "8.5 Stripe-oriented state" is dispositioned: promoted as lege-ecosystem-perf.work.stripe-oriented-state or declined with evidence
+                """
+            method manual
+        }
+        check tighten-the-write-dequant-path-claim {
+            statement """
+                "8.4 Tighten the write/dequant path" is dispositioned: promoted as lege-ecosystem-perf.work.tighten-the-write-dequant-path or declined with evidence
+                """
+            method manual
+        }
+        check what-large-render-means-for-this-problem-claim {
+            statement """
+                "1. What “large render” means for this problem" is dispositioned: promoted as lege-ecosystem-perf.requirement.what-large-render-means-for-this-problem or declined with evidence
+                """
+            method manual
+        }
+        check what-should-not-be-done-first-claim {
+            statement """
+                "20. What should not be done first" is dispositioned: promoted as lege-ecosystem-perf.work.what-should-not-be-done-first or declined with evidence
+                """
+            method manual
+        }
+    }
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+    }
+}
+
+record lege-ecosystem-perf.decode-optimization-vs-openjpeg/1 : work {
+    title "Import lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+    state proposed
+    intent """
+        Disposition every durable claim of lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md (docs/12-migration.md).
+        """
+    acceptance {
+        check full-resolution-claim {
+            statement """
+                "Full resolution" is dispositioned: promoted as lege-ecosystem-perf.work.full-resolution or declined with evidence
+                """
+            method manual
+        }
+        check jp2lam-vs-openjpeg-same-stream-baseline-claim {
+            statement """
+                "jp2lam vs OpenJPEG same-stream baseline" is dispositioned: promoted as lege-ecosystem-perf.work.jp2lam-vs-openjpeg-same-stream-baseline or declined with evidence
+                """
+            method manual
+        }
+        check pdf-renderer-integration-status-claim {
+            statement """
+                "PDF renderer integration status" is dispositioned: promoted as lege-ecosystem-perf.work.pdf-renderer-integration-status or declined with evidence
+                """
+            method manual
+        }
+        check pixel-correctness-same-jp2-claim {
+            statement """
+                "Pixel correctness (same JP2)" is dispositioned: promoted as lege-ecosystem-perf.work.pixel-correctness-same-jp2 or declined with evidence
+                """
+            method manual
+        }
+        check rebuild-openjpeg-decode-only-harness-once-claim {
+            statement """
+                "Rebuild OpenJPEG decode-only harness (once)" is dispositioned: promoted as lege-ecosystem-perf.work.rebuild-openjpeg-decode-only-harness-once or declined with evidence
+                """
+            method manual
+        }
+        check reduced-resolution-4-threads-claim {
+            statement """
+                "Reduced resolution (4 threads)" is dispositioned: promoted as lege-ecosystem-perf.work.reduced-resolution-4-threads or declined with evidence
+                """
+            method manual
+        }
+        check reproduce-claim {
+            statement """
+                "Reproduce" is dispositioned: promoted as lege-ecosystem-perf.work.reproduce or declined with evidence
+                """
+            method manual
+        }
+        check stage-split-jp2lam-stats-path-note-stats-claim {
+            statement """
+                "Stage split (jp2lam stats path — note: stats serializes Tier-1)" is dispositioned: promoted as lege-ecosystem-perf.work.stage-split-jp2lam-stats-path-note-stats or declined with evidence
+                """
+            method manual
+        }
+        check targets-for-later-audit-phases-claim {
+            statement """
+                "Targets for later audit phases" is dispositioned: promoted as lege-ecosystem-perf.work.targets-for-later-audit-phases or declined with evidence
+                """
+            method manual
+        }
+        check wall-times-median-of-5-runs-claim {
+            statement """
+                "Wall times (median of 5 runs)" is dispositioned: promoted as lege-ecosystem-perf.work.wall-times-median-of-5-runs or declined with evidence
+                """
+            method manual
+        }
+        check what-this-session-already-landed-decoder-claim {
+            statement """
+                "What this session already landed (decoder)" is dispositioned: promoted as lege-ecosystem-perf.work.what-this-session-already-landed-decoder or declined with evidence
+                """
+            method manual
+        }
+    }
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+    }
+}
+
+record lege-ecosystem-perf.work.add-direct-sycc-output/1 : work {
+    title "7.3 Add direct sYCC output"
+    state proposed
+    intent """
+        The packed direct gate requires sRGB for `Rgb8`; sYCC therefore falls back. Current sYCC reconstruction also allocates expanded chroma planes and performs per-pixel coordinate arithmetic. Add specialized direct 4:2:0, 4:2:2, and 4:4:4 kernels that replicate/interpolate chroma and perform YCbCr→RGB directly into the packed destination, without full expanded chroma planes.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The packed direct gate requires sRGB for `Rgb8`; sYCC therefore falls back. Current sYCC reconstruction also allocates expanded chroma planes and performs per-pixel coordinate arithmetic. Add specialized direct 4:2:0, 4:2:2, and 4:4:4 kernels that replicate/interpolate chroma and perform YCbCr→RGB directly into the packed destination, without full expanded chroma planes.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.audit-limitations/1 : work {
+    title "Audit limitations"
+    state proposed
+    intent """
+        The supplied source was inspected statically and cross-checked against the existing project benchmark documents. This environment did not contain a Rust compiler or Cargo, so I could not build this exact `jp2lam` snapshot for a same-stream side-by-side benchmark. The OpenJPEG control benchmark is reproducible and included, but its scores are not a direct ratio against `jp2lam` until the same JP2 files, output format, worker budget, and machine are used in both decoders.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The supplied source was inspected statically and cross-checked against the existing project benchmark documents. This environment did not contain a Rust compiler or Cargo, so I could not build this exact `jp2lam` snapshot for a same-stream side-by-side benchmark. The OpenJPEG control benchmark is reproducible and included, but its scores are not a direct ratio against `jp2lam` until the same JP2 files, output format, worker budget, and machine are used in both decoders.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.cache-architecture/1 : work {
+    title "14. Cache architecture"
+    state proposed
+    intent """
+        A renderer-owned image cache should distinguish:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            A renderer-owned image cache should distinguish:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.common-output-format-fallback/1 : work {
+    title "4.4 Common output-format fallback"
+    state proposed
+    intent """
+        `decode_packed_direct()` accepts only exact Gray, sRGB, or CMYK matches (`src/decode/mod.rs:515–523`). More importantly, `Rgba8` without an encoded alpha component returns `None` (`lines 524–529`), causing a full planar decode followed by generic packing.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `decode_packed_direct()` accepts only exact Gray, sRGB, or CMYK matches (`src/decode/mod.rs:515–523`). More importantly, `Rgba8` without an encoded alpha component returns `None` (`lines 524–529`), causing a full planar decode followed by generic packing.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.concrete-control-targets-on-this-host/1 : work {
+    title "18.3 Concrete control targets on this host"
+    state proposed
+    intent """
+        For the supplied 4485×2791 20:1 9/7 control image, OpenJPEG 2.5.3 produced approximately:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            For the supplied 4485×2791 20:1 9/7 control image, OpenJPEG 2.5.3 produced approximately:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.correctness-and-performance-gates/1 : work {
+    title "18. Correctness and performance gates"
+    state proposed
+    intent """
+        18. Correctness and performance gates
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            18. Correctness and performance gates
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.current-state/1 : work {
+    title "12.1 Current state"
+    state proposed
+    intent """
+        The release profile already uses fat LTO and one codegen unit. The portable `wide` backend provides real vectorization, but `src/simd/x86/mod.rs` detects AVX2 while its architecture-specific setup is effectively empty. `JP2LAM_PRIMITIVES=avx2` therefore does not yet mean a comprehensive hand-tuned AVX2 backend.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The release profile already uses fat LTO and one codegen unit. The portable `wide` backend provides real vectorization, but `src/simd/x86/mod.rs` detects AVX2 while its architecture-specific setup is effectively empty. `JP2LAM_PRIMITIVES=avx2` therefore does not yet mean a comprehensive hand-tuned AVX2 backend.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.dangerous-defaults/1 : work {
+    title "4.1 Dangerous defaults"
+    state proposed
+    intent """
+        `src/decode/mod.rs:196–205` defines:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `src/decode/mod.rs:196–205` defines:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.decode-directly-into-renderer-memory/1 : work {
+    title "7.2 Decode directly into renderer memory"
+    state proposed
+    intent """
+        Add an API resembling:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Add an API resembling:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.differential-correctness/1 : work {
+    title "18.1 Differential correctness"
+    state proposed
+    intent """
+        Use OpenJPEG as the primary oracle:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Use OpenJPEG as the primary oracle:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.evidence-from-the-existing-renderer-profiles/1 : work {
+    title "2. Evidence from the existing renderer profiles"
+    state proposed
+    intent """
+        The supplied project history already isolates JPX decode from renderer sampling:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The supplied project history already isolates JPX decode from renderer sampling:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.executive-verdict/1 : work {
+    title "Executive verdict"
+    state proposed
+    intent """
+        The JPEG 2000 decoder is now a credible primary bottleneck in JPX-heavy pages. The renderer-side image sampling pass has already reduced warm-decoded JPX rendering to roughly **35 ms**, while the same page still spends roughly **292–331 ms** in JPX decode. Earlier memory profiling also attributed about **150 MiB of unmodeled peak memory** to JPX coefficient and reconstruction intermediates. The source audit explains both results.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The JPEG 2000 decoder is now a credible primary bottleneck in JPX-heavy pages. The renderer-side image sampling pass has already reduced warm-decoded JPX rendering to roughly **35 ms**, while the same page still spends roughly **292–331 ms** in JPX decode. Earlier memory profiling also attributed about **150 MiB of unmodeled peak memory** to JPX coefficient and reconstruction intermediates. The source audit explains both results.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.fast-diagnosis-of-severe-3000-4000-outliers/1 : work {
+    title "19. Fast diagnosis of severe 3000×4000+ outliers"
+    state proposed
+    intent """
+        If a decode takes seconds rather than hundreds of milliseconds, check in this order:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            If a decode takes seconds rather than hundreds of milliseconds, check in this order:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.final-assessment/1 : work {
+    title "21. Final assessment"
+    state proposed
+    intent """
+        There is substantial optimization headroom, but it is concentrated rather than diffuse.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            There is substantial optimization headroom, but it is concentrated rather than diffuse.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.full-active-plane-temporary-per-vertical-level/1 : work {
+    title "5.2 Full active-plane temporary per vertical level"
+    state proposed
+    intent """
+        `interleave_rows()` at `src/dwt/irrev97.rs:963–982` allocates:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `interleave_rows()` at `src/dwt/irrev97.rs:963–982` allocates:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.full-resolution/1 : work {
+    title "Full resolution"
+    state proposed
+    intent """
+        | Decoder path | Median ms | Notes |
+        |---|---:|---|
+        | **OpenJPEG decode-only** (`opj_bench`) | **161.7 → 171.8** | re-measured after Phase 3; host variance ~10 ms |
+        | OpenJPEG total (decode+pack checksum) | 318–331 | includes deliberate generic pack |
+        | **jp2lam session packed Rgb8, Budgeted(4) — after Phase 3 fused pack** | **~190** | ICT + shift + pack fused; no 3× u8 staging planes |
+        | jp2lam session packed (pre–Phase 3) | 248.1 | staged ICT → 3× u8 → interleave |
+        | jp2lam `decode_jp2` legacy planar serial | 201.4 | compatibility path; planar i32, no pack |
+        | `opj_decompress` CLI → PNG | ~12 000 | **not comparable** (includes PNG encode I/O) |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            | Decoder path | Median ms | Notes |
+            |---|---:|---|
+            | **OpenJPEG decode-only** (`opj_bench`) | **161.7 → 171.8** | re-measured after Phase 3; host variance ~10 ms |
+            | OpenJPEG total (decode+pack checksum) | 318–331 | includes deliberate generic pack |
+            | **jp2lam session packed Rgb8, Budgeted(4) — after Phase 3 fused pack** | **~190** | ICT + shift + pack fused; no 3× u8 staging planes |
+            | jp2lam session packed (pre–Phase 3) | 248.1 | staged ICT → 3× u8 → interleave |
+            | jp2lam `decode_jp2` legacy planar serial | 201.4 | compatibility path; planar i32, no pack |
+            | `opj_decompress` CLI → PNG | ~12 000 | **not comparable** (includes PNG encode I/O) |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.full-resolution-decode/1 : work {
+    title "Full-resolution decode"
+    state proposed
+    intent """
+        | Components | Threads | OpenJPEG decode | Generic pack | Total |
+        |---|---:|---:|---:|---:|
+        | Gray | 1 | 185.9 ms | 22.7 ms | 209.2 ms |
+        | Gray | 2 | 137.4 ms | 23.4 ms | 170.9 ms |
+        | Gray | 4 | **88.0 ms** | 22.4 ms | **110.6 ms** |
+        | Gray | 8 | 82.1 ms | 23.0 ms | 105.8 ms |
+        | RGB | 1 | 560.0 ms | 100.7 ms | 660.9 ms |
+        | RGB | 2 | 364.2 ms | 99.1 ms | 463.4 ms |
+        | RGB | 4 | **262.9 ms** | 100.6 ms | **363.8 ms** |
+        | RGB | 8 | 204.5 ms | 103.6 ms | 307.0 ms |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            | Components | Threads | OpenJPEG decode | Generic pack | Total |
+            |---|---:|---:|---:|---:|
+            | Gray | 1 | 185.9 ms | 22.7 ms | 209.2 ms |
+            | Gray | 2 | 137.4 ms | 23.4 ms | 170.9 ms |
+            | Gray | 4 | **88.0 ms** | 22.4 ms | **110.6 ms** |
+            | Gray | 8 | 82.1 ms | 23.0 ms | 105.8 ms |
+            | RGB | 1 | 560.0 ms | 100.7 ms | 660.9 ms |
+            | RGB | 2 | 364.2 ms | 99.1 ms | 463.4 ms |
+            | RGB | 4 | **262.9 ms** | 100.6 ms | **363.8 ms** |
+            | RGB | 8 | 204.5 ms | 103.6 ms | 307.0 ms |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.fuse-finalization/1 : work {
+    title "7.1 Fuse finalization"
+    state proposed
+    intent """
+        Implement transform-specific final kernels:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Implement transform-specific final kernels:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.hybrid-native-path/1 : work {
+    title "13.2 Hybrid native path"
+    state proposed
+    intent """
+        Keep Tier-2 and MQ/Tier-1 on CPU initially, then upload dequantized coefficient bands and perform:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Keep Tier-2 and MQ/Tier-1 on CPU initially, then upload dequantized coefficient bands and perform:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.implementation-roadmap/1 : work {
+    title "17. Implementation roadmap"
+    state proposed
+    intent """
+        17. Implementation roadmap
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            17. Implementation roadmap
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.independent-control-benchmark/1 : work {
+    title "3. Independent control benchmark"
+    state proposed
+    intent """
+        I built a small OpenJPEG 2.5.3 C harness and encoded the supplied `lear.png` as 4485×2791, one-tile, six-resolution, irreversible 9/7 JP2 at approximately 20:1 compression. The host exposes five AMD EPYC cores and AVX2/AVX-512. Times are medians of five runs; “pack” is a deliberately generic scalar checksum/conversion loop and should not be treated as an optimized renderer output path.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            I built a small OpenJPEG 2.5.3 C harness and encoded the supplied `lear.png` as 4485×2791, one-tile, six-resolution, irreversible 9/7 JP2 at approximately 20:1 compression. The host exposes five AMD EPYC cores and AVX2/AVX-512. Times are medians of five runs; “pack” is a deliberately generic scalar checksum/conversion loop and should not be treated as an optimized renderer output path.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.jp2lam-jpeg-2000-decoder-performance-audit/1 : work {
+    title "`jp2lam` JPEG 2000 decoder performance audit"
+    state proposed
+    intent """
+        **Date:** 2026-08-05
+        **Scope:** the decoder in the supplied `jp2lam` source tree, with emphasis on PDF `/JPXDecode` images and source/output sizes around 3000×4000 pixels and above.
+        **Goal:** identify current structural, algorithmic, integration, parallelism, memory, and code-generation gaps; rank the work that is likely to improve end-to-end PDF rendering rather than only isolated kernels.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            **Date:** 2026-08-05
+            **Scope:** the decoder in the supplied `jp2lam` source tree, with emphasis on PDF `/JPXDecode` images and source/output sizes around 3000×4000 pixels and above.
+            **Goal:** identify current structural, algorithmic, integration, parallelism, memory, and code-generation gaps; rank the work that is likely to improve end-to-end PDF rendering rather than only isolated kernels.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.jp2lam-vs-openjpeg-same-stream-baseline/1 : work {
+    title "jp2lam vs OpenJPEG same-stream baseline"
+    state proposed
+    intent """
+        **Date:** 2026-08-05
+        **Host:** Windows (local), 4 decoder threads unless noted
+        **Fixture:** `lear.png` 4485×2791 RGB → jp2lam photo encode quality 75 → `lear_q75.jp2` (578 858 bytes, irreversible 9/7, 3 comps, sRGB)
+        **OpenJPEG:** 2.5.3 at `D:\tools\openjpeg\openjpeg-master\build\bin\Release\`
+        **Harnesses:**
+        - `cargo run --release --example compare_openjpeg -- lear.png`
+        - `cargo run --release --example decode_benchmark -- decode-fix-plan/bench-work/lear_q75.jp2`
+        - `decode-fix-plan/opj_bench.exe <jp2> <threads> <reduce> <runs>` (MSVC `/MD /DOPJ_STATIC`)
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            **Date:** 2026-08-05
+            **Host:** Windows (local), 4 decoder threads unless noted
+            **Fixture:** `lear.png` 4485×2791 RGB → jp2lam photo encode quality 75 → `lear_q75.jp2` (578 858 bytes, irreversible 9/7, 3 comps, sRGB)
+            **OpenJPEG:** 2.5.3 at `D:\tools\openjpeg\openjpeg-master\build\bin\Release\`
+            **Harnesses:**
+            - `cargo run --release --example compare_openjpeg -- lear.png`
+            - `cargo run --release --example decode_benchmark -- decode-fix-plan/bench-work/lear_q75.jp2`
+            - `decode-fix-plan/opj_bench.exe <jp2> <threads> <reduce> <runs>` (MSVC `/MD /DOPJ_STATIC`)
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.large-image-memory-target/1 : work {
+    title "5.4 Large-image memory target"
+    state proposed
+    intent """
+        For 3000×4000 RGB, a sensible CPU decoder target after this change is approximately:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            For 3000×4000 RGB, a sensible CPU decoder target after this change is approximately:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.memory-planning-and-resource-accounting/1 : work {
+    title "15. Memory planning and resource accounting"
+    state proposed
+    intent """
+        `DecodeLimits::max_working_bytes` uses a coarse estimate (`component_samples × 20` in the current code). The estimate does not accurately model:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `DecodeLimits::max_working_bytes` uses a coarse estimate (`component_samples × 20` in the current code). The estimate does not accurately model:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.mq-micro-optimization-only-after-attribution/1 : work {
+    title "8.7 MQ micro-optimization only after attribution"
+    state proposed
+    intent """
+        Potential low-level changes include:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Potential low-level changes include:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.nvjpeg2000-backend/1 : work {
+    title "13.1 nvJPEG2000 backend"
+    state proposed
+    intent """
+        Advantages:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Advantages:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.order-of-work/1 : work {
+    title "12.2 Order of work"
+    state proposed
+    intent """
+        Do architecture-specific SIMD after fixing layout and memory traffic. Otherwise AVX2 merely accelerates arithmetic between large allocations and copies.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Do architecture-specific SIMD after fixing layout and memory traffic. Otherwise AVX2 merely accelerates arithmetic between large allocations and copies.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p0-verify-the-renderer-is-not-bypassing-the/1 : work {
+    title "4. P0: verify the renderer is not bypassing the optimized decoder"
+    state proposed
+    intent """
+        4. P0: verify the renderer is not bypassing the optimized decoder
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            4. P0: verify the renderer is not bypassing the optimized decoder
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p1-irreversible-9-7-dwt-is-the-largest/1 : work {
+    title "5. P1: irreversible 9/7 DWT is the largest structural gap"
+    state proposed
+    intent """
+        Lossy JP2 files normally use irreversible 9/7. The current implementation has two independent large-image defects.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Lossy JP2 files normally use irreversible 9/7. The current implementation has two independent large-image defects.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p1-nonzero-tile-origins-unnecessarily-disable/1 : work {
+    title "6. P1: nonzero tile origins unnecessarily disable optimized DWT"
+    state proposed
+    intent """
+        `tile_local_header()` preserves an absolute tile origin in `src/decode/mod.rs:1427–1444`. Reconstruction then chooses the optimized DWT backend only when both origins are exactly zero:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `tile_local_header()` preserves an absolute tile origin in `src/decode/mod.rs:1427–1444`. Reconstruction then chooses the optimized DWT backend only when both origins are exactly zero:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p1-p2-tier-1-work-scheduling-and-hot-loop/1 : work {
+    title "8. P1/P2: Tier-1 work scheduling and hot-loop structure"
+    state proposed
+    intent """
+        Tier-1 remains a major arithmetic/branch component after DWT allocation is repaired. The current code has several correct but expensive structures.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Tier-1 remains a major arithmetic/branch component after DWT allocation is repaired. The current code has several correct but expensive structures.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p1-packed-direct-still-creates-full-planar/1 : work {
+    title "7. P1: “packed direct” still creates full planar staging"
+    state proposed
+    intent """
+        The direct API avoids constructing the crate’s native `Image`, but color reconstruction still creates large intermediate planes.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The direct API avoids constructing the crate’s native `Image`, but color reconstruction still creates large intermediate planes.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p2-current-roi-is-not-genuinely-windowed/1 : work {
+    title "10. P2: current ROI is not genuinely windowed"
+    state proposed
+    intent """
+        The decoder computes conservative subband windows and filters Tier-1 blocks, which is useful. But for a single-tile stream it still allocates the full coefficient plane, runs DWT over the full reduced tile, finalizes the full output, and then crops. The project’s own phase-3 measurement found only about an **11% speedup** for a quarter-image single-tile ROI. Multi-tile ROI performs better because entire tiles can be skipped.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The decoder computes conservative subband windows and filters Tier-1 blocks, which is useful. But for a single-tile stream it still allocates the full coefficient plane, runs DWT over the full reduced tile, finalizes the full output, and then crops. The project’s own phase-3 measurement found only about an **11% speedup** for a quarter-image single-tile ROI. Multi-tile ROI performs better because entire tiles can be skipped.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.p2-tier-2-metadata-and-allocation-churn/1 : work {
+    title "9. P2: Tier-2 metadata and allocation churn"
+    state proposed
+    intent """
+        Tier-2 is not expected to dominate a simple one-layer scan, but it can matter on streams with many precincts, layers, tile-parts, or small code-blocks. The current implementation creates avoidable objects:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Tier-2 is not expected to dominate a simple one-layer scan, but it can matter on streams with many precincts, layers, tile-parts, or small code-blocks. The current implementation creates avoidable objects:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.pdf-renderer-integration-status/1 : work {
+    title "PDF renderer integration status"
+    state proposed
+    intent """
+        `lege-pdf/render/crates/pdf-image/src/jpx.rs` already uses:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            `lege-pdf/render/crates/pdf-image/src/jpx.rs` already uses:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.peak-rss-single-representative-run/1 : work {
+    title "Peak RSS, single representative run"
+    state proposed
+    intent """
+        | Components | Reduction | Peak RSS |
+        |---|---:|---:|
+        | Gray | full | 53.4 MiB |
+        | Gray | 1 | 17.4 MiB |
+        | Gray | 2 | 8.2 MiB |
+        | RGB | full | 153.1 MiB |
+        | RGB | 1 | 45.5 MiB |
+        | RGB | 2 | 18.1 MiB |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            | Components | Reduction | Peak RSS |
+            |---|---:|---:|
+            | Gray | full | 53.4 MiB |
+            | Gray | 1 | 17.4 MiB |
+            | Gray | 2 | 8.2 MiB |
+            | RGB | full | 153.1 MiB |
+            | RGB | 1 | 45.5 MiB |
+            | RGB | 2 | 18.1 MiB |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.performance-scoreboard/1 : work {
+    title "18.2 Performance scoreboard"
+    state proposed
+    intent """
+        Record p50 and p95 for:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Record p50 and p95 for:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.persistent-parallel-scratch/1 : work {
+    title "8.1 Persistent parallel scratch"
+    state proposed
+    intent """
+        `Jp2Decoder` retains one `Tier1Scratch`, which benefits the serial path. The parallel path uses Rayon `try_for_each_init()` (`src/decode/t1.rs` around lines 414–416). That initializer is per Rayon job, not guaranteed once per worker, and the storage is not retained across decode calls.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `Jp2Decoder` retains one `Tier1Scratch`, which benefits the serial path. The parallel path uses Rayon `try_for_each_init()` (`src/decode/t1.rs` around lines 414–416). That initializer is per Rayon job, not guaranteed once per worker, and the storage is not retained across decode calls.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.pgo/1 : work {
+    title "12.3 PGO"
+    state proposed
+    intent """
+        Profile-guided optimization is likely worthwhile after the pipeline stabilizes because Tier-1/MQ contains many branches and common coding-style paths. Train on a PDF-specific corpus covering:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Profile-guided optimization is likely worthwhile after the pipeline stabilizes because Tier-1/MQ contains many branches and common coding-style paths. Train on a PDF-specific corpus covering:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.phase-0-one-diagnostic-pass/1 : work {
+    title "Phase 0 — one diagnostic pass"
+    state proposed
+    intent """
+        1. Add the one-line decoder telemetry.
+        2. Confirm release mode, backend, actual request, reduction, region, direct path, worker count, and cache behavior in the PDF renderer.
+        3. Add counters for repeated decode of identical PDF object bytes within one render and across zooms.
+        4. Benchmark the representative JPX scan and MRC pages with 1/2/4 decoder workers under the normal outer scheduler.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            1. Add the one-line decoder telemetry.
+            2. Confirm release mode, backend, actual request, reduction, region, direct path, worker count, and cache behavior in the PDF renderer.
+            3. Add counters for repeated decode of identical PDF object bytes within one render and across zooms.
+            4. Benchmark the representative JPX scan and MRC pages with 1/2/4 decoder workers under the normal outer scheduler.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.phase-1-low-risk-structural-patches/1 : work {
+    title "Phase 1 — low-risk structural patches"
+    state proposed
+    intent """
+        1. Add renderer-native RGBX/BGRA formats so no-alpha images stay on the direct path.
+        2. Make the PDF integration use persistent `Jp2Decoder` sessions.
+        3. Replace per-row 9/7 scratch allocation with coarse chunk/session scratch.
+        4. Route aligned nonzero tile origins through the optimized DWT backend.
+        5. Reserve obvious Tier-2 vectors and suppress packet-record retention when stats are off.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            1. Add renderer-native RGBX/BGRA formats so no-alpha images stay on the direct path.
+            2. Make the PDF integration use persistent `Jp2Decoder` sessions.
+            3. Replace per-row 9/7 scratch allocation with coarse chunk/session scratch.
+            4. Route aligned nonzero tile origins through the optimized DWT backend.
+            5. Reserve obvious Tier-2 vectors and suppress packet-record retention when stats are off.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.phase-2-9-7-banded-reconstruction/1 : work {
+    title "Phase 2 — 9/7 banded reconstruction"
+    state proposed
+    intent """
+        1. Port the 5/3 vertical band design to 9/7.
+        2. Reuse per-worker band scratch.
+        3. Add coarse independent band scheduling.
+        4. Add phase-aware banded kernels.
+        5. Remove the full active-plane `interleave_rows()` temporary.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            1. Port the 5/3 vertical band design to 9/7.
+            2. Reuse per-worker band scratch.
+            3. Add coarse independent band scheduling.
+            4. Add phase-aware banded kernels.
+            5. Remove the full active-plane `interleave_rows()` temporary.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.phase-3-fused-packed-output/1 : work {
+    title "Phase 3 — fused packed output"
+    state proposed
+    intent """
+        1. Fuse inverse ICT/RCT, shift, scale, clamp, and channel packing.
+        2. Add direct sYCC 4:2:0/4:2:2/4:4:4 output.
+        3. Add `decode_into()` with caller stride/channel order.
+        4. Write multi-tile output directly into the final canvas.
+        5. Parallelize components/tiles through one flattened decoder work budget.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            1. Fuse inverse ICT/RCT, shift, scale, clamp, and channel packing.
+            2. Add direct sYCC 4:2:0/4:2:2/4:4:4 output.
+            3. Add `decode_into()` with caller stride/channel order.
+            4. Write multi-tile output directly into the final canvas.
+            5. Parallelize components/tiles through one flattened decoder work budget.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.phase-4-tier-1-tier-2-refinement/1 : work {
+    title "Phase 4 — Tier-1/Tier-2 refinement"
+    state proposed
+    intent """
+        1. Build compact prevalidated `BlockJob`s.
+        2. Weighted largest-first/bucketed scheduling.
+        3. Persistent worker scratch.
+        4. Tight SIMD dequant/store.
+        5. Stripe-major padded flags/coefficient state.
+        6. Eliminate final sign sweep.
+        7. Inline common Tier-2 segment representation and dense block IDs.
+        8. Add quality-layer limit.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            1. Build compact prevalidated `BlockJob`s.
+            2. Weighted largest-first/bucketed scheduling.
+            3. Persistent worker scratch.
+            4. Tight SIMD dequant/store.
+            5. Stripe-major padded flags/coefficient state.
+            6. Eliminate final sign sweep.
+            7. Inline common Tier-2 segment representation and dense block IDs.
+            8. Add quality-layer limit.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.phase-6-isa-pgo-gpu/1 : work {
+    title "Phase 6 — ISA/PGO/GPU"
+    state proposed
+    intent """
+        1. AVX2/FMA and NEON specializations.
+        2. PGO with PDF JPX corpus.
+        3. Optional nvJPEG2000 control/backend on NVIDIA.
+        4. Hybrid CPU Tier-1 + GPU IDWT/color/composite path.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            1. AVX2/FMA and NEON specializations.
+            2. PGO with PDF JPX corpus.
+            3. Optional nvJPEG2000 control/backend on NVIDIA.
+            4. Hybrid CPU Tier-1 + GPU IDWT/color/composite path.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.pixel-correctness-same-jp2/1 : work {
+    title "Pixel correctness (same JP2)"
+    state proposed
+    intent """
+        | Metric | Value |
+        |---|---:|
+        | max abs sample | **1** |
+        | mean abs | **0.042** |
+        | pixels with abs > 2 | **0** |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            | Metric | Value |
+            |---|---:|
+            | max abs sample | **1** |
+            | mean abs | **0.042** |
+            | pixels with abs > 2 | **0** |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.port-the-banded-5-3-design-to-9-7/1 : work {
+    title "5.3 Port the banded 5/3 design to 9/7"
+    state proposed
+    intent """
+        The reversible 5/3 implementation already shows the right architecture. `src/dwt/rev53.rs:932–1009` processes vertical synthesis in fixed column bands, uses scratch proportional to `band_width × active_height`, and copies one band back. The irreversible path should use the same spatial blocking model.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The reversible 5/3 implementation already shows the right architecture. `src/dwt/rev53.rs:932–1009` processes vertical synthesis in fixed column bands, uses scratch proportional to `band_width × active_height`, and copies one band back. The irreversible path should use the same spatial blocking model.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.precompute-block-parameters/1 : work {
+    title "8.3 Precompute block parameters"
+    state proposed
+    intent """
+        `block_params()` recomputes geometry, quantization, style, and offsets per block. Tier-2 already knows most of this. Put the finalized values directly in `BlockJob` so the hot loop does not repeatedly perform checked arithmetic, lookups, and branching.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `block_params()` recomputes geometry, quantization, style, and offsets per block. Tier-2 already knows most of this. Put the finalized values directly in `BlockJob` so the hot loop does not repeatedly perform checked arithmetic, lookups, and branching.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.reader-api-is-inappropriate-for-resident-pdf/1 : work {
+    title "4.3 Reader API is inappropriate for resident PDF stream bytes"
+    state proposed
+    intent """
+        The reader-based API around `src/decode/mod.rs:1818–1860` can spill through a temporary file/mapping before calling the request API. PDF stream bytes are already resident. The PDF renderer should call the slice/session path directly.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The reader-based API around `src/decode/mod.rs:1818–1860` can spill through a temporary file/mapping before calling the request API. PDF stream bytes are already resident. The PDF renderer should call the slice/session path directly.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.rebuild-openjpeg-decode-only-harness-once/1 : work {
+    title "Rebuild OpenJPEG decode-only harness (once)"
+    state proposed
+    intent """
+        # From VS x64 Native Tools or via vcvars64:
+        #   cl /O2 /MD /DOPJ_STATIC /I...\openjp2 ... opj_bench.c /link openjp2.lib
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            # From VS x64 Native Tools or via vcvars64:
+            #   cl /O2 /MD /DOPJ_STATIC /I...\openjp2 ... opj_bench.c /link openjp2.lib
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.reduced-resolution-4-threads/1 : work {
+    title "Reduced resolution (4 threads)"
+    state proposed
+    intent """
+        | Reduce | Output dims | jp2lam session packed (ms) | OpenJPEG decode-only (ms) | Ratio |
+        |---:|---:|---:|---:|---:|
+        | 1 | 2243×1396 | **88.0** | **51.6** | 1.70× |
+        | 2 | 1122×698 | **28.7** | **17.1** | 1.68× |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            | Reduce | Output dims | jp2lam session packed (ms) | OpenJPEG decode-only (ms) | Ratio |
+            |---:|---:|---:|---:|---:|
+            | 1 | 2243×1396 | **88.0** | **51.6** | 1.70× |
+            | 2 | 1122×698 | **28.7** | **17.1** | 1.68× |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.reduced-resolution-decode-four-threads/1 : work {
+    title "Reduced-resolution decode, four threads"
+    state proposed
+    intent """
+        | Components | Reduction | Output dimensions | Decode | Generic pack | Total |
+        |---|---:|---:|---:|---:|---:|
+        | Gray | 1 level | 2243×1396 | 37.2 ms | 5.7 ms | 43.1 ms |
+        | Gray | 2 levels | 1122×698 | 12.8 ms | 1.4 ms | 14.4 ms |
+        | RGB | 1 level | 2243×1396 | 103.4 ms | 25.7 ms | 129.5 ms |
+        | RGB | 2 levels | 1122×698 | 34.6 ms | 6.2 ms | 41.1 ms |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            | Components | Reduction | Output dimensions | Decode | Generic pack | Total |
+            |---|---:|---:|---:|---:|---:|
+            | Gray | 1 level | 2243×1396 | 37.2 ms | 5.7 ms | 43.1 ms |
+            | Gray | 2 levels | 1122×698 | 12.8 ms | 1.4 ms | 14.4 ms |
+            | RGB | 1 level | 2243×1396 | 103.4 ms | 25.7 ms | 129.5 ms |
+            | RGB | 2 levels | 1122×698 | 34.6 ms | 6.2 ms | 41.1 ms |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.remove-the-final-sign-pass/1 : work {
+    title "8.6 Remove the final sign pass"
+    state proposed
+    intent """
+        The decoder currently applies signs in a separate full block scan. Store or materialize signed magnitudes when the sign symbol is decoded, or fold sign application into final block write/dequantization.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            The decoder currently applies signs in a separate full block scan. Store or materialize signed magnitudes when the sign symbol is decoded, or fold sign application into final block write/dequantization.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.reproduce/1 : work {
+    title "Reproduce"
+    state proposed
+    intent """
+        ```powershell
+        cd lege-codecs/jp2lam
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            ```powershell
+            cd lege-codecs/jp2lam
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.required-telemetry-before-optimization/1 : work {
+    title "4.5 Required telemetry before optimization"
+    state proposed
+    intent """
+        Emit one compact line per unique JPX decode during a diagnostic run:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            Emit one compact line per unique JPX decode during a diagnostic run:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.schedule-by-estimated-cost-not-block-count/1 : work {
+    title "8.2 Schedule by estimated cost, not block count"
+    state proposed
+    intent """
+        A `.par_iter()` over code-blocks distributes block count, but work varies with:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            A `.par_iter()` over code-blocks distributes block count, but work varies with:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.simd-architecture-dispatch-build-and-pgo/1 : work {
+    title "12. SIMD, architecture dispatch, build, and PGO"
+    state proposed
+    intent """
+        12. SIMD, architecture dispatch, build, and PGO
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            12. SIMD, architecture dispatch, build, and PGO
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.stage-split-jp2lam-stats-path-note-stats/1 : work {
+    title "Stage split (jp2lam stats path — note: stats serializes Tier-1)"
+    state proposed
+    intent """
+        On the full fixture, `decode_jp2_with_stats` reported (not production wall time):
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            On the full fixture, `decode_jp2_with_stats` reported (not production wall time):
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.stats-mode-changes-the-program-being-measured/1 : work {
+    title "4.2 Stats mode changes the program being measured"
+    state proposed
+    intent """
+        `decode_jp2_with_stats()` enables internal stats. In `src/decode/t1.rs`, stats-enabled Tier-1 is intentionally serialized. Do not use that path as the production benchmark or to infer real parallel scaling. Use coarse external stage timers or low-overhead thread-local counters that do not alter scheduling.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `decode_jp2_with_stats()` enables internal stats. In `src/decode/t1.rs`, stats-enabled Tier-1 is intentionally serialized. Do not use that path as the production benchmark or to infer real parallel scaling. Use coarse external stage timers or low-overhead thread-local counters that do not alter scheduling.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.stripe-oriented-state/1 : work {
+    title "8.5 Stripe-oriented state"
+    state proposed
+    intent """
+        JPEG 2000 Tier-1 scans four-row stripes. The current row-major coefficient/flag organization leads to strided accesses across four rows and branch-heavy neighbor updates. A padded stripe-major scratch layout can:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            JPEG 2000 Tier-1 scans four-row stripes. The current row-major coefficient/flag organization leads to strided accesses across four rows and branch-heavy neighbor updates. A padded stripe-major scratch layout can:
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.targets-for-later-audit-phases/1 : work {
+    title "Targets for later audit phases"
+    state proposed
+    intent """
+        | Phase | Goal | Success signal on this fixture |
+        |---|---|---|
+        | 3 Fused packed output | ICT + shift + pack without 3× full u8 planes | finalize ≪ 26 ms; session packed ≤ ~200 ms |
+        | 4 Tier-1 jobs | weighted scheduling + persistent scratch | Tier-1 wall under Budgeted(4) closer to OPJ |
+        | 5 Windowed ROI | true subband window IDWT | quarter ROI time_fraction ≪ 0.5 |
+        | 6 ISA/PGO | AVX2 9/7 + PGO | close remaining ~50 ms gap vs OPJ decode-only |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            | Phase | Goal | Success signal on this fixture |
+            |---|---|---|
+            | 3 Fused packed output | ICT + shift + pack without 3× full u8 planes | finalize ≪ 26 ms; session packed ≤ ~200 ms |
+            | 4 Tier-1 jobs | weighted scheduling + persistent scratch | Tier-1 wall under Budgeted(4) closer to OPJ |
+            | 5 Windowed ROI | true subband window IDWT | quarter ROI time_fraction ≪ 0.5 |
+            | 6 ISA/PGO | AVX2 9/7 + PGO | close remaining ~50 ms gap vs OPJ decode-only |
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.tighten-the-write-dequant-path/1 : work {
+    title "8.4 Tighten the write/dequant path"
+    state proposed
+    intent """
+        `BlockPlanes::write_block` validates and computes row bounds repeatedly, then performs scalar dequant copy. Validate the destination rectangle once when constructing the job. Use a tight row kernel—safe slices outside the inner loop, then SIMD dequant/store where profitable.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            `BlockPlanes::write_block` validates and computes row bounds repeatedly, then performs scalar dequant copy. Validate the destination rectangle once when constructing the job. Use a tight row kernel—safe slices outside the inner loop, then SIMD dequant/store where profitable.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.wall-times-median-of-5-runs/1 : work {
+    title "Wall times (median of 5 runs)"
+    state proposed
+    intent """
+        Wall times (median of 5 runs)
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            Wall times (median of 5 runs)
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.what-should-not-be-done-first/1 : work {
+    title "20. What should not be done first"
+    state proposed
+    intent """
+        - Do not begin with hand-optimizing `MqDecoder` instruction by instruction.
+        - Do not add more fine-grained Rayon regions inside existing component/tile/page parallelism.
+        - Do not substitute a faster allocator for eliminating full-plane temporaries.
+        - Do not implement ROI as “decode full, crop,” which is already the current limitation.
+        - Do not GPU-decode and immediately copy a full 12 MP raster back to CPU unless measurements prove the transfer still wins.
+        - Do not change 9/7 arithmetic or rounding for speed without exact OpenJPEG differential tests.
+        - Do not rely on the README as the source of current capability; it is already stale relative to implemented multi-tile reduction/ROI support.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            - Do not begin with hand-optimizing `MqDecoder` instruction by instruction.
+            - Do not add more fine-grained Rayon regions inside existing component/tile/page parallelism.
+            - Do not substitute a faster allocator for eliminating full-plane temporaries.
+            - Do not implement ROI as “decode full, crop,” which is already the current limitation.
+            - Do not GPU-decode and immediately copy a full 12 MP raster back to CPU unless measurements prove the transfer still wins.
+            - Do not change 9/7 arithmetic or rounding for speed without exact OpenJPEG differential tests.
+            - Do not rely on the README as the source of current capability; it is already stale relative to implemented multi-tile reduction/ROI support.
+            """
+    }
+}
+
+record lege-ecosystem-perf.work.what-this-session-already-landed-decoder/1 : work {
+    title "What this session already landed (decoder)"
+    state proposed
+    intent """
+        From the 2026-08-05 audit Phase 1–2 structural work:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-vs-openjpeg-baseline-2026-08-05.md"
+        excerpt """
+            From the 2026-08-05 audit Phase 1–2 structural work:
+            """
+    }
+}

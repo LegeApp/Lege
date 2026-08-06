@@ -2,6 +2,7 @@ akr 0.1
 project lege-ecosystem
 
 namespace lege-ecosystem "Project-wide knowledge."
+namespace lege-ecosystem-perf "JP2LAM decoder performance audits."
 
 defaults {
     review_after_days 90

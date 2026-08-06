@@ -1,6 +1,0 @@
-file=/mnt/data/lear_gray_openjpeg.jp2 threads=4 reduce=0 dims=4485x2791 comps=1 runs=1 median_ms parse=1.611 decode=78.429 pack=22.691 total=102.731 checksum=1576675782 peak_rss_kib=54680
-file=/mnt/data/lear_gray_openjpeg.jp2 threads=4 reduce=1 dims=2243x1396 comps=1 runs=1 median_ms parse=0.448 decode=40.637 pack=5.628 total=46.713 checksum=394402761 peak_rss_kib=17780
-file=/mnt/data/lear_gray_openjpeg.jp2 threads=4 reduce=2 dims=1122x698 comps=1 runs=1 median_ms parse=0.505 decode=13.255 pack=1.477 total=15.237 checksum=98683642 peak_rss_kib=8380
-file=/mnt/data/lear_rgb_openjpeg.jp2 threads=4 reduce=0 dims=4485x2791 comps=3 runs=1 median_ms parse=0.732 decode=275.570 pack=100.406 total=376.708 checksum=4634605598 peak_rss_kib=156788
-file=/mnt/data/lear_rgb_openjpeg.jp2 threads=4 reduce=1 dims=2243x1396 comps=3 runs=1 median_ms parse=1.303 decode=107.487 pack=27.691 total=136.481 checksum=1159332385 peak_rss_kib=46548
-file=/mnt/data/lear_rgb_openjpeg.jp2 threads=4 reduce=2 dims=1122x698 comps=3 runs=1 median_ms parse=0.756 decode=46.881 pack=6.189 total=53.825 checksum=290082444 peak_rss_kib=18572

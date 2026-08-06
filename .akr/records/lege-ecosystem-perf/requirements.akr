@@ -1,0 +1,18 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem-perf.requirement.what-large-render-means-for-this-problem/1 : requirement {
+    title "1. What “large render” means for this problem"
+    state proposed
+    scope [ all ]
+    statement """
+        There are three sizes that must be recorded separately:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/jp2lam-decoder-performance-audit-2026-08-05.md"
+        excerpt """
+            There are three sizes that must be recorded separately:
+            """
+    }
+}

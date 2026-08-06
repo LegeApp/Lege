@@ -5,26 +5,41 @@ build {
     tool "akr 0.1.0"
     grammar "0.1"
     vocabulary "0.1"
-    commit git:991c54c46a92e9b891096ad8f2604544a7ba3ac7
-    source_graph "sha256:d977aa866c6041a16d9bd174d94e7d1e07425e839a4e855b31fe870a603ea056"
+    commit git:14abee266cd7a12e05433fac89e7cf1234b1d93c
+    source_graph "sha256:c48ed45f0aee84877ca97364b61fd90fb543a59ca369ce383082f0484640c468"
 }
 
 source ".akr/project.akr" {
-    hash "sha256:72c541063af82df8caa20665898fcc1dafca337c7d2300dd7c1566d6bf75c1f7"
+    hash "sha256:1c68f28282e87162c61e62b9779adde4c9a07d8017858bcc681c6c12f55dfb8a"
     records 0
 }
 
-source ".akr/records/lege-ecosystem/policies.akr" {
-    hash "sha256:9eb3c6f244b0febd891c1a46508f1bff557ce84291ebeb27dcfd6fe2619c6fae"
-    records 3
+source ".akr/records/lege-ecosystem-perf/policies.akr" {
+    hash "sha256:e9a49bb7c7a262df84c95849a7a2c2bc417cf8cb3c484a644fbde1102cbcb56e"
+    records 5
 }
 
-source ".akr/records/lege-ecosystem/requirements.akr" {
-    hash "sha256:fafadf0c92b8705e309338f18e42792c04cfbc56e58fdc498f72d7403a2aca3c"
+source ".akr/records/lege-ecosystem-perf/requirements.akr" {
+    hash "sha256:27961cad77fbb00e3586f62cee6e39bc98904a6e58a6d712f4ec8479669408dc"
     records 1
 }
 
+source ".akr/records/lege-ecosystem-perf/work.akr" {
+    hash "sha256:b7a1816f753b030e7086ae93447abe08ee40b492ace87fb8bfe81afdabfc249d"
+    records 68
+}
+
+source ".akr/records/lege-ecosystem/policies.akr" {
+    hash "sha256:c4d3dabafd89f1d3cb3cace4e540e020aba189ea98554ecbd1e3e1fea56ce863"
+    records 7
+}
+
+source ".akr/records/lege-ecosystem/requirements.akr" {
+    hash "sha256:4b0610ccdac83aa3332403dfcd548536e96a2233303abcb476220ccfbea2d2cd"
+    records 5
+}
+
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:baab7d5d675a2bc978e01cd60a472da7f4b195b30066d9a736cdbdaeae1d59f3"
-    records 58
+    hash "sha256:b08d66afccf43efcfa94e03b93e5a8e976cd77d7823237fbb50e7af0a719267d"
+    records 67
 }
