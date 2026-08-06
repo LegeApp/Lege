@@ -16,7 +16,6 @@ resolver = "2"
 members = [
     "lege-process",             # `lege` CLI + core processing library
     "lege-process/lege-ipc",    # shared IPC/log types
-    "lege-process/GUI/Freya",   # `lege-gui`
     "lege-process/GUI/musicsheet", # `lege-music-gui`
     "lege-process/GUI/rfd",     # vendored file-dialog crate used by both GUIs
     "lege-gpu",                 # `lege_gpu`
@@ -24,7 +23,7 @@ members = [
     "lege-pdf/read",            # renderer-backed document intake/read seam
     "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
-    "lege-viewer",              # reader-first native PDF viewer
+    "lege-viewer",              # `lege-gui`: native viewer + processing workspace
     "lege-misc/xtask",          # packaging tasks (`cargo appimage`)
 ]
 # Kept out of the workspace on purpose:
@@ -36,7 +35,7 @@ exclude = [
 ]
 default-members = [
     "lege-process",
-    "lege-process/GUI/Freya",
+    "lege-viewer",
 ]
 
 [workspace.package]
@@ -125,36 +124,6 @@ byteorder = "1.5.0"
 bitvec = "1.0.1"
 chrono = "0.4.45"
 
-freya = { path = "freya-main/crates/freya", version = "0.4.0-rc.17" }
-freya-core = { path = "freya-main/crates/freya-core", version = "0.4.0-rc.17" }
-torin = { path = "freya-main/crates/torin", version = "0.4.0-rc.17" }
-ragnarok = { path = "freya-main/crates/ragnarok", version = "0.4.0-rc.17" }
-freya-clipboard = { path = "freya-main/crates/freya-clipboard", version = "0.4.0-rc.17" }
-freya-edit = { path = "freya-main/crates/freya-edit", version = "0.4.0-rc.17" }
-freya-winit = { path = "freya-main/crates/freya-winit", version = "0.4.0-rc.17" }
-freya-components = { path = "freya-main/crates/freya-components", version = "0.4.0-rc.17" }
-pathgraph = { path = "freya-main/crates/pathgraph", version = "0.4.0-rc.17" }
-freya-animation = { path = "freya-main/crates/freya-animation", version = "0.4.0-rc.17" }
-freya-router = { path = "freya-main/crates/freya-router", version = "0.4.0-rc.17" }
-freya-router-macro = { path = "freya-main/crates/freya-router-macro", version = "0.4.0-rc.17" }
-freya-testing = { path = "freya-main/crates/freya-testing", version = "0.4.0-rc.17" }
-freya-i18n = { path = "freya-main/crates/freya-i18n", version = "0.4.0-rc.17" }
-freya-performance-plugin = { path = "freya-main/crates/freya-performance-plugin", version = "0.4.0-rc.17" }
-freya-radio = { path = "freya-main/crates/freya-radio", version = "0.4.0-rc.17" }
-freya-render-api = { path = "freya-main/crates/freya-render-api", version = "0.4.0-rc.17" }
-freya-render-tiny-skia = { path = "freya-main/crates/freya-render-tiny-skia", version = "0.4.0-rc.17" }
-freya-engine = { path = "freya-main/crates/freya-engine", version = "0.4.0-rc.17" }
-freya-text-cosmic = { path = "freya-main/crates/freya-text-cosmic", version = "0.4.0-rc.17" }
-freya-devtools = { path = "freya-main/crates/freya-devtools", version = "0.4.0-rc.17" }
-freya-icons = { path = "freya-main/crates/freya-icons", features = ["all"], version = "0.4.0-rc.17" }
-freya-sdk = { path = "freya-main/crates/freya-sdk", features = ["all"], version = "0.4.0-rc.17" }
-freya-material-design = { path = "freya-main/crates/freya-material-design", version = "0.4.0-rc.17" }
-freya-plotters-backend = { path = "freya-main/crates/freya-plotters-backend", version = "0.4.0-rc.17" }
-freya-query = { path = "freya-main/crates/freya-query", version = "0.4.0-rc.17" }
-freya-webview = { path = "freya-main/crates/freya-webview", version = "0.4.0-rc.17" }
-freya-terminal = { path = "freya-main/crates/freya-terminal", version = "0.4.0-rc.17" }
-freya-code-editor = { path = "freya-main/crates/freya-code-editor", version = "0.4.0-rc.17", features = ["rust"] }
-freya-skia-safe = { version = "0.96.1", default-features = false }
 generational-box = "0.7"
 tracing = "0.1.41"
 bitflags = "2.9.3"
@@ -194,19 +163,6 @@ rustc-hash = "2.1.3"
 windows = { version = "0.62.2", default-features = false }
 windows-core = { version = "0.62.2", default-features = false }
 windows-future = { version = "0.3.2", default-features = false }
-
-# Vendored LegeApp/freya fork (freya-main/) and rfd (lege-process/GUI/rfd/) live in
-# this repo, so patch the crates.io / git coordinates onto the local checkouts.
-[patch."https://github.com/LegeApp/freya.git"]
-freya = { path = "freya-main/crates/freya" }
-freya-core = { path = "freya-main/crates/freya-core" }
-freya-components = { path = "freya-main/crates/freya-components" }
-freya-engine = { path = "freya-main/crates/freya-engine" }
-freya-winit = { path = "freya-main/crates/freya-winit" }
-freya-edit = { path = "freya-main/crates/freya-edit" }
-freya-clipboard = { path = "freya-main/crates/freya-clipboard" }
-freya-animation = { path = "freya-main/crates/freya-animation" }
-torin = { path = "freya-main/crates/torin" }
 
 # The JBIG2 and JPEG2000 codecs now live in-tree under lege-codecs/. Point the
 # historical Git coordinates at those local checkouts so `lege` links the vendored

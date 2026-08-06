@@ -3424,26 +3424,32 @@ dependencies = [
 
 [[package]]
 name = "lege-gui"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
- "anyhow",
- "atty",
- "chrono",
- "dirs",
- "embed-resource",
- "flume",
- "freya",
- "lege-ipc",
+ "arc-swap",
+ "copypasta",
+ "cosmic-text",
+ "crossbeam-channel",
+ "lege-gpu",
  "libc",
- "once_cell",
- "raw-window-handle",
+ "open",
+ "pdf-content",
+ "pdf-document",
+ "pdf-font",
+ "pdf-page-ir",
+ "pdf-render-api",
+ "pdf-render-cpu",
+ "pdf-render-wgpu",
+ "pdf-source",
+ "pdf-test-support",
+ "pdf-text",
  "rfd 0.17.2",
  "serde",
  "serde_json",
- "tokio",
- "uuid",
- "winapi",
- "windows",
+ "softbuffer",
+ "tempfile",
+ "thiserror 2.0.19",
+ "winit",
 ]
 
 [[package]]
@@ -3526,35 +3532,6 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "lege-viewer"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "copypasta",
- "cosmic-text",
- "crossbeam-channel",
- "lege-gpu",
- "open",
- "pdf-content",
- "pdf-document",
- "pdf-font",
- "pdf-page-ir",
- "pdf-render-api",
- "pdf-render-cpu",
- "pdf-render-wgpu",
- "pdf-source",
- "pdf-test-support",
- "pdf-text",
- "rfd 0.17.2",
- "serde",
- "serde_json",
- "softbuffer",
- "tempfile",
- "thiserror 2.0.19",
- "winit",
 ]
 
 [[package]]

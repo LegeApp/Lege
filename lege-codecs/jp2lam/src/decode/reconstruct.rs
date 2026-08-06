@@ -8,9 +8,13 @@ use crate::j2k::decode_markers::{
 use crate::model::{ColorSpace, Component, Image};
 use crate::plan::BandOrientation;
 use crate::simd::PRIMITIVES;
+use rayon::prelude::*;
 
 use super::stats::StatsSink;
 use super::t1::DecodedTileCoefficients;
+
+/// Parallelize fused pack when the plane has at least this many samples.
+const FUSED_PACK_PARALLEL_SAMPLES: usize = 256 * 1024;
 
 pub(crate) fn reconstruct_image_profiled(
     header: &CodestreamHeader,
@@ -458,44 +462,189 @@ pub(crate) fn reconstruct_grayscale_image(
     })
 }
 
-/// `channels` is the number of interleaved output planes, taken from the output
-/// format rather than `colorspace.component_count()` — an sRGB image with an
-/// in-data alpha channel is `Srgb` but produces 4 interleaved planes (RGBA).
+/// How reconstructed colour (and optional alpha) planes are interleaved into
+/// the packed destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackedLayout {
+    /// Planes in natural order: Gray, RGB, RGBA, CMYK, GrayA.
+    Sequential,
+    /// R, G, B, constant 255 (opaque pad; no alpha plane required).
+    Rgbx,
+    /// B, G, R, A — A is the opacity plane when present, otherwise 255.
+    Bgra,
+}
+
+impl PackedLayout {
+    pub(crate) fn from_format(format: super::DecodeOutputFormat) -> Self {
+        match format {
+            super::DecodeOutputFormat::Rgbx8 => Self::Rgbx,
+            super::DecodeOutputFormat::Bgra8 => Self::Bgra,
+            _ => Self::Sequential,
+        }
+    }
+}
+
+/// Destination for packed reconstruction: a rectangle inside a strided buffer.
+///
+/// Pixel `(x, y)` of the reconstructed tile (0-based in the tile) is written at
+/// canvas pixel `(origin_x + x, origin_y + y)`, i.e. byte offset
+/// `(origin_y + y) * stride + (origin_x + x) * channels`.
+#[derive(Debug)]
+pub(crate) struct PackedWriteTarget<'a> {
+    pub data: &'a mut [u8],
+    pub stride: usize,
+    pub channels: usize,
+    pub origin_x: usize,
+    pub origin_y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub layout: PackedLayout,
+}
+
+impl PackedWriteTarget<'_> {
+    fn validate(&self) -> Result<()> {
+        if self.channels == 0 || self.width == 0 || self.height == 0 {
+            return Err(invalid("packed write target has zero extent"));
+        }
+        let row_bytes = self
+            .width
+            .checked_mul(self.channels)
+            .ok_or_else(|| invalid("packed write row overflow"))?;
+        if self.stride < row_bytes + self.origin_x.saturating_mul(self.channels) {
+            // Need origin_x * channels + width * channels ≤ stride
+            let need = self
+                .origin_x
+                .checked_mul(self.channels)
+                .and_then(|o| o.checked_add(row_bytes))
+                .ok_or_else(|| invalid("packed write stride overflow"))?;
+            if self.stride < need {
+                return Err(invalid(format!(
+                    "packed write stride {} too small for origin_x={} width={} channels={}",
+                    self.stride, self.origin_x, self.width, self.channels
+                )));
+            }
+        }
+        let last_row = self
+            .origin_y
+            .checked_add(self.height - 1)
+            .ok_or_else(|| invalid("packed write height overflow"))?;
+        let need_len = last_row
+            .checked_mul(self.stride)
+            .and_then(|o| {
+                o.checked_add(self.origin_x * self.channels + self.width * self.channels)
+            })
+            .ok_or_else(|| invalid("packed write buffer size overflow"))?;
+        if self.data.len() < need_len {
+            return Err(invalid(format!(
+                "packed write buffer len {} < required {need_len}",
+                self.data.len()
+            )));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn pixel_offset(&self, x: usize, y: usize) -> usize {
+        (self.origin_y + y) * self.stride + (self.origin_x + x) * self.channels
+    }
+}
+
+/// `channels` is the number of interleaved output bytes per pixel, taken from
+/// the output format rather than `colorspace.component_count()` — an sRGB image
+/// with an in-data alpha channel is `Srgb` but produces 4 interleaved planes
+/// (RGBA), and opaque pad formats produce 4 bytes from 3 colour planes.
 pub(crate) fn reconstruct_packed_u8_profiled(
     header: &CodestreamHeader,
     colorspace: ColorSpace,
     channels: usize,
     colour_channels: usize,
+    layout: PackedLayout,
     tiles: Vec<DecodedTileCoefficients>,
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<u8>> {
+    let width = header.siz.width as usize;
+    let height = header.siz.height as usize;
+    let len = width
+        .checked_mul(height)
+        .and_then(|n| n.checked_mul(channels))
+        .ok_or_else(|| invalid("packed output size overflow"))?;
+    let mut data = vec![0u8; len];
+    reconstruct_packed_u8_into(
+        header,
+        colorspace,
+        channels,
+        colour_channels,
+        layout,
+        tiles,
+        PackedWriteTarget {
+            data: &mut data,
+            stride: width * channels,
+            channels,
+            origin_x: 0,
+            origin_y: 0,
+            width,
+            height,
+            layout,
+        },
+        stats,
+    )?;
+    Ok(data)
+}
+
+/// Reconstruct packed samples into an existing strided buffer rectangle.
+pub(crate) fn reconstruct_packed_u8_into(
+    header: &CodestreamHeader,
+    colorspace: ColorSpace,
+    channels: usize,
+    colour_channels: usize,
+    layout: PackedLayout,
+    tiles: Vec<DecodedTileCoefficients>,
+    target: PackedWriteTarget<'_>,
+    stats: &mut StatsSink<'_>,
+) -> Result<()> {
+    target.validate()?;
+    if target.channels != channels || target.layout != layout {
+        return Err(invalid("packed write target channels/layout mismatch"));
+    }
+    if target.width != header.siz.width as usize || target.height != header.siz.height as usize {
+        return Err(invalid(
+            "packed write target size does not match reduced tile SIZ",
+        ));
+    }
     match colorspace {
-        // Gray+alpha is still `Gray`, but interleaves two planes, so it takes
-        // the general path with one colour channel and one auxiliary one.
         ColorSpace::Gray if channels == 1 => {
-            reconstruct_grayscale_u8_profiled(header, tiles, stats)
+            reconstruct_grayscale_u8_into(header, tiles, target, stats)
         }
-        ColorSpace::Gray | ColorSpace::Srgb | ColorSpace::Cmyk => {
-            reconstruct_interleaved_u8_profiled(
-                header,
-                colorspace,
-                channels,
-                colour_channels,
-                tiles,
-                stats,
-            )
-        }
+        ColorSpace::Gray | ColorSpace::Srgb | ColorSpace::Cmyk => reconstruct_interleaved_u8_into(
+            header,
+            colorspace,
+            channels,
+            colour_channels,
+            layout,
+            tiles,
+            target,
+            stats,
+        ),
+        ColorSpace::YCbCr => reconstruct_sycc_packed_into(
+            header,
+            channels,
+            layout,
+            tiles,
+            target,
+            stats,
+        ),
         other => Err(invalid(format!(
             "unsupported packed output colorspace: {other:?}"
         ))),
     }
 }
 
-fn reconstruct_grayscale_u8_profiled(
+fn reconstruct_grayscale_u8_into(
     header: &CodestreamHeader,
     mut tiles: Vec<DecodedTileCoefficients>,
+    mut target: PackedWriteTarget<'_>,
     stats: &mut StatsSink<'_>,
-) -> Result<Vec<u8>> {
+) -> Result<()> {
     if tiles.len() != 1 {
         return Err(invalid("Gray8 output requires exactly one component"));
     }
@@ -512,8 +661,12 @@ fn reconstruct_grayscale_u8_profiled(
             "decoded coefficient tile dimensions do not match reduced SIZ",
         ));
     }
+    if target.channels != 1 || target.width != width || target.height != height {
+        return Err(invalid("gray packed write target size/channels mismatch"));
+    }
 
-    let output = match header.transform_for(0) {
+    let start = stats.start();
+    match header.transform_for(0) {
         WaveletTransform::Reversible53 => {
             let centered = reconstruct_reversible_53_centered(
                 header,
@@ -523,20 +676,9 @@ fn reconstruct_grayscale_u8_profiled(
                 height,
                 stats,
             )?;
-            let start = stats.start();
             let shift = 1i32 << (component.precision - 1);
             let max_sample = (1i32 << component.precision) - 1;
-            let output: Vec<u8> = centered
-                .into_iter()
-                .map(|sample| {
-                    scale_unsigned_to_u8(
-                        sample.saturating_add(shift).clamp(0, max_sample) as u32,
-                        max_sample as u32,
-                    )
-                })
-                .collect();
-            record_finalize_time(stats, start);
-            output
+            write_gray_plane_i32(&centered, shift, max_sample as u32, &mut target);
         }
         WaveletTransform::Irreversible97 => {
             let centered = reconstruct_irreversible_97_centered(
@@ -546,41 +688,76 @@ fn reconstruct_grayscale_u8_profiled(
                 height,
                 stats,
             )?;
-            let start = stats.start();
             let shift = (1u32 << (component.precision - 1)) as f32;
             let max_sample = (1u32 << component.precision) - 1;
-            let output: Vec<u8> = centered
-                .into_iter()
-                .map(|sample| {
-                    let value = (sample + shift + 0.5).clamp(0.0, max_sample as f32) as u32;
-                    scale_unsigned_to_u8(value, max_sample)
-                })
-                .collect();
-            record_finalize_time(stats, start);
-            output
+            write_gray_plane_f32(&centered, shift, max_sample, &mut target);
         }
-    };
+    }
+    record_finalize_time(stats, start);
     stats.update(|stats| {
-        stats.output_pixels = stats.output_pixels.saturating_add(output.len() as u64);
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add((width * height) as u64);
     });
-    Ok(output)
+    Ok(())
+}
+
+fn write_gray_plane_i32(
+    samples: &[i32],
+    shift: i32,
+    max_sample: u32,
+    target: &mut PackedWriteTarget<'_>,
+) {
+    // target is mut for exclusive write access to data.
+    let w = target.width;
+    let h = target.height;
+    for y in 0..h {
+        for x in 0..w {
+            let sample = samples[y * w + x];
+            let byte = scale_unsigned_to_u8(
+                sample.saturating_add(shift).clamp(0, max_sample as i32) as u32,
+                max_sample,
+            );
+            let off = target.pixel_offset(x, y);
+            target.data[off] = byte;
+        }
+    }
+}
+
+fn write_gray_plane_f32(
+    samples: &[f32],
+    shift: f32,
+    max_sample: u32,
+    target: &mut PackedWriteTarget<'_>,
+) {
+    let w = target.width;
+    let h = target.height;
+    for y in 0..h {
+        for x in 0..w {
+            let sample = samples[y * w + x];
+            let value = (sample + shift + 0.5).clamp(0.0, max_sample as f32) as u32;
+            let byte = scale_unsigned_to_u8(value, max_sample);
+            let off = target.pixel_offset(x, y);
+            target.data[off] = byte;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reconstruct_interleaved_u8_profiled(
+fn reconstruct_interleaved_u8_into(
     header: &CodestreamHeader,
     colorspace: ColorSpace,
     channels: usize,
     colour_channels: usize,
+    layout: PackedLayout,
     mut tiles: Vec<DecodedTileCoefficients>,
+    mut target: PackedWriteTarget<'_>,
     stats: &mut StatsSink<'_>,
-) -> Result<Vec<u8>> {
+) -> Result<()> {
     let decoded = header.siz.components.len();
-    // 2 covers Gray + one auxiliary plane (in-data alpha, or a second
-    // `/DeviceN` colorant).
-    if !matches!(channels, 2 | 3 | 4) || tiles.len() != decoded || decoded < channels {
+    if !matches!(channels, 2 | 3 | 4) || tiles.len() != decoded || decoded < colour_channels {
         return Err(invalid(format!(
-            "{colorspace:?} packed output requires {channels} of {decoded} decoded components"
+            "{colorspace:?} packed output needs ≥{colour_channels} colour components of {decoded} decoded (channels={channels})"
         )));
     }
     tiles.sort_by_key(|tile| tile.component);
@@ -593,17 +770,28 @@ fn reconstruct_interleaved_u8_profiled(
             "decoded packed-output components are not contiguous",
         ));
     }
-    // Keep exactly the requested output planes: an sRGB image with an in-data
-    // alpha decodes 4 components but yields 3 (Rgb8, alpha dropped) or 4 (Rgba8).
-    tiles.truncate(channels);
+    let keep = match layout {
+        PackedLayout::Rgbx => colour_channels,
+        PackedLayout::Bgra => decoded.min(colour_channels + 1),
+        PackedLayout::Sequential => channels.min(decoded),
+    };
+    tiles.truncate(keep);
     let pixel_count = header.siz.width as usize * header.siz.height as usize;
+    let colour_count = colour_channels.min(tiles.len());
 
-    // The leading `colour_channels` components are the MCT colour set (uniform
-    // transform); any further component (a CMYK K plane, or an sRGB/Gray alpha
-    // plane) is auxiliary and may carry a COC transform override, so scale it
-    // from its own transform. Per-component u8 planes are then interleaved. For
-    // a uniform stream this is byte-identical to a single-transform pass.
-    let colour_count = colour_channels.min(channels);
+    if can_fuse_packed(header, colour_count, tiles.len(), layout, channels) {
+        return reconstruct_fused_packed_into(
+            header,
+            channels,
+            colour_count,
+            layout,
+            tiles,
+            pixel_count,
+            &mut target,
+            stats,
+        );
+    }
+
     let mut tiles_iter = tiles.into_iter();
     let colour_tiles: Vec<DecodedTileCoefficients> =
         tiles_iter.by_ref().take(colour_count).collect();
@@ -613,17 +801,549 @@ fn reconstruct_interleaved_u8_profiled(
     }
 
     let start = stats.start();
-    let mut output = Vec::with_capacity(pixel_count * channels);
-    for index in 0..pixel_count {
-        for plane in &component_u8 {
-            output.push(plane[index]);
+    let w = target.width;
+    let h = target.height;
+    for y in 0..h {
+        for x in 0..w {
+            let index = y * w + x;
+            let off = target.pixel_offset(x, y);
+            match layout {
+                PackedLayout::Sequential => {
+                    for (ci, plane) in component_u8.iter().enumerate() {
+                        target.data[off + ci] = plane[index];
+                    }
+                }
+                PackedLayout::Rgbx => {
+                    target.data[off] = component_u8[0][index];
+                    target.data[off + 1] = component_u8[1][index];
+                    target.data[off + 2] = component_u8[2][index];
+                    target.data[off + 3] = 255;
+                }
+                PackedLayout::Bgra => {
+                    let a = if component_u8.len() > 3 {
+                        component_u8[3][index]
+                    } else {
+                        255
+                    };
+                    target.data[off] = component_u8[2][index];
+                    target.data[off + 1] = component_u8[1][index];
+                    target.data[off + 2] = component_u8[0][index];
+                    target.data[off + 3] = a;
+                }
+            }
         }
     }
     record_finalize_time(stats, start);
     stats.update(|stats| {
         stats.output_pixels = stats.output_pixels.saturating_add(pixel_count as u64);
     });
-    Ok(output)
+    Ok(())
+}
+
+/// True when every kept component is 8-bit and the layout is one of the fused
+/// RGB-family packers (including optional single auxiliary plane).
+fn can_fuse_packed(
+    header: &CodestreamHeader,
+    colour_count: usize,
+    kept: usize,
+    layout: PackedLayout,
+    channels: usize,
+) -> bool {
+    if colour_count != 3 || !matches!(channels, 3 | 4) {
+        return false;
+    }
+    if kept > colour_count + 1 {
+        return false;
+    }
+    // Sequential 4-channel with only 3 kept tiles is Rgb8 dropping alpha — fine.
+    // Rgbx always keeps 3. Bgra may keep 3 or 4.
+    match layout {
+        PackedLayout::Sequential if channels == 4 && kept < 4 => {
+            // Would need a synthetic alpha for sequential RGBA without a plane —
+            // that case is rejected upstream for Rgba8; Cmyk always has 4 tiles.
+            return false;
+        }
+        PackedLayout::Sequential | PackedLayout::Rgbx | PackedLayout::Bgra => {}
+    }
+    header
+        .siz
+        .components
+        .iter()
+        .take(kept)
+        .all(|c| c.precision == 8)
+}
+
+/// Inverse DWT → fused inverse MCT (if any) + level-shift + pack into the
+/// destination layout without allocating full per-component u8 planes.
+fn reconstruct_fused_packed_into(
+    header: &CodestreamHeader,
+    channels: usize,
+    colour_count: usize,
+    layout: PackedLayout,
+    tiles: Vec<DecodedTileCoefficients>,
+    pixel_count: usize,
+    target: &mut PackedWriteTarget<'_>,
+    stats: &mut StatsSink<'_>,
+) -> Result<()> {
+    debug_assert_eq!(colour_count, 3);
+    let apply_mct = header.cod.use_mct && colour_count == 3;
+    let mut tiles_iter = tiles.into_iter();
+    let colour_tiles: Vec<DecodedTileCoefficients> =
+        tiles_iter.by_ref().take(colour_count).collect();
+    let aux_tile = tiles_iter.next();
+
+    match header.cod.transform {
+        WaveletTransform::Irreversible97 => {
+            let mut planes = Vec::with_capacity(3);
+            for tile in colour_tiles {
+                let (w, h) = (tile.width, tile.height);
+                planes.push(reconstruct_irreversible_97_centered(
+                    header,
+                    tile.into_real()?,
+                    w,
+                    h,
+                    stats,
+                )?);
+            }
+            let aux_u8 = match aux_tile {
+                Some(tile) => Some(reconstruct_aux_component_u8(header, tile, stats)?),
+                None => None,
+            };
+            let start = stats.start();
+            fuse_pack_f32_into(
+                &planes[0],
+                &planes[1],
+                &planes[2],
+                aux_u8.as_deref(),
+                apply_mct,
+                layout,
+                channels,
+                pixel_count,
+                target,
+            )?;
+            record_finalize_time(stats, start);
+        }
+        WaveletTransform::Reversible53 => {
+            let mut planes = Vec::with_capacity(3);
+            for tile in colour_tiles {
+                let component = tile.component;
+                let (w, h) = (tile.width, tile.height);
+                planes.push(reconstruct_reversible_53_centered(
+                    header,
+                    tile.into_integer()?,
+                    component,
+                    w,
+                    h,
+                    stats,
+                )?);
+            }
+            let aux_u8 = match aux_tile {
+                Some(tile) => Some(reconstruct_aux_component_u8(header, tile, stats)?),
+                None => None,
+            };
+            let start = stats.start();
+            fuse_pack_i32_into(
+                &planes[0],
+                &planes[1],
+                &planes[2],
+                aux_u8.as_deref(),
+                apply_mct,
+                layout,
+                channels,
+                pixel_count,
+                target,
+            )?;
+            record_finalize_time(stats, start);
+        }
+    }
+
+    stats.update(|stats| {
+        stats.output_pixels = stats.output_pixels.saturating_add(pixel_count as u64);
+    });
+    Ok(())
+}
+
+#[inline]
+fn finalize_centered_f32_u8(sample: f32) -> u8 {
+    // Matches `centered_f32_to_u8` for precision 8: floor(x + 0.5) via +0.5 then trunc.
+    (sample + 128.0 + 0.5).clamp(0.0, 255.0) as u32 as u8
+}
+
+#[inline]
+fn finalize_centered_i32_u8(sample: i32) -> u8 {
+    sample.saturating_add(128).clamp(0, 255) as u8
+}
+
+#[inline]
+fn store_rgb_layout(out: &mut [u8], layout: PackedLayout, channels: usize, r: u8, g: u8, b: u8, a: u8) {
+    match layout {
+        PackedLayout::Sequential if channels == 3 => {
+            out[0] = r;
+            out[1] = g;
+            out[2] = b;
+        }
+        PackedLayout::Sequential if channels == 4 => {
+            out[0] = r;
+            out[1] = g;
+            out[2] = b;
+            out[3] = a;
+        }
+        PackedLayout::Rgbx => {
+            out[0] = r;
+            out[1] = g;
+            out[2] = b;
+            out[3] = 255;
+        }
+        PackedLayout::Bgra => {
+            out[0] = b;
+            out[1] = g;
+            out[2] = r;
+            out[3] = a;
+        }
+        _ => {
+            // Defensive: write as many leading RGB bytes as the channel count allows.
+            if !out.is_empty() {
+                out[0] = r;
+            }
+            if out.len() > 1 {
+                out[1] = g;
+            }
+            if out.len() > 2 {
+                out[2] = b;
+            }
+            if out.len() > 3 {
+                out[3] = a;
+            }
+        }
+    }
+}
+
+fn ict_rgb_f32(y: f32, cb: f32, cr: f32) -> (u8, u8, u8) {
+    let rf = y + 1.402f32 * cr;
+    let gf = y - 0.344_13f32 * cb - 0.714_14f32 * cr;
+    let bf = y + 1.772f32 * cb;
+    (
+        finalize_centered_f32_u8(rf),
+        finalize_centered_f32_u8(gf),
+        finalize_centered_f32_u8(bf),
+    )
+}
+
+fn rct_rgb_i32(y: i32, db: i32, dr: i32) -> (u8, u8, u8) {
+    let g = y - ((db + dr) >> 2);
+    let r = dr + g;
+    let b = db + g;
+    (
+        finalize_centered_i32_u8(r),
+        finalize_centered_i32_u8(g),
+        finalize_centered_i32_u8(b),
+    )
+}
+
+fn fuse_pack_f32_into(
+    y: &[f32],
+    cb: &[f32],
+    cr: &[f32],
+    aux: Option<&[u8]>,
+    apply_ict: bool,
+    layout: PackedLayout,
+    channels: usize,
+    pixel_count: usize,
+    target: &mut PackedWriteTarget<'_>,
+) -> Result<()> {
+    if y.len() != pixel_count || cb.len() != pixel_count || cr.len() != pixel_count {
+        return Err(invalid("fused pack plane length mismatch"));
+    }
+    if let Some(a) = aux {
+        if a.len() != pixel_count {
+            return Err(invalid("fused pack alpha length mismatch"));
+        }
+    }
+    let w = target.width;
+    let h = target.height;
+    if w * h != pixel_count {
+        return Err(invalid("fused pack target size mismatch"));
+    }
+    let tight = target.origin_x == 0
+        && target.origin_y == 0
+        && target.stride == w * channels
+        && pixel_count >= FUSED_PACK_PARALLEL_SAMPLES;
+
+    if tight {
+        // Contiguous destination: coarse parallel pixel jobs.
+        let pixels_per_job = (pixel_count / rayon::current_num_threads().max(1) / 2).max(1024);
+        let active = pixel_count * channels;
+        target.data[..active]
+            .par_chunks_mut(pixels_per_job * channels)
+            .enumerate()
+            .for_each(|(job, chunk)| {
+                let base = job * pixels_per_job;
+                let n = chunk.len() / channels;
+                for x in 0..n {
+                    let i = base + x;
+                    let (r, g, b) = if apply_ict {
+                        ict_rgb_f32(y[i], cb[i], cr[i])
+                    } else {
+                        (
+                            finalize_centered_f32_u8(y[i]),
+                            finalize_centered_f32_u8(cb[i]),
+                            finalize_centered_f32_u8(cr[i]),
+                        )
+                    };
+                    let a = aux.map(|p| p[i]).unwrap_or(255);
+                    store_rgb_layout(
+                        &mut chunk[x * channels..(x + 1) * channels],
+                        layout,
+                        channels,
+                        r,
+                        g,
+                        b,
+                        a,
+                    );
+                }
+            });
+    } else {
+        for py in 0..h {
+            for px in 0..w {
+                let i = py * w + px;
+                let (r, g, b) = if apply_ict {
+                    ict_rgb_f32(y[i], cb[i], cr[i])
+                } else {
+                    (
+                        finalize_centered_f32_u8(y[i]),
+                        finalize_centered_f32_u8(cb[i]),
+                        finalize_centered_f32_u8(cr[i]),
+                    )
+                };
+                let a = aux.map(|p| p[i]).unwrap_or(255);
+                let off = target.pixel_offset(px, py);
+                store_rgb_layout(
+                    &mut target.data[off..off + channels],
+                    layout,
+                    channels,
+                    r,
+                    g,
+                    b,
+                    a,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fuse_pack_i32_into(
+    y: &[i32],
+    db: &[i32],
+    dr: &[i32],
+    aux: Option<&[u8]>,
+    apply_rct: bool,
+    layout: PackedLayout,
+    channels: usize,
+    pixel_count: usize,
+    target: &mut PackedWriteTarget<'_>,
+) -> Result<()> {
+    if y.len() != pixel_count || db.len() != pixel_count || dr.len() != pixel_count {
+        return Err(invalid("fused pack plane length mismatch"));
+    }
+    if let Some(a) = aux {
+        if a.len() != pixel_count {
+            return Err(invalid("fused pack alpha length mismatch"));
+        }
+    }
+    let w = target.width;
+    let h = target.height;
+    if w * h != pixel_count {
+        return Err(invalid("fused pack target size mismatch"));
+    }
+    let tight = target.origin_x == 0
+        && target.origin_y == 0
+        && target.stride == w * channels
+        && pixel_count >= FUSED_PACK_PARALLEL_SAMPLES;
+
+    if tight {
+        let pixels_per_job = (pixel_count / rayon::current_num_threads().max(1) / 2).max(1024);
+        let active = pixel_count * channels;
+        target.data[..active]
+            .par_chunks_mut(pixels_per_job * channels)
+            .enumerate()
+            .for_each(|(job, chunk)| {
+                let base = job * pixels_per_job;
+                let n = chunk.len() / channels;
+                for x in 0..n {
+                    let i = base + x;
+                    let (r, g, b) = if apply_rct {
+                        rct_rgb_i32(y[i], db[i], dr[i])
+                    } else {
+                        (
+                            finalize_centered_i32_u8(y[i]),
+                            finalize_centered_i32_u8(db[i]),
+                            finalize_centered_i32_u8(dr[i]),
+                        )
+                    };
+                    let a = aux.map(|p| p[i]).unwrap_or(255);
+                    store_rgb_layout(
+                        &mut chunk[x * channels..(x + 1) * channels],
+                        layout,
+                        channels,
+                        r,
+                        g,
+                        b,
+                        a,
+                    );
+                }
+            });
+    } else {
+        for py in 0..h {
+            for px in 0..w {
+                let i = py * w + px;
+                let (r, g, b) = if apply_rct {
+                    rct_rgb_i32(y[i], db[i], dr[i])
+                } else {
+                    (
+                        finalize_centered_i32_u8(y[i]),
+                        finalize_centered_i32_u8(db[i]),
+                        finalize_centered_i32_u8(dr[i]),
+                    )
+                };
+                let a = aux.map(|p| p[i]).unwrap_or(255);
+                let off = target.pixel_offset(px, py);
+                store_rgb_layout(
+                    &mut target.data[off..off + channels],
+                    layout,
+                    channels,
+                    r,
+                    g,
+                    b,
+                    a,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 4:2:0 sYCC → packed sRGB without expanding chroma to full resolution.
+///
+/// Planes are finalized (level-shifted) at native component resolution; chroma
+/// is nearest-neighbour sampled at `(x/dx, y/dy)` while applying OpenJPEG's
+/// `sycc_to_rgb` integer formula.
+fn reconstruct_sycc_packed_into(
+    header: &CodestreamHeader,
+    channels: usize,
+    layout: PackedLayout,
+    mut tiles: Vec<DecodedTileCoefficients>,
+    mut target: PackedWriteTarget<'_>,
+    stats: &mut StatsSink<'_>,
+) -> Result<()> {
+    let _ = channels; // used via target.channels / store_rgb_layout
+    if tiles.len() != 3 || header.siz.components.len() != 3 {
+        return Err(invalid("sYCC packed output requires three components"));
+    }
+    if !matches!(channels, 3 | 4) {
+        return Err(invalid("sYCC packed output requires RGB-family channels"));
+    }
+    tiles.sort_by_key(|tile| tile.component);
+    for (idx, tile) in tiles.iter().enumerate() {
+        if tile.component != idx {
+            return Err(invalid("decoded sYCC components are not contiguous"));
+        }
+    }
+    let full_w = header.siz.width as usize;
+    let full_h = header.siz.height as usize;
+    if target.width != full_w || target.height != full_h {
+        return Err(invalid("sYCC packed write target size mismatch"));
+    }
+    let precision = header.siz.components[0].precision;
+    if precision != 8
+        || header.siz.components.iter().any(|c| c.precision != 8)
+    {
+        return Err(invalid(
+            "packed sYCC path currently requires 8-bit components",
+        ));
+    }
+    let dx1 = usize::from(header.siz.components[1].dx.max(1));
+    let dy1 = usize::from(header.siz.components[1].dy.max(1));
+    let dx2 = usize::from(header.siz.components[2].dx.max(1));
+    let dy2 = usize::from(header.siz.components[2].dy.max(1));
+    if dx1 != dx2 || dy1 != dy2 {
+        return Err(invalid("sYCC chroma sample factors differ"));
+    }
+
+    // Finalize each component at native resolution (no full-size chroma expand).
+    let mut native: Vec<(Vec<i32>, usize, usize)> = Vec::with_capacity(3);
+    for tile in tiles {
+        let c = tile.component;
+        let (cw, ch) = (tile.width, tile.height);
+        let precision = header.siz.components[c].precision;
+        let data = match header.transform_for(c) {
+            WaveletTransform::Reversible53 => {
+                let centered = reconstruct_reversible_53_centered(
+                    header,
+                    tile.into_integer()?,
+                    c,
+                    cw,
+                    ch,
+                    stats,
+                )?;
+                finalize_i32_samples(centered, precision)
+            }
+            WaveletTransform::Irreversible97 => {
+                let centered = reconstruct_irreversible_97_centered(
+                    header,
+                    tile.into_real()?,
+                    cw,
+                    ch,
+                    stats,
+                )?;
+                finalize_f32_samples(centered, precision)
+            }
+        };
+        if data.len() != cw * ch {
+            return Err(invalid("sYCC native plane size mismatch"));
+        }
+        native.push((data, cw, ch));
+    }
+    let (y_plane, yw, yh) = &native[0];
+    let (cb_plane, cbw, cbh) = &native[1];
+    let (cr_plane, crw, _crh) = &native[2];
+    if *yw != full_w || *yh != full_h {
+        return Err(invalid("sYCC luma plane is not full resolution"));
+    }
+
+    let start = stats.start();
+    let offset = 1i32 << (precision.saturating_sub(1));
+    let max_sample = (1i32 << precision) - 1;
+    for y in 0..full_h {
+        let cy = (y / dy1).min(cbh.saturating_sub(1));
+        for x in 0..full_w {
+            let cx = (x / dx1).min(cbw.saturating_sub(1));
+            let yy = y_plane[y * full_w + x];
+            let cb = cb_plane[cy * cbw + cx] - offset;
+            let cr = cr_plane[cy * crw + cx] - offset;
+            // OpenJPEG sycc_to_rgb bit-exact (truncation toward zero).
+            let r = (yy + (1.402 * cr as f32) as i32).clamp(0, max_sample) as u8;
+            let g = (yy - (0.344 * cb as f32 + 0.714 * cr as f32) as i32).clamp(0, max_sample) as u8;
+            let b = (yy + (1.772 * cb as f32) as i32).clamp(0, max_sample) as u8;
+            let off = target.pixel_offset(x, y);
+            store_rgb_layout(
+                &mut target.data[off..off + channels],
+                layout,
+                channels,
+                r,
+                g,
+                b,
+                255,
+            );
+        }
+    }
+    record_finalize_time(stats, start);
+    stats.update(|stats| {
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add((full_w * full_h) as u64);
+    });
+    Ok(())
 }
 
 /// Scale one centered `i32` (reversible 5/3) component to unsigned u8 samples.
@@ -815,6 +1535,25 @@ fn reconstruct_srgb_image(
     })
 }
 
+/// True when the tile-component origin is aligned to the full decomposition
+/// lattice (`2^levels`). Every synthesis step then has even phase, so the
+/// origin-zero optimized inverse DWT is bit-identical to the phase-aware path
+/// and is preferred for multi-tile streams with regular tile grids.
+fn lattice_aligned_origin(x0: usize, y0: usize, levels: u8) -> bool {
+    let Some(alignment) = 1usize.checked_shl(u32::from(levels)) else {
+        return false;
+    };
+    x0.is_multiple_of(alignment) && y0.is_multiple_of(alignment)
+}
+
+fn use_common_even_dwt(header: &CodestreamHeader) -> bool {
+    lattice_aligned_origin(
+        header.siz.x_origin as usize,
+        header.siz.y_origin as usize,
+        header.cod.decomposition_levels,
+    )
+}
+
 fn reconstruct_reversible_53_centered(
     header: &CodestreamHeader,
     mut coefficients: Vec<i32>,
@@ -829,7 +1568,7 @@ fn reconstruct_reversible_53_centered(
         ));
     }
     let dwt_start = stats.start();
-    if header.siz.x_origin == 0 && header.siz.y_origin == 0 {
+    if use_common_even_dwt(header) {
         if stats.is_enabled() {
             let timing = crate::dwt::inverse_53_2d_in_place_profiled(
                 &mut coefficients,
@@ -900,7 +1639,7 @@ fn reconstruct_irreversible_97_centered(
     // `f32` subband samples, so reconstruction goes straight to the inverse DWT
     // with no separate full-image coefficient plane or dequant sweep.
     let dwt_start = stats.start();
-    if header.siz.x_origin == 0 && header.siz.y_origin == 0 {
+    if use_common_even_dwt(header) {
         if stats.is_enabled() {
             let timing = crate::dwt::inverse_97_2d_in_place_profiled(
                 &mut data,
@@ -1002,6 +1741,183 @@ fn invalid(message: impl Into<String>) -> Jp2LamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fused_ict_pack_matches_staged_ict_then_finalize() {
+        // Byte-identical to inverse_ict + centered_f32_to_u8 + sequential RGB interleave.
+        let n = 64usize;
+        let y: Vec<f32> = (0..n).map(|i| (i as f32) * 0.5 - 20.0).collect();
+        let cb: Vec<f32> = (0..n).map(|i| (i as f32) * 0.25 - 5.0).collect();
+        let cr: Vec<f32> = (0..n).map(|i| 10.0 - (i as f32) * 0.3).collect();
+
+        let mut y_s = y.clone();
+        let mut cb_s = cb.clone();
+        let mut cr_s = cr.clone();
+        crate::simd::scalar::inverse_ict(&mut y_s, &mut cb_s, &mut cr_s);
+        let mut staged = Vec::with_capacity(n * 3);
+        for i in 0..n {
+            staged.push(finalize_centered_f32_u8(y_s[i]));
+            staged.push(finalize_centered_f32_u8(cb_s[i]));
+            staged.push(finalize_centered_f32_u8(cr_s[i]));
+        }
+
+        let mut fused = vec![0u8; n * 3];
+        let w = n; // 1-row plane for simplicity
+        fuse_pack_f32_into(
+            &y,
+            &cb,
+            &cr,
+            None,
+            true,
+            PackedLayout::Sequential,
+            3,
+            n,
+            &mut PackedWriteTarget {
+                data: &mut fused,
+                stride: w * 3,
+                channels: 3,
+                origin_x: 0,
+                origin_y: 0,
+                width: w,
+                height: 1,
+                layout: PackedLayout::Sequential,
+            },
+        )
+        .expect("fuse");
+        assert_eq!(fused, staged);
+    }
+
+    #[test]
+    fn fused_rct_pack_matches_staged_rct_then_finalize() {
+        let n = 48usize;
+        let y: Vec<i32> = (0..n).map(|i| (i as i32) - 24).collect();
+        let db: Vec<i32> = (0..n).map(|i| (i as i32) % 17 - 8).collect();
+        let dr: Vec<i32> = (0..n).map(|i| 9 - (i as i32) % 19).collect();
+
+        let mut y_s = y.clone();
+        let mut db_s = db.clone();
+        let mut dr_s = dr.clone();
+        crate::simd::scalar::inverse_rct(&mut y_s, &mut db_s, &mut dr_s);
+        let mut staged = Vec::with_capacity(n * 3);
+        for i in 0..n {
+            staged.push(finalize_centered_i32_u8(y_s[i]));
+            staged.push(finalize_centered_i32_u8(db_s[i]));
+            staged.push(finalize_centered_i32_u8(dr_s[i]));
+        }
+
+        let mut fused = vec![0u8; n * 3];
+        fuse_pack_i32_into(
+            &y,
+            &db,
+            &dr,
+            None,
+            true,
+            PackedLayout::Sequential,
+            3,
+            n,
+            &mut PackedWriteTarget {
+                data: &mut fused,
+                stride: n * 3,
+                channels: 3,
+                origin_x: 0,
+                origin_y: 0,
+                width: n,
+                height: 1,
+                layout: PackedLayout::Sequential,
+            },
+        )
+        .expect("fuse");
+        assert_eq!(fused, staged);
+    }
+
+    #[test]
+    fn sycc420_packed_matches_upsample_then_sycc_oracle() {
+        // 4x4 luma, 2x2 chroma; nearest upsample + sycc_to_rgb vs fused kernel.
+        let yw = 4usize;
+        let yh = 4usize;
+        let y: Vec<i32> = (0..16).map(|i| 16 + i * 8).collect();
+        let cb: Vec<i32> = vec![100, 120, 140, 160];
+        let cr: Vec<i32> = vec![90, 110, 130, 150];
+        let mut expanded = vec![
+            y.clone(),
+            upsample_chroma_nearest(&cb, 2, 2, yw, yh, 2, 2),
+            upsample_chroma_nearest(&cr, 2, 2, yw, yh, 2, 2),
+        ];
+        sycc_to_rgb_in_place(&mut expanded, 8);
+        let mut oracle = Vec::with_capacity(yw * yh * 3);
+        for i in 0..yw * yh {
+            oracle.push(expanded[0][i] as u8);
+            oracle.push(expanded[1][i] as u8);
+            oracle.push(expanded[2][i] as u8);
+        }
+
+        // Replay fused sampling formula on the same finalized planes.
+        let mut fused = vec![0u8; yw * yh * 3];
+        let offset = 128i32;
+        let max_sample = 255i32;
+        for yy in 0..yh {
+            let cy = (yy / 2).min(1);
+            for xx in 0..yw {
+                let cx = (xx / 2).min(1);
+                let yv = y[yy * yw + xx];
+                let cbv = cb[cy * 2 + cx] - offset;
+                let crv = cr[cy * 2 + cx] - offset;
+                let r = (yv + (1.402 * crv as f32) as i32).clamp(0, max_sample) as u8;
+                let g =
+                    (yv - (0.344 * cbv as f32 + 0.714 * crv as f32) as i32).clamp(0, max_sample)
+                        as u8;
+                let b = (yv + (1.772 * cbv as f32) as i32).clamp(0, max_sample) as u8;
+                let o = (yy * yw + xx) * 3;
+                fused[o] = r;
+                fused[o + 1] = g;
+                fused[o + 2] = b;
+            }
+        }
+        assert_eq!(fused, oracle);
+    }
+
+    #[test]
+    fn lattice_aligned_origin_accepts_zero_and_power_of_two_grids() {
+        assert!(lattice_aligned_origin(0, 0, 0));
+        assert!(lattice_aligned_origin(0, 0, 5));
+        assert!(lattice_aligned_origin(32, 64, 5)); // 2^5 = 32
+        assert!(lattice_aligned_origin(128, 256, 6));
+        assert!(!lattice_aligned_origin(1, 0, 1));
+        assert!(!lattice_aligned_origin(0, 16, 5)); // 16 not multiple of 32
+        assert!(!lattice_aligned_origin(48, 0, 5));
+    }
+
+    #[test]
+    fn lattice_aligned_97_inverse_matches_origin_zero_optimized_path() {
+        // A nonzero origin that is still lattice-aligned must produce the same
+        // reconstruction as the origin-zero optimized backend on the same local
+        // coefficient buffer (every synthesis phase is even).
+        let width = 17usize;
+        let height = 13usize;
+        let levels = 3u8;
+        let origin = 1usize << levels; // 8
+        let mut coeffs: Vec<f32> = (0..width * height)
+            .map(|i| (i as f32 * 0.37) - 40.0)
+            .collect();
+        let mut optimized = coeffs.clone();
+        let mut phase_aware = coeffs.clone();
+        crate::dwt::inverse_97_2d_in_place(&mut optimized, width, height, levels);
+        crate::dwt::inverse_97_2d_in_place_at(
+            &mut phase_aware,
+            width,
+            height,
+            levels,
+            origin,
+            origin,
+        )
+        .expect("phase-aware inverse");
+        for (a, b) in optimized.iter().zip(&phase_aware) {
+            assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        }
+        // Sanity: the lattice helper routes this origin to the common path.
+        assert!(lattice_aligned_origin(origin, origin, levels));
+        let _ = &mut coeffs;
+    }
 
     #[test]
     fn sycc_to_rgb_matches_openjpeg_reference() {

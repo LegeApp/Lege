@@ -9,14 +9,20 @@
 //! may be absent, and when present it is only a hint for `/SMaskInData`
 //! handling). The decoded format therefore comes from the codestream.
 //!
-//! Decode uses jp2lam's optimized request API. For 8-bit components the codec
-//! writes the packed 8-bit raster directly (`Gray8`/`Rgb8`/`Cmyk8`), removing
-//! the renderer-side full-image interleave pass and the planar `i32`
-//! intermediates. Streams whose components are not 8-bit (1/2/4-bit bitonal
-//! and palette scans, 12/16-bit deep scans) fall back to the native planar
-//! decode and PDFium's own shift-based widening (`src << (8 - prec)` below 8
-//! bits, `src >> (prec - 8)` above), which is what the legacy adapter did and
-//! is bit-exact with it.
+//! Decode uses jp2lam's optimized request API via a thread-local
+//! [`jp2lam::Jp2Decoder`] session (retained Tier-1 scratch + request-sized
+//! Rayon pool). For 8-bit components the codec writes the packed 8-bit raster
+//! directly (`Gray8`/`Rgb8`/`Rgba8`/`Cmyk8`), removing the renderer-side
+//! full-image interleave pass and the planar `i32` intermediates. Streams
+//! whose components are not 8-bit (1/2/4-bit bitonal and palette scans, 12/16-bit
+//! deep scans) fall back to the native planar decode and PDFium's own
+//! shift-based widening (`src << (8 - prec)` below 8 bits, `src >> (prec - 8)`
+//! above), which is what the legacy adapter did and is bit-exact with it.
+//!
+//! jp2lam also exposes opaque pad layouts (`Rgbx8`/`Bgra8`) for four-byte
+//! destinations without a codestream alpha plane. The CPU paint path still
+//! samples tight DeviceRGB; wire those formats when a GPU upload or BGRA
+//! surface path is ready (see `lege-codecs/jp2lam/decode-fix-plan/`).
 
 use std::cell::RefCell;
 use std::sync::Arc;

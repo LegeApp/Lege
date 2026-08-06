@@ -21,10 +21,10 @@ pub use batch::{
 };
 pub use content::{ContentClass, ContentStats, analyze as analyze_content, auto_quality};
 pub use decode::{
-    DecodeConcurrency, DecodeLimits, DecodeMetadata, DecodeOutputFormat, DecodeRegion,
-    DecodeRequest, DecodeResolution, DecodeResult, DecodedRaster, Jp2DecodeStats, Jp2Decoder,
-    decode_from_reader, decode_from_reader_request, decode_jp2, decode_jp2_request,
-    decode_jp2_with_stats, inspect_jp2, inspect_jp2_with_limits,
+    DecodeConcurrency, DecodeIntoInfo, DecodeLimits, DecodeMetadata, DecodeOutputFormat,
+    DecodeRegion, DecodeRequest, DecodeResolution, DecodeResult, DecodeTarget, DecodedRaster,
+    Jp2DecodeStats, Jp2Decoder, decode_from_reader, decode_from_reader_request, decode_jp2,
+    decode_jp2_request, decode_jp2_with_stats, inspect_jp2, inspect_jp2_with_limits,
 };
 #[cfg(feature = "counters")]
 pub use encode::counters::{

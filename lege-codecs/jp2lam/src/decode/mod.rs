@@ -81,9 +81,17 @@ pub enum DecodeOutputFormat {
     GrayA8,
     /// Write packed 8-bit red, green, and blue samples.
     Rgb8,
+    /// Write packed 8-bit red, green, blue, and a constant opaque X pad byte
+    /// (`255`). No codestream alpha is required — intended for renderer
+    /// destinations that own a four-byte RGBX/BGRA surface.
+    Rgbx8,
     /// Write packed 8-bit red, green, blue, and opacity samples (the codestream
     /// must carry a `cdef` opacity channel).
     Rgba8,
+    /// Write packed 8-bit blue, green, red, and opacity (or opaque `255` when
+    /// the codestream has no alpha plane). Stays on the direct packed path for
+    /// ordinary RGB images that a renderer wants in BGRA order.
+    Bgra8,
     /// Write packed 8-bit cyan, magenta, yellow, and black samples.
     Cmyk8,
 }
@@ -96,7 +104,10 @@ impl DecodeOutputFormat {
             DecodeOutputFormat::NativePlanarI32 | DecodeOutputFormat::Gray8 => 1,
             DecodeOutputFormat::GrayA8 => 2,
             DecodeOutputFormat::Rgb8 => 3,
-            DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 4,
+            DecodeOutputFormat::Rgbx8
+            | DecodeOutputFormat::Rgba8
+            | DecodeOutputFormat::Bgra8
+            | DecodeOutputFormat::Cmyk8 => 4,
         }
     }
 
@@ -110,8 +121,24 @@ impl DecodeOutputFormat {
             DecodeOutputFormat::NativePlanarI32
             | DecodeOutputFormat::Gray8
             | DecodeOutputFormat::GrayA8 => 1,
-            DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 3,
+            DecodeOutputFormat::Rgb8
+            | DecodeOutputFormat::Rgbx8
+            | DecodeOutputFormat::Rgba8
+            | DecodeOutputFormat::Bgra8
+            | DecodeOutputFormat::Cmyk8 => 3,
         }
+    }
+
+    /// Whether the format needs an in-codestream opacity plane. Opaque pad
+    /// formats (`Rgbx8`, `Bgra8`) do not — they synthesize `255` when alpha is
+    /// absent and use the real plane when present.
+    fn requires_encoded_alpha(self) -> bool {
+        matches!(self, DecodeOutputFormat::Rgba8 | DecodeOutputFormat::GrayA8)
+    }
+
+    /// Bytes per packed pixel (native planar is not a packed layout).
+    pub fn bytes_per_pixel(self) -> usize {
+        self.component_count()
     }
 }
 
@@ -215,6 +242,32 @@ pub struct DecodedRaster {
     pub data: Vec<u8>,
 }
 
+/// Caller-owned destination for [`Jp2Decoder::decode_into`].
+///
+/// `stride` is the number of bytes between the start of consecutive rows and
+/// must be at least `width * format.bytes_per_pixel()`. The buffer must hold
+/// at least `stride * height` bytes. Rows are written starting at byte 0 of
+/// each row; any padding past the active row width is left untouched.
+#[derive(Debug)]
+pub struct DecodeTarget<'a> {
+    pub data: &'a mut [u8],
+    pub width: u32,
+    pub height: u32,
+    pub stride: usize,
+    pub format: DecodeOutputFormat,
+    /// Reserved; must be `false` until premultiplied output is implemented.
+    pub premultiplied: bool,
+}
+
+/// Metadata returned by [`Jp2Decoder::decode_into`] after a successful write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeIntoInfo {
+    pub width: u32,
+    pub height: u32,
+    pub format: DecodeOutputFormat,
+    pub stride: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum DecodeResult {
     Native(Image),
@@ -275,6 +328,117 @@ impl Jp2Decoder {
         let pool = &pool.as_ref().expect("decode pool was initialized").1;
         pool.install(|| decode_jp2_request_with_scratch(bytes, request, scratch))
     }
+
+    /// Decode into a caller-owned packed buffer.
+    ///
+    /// The request's `output` field is ignored; the target's `format` is used.
+    /// v1 requires the stream to take the packed 8-bit direct path (no palette
+    /// expansion, no sub-8-bit planar fallback). On success the logical
+    /// `width × height` rectangle is fully written; row padding past the
+    /// active pixels is left unchanged.
+    pub fn decode_into(
+        &mut self,
+        bytes: &[u8],
+        request: &DecodeRequest,
+        target: DecodeTarget<'_>,
+    ) -> Result<DecodeIntoInfo> {
+        if target.premultiplied {
+            return Err(crate::Jp2LamError::InvalidInput(
+                "decode_into premultiplied output is not implemented".into(),
+            ));
+        }
+        if matches!(target.format, DecodeOutputFormat::NativePlanarI32) {
+            return Err(crate::Jp2LamError::InvalidInput(
+                "decode_into requires a packed output format".into(),
+            ));
+        }
+        let bpp = target.format.bytes_per_pixel();
+        let min_stride = (target.width as usize)
+            .checked_mul(bpp)
+            .ok_or_else(|| crate::Jp2LamError::InvalidInput("decode_into stride overflow".into()))?;
+        if target.stride < min_stride {
+            return Err(crate::Jp2LamError::InvalidInput(format!(
+                "decode_into stride {} < minimum {min_stride}",
+                target.stride
+            )));
+        }
+        let need = target
+            .stride
+            .checked_mul(target.height as usize)
+            .ok_or_else(|| {
+                crate::Jp2LamError::InvalidInput("decode_into buffer size overflow".into())
+            })?;
+        if target.data.len() < need {
+            return Err(crate::Jp2LamError::InvalidInput(format!(
+                "decode_into buffer len {} < required {need}",
+                target.data.len()
+            )));
+        }
+
+        let mut into_request = request.clone();
+        into_request.output = target.format;
+        validate_decode_request(&into_request)?;
+        validate_input_bytes(bytes.len(), &into_request.limits)?;
+
+        let thread_count = decode_thread_count(into_request.concurrency)?;
+        if self
+            .pool
+            .as_ref()
+            .is_none_or(|(cached_count, _)| *cached_count != thread_count)
+        {
+            self.pool = Some((thread_count, build_decode_pool(thread_count)?));
+        }
+        let Self { scratch, pool } = self;
+        let pool = &pool.as_ref().expect("decode pool was initialized").1;
+        pool.install(|| {
+            decode_jp2_into_with_scratch(bytes, &into_request, target, scratch)
+        })
+    }
+}
+
+fn decode_jp2_into_with_scratch(
+    bytes: &[u8],
+    request: &DecodeRequest,
+    target: DecodeTarget<'_>,
+    scratch: &mut DecodeScratch,
+) -> Result<DecodeIntoInfo> {
+    // Decode via the packed path (handles multi-tile, ROI, reduce). When the
+    // result is a packed raster matching the target size, copy active rows into
+    // the caller buffer (honouring a larger stride). Direct zero-copy into the
+    // caller's buffer for the full multi-tile path is a future refinement; this
+    // still validates the public contract and avoids planar intermediates when
+    // the stream is on the packed direct path.
+    let result = decode_jp2_request_with_scratch(bytes, request, scratch)?;
+    let DecodeResult::Raster(raster) = result else {
+        return Err(crate::Jp2LamError::DecodeFailed(
+            "decode_into requires packed 8-bit direct path; stream fell back to planar".into(),
+        ));
+    };
+    if raster.width != target.width || raster.height != target.height {
+        return Err(crate::Jp2LamError::InvalidInput(format!(
+            "decode_into target {}x{} does not match decoded {}x{}",
+            target.width, target.height, raster.width, raster.height
+        )));
+    }
+    if raster.format != target.format {
+        return Err(crate::Jp2LamError::DecodeFailed(format!(
+            "decode_into format mismatch: target {:?}, decoded {:?}",
+            target.format, raster.format
+        )));
+    }
+    let bpp = target.format.bytes_per_pixel();
+    let row_bytes = (target.width as usize) * bpp;
+    for y in 0..target.height as usize {
+        let src = y * raster.stride;
+        let dst = y * target.stride;
+        target.data[dst..dst + row_bytes].copy_from_slice(&raster.data[src..src + row_bytes]);
+    }
+    Ok(DecodeIntoInfo {
+        width: target.width,
+        height: target.height,
+        format: target.format,
+        stride: target.stride,
+    })
 }
 
 /// Parse the JP2 wrapper and JPEG 2000 Part 1 main header.
@@ -512,28 +676,35 @@ fn decode_packed_direct(
 ) -> Result<Option<DecodedRaster>> {
     let mut stats = StatsSink::disabled();
     let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette, true, limits)?;
-    let expected_space = match format {
-        DecodeOutputFormat::Gray8 | DecodeOutputFormat::GrayA8 => ColorSpace::Gray,
-        DecodeOutputFormat::Rgb8 | DecodeOutputFormat::Rgba8 => ColorSpace::Srgb,
-        DecodeOutputFormat::Cmyk8 => ColorSpace::Cmyk,
+    let expected_spaces: &[ColorSpace] = match format {
+        DecodeOutputFormat::Gray8 | DecodeOutputFormat::GrayA8 => &[ColorSpace::Gray],
+        // sYCC streams decode to packed sRGB bytes via a specialized kernel.
+        DecodeOutputFormat::Rgb8
+        | DecodeOutputFormat::Rgbx8
+        | DecodeOutputFormat::Rgba8
+        | DecodeOutputFormat::Bgra8 => &[ColorSpace::Srgb, ColorSpace::YCbCr],
+        DecodeOutputFormat::Cmyk8 => &[ColorSpace::Cmyk],
         DecodeOutputFormat::NativePlanarI32 => return Ok(None),
     };
-    if core.header.palette.is_some() || core.header.colorspace != expected_space {
+    if core.header.palette.is_some() || !expected_spaces.contains(&core.header.colorspace) {
         return Ok(None);
     }
-    // Rgba8 interleaves a 4th (opacity) plane; without an in-data alpha
-    // channel there is nothing to fill it, so fall back to the planar path.
-    // GrayA8 needs only a second *component* — it carries an opacity plane or a
-    // second colorant, and the consumer tells them apart.
-    if matches!(format, DecodeOutputFormat::Rgba8) && core.header.alpha.is_none() {
-        return Ok(None);
-    }
-    if matches!(format, DecodeOutputFormat::GrayA8) && core.header.component_count != 2 {
-        return Ok(None);
+    let expected_space = core.header.colorspace;
+    // Rgba8 / GrayA8 need a real opacity (or second) plane in the codestream.
+    // Rgbx8 / Bgra8 synthesize an opaque pad when alpha is absent and stay on
+    // the direct packed path.
+    if format.requires_encoded_alpha() {
+        if matches!(format, DecodeOutputFormat::Rgba8) && core.header.alpha.is_none() {
+            return Ok(None);
+        }
+        if matches!(format, DecodeOutputFormat::GrayA8) && core.header.component_count != 2 {
+            return Ok(None);
+        }
     }
     let reduce_levels = select_reduce_levels(&core.codestream, resolution)?;
     let channels = format.component_count();
     let colour_channels = format.colour_component_count();
+    let layout = reconstruct::PackedLayout::from_format(format);
 
     // Single tile: reconstruct straight into the packed raster (no intermediate
     // planar image), the phase-1/2 fast path.
@@ -553,6 +724,7 @@ fn decode_packed_direct(
             expected_space,
             channels,
             colour_channels,
+            layout,
             components,
             &mut stats,
         )?;
@@ -570,9 +742,8 @@ fn decode_packed_direct(
         }));
     }
 
-    // Multi-tile: reconstruct each tile's finished samples (per-tile inverse
-    // RCT/ICT, clamp, scale, interleave) and stitch them straight into the
-    // packed output rectangle. No intermediate full-image planar buffer.
+    // Multi-tile: reconstruct each tile directly into its canvas rectangle.
+    // No per-tile packed temporary raster.
     let siz = &core.codestream.siz;
     let (canvas_x0, canvas_x1) =
         reduced_axis_bounds(siz.x_origin, siz.x_origin + siz.width, reduce_levels);
@@ -616,25 +787,30 @@ fn decode_packed_direct(
             scratch,
             limits,
         )?;
-        let tile_data = reconstruct::reconstruct_packed_u8_profiled(
+        let tile_width = header.siz.width as usize;
+        let tile_height = header.siz.height as usize;
+        let origin_x = (reduced_x0 - canvas_x0) as usize;
+        let origin_y = (reduced_y0 - canvas_y0) as usize;
+        let stitch_start = stats.start();
+        reconstruct::reconstruct_packed_u8_into(
             &header,
             expected_space,
             channels,
             colour_channels,
+            layout,
             components,
+            reconstruct::PackedWriteTarget {
+                data: &mut data,
+                stride,
+                channels,
+                origin_x,
+                origin_y,
+                width: tile_width,
+                height: tile_height,
+                layout,
+            },
             &mut stats,
         )?;
-        let tile_width = header.siz.width as usize;
-        let tile_height = header.siz.height as usize;
-        let tile_stride = tile_width * channels;
-        let dst_x = (reduced_x0 - canvas_x0) as usize * channels;
-        let dst_y = (reduced_y0 - canvas_y0) as usize;
-        let stitch_start = stats.start();
-        for row in 0..tile_height {
-            let src = row * tile_stride;
-            let dst = (dst_y + row) * stride + dst_x;
-            data[dst..dst + tile_stride].copy_from_slice(&tile_data[src..src + tile_stride]);
-        }
         stats.finish(stitch_start, |stats, elapsed| {
             stats.tile_stitch_ns = stats.tile_stitch_ns.saturating_add(elapsed);
         });
@@ -1512,10 +1688,15 @@ fn reduced_axis_bounds(mut start: u32, mut end: u32, reduce_levels: u8) -> (u32,
 }
 
 fn pack_image_8bit(image: &Image, format: DecodeOutputFormat) -> Result<DecodedRaster> {
-    let expected_components = match format {
+    let out_channels = format.component_count();
+    let colour_channels = format.colour_component_count();
+    // Source planes required from the planar Image. Opaque pad formats accept
+    // 3-component RGB (synthesize X/A = 255) or 4-component RGBA.
+    let min_components = match format {
         DecodeOutputFormat::Gray8 => 1,
         DecodeOutputFormat::GrayA8 => 2,
         DecodeOutputFormat::Rgb8 => 3,
+        DecodeOutputFormat::Rgbx8 | DecodeOutputFormat::Bgra8 => 3,
         DecodeOutputFormat::Rgba8 | DecodeOutputFormat::Cmyk8 => 4,
         DecodeOutputFormat::NativePlanarI32 => {
             return Err(crate::Jp2LamError::InvalidInput(
@@ -1523,31 +1704,55 @@ fn pack_image_8bit(image: &Image, format: DecodeOutputFormat) -> Result<DecodedR
             ));
         }
     };
-    if image.components.len() != expected_components {
+    if image.components.len() < min_components {
         return Err(crate::Jp2LamError::InvalidInput(format!(
-            "{format:?} output requires {expected_components} components, decoded image has {}",
+            "{format:?} output requires at least {min_components} components, decoded image has {}",
             image.components.len()
         )));
     }
     let width = image.width as usize;
     let height = image.height as usize;
     let stride = width
-        .checked_mul(expected_components)
+        .checked_mul(out_channels)
         .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output stride overflow".into()))?;
     let len = stride
         .checked_mul(height)
         .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output size overflow".into()))?;
+    let scale_sample = |component: &crate::model::Component, index: usize| -> u8 {
+        let sample = component.data[index].max(0) as u64;
+        let max_sample = (1u64 << component.precision.min(31)) - 1;
+        let scaled = if max_sample == 255 {
+            sample.min(255)
+        } else {
+            sample.saturating_mul(255).saturating_add(max_sample / 2) / max_sample.max(1)
+        };
+        scaled.min(255) as u8
+    };
     let mut data = Vec::with_capacity(len);
     for index in 0..width * height {
-        for component in &image.components {
-            let sample = component.data[index].max(0) as u64;
-            let max_sample = (1u64 << component.precision.min(31)) - 1;
-            let scaled = if max_sample == 255 {
-                sample.min(255)
-            } else {
-                sample.saturating_mul(255).saturating_add(max_sample / 2) / max_sample.max(1)
-            };
-            data.push(scaled.min(255) as u8);
+        match format {
+            DecodeOutputFormat::Bgra8 => {
+                let r = scale_sample(&image.components[0], index);
+                let g = scale_sample(&image.components[1], index);
+                let b = scale_sample(&image.components[2], index);
+                let a = if image.components.len() > colour_channels {
+                    scale_sample(&image.components[colour_channels], index)
+                } else {
+                    255
+                };
+                data.extend_from_slice(&[b, g, r, a]);
+            }
+            DecodeOutputFormat::Rgbx8 => {
+                let r = scale_sample(&image.components[0], index);
+                let g = scale_sample(&image.components[1], index);
+                let b = scale_sample(&image.components[2], index);
+                data.extend_from_slice(&[r, g, b, 255]);
+            }
+            _ => {
+                for component in image.components.iter().take(out_channels) {
+                    data.push(scale_sample(component, index));
+                }
+            }
         }
     }
     Ok(DecodedRaster {
@@ -2588,6 +2793,196 @@ mod tests {
             panic!("expected packed rasters");
         };
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn decode_into_matches_decode_with_stride_padding() {
+        let width = 32u32;
+        let height = 24u32;
+        let samples: Vec<u8> = (0..width * height * 3)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect();
+        let image = Image::from_rgb_bytes(width, height, &samples).expect("source");
+        let encoded = crate::encode(
+            &image,
+            &crate::EncodeOptions {
+                quality: 100,
+                format: crate::OutputFormat::Jp2,
+                tile_policy: crate::TilePolicy::Single,
+                ..Default::default()
+            },
+        )
+        .expect("encode");
+
+        let request = DecodeRequest {
+            output: DecodeOutputFormat::Rgb8,
+            ..Default::default()
+        };
+        let mut decoder = Jp2Decoder::new();
+        let DecodeResult::Raster(owned) = decoder.decode(&encoded, &request).expect("decode")
+        else {
+            panic!("expected raster");
+        };
+
+        let bpp = 3usize;
+        let pad = 17usize;
+        let stride = width as usize * bpp + pad;
+        let mut buf = vec![0xA5u8; stride * height as usize];
+        let info = decoder
+            .decode_into(
+                &encoded,
+                &request,
+                DecodeTarget {
+                    data: &mut buf,
+                    width,
+                    height,
+                    stride,
+                    format: DecodeOutputFormat::Rgb8,
+                    premultiplied: false,
+                },
+            )
+            .expect("decode_into");
+        assert_eq!(info.width, width);
+        assert_eq!(info.height, height);
+        assert_eq!(info.stride, stride);
+
+        for y in 0..height as usize {
+            let src = y * owned.stride;
+            let dst = y * stride;
+            assert_eq!(
+                &buf[dst..dst + width as usize * bpp],
+                &owned.data[src..src + width as usize * bpp],
+                "row {y} active pixels"
+            );
+            assert!(
+                buf[dst + width as usize * bpp..dst + stride]
+                    .iter()
+                    .all(|&b| b == 0xA5),
+                "row {y} padding must be untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_into_rejects_short_buffer_and_native_format() {
+        let width = 8u32;
+        let height = 8u32;
+        let samples = vec![0u8; (width * height * 3) as usize];
+        let image = Image::from_rgb_bytes(width, height, &samples).expect("source");
+        let encoded = crate::encode(
+            &image,
+            &crate::EncodeOptions {
+                quality: 100,
+                format: crate::OutputFormat::Jp2,
+                ..Default::default()
+            },
+        )
+        .expect("encode");
+        let mut decoder = Jp2Decoder::new();
+        let request = DecodeRequest::default();
+        let mut tiny = [0u8; 4];
+        assert!(decoder
+            .decode_into(
+                &encoded,
+                &request,
+                DecodeTarget {
+                    data: &mut tiny,
+                    width,
+                    height,
+                    stride: width as usize * 3,
+                    format: DecodeOutputFormat::Rgb8,
+                    premultiplied: false,
+                },
+            )
+            .is_err());
+        let mut buf = vec![0u8; (width * height * 3) as usize];
+        assert!(decoder
+            .decode_into(
+                &encoded,
+                &request,
+                DecodeTarget {
+                    data: &mut buf,
+                    width,
+                    height,
+                    stride: width as usize * 3,
+                    format: DecodeOutputFormat::NativePlanarI32,
+                    premultiplied: false,
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn rgbx_and_bgra_direct_match_rgb8_with_opaque_pad() {
+        // Opaque pad formats must stay on the packed-direct path (no planar
+        // fallback) for ordinary 3-component sRGB, and must match Rgb8 channel
+        // values with X/A = 255 (and BGRA channel order for Bgra8).
+        let width = 48u32;
+        let height = 32u32;
+        let samples = (0..width * height * 3)
+            .map(|i| ((i * 17 + 41) % 256) as u8)
+            .collect::<Vec<_>>();
+        let image = Image::from_rgb_bytes(width, height, &samples).expect("source");
+        let encoded = crate::encode(
+            &image,
+            &crate::EncodeOptions {
+                quality: 100,
+                format: crate::OutputFormat::Jp2,
+                tile_policy: crate::TilePolicy::Single,
+                ..Default::default()
+            },
+        )
+        .expect("encode RGB");
+
+        let rgb = match decode_jp2_request(
+            &encoded,
+            &DecodeRequest {
+                output: DecodeOutputFormat::Rgb8,
+                ..Default::default()
+            },
+        )
+        .expect("rgb8")
+        {
+            DecodeResult::Raster(r) => r,
+            _ => panic!("expected rgb8 raster"),
+        };
+        let rgbx = match decode_jp2_request(
+            &encoded,
+            &DecodeRequest {
+                output: DecodeOutputFormat::Rgbx8,
+                ..Default::default()
+            },
+        )
+        .expect("rgbx8")
+        {
+            DecodeResult::Raster(r) => r,
+            _ => panic!("expected rgbx raster"),
+        };
+        let bgra = match decode_jp2_request(
+            &encoded,
+            &DecodeRequest {
+                output: DecodeOutputFormat::Bgra8,
+                ..Default::default()
+            },
+        )
+        .expect("bgra8")
+        {
+            DecodeResult::Raster(r) => r,
+            _ => panic!("expected bgra raster"),
+        };
+
+        assert_eq!(rgbx.format, DecodeOutputFormat::Rgbx8);
+        assert_eq!(bgra.format, DecodeOutputFormat::Bgra8);
+        assert_eq!(rgbx.stride, width as usize * 4);
+        assert_eq!(bgra.stride, width as usize * 4);
+        let pixels = (width * height) as usize;
+        for i in 0..pixels {
+            let r = rgb.data[i * 3];
+            let g = rgb.data[i * 3 + 1];
+            let b = rgb.data[i * 3 + 2];
+            assert_eq!(&rgbx.data[i * 4..i * 4 + 4], &[r, g, b, 255]);
+            assert_eq!(&bgra.data[i * 4..i * 4 + 4], &[b, g, r, 255]);
+        }
     }
 
     #[test]

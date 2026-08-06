@@ -22,7 +22,7 @@ Lege-ecosystem/
 │   ├── resize/                processor-facing resize helpers
 │   ├── lege-ipc/              CLI/GUI IPC types
 │   └── GUI/
-│       ├── Freya/             main `lege-gui` application
+│       ├── Freya/             retired desktop frontend (theme source retained)
 │       ├── musicsheet/        `lege-music-gui`
 │       └── rfd/               vendored file dialog crate
 ├── lege-gpu/                  shared GPU compute and ONNX runtime
@@ -31,13 +31,13 @@ Lege-ecosystem/
 │   ├── read/                  document intake/read seam
 │   ├── write/                 shared typed PDF writer
 │   └── render/                native document and rendering engine
-├── lege-viewer/               reader-first native PDF viewer
+├── lege-viewer/               native `lege-gui`: reader + processing workspace
 ├── lege-codecs/
 │   ├── jbig2enc-rust/         JBIG2 codec project
 │   ├── jp2lam/                JPEG2000 codec project
 │   └── djvulibrust/           standalone DjVu encoder project
 ├── lege-misc/                 assets, docs, packaging, scripts, and xtask
-└── freya-main/                vendored Freya workspace
+└── freya-main/                vendored legacy UI workspace (music edition only)
 ```
 
 `lege-pdf/render` and `lege-viewer` are direct workspace members and evolve

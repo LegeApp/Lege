@@ -29,6 +29,12 @@ const PARALLEL_ROW_THRESHOLD: usize = 2 * 1024 * 1024;
 // then it should not be enabled.
 const PARALLEL_COLUMN_THRESHOLD: usize = usize::MAX / 2;
 
+// Column band width for vertical 9/7 synthesis/analysis. Matches the reversible
+// 5/3 design: process independent column bands so scratch is
+// `VERTICAL_BAND_COLS * active_height` rather than a full active plane, and so
+// the deinterleave/interleave steps never allocate a W×H temporary.
+const VERTICAL_BAND_COLS: usize = 256;
+
 pub(crate) fn forward_97_2d_in_place(
     data: &mut [f32],
     width: usize,
@@ -186,11 +192,26 @@ fn forward_97_rows_in_place(
     use_wide: bool,
 ) {
     if active_width.saturating_mul(active_height) >= PARALLEL_ROW_THRESHOLD {
+        // Coarse jobs (not one Rayon task per row): each job owns one line
+        // scratch reused across its rows. Rayon `for_each_init` is *per job*,
+        // not per worker, so a single allocation per coarse chunk is the
+        // reliable bound.
+        let workers = rayon::current_num_threads().max(1);
+        let rows_per_job = active_height.div_ceil(workers * 2).max(1);
         data[..active_height * stride]
-            .par_chunks_mut(stride)
-            .for_each(|row| {
+            .par_chunks_mut(rows_per_job * stride)
+            .for_each(|rows| {
                 let mut local_scratch = vec![0.0f32; active_width];
-                forward_97_1d_with_scratch(&mut row[..active_width], &mut local_scratch, use_wide);
+                for row in rows.chunks_mut(stride) {
+                    if row.len() < active_width {
+                        break;
+                    }
+                    forward_97_1d_with_scratch(
+                        &mut row[..active_width],
+                        &mut local_scratch,
+                        use_wide,
+                    );
+                }
             });
     } else {
         for y in 0..active_height {
@@ -305,8 +326,9 @@ fn fetch_sym(samples: &[f32], i: isize) -> f32 {
 }
 
 /// Annex F.4.3/F.4.8.2 vertical 9/7 decomposition over the top-left
-/// `active_width` x `active_height` rectangle, using contiguous whole-row
-/// lifting instead of per-column gather/scatter.
+/// `active_width` x `active_height` rectangle, using contiguous column bands
+/// so scratch stays `VERTICAL_BAND_COLS × active_height` rather than a full
+/// active plane (and so deinterleave never allocates a W×H temporary).
 fn forward_97_vertical_in_place(
     data: &mut [f32],
     stride: usize,
@@ -326,46 +348,72 @@ fn forward_97_vertical_in_place(
         return;
     }
 
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        1,
-        ALPHA,
-        use_wide,
-    );
-    apply_vertical_lift(data, stride, active_width, active_height, 0, BETA, use_wide);
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        1,
-        GAMMA,
-        use_wide,
-    );
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        0,
-        DELTA,
-        use_wide,
-    );
+    let mut band_scratch = vec![0.0f32; VERTICAL_BAND_COLS * active_height];
+    for band_x in (0..active_width).step_by(VERTICAL_BAND_COLS) {
+        let band_width = VERTICAL_BAND_COLS.min(active_width - band_x);
+        let scratch = &mut band_scratch[..band_width * active_height];
 
-    scale_rows_interleaved(
-        data,
-        stride,
-        active_width,
-        active_height,
-        INV_K,
-        K,
-        use_wide,
-    );
+        // Gather interleaved columns into a contiguous band (source is still
+        // interleaved spatial samples before the forward vertical deinterleave).
+        for y in 0..active_height {
+            let src = y * stride + band_x;
+            let dst = y * band_width;
+            scratch[dst..dst + band_width].copy_from_slice(&data[src..src + band_width]);
+        }
 
-    deinterleave_rows(data, stride, active_width, active_height);
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            1,
+            ALPHA,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            0,
+            BETA,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            1,
+            GAMMA,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            0,
+            DELTA,
+            use_wide,
+        );
+        scale_rows_interleaved(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            INV_K,
+            K,
+            use_wide,
+        );
+        deinterleave_rows_inplace(scratch, band_width, active_height);
+
+        for y in 0..active_height {
+            let src = y * band_width;
+            let dst = y * stride + band_x;
+            data[dst..dst + band_width].copy_from_slice(&scratch[src..src + band_width]);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -616,30 +664,31 @@ fn scale_slice_wide(target: &mut [f32], scale: f32) {
     }
 }
 
-fn deinterleave_rows(data: &mut [f32], stride: usize, active_width: usize, active_height: usize) {
+/// Deinterleave even/odd rows into low/high blocks inside a contiguous band
+/// buffer where `stride == active_width`. Uses a single line of temporary
+/// storage rather than a full-plane temporary.
+fn deinterleave_rows_inplace(data: &mut [f32], active_width: usize, active_height: usize) {
+    if active_width == 0 || active_height < 2 {
+        return;
+    }
     let sn = active_height.div_ceil(2);
     let dn = active_height - sn;
-    let mut tmp = vec![0.0f32; active_width * active_height];
-
-    for i in 0..sn {
-        let src = row(data, stride, active_width, 2 * i);
-        tmp[i * active_width..(i + 1) * active_width].copy_from_slice(src);
-    }
+    // Pull odds into a side buffer, then pack lows followed by highs.
+    let mut odds = vec![0.0f32; dn * active_width];
     for i in 0..dn {
-        let src = row(data, stride, active_width, 2 * i + 1);
-        let dst_y = sn + i;
-        tmp[dst_y * active_width..(dst_y + 1) * active_width].copy_from_slice(src);
+        let src = (2 * i + 1) * active_width;
+        odds[i * active_width..(i + 1) * active_width]
+            .copy_from_slice(&data[src..src + active_width]);
     }
-
-    for y in 0..active_height {
-        row_mut(data, stride, active_width, y)
-            .copy_from_slice(&tmp[y * active_width..(y + 1) * active_width]);
+    // Compact even (low) rows toward the top.
+    for i in 0..sn {
+        let src = (2 * i) * active_width;
+        let dst = i * active_width;
+        if src != dst {
+            data.copy_within(src..src + active_width, dst);
+        }
     }
-}
-
-#[inline]
-fn row(data: &[f32], stride: usize, active_width: usize, y: usize) -> &[f32] {
-    &data[y * stride..y * stride + active_width]
+    data[sn * active_width..(sn + dn) * active_width].copy_from_slice(&odds);
 }
 
 #[inline]
@@ -869,11 +918,24 @@ fn inverse_97_rows_in_place(
     use_wide: bool,
 ) {
     if active_width.saturating_mul(active_height) >= PARALLEL_ROW_THRESHOLD {
+        // Coarse jobs reuse one line scratch per job; allocation count is
+        // O(jobs × levels), not O(rows × levels).
+        let workers = rayon::current_num_threads().max(1);
+        let rows_per_job = active_height.div_ceil(workers * 2).max(1);
         data[..active_height * stride]
-            .par_chunks_mut(stride)
-            .for_each(|row| {
+            .par_chunks_mut(rows_per_job * stride)
+            .for_each(|rows| {
                 let mut local_scratch = vec![0.0f32; active_width];
-                inverse_97_1d_with_scratch(&mut row[..active_width], &mut local_scratch, use_wide);
+                for row in rows.chunks_mut(stride) {
+                    if row.len() < active_width {
+                        break;
+                    }
+                    inverse_97_1d_with_scratch(
+                        &mut row[..active_width],
+                        &mut local_scratch,
+                        use_wide,
+                    );
+                }
             });
     } else {
         for y in 0..active_height {
@@ -910,74 +972,76 @@ fn inverse_97_vertical_in_place(
         return;
     }
 
-    interleave_rows(data, stride, active_width, active_height);
-
-    scale_rows_interleaved(
-        data,
-        stride,
-        active_width,
-        active_height,
-        K,
-        INV_K,
-        use_wide,
-    );
-
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        0,
-        -DELTA,
-        use_wide,
-    );
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        1,
-        -GAMMA,
-        use_wide,
-    );
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        0,
-        -BETA,
-        use_wide,
-    );
-    apply_vertical_lift(
-        data,
-        stride,
-        active_width,
-        active_height,
-        1,
-        -ALPHA,
-        use_wide,
-    );
-}
-
-fn interleave_rows(data: &mut [f32], stride: usize, active_width: usize, active_height: usize) {
     let sn = active_height.div_ceil(2);
     let dn = active_height - sn;
-    let mut tmp = vec![0.0f32; active_width * active_height];
+    let mut band_scratch = vec![0.0f32; VERTICAL_BAND_COLS * active_height];
+    for band_x in (0..active_width).step_by(VERTICAL_BAND_COLS) {
+        let band_width = VERTICAL_BAND_COLS.min(active_width - band_x);
+        let scratch = &mut band_scratch[..band_width * active_height];
 
-    for i in 0..sn {
-        let src = row(data, stride, active_width, i);
-        tmp[(2 * i) * active_width..(2 * i + 1) * active_width].copy_from_slice(src);
-    }
-    for i in 0..dn {
-        let src = row(data, stride, active_width, sn + i);
-        let dst_y = 2 * i + 1;
-        tmp[dst_y * active_width..(dst_y + 1) * active_width].copy_from_slice(src);
-    }
+        // Gather low/high deinterleaved columns into interleaved band layout.
+        for i in 0..sn {
+            let src = i * stride + band_x;
+            let dst = (2 * i) * band_width;
+            scratch[dst..dst + band_width].copy_from_slice(&data[src..src + band_width]);
+        }
+        for i in 0..dn {
+            let src = (sn + i) * stride + band_x;
+            let dst = (2 * i + 1) * band_width;
+            scratch[dst..dst + band_width].copy_from_slice(&data[src..src + band_width]);
+        }
 
-    for y in 0..active_height {
-        row_mut(data, stride, active_width, y)
-            .copy_from_slice(&tmp[y * active_width..(y + 1) * active_width]);
+        scale_rows_interleaved(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            K,
+            INV_K,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            0,
+            -DELTA,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            1,
+            -GAMMA,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            0,
+            -BETA,
+            use_wide,
+        );
+        apply_vertical_lift(
+            scratch,
+            band_width,
+            band_width,
+            active_height,
+            1,
+            -ALPHA,
+            use_wide,
+        );
+
+        for y in 0..active_height {
+            let src = y * band_width;
+            let dst = y * stride + band_x;
+            data[dst..dst + band_width].copy_from_slice(&scratch[src..src + band_width]);
+        }
     }
 }
 
@@ -1151,6 +1215,31 @@ mod tests {
         assert_eq!(data, original, "forward one-row pass must not scale");
         inverse_97_vertical_in_place(&mut data, 4, 4, 1, false);
         assert_eq!(data, original, "inverse one-row pass must not scale");
+    }
+
+    #[test]
+    fn banded_vertical_roundtrips_widths_beyond_one_band() {
+        // Force at least two vertical bands (VERTICAL_BAND_COLS = 256) so the
+        // band gather/scatter and the trailing partial band are both exercised.
+        let width = super::VERTICAL_BAND_COLS + 37;
+        let height = 41usize;
+        let levels = 3u8;
+        let original: Vec<f32> = (0..width * height)
+            .map(|i| {
+                let x = (i % width) as f32;
+                let y = (i / width) as f32;
+                x * 0.17 - y * 0.31 + (x * y * 0.001)
+            })
+            .collect();
+        let mut data = original.clone();
+        forward_97_2d_in_place(&mut data, width, height, levels).expect("forward");
+        inverse_97_2d_in_place(&mut data, width, height, levels);
+        for (actual, expected) in data.iter().zip(&original) {
+            assert!(
+                (actual - expected).abs() < 2e-3,
+                "{actual} vs {expected} at multi-band {width}x{height}"
+            );
+        }
     }
 
     #[test]

@@ -1,52 +1,48 @@
+//! Decode-side micro-benchmark for jp2lam.
+//!
+//! Defaults measure the **renderer-relevant** path: a persistent [`Jp2Decoder`]
+//! session, packed 8-bit output, and a budgeted worker count — not the
+//! compatibility `decode_jp2()` planar/serial path (which remains available
+//! via `JP2LAM_DECODE_BENCH_LEGACY=1` for regression comparison).
+//!
+//! Usage:
+//! ```text
+//! cargo run --release --example decode_benchmark -- [fixture.jp2|fixture.png]
+//! ```
+//!
+//! Environment:
+//! - `JP2LAM_DECODE_BENCH_ITERS` (default 7)
+//! - `JP2LAM_DECODE_BENCH_THREADS` (default 4; use 1 for serial)
+//! - `JP2LAM_DECODE_BENCH_OUTPUT` = `gray8` | `rgb8` | `rgbx8` | `bgra8` | `native` (default auto)
+//! - `JP2LAM_DECODE_BENCH_REDUCE` = discard N highest wavelet levels
+//! - `JP2LAM_DECODE_BENCH_REGION` = set to measure quarter-image ROI
+//! - `JP2LAM_DECODE_BENCH_LEGACY=1` = time `decode_jp2` planar serial
+//! - `JP2LAM_DECODE_BENCH_FIXTURE_OUT` = write encoded JP2 bytes
+//! - `JP2LAM_DECODE_BENCH_WIDTH` / `HEIGHT` for synthetic gray when no file given
+
 use jp2lam::{
-    ColorSpace, Component, DecodeOutputFormat, DecodeRegion, DecodeRequest, DecodeResolution,
-    DecodeResult, EncodeOptions, Image, Jp2DecodeStats, Jp2Decoder, OutputFormat, decode_jp2,
-    decode_jp2_with_stats, encode,
+    ColorSpace, Component, DecodeConcurrency, DecodeOutputFormat, DecodeRegion, DecodeRequest,
+    DecodeResolution, DecodeResult, EncodeOptions, Image, Jp2DecodeStats, Jp2Decoder, OutputFormat,
+    decode_jp2, decode_jp2_with_stats, encode, inspect_jp2,
 };
 use std::hint::black_box;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next();
-    let iterations = args
-        .next()
-        .and_then(|value| value.parse::<usize>().ok())
-        .or_else(|| {
-            std::env::var("JP2LAM_DECODE_BENCH_ITERS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-        })
-        .unwrap_or(7)
-        .max(1);
+    let iterations = env_usize("JP2LAM_DECODE_BENCH_ITERS", 7).max(1);
+    let threads = env_usize("JP2LAM_DECODE_BENCH_THREADS", 4).max(1);
+    let legacy = env_flag("JP2LAM_DECODE_BENCH_LEGACY");
 
     let (label, encoded) = match first {
-        Some(path) => {
-            let bytes = std::fs::read(&path)
-                .unwrap_or_else(|error| panic!("failed to read {path}: {error}"));
-            (path, bytes)
-        }
+        Some(path) => load_or_encode_fixture(&path),
         None => {
             let width = env_dimension("JP2LAM_DECODE_BENCH_WIDTH", 2048);
             let height = env_dimension("JP2LAM_DECODE_BENCH_HEIGHT", 2048);
             let image = synthetic_gray(width, height);
-            // Optional fixed tiling (JP2LAM_DECODE_BENCH_TILE=<edge>) so region
-            // decode can be measured against a multi-tile fixture, where the
-            // tile-skip path scales toward the region area.
-            let options = match std::env::var("JP2LAM_DECODE_BENCH_TILE")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .filter(|&edge| edge > 0)
-            {
-                Some(edge) => EncodeOptions {
-                    tile_policy: jp2lam::TilePolicy::Fixed {
-                        width: edge,
-                        height: edge,
-                    },
-                    ..EncodeOptions::photo(75, OutputFormat::Jp2)
-                },
-                None => EncodeOptions::photo(75, OutputFormat::Jp2),
-            };
+            let options = tile_options_from_env(EncodeOptions::photo(75, OutputFormat::Jp2));
             let bytes = encode(&image, &options).expect("encode synthetic benchmark fixture");
             (format!("synthetic-gray-{width}x{height}-q75"), bytes)
         }
@@ -54,59 +50,198 @@ fn main() {
     if let Some(path) = std::env::var_os("JP2LAM_DECODE_BENCH_FIXTURE_OUT") {
         std::fs::write(&path, &encoded)
             .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.to_string_lossy()));
+        println!("wrote_fixture={}", path.to_string_lossy());
     }
 
-    let warm = decode_jp2(black_box(&encoded)).expect("warm-up decode");
+    let meta = inspect_jp2(&encoded).expect("inspect fixture");
+    let (width, height) = (meta.width, meta.height);
+    let megapixels = f64::from(width) * f64::from(height) / 1_000_000.0;
+    let auto_output = auto_output_format(&meta);
+    let output = parse_output_format(auto_output);
+    let concurrency = if threads <= 1 {
+        DecodeConcurrency::Serial
+    } else {
+        DecodeConcurrency::Budgeted(threads)
+    };
+    let reduce = std::env::var("JP2LAM_DECODE_BENCH_REDUCE")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok());
+    let resolution = match reduce {
+        Some(levels) => DecodeResolution::ReduceLevels(levels),
+        None => DecodeResolution::Full,
+    };
+
+    println!("fixture={label}");
+    println!("source_dims={width}x{height}");
+    println!("components={}", meta.codestream.siz.components.len());
+    println!("colorspace={:?}", meta.colorspace);
+    println!("compressed_bytes={}", encoded.len());
+    println!("iterations={iterations}");
+    println!("threads={threads}");
+    println!("legacy_planar_serial={legacy}");
+    println!("output={output:?}");
+    println!("resolution={resolution:?}");
+
+    if legacy {
+        run_legacy_planar(&encoded, iterations, megapixels);
+    } else {
+        run_session_path(
+            &encoded,
+            iterations,
+            megapixels,
+            &DecodeRequest {
+                resolution,
+                output,
+                concurrency,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Stage breakdown uses the stats path (intentionally serializes Tier-1);
+    // report it separately so it is not confused with production timing.
+    let (profiled, stats) = decode_jp2_with_stats(&encoded).expect("profiled decode");
+    println!("stats_note=stats_path_serializes_tier1_not_production_wall_time");
+    print_stats(&stats);
+    drop(profiled);
+
+    if let Some(levels) = reduce {
+        benchmark_reduced(&encoded, iterations, levels, threads, output);
+    }
+
+    if env_flag("JP2LAM_DECODE_BENCH_REGION") {
+        benchmark_region(&encoded, iterations, threads, output);
+    }
+}
+
+fn load_or_encode_fixture(path: &str) -> (String, Vec<u8>) {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| panic!("failed to read {path}: {error}"));
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "jp2" | "j2k" | "j2c" | "jpc") {
+        return (path.to_string(), bytes);
+    }
+    // PNG / other raster: encode as irreversible photo JP2 (~quality 75 ≈ 20:1 class).
+    let image = load_raster_image(&bytes, path);
+    let quality = env_usize("JP2LAM_DECODE_BENCH_QUALITY", 75).min(100) as u8;
+    let options = tile_options_from_env(EncodeOptions::photo(quality, OutputFormat::Jp2));
+    let encoded = encode(&image, &options).expect("encode raster to JP2");
+    (
+        format!("{path}->jp2-q{quality}-{}x{}", image.width, image.height),
+        encoded,
+    )
+}
+
+fn load_raster_image(bytes: &[u8], path: &str) -> Image {
+    let dyn_img = image::load_from_memory(bytes)
+        .unwrap_or_else(|error| panic!("failed to decode raster {path}: {error}"));
+    let rgb = dyn_img.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    Image::from_rgb_bytes(width, height, rgb.as_raw()).expect("build Image from RGB")
+}
+
+fn tile_options_from_env(base: EncodeOptions) -> EncodeOptions {
+    match std::env::var("JP2LAM_DECODE_BENCH_TILE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|&edge| edge > 0)
+    {
+        Some(edge) => EncodeOptions {
+            tile_policy: jp2lam::TilePolicy::Fixed {
+                width: edge,
+                height: edge,
+            },
+            ..base
+        },
+        None => base,
+    }
+}
+
+fn auto_output_format(meta: &jp2lam::DecodeMetadata) -> DecodeOutputFormat {
+    match std::env::var("JP2LAM_DECODE_BENCH_OUTPUT")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("gray8") => DecodeOutputFormat::Gray8,
+        Some("rgb8") => DecodeOutputFormat::Rgb8,
+        Some("rgbx8") => DecodeOutputFormat::Rgbx8,
+        Some("bgra8") => DecodeOutputFormat::Bgra8,
+        Some("native") => DecodeOutputFormat::NativePlanarI32,
+        Some(other) => panic!("unknown JP2LAM_DECODE_BENCH_OUTPUT={other}"),
+        None => match meta.colorspace {
+            ColorSpace::Gray => DecodeOutputFormat::Gray8,
+            ColorSpace::Srgb | ColorSpace::YCbCr => DecodeOutputFormat::Rgb8,
+            ColorSpace::Cmyk => DecodeOutputFormat::Cmyk8,
+            _ => DecodeOutputFormat::NativePlanarI32,
+        },
+    }
+}
+
+fn parse_output_format(format: DecodeOutputFormat) -> DecodeOutputFormat {
+    format
+}
+
+fn run_legacy_planar(encoded: &[u8], iterations: usize, megapixels: f64) {
+    let warm = decode_jp2(black_box(encoded)).expect("warm-up decode");
     let expected_hash = image_hash(&warm);
     drop(warm);
 
     let mut samples = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let start = Instant::now();
-        let image = decode_jp2(black_box(&encoded)).expect("benchmark decode");
-        let elapsed = start.elapsed();
+        let image = decode_jp2(black_box(encoded)).expect("benchmark decode");
+        samples.push(start.elapsed());
         assert_eq!(image_hash(black_box(&image)), expected_hash);
-        samples.push(elapsed);
     }
+    report_timings("legacy_planar_serial", &samples, megapixels, expected_hash);
+}
+
+fn run_session_path(
+    encoded: &[u8],
+    iterations: usize,
+    megapixels: f64,
+    request: &DecodeRequest,
+) {
+    let mut decoder = Jp2Decoder::new();
+    let warm = decoder.decode(encoded, request).expect("warm session decode");
+    let expected_hash = result_hash(&warm);
+    drop(warm);
+
+    let mut samples = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let result = decoder
+            .decode(black_box(encoded), request)
+            .expect("session decode");
+        samples.push(start.elapsed());
+        assert_eq!(result_hash(black_box(&result)), expected_hash);
+    }
+    report_timings("session_packed", &samples, megapixels, expected_hash);
+}
+
+fn report_timings(label: &str, samples: &[Duration], megapixels: f64, hash: u64) {
+    let mut samples = samples.to_vec();
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     let total: Duration = samples.iter().sum();
     let mean = total / samples.len() as u32;
-    let megapixels = f64::from(warm_dimensions(&encoded).0)
-        * f64::from(warm_dimensions(&encoded).1)
-        / 1_000_000.0;
-
-    println!("fixture={label}");
-    println!("compressed_bytes={}", encoded.len());
-    println!("iterations={iterations}");
+    println!("path={label}");
     println!("median_ms={:.3}", median.as_secs_f64() * 1_000.0);
     println!("mean_ms={:.3}", mean.as_secs_f64() * 1_000.0);
     println!(
         "median_megapixels_per_second={:.3}",
-        megapixels / median.as_secs_f64()
+        megapixels / median.as_secs_f64().max(f64::MIN_POSITIVE)
     );
-    println!("output_hash={expected_hash:016x}");
-
-    let (profiled, stats) = decode_jp2_with_stats(&encoded).expect("profiled decode");
-    assert_eq!(image_hash(&profiled), expected_hash);
-    print_stats(&stats);
-
-    if let Some(reduce) = std::env::var("JP2LAM_DECODE_BENCH_REDUCE")
-        .ok()
-        .and_then(|value| value.parse::<u8>().ok())
-    {
-        benchmark_reduced(&encoded, iterations, reduce);
-    }
-
-    if std::env::var_os("JP2LAM_DECODE_BENCH_REGION").is_some() {
-        benchmark_region(&encoded, iterations);
-    }
+    println!("output_hash={hash:016x}");
 }
 
-/// Compare a full packed decode against a centered quarter-area region decode
-/// (half width, half height). Region decode time should scale toward the region
-/// area rather than the full image area.
-fn benchmark_region(encoded: &[u8], iterations: usize) {
+fn benchmark_region(encoded: &[u8], iterations: usize, threads: usize, output: DecodeOutputFormat) {
     let (width, height) = warm_dimensions(encoded);
     let region = DecodeRegion {
         x: width / 4,
@@ -114,45 +249,27 @@ fn benchmark_region(encoded: &[u8], iterations: usize) {
         width: (width / 2).max(1),
         height: (height / 2).max(1),
     };
+    let concurrency = if threads <= 1 {
+        DecodeConcurrency::Serial
+    } else {
+        DecodeConcurrency::Budgeted(threads)
+    };
     let mut decoder = Jp2Decoder::new();
-
     let full_request = DecodeRequest {
-        output: DecodeOutputFormat::Gray8,
+        output,
+        concurrency,
         ..Default::default()
     };
     let region_request = DecodeRequest {
-        output: DecodeOutputFormat::Gray8,
+        output,
         region: Some(region),
+        concurrency,
         ..Default::default()
     };
 
-    fn median(
-        decoder: &mut Jp2Decoder,
-        encoded: &[u8],
-        request: &DecodeRequest,
-        iterations: usize,
-    ) -> (Duration, u32, u32) {
-        // Warm-up.
-        let _ = decoder
-            .decode(encoded, request)
-            .expect("warm region decode");
-        let mut samples = Vec::with_capacity(iterations);
-        let mut dims = (0u32, 0u32);
-        for _ in 0..iterations {
-            let start = Instant::now();
-            let result = decoder.decode(black_box(encoded), request).expect("decode");
-            samples.push(start.elapsed());
-            if let DecodeResult::Raster(raster) = &result {
-                dims = (raster.width, raster.height);
-            }
-        }
-        samples.sort_unstable();
-        (samples[samples.len() / 2], dims.0, dims.1)
-    }
-
-    let (full_ms, full_w, full_h) = median(&mut decoder, encoded, &full_request, iterations);
+    let (full_ms, full_w, full_h) = median_request(&mut decoder, encoded, &full_request, iterations);
     let (region_ms, region_w, region_h) =
-        median(&mut decoder, encoded, &region_request, iterations);
+        median_request(&mut decoder, encoded, &region_request, iterations);
     println!("region.full_ms={:.3}", full_ms.as_secs_f64() * 1_000.0);
     println!("region.full_dims={full_w}x{full_h}");
     println!("region.region_ms={:.3}", region_ms.as_secs_f64() * 1_000.0);
@@ -168,8 +285,27 @@ fn benchmark_region(encoded: &[u8], iterations: usize) {
     );
 }
 
+fn median_request(
+    decoder: &mut Jp2Decoder,
+    encoded: &[u8],
+    request: &DecodeRequest,
+    iterations: usize,
+) -> (Duration, u32, u32) {
+    let _ = decoder.decode(encoded, request).expect("warm");
+    let mut samples = Vec::with_capacity(iterations);
+    let mut dims = (0u32, 0u32);
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let result = decoder.decode(black_box(encoded), request).expect("decode");
+        samples.push(start.elapsed());
+        dims = result_dims(&result);
+    }
+    samples.sort_unstable();
+    (samples[samples.len() / 2], dims.0, dims.1)
+}
+
 fn warm_dimensions(encoded: &[u8]) -> (u32, u32) {
-    let metadata = jp2lam::inspect_jp2(encoded).expect("inspect benchmark fixture");
+    let metadata = inspect_jp2(encoded).expect("inspect benchmark fixture");
     (metadata.width, metadata.height)
 }
 
@@ -179,6 +315,21 @@ fn env_dimension(name: &str, default: u32) -> u32 {
         .and_then(|value| value.parse().ok())
         .filter(|&value| value > 0)
         .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(default)
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
 }
 
 fn synthetic_gray(width: u32, height: u32) -> Image {
@@ -218,6 +369,20 @@ fn image_hash(image: &Image) -> u64 {
         }
     }
     hash
+}
+
+fn result_hash(result: &DecodeResult) -> u64 {
+    match result {
+        DecodeResult::Native(image) => image_hash(image),
+        DecodeResult::Raster(raster) => bytes_hash(&raster.data),
+    }
+}
+
+fn result_dims(result: &DecodeResult) -> (u32, u32) {
+    match result {
+        DecodeResult::Native(image) => (image.width, image.height),
+        DecodeResult::Raster(raster) => (raster.width, raster.height),
+    }
 }
 
 fn print_stats(stats: &Jp2DecodeStats) {
@@ -274,37 +439,42 @@ fn print_stats(stats: &Jp2DecodeStats) {
     println!("stats.peak_scratch_bytes={}", stats.peak_scratch_bytes);
 }
 
-fn benchmark_reduced(encoded: &[u8], iterations: usize, reduce: u8) {
+fn benchmark_reduced(
+    encoded: &[u8],
+    iterations: usize,
+    reduce: u8,
+    threads: usize,
+    output: DecodeOutputFormat,
+) {
+    let concurrency = if threads <= 1 {
+        DecodeConcurrency::Serial
+    } else {
+        DecodeConcurrency::Budgeted(threads)
+    };
     let request = DecodeRequest {
         resolution: DecodeResolution::ReduceLevels(reduce),
-        output: DecodeOutputFormat::Gray8,
+        output,
+        concurrency,
         ..Default::default()
     };
     let mut decoder = Jp2Decoder::new();
-    let DecodeResult::Raster(warm) = decoder
-        .decode(encoded, &request)
-        .expect("warm reduced decode")
-    else {
-        panic!("reduced packed request returned a native image");
-    };
-    let expected_hash = bytes_hash(&warm.data);
+    let warm = decoder.decode(encoded, &request).expect("warm reduced");
+    let expected_hash = result_hash(&warm);
+    let (w, h) = result_dims(&warm);
     let mut samples = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let start = Instant::now();
-        let DecodeResult::Raster(raster) = decoder
+        let result = decoder
             .decode(black_box(encoded), &request)
-            .expect("reduced decode")
-        else {
-            panic!("reduced packed request returned a native image");
-        };
+            .expect("reduced decode");
         samples.push(start.elapsed());
-        assert_eq!(bytes_hash(black_box(&raster.data)), expected_hash);
+        assert_eq!(result_hash(black_box(&result)), expected_hash);
     }
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     println!("reduced.levels={reduce}");
-    println!("reduced.width={}", warm.width);
-    println!("reduced.height={}", warm.height);
+    println!("reduced.width={w}");
+    println!("reduced.height={h}");
     println!("reduced.median_ms={:.3}", median.as_secs_f64() * 1_000.0);
     println!("reduced.output_hash={expected_hash:016x}");
 }
