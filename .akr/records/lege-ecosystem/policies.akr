@@ -1,6 +1,126 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.policy.implementation-update/1 : policy {
+    title "2026-07-19 implementation update"
+    state proposed
+    scope [ all ]
+    rule """
+        - Sections 1 and 2 are implemented. Tier-2 now models per-resolution precinct
+          grids, per-precinct tag trees/code-block routing, all five progression orders,
+          and SOP/EPH. The degenerate irreversible 9/7 one-sample phase is fixed before
+          relaxing the decomposition bound.
+        - The Armenia obj8 repro was not precinct-partitioned: after SOP/EPH parsing it
+          exposed code-block style `0x3e`. Annex B.10.7.2 terminated-segment lengths and
+          Annex D RESET, TERMALL, VSC, predictable termination, and segmentation
+          symbols are now implemented. The actual 9/7 output differs from OpenJPEG by
+          max 1 (mean 0.00053).
+        - The Section 3 diagnosis was incomplete. Its extracted 150-tile PDF stream is
+          structurally complete according to OpenJPEG, and zero-byte contributions are
+          valid with Annex D.4.1 synthetic end bytes. That syntax is now accepted, but
+          the repro then exposes a corrupt 1,349-byte tile tail. A salvage prototype
+          corrupted the entire affected 128×128 tile, so strict failure remains.
+        - Section 4 remains unresolved. The same strict no-tail policy is retained
+          because both measured salvage attempts produced visible corruption.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - Sections 1 and 2 are implemented. Tier-2 now models per-resolution precinct
+              grids, per-precinct tag trees/code-block routing, all five progression orders,
+              and SOP/EPH. The degenerate irreversible 9/7 one-sample phase is fixed before
+              relaxing the decomposition bound.
+            - The Armenia obj8 repro was not precinct-partitioned: after SOP/EPH parsing it
+              exposed code-block style `0x3e`. Annex B.10.7.2 terminated-segment lengths and
+              Annex D RESET, TERMALL, VSC, predictable termination, and segmentation
+              symbols are now implemented. The actual 9/7 output differs from OpenJPEG by
+              max 1 (mean 0.00053).
+            - The Section 3 diagnosis was incomplete. Its extracted 150-tile PDF stream is
+              structurally complete according to OpenJPEG, and zero-byte contributions are
+              valid with Annex D.4.1 synthetic end bytes. That syntax is now accepted, but
+              the repro then exposes a corrupt 1,349-byte tile tail. A salvage prototype
+              corrupted the entire affected 128×128 tile, so strict failure remains.
+            - Section 4 remains unresolved. The same strict no-tail policy is retained
+              because both measured salvage attempts produced visible corruption.
+            """
+    }
+}
+
+record lege-ecosystem.policy.later-update-section-2-resolved-and-sub-8-bit/1 : policy {
+    title "2026-07-22 (later) update — Section 2 RESOLVED, and sub-8-bit precision added"
+    state proposed
+    scope [ all ]
+    rule """
+        - **Section 2 was a real DWT bug, and this is it.** `forward_97_vertical_in_place` /
+          `inverse_97_vertical_in_place` scaled a *one-row* resolution by INV_K / K.
+          The pair round-trips through our own encoder, so every test passed, but it
+          does not match conformant streams: OpenJPEG returns from both
+          `opj_dwt_encode_and_deinterleave_v_real` and `opj_v8dwt_decode` on height 1
+          without touching the data, and **our own horizontal 1-D path already treated
+          the case as an identity** — the two disagreed. This is exactly the drift §2
+          and §5-trap-1 recorded when the decomposition bound was lifted: a codestream
+          that signals more levels than its dimensions need passes through several 1x1
+          levels, so its DC comes out multiplied by K^n while the AC stays
+          pixel-perfect. On the 884x1344 / 17-resolution repro a fit against OpenJPEG
+          gave `ours = 1.002 * opj + 194` — a pure DC offset, K^5 = 2.8158.
+          With the identity restored the dimension-derived bound has nothing left to
+          reject; `max_dwt_decompositions` is gone and the only limit is the spec's own
+          `NL <= 32`. Repro (Howard R. Turner, *Science in Medieval Islam* obj7):
+          max abs diff 5, mean 0.147, 3062 of 1,188,096 px over 2 — the 9/7 float floor
+          at 11 real levels rather than the usual 5, diffuse and edge-concentrated.
+          End-to-end 0.2424 silent-blank(codec) -> 0.0014.
+        - **Sub-8-bit sample precision (1/2/4-bit) is implemented.** The SIZ gate
+          accepted only 8..=16 bits; bitonal scans are 1-bit and were the largest
+          remaining census class. Nothing in the pipeline needed a special case.
+          Verified bit-exact vs OpenJPEG (max abs diff 0) on pdfbox/3246 obj3.
+          **NOTE for future verification work:** the CLI's PNG writers used to clamp
+          raw samples to 0..255, which wrote a 1-bit page as 0/1 and *clipped* 16-bit
+          components instead of scaling them. They now scale by component precision.
+        - **Renderer-side caveat (not a codec issue):** pdf-renderer widens sub-8-bit
+          samples with PDFium's `src << (8 - prec)`, not full-range scaling, because
+          that is what PDFium's `CJpx_Decoder::Decode` does and it is what the corpus
+          grades against (exactly 0.00000 on pdfbox/3246 and 4326; full-range leaves
+          them at 0.81-0.99). Do not "fix" that to match OpenJPEG's writers.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Section 2 was a real DWT bug, and this is it.** `forward_97_vertical_in_place` /
+              `inverse_97_vertical_in_place` scaled a *one-row* resolution by INV_K / K.
+              The pair round-trips through our own encoder, so every test passed, but it
+              does not match conformant streams: OpenJPEG returns from both
+              `opj_dwt_encode_and_deinterleave_v_real` and `opj_v8dwt_decode` on height 1
+              without touching the data, and **our own horizontal 1-D path already treated
+              the case as an identity** — the two disagreed. This is exactly the drift §2
+              and §5-trap-1 recorded when the decomposition bound was lifted: a codestream
+              that signals more levels than its dimensions need passes through several 1x1
+              levels, so its DC comes out multiplied by K^n while the AC stays
+              pixel-perfect. On the 884x1344 / 17-resolution repro a fit against OpenJPEG
+              gave `ours = 1.002 * opj + 194` — a pure DC offset, K^5 = 2.8158.
+              With the identity restored the dimension-derived bound has nothing left to
+              reject; `max_dwt_decompositions` is gone and the only limit is the spec's own
+              `NL <= 32`. Repro (Howard R. Turner, *Science in Medieval Islam* obj7):
+              max abs diff 5, mean 0.147, 3062 of 1,188,096 px over 2 — the 9/7 float floor
+              at 11 real levels rather than the usual 5, diffuse and edge-concentrated.
+              End-to-end 0.2424 silent-blank(codec) -> 0.0014.
+            - **Sub-8-bit sample precision (1/2/4-bit) is implemented.** The SIZ gate
+              accepted only 8..=16 bits; bitonal scans are 1-bit and were the largest
+              remaining census class. Nothing in the pipeline needed a special case.
+              Verified bit-exact vs OpenJPEG (max abs diff 0) on pdfbox/3246 obj3.
+              **NOTE for future verification work:** the CLI's PNG writers used to clamp
+              raw samples to 0..255, which wrote a 1-bit page as 0/1 and *clipped* 16-bit
+              components instead of scaling them. They now scale by component precision.
+            - **Renderer-side caveat (not a codec issue):** pdf-renderer widens sub-8-bit
+              samples with PDFium's `src << (8 - prec)`, not full-range scaling, because
+              that is what PDFium's `CJpx_Decoder::Decode` does and it is what the corpus
+              grades against (exactly 0.00000 on pdfbox/3246 and 4326; full-range leaves
+              them at 0.81-0.99). Do not "fix" that to match OpenJPEG's writers.
+            """
+    }
+}
+
 record lege-ecosystem.policy.renderer-integration-policy/1 : policy {
     title "28. Renderer integration policy"
     state proposed
@@ -45,6 +165,84 @@ record lege-ecosystem.policy.reuse-per-packet-contribution-storage/1 : policy {
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
         excerpt """
             `push_tile_part()` creates a fresh `Vec<Contribution>` for every packet.
+            """
+    }
+}
+
+record lege-ecosystem.policy.the-census-extraction-tool-your-main-instrument/1 : policy {
+    title "The census / extraction tool (your main instrument)"
+    state proposed
+    scope [ all ]
+    rule """
+        `pdf-renderer/crates/pdf-cli/examples/jpxcensus.rs` extracts every `/JPXDecode`
+        stream from a list of PDFs, decodes each with `jp2lam`, and tallies normalized
+        error signatures. Set `JPXDUMPDIR` to also dump one representative failing
+        stream per signature to disk (as `.jp2`) for `opj_dump`/`opj_decompress`.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            `pdf-renderer/crates/pdf-cli/examples/jpxcensus.rs` extracts every `/JPXDecode`
+            stream from a list of PDFs, decodes each with `jp2lam`, and tallies normalized
+            error signatures. Set `JPXDUMPDIR` to also dump one representative failing
+            stream per signature to disk (as `.jp2`) for `opj_dump`/`opj_decompress`.
+            """
+    }
+}
+
+record lege-ecosystem.policy.tpsot-tnsot-non-conformant-tile-parts-2-files/1 : policy {
+    title "4. `TPsot==TNsot` non-conformant tile-parts — ~2 files  [RESOLVED 2026-07-22 — the assembly-bug diagnosis in this section is WRONG; real cause was a missing `inalign` byte-realignment. See the 2026-07-22 update near the top.]"
+    state proposed
+    scope [ all ]
+    rule """
+        - **Error:** `tile-part contains data after the tile's packet sequence`
+        - **Repro:** `Prussian-Line-Infantry-1792-1815.pdf` obj15 (1208×1638, 3-comp,
+          csty=0, no precincts). OpenJPEG decodes it, emitting
+          `[WARNING] Non conformant codestream TPsot==TNsot.`
+        - **Reject site:** `src/decode/t2.rs` `push_tile_part` ~line 171-176 — after the
+          full packet sequence is read, leftover bytes trigger the error.
+        - **Diagnosis & TRAP:** the leftover bytes are **not** padding — they are a
+          genuine tile-part chunk that our tile-part assembly misplaces because the
+          stream sets `TPsot == TNsot` (an off-by-one tile-part index). I tried the
+          naive fix (break out of the loop, ignore the tail); it decodes but **corrupts
+          a 256-row code-block band** (rows 768-1023 of 1638; measured 1.4% of pixels
+          >30 off, a visible stripe). That is a silent mis-decode — worse than the clean
+          blank — so the strict failure is kept deliberately (see the NOTE comment now
+          in `push_tile_part`).
+        - **Recommended approach:** fix the **tile-part boundary / ordering** for the
+          non-conformant `TPsot==TNsot` case in `src/decode/mod.rs`
+          `tile_part_indices_by_tile` (the TNsot-advisory logic) so every tile-part's
+          payload is assigned to the correct tile and concatenated in the right order —
+          then there is no "trailing" data. Compare against OpenJPEG's tolerant
+          tile-part handling (`opj_j2k_read_sot` / the `TPsot==TNsot` warning path).
+          Verify the Prussian stream reaches max diff ≤ 2 with no corrupted band.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Error:** `tile-part contains data after the tile's packet sequence`
+            - **Repro:** `Prussian-Line-Infantry-1792-1815.pdf` obj15 (1208×1638, 3-comp,
+              csty=0, no precincts). OpenJPEG decodes it, emitting
+              `[WARNING] Non conformant codestream TPsot==TNsot.`
+            - **Reject site:** `src/decode/t2.rs` `push_tile_part` ~line 171-176 — after the
+              full packet sequence is read, leftover bytes trigger the error.
+            - **Diagnosis & TRAP:** the leftover bytes are **not** padding — they are a
+              genuine tile-part chunk that our tile-part assembly misplaces because the
+              stream sets `TPsot == TNsot` (an off-by-one tile-part index). I tried the
+              naive fix (break out of the loop, ignore the tail); it decodes but **corrupts
+              a 256-row code-block band** (rows 768-1023 of 1638; measured 1.4% of pixels
+              >30 off, a visible stripe). That is a silent mis-decode — worse than the clean
+              blank — so the strict failure is kept deliberately (see the NOTE comment now
+              in `push_tile_part`).
+            - **Recommended approach:** fix the **tile-part boundary / ordering** for the
+              non-conformant `TPsot==TNsot` case in `src/decode/mod.rs`
+              `tile_part_indices_by_tile` (the TNsot-advisory logic) so every tile-part's
+              payload is assigned to the correct tile and concatenated in the right order —
+              then there is no "trailing" data. Compare against OpenJPEG's tolerant
+              tile-part handling (`opj_j2k_read_sot` / the `TPsot==TNsot` warning path).
+              Verify the Prussian stream reaches max diff ≤ 2 with no corrupted band.
             """
     }
 }

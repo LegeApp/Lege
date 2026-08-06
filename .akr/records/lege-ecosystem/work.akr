@@ -389,6 +389,116 @@ record lege-ecosystem.decode-optimization-audit/1 : work {
     }
 }
 
+record lege-ecosystem.decode-optimization-handoff/1 : work {
+    title "Import lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+    state proposed
+    intent """
+        Disposition every durable claim of lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md (docs/12-migration.md).
+        """
+    acceptance {
+        check degenerate-1-sample-dwt-split-8-files-resolved-claim {
+            statement """
+                "2. Degenerate 1-sample DWT split — ~8 files  [RESOLVED 2026-07-22 — root cause was a K/INV_K scaling on a one-row resolution in the *vertical* pass; see the update near the top. The "relaxing the bound drifts" note below is accurate but the cause is now fixed.]" is dispositioned: promoted as lege-ecosystem.requirement.degenerate-1-sample-dwt-split-8-files-resolved or declined with evidence
+                """
+            method manual
+        }
+        check end-to-end-oracle-whole-page-vs-pdfium-claim {
+            statement """
+                "End-to-end oracle (whole page vs PDFium)" is dispositioned: promoted as lege-ecosystem.work.end-to-end-oracle-whole-page-vs-pdfium or declined with evidence
+                """
+            method manual
+        }
+        check handoff-remaining-jp2lam-jpeg-2000-decode-gaps-claim {
+            statement """
+                "Handoff: remaining `jp2lam` JPEG 2000 decode gaps" is dispositioned: promoted as lege-ecosystem.work.handoff-remaining-jp2lam-jpeg-2000-decode-gaps or declined with evidence
+                """
+            method manual
+        }
+        check implementation-update-claim {
+            statement """
+                "2026-07-19 implementation update" is dispositioned: promoted as lege-ecosystem.policy.implementation-update or declined with evidence
+                """
+            method manual
+        }
+        check later-update-section-2-resolved-and-sub-8-bit-claim {
+            statement """
+                "2026-07-22 (later) update — Section 2 RESOLVED, and sub-8-bit precision added" is dispositioned: promoted as lege-ecosystem.policy.later-update-section-2-resolved-and-sub-8-bit or declined with evidence
+                """
+            method manual
+        }
+        check orientation-environment-claim {
+            statement """
+                "0. Orientation & environment" is dispositioned: promoted as lege-ecosystem.requirement.orientation-environment or declined with evidence
+                """
+            method manual
+        }
+        check post-precinct-census-2026-07-19-from-pdf-claim {
+            statement """
+                "7. Post-precinct census (2026-07-19, from pdf-renderer) — new residuals" is dispositioned: promoted as lege-ecosystem.work.post-precinct-census-2026-07-19-from-pdf or declined with evidence
+                """
+            method manual
+        }
+        check precincts-sop-eph-10-files-largest-remaining-claim {
+            statement """
+                "1. Precincts / SOP / EPH — ~10 files (LARGEST remaining class)" is dispositioned: promoted as lege-ecosystem.requirement.precincts-sop-eph-10-files-largest-remaining or declined with evidence
+                """
+            method manual
+        }
+        check quick-reference-claim {
+            statement """
+                "6. Quick reference" is dispositioned: promoted as lege-ecosystem.work.quick-reference or declined with evidence
+                """
+            method manual
+        }
+        check run-the-census-2nd-arg-max-files-omit-for-all-claim {
+            statement """
+                "2. Run the census (2nd arg = max files; omit for all 424). ~250s per ~34 files." is dispositioned: promoted as lege-ecosystem.work.run-the-census-2nd-arg-max-files-omit-for-all or declined with evidence
+                """
+            method manual
+        }
+        check the-census-extraction-tool-your-main-instrument-claim {
+            statement """
+                "The census / extraction tool (your main instrument)" is dispositioned: promoted as lege-ecosystem.policy.the-census-extraction-tool-your-main-instrument or declined with evidence
+                """
+            method manual
+        }
+        check tpsot-tnsot-non-conformant-tile-parts-2-files-claim {
+            statement """
+                "4. `TPsot==TNsot` non-conformant tile-parts — ~2 files  [RESOLVED 2026-07-22 — the assembly-bug diagnosis in this section is WRONG; real cause was a missing `inalign` byte-realignment. See the 2026-07-22 update near the top.]" is dispositioned: promoted as lege-ecosystem.policy.tpsot-tnsot-non-conformant-tile-parts-2-files or declined with evidence
+                """
+            method manual
+        }
+        check two-traps-do-not-fix-these-by-loosening-a-check-claim {
+            statement """
+                "5. Two traps — do NOT "fix" these by loosening a check" is dispositioned: promoted as lege-ecosystem.work.two-traps-do-not-fix-these-by-loosening-a-check or declined with evidence
+                """
+            method manual
+        }
+        check update-sections-3-and-4-resolved-the-4-claim {
+            statement """
+                "2026-07-22 update — Sections 3 and 4 RESOLVED (the §4 diagnosis below was WRONG)" is dispositioned: promoted as lege-ecosystem.requirement.update-sections-3-and-4-resolved-the-4 or declined with evidence
+                """
+            method manual
+        }
+        check what-was-already-fixed-do-not-redo-claim {
+            statement """
+                "What was already fixed (do not redo)" is dispositioned: promoted as lege-ecosystem.work.what-was-already-fixed-do-not-redo or declined with evidence
+                """
+            method manual
+        }
+        check zero-length-code-block-contribution-truncated-claim {
+            statement """
+                "3. Zero-length code-block contribution (truncated streams) — ~6 files" is dispositioned: promoted as lege-ecosystem.work.zero-length-code-block-contribution-truncated or declined with evidence
+                """
+            method manual
+        }
+    }
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+    }
+}
+
 record lege-ecosystem.work.add-jp2decodestats/1 : work {
     title "3. Add `Jp2DecodeStats`"
     state proposed
@@ -560,6 +670,39 @@ record lege-ecosystem.work.eliminate-temporary-full-image-allocation-for/1 : wor
     }
 }
 
+record lege-ecosystem.work.end-to-end-oracle-whole-page-vs-pdfium/1 : work {
+    title "End-to-end oracle (whole page vs PDFium)"
+    state proposed
+    intent """
+        `pdf-renderer/tools/pdfium-diff` (a separate crate, needs `libpdfium`;
+        `D:\Rust-projects\pdfium-port-plan\pdfium.dll` is present):
+        ```bash
+        cd tools/pdfium-diff
+        cargo run -- D:/Rust-projects/pdfium-port-plan/pdfium.dll 2.0 "<one-file.pdf>"
+        # writes pdfium-diff-out/results.csv; summary line prints suspect/silent-blanks/degraded.
+        ```
+        Use this to confirm a decode fix actually clears the page against PDFium. **Do
+        not run the full corpus sweep** (11k files, ~2 h) — the owner runs that; single
+        files are seconds.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            `pdf-renderer/tools/pdfium-diff` (a separate crate, needs `libpdfium`;
+            `D:\Rust-projects\pdfium-port-plan\pdfium.dll` is present):
+            ```bash
+            cd tools/pdfium-diff
+            cargo run -- D:/Rust-projects/pdfium-port-plan/pdfium.dll 2.0 "<one-file.pdf>"
+            # writes pdfium-diff-out/results.csv; summary line prints suspect/silent-blanks/degraded.
+            ```
+            Use this to confirm a decode fix actually clears the page against PDFium. **Do
+            not run the full corpus sweep** (11k files, ~2 h) — the owner runs that; single
+            files are seconds.
+            """
+    }
+}
+
 record lege-ecosystem.work.fixed-point-9-7-is-a-later-experiment/1 : work {
     title "19. Fixed-point 9/7 is a later experiment"
     state proposed
@@ -637,6 +780,31 @@ record lege-ecosystem.work.fuse-tier-1-output-and-dequantization/1 : work {
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
         excerpt """
             The current irreversible flow is:
+            """
+    }
+}
+
+record lege-ecosystem.work.handoff-remaining-jp2lam-jpeg-2000-decode-gaps/1 : work {
+    title "Handoff: remaining `jp2lam` JPEG 2000 decode gaps"
+    state proposed
+    intent """
+        **Audience:** an agent continuing the JPX decode work in `jp2lam`.
+        **Context:** `jp2lam` is the JPEG 2000 codec behind the `pdf-renderer` port of
+        PDFium. Its decoder feeds `/JPXDecode` images. A differential sweep of
+        `pdf-renderer` against PDFium found ~610 corpus pages rendering **blank**
+        because their JPX image failed to decode and the error was swallowed. That has
+        been root-caused and mostly fixed; this document hands off the residual tail.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            **Audience:** an agent continuing the JPX decode work in `jp2lam`.
+            **Context:** `jp2lam` is the JPEG 2000 codec behind the `pdf-renderer` port of
+            PDFium. Its decoder feeds `/JPXDecode` images. A differential sweep of
+            `pdf-renderer` against PDFium found ~610 corpus pages rendering **blank**
+            because their JPX image failed to decode and the error was swallowed. That has
+            been root-caused and mostly fixed; this document hands off the residual tail.
             """
     }
 }
@@ -1017,6 +1185,25 @@ record lege-ecosystem.work.phase-6-isa-pgo-optional-gpu/1 : work {
     }
 }
 
+record lege-ecosystem.work.post-precinct-census-2026-07-19-from-pdf/1 : work {
+    title "7. Post-precinct census (2026-07-19, from pdf-renderer) — new residuals"
+    state proposed
+    intent """
+        After the precinct/SOP/EPH + degenerate-DWT round landed, a fresh full-corpus
+        `jpxcensus` (451 blank docs, 1224 JPX streams) decodes **1207 (98.6%)**. The 17
+        residuals, for this session:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            After the precinct/SOP/EPH + degenerate-DWT round landed, a fresh full-corpus
+            `jpxcensus` (451 blank docs, 1224 JPX streams) decodes **1207 (98.6%)**. The 17
+            residuals, for this session:
+            """
+    }
+}
+
 record lege-ecosystem.work.produce-packed-output-directly/1 : work {
     title "12. Produce packed output directly"
     state proposed
@@ -1028,6 +1215,31 @@ record lege-ecosystem.work.produce-packed-output-directly/1 : work {
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
         excerpt """
             The PDF renderer ultimately needs 8-bit output. It should not receive three or four planar `Vec<i32>` components only to scale and interleave them later.
+            """
+    }
+}
+
+record lege-ecosystem.work.quick-reference/1 : work {
+    title "6. Quick reference"
+    state proposed
+    intent """
+        | Class | ~N | Error signature (substring) | Reject site | Repro obj |
+        |---|---:|---|---|---|
+        | Precincts/SOP/EPH | 10 | `precinct partitioning, SOP markers` | `decode_markers.rs:~475` | Armenia obj8 |
+        | Degenerate DWT | 8 | `decomposition levels … exceed DWT limit` | `decode_markers.rs:~462` + `dwt/` | Neo-Confucianism obj9 |
+        | Zero-length contribution | 6 | `zero byte length` | `t2.rs:~481` | (dump via census) |
+        | TPsot==TNsot tail | 2 | `data after the tile's packet sequence` | `t2.rs:~171` + `mod.rs` assembly | Prussian obj15 |
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            | Class | ~N | Error signature (substring) | Reject site | Repro obj |
+            |---|---:|---|---|---|
+            | Precincts/SOP/EPH | 10 | `precinct partitioning, SOP markers` | `decode_markers.rs:~475` | Armenia obj8 |
+            | Degenerate DWT | 8 | `decomposition levels … exceed DWT limit` | `decode_markers.rs:~462` + `dwt/` | Neo-Confucianism obj9 |
+            | Zero-length contribution | 6 | `zero byte length` | `t2.rs:~481` | (dump via census) |
+            | TPsot==TNsot tail | 2 | `data after the tile's packet sequence` | `t2.rs:~171` + `mod.rs` assembly | Prussian obj15 |
             """
     }
 }
@@ -1175,6 +1387,27 @@ record lege-ecosystem.work.reusable-bounded-scratch/1 : work {
     }
 }
 
+record lege-ecosystem.work.run-the-census-2nd-arg-max-files-omit-for-all/1 : work {
+    title "2. Run the census (2nd arg = max files; omit for all 424). ~250s per ~34 files."
+    state proposed
+    intent """
+        DUMP="<some-writable-dir>"; mkdir -p "$DUMP"
+        JPXDUMPDIR="$DUMP" cargo run -q -p pdf-cli --example jpxcensus -- /tmp/blankwin.txt 60
+        # Dumped streams land in $DUMP/failjpx_<sig>.jp2 — opj_dump / opj_decompress them.
+        ```
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            DUMP="<some-writable-dir>"; mkdir -p "$DUMP"
+            JPXDUMPDIR="$DUMP" cargo run -q -p pdf-cli --example jpxcensus -- /tmp/blankwin.txt 60
+            # Dumped streams land in $DUMP/failjpx_<sig>.jp2 — opj_dump / opj_decompress them.
+            ```
+            """
+    }
+}
+
 record lege-ecosystem.work.specialize-the-common-code-block-style/1 : work {
     title "20. Specialize the common code-block style"
     state proposed
@@ -1235,6 +1468,23 @@ record lege-ecosystem.work.treat-9-7-as-the-first-arithmetic-kernel-target/1 : w
     }
 }
 
+record lege-ecosystem.work.two-traps-do-not-fix-these-by-loosening-a-check/1 : work {
+    title "5. Two traps — do NOT \"fix\" these by loosening a check"
+    state proposed
+    intent """
+        Both were tried this session and produce **silent mis-decodes**, which are
+        worse than the current clean (B3-flagged) failures:
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            Both were tried this session and produce **silent mis-decodes**, which are
+            worse than the current clean (B3-flagged) failures:
+            """
+    }
+}
+
 record lege-ecosystem.work.use-a-stripe-oriented-scratch-layout/1 : work {
     title "22. Use a stripe-oriented scratch layout"
     state proposed
@@ -1261,6 +1511,86 @@ record lege-ecosystem.work.vertical-lifting-layout/1 : work {
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
         excerpt """
             Vertical DWT is likely less cache-friendly because samples are separated by the full image stride.
+            """
+    }
+}
+
+record lege-ecosystem.work.what-was-already-fixed-do-not-redo/1 : work {
+    title "What was already fixed (do not redo)"
+    state proposed
+    intent """
+        `ftyp` brand (`jpx ` major / `jp2 ` or `jpx ` compat), QCC per-component
+        quantization, non-LRCP progression, TNsot-advisory multi-tile-part, raw J2K
+        codestreams (SOC at offset 0), CMYK (EnumCS 12, 4-comp + MCT-on-first-3),
+        `floor→ceil` decomposition bound, PLT/PLM/TLM length markers ignored, and
+        `pclr`+`cmap` palette (added in parallel — verify it still holds if you touch
+        color). See `pdf-renderer/DEFERRED.md` corpus item 1 for the full writeup.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            `ftyp` brand (`jpx ` major / `jp2 ` or `jpx ` compat), QCC per-component
+            quantization, non-LRCP progression, TNsot-advisory multi-tile-part, raw J2K
+            codestreams (SOC at offset 0), CMYK (EnumCS 12, 4-comp + MCT-on-first-3),
+            `floor→ceil` decomposition bound, PLT/PLM/TLM length markers ignored, and
+            `pclr`+`cmap` palette (added in parallel — verify it still holds if you touch
+            color). See `pdf-renderer/DEFERRED.md` corpus item 1 for the full writeup.
+            """
+    }
+}
+
+record lege-ecosystem.work.zero-length-code-block-contribution-truncated/1 : work {
+    title "3. Zero-length code-block contribution (truncated streams) — ~6 files"
+    state proposed
+    intent """
+        - **Error:** `non-empty code-block contribution has zero byte length`
+        - **Repro:** was seen on `Stalin…` (that hit is an `.epub`, not a PDF — find a
+          PDF trigger by re-running the census with `JPXDUMPDIR` set and grabbing the
+          dumped `failjpx_…zerobytelength….jp2`).
+        - **Reject site:** `src/decode/t2.rs` ~line 481-485, in the packet-header
+          contribution reader: a code-block signals inclusion but decodes a body length
+          of 0, which the code treats as malformed.
+        - **Diagnosis:** these are **truncated** streams (the file is cut off; the
+          packet header promises data the body doesn't contain). PDFium/OpenJPEG salvage
+          the partial image (they render what decoded). `jp2lam` errors → blank.
+        - **Recommended approach (careful — correctness risk):** treat a truncated tail
+          as *end of data*, not a hard error: stop Tier-2 at the first packet that runs
+          past the available bytes, keep the coefficients decoded so far, and let
+          reconstruction produce the partial image (this mirrors how `pdf-structure`
+          already salvages truncated Flate content streams). The catch is that the
+          reconstruct path currently expects a complete packet sequence (`finish()` at
+          t2.rs ~line 225 errors on `ended early`). You'll need reconstruct to tolerate
+          missing contributions (zero-fill those code-blocks). **Verify the partial
+          output matches OpenJPEG's partial output**, not just "it doesn't error" — a
+          partial decode that diverges from OpenJPEG is a silent quality regression.
+        - **Priority:** lower than §1 — truncation is inherently lossy and rare.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Error:** `non-empty code-block contribution has zero byte length`
+            - **Repro:** was seen on `Stalin…` (that hit is an `.epub`, not a PDF — find a
+              PDF trigger by re-running the census with `JPXDUMPDIR` set and grabbing the
+              dumped `failjpx_…zerobytelength….jp2`).
+            - **Reject site:** `src/decode/t2.rs` ~line 481-485, in the packet-header
+              contribution reader: a code-block signals inclusion but decodes a body length
+              of 0, which the code treats as malformed.
+            - **Diagnosis:** these are **truncated** streams (the file is cut off; the
+              packet header promises data the body doesn't contain). PDFium/OpenJPEG salvage
+              the partial image (they render what decoded). `jp2lam` errors → blank.
+            - **Recommended approach (careful — correctness risk):** treat a truncated tail
+              as *end of data*, not a hard error: stop Tier-2 at the first packet that runs
+              past the available bytes, keep the coefficients decoded so far, and let
+              reconstruction produce the partial image (this mirrors how `pdf-structure`
+              already salvages truncated Flate content streams). The catch is that the
+              reconstruct path currently expects a complete packet sequence (`finish()` at
+              t2.rs ~line 225 errors on `ended early`). You'll need reconstruct to tolerate
+              missing contributions (zero-fill those code-blocks). **Verify the partial
+              output matches OpenJPEG's partial output**, not just "it doesn't error" — a
+              partial decode that diverges from OpenJPEG is a silent quality regression.
+            - **Priority:** lower than §1 — truncation is inherently lossy and rare.
             """
     }
 }

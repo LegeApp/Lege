@@ -1,6 +1,200 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.requirement.degenerate-1-sample-dwt-split-8-files-resolved/1 : requirement {
+    title "2. Degenerate 1-sample DWT split — ~8 files  [RESOLVED 2026-07-22 — root cause was a K/INV_K scaling on a one-row resolution in the *vertical* pass; see the update near the top. The \"relaxing the bound drifts\" note below is accurate but the cause is now fixed.]"
+    state proposed
+    scope [ all ]
+    statement """
+        - **Error:** `COD decomposition levels N exceed DWT limit N for image
+          dimensions WxH`
+        - **Repro:** `Neo-Confucianism-in-History.pdf` obj9 — a **176×16** tile
+          declaring **5** decomposition levels (numresolutions=6). OpenJPEG decodes it.
+        - **Reject site:** `src/j2k/decode_markers.rs` `max_dwt_decompositions`
+          (~line 577) returns `ceil(log2(min_dim))`; for min_dim=16 that's 4, so 5 is
+          rejected at line 462-465.
+        - **Diagnosis (IMPORTANT — this is a real DWT bug, not just a bound):** the
+          extra level splits an axis that is already down to **1 sample** (16 → 8 → 4 →
+          2 → 1, then a 5th level on the height axis operates on a 1-sample band). I
+          measured that if you merely relax the bound to `ceil(log2(max_dim))` and let
+          it decode, `jp2lam`'s **inverse DWT drifts ~16/255 (mean), max 25** vs
+          OpenJPEG on that axis — i.e. it silently mis-decodes. So the bound is
+          currently kept strict *on purpose* (a clean B3-flagged failure beats a wrong
+          image — see §5).
+        - **Recommended approach:** fix the inverse DWT (`src/dwt/`, `irrev97.rs` /
+          `rev53.rs` and the 2D driver `inverse_97_2d_in_place_at`) to correctly handle
+          a lifting step on a length-1 (and length-0) axis — it must be a pass-through
+          that matches OpenJPEG's `opj_dwt_decode` boundary handling. **Then** relax
+          `max_dwt_decompositions` to `ceil(log2(max_dim))` (the larger dimension) and
+          re-verify the 176×16 stream is now max diff ≤ 2. Do the DWT fix first; the
+          bound relaxation without it re-introduces the drift.
+        - **Verification:** decode the dumped `failjpx_…decompositionlevels….jp2` and
+          diff vs OpenJPEG — must drop from mean ~16 to ≤ ~1.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Error:** `COD decomposition levels N exceed DWT limit N for image
+              dimensions WxH`
+            - **Repro:** `Neo-Confucianism-in-History.pdf` obj9 — a **176×16** tile
+              declaring **5** decomposition levels (numresolutions=6). OpenJPEG decodes it.
+            - **Reject site:** `src/j2k/decode_markers.rs` `max_dwt_decompositions`
+              (~line 577) returns `ceil(log2(min_dim))`; for min_dim=16 that's 4, so 5 is
+              rejected at line 462-465.
+            - **Diagnosis (IMPORTANT — this is a real DWT bug, not just a bound):** the
+              extra level splits an axis that is already down to **1 sample** (16 → 8 → 4 →
+              2 → 1, then a 5th level on the height axis operates on a 1-sample band). I
+              measured that if you merely relax the bound to `ceil(log2(max_dim))` and let
+              it decode, `jp2lam`'s **inverse DWT drifts ~16/255 (mean), max 25** vs
+              OpenJPEG on that axis — i.e. it silently mis-decodes. So the bound is
+              currently kept strict *on purpose* (a clean B3-flagged failure beats a wrong
+              image — see §5).
+            - **Recommended approach:** fix the inverse DWT (`src/dwt/`, `irrev97.rs` /
+              `rev53.rs` and the 2D driver `inverse_97_2d_in_place_at`) to correctly handle
+              a lifting step on a length-1 (and length-0) axis — it must be a pass-through
+              that matches OpenJPEG's `opj_dwt_decode` boundary handling. **Then** relax
+              `max_dwt_decompositions` to `ceil(log2(max_dim))` (the larger dimension) and
+              re-verify the 176×16 stream is now max diff ≤ 2. Do the DWT fix first; the
+              bound relaxation without it re-introduces the drift.
+            - **Verification:** decode the dumped `failjpx_…decompositionlevels….jp2` and
+              diff vs OpenJPEG — must drop from mean ~16 to ≤ ~1.
+            """
+    }
+}
+
+record lege-ecosystem.requirement.orientation-environment/1 : requirement {
+    title "0. Orientation & environment"
+    state proposed
+    scope [ all ]
+    statement """
+        - **Repo:** `D:\Rust-projects\jp2lam` on Windows; the same disk boots Linux
+          where the path is `/mnt/Samsung980_1TB/Rust-projects/jp2lam`. Dual-boot, one
+          drive: **`D:\` on Windows == `/mnt/Samsung980_1TB` on Linux.** The corpus
+          under `D:\Pol was right again\…` is the Linux `/mnt/Samsung980_1TB/Pol was
+          right again/…` in the sweep CSV.
+        - **Build / test:** `cargo test` (247+ lib tests; a few `#[ignore]`d ones need
+          archive.org sample files). CLI decoder: `cargo build --features cli` →
+          `target/debug/jp2lam.exe decode <in.jp2> <out.png>`.
+        - **Rust 1.95 pin** (edition 2024). The crate is also a path-dependency of
+          `pdf-renderer`; after changing it, `cargo build --workspace` there must stay
+          green (it does today).
+        - **Oracle = OpenJPEG.** `opj_decompress -i x.jp2 -o x.png` and
+          `opj_dump -i x.jp2` are on PATH. **Every fix must be verified bit-exact vs
+          OpenJPEG**: 5/3 reversible transform → max abs diff **0**; 9/7 irreversible →
+          max abs diff **≤ ~2** (float rounding). A larger diff means the fix is wrong —
+          see the two traps in §5.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Repo:** `D:\Rust-projects\jp2lam` on Windows; the same disk boots Linux
+              where the path is `/mnt/Samsung980_1TB/Rust-projects/jp2lam`. Dual-boot, one
+              drive: **`D:\` on Windows == `/mnt/Samsung980_1TB` on Linux.** The corpus
+              under `D:\Pol was right again\…` is the Linux `/mnt/Samsung980_1TB/Pol was
+              right again/…` in the sweep CSV.
+            - **Build / test:** `cargo test` (247+ lib tests; a few `#[ignore]`d ones need
+              archive.org sample files). CLI decoder: `cargo build --features cli` →
+              `target/debug/jp2lam.exe decode <in.jp2> <out.png>`.
+            - **Rust 1.95 pin** (edition 2024). The crate is also a path-dependency of
+              `pdf-renderer`; after changing it, `cargo build --workspace` there must stay
+              green (it does today).
+            - **Oracle = OpenJPEG.** `opj_decompress -i x.jp2 -o x.png` and
+              `opj_dump -i x.jp2` are on PATH. **Every fix must be verified bit-exact vs
+              OpenJPEG**: 5/3 reversible transform → max abs diff **0**; 9/7 irreversible →
+              max abs diff **≤ ~2** (float rounding). A larger diff means the fix is wrong —
+              see the two traps in §5.
+            """
+    }
+}
+
+record lege-ecosystem.requirement.precincts-sop-eph-10-files-largest-remaining/1 : requirement {
+    title "1. Precincts / SOP / EPH — ~10 files (LARGEST remaining class)"
+    state proposed
+    scope [ all ]
+    statement """
+        - **Error:** `unsupported packet syntax: precinct partitioning, SOP markers,
+          and EPH markers are not implemented`
+        - **Repro:** `The-Conversion-Of-Armenia-To-The-Christian-Faith.pdf` obj8
+          (`D:\Pol was right again\…\Armenia…`). OpenJPEG decodes it.
+        - **Reject site:** `src/j2k/decode_markers.rs` ~line 475 (`validate_decoder_scope`):
+          `if cod.uses_precincts || cod.sop_markers || cod.eph_markers { … }`. The COD
+          `Scod` bits are already parsed (`uses_precincts`, `sop_markers`, `eph_markers`
+          at lines 335-337; `precinct_sizes: Vec<PrecinctSize>` is carried on
+          `CodSegment`).
+        - **Why it's the big one:** the Tier-2 packet iterator in `src/decode/t2.rs`
+          currently assumes **P=1** (one precinct per resolution) — `packet_axis_order`
+          iterates only (layer, resolution, component). Precincts add a fourth axis: a
+          packet exists per (layer, resolution, component, **precinct**), and the number
+          of precincts per resolution is derived from the `PPx/PPy` sizes and the
+          resolution's coordinates. This is the load-bearing change.
+        - **Recommended approach:**
+          1. In `t2.rs`, generalize the packet odometer to include the precinct index
+             as the innermost spatial axis (Annex B.12 order within a resolution).
+             Compute per-resolution precinct counts from `precinct_sizes` and the
+             tile-component reference grid (Annex B.6): `numprecincts_x =
+             ceil(trx1/2^PPx) - floor(trx0/2^PPx)` etc.
+          2. Route each packet's code-block contributions to the code-blocks of its
+             precinct only (precincts partition each subband into rectangles; a
+             code-block belongs to exactly one precinct). Today `band_lookup` maps
+             (component,resolution)→bands; you'll need band→precinct→code-block routing.
+          3. **SOP** (`0xFF91`, before a packet) and **EPH** (`0xFF92`, after the packet
+             header) are optional delimiters — detect and skip them at the right points
+             in `push_tile_part` / the packet header reader. They don't change the data,
+             only frame it; but if `sop_markers`/`eph_markers` are set you MUST consume
+             them or the byte cursor desyncs.
+          4. Port against OpenJPEG's `opj_t2_decode_packets` / `opj_pi_*` for the
+             iteration order and precinct math — that's the reference the corpus was
+             produced against.
+        - **Verification:** the Armenia streams; expect 9/7 max diff ≤ 2. Add a focused
+          unit test with a precinct-partitioned fixture (`opj_compress -c [64,64]` makes
+          one). Re-run the census; this should clear ~10 files.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Error:** `unsupported packet syntax: precinct partitioning, SOP markers,
+              and EPH markers are not implemented`
+            - **Repro:** `The-Conversion-Of-Armenia-To-The-Christian-Faith.pdf` obj8
+              (`D:\Pol was right again\…\Armenia…`). OpenJPEG decodes it.
+            - **Reject site:** `src/j2k/decode_markers.rs` ~line 475 (`validate_decoder_scope`):
+              `if cod.uses_precincts || cod.sop_markers || cod.eph_markers { … }`. The COD
+              `Scod` bits are already parsed (`uses_precincts`, `sop_markers`, `eph_markers`
+              at lines 335-337; `precinct_sizes: Vec<PrecinctSize>` is carried on
+              `CodSegment`).
+            - **Why it's the big one:** the Tier-2 packet iterator in `src/decode/t2.rs`
+              currently assumes **P=1** (one precinct per resolution) — `packet_axis_order`
+              iterates only (layer, resolution, component). Precincts add a fourth axis: a
+              packet exists per (layer, resolution, component, **precinct**), and the number
+              of precincts per resolution is derived from the `PPx/PPy` sizes and the
+              resolution's coordinates. This is the load-bearing change.
+            - **Recommended approach:**
+              1. In `t2.rs`, generalize the packet odometer to include the precinct index
+                 as the innermost spatial axis (Annex B.12 order within a resolution).
+                 Compute per-resolution precinct counts from `precinct_sizes` and the
+                 tile-component reference grid (Annex B.6): `numprecincts_x =
+                 ceil(trx1/2^PPx) - floor(trx0/2^PPx)` etc.
+              2. Route each packet's code-block contributions to the code-blocks of its
+                 precinct only (precincts partition each subband into rectangles; a
+                 code-block belongs to exactly one precinct). Today `band_lookup` maps
+                 (component,resolution)→bands; you'll need band→precinct→code-block routing.
+              3. **SOP** (`0xFF91`, before a packet) and **EPH** (`0xFF92`, after the packet
+                 header) are optional delimiters — detect and skip them at the right points
+                 in `push_tile_part` / the packet header reader. They don't change the data,
+                 only frame it; but if `sop_markers`/`eph_markers` are set you MUST consume
+                 them or the byte cursor desyncs.
+              4. Port against OpenJPEG's `opj_t2_decode_packets` / `opj_pi_*` for the
+                 iteration order and precinct math — that's the reference the corpus was
+                 produced against.
+            - **Verification:** the Armenia streams; expect 9/7 max diff ≤ 2. Add a focused
+              unit test with a precinct-partitioned fixture (`opj_compress -c [64,64]` makes
+              one). Re-run the census; this should clear ~10 files.
+            """
+    }
+}
+
 record lege-ecosystem.requirement.reduced-reconstruction-geometry/1 : requirement {
     title "8. Reduced reconstruction geometry"
     state proposed
@@ -13,6 +207,70 @@ record lege-ecosystem.requirement.reduced-reconstruction-geometry/1 : requiremen
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
         excerpt """
             Reconstruction must use the dimensions and reference-grid phase associated with the selected resolution, not simply divide the full dimensions by a power of two.
+            """
+    }
+}
+
+record lege-ecosystem.requirement.update-sections-3-and-4-resolved-the-4/1 : requirement {
+    title "2026-07-22 update — Sections 3 and 4 RESOLVED (the §4 diagnosis below was WRONG)"
+    state proposed
+    scope [ all ]
+    statement """
+        - **Section 4 was NOT a tile-part assembly bug.** That diagnosis is disproven:
+          the Prussian obj15 repro has 35 tiles with an identical 6-part/TNsot=5
+          structure, yet only tile 16 failed — an assembly/ordering fault would break
+          all 35. The real cause is that the Tier-2 packet-header bit reader
+          (`PacketBioReader`) was missing the terminating **byte-realignment** (ISO/IEC
+          15444-1 Annex B.10.1 = OpenJPEG `opj_bio_inalign`): when a packet header's
+          last consumed byte is `0xFF`, the following bit-stuff byte belongs to the
+          header and must be consumed before the body. Tile 16's R3C0 header ends
+          `0xFF 0x00`; the old reader sliced the body one byte early at the stuff byte
+          and desynced every later packet of that tile — which surfaced as the "leftover
+          bytes after the packet sequence" error, and (under naive tail-tolerance) as
+          the exact documented 256-row corruption stripe. Fix: `PacketBioReader::inalign()`
+          called after every packet-header parse (`src/decode/t2.rs`). Verified: the
+          corrupt rows 768-1023 go from max 255 / 75134 px >30 to max 3 / 0 px >30;
+          overall max 4 (MCT float floor); end-to-end all pages `degraded=0`.
+        - **Section 3's named repros were the same `inalign` desync, not truncation.**
+          Profit-Over-People obj4 now decodes bit-exact (5/3 max 0); the Imre Nagy
+          streams decode within the MCT float floor. **Genuine** stream truncation is
+          kept strict — a raw-truncated stream makes OpenJPEG itself error ("Tile part
+          length inconsistent with stream length"), so a clean failure is correct there.
+        - **Also landed 2026-07-22:** 4:2:0 sYCC chroma-subsampling (narrowly gated;
+          per-component Annex B.2 geometry + `sycc420_to_rgb`-matching upsample), and
+          colr METH 3/4 (any-ICC / vendor colour, inferring the space from the ICC data
+          space or component count; ambiguous 2-component rejected cleanly) + palette
+          channel-count reconciliation. All verified bit-exact vs OpenJPEG.
+        """
+    source {
+        kind legacy
+        path "lege-codecs/jp2lam/decode-fix-plan/HANDOFF-remaining-jpx-decode.md"
+        excerpt """
+            - **Section 4 was NOT a tile-part assembly bug.** That diagnosis is disproven:
+              the Prussian obj15 repro has 35 tiles with an identical 6-part/TNsot=5
+              structure, yet only tile 16 failed — an assembly/ordering fault would break
+              all 35. The real cause is that the Tier-2 packet-header bit reader
+              (`PacketBioReader`) was missing the terminating **byte-realignment** (ISO/IEC
+              15444-1 Annex B.10.1 = OpenJPEG `opj_bio_inalign`): when a packet header's
+              last consumed byte is `0xFF`, the following bit-stuff byte belongs to the
+              header and must be consumed before the body. Tile 16's R3C0 header ends
+              `0xFF 0x00`; the old reader sliced the body one byte early at the stuff byte
+              and desynced every later packet of that tile — which surfaced as the "leftover
+              bytes after the packet sequence" error, and (under naive tail-tolerance) as
+              the exact documented 256-row corruption stripe. Fix: `PacketBioReader::inalign()`
+              called after every packet-header parse (`src/decode/t2.rs`). Verified: the
+              corrupt rows 768-1023 go from max 255 / 75134 px >30 to max 3 / 0 px >30;
+              overall max 4 (MCT float floor); end-to-end all pages `degraded=0`.
+            - **Section 3's named repros were the same `inalign` desync, not truncation.**
+              Profit-Over-People obj4 now decodes bit-exact (5/3 max 0); the Imre Nagy
+              streams decode within the MCT float floor. **Genuine** stream truncation is
+              kept strict — a raw-truncated stream makes OpenJPEG itself error ("Tile part
+              length inconsistent with stream length"), so a clean failure is correct there.
+            - **Also landed 2026-07-22:** 4:2:0 sYCC chroma-subsampling (narrowly gated;
+              per-component Annex B.2 geometry + `sycc420_to_rgb`-matching upsample), and
+              colr METH 3/4 (any-ICC / vendor colour, inferring the space from the ICC data
+              space or component count; ambiguous 2-component rejected cleanly) + palette
+              channel-count reconciliation. All verified bit-exact vs OpenJPEG.
             """
     }
 }
