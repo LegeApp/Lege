@@ -1,0 +1,13 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem-perf.papercut.imported-lege-ecosystem-perf-audit-work-records/1 : papercut {
+    title "Imported lege-ecosystem-perf audit work records (2026-08-05) are stale…"
+    state verified
+    statement """
+        Imported lege-ecosystem-perf audit work records (2026-08-05) are stale vs code: their P1/Phase-1..3 defects (nonzero tile origins disabling optimized DWT, per-row 9/7 scratch, full planar staging, missing packed Rgbx8/Bgra8 formats) are already fixed in lege-codecs/jp2lam. Determining 'unfinished' work required reading source per-item since ledger states are all still 'proposed'. Consider reconciling/closing those imported records against the implementation.
+        """
+    observed_at git:5780178af9f0d10bc4a8457259dfa141c2f804de
+    author "fugu"
+    created_at 2026-08-06
+}

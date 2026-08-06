@@ -1,0 +1,14 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem-perf.evidence.tier1-lpt-scheduling/1 : evidence {
+    title "Tier-1 parallel decode reworked to weighted LPT scheduling + per-worker persistent Tier1Scratch (working-tree change to src/decode/t1.rs, uncommitted at this HEAD); full lib suite 339 passed incl. serial_and_budgeted_tier1_are_byte_identical."
+    state verified
+    result pass
+    method command
+    observed_at git:5780178af9f0d10bc4a8457259dfa141c2f804de
+    command "cd lege-codecs/jp2lam && cargo test --lib"
+    summary """
+        Tier-1 parallel decode reworked to weighted LPT scheduling + per-worker persistent Tier1Scratch (working-tree change to src/decode/t1.rs, uncommitted at this HEAD); full lib suite 339 passed incl. serial_and_budgeted_tier1_are_byte_identical.
+        """
+}

@@ -5,13 +5,23 @@ build {
     tool "akr 0.1.0"
     grammar "0.1"
     vocabulary "0.1"
-    commit git:14abee266cd7a12e05433fac89e7cf1234b1d93c
-    source_graph "sha256:c48ed45f0aee84877ca97364b61fd90fb543a59ca369ce383082f0484640c468"
+    commit git:5780178af9f0d10bc4a8457259dfa141c2f804de
+    source_graph "sha256:9ec999e6b6076ed870672d0f0838c5f75992a2a22bb4aca11aaaebb08611fe11"
 }
 
 source ".akr/project.akr" {
     hash "sha256:1c68f28282e87162c61e62b9779adde4c9a07d8017858bcc681c6c12f55dfb8a"
     records 0
+}
+
+source ".akr/records/lege-ecosystem-perf/evidence.akr" {
+    hash "sha256:10a0aac0427b1aad65b1e59086a125867d4470ab984197a81e11a39f59063a9b"
+    records 1
+}
+
+source ".akr/records/lege-ecosystem-perf/papercuts.akr" {
+    hash "sha256:1b2c9c1af9a7466a47560e1c18991429529282928b39d07cc807c9f68c109669"
+    records 1
 }
 
 source ".akr/records/lege-ecosystem-perf/policies.akr" {
@@ -40,6 +50,16 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:b08d66afccf43efcfa94e03b93e5a8e976cd77d7823237fbb50e7af0a719267d"
+    hash "sha256:995ec3a148f4b5aa8c76f10f2d74f92286ad171c7adf9524af8bc4267efe86ac"
     records 67
+}
+
+seal @lege-ecosystem-perf.evidence.tier1-lpt-scheduling/1 {
+    state verified
+    hash "sha256:f47478e635dfd1dc926ed37d0cf564d1c88b942c2577d2cc320eac08743d3a3d"
+}
+
+seal @lege-ecosystem-perf.papercut.imported-lege-ecosystem-perf-audit-work-records/1 {
+    state verified
+    hash "sha256:5595956fc334cac04c4e5eecf3eaf1daec2004400ee6e866c49e5a6b103d182f"
 }

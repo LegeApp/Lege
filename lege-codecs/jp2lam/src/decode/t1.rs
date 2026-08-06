@@ -12,10 +12,10 @@ use crate::tier1::flags::FlagGrid;
 use crate::tier1::helpers::{
     magnitude_context, sign_context, sign_prediction_bit, zero_coding_context,
 };
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::stats::StatsSink;
 use super::t2::{DecodedCodewordSegment, DecodedTilePackets};
-use rayon::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecodedCodeBlockCoefficients {
@@ -411,12 +411,53 @@ fn decode_codeblocks_parallel(
 ) -> Result<()> {
     let planes = BlockPlanes::new(components);
     let style = header.cod.code_block_style;
-    packets.codeblocks.par_iter().try_for_each_init(
-        Tier1Scratch::new,
-        |scratch, block| -> Result<()> {
-            let params = block_params(header, block)?;
-            let mut sink = StatsSink::disabled();
-            decode_codeblock_segments_into(
+    let blocks = &packets.codeblocks;
+
+    // Weighted largest-processing-time-first schedule. Code-block decode cost
+    // scales with the coefficient count times the number of coding passes, so
+    // decode the most expensive blocks first: their long MQ scans overlap the
+    // many cheap blocks instead of one big block stranding on a single worker
+    // at the tail. Every block writes a disjoint plane rectangle, so *any*
+    // completion order reproduces the serial output byte-for-byte — the
+    // invariant `serial_and_budgeted_tier1_are_byte_identical` guards.
+    let mut order: Vec<usize> = (0..blocks.len()).collect();
+    order.sort_unstable_by_key(|&i| {
+        let block = &blocks[i];
+        let area = u64::from(block.x1.saturating_sub(block.x0))
+            * u64::from(block.y1.saturating_sub(block.y0));
+        core::cmp::Reverse(area.saturating_mul(u64::from(block.passes)))
+    });
+
+    // A shared cursor turns the sorted list into a greedy work queue: whenever a
+    // worker finishes a block it claims the next-largest remaining one. The
+    // `failed` flag lets peers stop pulling new work once any block errors.
+    let cursor = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+
+    // `broadcast` runs this closure exactly once per thread in the active
+    // (request-sized) pool, so each worker allocates one [`Tier1Scratch`] for
+    // the whole tile and reuses it across every block it claims — no per-job
+    // scratch reallocation.
+    let results = rayon::broadcast(|_| -> Result<()> {
+        let mut scratch = Tier1Scratch::new();
+        let mut sink = StatsSink::disabled();
+        loop {
+            if failed.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let next = cursor.fetch_add(1, Ordering::Relaxed);
+            let Some(&index) = order.get(next) else {
+                return Ok(());
+            };
+            let block = &blocks[index];
+            let params = match block_params(header, block) {
+                Ok(params) => params,
+                Err(error) => {
+                    failed.store(true, Ordering::Relaxed);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = decode_codeblock_segments_into(
                 params.block_width,
                 params.block_height,
                 block.band,
@@ -425,12 +466,15 @@ fn decode_codeblocks_parallel(
                 block.passes,
                 style,
                 &block.segments,
-                scratch,
+                &mut scratch,
                 &mut sink,
-            )?;
+            ) {
+                failed.store(true, Ordering::Relaxed);
+                return Err(error);
+            }
             // SAFETY: code blocks tile pairwise-disjoint rectangles of each
             // component plane, so no two parallel writes overlap.
-            unsafe {
+            let write = unsafe {
                 planes.write_block(
                     block.component,
                     block.x0 as usize,
@@ -440,9 +484,18 @@ fn decode_codeblocks_parallel(
                     &scratch.coefficients,
                     params.step,
                 )
+            };
+            if let Err(error) = write {
+                failed.store(true, Ordering::Relaxed);
+                return Err(error);
             }
-        },
-    )
+        }
+    });
+
+    for result in results {
+        result?;
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
