@@ -33,7 +33,15 @@ const PARALLEL_COLUMN_THRESHOLD: usize = usize::MAX / 2;
 // 5/3 design: process independent column bands so scratch is
 // `VERTICAL_BAND_COLS * active_height` rather than a full active plane, and so
 // the deinterleave/interleave steps never allocate a W×H temporary.
-const VERTICAL_BAND_COLS: usize = 256;
+//
+// Width 128 (not 256) keeps the per-band working set
+// (`VERTICAL_BAND_COLS * active_height * 4` bytes) resident in each P-core's L2
+// across the scale + four lifting sweeps of one band. An interleaved A/B on the
+// lear 4485x2791 q75 RGB decode (4 P-core workers) had 128 fastest in every
+// round (~2% over 256; 64 was no better). Band width does not change the
+// per-column lifting arithmetic, so output is bit-identical. See
+// `@lege-ecosystem-perf.observation.decode-flamegraph-lear-2026-08-06`.
+const VERTICAL_BAND_COLS: usize = 128;
 
 pub(crate) fn forward_97_2d_in_place(
     data: &mut [f32],
