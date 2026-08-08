@@ -17,6 +17,7 @@ members = [
     "lege-process",             # `lege` CLI + core processing library
     "lege-process/lege-ipc",    # shared IPC/log types
     "lege-process/GUI/musicsheet", # `lege-music-gui`
+    "lege-process/GUI/Freya",     # `lege-gui` legacy Skia/Freya desktop GUI
     "lege-process/GUI/rfd",     # vendored file-dialog crate used by both GUIs
     "lege-gpu",                 # `lege_gpu`
     "lege-ocr",                 # `lege_ocr`
@@ -49,7 +50,7 @@ repository = "https://github.com/LegeApp/Lege"
 unsafe_code = "warn"
 missing_debug_implementations = "warn"
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "german", "layout-detection", "music-sheet", "ocr", "paddle-ocr", "tesseract-ocr", "trace_arith"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "freya", "german", "layout-detection", "music-sheet", "ocr", "paddle-ocr", "tesseract-ocr", "trace_arith", "viewer"))'] }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

@@ -30,7 +30,7 @@ impl WakeSink for WinitWake {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = match parse_launch_config(std::env::args_os().skip(1)) {
         Ok(config) if config.mode == LaunchMode::Help => {
             println!("{USAGE}");

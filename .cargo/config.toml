@@ -5,14 +5,17 @@ appimage = "run --package xtask -- appimage"
 process = "build --package lege --bin lege"
 process-check = "check --package lege --bin lege"
 process-run = "run --package lege --bin lege --"
-gui = "build --package lege-gui"
-gui-check = "check --package lege-gui"
+gui = "build --package lege --bin lege --bin lege-gui --features viewer"
+gui-check = "check --package lege --bin lege --bin lege-gui --features viewer"
 music-gui = "build --package lege-music-gui"
 music-gui-check = "check --package lege-music-gui"
-# Compatibility shortcuts; the Winit reader is now the public lege-gui package.
-viewer = "build --package lege-gui"
-viewer-check = "check --package lege-gui --all-targets"
-viewer-run = "run --package lege-gui --"
+# Compatibility shortcut for the legacy viewer backend.
+viewer = "build --package lege --bin lege --bin lege-gui --features viewer"
+viewer-check = "check --package lege --bin lege --bin lege-gui --features viewer"
+gui-freya = "build --package lege --bin lege --bin lege-gui --features freya"
+gui-freya-check = "check --package lege --bin lege --bin lege-gui --features freya"
+gui-freya-run = "run --package lege --bin lege-gui --features freya --"
+viewer-run = "run --package lege --bin lege-gui --features viewer --"
 
 # Shared libraries / development utilities
 gpu = "build --package lege-gpu"

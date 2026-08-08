@@ -2,7 +2,11 @@ use freya_animation::prelude::*;
 use freya_core::prelude::*;
 use torin::{alignment::Alignment, direction::Direction, prelude::Position, size::Size};
 
-use crate::{button::Button, popup::PopupBackground};
+use crate::{
+    button::Button,
+    popup::{PopupBackground, PopupTheme, PopupThemePartial, PopupThemePreference},
+    get_theme,
+};
 
 #[derive(Clone, PartialEq)]
 pub struct LegeModal {
@@ -74,6 +78,8 @@ impl LegeModal {
 impl Component for LegeModal {
     fn render(&self) -> impl IntoElement {
         let show = *self.show.read();
+        let PopupTheme { background, color } =
+            get_theme!(None::<PopupThemePartial>, PopupThemePreference, "popup");
 
         let background_animation = use_animation_with_dependencies(&show, |conf, show| {
             conf.on_creation(OnCreation::Finish);
@@ -141,8 +147,8 @@ impl Component for LegeModal {
                         .a11y_role(AccessibilityRole::Dialog)
                         .scale((scale, scale))
                         .opacity(opacity)
-                        .background((240, 244, 247))
-                        .color((18, 18, 18))
+                        .background(background)
+                        .color(color)
                         .corner_radius(10.)
                         .shadow(Shadow::new().y(4.).blur(8.).color((0, 0, 0, 40)))
                         .width(self.width.clone())
@@ -156,7 +162,7 @@ impl Component for LegeModal {
                                 .width(Size::fill())
                                 .height(Size::px(42.))
                                 .padding((10., 14., 10., 14.))
-                                .background((226, 232, 235))
+                                .background(background)
                                 .direction(Direction::Horizontal)
                                 .main_align(Alignment::SpaceBetween)
                                 .cross_align(Alignment::Center)

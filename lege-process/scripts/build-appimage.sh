@@ -6,14 +6,10 @@ VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/lege-process/Car
 ARCH="${ARCH:-x86_64}"
 APPDIR="${APPDIR:-$ROOT/target/appimage/Lege.AppDir}"
 OUT_DIR="${OUT_DIR:-$ROOT/target/appimage}"
-REPO_APPIMAGETOOL="$ROOT/lege-misc/packaging/appimage/tools/appimagetool-x86_64.AppImage"
-if [[ -n "${APPIMAGETOOL:-}" ]]; then
-  APPIMAGETOOL="$APPIMAGETOOL"
-elif [[ -x "$REPO_APPIMAGETOOL" ]]; then
-  APPIMAGETOOL="$REPO_APPIMAGETOOL"
-else
-  APPIMAGETOOL="appimagetool"
-fi
+APPIMAGE_APPDATA_PATH="$ROOT/lege-process/packaging/appimage/com.legeapp.Lege.appdata.xml"
+APPIMAGETOOL_PATH=""
+LOCAL_APPIMAGETOOL="$ROOT/lege-process/packaging/appimage/tools/appimagetool-x86_64.AppImage"
+APPIMAGE_GUI="${APPIMAGE_GUI:-${1:-freya}}"
 PROFILE="${PROFILE:-release}"
 
 if [[ "$PROFILE" != "release" ]]; then
@@ -21,9 +17,21 @@ if [[ "$PROFILE" != "release" ]]; then
   exit 1
 fi
 
+case "$APPIMAGE_GUI" in
+  freya)
+    ;;
+  viewer)
+    ;;
+  *)
+    echo "Unsupported GUI variant '$APPIMAGE_GUI'. Use 'freya' (default) or 'viewer'." >&2
+    exit 1
+    ;;
+esac
+
 required_inputs=(
   "$ROOT/lege-process/lege.desktop"
   "$ROOT/lege-misc/assets/icon.png"
+  "$APPIMAGE_APPDATA_PATH"
 )
 
 for input in "${required_inputs[@]}"; do
@@ -33,8 +41,26 @@ for input in "${required_inputs[@]}"; do
   fi
 done
 
-if ! command -v "$APPIMAGETOOL" >/dev/null 2>&1; then
-  echo "Missing appimagetool. Install it or set APPIMAGETOOL=/path/to/appimagetool." >&2
+if [[ -n "${APPIMAGETOOL:-}" ]]; then
+  if [[ -x "$APPIMAGETOOL" ]]; then
+    APPIMAGETOOL_PATH="$APPIMAGETOOL"
+  elif command -v "$APPIMAGETOOL" >/dev/null 2>&1; then
+    APPIMAGETOOL_PATH="$(command -v "$APPIMAGETOOL")"
+  fi
+fi
+
+if [[ -z "$APPIMAGETOOL_PATH" && -x "$LOCAL_APPIMAGETOOL" ]]; then
+  APPIMAGETOOL_PATH="$LOCAL_APPIMAGETOOL"
+fi
+
+if [[ -z "$APPIMAGETOOL_PATH" ]] && command -v appimagetool >/dev/null 2>&1; then
+  APPIMAGETOOL_PATH="$(command -v appimagetool)"
+fi
+
+if [[ -z "$APPIMAGETOOL_PATH" ]]; then
+  echo "Missing appimagetool. Set APPIMAGETOOL=/path/to/appimagetool (exported), place it on PATH as 'appimagetool', or ensure"
+  echo "  $LOCAL_APPIMAGETOOL"
+  echo "is present and executable." >&2
   exit 1
 fi
 
@@ -46,25 +72,39 @@ fi
 cargo build \
   --release \
   --package lege \
-  --package lege-gui \
   "${features_args[@]}"
 
-rm -rf "$APPDIR"
+if [[ "$APPIMAGE_GUI" == "viewer" ]]; then
+  cargo build --release \
+    --manifest-path "$ROOT/Cargo.toml" \
+    --package lege-gui
+else
+  cargo build --release \
+    --manifest-path "$ROOT/Cargo.toml" \
+    --package lege-gui-freya \
+    "${features_args[@]}"
+fi
+
+if [[ -d "$APPDIR" ]]; then
+  find "$APPDIR" -mindepth 1 -delete
+else
+  mkdir -p "$APPDIR"
+fi
 mkdir -p \
   "$APPDIR/usr/bin" \
-  "$APPDIR/usr/lib/lege" \
   "$APPDIR/usr/share/applications" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
   "$APPDIR/usr/share/metainfo"
 
 install -Dm755 "$ROOT/target/release/lege" "$APPDIR/usr/bin/lege"
 install -Dm755 "$ROOT/target/release/lege-gui" "$APPDIR/usr/bin/lege-gui"
+
 install -Dm644 "$ROOT/lege-process/lege.desktop" "$APPDIR/usr/share/applications/lege.desktop"
 install -Dm644 "$ROOT/lege-process/lege.desktop" "$APPDIR/lege.desktop"
 install -Dm644 "$ROOT/lege-misc/assets/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/lege.png"
 install -Dm644 "$ROOT/lege-misc/assets/icon.png" "$APPDIR/lege.png"
 install -Dm644 "$ROOT/lege-misc/assets/icon.png" "$APPDIR/.DirIcon"
-install -Dm644 "$ROOT/lege-misc/packaging/appimage/com.legeapp.Lege.appdata.xml" \
+install -Dm644 "$APPIMAGE_APPDATA_PATH" \
   "$APPDIR/usr/share/metainfo/com.legeapp.Lege.appdata.xml"
 
 cat >"$APPDIR/AppRun" <<'APPRUN'
@@ -85,4 +125,4 @@ if [[ -n "${APPIMAGE_UPDATE_INFORMATION:-}" ]]; then
   appimage_args+=("-u" "$APPIMAGE_UPDATE_INFORMATION")
 fi
 
-"$APPIMAGETOOL" "${appimage_args[@]}" "$APPDIR" "$OUT_DIR/Lege-${VERSION}-${ARCH}.AppImage"
+"$APPIMAGETOOL_PATH" "${appimage_args[@]}" "$APPDIR" "$OUT_DIR/Lege-${VERSION}-${ARCH}.AppImage"

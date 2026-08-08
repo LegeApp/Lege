@@ -20,7 +20,7 @@ use crate::worker_process::{WorkerProcessingStatus, WorkerProgressUpdate};
 use crate::appearance::{self, Rgb};
 use crate::colors::{
     active_bg, app_bg, border, border_focus, card_bg, control_bg, focus_bg, hover_bg, info_bg,
-    info_fg, inverse_surface, inverse_surface_secondary, inverse_surface_tertiary, muted_fg,
+    inverse_surface, inverse_surface_secondary, inverse_surface_tertiary, muted_fg,
     panel_bg, progress_track_bg, selected_bg, text_fg,
 };
 
@@ -403,7 +403,6 @@ pub struct AppState {
     pub active_task_ids: Vec<u64>,
     pub processing_items: Vec<ProcessingQueueDisplayItem>,
     pub should_cancel: bool,
-    pub job_color_index: u32,
 
     pub target_height_input: String,
     pub k_factor_input: String,
@@ -470,7 +469,6 @@ impl Default for AppState {
             active_task_ids: Vec::new(),
             processing_items: Vec::new(),
             should_cancel: false,
-            job_color_index: u32::MAX,
             target_height_input: resolution_input_from_options(&options),
             k_factor_input: options.k_factor.to_string(),
             threshold_input: options.threshold_value.to_string(),
@@ -757,7 +755,12 @@ fn popup_message_entries(state: State<AppState>) -> Vec<(String, PopupKind)> {
     entries_out.into_iter().take(2).collect()
 }
 
-fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, u8)) -> Element {
+fn rail_note_card(
+    text: impl Into<String>,
+    font_size: f32,
+    background: (u8, u8, u8),
+    foreground: (u8, u8, u8),
+) -> Element {
     let text = text.into();
     rect()
         .background(background)
@@ -769,16 +772,16 @@ fn rail_note_card(text: impl Into<String>, font_size: f32, background: (u8, u8, 
         )
         .corner_radius(6.)
         .padding((8., 10., 8., 10.))
-        .width(Size::fill())
-        .child(
-            rect().width(Size::fill()).child(
-                paragraph()
-                    .width(Size::fill())
-                    .span(Span::new(text).font_size(font_size).color(info_fg()))
-                    .line_height(1.25)
-                    .max_lines(5),
-            ),
-        )
+                .width(Size::fill())
+                .child(
+                    rect().width(Size::fill()).child(
+                        paragraph()
+                            .width(Size::fill())
+                            .span(Span::new(text).font_size(font_size).color(foreground))
+                            .line_height(1.25)
+                            .max_lines(5),
+                    ),
+                )
         .into()
 }
 
@@ -818,7 +821,7 @@ fn PopupRail(state: State<AppState>) -> Element {
                 .on_pointer_down(move |_: Event<PointerEventData>| {
                     hide_popup(state, kind);
                 })
-                .child(rail_note_card(msg, 13., info_bg()))
+                .child(rail_note_card(msg, 13., app_bg(), text_fg()))
                 .into()
         })
         .collect();
@@ -2320,7 +2323,6 @@ fn StatusBar(state: State<AppState>) -> Element {
     let queue_len = queue_items.len();
     let status = read.status_lines.clone();
     let progress_metrics = read.progress_metrics;
-    let job_color_index = read.job_color_index;
     drop(read);
 
     let top_left: Element = status_tooltip_panel(state, TooltipSide::Left);
@@ -2362,7 +2364,7 @@ fn StatusBar(state: State<AppState>) -> Element {
     // Main content: dual-mode.
     let main_content: Element = if is_processing {
         // Processing mode: existing progress display.
-        let bar_color = crate::colors::job_accent_color(job_color_index);
+        let bar_color = crate::colors::selected_bg();
         let progress_section = progress_metrics.and_then(|m| progress_single_bar(m, bar_color));
         let secondary_text = if progress_section.is_some() {
             let mut parts = Vec::new();
@@ -2543,7 +2545,7 @@ fn completion_message(result: &ProcessingResult, estimated_original_size: u64) -
         result.original_size
     };
 
-    let reduction_percent = if basis_size > 0 {
+    let reduction_percent: f64 = if basis_size > 0 {
         (1.0 - (result.compressed_size as f64 / basis_size as f64)) * 100.0
     } else {
         0.0
@@ -3273,17 +3275,6 @@ fn start_or_cancel_processing(
         let mut s = state.write();
         s.is_processing = true;
         s.should_cancel = false;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(7);
-        let prev = s.job_color_index;
-        let mut picked = (nanos % 15) as u32;
-        // avoid same color as last job (u32::MAX = no previous job)
-        if prev != u32::MAX && picked == prev {
-            picked = (picked + 1) % 15;
-        }
-        s.job_color_index = picked;
         s.active_eta = None;
         s.progress_metrics = None;
         s.processing_items = queue

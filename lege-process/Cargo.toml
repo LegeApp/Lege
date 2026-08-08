@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.71"
+version = "1.4.73"
 edition = "2024"
 description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -16,6 +16,10 @@ path = "core/lib.rs"
 [[bin]]
 name = "lege"
 path = "core/main.rs"
+
+[[bin]]
+name = "lege-gui"
+path = "gui.rs"
 
 
 [build-dependencies]
@@ -69,18 +73,27 @@ winres = "0.1.12"
 libloading = "0.9.0"
 num_cpus = { workspace = true }
 ttf-parser = { workspace = true }
+raw-window-handle = { workspace = true, optional = true }
+open = { workspace = true, optional = true }
 encoding_rs = { workspace = true }
+atty = { version = "0.2.14", optional = true }
 wait-timeout = { workspace = true }
 bytes = { workspace = true }
+copypasta = { version = "0.10", optional = true }
 console = { workspace = true }
 rustc-hash = { workspace = true }
 env_logger = "0.11.11"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
 futures = "0.3.32"
 async-trait = "0.1"
 regex = "1.12.2"
 unicode-normalization = "0.1"
 indicatif = { version = "0.18.6", features = ["tokio"] }
+uuid = { version = "1.0", features = ["v4"], optional = true }
+winit = { workspace = true, optional = true }
+rfd = { path = "GUI/rfd", optional = true }
+freya = { path = "../freya-main/crates/freya", default-features = false, features = ["cpu-renderer"], optional = true }
+lege_viewer = { package = "lege-gui", path = "../lege-viewer", optional = true }
 sha2 = { version = "0.11.0", default-features = false }
 parking_lot = "0.12"
 flume = { workspace = true }
@@ -105,7 +118,7 @@ libc = "0.2"
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi"] }
+winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi", "wincon", "winuser"] }
 windows = { workspace = true, features = [
     "Foundation",
     "Globalization",
@@ -133,6 +146,21 @@ windows-future = { workspace = true }
 ndarray = "0.17.2"
 
 [features]
+freya = [
+    "dep:freya",
+    "dep:rfd",
+    "dep:atty",
+    "dep:uuid",
+    "dep:open",
+    "dep:raw-window-handle",
+]
+viewer = [
+    "dep:copypasta",
+    "dep:winit",
+    "dep:rfd",
+    "dep:open",
+    "dep:lege_viewer",
+]
 default = ["jp2-lam", "paddle-ocr", "layout-detection"]
 debug-logging = ["lege-gpu/debug-logging"]
 jp2-lam = ["dep:jp2lam"]

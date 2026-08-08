@@ -19,6 +19,7 @@
 # Usage:
 #   scripts/build-macos-app-silicon.sh           # Apple Silicon (default)
 #   scripts/build-macos-app-silicon.sh --intel   # Intel
+#   scripts/build-macos-app-silicon.sh --cli     # CLI-only bundle, no GUI
 #   scripts/build-macos-app-silicon.sh --help
 #
 # Runs either on a real Mac or inside the macos-cross-compiler
@@ -59,6 +60,13 @@
 #     bundled in Resources because "heavy" binarization loads it at runtime.
 #     PP-DocLayout-M is embedded by layout-detection and is NOT copied into the
 #     application bundle as a separate model file.
+#   * --cli skips the lege-gui GUI entirely (the GUI is where untestable-from-Linux
+#     macOS edge cases tend to live) and produces the same "Lege.app" structure
+#     with the CLI as its main executable: launching the app from Finder opens
+#     the `lege` CLI in a Terminal window. Everything else is bundled the same
+#     way — the djvu-encoder helper, its AGPL license text (a legal AGPL
+#     component requires the license to travel with the binary), sauvola.onnx,
+#     docs and icon.
 #   * DjVu encoding remains a separate AGPL executable, built from the sibling
 #     djvulibrust project and bundled under Contents/Helpers; Lege does not link
 #     it as a library.
@@ -82,13 +90,17 @@ MISC_DIR="${MISC_DIR:-$ROOT/lege-misc}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--silicon | --intel]
+Usage: $(basename "$0") [--silicon | --intel] [--cli]
 
 Build the main Lege macOS application.
 
 Options:
   --silicon  Build for Apple Silicon / arm64 (default).
   --intel    Build for Intel / x86_64.
+  --cli      Build only the 'lege' CLI bundle — no GUI binary. The bundle still
+             ships as "Lege.app", but its main executable opens the CLI in a
+             Terminal window when launched from Finder. The djvu-encoder helper
+             and its AGPL license are still built and bundled.
   -h, --help Show this help.
 
 The selected architecture also controls the default output directory.
@@ -100,6 +112,7 @@ EOF
 # Keep TARGET as an environment-variable override for automated builds, while
 # providing readable command-line flags for normal use.
 TARGET="${TARGET:-aarch64-apple-darwin}"
+CLI_ONLY="${CLI_ONLY:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -108,6 +121,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --intel)
       TARGET="x86_64-apple-darwin"
+      ;;
+    --cli)
+      CLI_ONLY=1
       ;;
     -h|--help)
       usage
@@ -171,7 +187,20 @@ BUNDLE_ID="com.legeapp.lege"
 ARCH_PREFIX="${TARGET%%-*}"
 DJVU_ENCODER_BIN="$DJVU_ENCODER_TARGET_DIR/$TARGET/release/djvu-encoder"
 
+# The bundle's main executable. Normally the GUI; in --cli mode a small launcher
+# script that opens the `lege` CLI in a Terminal window (no GUI binary is built
+# or installed).
+BUNDLE_EXECUTABLE="lege-gui"
+if [[ "$CLI_ONLY" == "1" ]]; then
+  BUNDLE_EXECUTABLE="lege-cli"
+fi
+
 ARCHIVE_STEM="Lege-$VERSION-$ARCH_LABEL"
+if [[ "$CLI_ONLY" == "1" ]]; then
+  # Keep the CLI-only artifact distinguishable from the GUI build it shares an
+  # OUT_DIR with.
+  ARCHIVE_STEM="Lege-CLI-$VERSION-$ARCH_LABEL"
+fi
 
 # Make the documented Linux cross-build the default behavior. The marker keeps
 # the script from trying to start a nested container after it re-enters itself.
@@ -199,10 +228,18 @@ if [[ "$(uname -s)" != "Darwin" \
   mkdir -p "$ROOT/target/macos-cross-cache/cargo" \
     "$ROOT/target/macos-cross-cache/rustup"
 
+  # Re-enter the same script inside the container, forwarding the --cli flag
+  # (CLI_ARGS is empty or exactly "--cli", so it is safe to interpolate).
+  CLI_ARGS=""
+  if [[ "$CLI_ONLY" == "1" ]]; then
+    CLI_ARGS="--cli"
+  fi
+
   echo "== Starting macOS cross-compiler container ($MACOS_CROSS_IMAGE)"
   "$CONTAINER_RUNTIME" run --platform=linux/amd64 --rm \
     -e LEGE_MACOS_CROSS_CONTAINER=1 \
     -e TARGET="$TARGET" \
+    -e CLI_ONLY="$CLI_ONLY" \
     -e CODESIGN_ID="$CODESIGN_ID" \
     -e SKIP_CLI_BUILD="$SKIP_CLI_BUILD" \
     -e MACOS_RUST_TOOLCHAIN="$MACOS_RUST_TOOLCHAIN" \
@@ -210,7 +247,7 @@ if [[ "$(uname -s)" != "Darwin" \
     -e RUSTUP_HOME=/workspace/target/macos-cross-cache/rustup \
     -v "$ROOT:/workspace" \
     "$MACOS_CROSS_IMAGE" \
-    /bin/bash -lc 'rustup toolchain install "$MACOS_RUST_TOOLCHAIN" --profile minimal --target "$TARGET" --no-self-update && export RUSTUP_TOOLCHAIN="$MACOS_RUST_TOOLCHAIN" && cd /workspace && lege-process/scripts/build-macos-app-silicon.sh'
+    /bin/bash -lc 'rustup toolchain install "$MACOS_RUST_TOOLCHAIN" --profile minimal --target "$TARGET" --no-self-update && export RUSTUP_TOOLCHAIN="$MACOS_RUST_TOOLCHAIN" && cd /workspace && lege-process/scripts/build-macos-app-silicon.sh $CLI_ARGS'
 
   # The cross image does not currently ship rcodesign. Once it returns, use a
   # host installation when available and replace the container's deliberately
@@ -220,10 +257,11 @@ if [[ "$(uname -s)" != "Darwin" \
     echo "== Ad-hoc signing the macOS bundle with host rcodesign"
     # A host signing pass replaces the deliberately unsigned cross-build.
     rcodesign sign "$HOST_APP"
-    for signed_path in \
-      Contents/MacOS/lege-gui \
-      Contents/MacOS/lege \
-      Contents/Helpers/djvu-encoder; do
+    SIGNED_PATHS=(Contents/MacOS/lege Contents/Helpers/djvu-encoder)
+    if [[ "$CLI_ONLY" != "1" ]]; then
+      SIGNED_PATHS+=(Contents/MacOS/lege-gui)
+    fi
+    for signed_path in "${SIGNED_PATHS[@]}"; do
       # rcodesign's `verify` currently rejects valid ad-hoc signatures because
       # their CMS slot is intentionally empty. Parsing the signature confirms
       # that each nested Mach-O was signed successfully.
@@ -266,7 +304,11 @@ if [[ ! -f "$DJVU_ENCODER_LICENSE" ]]; then
 fi
 
 if [[ "$SKIP_BUILD" == "1" ]]; then
-  for binary in lege lege-gui; do
+  BINARIES=(lege)
+  if [[ "$CLI_ONLY" != "1" ]]; then
+    BINARIES+=(lege-gui)
+  fi
+  for binary in "${BINARIES[@]}"; do
     if [[ ! -x "$ROOT/target/$TARGET/release/$binary" ]]; then
       echo "SKIP_BUILD=1 but target/$TARGET/release/$binary is missing." >&2
       exit 1
@@ -326,9 +368,13 @@ else
   )
   rm -rf "$DJVU_BUILD_DIR"
 
-  echo "== Building lege-gui (main GUI) for $TARGET"
-  cargo build --release --target "$TARGET" -p lege-gui --bin lege-gui \
-    --no-default-features
+  if [[ "$CLI_ONLY" != "1" ]]; then
+    echo "== Building lege-gui (main GUI) for $TARGET"
+    cargo build --release --target "$TARGET" -p lege-gui --bin lege-gui \
+      --no-default-features
+  else
+    echo "== CLI-only build: skipping the lege-gui GUI binary"
+  fi
 fi
 
 APP="$OUT_DIR/$APP_NAME.app"
@@ -339,13 +385,58 @@ HELPERS_DIR="$APP/Contents/Helpers"
 rm -rf "$APP"
 mkdir -p "$MACOS_DIR" "$RES_DIR/docs" "$FRAMEWORKS_DIR" "$HELPERS_DIR"
 
-install -m755 "$ROOT/target/$TARGET/release/lege-gui" "$MACOS_DIR/lege-gui"
-# The GUI resolves the worker CLI next to its own executable.
+# The GUI resolves the worker CLI next to its own executable. In --cli mode the
+# bundle has no GUI; a launcher script (CFBundleExecutable) opens the CLI in a
+# Terminal window instead.
 install -m755 "$ROOT/target/$TARGET/release/lege" "$MACOS_DIR/lege"
+if [[ "$CLI_ONLY" != "1" ]]; then
+  install -m755 "$ROOT/target/$TARGET/release/lege-gui" "$MACOS_DIR/lege-gui"
+fi
 # Keep the AGPL encoder as a separately launched helper, not a linked library.
 install -m755 "$DJVU_ENCODER_BIN" "$HELPERS_DIR/djvu-encoder"
 mkdir -p "$RES_DIR/licenses"
 install -m644 "$DJVU_ENCODER_LICENSE" "$RES_DIR/licenses/djvu-encoder-AGPL-3.0.txt"
+
+# In --cli mode the bundle's main executable is a launcher that opens the `lege`
+# CLI in a Terminal window when the app is launched from Finder, while still
+# running it directly (foreground, args/stdin/stdout preserved) when invoked
+# from a shell.
+if [[ "$CLI_ONLY" == "1" ]]; then
+  cat >"$MACOS_DIR/lege-cli" <<'LAUNCHER'
+#!/bin/bash
+# Lege CLI launcher for the --cli bundle. Launching the app from Finder opens
+# the `lege` CLI in a new Terminal window; running this file from a shell
+# executes the CLI in the current terminal so arguments, stdin/stdout, and exit
+# codes pass through unchanged.
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+LEGE="$DIR/lege"
+
+# LaunchServices passes Finder-launched apps a -psn_<pid>.<serial> argument;
+# never forward it to the CLI.
+if [[ "${1:-}" == -psn_* ]]; then
+  shift
+fi
+
+# Already in a terminal (this also covers `open` from a shell): run the CLI
+# directly in the foreground.
+if [[ -n "${TERM_PROGRAM:-}" || -n "${TERM:-}" ]]; then
+  exec "$LEGE" "$@"
+fi
+
+# Launched from Finder: open an interactive session in Terminal.app.
+if [[ -x /usr/bin/osascript ]]; then
+  /usr/bin/osascript \
+    -e 'tell application "Terminal" to do script (quoted form of "'"$LEGE"'")' \
+    -e 'tell application "Terminal" to activate' \
+    >/dev/null 2>&1 && exit 0
+fi
+
+exec "$LEGE" "$@"
+LAUNCHER
+  chmod 755 "$MACOS_DIR/lege-cli"
+fi
 # Store documentation as bundle resources. The relative symlink preserves the
 # same executable-adjacent `docs/` lookup used by the Linux installer without
 # placing non-executable payloads directly in Contents/MacOS.
@@ -387,7 +478,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>        <string>$BUNDLE_ID</string>
     <key>CFBundleVersion</key>           <string>$VERSION</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleExecutable</key>        <string>lege-gui</string>
+    <key>CFBundleExecutable</key>        <string>$BUNDLE_EXECUTABLE</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
 $ICON_PLIST_ENTRY
     <key>LSMinimumSystemVersion</key>    <string>${MACOSX_DEPLOYMENT_TARGET:-13.3}</string>
@@ -427,7 +518,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   fi
   codesign "${CODESIGN_ARGS[@]}" "$HELPERS_DIR/djvu-encoder"
   codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege"
-  codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege-gui"
+  if [[ "$CLI_ONLY" != "1" ]]; then
+    codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege-gui"
+  fi
   codesign "${CODESIGN_ARGS[@]}" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
   DMG="$OUT_DIR/$ARCHIVE_STEM.dmg"

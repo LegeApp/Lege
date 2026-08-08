@@ -28,13 +28,31 @@ location explicitly:
 ```bash
 chmod +x appimagetool-x86_64.AppImage
 # option A: place on PATH as `appimagetool`, then:
+# default Freya GUI
 cargo appimage
-# option B: point at it directly:
+# optional viewer GUI
+cargo appimage viewer
+# option B: point at it directly (same shell command):
 APPIMAGETOOL=/path/to/appimagetool-x86_64.AppImage cargo appimage
+# or keep it for this session:
+export APPIMAGETOOL=/path/to/appimagetool-x86_64.AppImage
+cargo appimage viewer
+cargo appimage
 ```
 
-The `cargo appimage` task builds `lege` and `lege-gui` in release mode with the
-normal default features, creates `target/appimage/Lege.AppDir`, and emits:
+`cargo appimage` also falls back to the bundled tool at
+`lege-process/packaging/appimage/tools/appimagetool-x86_64.AppImage` if neither
+`APPIMAGETOOL` nor PATH-provided `appimagetool` is available.
+
+You can also force variant through env:
+```bash
+APPIMAGE_GUI=viewer cargo appimage
+```
+
+By default, `cargo appimage` builds the core CLI plus the Freya GUI (`lege-process/GUI/Freya`).
+Pass `viewer` (or `APPIMAGE_GUI=viewer`) to build the legacy viewer GUI instead.
+The task builds in release mode with the requested GUI target, creates
+`target/appimage/Lege.AppDir`, and emits:
 
 ```bash
 target/appimage/Lege-<version>-x86_64.AppImage
@@ -45,7 +63,7 @@ The AppImage bundles:
 - `usr/bin/lege`
 - `usr/bin/lege-gui`
 - `lege.desktop`
-- `lege.png`
+- `usr/share/icons/hicolor/256x256/apps/lege.png`
 - AppStream metadata
 
 `AppRun` launches the GUI and exports `LD_LIBRARY_PATH` and `LEGE_DATA_DIR` so

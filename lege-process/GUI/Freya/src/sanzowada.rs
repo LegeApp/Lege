@@ -35,7 +35,7 @@ pub fn theme_index_by_colors(colors: &[String]) -> Option<usize> {
     })
 }
 
-pub const SANZO_THEMES: [SanzoTheme; 28] = [
+pub static SANZO_THEMES: [SanzoTheme; 28] = [
     SanzoTheme {
         colors: &["Slate Color", "Antwarp Blue", "Golden Yellow"],
         default_dark: true,
