@@ -13,6 +13,18 @@ record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 : evide
         """
 }
 
+record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/1 : evidence {
+    title "The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return."
+    state verified
+    result pass
+    method observation
+    observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
+    artifact ".agent/scratch/lege-gpu-init-benchmark-2026-08-09.md"
+    summary """
+        The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return.
+        """
+}
+
 record lege-ecosystem.evidence.lege-process-about-email-removed-2026-08-09/1 : evidence {
     title "Both shipped About popup implementations now construct only their header when the theme chooser is closed, so no removed-row child or spacing remains. The email field/value is absent from both GUI schemas and both locale files, the scoped search returned no matches, and both locale schema tests passed."
     state verified
@@ -22,6 +34,30 @@ record lege-ecosystem.evidence.lege-process-about-email-removed-2026-08-09/1 : e
     command "rg -n -i 'read@legeapp.com|popups.email|\"email\"' lege-process/GUI lege-process/language_service; cargo test -p lege-gui-freya -p lege-music-gui bundled_locales_match_the_gui_schema"
     summary """
         Both shipped About popup implementations now construct only their header when the theme chooser is closed, so no removed-row child or spacing remains. The email field/value is absent from both GUI schemas and both locale files, the scoped search returned no matches, and both locale schema tests passed.
+        """
+}
+
+record lege-ecosystem.evidence.lege-process-about-email-removed-committed-2026-08-09/1 : evidence {
+    title "At the committed active-work revision, the scoped search found no About email field, value, or use, and both shipped GUI locale schema tests passed."
+    state verified
+    result pass
+    method command
+    observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
+    command "scoped email rg; bundled GUI locale tests"
+    summary """
+        At the committed active-work revision, the scoped search found no About email field, value, or use, and both shipped GUI locale schema tests passed.
+        """
+}
+
+record lege-ecosystem.evidence.lege-process-about-gpu-checks-committed-2026-08-09/1 : evidence {
+    title "At the committed active-work revision, both GUI locale tests, hardware WGPU constant/pipeline sharing test, and affected package checks passed."
+    state verified
+    result pass
+    method command
+    observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
+    command "GUI locale tests; lege-gpu sharing test; cargo check -p lege -p lege-gpu"
+    summary """
+        At the committed active-work revision, both GUI locale tests, hardware WGPU constant/pipeline sharing test, and affected package checks passed.
         """
 }
 
