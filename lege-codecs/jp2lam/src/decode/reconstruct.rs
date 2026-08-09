@@ -549,48 +549,6 @@ impl PackedWriteTarget<'_> {
     }
 }
 
-/// `channels` is the number of interleaved output bytes per pixel, taken from
-/// the output format rather than `colorspace.component_count()` — an sRGB image
-/// with an in-data alpha channel is `Srgb` but produces 4 interleaved planes
-/// (RGBA), and opaque pad formats produce 4 bytes from 3 colour planes.
-pub(crate) fn reconstruct_packed_u8_profiled(
-    header: &CodestreamHeader,
-    colorspace: ColorSpace,
-    channels: usize,
-    colour_channels: usize,
-    layout: PackedLayout,
-    tiles: Vec<DecodedTileCoefficients>,
-    stats: &mut StatsSink<'_>,
-) -> Result<Vec<u8>> {
-    let width = header.siz.width as usize;
-    let height = header.siz.height as usize;
-    let len = width
-        .checked_mul(height)
-        .and_then(|n| n.checked_mul(channels))
-        .ok_or_else(|| invalid("packed output size overflow"))?;
-    let mut data = vec![0u8; len];
-    reconstruct_packed_u8_into(
-        header,
-        colorspace,
-        channels,
-        colour_channels,
-        layout,
-        tiles,
-        PackedWriteTarget {
-            data: &mut data,
-            stride: width * channels,
-            channels,
-            origin_x: 0,
-            origin_y: 0,
-            width,
-            height,
-            layout,
-        },
-        stats,
-    )?;
-    Ok(data)
-}
-
 /// Reconstruct packed samples into an existing strided buffer rectangle.
 pub(crate) fn reconstruct_packed_u8_into(
     header: &CodestreamHeader,

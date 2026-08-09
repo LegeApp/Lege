@@ -46,6 +46,28 @@ pub struct DecodeMetadata {
     pub container_palette_channels: Option<u8>,
 }
 
+impl DecodeMetadata {
+    /// Dimensions produced by a full-image decode at `resolution`.
+    ///
+    /// This lets callers allocate a final destination before calling
+    /// [`Jp2Decoder::decode_into`], including for reduced-resolution requests.
+    pub fn decoded_dimensions(&self, resolution: DecodeResolution) -> Result<(u32, u32)> {
+        let reduce_levels = select_reduce_levels(&self.codestream, resolution)?;
+        let siz = &self.codestream.siz;
+        let (x0, x1) = reduced_axis_bounds(
+            siz.x_origin,
+            siz.x_origin.saturating_add(siz.width),
+            reduce_levels,
+        );
+        let (y0, y1) = reduced_axis_bounds(
+            siz.y_origin,
+            siz.y_origin.saturating_add(siz.height),
+            reduce_levels,
+        );
+        Ok((x1 - x0, y1 - y0))
+    }
+}
+
 /// A JPEG 2000 in-codestream opacity channel (from a `cdef` box).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InDataAlpha {
@@ -402,12 +424,21 @@ fn decode_jp2_into_with_scratch(
     target: DecodeTarget<'_>,
     scratch: &mut DecodeScratch,
 ) -> Result<DecodeIntoInfo> {
-    // Decode via the packed path (handles multi-tile, ROI, reduce). When the
-    // result is a packed raster matching the target size, copy active rows into
-    // the caller buffer (honouring a larger stride). Direct zero-copy into the
-    // caller's buffer for the full multi-tile path is a future refinement; this
-    // still validates the public contract and avoids planar intermediates when
-    // the stream is on the packed direct path.
+    // Full-image packed decoding reconstructs directly into the caller's
+    // destination, including reduced and multi-tile streams. Region output
+    // still needs the crop path below because its write geometry is not a full
+    // tile rectangle.
+    if request.region.is_none() {
+        if let Some(info) = decode_packed_direct_into(bytes, request, target, scratch)? {
+            return Ok(info);
+        }
+        return Err(crate::Jp2LamError::DecodeFailed(
+            "decode_into requires the packed 8-bit direct path; palette expansion or this colorspace/format combination needs planar output".into(),
+        ));
+    }
+
+    // Preserve region-decode behavior until reconstruction can write a clipped
+    // tile rectangle directly into a region-sized destination.
     let result = decode_jp2_request_with_scratch(bytes, request, scratch)?;
     let DecodeResult::Raster(raster) = result else {
         return Err(crate::Jp2LamError::DecodeFailed(
@@ -676,6 +707,100 @@ fn decode_packed_direct(
 ) -> Result<Option<DecodedRaster>> {
     let mut stats = StatsSink::disabled();
     let core = parse_jp2_core(bytes, &mut stats, ignore_container_palette, true, limits)?;
+    let Some(parameters) = packed_direct_parameters(&core, resolution, format)? else {
+        return Ok(None);
+    };
+    let (canvas_x0, canvas_y0, out_width, out_height) =
+        packed_canvas_geometry(&core.codestream, parameters.reduce_levels)?;
+    let stride = out_width
+        .checked_mul(parameters.channels)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output stride overflow".into()))?;
+    let total = stride
+        .checked_mul(out_height)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output size overflow".into()))?;
+    let mut data = vec![0u8; total];
+    decode_packed_direct_to_target(
+        &core,
+        region,
+        scratch,
+        limits,
+        &parameters,
+        canvas_x0,
+        canvas_y0,
+        &mut data,
+        stride,
+        &mut stats,
+    )?;
+
+    Ok(Some(DecodedRaster {
+        width: out_width as u32,
+        height: out_height as u32,
+        stride,
+        format,
+        data,
+    }))
+}
+
+fn decode_packed_direct_into(
+    bytes: &[u8],
+    request: &DecodeRequest,
+    target: DecodeTarget<'_>,
+    scratch: &mut DecodeScratch,
+) -> Result<Option<DecodeIntoInfo>> {
+    let mut stats = StatsSink::disabled();
+    let core = parse_jp2_core(
+        bytes,
+        &mut stats,
+        request.ignore_container_palette,
+        true,
+        &request.limits,
+    )?;
+    let Some(parameters) = packed_direct_parameters(&core, request.resolution, target.format)?
+    else {
+        return Ok(None);
+    };
+    let (canvas_x0, canvas_y0, out_width, out_height) =
+        packed_canvas_geometry(&core.codestream, parameters.reduce_levels)?;
+    if target.width as usize != out_width || target.height as usize != out_height {
+        return Err(crate::Jp2LamError::InvalidInput(format!(
+            "decode_into target {}x{} does not match decoded {}x{}",
+            target.width, target.height, out_width, out_height
+        )));
+    }
+    decode_packed_direct_to_target(
+        &core,
+        None,
+        scratch,
+        &request.limits,
+        &parameters,
+        canvas_x0,
+        canvas_y0,
+        target.data,
+        target.stride,
+        &mut stats,
+    )?;
+    Ok(Some(DecodeIntoInfo {
+        width: target.width,
+        height: target.height,
+        format: target.format,
+        stride: target.stride,
+    }))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PackedDirectParameters {
+    expected_space: ColorSpace,
+    reduce_levels: u8,
+    channels: usize,
+    colour_channels: usize,
+    layout: reconstruct::PackedLayout,
+}
+
+fn packed_direct_parameters(
+    core: &ParsedJp2Core<'_>,
+    resolution: DecodeResolution,
+    format: DecodeOutputFormat,
+) -> Result<Option<PackedDirectParameters>> {
     let expected_spaces: &[ColorSpace] = match format {
         DecodeOutputFormat::Gray8 | DecodeOutputFormat::GrayA8 => &[ColorSpace::Gray],
         // sYCC streams decode to packed sRGB bytes via a specialized kernel.
@@ -705,46 +830,20 @@ fn decode_packed_direct(
     let channels = format.component_count();
     let colour_channels = format.colour_component_count();
     let layout = reconstruct::PackedLayout::from_format(format);
+    Ok(Some(PackedDirectParameters {
+        expected_space,
+        reduce_levels,
+        channels,
+        colour_channels,
+        layout,
+    }))
+}
 
-    // Single tile: reconstruct straight into the packed raster (no intermediate
-    // planar image), the phase-1/2 fast path.
-    if core.tile_parts_by_tile.len() == 1 {
-        let (header, components) = decode_tile_components(
-            &core,
-            0,
-            &core.tile_parts_by_tile[0],
-            reduce_levels,
-            region,
-            &mut stats,
-            scratch,
-            limits,
-        )?;
-        let data = reconstruct::reconstruct_packed_u8_profiled(
-            &header,
-            expected_space,
-            channels,
-            colour_channels,
-            layout,
-            components,
-            &mut stats,
-        )?;
-        let stride = (header.siz.width as usize)
-            .checked_mul(channels)
-            .ok_or_else(|| {
-                crate::Jp2LamError::DecodeFailed("packed output stride overflow".into())
-            })?;
-        return Ok(Some(DecodedRaster {
-            width: header.siz.width,
-            height: header.siz.height,
-            stride,
-            format,
-            data,
-        }));
-    }
-
-    // Multi-tile: reconstruct each tile directly into its canvas rectangle.
-    // No per-tile packed temporary raster.
-    let siz = &core.codestream.siz;
+fn packed_canvas_geometry(
+    header: &CodestreamHeader,
+    reduce_levels: u8,
+) -> Result<(u32, u32, usize, usize)> {
+    let siz = &header.siz;
     let (canvas_x0, canvas_x1) =
         reduced_axis_bounds(siz.x_origin, siz.x_origin + siz.width, reduce_levels);
     let (canvas_y0, canvas_y1) =
@@ -753,21 +852,33 @@ fn decode_packed_direct(
         .map_err(|_| crate::Jp2LamError::DecodeFailed("packed canvas width overflow".into()))?;
     let out_height = usize::try_from(canvas_y1 - canvas_y0)
         .map_err(|_| crate::Jp2LamError::DecodeFailed("packed canvas height overflow".into()))?;
-    let stride = out_width
-        .checked_mul(channels)
-        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output stride overflow".into()))?;
-    let total = stride
-        .checked_mul(out_height)
-        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output size overflow".into()))?;
-    let mut data = vec![0u8; total];
+    Ok((canvas_x0, canvas_y0, out_width, out_height))
+}
 
+#[allow(clippy::too_many_arguments)]
+fn decode_packed_direct_to_target(
+    core: &ParsedJp2Core<'_>,
+    region: Option<RegionSpatial>,
+    scratch: &mut DecodeScratch,
+    limits: &DecodeLimits,
+    parameters: &PackedDirectParameters,
+    canvas_x0: u32,
+    canvas_y0: u32,
+    data: &mut [u8],
+    stride: usize,
+    stats: &mut StatsSink<'_>,
+) -> Result<()> {
+    // Every tile reconstructs directly into its final canvas rectangle. The
+    // one-tile case is the same zero-intermediate fast path with origin (0, 0).
     for (tile_index, part_indices) in core.tile_parts_by_tile.iter().enumerate() {
         let tile_index = u16::try_from(tile_index).map_err(|_| {
             crate::Jp2LamError::DecodeFailed("tile index exceeds Isot range".into())
         })?;
         let (x0, y0, width, height) = tile_rect(&core.codestream, tile_index)?;
-        let (reduced_x0, reduced_x1) = reduced_axis_bounds(x0, x0 + width, reduce_levels);
-        let (reduced_y0, reduced_y1) = reduced_axis_bounds(y0, y0 + height, reduce_levels);
+        let (reduced_x0, reduced_x1) =
+            reduced_axis_bounds(x0, x0 + width, parameters.reduce_levels);
+        let (reduced_y0, reduced_y1) =
+            reduced_axis_bounds(y0, y0 + height, parameters.reduce_levels);
         if let Some(region) = region {
             if reduced_x0 >= region.x1
                 || region.x0 >= reduced_x1
@@ -778,12 +889,12 @@ fn decode_packed_direct(
             }
         }
         let (header, components) = decode_tile_components(
-            &core,
+            core,
             tile_index,
             part_indices,
-            reduce_levels,
+            parameters.reduce_levels,
             region,
-            &mut stats,
+            stats,
             scratch,
             limits,
         )?;
@@ -794,35 +905,29 @@ fn decode_packed_direct(
         let stitch_start = stats.start();
         reconstruct::reconstruct_packed_u8_into(
             &header,
-            expected_space,
-            channels,
-            colour_channels,
-            layout,
+            parameters.expected_space,
+            parameters.channels,
+            parameters.colour_channels,
+            parameters.layout,
             components,
             reconstruct::PackedWriteTarget {
-                data: &mut data,
+                data,
                 stride,
-                channels,
+                channels: parameters.channels,
                 origin_x,
                 origin_y,
                 width: tile_width,
                 height: tile_height,
-                layout,
+                layout: parameters.layout,
             },
-            &mut stats,
+            stats,
         )?;
         stats.finish(stitch_start, |stats, elapsed| {
             stats.tile_stitch_ns = stats.tile_stitch_ns.saturating_add(elapsed);
         });
     }
 
-    Ok(Some(DecodedRaster {
-        width: out_width as u32,
-        height: out_height as u32,
-        stride,
-        format,
-        data,
-    }))
+    Ok(())
 }
 
 /// A crop rectangle in reduced-image pixel indices (0-based within the
@@ -2859,6 +2964,78 @@ mod tests {
                     .iter()
                     .all(|&b| b == 0xA5),
                 "row {y} padding must be untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_into_reduced_multi_tile_matches_owned_output() {
+        let width = 95u32;
+        let height = 70u32;
+        let samples: Vec<u8> = (0..width * height * 3)
+            .map(|i| ((i * 29 + 11) % 256) as u8)
+            .collect();
+        let image = Image::from_rgb_bytes(width, height, &samples).expect("source");
+        let encoded = crate::encode(
+            &image,
+            &crate::EncodeOptions {
+                quality: 100,
+                format: crate::OutputFormat::Jp2,
+                tile_policy: crate::TilePolicy::Fixed {
+                    width: 32,
+                    height: 24,
+                },
+                ..Default::default()
+            },
+        )
+        .expect("encode multi-tile");
+        let request = DecodeRequest {
+            resolution: DecodeResolution::ReduceLevels(1),
+            output: DecodeOutputFormat::Rgb8,
+            ..Default::default()
+        };
+        let metadata = inspect_jp2(&encoded).expect("inspect");
+        let (decoded_width, decoded_height) = metadata
+            .decoded_dimensions(request.resolution)
+            .expect("reduced dimensions");
+        let mut decoder = Jp2Decoder::new();
+        let DecodeResult::Raster(owned) = decoder.decode(&encoded, &request).expect("decode")
+        else {
+            panic!("expected raster");
+        };
+        assert_eq!((owned.width, owned.height), (decoded_width, decoded_height));
+
+        let row_bytes = decoded_width as usize * 3;
+        let stride = row_bytes + 13;
+        let mut target = vec![0xA5; stride * decoded_height as usize];
+        let info = decoder
+            .decode_into(
+                &encoded,
+                &request,
+                DecodeTarget {
+                    data: &mut target,
+                    width: decoded_width,
+                    height: decoded_height,
+                    stride,
+                    format: DecodeOutputFormat::Rgb8,
+                    premultiplied: false,
+                },
+            )
+            .expect("decode_into reduced multi-tile");
+        assert_eq!(info.width, decoded_width);
+        assert_eq!(info.height, decoded_height);
+        for y in 0..decoded_height as usize {
+            let src = y * owned.stride;
+            let dst = y * stride;
+            assert_eq!(
+                &target[dst..dst + row_bytes],
+                &owned.data[src..src + row_bytes],
+                "row {y} active pixels"
+            );
+            assert!(
+                target[dst + row_bytes..dst + stride]
+                    .iter()
+                    .all(|&byte| byte == 0xA5)
             );
         }
     }

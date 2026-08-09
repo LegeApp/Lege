@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use jp2lam::{
     ColorSpace, DecodeConcurrency, DecodeLimits as Jp2DecodeLimits, DecodeOutputFormat,
-    DecodeRequest, DecodeResolution, DecodeResult,
+    DecodeRequest, DecodeResolution, DecodeResult, DecodeTarget,
 };
 
 use crate::codec::{DecodeLimits, DecodedFormat, DecodedImage, ImageCodec};
@@ -277,14 +277,23 @@ impl ImageCodec for JpxCodec {
         let concurrency =
             jpx_concurrency_override().unwrap_or_else(|| load_aware_budget(in_flight.current()));
 
-        let result = if all_8bit {
+        // `decode_into` writes directly into the renderer's final Arc allocation.
+        // Container-palette expansion still needs jp2lam's planar fallback; an
+        // ignored PDF-overridden palette is eligible because the raw index
+        // component is decoded as Gray8.
+        let packed_direct =
+            all_8bit && (meta.container_palette_channels.is_none() || ignore_container_palette);
+        let result = if packed_direct {
+            let (decoded_width, decoded_height) = meta
+                .decoded_dimensions(resolution)
+                .map_err(|e| ImageError::Decode(format!("JPX: {e}")))?;
             self.decode_packed(
                 data,
                 resolution,
                 format,
                 channels,
-                width,
-                height,
+                decoded_width,
+                decoded_height,
                 limits,
                 concurrency,
                 ignore_container_palette,
@@ -347,45 +356,43 @@ impl JpxCodec {
             ignore_container_palette,
             limits: decoder_limits(limits),
         };
-        let result = JPX_DECODER
-            .with(|decoder| decoder.borrow_mut().decode(data, &request))
+        let stride = (width as usize)
+            .checked_mul(channels)
+            .ok_or_else(|| ImageError::Decode("JPX: stride overflow".into()))?;
+        let bytes = stride
+            .checked_mul(height as usize)
+            .ok_or_else(|| ImageError::Decode("JPX: size overflow".into()))?;
+        if bytes as u64 > limits.max_output_bytes {
+            return Err(ImageError::TooLarge { width, height });
+        }
+        let mut output_data = zeroed_arc(bytes);
+        let output_slice = Arc::get_mut(&mut output_data)
+            .expect("JPX output Arc is unique while the decoder writes it");
+        let info = JPX_DECODER
+            .with(|decoder| {
+                decoder.borrow_mut().decode_into(
+                    data,
+                    &request,
+                    DecodeTarget {
+                        data: output_slice,
+                        width,
+                        height,
+                        stride,
+                        format: output,
+                        premultiplied: false,
+                    },
+                )
+            })
             .map_err(|e| ImageError::Decode(format!("JPX: {e}")))?;
         if limits.is_cancelled() {
             return Err(ImageError::Cancelled);
         }
-
-        let raster = match result {
-            DecodeResult::Raster(raster) => raster,
-            // A packed request that fell back to native never happens for the
-            // formats above, but be defensive rather than mis-render.
-            DecodeResult::Native(_) => {
-                return self.decode_native_interleaved(
-                    data,
-                    resolution,
-                    format,
-                    channels,
-                    width,
-                    height,
-                    limits,
-                    concurrency,
-                    ignore_container_palette,
-                );
-            }
-        };
-
-        let bytes = raster.data.len();
-        if bytes as u64 > limits.max_output_bytes {
-            return Err(ImageError::TooLarge {
-                width: raster.width,
-                height: raster.height,
-            });
-        }
         Ok(DecodedImage {
-            width: raster.width,
-            height: raster.height,
+            width: info.width,
+            height: info.height,
             format,
-            stride: raster.stride,
-            data: Arc::from(raster.data),
+            stride: info.stride,
+            data: output_data,
         })
     }
 
@@ -509,6 +516,14 @@ impl JpxCodec {
             data: Arc::from(out),
         })
     }
+}
+
+/// Allocate the renderer's final shared JPX output directly. The allocation is
+/// uniquely owned while jp2lam fills it, then handed to `DecodedImage` unchanged.
+fn zeroed_arc(len: usize) -> Arc<[u8]> {
+    let data = Arc::<[u8]>::new_zeroed_slice(len);
+    // SAFETY: `new_zeroed_slice` initialized every `u8` to a valid zero value.
+    unsafe { data.assume_init() }
 }
 
 fn decoder_limits(limits: &DecodeLimits) -> Jp2DecodeLimits {

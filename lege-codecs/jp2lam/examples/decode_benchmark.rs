@@ -1,9 +1,9 @@
 //! Decode-side micro-benchmark for jp2lam.
 //!
 //! Defaults measure the **renderer-relevant** path: a persistent [`Jp2Decoder`]
-//! session, packed 8-bit output, and a budgeted worker count — not the
-//! compatibility `decode_jp2()` planar/serial path (which remains available
-//! via `JP2LAM_DECODE_BENCH_LEGACY=1` for regression comparison).
+//! session writing packed 8-bit output into caller-owned storage with a
+//! budgeted worker count — not the compatibility `decode_jp2()` planar/serial
+//! path (which remains available via `JP2LAM_DECODE_BENCH_LEGACY=1`).
 //!
 //! Usage:
 //! ```text
@@ -22,8 +22,8 @@
 
 use jp2lam::{
     ColorSpace, Component, DecodeConcurrency, DecodeOutputFormat, DecodeRegion, DecodeRequest,
-    DecodeResolution, DecodeResult, EncodeOptions, Image, Jp2DecodeStats, Jp2Decoder, OutputFormat,
-    decode_jp2, decode_jp2_with_stats, encode, inspect_jp2,
+    DecodeResolution, DecodeResult, DecodeTarget, EncodeOptions, Image, Jp2DecodeStats, Jp2Decoder,
+    OutputFormat, decode_jp2, decode_jp2_with_stats, encode, inspect_jp2,
 };
 use std::hint::black_box;
 use std::path::Path;
@@ -208,6 +208,56 @@ fn run_session_path(
     megapixels: f64,
     request: &DecodeRequest,
 ) {
+    let metadata = inspect_jp2(encoded).expect("inspect session fixture");
+    if request.output != DecodeOutputFormat::NativePlanarI32
+        && metadata.container_palette_channels.is_none()
+    {
+        let (width, height) = metadata
+            .decoded_dimensions(request.resolution)
+            .expect("select output dimensions");
+        let stride = width as usize * request.output.bytes_per_pixel();
+        let mut output = vec![0u8; stride * height as usize];
+        let mut decoder = Jp2Decoder::new();
+        decoder
+            .decode_into(
+                encoded,
+                request,
+                DecodeTarget {
+                    data: &mut output,
+                    width,
+                    height,
+                    stride,
+                    format: request.output,
+                    premultiplied: false,
+                },
+            )
+            .expect("warm session decode_into");
+        let expected_hash = bytes_hash(&output);
+
+        let mut samples = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            decoder
+                .decode_into(
+                    black_box(encoded),
+                    request,
+                    DecodeTarget {
+                        data: black_box(&mut output),
+                        width,
+                        height,
+                        stride,
+                        format: request.output,
+                        premultiplied: false,
+                    },
+                )
+                .expect("session decode_into");
+            samples.push(start.elapsed());
+            assert_eq!(bytes_hash(black_box(&output)), expected_hash);
+        }
+        report_timings("session_packed_into", &samples, megapixels, expected_hash);
+        return;
+    }
+
     let mut decoder = Jp2Decoder::new();
     let warm = decoder.decode(encoded, request).expect("warm session decode");
     let expected_hash = result_hash(&warm);
