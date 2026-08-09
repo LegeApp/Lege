@@ -37,6 +37,18 @@ record lege-ecosystem-perf.papercut.after-committing-validated-akr-record-change
     created_at 2026-08-09
 }
 
+record lege-ecosystem-perf.papercut.after-several-successful-akr-writes-the-mcp/1 : papercut {
+    title "After several successful AKR writes, the MCP transport closed…"
+    state verified
+    statement """
+        After several successful AKR writes, the MCP transport closed persistently: knowledge.explain and knowledge.revise both failed immediately, and error[AKR-C004]: "D-011" is neither a registered diagnostic code, a known rule, nor a record kind also rejected a decision identifier even though tool guidance names it. The local  fallback completed the handoff update.
+        """
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
 record lege-ecosystem-perf.papercut.at-handoff-knowledge-validate-withheld-its/1 : papercut {
     title "At handoff, knowledge.validate withheld its entire 8.5k-token result…"
     state verified
@@ -96,6 +108,30 @@ record lege-ecosystem-perf.papercut.knowledge-context-withheld-a-4-1k-token-bund
     created_at 2026-08-09
 }
 
+record lege-ecosystem-perf.papercut.knowledge-papercut-rejected-its-first-call/1 : papercut {
+    title "`knowledge.papercut` rejected its first call because this…"
+    state verified
+    statement """
+        `knowledge.papercut` rejected its first call because this multi-namespace project requires an explicit namespace, although the task protocol's example does not mention that requirement. Retrying with `namespace: lege-ecosystem-perf` succeeded.
+        """
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.refreshing-the-handoff-s-structures-pdf-profile/1 : papercut {
+    title "Refreshing the handoff's Structures.pdf profile, `cargo build --release…"
+    state verified
+    statement """
+        Refreshing the handoff's Structures.pdf profile, `cargo build --release -p pdfium-diff` failed because the profiling tool also is not a root-workspace member. It must be built through `lege-pdf/render/tools/pdfium-diff/Cargo.toml`, mirroring the jp2lam package-selection gotcha.
+        """
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    about "cargo"
+    author "codex"
+    created_at 2026-08-09
+}
+
 record lege-ecosystem-perf.papercut.running-cargo-fmt-check-from-lege-pdf-render/1 : papercut {
     title "Running `cargo fmt --check` from `lege-pdf/render` failed with…"
     state verified
@@ -107,6 +143,17 @@ record lege-ecosystem-perf.papercut.running-cargo-fmt-check-from-lege-pdf-render
     created_at 2026-08-09
 }
 
+record lege-ecosystem-perf.papercut.the-exact-structures-pdf-profiling-command/1 : papercut {
+    title "The exact Structures.pdf profiling command stored in AKR failed after a…"
+    state verified
+    statement """
+        The exact Structures.pdf profiling command stored in AKR failed after a normal release rebuild because `pdfium-diff profile` requires the non-default `bench-profiling` feature. The evidence command does not capture its required build configuration; rebuild via the tool manifest with `--features bench-profiling` first.
+        """
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    author "codex"
+    created_at 2026-08-09
+}
+
 record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/1 : papercut {
     title "The targeted renderer/image clippy check is blocked by an unrelated…"
     state verified
@@ -114,6 +161,17 @@ record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/
         The targeted renderer/image clippy check is blocked by an unrelated existing `-D clippy::expect-used` violation in `lege-pdf/render/crates/pdf-document/src/pages.rs:594`, reached through `pdf-cli` dependencies. Renderer/image tests pass, but the documented clippy gate cannot complete until that pre-existing lint is resolved or the check is scoped differently.
         """
     observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-correcting-a-sealed-evidence-record/1 : papercut {
+    title "While correcting a sealed evidence record, copying the JSON-rendered…"
+    state verified
+    statement """
+        While correcting a sealed evidence record, copying the JSON-rendered observed_at value into an AKR source body failed because the source grammar expects a typed commit rather than the displayed string; additionally, papercut logging requires an explicit namespace in this multi-namespace repository.
+        """
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
     author "codex"
     created_at 2026-08-09
 }
@@ -149,6 +207,18 @@ record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 :
         """
     observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
     supersedes [ @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/1 ]
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-validating-the-jpx-output-ownership/1 : papercut {
+    title "While validating the JPX output-ownership change, `cargo check -p…"
+    state verified
+    statement """
+        While validating the JPX output-ownership change, `cargo check -p jp2lam` worked from the ecosystem root but `cargo test -p jp2lam` failed because jp2lam is path-patched yet not a workspace member. Tests must be invoked with `--manifest-path lege-codecs/jp2lam/Cargo.toml`, a non-obvious package-selection inconsistency.
+        """
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    about "cargo"
     author "codex"
     created_at 2026-08-09
 }

@@ -1,6 +1,58 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem-perf.evidence.jp2-direct-output-benchmark-smoke-2026-08-09/1 : evidence {
+    title "Direct-output release benchmark smoke"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "JP2LAM_DECODE_BENCH_WIDTH=512 JP2LAM_DECODE_BENCH_HEIGHT=512 JP2LAM_DECODE_BENCH_ITERS=5 JP2LAM_DECODE_BENCH_THREADS=4 cargo run --release --manifest-path lege-codecs/jp2lam/Cargo.toml --example decode_benchmark"
+    artifact "lege-codecs/jp2lam/examples/decode_benchmark.rs"
+    summary """
+        The release benchmark exercised path=session_packed_into and produced stable output hash 08ffafc12705f1c4 at 2.993 ms median for the synthetic 512x512 Gray8 fixture.
+        """
+}
+
+record lege-ecosystem-perf.evidence.jp2-direct-output-codec-tests-2026-08-09/1 : evidence {
+    title "JP2 direct-output codec regression suite"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "cargo test --manifest-path lege-codecs/jp2lam/Cargo.toml --lib"
+    artifact "lege-codecs/jp2lam/src/decode/mod.rs"
+    summary """
+        The jp2lam library suite passed: 340 passed, 0 failed, 5 ignored, including direct-write single-tile and reduced multi-tile stride-padding coverage.
+        """
+}
+
+record lege-ecosystem-perf.evidence.jp2-direct-output-renderer-tests-2026-08-09/1 : evidence {
+    title "Renderer image codec regression suite"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "cargo test -p pdf-image"
+    artifact "lege-pdf/render/crates/pdf-image/src/jpx.rs"
+    summary """
+        All pdf-image tests passed, including 7 JPX codec integration tests covering packed Gray/RGB, reduced output, high-bit-depth fallback, limits, and geometry.
+        """
+}
+
+record lege-ecosystem-perf.evidence.jp2-direct-output-workspace-check-2026-08-09/1 : evidence {
+    title "Ecosystem workspace check after JP2 direct output"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "cargo check --workspace"
+    artifact "lege-pdf/render/crates/pdf-image/src/jpx.rs"
+    summary """
+        The complete Lege ecosystem workspace compiled successfully after routing packed JPX output directly into the renderer's final Arc allocation.
+        """
+}
+
 record lege-ecosystem-perf.evidence.jpeg-direct-arc-decode-profile/1 : evidence {
     title "JPEG direct-Arc decoder assembly profile"
     state superseded
@@ -80,6 +132,55 @@ record lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/2 : 
         The full targeted renderer/codec test set passed after the Arc final-buffer handoff, including pixel-equivalence, fixture, and chaos coverage; focused RGB8 area-min mask tests also passed 6/6.
         """
     supersedes [ @lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/1 ]
+}
+
+record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/1 : evidence {
+    title "Structures.pdf direct JPX output profile"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 21 .agent/scratch/mrc-smask-followup-20260809/structures.direct-output.decode-only.repeat.jsonl --mode decode-only"
+    artifact ".agent/scratch/mrc-smask-followup-20260809/structures.direct-output.decode-only.repeat.jsonl"
+    summary """
+        On Structures.pdf page 0, 21-run direct-output medians were 246.834 ms decode-only, 204.616 ms JPX, and 41.516 ms JBIG2 with unchanged hash fdc3994f80330ee0; JPX p25/p75 were 195.466/233.428 ms.
+        """
+}
+
+record lege-ecosystem-perf.evidence.structures-direct-output-warm-profile-2026-08-09/1 : evidence {
+    title "Structures.pdf warm renderer profile after direct JPX output"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.direct-output.compiled.jsonl --mode compiled && lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.direct-output.warm-decoded.jsonl --mode warm-decoded"
+    artifact ".agent/scratch/mrc-smask-followup-20260809/structures.direct-output.compiled.jsonl"
+    summary """
+        Structures.pdf page 0 stayed byte-identical at hash fdc3994f80330ee0; 11-run medians were 70.697 ms compiled and 70.049 ms warm-decoded, with render.output approximately 0.000201 ms.
+        """
+}
+
+record lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/1 : evidence {
+    title "Structures.pdf direct Arc output versus owned Vec control"
+    state superseded
+    result pass
+    method observation
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    artifact ".agent/scratch/mrc-smask-followup-20260809/structures.owned-control.decode-only.jsonl"
+    summary """
+        A 21-run control build temporarily forcing the former owned-raster plus Vec-to-Arc path measured 266.771 ms median JPX (p25/p75 261.850/282.075), versus 204.616 ms (195.466/233.428) for direct Arc output: direct output was 23.3% faster in this same-session A/B. Both hashes were fdc3994f80330ee0; the direct gate was restored after measurement.
+        """
+}
+
+record lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/2 : evidence {
+    title "Structures.pdf direct Arc output versus owned Vec control"
+    state verified
+    result pass
+    method observation
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    artifact ".agent/scratch/mrc-smask-followup-20260809/structures.packed-owned-control.decode-only.jsonl"
+    summary "A corrected 21-run control temporarily restored the former packed owned-raster plus Vec-to-Arc path. It measured 196.892 ms median JPX (p25/p75 192.961/205.569), versus 204.616 ms (195.466/233.428) for direct Arc output in a sequential same-session comparison. Direct output was about 3.9% slower at the median, and the distributions overlap, so this run demonstrates no throughput improvement. Both output hashes were fdc3994f80330ee0. The direct path still removes one full-image allocation and copy; the temporary control branch was removed after measurement. Revision 1 used the native-planar fallback as its control and is superseded by this corrected packed-path measurement."
+    supersedes [ @lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/1 ]
 }
 
 record lege-ecosystem-perf.evidence.structures-smask-followup-profile/1 : evidence {
