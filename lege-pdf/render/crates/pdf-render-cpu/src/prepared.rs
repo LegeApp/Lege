@@ -6230,7 +6230,7 @@ mod image_cache_tests {
         crate::exec::execute(prepared, &mut surface, &mut ctx, &mut stats);
         let (_stride, pixels) =
             surface.into_output(pdf_render_api::OutputFormat::Rgba8PremultipliedSrgb);
-        pixels
+        pixels.to_vec()
     }
 
     fn prepared_samples(prepared: &CpuPreparedPage) -> Arc<[u8]> {

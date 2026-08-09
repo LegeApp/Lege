@@ -1191,7 +1191,7 @@ impl<'a> Decoder<'a> {
         let (kind, format, bpp) = output_layout(frame, self.adobe_transform, self.saw_jfif);
         let modes = component_upsampling(frame);
         let stride = w * bpp;
-        let mut out = vec![0u8; stride * h];
+        let mut out = zeroed_arc(stride * h);
         let ncomp = scan_comps.len();
         let mut sampled = vec![vec![0u8; w]; ncomp];
 
@@ -1276,7 +1276,7 @@ impl<'a> Decoder<'a> {
                 &modes,
                 &mut sampled,
                 kind,
-                &mut out,
+                unique_arc_mut(&mut out),
                 stride,
             );
             for si in 0..ncomp {
@@ -1300,7 +1300,7 @@ impl<'a> Decoder<'a> {
             &modes,
             &mut sampled,
             kind,
-            &mut out,
+            unique_arc_mut(&mut out),
             stride,
         );
 
@@ -2394,7 +2394,9 @@ fn stream_source_row<'a>(
     if sy < band_start {
         &above[..stride]
     } else if sy >= band_start + band_rows {
-        let next = below.expect("a non-edge fancy-upsample row has lower context");
+        let Some(next) = below else {
+            unreachable!("a non-edge fancy-upsample row always has lower context")
+        };
         &next[..stride]
     } else {
         let local = sy - band_start;
@@ -2502,7 +2504,7 @@ fn assemble(
     let (kind, format, bpp) = output_layout(frame, adobe, saw_jfif);
     let modes = component_upsampling(frame);
     let stride = w * bpp;
-    let mut out = vec![0u8; stride * h];
+    let mut out = zeroed_arc(stride * h);
     let mut sampled = vec![vec![0u8; w]; n];
     for y in 0..h {
         for ci in 0..n {
@@ -2539,7 +2541,7 @@ fn assemble(
         }
         assemble_row(
             kind,
-            &mut out[y * stride..y * stride + stride],
+            &mut unique_arc_mut(&mut out)[y * stride..y * stride + stride],
             w,
             &rows[..n],
         );
@@ -2560,14 +2562,38 @@ fn store_three(out: &mut [u8], pixel: usize, c0: u8, c1: u8, c2: u8, is_rgb: boo
     out[dst + 2] = rgb[2];
 }
 
-fn image(w: usize, h: usize, format: DecodedFormat, stride: usize, data: Vec<u8>) -> DecodedImage {
+fn image(
+    w: usize,
+    h: usize,
+    format: DecodedFormat,
+    stride: usize,
+    data: Arc<[u8]>,
+) -> DecodedImage {
     DecodedImage {
         width: w as u32,
         height: h as u32,
         format,
         stride,
-        data: Arc::from(data),
+        data,
     }
+}
+
+/// Allocate the decoder's final shared output directly. A `Vec<u8>` cannot be
+/// rehomed into `Arc<[u8]>` without a full allocation and copy because the Arc
+/// refcounts need adjacent storage; scan assembly writes into this uniquely
+/// owned allocation and then hands it to `DecodedImage` unchanged.
+fn zeroed_arc(len: usize) -> Arc<[u8]> {
+    let data = Arc::<[u8]>::new_zeroed_slice(len);
+    // SAFETY: `new_zeroed_slice` initialized every `u8` to a valid zero value.
+    unsafe { data.assume_init() }
+}
+
+#[inline]
+fn unique_arc_mut<T>(data: &mut Arc<[T]>) -> &mut [T] {
+    let Some(data) = Arc::get_mut(data) else {
+        unreachable!("JPEG output is never shared while the decoder writes it")
+    };
+    data
 }
 
 #[cfg(test)]

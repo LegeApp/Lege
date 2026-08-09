@@ -1795,7 +1795,6 @@ impl CpuBackend {
         #[cfg(feature = "profiling")]
         let output_start = std::time::Instant::now();
         let (stride, pixels) = surface.into_output(request.output_format);
-        let pixels: Arc<[u8]> = Arc::from(pixels);
         stats.output_bytes = pixels.len() as u64;
         #[cfg(feature = "profiling")]
         {
@@ -1841,7 +1840,13 @@ impl CpuBackend {
         profile.increment("render.soft_masks", stats.soft_masks as u64);
         profile.increment("render.output_bytes", stats.output_bytes);
         profile.merge(&stats.profile);
-        let transient_render_bytes = stats.surface_bytes.saturating_add(stats.output_bytes);
+        // RGBA output takes ownership of the surface allocation; it is no
+        // longer a second simultaneously-live full-page buffer. Gray8 still
+        // allocates its smaller output while reading the RGBA surface.
+        let transient_render_bytes = match request.output_format {
+            OutputFormat::Rgba8PremultipliedSrgb => stats.surface_bytes.max(stats.output_bytes),
+            OutputFormat::Gray8 => stats.surface_bytes.saturating_add(stats.output_bytes),
+        };
         profile.allocate_bytes(transient_render_bytes);
         profile.release_bytes(transient_render_bytes);
         Ok((host, stats, profile))
@@ -1965,7 +1970,6 @@ impl CpuBackend {
         stats.absorb_diagnostics(&prepared.diagnostics);
         let output_start = std::time::Instant::now();
         let (stride, pixels) = surface.into_output(request.output_format);
-        let pixels: Arc<[u8]> = Arc::from(pixels);
         stats.output_bytes = pixels.len() as u64;
         stats.output = output_start.elapsed();
         let mut profile = stats.profile.clone();
@@ -1974,7 +1978,10 @@ impl CpuBackend {
         profile.add_duration("render.output", stats.output);
         profile.add_duration("render.prepared_total", total_start.elapsed());
         profile.increment("render.output_bytes", stats.output_bytes);
-        let transient_render_bytes = stats.surface_bytes.saturating_add(stats.output_bytes);
+        let transient_render_bytes = match request.output_format {
+            OutputFormat::Rgba8PremultipliedSrgb => stats.surface_bytes.max(stats.output_bytes),
+            OutputFormat::Gray8 => stats.surface_bytes.saturating_add(stats.output_bytes),
+        };
         profile.allocate_bytes(transient_render_bytes);
         profile.release_bytes(transient_render_bytes);
         Ok((
