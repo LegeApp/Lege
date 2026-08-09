@@ -18,6 +18,9 @@ Cargo.lock
 !CHANGELOG.md
 !jp2lam-photo-hdr-readiness-plan.md
 !real-estate-hdr-format-recommendations.md
+# AKR migration trackers still cite these legacy reports. Keep them until the
+# corresponding import work is fully dispositioned and completed.
+!decode-fix-plan/*.md
 *.pdf
 *.txt
 perf.data*
