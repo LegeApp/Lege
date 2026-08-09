@@ -132,18 +132,16 @@ impl CompiledGraph {
     }
 
     #[cfg(feature = "layout-detection")]
-    pub(crate) async fn build_layout(graph: &PreparedGraph) -> Result<Self> {
-        let t0 = std::time::Instant::now();
-        let ctx = GpuContext::shared().await?;
+    pub(crate) fn build_layout_with_context(
+        graph: &PreparedGraph,
+        ctx: GpuContext,
+    ) -> Result<Self> {
         if ctx.is_cpu_adapter {
             bail!("{}", Self::LAYOUT_SOFTWARE_ADAPTER_ERROR);
         }
         #[cfg(feature = "debug-logging")]
-        eprintln!(
-            "  compiled.layout_build: gpu_init={:.0}ms",
-            t0.elapsed().as_millis()
-        );
-        Self::build_from_context(graph, ctx, t0, None)
+        eprintln!("  compiled.layout_build: using prefetched GPU context");
+        Self::build_from_context(graph, ctx, std::time::Instant::now(), None)
     }
 
     #[cfg(feature = "layout-detection")]

@@ -11,6 +11,8 @@ use crate::vision::onnx_pb::ModelProto;
 use crate::vision::preprocess;
 use crate::vision::reference::Tensor;
 use crate::vision::runtime::compiled::CompiledGraph;
+#[cfg(feature = "layout-detection")]
+use crate::vision::runtime::device::GpuContext;
 
 #[cfg(feature = "layout-detection")]
 const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.20;
@@ -76,23 +78,45 @@ impl LayoutDetector {
         if config.model_path.as_os_str().is_empty() {
             bail!("layout model path is empty");
         }
-        let model = load_model(&config.model_path).with_context(|| {
-            format!(
-                "failed to load layout model {}",
-                config.model_path.display()
-            )
-        })?;
-        Self::from_model(model, config)
+        let model_path = config.model_path.clone();
+        Self::load_and_build(
+            move || {
+                load_model(&model_path).with_context(|| {
+                    format!("failed to load layout model {}", model_path.display())
+                })
+            },
+            config,
+        )
     }
 
     /// Build a detector from an in-memory ONNX payload (e.g. a model embedded
     /// in the binary). `config.model_path` may be empty.
     pub fn from_model_bytes(bytes: &[u8], config: LayoutConfig) -> Result<Self> {
-        let model = load_model_from_bytes(bytes).context("failed to load embedded layout model")?;
-        Self::from_model(model, config)
+        Self::load_and_build(
+            || load_model_from_bytes(bytes).context("failed to load embedded layout model"),
+            config,
+        )
     }
 
-    fn from_model(model: ModelProto, config: LayoutConfig) -> Result<Self> {
+    fn load_and_build(
+        load_model: impl FnOnce() -> Result<ModelProto> + Send,
+        config: LayoutConfig,
+    ) -> Result<Self> {
+        // Model decoding/preparation and adapter/device discovery are
+        // independent cold-start work. Start device creation while the CPU
+        // parses the model, then join before allocating graph buffers so the
+        // detector remains fully ready when this constructor returns.
+        let (graph, gpu_context) = rayon::join(
+            || Self::prepare_model(load_model()?),
+            || {
+                pollster::block_on(GpuContext::shared())
+                    .context("failed to compile layout graph for WGPU")
+            },
+        );
+        Self::from_graph(graph?, gpu_context, config)
+    }
+
+    fn prepare_model(model: ModelProto) -> Result<PreparedGraph> {
         let report = ModelReport::from_model(&model).context("failed to inspect layout model")?;
         if !report.rejection_reasons.is_empty() {
             bail!(
@@ -108,8 +132,15 @@ impl LayoutDetector {
                 graph.inputs
             );
         }
+        Ok(graph)
+    }
 
-        let compiled = pollster::block_on(CompiledGraph::build_layout(&graph))
+    fn from_graph(
+        graph: PreparedGraph,
+        gpu_context: Result<GpuContext>,
+        config: LayoutConfig,
+    ) -> Result<Self> {
+        let compiled = CompiledGraph::build_layout_with_context(&graph, gpu_context?)
             .context("failed to compile layout graph for WGPU")?;
 
         Ok(Self {
@@ -124,11 +155,9 @@ impl LayoutDetector {
     }
 
     /// Build a second inference session that shares this detector's GPU device
-    /// and immutable prepared graph but owns its own resident activation and
-    /// readback buffers, so it can run one page concurrently with the parent
-    /// (Phase 5 GPU session pool). Model weights are re-uploaded per session;
-    /// PP-DocLayout-M is small, so a handful of sessions stay well inside the
-    /// VRAM budget.
+    /// and immutable prepared graph, constant buffers, and shader pipelines but
+    /// owns its own resident activation and readback buffers, so it can run one
+    /// page concurrently with the parent (Phase 5 GPU session pool).
     pub fn build_sibling(&self) -> Result<Self> {
         let compiled = self
             .compiled
@@ -1273,8 +1302,9 @@ mod pp_doclayout_tests {
         );
         let graph = PreparedGraph::from_model(&model).expect("prepare PP graph");
         assert_eq!(graph.inputs.first().map(String::as_str), Some("pp_image"));
+        let ctx = pollster::block_on(GpuContext::shared()).expect("initialize GPU context");
         let compiled =
-            pollster::block_on(CompiledGraph::build_layout(&graph)).expect("compile PP graph");
+            CompiledGraph::build_layout_with_context(&graph, ctx).expect("compile PP graph");
 
         let input = Tensor::new(
             vec![1, 3, 640, 640],
