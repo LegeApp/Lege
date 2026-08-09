@@ -156,11 +156,25 @@ record lege-ecosystem-perf.papercut.the-exact-structures-pdf-profiling-command/1
 
 record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/1 : papercut {
     title "The targeted renderer/image clippy check is blocked by an unrelated…"
-    state verified
+    state superseded
     statement """
         The targeted renderer/image clippy check is blocked by an unrelated existing `-D clippy::expect-used` violation in `lege-pdf/render/crates/pdf-document/src/pages.rs:594`, reached through `pdf-cli` dependencies. Renderer/image tests pass, but the documented clippy gate cannot complete until that pre-existing lint is resolved or the check is scoped differently.
         """
     observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/2 : papercut {
+    title "The targeted renderer/image clippy check is blocked by an unrelated…"
+    state verified
+    statement """
+        The targeted renderer/image clippy check is blocked by an unrelated existing `-D clippy::expect-used` violation in `lege-pdf/render/crates/pdf-document/src/pages.rs:594`, reached through `pdf-cli` dependencies. Renderer/image tests pass, but the documented clippy gate cannot complete until that pre-existing lint is resolved or the check is scoped differently.
+
+        RESOLVED: annotation quad-point conversion now uses an explicitly sized copy instead of `expect`, and the JPX final-Arc path returns a typed decode error if its allocation unexpectedly becomes shared. The documented `cargo clippy -p pdf-render-cpu -p pdf-cli` gate completes successfully; existing non-denied warnings remain visible.
+        """
+    observed_at git:acb7cffe321b6aebd57ec4cc2f15ba99084a1586
+    supersedes [ @lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/1 ]
     author "codex"
     created_at 2026-08-09
 }
@@ -201,12 +215,26 @@ record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/1 :
 
 record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 : papercut {
     title "While reproducing the Structures.pdf MRC profile, the performance…"
-    state verified
+    state superseded
     statement """
         While reproducing the Structures.pdf MRC profile, the performance handoff labels the 2222x3191 run as scale 2.0833333, but the supplied 444.4x638.2-point page produces 926x1330 at that scale and 2222x3191 at scale 5.0. Benchmark records should store both requested scale and resulting dimensions so comparisons cannot silently mix them.
         """
     observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
     supersedes [ @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/1 ]
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/3 : papercut {
+    title "While reproducing the Structures.pdf MRC profile, the performance…"
+    state verified
+    statement """
+        While reproducing the Structures.pdf MRC profile, the performance handoff labels the 2222x3191 run as scale 2.0833333, but the supplied 444.4x638.2-point page produces 926x1330 at that scale and 2222x3191 at scale 5.0. Benchmark records should store both requested scale and resulting dimensions so comparisons cannot silently mix them.
+
+        RESOLVED: the current Structures profile evidence identifies scale 2.0833333 as a 926x1330 page render and separately identifies 2222x3191 as the embedded JPX source dimensions, preventing the two sizes from being conflated.
+        """
+    observed_at git:acb7cffe321b6aebd57ec4cc2f15ba99084a1586
+    supersedes [ @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 ]
     author "codex"
     created_at 2026-08-09
 }

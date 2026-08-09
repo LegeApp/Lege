@@ -1,6 +1,18 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem-perf.evidence.akr-m022-cleanup-2026-08-09/1 : evidence {
+    title "After restoring the five legacy reports still cited by active migration trackers, strict validation reported zero AKR-M022 diagnostics; the count fell from 153 to zero, leaving only four AKR-G012 ancestry warnings."
+    state verified
+    result pass
+    method command
+    observed_at git:acb7cffe321b6aebd57ec4cc2f15ba99084a1586
+    command "akr check"
+    summary """
+        After restoring the five legacy reports still cited by active migration trackers, strict validation reported zero AKR-M022 diagnostics; the count fell from 153 to zero, leaving only four AKR-G012 ancestry warnings.
+        """
+}
+
 record lege-ecosystem-perf.evidence.jp2-direct-output-benchmark-smoke-2026-08-09/1 : evidence {
     title "Direct-output release benchmark smoke"
     state verified
@@ -132,6 +144,18 @@ record lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/2 : 
         The full targeted renderer/codec test set passed after the Arc final-buffer handoff, including pixel-equivalence, fixture, and chaos coverage; focused RGB8 area-min mask tests also passed 6/6.
         """
     supersedes [ @lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/1 ]
+}
+
+record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-2026-08-09/1 : evidence {
+    title "The documented renderer clippy gate exited successfully after replacing expect-based fixed-size annotation conversion and handling a theoretically shared JPX Arc with a typed decode error. pdf-document tests and all 74 pdf-image tests also passed."
+    state verified
+    result pass
+    method command
+    observed_at git:acb7cffe321b6aebd57ec4cc2f15ba99084a1586
+    command "cargo clippy -p pdf-render-cpu -p pdf-cli"
+    summary """
+        The documented renderer clippy gate exited successfully after replacing expect-based fixed-size annotation conversion and handling a theoretically shared JPX Arc with a typed decode error. pdf-document tests and all 74 pdf-image tests also passed.
+        """
 }
 
 record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/1 : evidence {
