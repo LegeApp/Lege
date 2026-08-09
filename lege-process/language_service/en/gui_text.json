@@ -145,7 +145,6 @@
       "queue_items_title": "Queue Items",
       "processing_log_title": "Processing Log",
       "debug_log_title": "Debug Log",
-      "email": "Email",
       "docs_not_found": "Documentation not found. Ensure docs/ is next to the Lege executable.",
       "documentation": "Documentation",
       "licenses": "Licenses",

@@ -183,7 +183,6 @@ pub struct GuiPopupsText {
     pub queue_items_title: String,
     pub processing_log_title: String,
     pub debug_log_title: String,
-    pub email: String,
     pub docs_not_found: String,
     pub documentation: String,
     pub licenses: String,
@@ -215,3 +214,18 @@ pub static GUI_TEXT: Lazy<GuiText> = Lazy::new(|| {
     let json = include_str!("../../../language_service/en/gui_text.json");
     serde_json::from_str(json).expect("gui_text.json failed to parse")
 });
+
+#[cfg(test)]
+mod tests {
+    use super::GuiText;
+
+    #[test]
+    fn bundled_locales_match_the_gui_schema() {
+        for json in [
+            include_str!("../../../language_service/en/gui_text.json"),
+            include_str!("../../../language_service/de/gui_text.json"),
+        ] {
+            serde_json::from_str::<GuiText>(json).expect("bundled GUI text should deserialize");
+        }
+    }
+}

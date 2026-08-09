@@ -2827,8 +2827,6 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
 
     let show_chooser = state.read().show_theme_chooser;
 
-    const EMAIL: &str = "read@legeapp.com";
-
     let on_close = Rc::new(RefCell::new(move || {
         // Closing the About window also cancels any in-progress theme preview so an
         // un-accepted browse doesn't leave the app on a theme that isn't persisted.
@@ -2847,46 +2845,39 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     let state_for_docs = state;
     let state_for_licenses = state;
 
-    let body: Element = if show_chooser {
-        ThemeChooser(state, theme)
+    let content = rect()
+        .width(Size::px(if show_chooser { 480. } else { 300. }))
+        .padding(10.)
+        .spacing(6.)
+        .child(
+            rect()
+                .direction(Direction::Horizontal)
+                .spacing(8.)
+                .cross_align(Alignment::Center)
+                .child(
+                    label()
+                        .text("Lege")
+                        .font_size(18.)
+                        .font_weight(700)
+                        .color(text_fg()),
+                )
+                .child(
+                    label()
+                        .text(format!("v{}", display_version()))
+                        .font_size(12.)
+                        .color(muted_fg()),
+                ),
+        );
+    let content = if show_chooser {
+        content.child(ThemeChooser(state, theme))
     } else {
-        SelectableText::new(format!("{}: {}", GUI_TEXT.interactive.popups.email, EMAIL))
-            .font_size(13.)
-            .color(text_fg())
-            .into()
+        content
     };
 
     Popup::new()
         .show(true)
         .on_close_request(move |_| (on_close_request.borrow_mut())())
-        .child(
-            PopupContent::new().child(
-                rect()
-                    .width(Size::px(if show_chooser { 480. } else { 300. }))
-                    .padding(10.)
-                    .spacing(6.)
-                    .child(
-                        rect()
-                            .direction(Direction::Horizontal)
-                            .spacing(8.)
-                            .cross_align(Alignment::Center)
-                            .child(
-                                label()
-                                    .text("Lege")
-                                    .font_size(18.)
-                                    .font_weight(700)
-                                    .color(text_fg()),
-                            )
-                            .child(
-                                label()
-                                    .text(format!("v{}", display_version()))
-                                    .font_size(12.)
-                                    .color(muted_fg()),
-                            ),
-                    )
-                    .child(body),
-            ),
-        )
+        .child(PopupContent::new().child(content))
         .child(
             PopupButtons::new()
                 .child(

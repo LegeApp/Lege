@@ -145,7 +145,6 @@
       "queue_items_title": "Warteschlangeneinträge",
       "processing_log_title": "Verarbeitungsprotokoll",
       "debug_log_title": "Debug-Protokoll",
-      "email": "E-Mail",
       "docs_not_found": "Dokumentation nicht gefunden. Stelle sicher, dass docs/ neben der Lege-Anwendung liegt.",
       "documentation": "Dokumentation",
       "licenses": "Lizenzen",
