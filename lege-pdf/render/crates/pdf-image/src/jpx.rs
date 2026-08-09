@@ -366,8 +366,11 @@ impl JpxCodec {
             return Err(ImageError::TooLarge { width, height });
         }
         let mut output_data = zeroed_arc(bytes);
-        let output_slice = Arc::get_mut(&mut output_data)
-            .expect("JPX output Arc is unique while the decoder writes it");
+        let Some(output_slice) = Arc::get_mut(&mut output_data) else {
+            return Err(ImageError::Decode(
+                "JPX: output allocation unexpectedly became shared".into(),
+            ));
+        };
         let info = JPX_DECODER
             .with(|decoder| {
                 decoder.borrow_mut().decode_into(

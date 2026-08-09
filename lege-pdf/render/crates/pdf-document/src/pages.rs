@@ -591,7 +591,11 @@ fn annot_quad_points(
     };
     numbers
         .chunks_exact(8)
-        .map(|chunk| chunk.try_into().expect("chunks_exact(8)"))
+        .map(|chunk| {
+            let mut quad = [0.0; 8];
+            quad.copy_from_slice(chunk);
+            quad
+        })
         .collect::<Vec<[f64; 8]>>()
         .into()
 }
