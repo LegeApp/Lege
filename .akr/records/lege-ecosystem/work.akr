@@ -499,6 +499,81 @@ record lege-ecosystem.decode-optimization-handoff/1 : work {
     }
 }
 
+record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/1 : work {
+    title "Remove About email row and reduce Lege GPU initialization overhead"
+    state superseded
+    scope [
+        path "lege-gpu/src/vision/runtime/device.rs",
+        path "lege-process/GUI/Freya/src/**",
+        path "lege-process/language_service/**/gui_text.json"
+    ]
+    intent "Remove the email line from the Freya About popup without residual layout space and evaluate GPU startup for measurable redundant initialization work, preserving adapter fallback and eager readiness semantics."
+    note "GPU changes must retain hardware-first adapter policy, real fallback behavior, and fully initialized sessions; do not disguise cost through delayed initialization or reduced capability."
+    acceptance {
+        check about-email-removed {
+            statement """
+                The About popup contains no email row or placeholder spacing, and localized GUI text still deserializes.
+                """
+            method command
+        }
+        check focused-tests-pass {
+            statement """
+                Focused Freya, lege-gpu, and affected workspace checks pass.
+                """
+            method command
+        }
+        check gpu-initialization-evaluated {
+            statement """
+                GPU initialization is profiled and any retained optimization removes demonstrably redundant work without changing adapter fallback or eager session readiness.
+                """
+            method observation
+        }
+    }
+}
+
+record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/2 : work {
+    title "Remove About email row and reduce Lege GPU initialization overhead"
+    state completed
+    scope [
+        path "lege-gpu/src/vision/api.rs",
+        path "lege-gpu/src/vision/runtime/compiled.rs",
+        path "lege-gpu/src/vision/runtime/device.rs",
+        path "lege-process/GUI/Freya/src/**",
+        path "lege-process/GUI/musicsheet/src/**",
+        path "lege-process/language_service/**/gui_text.json"
+    ]
+    intent "Remove the email line from both shipped Lege About popups without residual layout space and evaluate GPU startup for measurable redundant initialization work, preserving adapter fallback and eager readiness semantics."
+    note "GPU changes must retain hardware-first adapter policy, real fallback behavior, and fully initialized sessions; do not disguise cost through delayed initialization or reduced capability."
+    acceptance {
+        check about-email-removed {
+            statement """
+                The About popup contains no email row or placeholder spacing, and localized GUI text still deserializes.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.lege-process-about-email-removed-2026-08-09/1
+            ]
+        }
+        check focused-tests-pass {
+            statement """
+                Focused Freya, Sheet Music GUI, lege-gpu, and affected workspace checks pass.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.lege-process-about-gpu-focused-checks-2026-08-09/1
+            ]
+        }
+        check gpu-initialization-evaluated {
+            statement """
+                GPU initialization is profiled and any retained optimization removes demonstrably redundant work without changing adapter fallback or eager session readiness.
+                """
+            method observation
+            verified_by [ @lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 ]
+        }
+    }
+    supersedes [ @lege-ecosystem.lege-process.about-gpu-init-2026-08-09/1 ]
+}
+
 record lege-ecosystem.work.add-jp2decodestats/1 : work {
     title "3. Add `Jp2DecodeStats`"
     state proposed

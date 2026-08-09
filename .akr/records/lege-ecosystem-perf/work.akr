@@ -3,7 +3,7 @@ project lege-ecosystem
 
 record lege-ecosystem-perf.akr.papercut-cleanup-2026-08-09/1 : work {
     title "Resolve the first Lege AKR papercut and diagnostic batch"
-    state completed
+    state superseded
     scope [
         path ".akr/**",
         path "lege-codecs/jp2lam/.gitignore",
@@ -31,6 +31,41 @@ record lege-ecosystem-perf.akr.papercut-cleanup-2026-08-09/1 : work {
             ]
         }
     }
+}
+
+record lege-ecosystem-perf.akr.papercut-cleanup-2026-08-09/2 : work {
+    title "Resolve the first Lege AKR papercut and diagnostic batch"
+    state completed
+    scope [
+        path ".akr/**",
+        path "lege-codecs/jp2lam/.gitignore",
+        path "lege-codecs/jp2lam/decode-fix-plan/*.md",
+        path "lege-pdf/render/crates/pdf-document/src/pages.rs",
+        path "lege-pdf/render/crates/pdf-image/src/jpx.rs"
+    ]
+    intent "Restore provenance required by unfinished AKR migrations and remove the concrete expect-used blockers recorded by the renderer clippy papercut."
+    note "This bounded first pass does not rewrite observations made on non-ancestor branches. It leaves those warnings visible until they can be re-observed or their branches are incorporated without falsifying provenance."
+    acceptance {
+        check legacy-source-validation {
+            statement """
+                Strict AKR validation reports no AKR-M022 missing legacy-source diagnostics.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem-perf.evidence.akr-m022-cleanup-revalidated-2026-08-09/1
+            ]
+        }
+        check renderer-clippy-expect-gate {
+            statement """
+                The documented cargo clippy -p pdf-render-cpu -p pdf-cli command completes without an expect-used error.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-revalidated-2026-08-09/1
+            ]
+        }
+    }
+    supersedes [ @lege-ecosystem-perf.akr.papercut-cleanup-2026-08-09/1 ]
 }
 
 record lege-ecosystem-perf.decode-optimization-audit/1 : work {

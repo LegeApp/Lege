@@ -1,0 +1,13 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.papercut.while-cleaning-temporary-gpu-probes-a-combined/1 : papercut {
+    title "While cleaning temporary GPU probes, a combined apply_patch missed…"
+    state verified
+    statement """
+        While cleaning temporary GPU probes, a combined apply_patch missed because a layout test's formatting differed from the search excerpt; the follow-up papercut command also required an undocumented-in-context namespace flag in this multi-namespace repo. Splitting the cleanup and passing --namespace lege-ecosystem resolved both retries.
+        """
+    observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
+    author "codex"
+    created_at 2026-08-09
+}

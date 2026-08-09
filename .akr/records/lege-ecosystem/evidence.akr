@@ -1,0 +1,38 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 : evidence {
+    title "Fresh-process release profiling on Intel Iris Xe/Vulkan showed median first-engine initialization falling from 93.831 ms to 82.591 ms (-11.98%) and median two-session pool initialization from 97.182 ms to 88.091 ms (-9.36%) when full model decoding/preparation overlaps adapter/device discovery. The constructor still joins both jobs before graph allocation and return; adapter selection, fallback ordering, feature requests, buffer allocation, and eager sibling readiness are unchanged."
+    state verified
+    result pass
+    method observation
+    observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
+    artifact ".agent/scratch/lege-gpu-init-benchmark-2026-08-09.md"
+    summary """
+        Fresh-process release profiling on Intel Iris Xe/Vulkan showed median first-engine initialization falling from 93.831 ms to 82.591 ms (-11.98%) and median two-session pool initialization from 97.182 ms to 88.091 ms (-9.36%) when full model decoding/preparation overlaps adapter/device discovery. The constructor still joins both jobs before graph allocation and return; adapter selection, fallback ordering, feature requests, buffer allocation, and eager sibling readiness are unchanged.
+        """
+}
+
+record lege-ecosystem.evidence.lege-process-about-email-removed-2026-08-09/1 : evidence {
+    title "Both shipped About popup implementations now construct only their header when the theme chooser is closed, so no removed-row child or spacing remains. The email field/value is absent from both GUI schemas and both locale files, the scoped search returned no matches, and both locale schema tests passed."
+    state verified
+    result pass
+    method command
+    observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
+    command "rg -n -i 'read@legeapp.com|popups.email|\"email\"' lege-process/GUI lege-process/language_service; cargo test -p lege-gui-freya -p lege-music-gui bundled_locales_match_the_gui_schema"
+    summary """
+        Both shipped About popup implementations now construct only their header when the theme chooser is closed, so no removed-row child or spacing remains. The email field/value is absent from both GUI schemas and both locale files, the scoped search returned no matches, and both locale schema tests passed.
+        """
+}
+
+record lege-ecosystem.evidence.lege-process-about-gpu-focused-checks-2026-08-09/1 : evidence {
+    title "Touched Rust modules passed focused formatting, both GUI locale tests passed, the GPU sharing test passed on hardware WGPU, Lege and lege-gpu checks passed, and the patch has no whitespace errors. Existing dependency and legacy-code warnings remain non-fatal."
+    state verified
+    result pass
+    method command
+    observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
+    command "rustfmt --edition 2024 --check [touched non-legacy-format files]; cargo test -p lege-gui-freya -p lege-music-gui bundled_locales_match_the_gui_schema; cargo test -p lege-gpu --features layout-detection related_dynamic_graph_shares_constant_buffers_and_pipelines; cargo check -p lege; cargo check -p lege-gpu; git diff --check"
+    summary """
+        Touched Rust modules passed focused formatting, both GUI locale tests passed, the GPU sharing test passed on hardware WGPU, Lege and lege-gpu checks passed, and the patch has no whitespace errors. Existing dependency and legacy-code warnings remain non-fatal.
+        """
+}
