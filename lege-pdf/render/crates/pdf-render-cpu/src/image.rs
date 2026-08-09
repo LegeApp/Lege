@@ -838,10 +838,7 @@ impl PreparedImage {
                 // texels-per-device-pixel footprint from the image inverse;
                 // MRC pages commonly attach a 300–500 dpi bilevel mask to a
                 // foreground that is then rendered at screen resolution.
-                let mask_footprint = [
-                    (self.inv.a.abs() + self.inv.c.abs()) * sm.width as f64,
-                    (self.inv.b.abs() + self.inv.d.abs()) * sm.height as f64,
-                ];
+                let mask_footprint = self.smask_footprint(sm);
                 let sa = sample_smask(sm, p.x, p.y, mask_footprint);
                 (rgba[3] as f32 * sa) as u8
             }
@@ -862,6 +859,26 @@ impl PreparedImage {
     /// See [`Self::box_taps_x`].
     pub(crate) fn box_taps_y(&self, fy: f64) -> Option<AxisTaps> {
         axis_box_taps(fy, (self.footprint[1] * 0.5).max(0.5), self.height)
+    }
+
+    /// This draw's soft-mask footprint in *mask* texels per device pixel.
+    ///
+    /// The mask has independent sample dimensions but shares the base image's
+    /// unit-square placement, so its footprint comes from the image inverse
+    /// scaled by the mask's own size. MRC pages commonly attach a 300–500 dpi
+    /// bilevel mask to a foreground rendered at screen resolution.
+    pub(crate) fn smask_footprint(&self, sm: &ImageSMask) -> [f64; 2] {
+        [
+            (self.inv.a.abs() + self.inv.c.abs()) * sm.width as f64,
+            (self.inv.b.abs() + self.inv.d.abs()) * sm.height as f64,
+        ]
+    }
+
+    /// Per-axis box taps for the soft mask at mask-texel coordinate `mfx`,
+    /// given the footprint from [`Self::smask_footprint`]. Mirrors the halving
+    /// and 0.5 floor [`sample_smask`] applies.
+    pub(crate) fn smask_box_taps(f: f64, half_footprint: f64, len: u32) -> Option<AxisTaps> {
+        axis_box_taps(f, (half_footprint * 0.5).max(0.5), len)
     }
 
     /// Area-weighted average of the source texels inside this device pixel's
@@ -1612,8 +1629,23 @@ fn stencil_hides(sm: &ImageSMask, u: f64, v: f64) -> bool {
     if sm.width == 0 || sm.height == 0 {
         return false;
     }
-    let col = clampi((u * sm.width as f64) as i64, sm.width) as usize;
-    let row = clampi(((1.0 - v) * sm.height as f64) as i64, sm.height) as usize;
+    stencil_hides_at(sm, stencil_col(sm, u), stencil_row(sm, v))
+}
+
+/// The stencil texel column a unit-square `u` point-samples. Depends only on
+/// `u`, so an axis-aligned draw can prepare it once per destination column.
+pub(crate) fn stencil_col(sm: &ImageSMask, u: f64) -> u32 {
+    clampi((u * sm.width as f64) as i64, sm.width)
+}
+
+/// See [`stencil_col`]; rows increase downward, hence the `1 - v`.
+pub(crate) fn stencil_row(sm: &ImageSMask, v: f64) -> u32 {
+    clampi(((1.0 - v) * sm.height as f64) as i64, sm.height)
+}
+
+/// The body of [`stencil_hides`] once the texel has been located.
+pub(crate) fn stencil_hides_at(sm: &ImageSMask, col: u32, row: u32) -> bool {
+    let (col, row) = (col as usize, row as usize);
     let bpc = sm.bits_per_component.max(1) as usize;
     let row_bits = (sm.width as usize * bpc).div_ceil(8) * 8;
     let bit = row * row_bits + col * bpc;
@@ -1724,30 +1756,55 @@ fn tint_lut_rgb(rgb: &[u8], tint: f32) -> [f32; 3] {
 /// source footprint, exactly like their base image. Point-sampling a 1-bit MRC
 /// mask otherwise keeps one source bit in ten or twenty and turns a smooth
 /// coverage edge into an arbitrary opaque/transparent choice.
+/// Packed row stride, in bits, of a soft mask's samples (rows are byte-aligned).
+pub(crate) fn smask_row_bits(sm: &ImageSMask) -> usize {
+    (sm.width as usize * sm.bits_per_component as usize).div_ceil(8) * 8
+}
+
+/// Fractional set-bit coverage of a **one-bit** soft mask over one destination
+/// pixel's prepared per-axis tap boxes, in `0..=1`.
+///
+/// Shared by [`sample_smask`], which derives the taps per pixel, and the
+/// executor's axis-aligned MRC fast path, which hoists them per destination
+/// column and row — both then produce the identical alpha byte.
+pub(crate) fn bilevel_smask_coverage(sm: &ImageSMask, tx: &AxisTaps, ty: &AxisTaps) -> f32 {
+    let row_bits = smask_row_bits(sm);
+    let weight = tx.total.saturating_mul(ty.total).max(1);
+    let mut ones_w = 0u64;
+    for row in ty.lo..=ty.hi {
+        let row_ones = weighted_row_ones_in(&sm.samples, row as usize * row_bits, tx);
+        ones_w = ones_w.saturating_add(ty.weight_at(row).saturating_mul(row_ones));
+    }
+    ones_w as f32 / weight as f32
+}
+
+/// Apply a soft mask's `/Decode` remap to a normalised sample.
+pub(crate) fn apply_smask_decode(sm: &ImageSMask, raw: f32) -> f32 {
+    match sm.decode.as_ref().and_then(|d| d.first()) {
+        Some([lo, hi]) => (lo + raw * (hi - lo)).clamp(0.0, 1.0),
+        None => raw,
+    }
+}
+
 fn sample_smask(sm: &ImageSMask, u: f64, v: f64, footprint: [f64; 2]) -> f32 {
     if sm.width == 0 || sm.height == 0 {
         return 1.0;
     }
-    let row_bits = (sm.width as usize * sm.bits_per_component as usize).div_ceil(8) * 8;
+    let row_bits = smask_row_bits(sm);
     let maxv = ((1u64 << sm.bits_per_component.min(16)) - 1).max(1) as f32;
     let fx = u * sm.width as f64 - 0.5;
     let fy = (1.0 - v) * sm.height as f64 - 0.5;
 
     let raw = if footprint[0] > 1.0 || footprint[1] > 1.0 {
-        let Some(tx) = axis_box_taps(fx, (footprint[0] * 0.5).max(0.5), sm.width) else {
+        let Some(tx) = PreparedImage::smask_box_taps(fx, footprint[0], sm.width) else {
             return 1.0;
         };
-        let Some(ty) = axis_box_taps(fy, (footprint[1] * 0.5).max(0.5), sm.height) else {
+        let Some(ty) = PreparedImage::smask_box_taps(fy, footprint[1], sm.height) else {
             return 1.0;
         };
         let weight = tx.total.saturating_mul(ty.total).max(1);
         if sm.bits_per_component == 1 {
-            let mut ones_w = 0u64;
-            for row in ty.lo..=ty.hi {
-                let row_ones = weighted_row_ones_in(&sm.samples, row as usize * row_bits, &tx);
-                ones_w = ones_w.saturating_add(ty.weight_at(row).saturating_mul(row_ones));
-            }
-            ones_w as f32 / weight as f32
+            bilevel_smask_coverage(sm, &tx, &ty)
         } else {
             let bpc = sm.bits_per_component as usize;
             let mut acc = 0.0f64;
@@ -1767,10 +1824,7 @@ fn sample_smask(sm: &ImageSMask, u: f64, v: f64, footprint: [f64; 2]) -> f32 {
         let bit = row * row_bits + col * sm.bits_per_component as usize;
         read_bits(&sm.samples, bit, sm.bits_per_component as usize) as f32 / maxv
     };
-    match sm.decode.as_ref().and_then(|d| d.first()) {
-        Some([lo, hi]) => (lo + raw * (hi - lo)).clamp(0.0, 1.0),
-        None => raw,
-    }
+    apply_smask_decode(sm, raw)
 }
 
 /// Read a big-endian `bits`-wide field starting at bit offset `bit`.
@@ -1838,7 +1892,7 @@ fn count_one_bits(data: &[u8], start_bit: usize, bit_len: usize) -> u32 {
 /// Weighted set-bit count for an arbitrary packed row and horizontal tap
 /// range. Full interior bytes use [`count_one_bits`]; only the fractional edge
 /// texels are read individually.
-fn weighted_row_ones_in(data: &[u8], base_bit: usize, cols: &AxisTaps) -> u64 {
+pub(crate) fn weighted_row_ones_in(data: &[u8], base_bit: usize, cols: &AxisTaps) -> u64 {
     let bit_at = |x: u32| -> u64 {
         let b = base_bit + x as usize;
         let byte = data.get(b / 8).copied().unwrap_or(0);

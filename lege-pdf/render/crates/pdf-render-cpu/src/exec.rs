@@ -683,14 +683,13 @@ fn paint_image(
         && img.inv.b.abs() < 1e-12
         && img.inv.c.abs() < 1e-12
         && img.samples.len() >= img.width as usize * img.height as usize * 3;
-    let fast_rgb8 = fast_rgb8_base
-        && img.interpolation == pdf_page_ir::InterpolationMode::Nearest;
+    let fast_rgb8 = fast_rgb8_base && img.interpolation == pdf_page_ir::InterpolationMode::Nearest;
     // Magnified/1:1 continuous-tone JPEG/JPX is forced to Bilinear in
     // prepared.rs; without a dedicated path those draws fall into the generic
     // per-pixel bilinear loop (~tens of Mpix/s). Same axis-aligned eligibility
     // as nearest, with bilinear taps matching `PreparedImage::bilinear`.
-    let fast_rgb8_bilinear = fast_rgb8_base
-        && img.interpolation == pdf_page_ir::InterpolationMode::Bilinear;
+    let fast_rgb8_bilinear =
+        fast_rgb8_base && img.interpolation == pdf_page_ir::InterpolationMode::Bilinear;
     // The area-minified twin of `fast_rgb8`: same eligibility, but the image is
     // minified on at least one axis (footprint > 1), so each destination pixel
     // box-averages its source footprint (what the generic path's
@@ -699,12 +698,10 @@ fn paint_image(
     // generic per-pixel `inv.apply` bit-for-bit. Interpolation is not checked:
     // minification ignores it (`shade` area-averages regardless of the
     // Nearest/Bilinear hint), so a minified Bilinear draw lands here too.
-    let fast_rgb8_area = blend_is_normal
+    let rgb8_area_shape = blend_is_normal
         && cmask.is_none()
         && soft.is_none()
         && img.alpha == 255
-        && img.smask.is_none()
-        && img.mask.is_none()
         && !img.is_stencil
         && img.bpc == 8
         && img.decode.is_none()
@@ -713,6 +710,17 @@ fn paint_image(
         && img.inv.b == 0.0
         && img.inv.c == 0.0
         && img.samples.len() >= img.width as usize * img.height as usize * 3;
+    let fast_rgb8_area = rgb8_area_shape && img.smask.is_none() && img.mask.is_none();
+    // The MRC shape: the same opaque axis-aligned minified RGB8 source, but cut
+    // out by a one-bit JBIG2 layer. Without this the draw falls into the
+    // generic per-pixel loop and pays a fresh inverse map, two base tap boxes,
+    // and a mask lookup for every destination pixel — all of which depend only
+    // on the destination column or row once the placement is axis-aligned.
+    let area_min_mask = if rgb8_area_shape {
+        area_min_bilevel_mask(img)
+    } else {
+        None
+    };
     // The same, for an opaque axis-aligned minified CMYK image: the source is
     // converted to RGB8 once and then box-averaged identically. Eligibility
     // mirrors `fast_rgb8_area` but for the CMYK colour space; the sample-length
@@ -750,6 +758,14 @@ fn paint_image(
         }
     } else if fast_rgb8_area {
         let result = paint_axis_aligned_rgb8_area_min_opaque(img, surface, x0, y0, x1, y1);
+        covered = result.0;
+        #[cfg(feature = "profiling")]
+        {
+            sample_attempts = (x1 - x0) as u64 * (y1 - y0) as u64;
+            sample_taps = result.1;
+        }
+    } else if let Some(mask) = area_min_mask {
+        let result = paint_axis_aligned_rgb8_area_min_masked(img, mask, surface, x0, y0, x1, y1);
         covered = result.0;
         #[cfg(feature = "profiling")]
         {
@@ -873,6 +889,9 @@ fn paint_image(
         }
         if fast_rgb8_area {
             profile.increment("image.fast_rgb8_area_min_pixels", covered);
+        }
+        if area_min_mask.is_some() {
+            profile.increment("image.fast_rgb8_area_min_masked_pixels", covered);
         }
         if fast_cmyk_area_used {
             profile.increment("image.fast_cmyk_area_min_pixels", covered);
@@ -1455,15 +1474,7 @@ fn paint_axis_aligned_rgb8_bilinear_opaque(
             };
         }
         let _ = use_sse;
-        paint_bilinear_row_scalar(
-            samples,
-            source_stride,
-            &columns,
-            ry,
-            row,
-            x0,
-            output_origin,
-        )
+        paint_bilinear_row_scalar(samples, source_stride, &columns, ry, row, x0, output_origin)
     };
 
     let (buf, first_abs_y, stride) = surface.rows_mut_abs(y0, y1);
@@ -1543,10 +1554,8 @@ fn bilinear_rgb8_pixel(
     let s11 = base1 + rx.i1 as usize * 3;
     let mut rgb = [0u8; 3];
     for ch in 0..3 {
-        let top =
-            samples[s00 + ch] as f32 * rx.one_minus_t + samples[s10 + ch] as f32 * rx.t;
-        let bot =
-            samples[s01 + ch] as f32 * rx.one_minus_t + samples[s11 + ch] as f32 * rx.t;
+        let top = samples[s00 + ch] as f32 * rx.one_minus_t + samples[s10 + ch] as f32 * rx.t;
+        let bot = samples[s01 + ch] as f32 * rx.one_minus_t + samples[s11 + ch] as f32 * rx.t;
         rgb[ch] = (top * ry.one_minus_t + bot * ry.t).clamp(0.0, 255.0) as u8;
     }
     rgb
@@ -1571,7 +1580,7 @@ unsafe fn paint_bilinear_row_sse2(
     output_origin: usize,
 ) -> u64 {
     use std::arch::x86_64::{
-        _mm_add_ps, _mm_cvttps_epi32, _mm_mul_ps, _mm_set1_ps, _mm_set_ps, _mm_storeu_si128,
+        _mm_add_ps, _mm_cvttps_epi32, _mm_mul_ps, _mm_set_ps, _mm_set1_ps, _mm_storeu_si128,
     };
 
     let base0 = ry.i0 as usize * source_stride;
@@ -1723,6 +1732,237 @@ fn paint_axis_aligned_cmyk_area_min_opaque(
     ))
 }
 
+/// The bilevel cut-out a minified RGB8 draw carries. MRC producers write one of
+/// two encodings: a grayscale `/SMask` coverage layer whose alpha is
+/// box-filtered with the base image, or a hard `/Mask` stencil that is
+/// point-sampled all-or-nothing. Both are JBIG2 in practice.
+#[derive(Clone, Copy)]
+enum AreaMinMask<'a> {
+    Soft(&'a pdf_page_ir::ImageSMask),
+    Stencil(&'a pdf_page_ir::ImageSMask),
+}
+
+/// Classify `img`'s mask for the axis-aligned area-minification fast path, or
+/// `None` to keep the generic per-pixel path.
+fn area_min_bilevel_mask(img: &crate::image::PreparedImage) -> Option<AreaMinMask<'_>> {
+    if let Some(sm) = img.smask.as_deref() {
+        // `sample_smask` only takes its packed-bit box-filter branch at 1 bpc
+        // and only box-filters at all when the mask minifies on an axis;
+        // point-sampled masks are not what this path reproduces.
+        let footprint = img.smask_footprint(sm);
+        let usable = sm.bits_per_component == 1
+            && sm.width > 0
+            && sm.height > 0
+            && (footprint[0] > 1.0 || footprint[1] > 1.0);
+        return usable.then_some(AreaMinMask::Soft(sm));
+    }
+    match img.mask.as_ref()? {
+        // A colour-key mask tests the base image's own samples, not an
+        // independent bitmap, so it does not separate per axis.
+        pdf_page_ir::ImageMask::ColorKey(_) => None,
+        pdf_page_ir::ImageMask::Stencil(sm) => {
+            (sm.width > 0 && sm.height > 0).then_some(AreaMinMask::Stencil(sm))
+        }
+    }
+}
+
+/// The prepared mask lookup for one destination column or row.
+#[derive(Clone, Copy)]
+enum MaskAxis {
+    /// Box-filter taps into a one-bit `/SMask`.
+    Taps(crate::image::AxisTaps),
+    /// The point-sampled texel index of a hard `/Mask` stencil.
+    Texel(u32),
+}
+
+/// Area-minify an axis-aligned opaque RGB8 image cut out by a bilevel mask —
+/// the MRC scanned-page shape: a JPX foreground over a JPX background, cut out
+/// by a JBIG2 layer sharing the foreground's placement.
+///
+/// The generic per-pixel loop recomputes, for every destination pixel, the
+/// inverse map, the base image's two box-filter tap ranges, and the mask's own
+/// per-axis lookup. With `inv.b == inv.c == 0` every one of those depends only
+/// on the destination column (X) or row (Y), so they are prepared once each
+/// here. What remains per pixel — the weighted box average, the mask's
+/// coverage or stencil test, the `/Decode` remap, and the source-over
+/// composite — is the generic path's arithmetic term for term, so the painted
+/// pixels are unchanged.
+// Called once per draw, and large enough (two prepared axis passes, the box
+// average, both mask encodings, and the generic border fallback) that inlining
+// it into `paint_image` measurably degrades the *sibling* fast paths' codegen —
+// the unmasked JPX scan lost 37 % of its raster time to the bloat before this.
+#[inline(never)]
+fn paint_axis_aligned_rgb8_area_min_masked(
+    img: &crate::image::PreparedImage,
+    mask: AreaMinMask<'_>,
+    surface: &mut Surface,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+) -> (u64, u64) {
+    let stride = img.width as usize * 3;
+    let rgb: &[u8] = &img.samples;
+    // `edge_coverage` returns `None` — provably interior, full weight — exactly
+    // when the mapped pixel square stays inside the unit square on both axes.
+    // With `inv.b == inv.c == 0` that test separates, so the interior is a
+    // rectangle of whole destination columns and rows: the prepared body runs
+    // there, and the anti-aliased border band keeps the generic per-pixel
+    // treatment. The draw therefore stays pixel-identical, edges included.
+    let half_u = 0.5 * img.inv.a.abs();
+    let half_v = 0.5 * img.inv.d.abs();
+    let mask_footprint = match mask {
+        AreaMinMask::Soft(sm) => img.smask_footprint(sm),
+        AreaMinMask::Stencil(_) => [0.0, 0.0],
+    };
+
+    // Per destination column: whether it is interior in u, the base image's X
+    // tap box, and the mask's X lookup.
+    let mut columns: Vec<(bool, Option<(crate::image::AxisTaps, MaskAxis)>)> =
+        Vec::with_capacity(x1 - x0);
+    for x in x0..x1 {
+        let u = img.inv.a * (x as f64 + 0.5) + img.inv.e;
+        let interior = u >= half_u && u <= 1.0 - half_u;
+        if !(0.0..1.0).contains(&u) {
+            columns.push((interior, None));
+            continue;
+        }
+        let base = img.box_taps_x(u * img.width as f64 - 0.5);
+        let axis = match mask {
+            AreaMinMask::Soft(sm) => crate::image::PreparedImage::smask_box_taps(
+                u * sm.width as f64 - 0.5,
+                mask_footprint[0],
+                sm.width,
+            )
+            .map(MaskAxis::Taps),
+            AreaMinMask::Stencil(sm) => Some(MaskAxis::Texel(crate::image::stencil_col(sm, u))),
+        };
+        columns.push((interior, base.zip(axis)));
+    }
+
+    // Per destination row, the same.
+    let mut rows: Vec<(bool, Option<(crate::image::AxisTaps, MaskAxis)>)> =
+        Vec::with_capacity(y1 - y0);
+    for y in y0..y1 {
+        let v = img.inv.d * (y as f64 + 0.5) + img.inv.f;
+        let interior = v >= half_v && v <= 1.0 - half_v;
+        if !(0.0..1.0).contains(&v) {
+            rows.push((interior, None));
+            continue;
+        }
+        let base = img.box_taps_y((1.0 - v) * img.height as f64 - 0.5);
+        let axis = match mask {
+            AreaMinMask::Soft(sm) => crate::image::PreparedImage::smask_box_taps(
+                (1.0 - v) * sm.height as f64 - 0.5,
+                mask_footprint[1],
+                sm.height,
+            )
+            .map(MaskAxis::Taps),
+            AreaMinMask::Stencil(sm) => Some(MaskAxis::Texel(crate::image::stencil_row(sm, v))),
+        };
+        rows.push((interior, base.zip(axis)));
+    }
+
+    let output_origin = surface.origin_x;
+    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y1);
+    let mut painted = 0u64;
+    let mut taps = 0u64;
+    for (local_y, &(row_interior, row_axes)) in rows.iter().enumerate() {
+        let y = y0 + local_y;
+        let row_offset = (y - first_output_y) * output_stride;
+        let row = &mut output[row_offset..row_offset + output_stride];
+        for (local_x, &(col_interior, col_axes)) in columns.iter().enumerate() {
+            let x = x0 + local_x;
+            let px = &mut row[(x - output_origin) * 4..][..4];
+
+            let (Some((tx, mx)), Some((ty, my)), true) =
+                (col_axes, row_axes, col_interior && row_interior)
+            else {
+                // Border band, or a column/row whose center maps outside the
+                // image: the generic per-pixel treatment, minus the clip and
+                // soft-clip terms this path's eligibility already excluded.
+                let (dx, dy) = (x as f64 + 0.5, y as f64 + 0.5);
+                let edge = img.edge_coverage(dx, dy);
+                if edge == Some(0) {
+                    continue;
+                }
+                let color = match edge {
+                    None => img.shade(dx, dy),
+                    Some(_) => img.shade_clamped(dx, dy),
+                };
+                let Some(color) = color else { continue };
+                let cov = match edge {
+                    Some(ec) => mul_div_255(255, ec),
+                    None => 255,
+                };
+                let a = mul_div_255(color[3] as u16, cov);
+                if a == 0 {
+                    continue;
+                }
+                composite_px_blended(
+                    px,
+                    [color[0], color[1], color[2]],
+                    a as u8,
+                    BlendChoice::Normal,
+                );
+                painted += 1;
+                continue;
+            };
+
+            let weight = tx.total * ty.total;
+            if weight == 0 {
+                continue;
+            }
+            taps += (tx.hi - tx.lo + 1) as u64 * (ty.hi - ty.lo + 1) as u64;
+
+            // The mask first: a fully transparent destination pixel skips the
+            // box average entirely, and on a scanned page the foreground layer
+            // is transparent over most of the sheet.
+            let alpha = match (mask, mx, my) {
+                (AreaMinMask::Soft(sm), MaskAxis::Taps(mtx), MaskAxis::Taps(mty)) => {
+                    let coverage = crate::image::bilevel_smask_coverage(sm, &mtx, &mty);
+                    (255.0 * crate::image::apply_smask_decode(sm, coverage)) as u8
+                }
+                (AreaMinMask::Stencil(sm), MaskAxis::Texel(col), MaskAxis::Texel(srow)) => {
+                    if crate::image::stencil_hides_at(sm, col, srow) {
+                        0
+                    } else {
+                        255
+                    }
+                }
+                // The axis kinds are built from `mask` above, so the mixed
+                // combinations cannot occur.
+                _ => 0,
+            };
+            if alpha == 0 {
+                continue;
+            }
+
+            let (mut a0, mut a1, mut a2) = (0u64, 0u64, 0u64);
+            for sr in ty.lo..=ty.hi {
+                let wy = ty.weight_at(sr);
+                let base = sr as usize * stride + tx.lo as usize * 3;
+                let end = sr as usize * stride + (tx.hi as usize + 1) * 3;
+                for (col, texel) in (tx.lo..).zip(rgb[base..end].chunks_exact(3)) {
+                    let w = wy * tx.weight_at(col);
+                    a0 += w * texel[0] as u64;
+                    a1 += w * texel[1] as u64;
+                    a2 += w * texel[2] as u64;
+                }
+            }
+            let color = [
+                ((a0 + weight / 2) / weight).min(255) as u8,
+                ((a1 + weight / 2) / weight).min(255) as u8,
+                ((a2 + weight / 2) / weight).min(255) as u8,
+            ];
+
+            composite_px_blended(px, color, alpha, BlendChoice::Normal);
+            painted += 1;
+        }
+    }
+    (painted, taps)
+}
+
 /// Core of the opaque axis-aligned area-minification fast paths. `rgb` is a
 /// packed `width*height*3` RGB8 view of the source (the samples themselves for
 /// an RGB image; a converted buffer for CMYK). Prepares per-column source X
@@ -1762,12 +2002,14 @@ fn area_min_box_average_opaque(
     }
 
     let output_origin = surface.origin_x;
+    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y1);
     let mut painted = 0u64;
     let mut taps = 0u64;
     for (local_y, row_taps) in source_rows.iter().enumerate() {
         let Some(ty) = row_taps else { continue };
         let y = y0 + local_y;
-        let row = surface.row_mut(y);
+        let row_offset = (y - first_output_y) * output_stride;
+        let row = &mut output[row_offset..row_offset + output_stride];
         for (local_x, col_taps) in source_columns.iter().enumerate() {
             let Some(tx) = col_taps else { continue };
             let weight = tx.total * ty.total;
@@ -3039,6 +3281,127 @@ mod rgb8_area_min_tests {
                         fr, rr,
                         "row {y} differs sw={sw} sh={sh} dev={dev_w}x{dev_h}"
                     );
+                }
+            }
+        }
+    }
+
+    /// A packed one-bit mask bitmap of `w x h`, byte-aligned rows.
+    fn bilevel(w: u32, h: u32, rng: &mut Rng) -> Arc<pdf_page_ir::ImageSMask> {
+        let row_bytes = (w as usize).div_ceil(8);
+        let samples: Vec<u8> = (0..row_bytes * h as usize).map(|_| rng.byte()).collect();
+        Arc::new(pdf_page_ir::ImageSMask {
+            width: w,
+            height: h,
+            bits_per_component: 1,
+            decode: None,
+            samples: Arc::from(samples),
+            codec: None,
+            codec_data: None,
+            codec_parms: None,
+        })
+    }
+
+    /// The generic `paint_image` body for the shape the masked area-min path
+    /// serves: no clip mask, no soft clip, opaque `alpha`, Normal blend.
+    fn generic_masked_reference(img: &PreparedImage, dev_w: u32, dev_h: u32) -> (Surface, u64) {
+        let mut reference = Surface::new(dev_w as usize, dev_h as usize, Background::Transparent);
+        let mut painted = 0u64;
+        for y in 0..dev_h as usize {
+            let row = reference.row_mut(y);
+            for x in 0..dev_w as usize {
+                let (dx, dy) = (x as f64 + 0.5, y as f64 + 0.5);
+                let edge = img.edge_coverage(dx, dy);
+                if edge == Some(0) {
+                    continue;
+                }
+                let color = match edge {
+                    None => img.shade(dx, dy),
+                    Some(_) => img.shade_clamped(dx, dy),
+                };
+                let Some(c) = color else { continue };
+                let cov = match edge {
+                    Some(ec) => mul_div_255(255, ec),
+                    None => 255,
+                };
+                let a = mul_div_255(mul_div_255(c[3] as u16, 255), cov);
+                if a == 0 {
+                    continue;
+                }
+                let px = &mut row[x * 4..x * 4 + 4];
+                composite_px_blended(px, [c[0], c[1], c[2]], a as u8, BlendChoice::Normal);
+                painted += 1;
+            }
+        }
+        (reference, painted)
+    }
+
+    /// The MRC path — minified RGB8 cut out by a bilevel layer — must reproduce
+    /// the generic per-pixel body byte for byte, in **both** mask encodings and
+    /// including the anti-aliased border band. Mask dimensions are varied
+    /// independently of the base image's, as MRC producers do.
+    #[test]
+    fn masked_fast_path_matches_generic_shade() {
+        let mut rng = Rng(0x00c0_ffee_0bad_f00d);
+        let cases = [
+            (7u32, 5u32, 3u32, 3u32),
+            (16, 16, 5, 7),
+            (33, 9, 8, 4),
+            (9, 33, 4, 8),
+            (64, 48, 20, 15),
+            (5, 5, 4, 2),
+        ];
+        for &(sw, sh, dev_w, dev_h) in &cases {
+            // Mask geometries: same as the base, coarser, and finer.
+            for &(mw, mh) in &[(sw, sh), (sw * 2, sh * 2), (sw.div_ceil(2), sh.div_ceil(2))] {
+                for trial in 0..6 {
+                    let samples: Vec<u8> = (0..(sw * sh * 3)).map(|_| rng.byte()).collect();
+                    let mut img = make_image(sw, sh, dev_w, dev_h, samples);
+                    let mask = bilevel(mw, mh, &mut rng);
+                    // Alternate the two encodings, and exercise `/Decode [1 0]`
+                    // polarity on the soft-mask side.
+                    let soft = trial % 2 == 0;
+                    if soft {
+                        let mut sm = (*mask).clone();
+                        if trial % 4 == 0 {
+                            sm.decode = Some(Arc::from(vec![[1.0f32, 0.0f32]]));
+                        }
+                        img.smask = Some(Arc::new(sm));
+                    } else {
+                        img.mask = Some(pdf_page_ir::ImageMask::Stencil(mask));
+                    }
+
+                    let Some(kind) = area_min_bilevel_mask(&img) else {
+                        // Only a non-minifying soft mask is turned away, and
+                        // then the generic path is already what runs.
+                        assert!(soft, "a stencil mask is always eligible");
+                        continue;
+                    };
+                    let mut fast =
+                        Surface::new(dev_w as usize, dev_h as usize, Background::Transparent);
+                    let (painted, _taps) = paint_axis_aligned_rgb8_area_min_masked(
+                        &img,
+                        kind,
+                        &mut fast,
+                        0,
+                        0,
+                        dev_w as usize,
+                        dev_h as usize,
+                    );
+
+                    let (mut reference, ref_painted) = generic_masked_reference(&img, dev_w, dev_h);
+                    let what = if soft { "smask" } else { "stencil" };
+                    assert_eq!(
+                        painted, ref_painted,
+                        "{what} painted count sw={sw} sh={sh} mask={mw}x{mh} dev={dev_w}x{dev_h}"
+                    );
+                    for y in 0..dev_h as usize {
+                        assert_eq!(
+                            fast.row_mut(y).to_vec(),
+                            reference.row_mut(y).to_vec(),
+                            "{what} row {y} differs sw={sw} sh={sh} mask={mw}x{mh} dev={dev_w}x{dev_h}"
+                        );
+                    }
                 }
             }
         }
