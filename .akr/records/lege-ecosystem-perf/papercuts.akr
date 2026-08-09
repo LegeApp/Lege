@@ -1,6 +1,78 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem-perf.papercut.a-release-profiler-rebuild-from-the-repository/1 : papercut {
+    title "A release-profiler rebuild from the repository root rejected…"
+    state verified
+    statement """
+        A release-profiler rebuild from the repository root rejected `--features bench-profiling` because the `pdfium-diff` tool is deliberately outside the workspace; the feature belongs to its own manifest. The command must run from `lege-pdf/render/tools/pdfium-diff` or pass that manifest explicitly.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.after-committing-validated-akr-record-changes/1 : papercut {
+    title "After committing validated AKR record changes with ordinary Git, `akr…"
+    state superseded
+    statement """
+        After committing validated AKR record changes with ordinary Git, `akr lock --check` rejected the embedded build commit because the lock was generated against the parent source commit. The workflow needs an atomic documented commit path or an explicit follow-up lock-only commit; otherwise a seemingly clean knowledge commit fails the required post-commit audit.
+        """
+    observed_at git:c0baea0d7c8b7d17690c6da78db22e407e82cf5d
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.after-committing-validated-akr-record-changes/2 : papercut {
+    title "After committing validated AKR record changes with ordinary Git, `akr…"
+    state verified
+    statement """
+        After committing validated AKR record changes with ordinary Git, `akr lock --check` rejected the embedded build commit because the lock was generated against the parent source commit. The workflow needs an atomic documented commit path or an explicit follow-up lock-only commit; otherwise a seemingly clean knowledge commit fails the required post-commit audit.
+        """
+    observed_at git:c0baea0d7c8b7d17690c6da78db22e407e82cf5d
+    about "akr"
+    supersedes [ @lege-ecosystem-perf.papercut.after-committing-validated-akr-record-changes/1 ]
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.at-handoff-knowledge-validate-withheld-its/1 : papercut {
+    title "At handoff, knowledge.validate withheld its entire 8.5k-token result…"
+    state verified
+    statement """
+        At handoff, knowledge.validate withheld its entire 8.5k-token result and suggested narrower arguments even though the tool exposes no scope/filter argument; diagnosing required the separate `akr check` CLI (the protocol's `knowledge.validate` name is not a CLI subcommand). A summarized diagnostics mode would make the required handoff check actionable.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.correcting-an-inaccurate-papercut-via-knowledge/1 : papercut {
+    title "Correcting an inaccurate papercut via knowledge.supersede failed…"
+    state verified
+    statement """
+        Correcting an inaccurate papercut via knowledge.supersede failed because the connected workspace vocabulary 0.1 does not support the tool schema's `new_key` option. The correction had to reuse the original key instead of creating a clearer replacement key.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.creating-the-finalization-work-record-failed/1 : papercut {
+    title "Creating the finalization work record failed because `depends_on`…"
+    state verified
+    statement """
+        Creating the finalization work record failed because `depends_on` cannot reference a completed work record, but the propose schema does not identify which relation should capture historical provenance. The write was retried with only the live decision dependency.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
 record lege-ecosystem-perf.papercut.imported-lege-ecosystem-perf-audit-work-records/1 : papercut {
     title "Imported lege-ecosystem-perf audit work records (2026-08-05) are stale…"
     state verified
@@ -10,4 +82,73 @@ record lege-ecosystem-perf.papercut.imported-lege-ecosystem-perf-audit-work-reco
     observed_at git:5780178af9f0d10bc4a8457259dfa141c2f804de
     author "fugu"
     created_at 2026-08-06
+}
+
+record lege-ecosystem-perf.papercut.knowledge-context-withheld-a-4-1k-token-bundle/1 : papercut {
+    title "knowledge.context withheld a 4.1k-token bundle even though I requested…"
+    state verified
+    statement """
+        knowledge.context withheld a 4.1k-token bundle even though I requested a 16k budget, then advised requesting fewer tokens. The MCP response ceiling is lower than the tool's advertised budget parameter, so context had to be retried with narrower paths.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.running-cargo-fmt-check-from-lege-pdf-render/1 : papercut {
+    title "Running `cargo fmt --check` from `lege-pdf/render` failed with…"
+    state verified
+    statement """
+        Running `cargo fmt --check` from `lege-pdf/render` failed with “Failed to find targets” because that directory is not a usable Cargo formatting root even though renderer crates are nested beneath it. The verification workflow needs to point rustfmt/cargo at the concrete crate or the external tool manifest.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/1 : papercut {
+    title "The targeted renderer/image clippy check is blocked by an unrelated…"
+    state verified
+    statement """
+        The targeted renderer/image clippy check is blocked by an unrelated existing `-D clippy::expect-used` violation in `lege-pdf/render/crates/pdf-document/src/pages.rs:594`, reached through `pdf-cli` dependencies. Renderer/image tests pass, but the documented clippy gate cannot complete until that pre-existing lint is resolved or the check is scoped differently.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-recording-the-renderer-decision-knowledge/1 : papercut {
+    title "While recording the renderer decision, knowledge.propose rejected a…"
+    state verified
+    statement """
+        While recording the renderer decision, knowledge.propose rejected a dotted decision topic even though the key is dot-delimited; the topic segment syntax was not apparent from the tool schema, so the write had to be retried with a single hyphenated segment. The response also warned that the connected MCP vocabulary 0.2 is newer than the workspace build vocabulary 0.1.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    about "akr"
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/1 : papercut {
+    title "While reproducing the Structures.pdf MRC profile, the performance…"
+    state superseded
+    statement """
+        While reproducing the Structures.pdf MRC profile, the performance handoff labels the 2222x3191 run as scale 2.0833333, but the supplied 444.4x638.2-point page produces 926x1330 at that scale and 2222x3191 at scale 5.0. Benchmark records should store both requested scale and resulting dimensions so comparisons cannot silently mix them.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    author "codex"
+    created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 : papercut {
+    title "While reproducing the Structures.pdf MRC profile, the performance…"
+    state verified
+    statement """
+        While reproducing the Structures.pdf MRC profile, the performance handoff labels the 2222x3191 run as scale 2.0833333, but the supplied 444.4x638.2-point page produces 926x1330 at that scale and 2222x3191 at scale 5.0. Benchmark records should store both requested scale and resulting dimensions so comparisons cannot silently mix them.
+        """
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    supersedes [ @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/1 ]
+    author "codex"
+    created_at 2026-08-09
 }

@@ -461,6 +461,76 @@ record lege-ecosystem-perf.decode-optimization-vs-openjpeg/1 : work {
     }
 }
 
+record lege-ecosystem-perf.jp2.decode-optimization-handoff-2026-08-09/1 : work {
+    title "Handoff: remaining JP2 decode optimization after renderer MRC pass"
+    state proposed
+    scope [
+        path "lege-codecs/jp2lam/examples/decode_benchmark.rs",
+        path "lege-codecs/jp2lam/src/**",
+        path "lege-pdf/render/crates/pdf-image/src/jpx.rs"
+    ]
+    intent """
+        Continue JP2 decoding optimization at the codec boundary now that warm renderer shading and final page ownership are no longer the dominant costs on JPX-heavy and MRC pages.
+        """
+    note """
+        Start by refreshing stage timing and a P-core-pinned flamegraph on the same representative codestream after the landed weighted-LPT Tier-1 scheduler and 128-column 9/7 vertical bands. Then remove measurable output duplication before deeper arithmetic work: Jp2Decoder::decode_into currently decodes to DecodedRaster<Vec<u8>> and copies rows into the caller target, while pdf-image's packed JPX path calls Arc::from(raster.data), which allocates and copies again. A true caller-owned or direct shared-output path must write through reconstruction/finalization, not merely wrap the present API. If profiling still agrees with the 2026-08-06 flamegraph, prioritize irreversible 9/7 vertical memory traffic and Tier-1 MQ/FlagGrid work; do not retry the reverted fused-pack SIMD experiment unless layout/memory traffic changes first. Keep true windowed ROI subband/IDWT work as the next structural phase. Preserve renderer load-aware Budgeted(2..8) concurrency and verify whole-document throughput before increasing nested codec parallelism. Correctness gates remain OpenJPEG same-stream comparisons (reversible 5/3 max diff 0; irreversible 9/7 approximately <=2 absent documented color-floor exceptions), serial-vs-budgeted identity, packed-vs-native identity where applicable, renderer page hashes, and the JPX corpus census.
+        """
+    claim current-boundary {
+        text """
+            The supplied Structures.pdf page 0 now renders in a 70.449 ms warm-decoded median, while decode-only is 237.823 ms: 196.440 ms JPX and 41.367 ms JBIG2. The renderer's output handoff is approximately 0.00017 ms, so remaining cold latency is decisively codec-side.
+            """
+    }
+    claim landed-state {
+        text """
+            Already landed: direct packed 8-bit formats, reduced-resolution selection, multi-tile reduced decode, lattice-aligned nonzero-origin DWT routing, banded irreversible 9/7 reconstruction, Tier-1-fused irreversible dequantization, reusable thread-local Jp2Decoder sessions, request-sized pools, weighted LPT Tier-1 scheduling, persistent per-worker Tier1Scratch, and 128-column vertical bands for L2 residency.
+            """
+    }
+    claim negative-result {
+        text """
+            Do not re-land the wide f32x8 fused-pack experiment as-is. Interleaved A/B was performance-neutral and the output hash was unchanged because fat-LTO LLVM already vectorized the scalar loop; evidence points to memory/layout traffic rather than missing pack arithmetic SIMD.
+            """
+    }
+    claim output-copy-gap {
+        text """
+            The public decode_into contract is not yet zero-copy internally: decode_jp2_into_with_scratch first obtains a DecodedRaster backed by Vec<u8> and copies each active row into the target. The PDF renderer does not use decode_into and converts the packed raster with Arc::from(raster.data), causing another full decoded-output allocation and copy.
+            """
+    }
+    claim parallelism-constraint {
+        text """
+            The PDF renderer already parallelizes documents/pages and sizes each JPX decode from live in-flight load, clamped to Budgeted(2..8). JP2 optimizations must not replace this with unrestricted nested Rayon parallelism without whole-document throughput and tail-latency measurements.
+            """
+    }
+    claim profile-before-tuning {
+        text """
+            The last durable flamegraph attributed about 25% to irreversible 9/7 DWT, 22% to Tier-1/MQ, 15% to final pack/color, and 6.1% to memcpy, but it predates at least the final 128-column band change and should be refreshed before choosing another hot-loop optimization.
+            """
+    }
+    depends_on [
+        @lege-ecosystem-perf.renderer.final-buffer-ownership/1,
+        @lege-ecosystem.work.jp2lam-jpeg-2000-decoder-optimization-plan/1
+    ]
+}
+
+record lege-ecosystem-perf.renderer.finalize-mrc-smask-and-jp2-handoff/1 : work {
+    title "Finalize renderer optimization commits and current JP2 decode handoff"
+    state completed
+    scope [ path ".akr/**", path "lege-codecs/jp2lam/**", path "lege-pdf/render/**" ]
+    intent """
+        Reprofile the supplied Structures.pdf soft-mask case, verify and organize all current uncommitted renderer and AKR changes into coherent commits, and record a current durable handoff for the remaining JP2 decoding work.
+        """
+    depends_on [ @lege-ecosystem-perf.renderer.final-buffer-ownership/1 ]
+}
+
+record lege-ecosystem-perf.renderer.mrc-smask-followup-optimization/1 : work {
+    title "Follow-up MRC and soft-mask renderer optimization pass"
+    state completed
+    scope [ path "lege-pdf/render/**" ]
+    intent """
+        Measure and optimize remaining renderer-side costs on MRC and soft-mask corpus documents after the masked area-minification fast path, with focused investigation of JPEG Sweep's high per-document time and no change to the known JP2 decoder boundary.
+        """
+    depends_on [ @lege-ecosystem-perf.renderer.mrc-masked-draw-fast-path/1 ]
+}
+
 record lege-ecosystem-perf.work.add-direct-sycc-output/1 : work {
     title "7.3 Add direct sYCC output"
     state proposed

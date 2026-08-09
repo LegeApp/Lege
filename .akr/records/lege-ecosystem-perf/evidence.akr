@@ -1,6 +1,112 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem-perf.evidence.jpeg-direct-arc-decode-profile/1 : evidence {
+    title "JPEG direct-Arc decoder assembly profile"
+    state superseded
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /mnt/Samsung980_1TB/to-sort/globalhistoryofm0000unse_1.pdf 0 15 .agent/scratch/mrc-smask-followup-20260809/jpeg-decode.final2.jsonl --mode decode-only"
+    artifact "lege-pdf/render/crates/pdf-image/src/jpeg/mod.rs"
+    summary """
+        The representative JPEG decode-only median fell from 81.430 ms to 63.842 ms (-21.6%) after assembly moved from Vec-to-Arc copy to direct Arc output, with output hash 3dfafb56edf8d303 unchanged.
+        """
+}
+
+record lege-ecosystem-perf.evidence.jpeg-direct-arc-decode-profile/2 : evidence {
+    title "JPEG direct-Arc decoder assembly profile"
+    state verified
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /mnt/Samsung980_1TB/to-sort/globalhistoryofm0000unse_1.pdf 0 15 .agent/scratch/mrc-smask-followup-20260809/jpeg-decode.final2.jsonl --mode decode-only"
+    artifact "lege-pdf/render/crates/pdf-image/src/jpeg/mod.rs"
+    summary """
+        The representative JPEG decode-only median fell from 81.430 ms to 63.842 ms (-21.6%) after assembly moved from Vec-to-Arc copy to direct Arc output, with output hash 3dfafb56edf8d303 unchanged.
+        """
+    supersedes [ @lege-ecosystem-perf.evidence.jpeg-direct-arc-decode-profile/1 ]
+}
+
+record lege-ecosystem-perf.evidence.jpeg-sweep-final-buffer-profile/1 : evidence {
+    title "JPEG Sweep output-copy removal profile"
+    state superseded
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /mnt/Samsung980_1TB/to-sort/globalhistoryofm0000unse_1.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/jpeg-sweep.final2.compiled.jsonl --mode compiled"
+    artifact "lege-pdf/render/crates/pdf-render-cpu/src/lib.rs"
+    summary """
+        The final 11-run JPEG Sweep compiled-page median was 95.828 ms versus the 7-run 161.684 ms baseline (-40.7%); render.output fell from 63.884 ms to 0.000270 ms, peak live renderer bytes halved, and output hash 3dfafb56edf8d303 was unchanged.
+        """
+}
+
+record lege-ecosystem-perf.evidence.jpeg-sweep-final-buffer-profile/2 : evidence {
+    title "JPEG Sweep output-copy removal profile"
+    state verified
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /mnt/Samsung980_1TB/to-sort/globalhistoryofm0000unse_1.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/jpeg-sweep.final2.compiled.jsonl --mode compiled"
+    artifact "lege-pdf/render/crates/pdf-render-cpu/src/lib.rs"
+    summary """
+        The final 11-run JPEG Sweep compiled-page median was 95.828 ms versus the 7-run 161.684 ms baseline (-40.7%); render.output fell from 63.884 ms to 0.000270 ms, peak live renderer bytes halved, and output hash 3dfafb56edf8d303 was unchanged.
+        """
+    supersedes [ @lege-ecosystem-perf.evidence.jpeg-sweep-final-buffer-profile/1 ]
+}
+
+record lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/1 : evidence {
+    title "Renderer, codec, scheduler, postprocess, and chaos regression suite passes"
+    state superseded
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "cd lege-pdf && cargo test -q -p pdf-render-cpu -p pdf-image -p pdf-content -p pdf-render-scheduler -p pdf-postprocess -p pdf-chaos-tests"
+    artifact "lege-pdf/render/crates/pdf-render-cpu/src/surface.rs"
+    summary """
+        The full targeted renderer/codec test set passed after the Arc final-buffer handoff, including pixel-equivalence, fixture, and chaos coverage; focused RGB8 area-min mask tests also passed 6/6.
+        """
+}
+
+record lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/2 : evidence {
+    title "Renderer, codec, scheduler, postprocess, and chaos regression suite passes"
+    state verified
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "cd lege-pdf && cargo test -q -p pdf-render-cpu -p pdf-image -p pdf-content -p pdf-render-scheduler -p pdf-postprocess -p pdf-chaos-tests"
+    artifact "lege-pdf/render/crates/pdf-render-cpu/src/surface.rs"
+    summary """
+        The full targeted renderer/codec test set passed after the Arc final-buffer handoff, including pixel-equivalence, fixture, and chaos coverage; focused RGB8 area-min mask tests also passed 6/6.
+        """
+    supersedes [ @lege-ecosystem-perf.evidence.mrc-smask-final-buffer-regression-suite/1 ]
+}
+
+record lege-ecosystem-perf.evidence.structures-smask-followup-profile/1 : evidence {
+    title "Structures.pdf soft-mask renderer and decoder follow-up profile"
+    state superseded
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.final.compiled.jsonl --mode compiled && lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.final.warm-decoded.jsonl --mode warm-decoded && lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.final.decode-only.jsonl --mode decode-only"
+    summary """
+        On the supplied Structures.pdf page 0 at scale 2.0833333 (926x1330 output; 2222x3191 JPX sources), 11-run medians were 71.028 ms compiled and 70.449 ms warm-decoded with hash fdc3994f80330ee0; render.output was approximately 0.00017 ms. Decode-only was 237.823 ms: 196.440 ms JPX plus 41.367 ms JBIG2, confirming cold decode remains outside the renderer-side fast path.
+        """
+}
+
+record lege-ecosystem-perf.evidence.structures-smask-followup-profile/2 : evidence {
+    title "Structures.pdf soft-mask renderer and decoder follow-up profile"
+    state verified
+    result pass
+    method command
+    observed_at git:ef8b70669f02df887a959aafe62ac996691c9ef3
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.final.compiled.jsonl --mode compiled && lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.final.warm-decoded.jsonl --mode warm-decoded && lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.final.decode-only.jsonl --mode decode-only"
+    summary """
+        On the supplied Structures.pdf page 0 at scale 2.0833333 (926x1330 output; 2222x3191 JPX sources), 11-run medians were 71.028 ms compiled and 70.449 ms warm-decoded with hash fdc3994f80330ee0; render.output was approximately 0.00017 ms. Decode-only was 237.823 ms: 196.440 ms JPX plus 41.367 ms JBIG2, confirming cold decode remains outside the renderer-side fast path.
+        """
+    supersedes [ @lege-ecosystem-perf.evidence.structures-smask-followup-profile/1 ]
+}
+
 record lege-ecosystem-perf.evidence.tier1-lpt-scheduling/1 : evidence {
     title "Tier-1 parallel decode reworked to weighted LPT scheduling + per-worker persistent Tier1Scratch (working-tree change to src/decode/t1.rs, uncommitted at this HEAD); full lib suite 339 passed incl. serial_and_budgeted_tier1_are_byte_identical."
     state verified

@@ -1,0 +1,79 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem-perf.renderer.final-buffer-ownership/1 : decision {
+    title "Allocate renderer and JPEG final buffers in their shared Arc layout"
+    state proposed
+    scope [
+        path "lege-pdf/render/crates/pdf-image/src/jpeg/**",
+        path "lege-pdf/render/crates/pdf-render-cpu/**"
+    ]
+    topic final-buffer-ownership
+    decision """
+        Allocate CPU page surfaces and JPEG decoded output directly as uniquely-owned Arc slices, mutate them only while unique, and hand the Arc to HostPage or DecodedImage without a whole-buffer Vec-to-Arc conversion. Preserve Surface clone value semantics by deep-copying knockout-group snapshots.
+        """
+    claim jpeg-decoder-result {
+        text """
+            Sequential and general/progressive JPEG assembly also previously built a Vec and copied it into DecodedImage's Arc. Direct Arc assembly reduced the representative 15-run JPEG decode median from 81.430 ms to 63.842 ms (-21.6%) with the decoded-page hash unchanged.
+            """
+    }
+    claim jpeg-sweep-root-cause {
+        text """
+            JPEG Sweep renders the same page as JPEG Viewer at 2.0833333 scale: 5746x7419 (42.63 million destination pixels, 170,518,296 output bytes) versus 2758x3561. Before this change, its median 161.684 ms compiled page time consisted primarily of 56.892 ms surface initialization, 39.294 ms bilinear image paint, and 63.884 ms output conversion. The last component was a full Vec-to-Arc page copy rather than JPEG shading.
+            """
+    }
+    claim measured-result {
+        text """
+            On the representative JPEG Sweep profile, direct final-buffer ownership reduced the 11-run median compiled page time from the 7-run baseline 161.684 ms to 95.828 ms (-40.7%), reduced render.output from 63.884 ms to 0.000270 ms, halved peak live renderer bytes from 325.24 MiB to 162.62 MiB, and preserved page hash 3dfafb56edf8d303. JPEG Viewer fell from 39.190 ms to 22.785 ms (-41.9%) with its hash unchanged.
+            """
+    }
+    claim mrc-jpx-boundary {
+        text """
+            The generic page-buffer handoff benefits MRC and soft-mask outputs without changing their paint semantics, but the Structures.pdf soft-mask fixture was not present on the host for direct remeasurement. The available MRC stencil and JPX representatives retained hashes 5d7f13037e0fd8e6 and 6ea54a27f0c7eb51; JPX time was effectively unchanged within noise, and JP2 decoding remains the relevant unresolved decoder hurdle.
+            """
+    }
+    claim remaining-cost {
+        text """
+            After removing the output copy, JPEG Sweep remains dominated by approximately 55.7 ms of white background initialization and 39.7 ms of bilinear paint across 42.63 million destination pixels. Skipping initialization would require proof that the prepared page fully and opaquely overwrites the surface; hidden codec or fill parallelism should not be added without document-throughput evidence.
+            """
+    }
+    depends_on [ @lege-ecosystem-perf.renderer.mrc-masked-draw-fast-path/1 ]
+}
+
+record lege-ecosystem-perf.renderer.mrc-masked-draw-fast-path/1 : decision {
+    title "MRC pages are shading-bound, not decode-bound: masked area-min fast path in pdf-render-cpu"
+    state proposed
+    scope [ path "lege-pdf/render/crates/pdf-render-cpu/**" ]
+    decision """
+        Add `paint_axis_aligned_rgb8_area_min_masked` to `pdf-render-cpu/src/exec.rs`: an axis-aligned area-minification fast path for RGB8 image draws carrying a bilevel cut-out, covering both MRC mask encodings (1-bit `/SMask` coverage layer, and hard `/Mask` over an `/ImageMask` stencil). Per-column and per-row preparation of the inverse map, the base box-filter taps, and the mask's per-axis lookup replaces per-pixel recomputation. Byte-identical to the generic path, edge anti-aliasing included. Measured 2026-08-08; full record in lege-pdf/render/docs/refinement/performance-history/optimization-mrc-mask-20260808.md
+        """
+    claim edge-aa-separates {
+        text """
+            An axis-aligned fast path need not sacrifice image-edge anti-aliasing. `edge_coverage` returns None (provably interior) exactly when the mapped pixel square stays inside the unit square on both axes, and with `inv.b == inv.c == 0` that test separates per axis, so the interior is a rectangle of whole destination columns and rows. Running the prepared body there and the generic body on the border band keeps the draw byte-identical. The sibling paths (`fast_rgb8_area`, `fast_rgb8`, `fast_rgb8_bilinear`, `fast_cmyk_area`) still drop it and move page hashes by a one-pixel ring.
+            """
+    }
+    claim inline-never-required {
+        text """
+            `#[inline(never)]` on the new painter is load-bearing, not cosmetic: inlined into `paint_image` it degraded the unmasked jpx-scan page from 22.6 ms to 31.1 ms of `render.image` with an identical code path and identical counters. Large once-per-draw painters in exec.rs should carry the attribute.
+            """
+    }
+    claim results {
+        text """
+            Paired A/B against a worktree build of ef8b706, 9-15 runs per binary, alternating order, i7-13700H: mrc-jpx-jbig2 144.16 -> 12.63 ms (-91.2%), Structures.pdf p0 228.86 -> 69.39 ms (-69.7%), with jpeg-scan-viewer, jpeg-scan-sweep and jpx-scan within +/-1.4%. All page hashes unchanged; 82 pages rendered by both binaries were byte-identical.
+            """
+    }
+    claim shading-not-decode {
+        text """
+            With the production SharedImageCache warm, an MRC page is ~99.6% image shading, not codec decode: on Structures.pdf p0 `compiled` (235.4 ms) and `warm-decoded` (233.0 ms) agree to within noise and `render.image` is 234.4 ms of the 235.4 ms page. The 2026-07-19 'approximately half decode, half sampling' attribution held only for a cold cache.
+            """
+    }
+    claim two-mrc-encodings {
+        text """
+            MRC producers emit two distinct mask encodings and a fast path must cover both: a 1-bit grayscale `/SMask` coverage layer that is box-filtered with the base image (Acrobat/Kakadu, e.g. Structures.pdf), and a hard `/Mask` referencing an `/ImageMask true` JBIG2 bitmap that is point-sampled all-or-nothing (ABBYY/LuraDocument, e.g. Zen-essence.pdf). Covering only `/SMask` leaves the corpus MRC page on the generic path.
+            """
+    }
+    source {
+        kind internal
+        path "lege-pdf/render/docs/refinement/performance-history/optimization-mrc-mask-20260808.md"
+    }
+}
