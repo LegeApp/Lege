@@ -17,7 +17,7 @@ mod api;
 
 pub use api::{
     Detector, RecLine, RecRecognizer, RecWord, SauvolaConfig, SauvolaCpuProcessor,
-    SauvolaProcessor, TextBox,
+    SauvolaProcessor, TextBox, TokenRecognizer, TokenRecognizerConfig, TokenSequence,
 };
 #[cfg(feature = "layout-detection")]
 pub use api::{

@@ -295,9 +295,13 @@ pub fn save_appearance_settings(settings: &AppearanceSettings) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static PREVIEW_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn music_sheet_defaults_to_sanzo_dark_seventeen() {
+        let _preview_guard = PREVIEW_TEST_LOCK.lock().unwrap();
         assert_eq!(
             AppearanceSettings::default().theme,
             ThemeChoice::Sanzo {
@@ -312,6 +316,7 @@ mod tests {
 
     #[test]
     fn preview_drives_active_palette_light_and_dark() {
+        let _preview_guard = PREVIEW_TEST_LOCK.lock().unwrap();
         let t = crate::sanzowada::theme_at(0).unwrap();
 
         set_theme_preview(Some(ThemeChoice::Sanzo {

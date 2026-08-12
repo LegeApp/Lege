@@ -6,7 +6,9 @@
 //! convention: index 0 is the CTC blank, indices `1..=n` are the dictionary
 //! lines in order, and the final index is a space.
 
+#[cfg(test)]
 use crate::vision::reference::Tensor;
+use crate::vision::runtime::compiled::CompactTop2;
 use std::ops::Range;
 
 /// Character set for a CTC recognizer.
@@ -62,6 +64,7 @@ pub(crate) struct CharSpan {
     pub(crate) confidence: f32,
 }
 
+#[cfg(test)]
 fn for_each_emission(
     logits: &Tensor,
     dict: &CtcDict,
@@ -93,11 +96,7 @@ fn for_each_emission(
             }
         }
         if best != prev && best != 0 {
-            let confidence = if (0.0..=1.0).contains(&best_val) {
-                best_val
-            } else {
-                1.0 / (1.0 + (second_val - best_val).exp())
-            };
+            let confidence = top2_confidence(best_val, second_val);
             emit(best, t, confidence.clamp(0.0, 1.0));
         }
         prev = best;
@@ -105,9 +104,44 @@ fn for_each_emission(
     timesteps
 }
 
+fn top2_confidence(best: f32, second: f32) -> f32 {
+    if (0.0..=1.0).contains(&best) {
+        best
+    } else {
+        1.0 / (1.0 + (second - best).exp())
+    }
+}
+
+/// Decode the compact device-side top-two output for one CTC line. The GPU has
+/// already performed the class scan, so CPU work is proportional to timesteps
+/// rather than `timesteps * classes`.
+pub(crate) fn ctc_greedy_decode_compact_spans(
+    rows: &[CompactTop2],
+    dict: &CtcDict,
+) -> Vec<CharSpan> {
+    let mut spans = Vec::new();
+    let mut previous = usize::MAX;
+    for (timestep, row) in rows.iter().enumerate() {
+        let class_index = row.class_index;
+        if class_index >= dict.num_classes() {
+            return Vec::new();
+        }
+        if class_index != previous && class_index != 0 {
+            spans.push(CharSpan {
+                class_index,
+                timestep,
+                confidence: top2_confidence(row.best, row.second).clamp(0.0, 1.0),
+            });
+        }
+        previous = class_index;
+    }
+    spans
+}
+
 /// Greedy CTC decode returning per-character spans plus the total timestep count
 /// `T`. The caller maps `timestep/T` to a horizontal position to reconstruct
 /// word boxes. Same collapse rule as [`ctc_greedy_decode`].
+#[cfg(test)]
 pub(crate) fn ctc_greedy_decode_spans(logits: &Tensor, dict: &CtcDict) -> (Vec<CharSpan>, usize) {
     let mut spans = Vec::new();
     let timesteps = for_each_emission(logits, dict, |class_index, timestep, confidence| {
@@ -121,6 +155,7 @@ pub(crate) fn ctc_greedy_decode_spans(logits: &Tensor, dict: &CtcDict) -> (Vec<C
 }
 
 /// Greedy CTC decode of recognition logits shaped `[1, T, C]` or `[T, C]`.
+#[cfg(test)]
 pub(crate) fn ctc_greedy_decode(logits: &Tensor, dict: &CtcDict) -> String {
     let mut out = String::new();
     for_each_emission(logits, dict, |class_index, _, _| {
@@ -163,5 +198,35 @@ mod tests {
         let dict = CtcDict::from_dict_text("a\n");
         let output = logits(&[1], 4);
         assert!(ctc_greedy_decode(&output, &dict).is_empty());
+    }
+
+    #[test]
+    fn compact_decode_matches_full_logits() {
+        let dict = CtcDict::from_dict_text("a\nb\n");
+        let output = logits(&[1, 1, 0, 1, 3, 2], dict.num_classes());
+        let rows = output
+            .data
+            .chunks_exact(dict.num_classes())
+            .map(|row| {
+                let mut ranked = row.iter().copied().enumerate().collect::<Vec<_>>();
+                ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+                CompactTop2 {
+                    class_index: ranked[0].0,
+                    best: ranked[0].1,
+                    second: ranked[1].1,
+                }
+            })
+            .collect::<Vec<_>>();
+        let compact = ctc_greedy_decode_compact_spans(&rows, &dict);
+        let (full, _) = ctc_greedy_decode_spans(&output, &dict);
+        assert_eq!(
+            compact
+                .iter()
+                .map(|span| (span.class_index, span.timestep))
+                .collect::<Vec<_>>(),
+            full.iter()
+                .map(|span| (span.class_index, span.timestep))
+                .collect::<Vec<_>>()
+        );
     }
 }

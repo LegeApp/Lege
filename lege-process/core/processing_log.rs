@@ -51,6 +51,7 @@ pub fn from_pipeline_config(config: &PipelineConfig) -> ProcessingOptions {
     options.target_height = Some(config.target_height());
     options.layout_analysis = config.enable_layout_detection();
     options.use_ocr = config.enable_ocr();
+    options.automatic_toc = config.enable_auto_toc();
     options.slow_ocr = config.slow_ocr_enabled();
     options.high_quality_output = config.high_quality_output();
     options.jpeg_compat = config.jpeg_compat();

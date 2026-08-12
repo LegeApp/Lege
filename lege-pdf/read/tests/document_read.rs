@@ -3,8 +3,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lege_pdf_read::{
-    CancellationToken, CompileStatus, RasterPlane, RasterProduct, ReadError, RenderSession,
-    examine_document, extract_outline, has_text_layer, page_text, positioned_words,
+    CancellationToken, CompileStatus, PageContentKind, RasterPlane, RasterProduct, ReadError,
+    RenderSession, examine_document, extract_outline, has_text_layer, page_text,
+    page_text_evidence, positioned_words,
 };
 use pdf_test_support::builder::{self, PdfBuilder};
 
@@ -192,6 +193,22 @@ fn text_wrapper_returns_exact_words_in_render_pixel_space() {
     assert!(words.iter().all(|word| {
         word.bbox[0] >= 0.0 && word.bbox[1] >= 0.0 && word.bbox[2] <= 600.0 && word.bbox[3] <= 400.0
     }));
+
+    let evidence = page_text_evidence(&session, 0, 600, 400).expect("page evidence");
+    assert_eq!(evidence.kind, PageContentKind::NativeText);
+    assert!(evidence.trustworthy);
+    assert_eq!(evidence.character_count, "Illinoiswill".len());
+    assert_eq!(evidence.image_count, 0);
+}
+
+#[test]
+fn simple_full_page_jpeg_is_exposed_for_direct_scan_intake() {
+    let session = RenderSession::open(shared(scan_fixture()), None).expect("scan fixture opens");
+    let evidence = page_text_evidence(&session, 0, 100, 100).expect("scan evidence");
+    assert_eq!(evidence.kind, PageContentKind::ScannedImage);
+    let scan = evidence.direct_scan.expect("direct JPEG route");
+    assert_eq!((scan.width, scan.height), (16, 16));
+    assert!(scan.jpeg.starts_with(&[0xff, 0xd8]));
 }
 
 #[test]
@@ -303,6 +320,27 @@ fn annotation_fixture() -> Vec<u8> {
         "/Type/XObject/Subtype/Form/BBox[0 0 10 10]",
         b"1 0 0 rg 0 0 10 10 re f",
     );
+    pdf.finish_classic_xref("/Root 1 0 R");
+    pdf.into_bytes()
+}
+
+fn scan_fixture() -> Vec<u8> {
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, 90)
+        .encode(&vec![230; 16 * 16], 16, 16, jpeg_encoder::ColorType::Luma)
+        .expect("encode fixture JPEG");
+    let mut pdf = PdfBuilder::new();
+    pdf.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    pdf.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 100 100]>>",
+    );
+    pdf.add_object(
+        3,
+        "<</Type/Page/Parent 2 0 R/Contents 4 0 R/Resources<</XObject<</Im0 5 0 R>>>>>>",
+    );
+    pdf.add_stream(4, "", b"q 100 0 0 100 0 0 cm /Im0 Do Q");
+    pdf.add_stream(5, "/Type/XObject/Subtype/Image/Width 16/Height 16/ColorSpace/DeviceGray/BitsPerComponent 8/Filter/DCTDecode", &jpeg);
     pdf.finish_classic_xref("/Root 1 0 R");
     pdf.into_bytes()
 }

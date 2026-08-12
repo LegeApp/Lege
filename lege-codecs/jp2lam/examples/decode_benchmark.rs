@@ -115,7 +115,8 @@ fn main() {
 }
 
 fn load_or_encode_fixture(path: &str) -> (String, Vec<u8>) {
-    let bytes = std::fs::read(path).unwrap_or_else(|error| panic!("failed to read {path}: {error}"));
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|error| panic!("failed to read {path}: {error}"));
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -202,12 +203,7 @@ fn run_legacy_planar(encoded: &[u8], iterations: usize, megapixels: f64) {
     report_timings("legacy_planar_serial", &samples, megapixels, expected_hash);
 }
 
-fn run_session_path(
-    encoded: &[u8],
-    iterations: usize,
-    megapixels: f64,
-    request: &DecodeRequest,
-) {
+fn run_session_path(encoded: &[u8], iterations: usize, megapixels: f64, request: &DecodeRequest) {
     let metadata = inspect_jp2(encoded).expect("inspect session fixture");
     if request.output != DecodeOutputFormat::NativePlanarI32
         && metadata.container_palette_channels.is_none()
@@ -259,7 +255,9 @@ fn run_session_path(
     }
 
     let mut decoder = Jp2Decoder::new();
-    let warm = decoder.decode(encoded, request).expect("warm session decode");
+    let warm = decoder
+        .decode(encoded, request)
+        .expect("warm session decode");
     let expected_hash = result_hash(&warm);
     drop(warm);
 
@@ -317,7 +315,8 @@ fn benchmark_region(encoded: &[u8], iterations: usize, threads: usize, output: D
         ..Default::default()
     };
 
-    let (full_ms, full_w, full_h) = median_request(&mut decoder, encoded, &full_request, iterations);
+    let (full_ms, full_w, full_h) =
+        median_request(&mut decoder, encoded, &full_request, iterations);
     let (region_ms, region_w, region_h) =
         median_request(&mut decoder, encoded, &region_request, iterations);
     println!("region.full_ms={:.3}", full_ms.as_secs_f64() * 1_000.0);

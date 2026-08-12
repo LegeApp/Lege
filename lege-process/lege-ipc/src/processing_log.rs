@@ -142,6 +142,7 @@ pub struct ProcessingOptions {
     pub png_folder_mode: bool,
     pub layout_analysis: bool,
     pub use_ocr: bool,
+    pub automatic_toc: bool,
     pub slow_ocr: bool,
     pub high_quality_output: bool,
     pub jpeg_compat: bool,
@@ -178,6 +179,7 @@ impl ProcessingOptions {
             png_folder_mode: false,
             layout_analysis: true,
             use_ocr: false,
+            automatic_toc: false,
             slow_ocr: false,
             high_quality_output: false,
             jpeg_compat: false,
@@ -373,7 +375,13 @@ pub fn run_logs_dir() -> PathBuf {
 /// output file stem: GUI jobs suffix outputs with a unique id, so this maps one
 /// history entry to one log file without storing extra state in the entry.
 pub fn run_log_path_for_output(output_path: &str) -> PathBuf {
-    let stem = std::path::Path::new(output_path)
+    // Log history can be moved between operating systems. Strip either path
+    // separator before asking the host platform to identify the file stem.
+    let file_name = output_path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(output_path);
+    let stem = std::path::Path::new(file_name)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("run");

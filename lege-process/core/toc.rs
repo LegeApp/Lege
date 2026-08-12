@@ -72,12 +72,37 @@ pub struct PageTextStats {
 pub struct PageTocData {
     pub candidates: Vec<TocCandidate>,
     pub stats: Option<PageTextStats>,
+    /// Front-matter `doc_title` evidence used for conservative PDF identity.
+    pub metadata_candidates: Vec<MetadataCandidate>,
+    /// OCR lines found inside a printed table-of-contents (`content`) box.
+    pub printed_contents: Vec<String>,
 }
 
 impl PageTocData {
     pub fn is_empty(&self) -> bool {
-        self.candidates.is_empty()
+        self.candidates.is_empty() && self.metadata_candidates.is_empty()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct MetadataLine {
+    pub text: String,
+    pub bbox: [f32; 4],
+    pub height: f32,
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MetadataCandidate {
+    pub page_index: usize,
+    pub title: TocCandidate,
+    pub lines: Vec<MetadataLine>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferredMetadata {
+    pub title: Option<String>,
+    pub author: Option<String>,
 }
 
 /// `LEGE_NO_AUTO_TOC=1` disables synthesis. Preservation of a source outline is
@@ -118,17 +143,10 @@ pub fn capture_page(
         return PageTocData::default();
     }
 
-    // A page with no title detection contributes nothing, so it never pays for
-    // an hOCR parse. Its body lines are not needed either: the document median
-    // is only ever compared against titles, which live on the pages we do parse.
     let titles: Vec<(TitleKind, &Detection)> = detections
         .iter()
         .filter_map(|detection| title_kind(detection).map(|kind| (kind, detection)))
         .collect();
-    if titles.is_empty() {
-        return PageTocData::default();
-    }
-
     let Some(hocr) = hocr.filter(|text| !text.trim().is_empty()) else {
         return PageTocData::default();
     };
@@ -145,7 +163,9 @@ pub fn capture_page(
         median_line_height: median(lines.iter().map(|line| line.height).collect()),
     };
 
+    let metadata_lines: Vec<MetadataLine> = lines.iter().map(metadata_line).collect();
     let mut candidates = Vec::new();
+    let mut metadata_candidates = Vec::new();
     for (kind, detection) in titles {
         let bbox = detection.bbox;
         let inside: Vec<&HocrLine> = lines
@@ -189,7 +209,7 @@ pub fn capture_page(
             .map(|line| line.y)
             .fold(page_height, f32::min);
 
-        candidates.push(TocCandidate {
+        let candidate = TocCandidate {
             page_index,
             kind,
             confidence: detection.confidence,
@@ -199,12 +219,65 @@ pub fn capture_page(
             page_height,
             gap_below: (next_top - bottom).max(0.0),
             word_confidence,
-        });
+        };
+        if kind == TitleKind::DocTitle {
+            metadata_candidates.push(MetadataCandidate {
+                page_index,
+                title: candidate.clone(),
+                lines: metadata_lines.clone(),
+            });
+        }
+        candidates.push(candidate);
     }
+
+    let printed_contents = detections
+        .iter()
+        .filter(|detection| detection.class_name.as_deref() == Some("content"))
+        .flat_map(|detection| {
+            lines
+                .iter()
+                .filter(move |line| line_center_inside(line, detection.bbox))
+                .map(line_text)
+        })
+        .filter(|text| !text.is_empty())
+        .collect();
 
     PageTocData {
         candidates,
         stats: Some(stats),
+        metadata_candidates,
+        printed_contents,
+    }
+}
+
+fn line_text(line: &HocrLine) -> String {
+    line.raw_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(normalize_title)
+        .unwrap_or_else(|| {
+            normalize_title(
+                &line
+                    .words
+                    .iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
+}
+
+fn metadata_line(line: &HocrLine) -> MetadataLine {
+    MetadataLine {
+        text: line_text(line),
+        bbox: [line.x, line.y, line.x + line.width, line.y + line.height],
+        height: line.height,
+        confidence: line
+            .words
+            .iter()
+            .filter_map(|word| word.confidence)
+            .min_by(f32::total_cmp),
     }
 }
 
@@ -308,6 +381,15 @@ pub fn build_outline(
     stats: &[PageTextStats],
     total_pages: usize,
 ) -> Vec<OutlineItem> {
+    build_outline_with_contents(candidates, stats, total_pages, &[])
+}
+
+pub fn build_outline_with_contents(
+    candidates: Vec<TocCandidate>,
+    stats: &[PageTextStats],
+    total_pages: usize,
+    printed_contents: &[String],
+) -> Vec<OutlineItem> {
     if auto_toc_disabled() || candidates.is_empty() || total_pages == 0 {
         return Vec::new();
     }
@@ -385,6 +467,9 @@ pub fn build_outline(
                 body_height,
                 numbers[index].is_some(),
                 monotonic[index],
+                printed_contents
+                    .iter()
+                    .any(|line| printed_toc_matches(line, &candidate.text)),
             );
             if toc_debug() {
                 eprintln!(
@@ -468,6 +553,7 @@ fn score_candidate(
     body_height: f32,
     has_number: bool,
     monotonic: bool,
+    printed_match: bool,
 ) -> f32 {
     let mut score = 0.0f32;
 
@@ -531,12 +617,42 @@ fn score_candidate(
     if is_heading_case(&candidate.text) {
         score += 0.25;
     }
+    if printed_match {
+        score += 0.75;
+    }
 
     // Detection confidence above the floor, worth at most half a point.
     score += ((candidate.confidence - CONFIDENCE_FLOOR) / (1.0 - CONFIDENCE_FLOOR)).clamp(0.0, 1.0)
         * 0.5;
 
     score
+}
+
+fn printed_toc_matches(line: &str, title: &str) -> bool {
+    let normalize = |text: &str| {
+        let mut words = text
+            .split_whitespace()
+            .map(|word| {
+                word.trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        while words.last().is_some_and(|word| word.parse::<u32>().is_ok()) {
+            words.pop();
+        }
+        words
+    };
+    let line = normalize(line);
+    let title = normalize(title);
+    if title.is_empty() || line.is_empty() {
+        return false;
+    }
+    if line == title {
+        return true;
+    }
+    let common = title.iter().filter(|word| line.contains(word)).count();
+    common * 4 >= title.len() * 3
 }
 
 /// Mark candidates that belong to a real chapter-number sequence.
@@ -733,6 +849,189 @@ fn truncate_title(text: &str) -> String {
     }
 }
 
+// ============================================================================
+// Conservative title / author inference
+// ============================================================================
+
+pub fn infer_metadata(
+    candidates: &[MetadataCandidate],
+    stats: &[PageTextStats],
+    total_pages: usize,
+) -> InferredMetadata {
+    if candidates.is_empty() || total_pages == 0 {
+        return InferredMetadata::default();
+    }
+    let body_height = median(
+        stats
+            .iter()
+            .map(|page| page.median_line_height)
+            .filter(|height| *height > 0.0)
+            .collect(),
+    );
+    if body_height <= 0.0 {
+        return InferredMetadata::default();
+    }
+    let front_pages = (((total_pages + 9) / 10).clamp(3, 10)).min(total_pages);
+    let mut ranked = candidates
+        .iter()
+        .filter(|candidate| candidate.page_index < front_pages)
+        .filter(|candidate| candidate.title.confidence >= 0.70)
+        .filter(|candidate| {
+            candidate
+                .title
+                .word_confidence
+                .is_none_or(|confidence| confidence >= 0.75)
+        })
+        .filter(|candidate| candidate.title.line_height >= body_height * 1.35)
+        .filter(|candidate| credible_inferred_title(&candidate.title.text))
+        .map(|candidate| {
+            let title = &candidate.title;
+            let size_score = (title.line_height / body_height).min(3.0);
+            let position = title.bbox[1] / title.page_height.max(1.0);
+            let position_score = if position <= 0.55 { 1.0 } else { 0.0 };
+            let score = size_score + position_score + title.confidence;
+            (score, candidate)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let Some((best_score, best)) = ranked.first().copied() else {
+        return InferredMetadata::default();
+    };
+    if ranked.get(1).is_some_and(|(runner_score, runner)| {
+        best_score - *runner_score < 0.75
+            && normalize_title(&runner.title.text).to_lowercase()
+                != normalize_title(&best.title.text).to_lowercase()
+    }) {
+        return InferredMetadata::default();
+    }
+
+    InferredMetadata {
+        title: Some(truncate_title(&best.title.text)),
+        author: infer_author(best),
+    }
+}
+
+fn credible_inferred_title(text: &str) -> bool {
+    let text = normalize_title(text);
+    let lower = text.to_lowercase();
+    let words = text.split_whitespace().count();
+    text.chars().count() >= 3
+        && text.chars().count() <= 160
+        && words <= 20
+        && !matches!(lower.as_str(), "document" | "untitled" | "unknown")
+        && !has_chapter_pattern(&text)
+}
+
+fn infer_author(candidate: &MetadataCandidate) -> Option<String> {
+    let title = &candidate.title;
+    let mut lines = candidate
+        .lines
+        .iter()
+        .filter(|line| !line.text.is_empty())
+        .filter(|line| line.confidence.is_none_or(|confidence| confidence >= 0.75))
+        .filter(|line| {
+            line.bbox[3] >= title.bbox[1] - title.page_height * 0.12
+                && line.bbox[1] <= title.bbox[3] + title.page_height * 0.35
+        })
+        .collect::<Vec<_>>();
+    lines.sort_by(|a, b| a.bbox[1].total_cmp(&b.bbox[1]));
+
+    let mut explicit = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(after) = strip_author_cue(&line.text) {
+            if !after.is_empty() && author_name_like(after) {
+                explicit.push(normalize_title(after));
+            } else if let Some(next) = lines.get(index + 1)
+                && next.height < title.line_height * 0.9
+                && author_name_like(&next.text)
+            {
+                explicit.push(normalize_title(&next.text));
+            }
+        }
+    }
+    explicit.sort();
+    explicit.dedup();
+    if explicit.len() == 1 {
+        return explicit.pop();
+    }
+    if !explicit.is_empty() {
+        return None;
+    }
+
+    let title_center = (title.bbox[0] + title.bbox[2]) * 0.5;
+    let mut implicit = lines
+        .into_iter()
+        .filter(|line| line.bbox[1] >= title.bbox[3])
+        .filter(|line| line.bbox[1] - title.bbox[3] <= title.page_height * 0.18)
+        .filter(|line| line.height >= title.line_height * 0.35)
+        .filter(|line| line.height <= title.line_height * 0.85)
+        .filter(|line| line.confidence.is_none_or(|confidence| confidence >= 0.85))
+        .filter(|line| {
+            let center = (line.bbox[0] + line.bbox[2]) * 0.5;
+            (center - title_center).abs() <= title.page_height * 0.15
+        })
+        .filter(|line| author_name_like(&line.text))
+        .map(|line| normalize_title(&line.text))
+        .collect::<Vec<_>>();
+    implicit.sort();
+    implicit.dedup();
+    (implicit.len() == 1).then(|| implicit.remove(0))
+}
+
+fn strip_author_cue(text: &str) -> Option<&str> {
+    let trimmed = text.trim();
+    let lower = trimmed.to_lowercase();
+    for cue in ["written by", "authored by", "by"] {
+        if lower == cue {
+            return Some("");
+        }
+        if lower.starts_with(cue)
+            && lower
+                .as_bytes()
+                .get(cue.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(*byte, b':' | b'-'))
+        {
+            return Some(trimmed[cue.len()..].trim_matches([' ', ':', '-', '—']));
+        }
+    }
+    None
+}
+
+fn author_name_like(text: &str) -> bool {
+    let text = normalize_title(text);
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    if words.is_empty() || words.len() > 8 {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    if [
+        "press",
+        "publisher",
+        "publishing",
+        "edition",
+        "volume",
+        "university",
+        "copyright",
+        "isbn",
+    ]
+    .iter()
+    .any(|word| lower.split_whitespace().any(|token| token.contains(word)))
+        || lower.chars().filter(|ch| ch.is_ascii_digit()).count() >= 3
+    {
+        return false;
+    }
+    let alphabetic_words = words
+        .iter()
+        .filter(|word| word.chars().any(char::is_alphabetic))
+        .count();
+    alphabetic_words >= 2
+        && text.chars().all(|ch| {
+            ch.is_alphabetic()
+                || ch.is_whitespace()
+                || matches!(ch, '.' | ',' | '-' | '\'' | '’' | '&')
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,6 +1057,71 @@ mod tests {
                 median_line_height: height,
             })
             .collect()
+    }
+
+    fn metadata_candidate(title: &str, lines: &[(&str, f32, f32)]) -> MetadataCandidate {
+        MetadataCandidate {
+            page_index: 0,
+            title: TocCandidate {
+                kind: TitleKind::DocTitle,
+                confidence: 0.94,
+                bbox: [100.0, 120.0, 700.0, 190.0],
+                text: title.to_string(),
+                line_height: 64.0,
+                ..candidate(0, title, 64.0)
+            },
+            lines: lines
+                .iter()
+                .map(|(text, y, height)| MetadataLine {
+                    text: (*text).to_string(),
+                    bbox: [180.0, *y, 620.0, *y + *height],
+                    height: *height,
+                    confidence: Some(0.96),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn conservative_metadata_accepts_an_explicit_written_by_line() {
+        let candidate = metadata_candidate(
+            "The Long Road Home",
+            &[
+                ("The Long Road Home", 130.0, 64.0),
+                ("Written by Ada Lovelace", 230.0, 30.0),
+            ],
+        );
+        let inferred = infer_metadata(&[candidate], &body_stats(20, 28.0), 20);
+        assert_eq!(inferred.title.as_deref(), Some("The Long Road Home"));
+        assert_eq!(inferred.author.as_deref(), Some("Ada Lovelace"));
+    }
+
+    #[test]
+    fn ambiguous_cover_titles_produce_no_metadata() {
+        let first = metadata_candidate("Collected Essays", &[]);
+        let mut second = metadata_candidate("Selected Essays", &[]);
+        second.title.bbox[1] = 125.0;
+        assert_eq!(
+            infer_metadata(&[first, second], &body_stats(20, 28.0), 20),
+            InferredMetadata::default()
+        );
+    }
+
+    #[test]
+    fn publisher_copy_is_not_mistaken_for_an_author() {
+        let candidate = metadata_candidate(
+            "A Natural History of Islands",
+            &[
+                ("A Natural History of Islands", 130.0, 64.0),
+                ("Oxford University Press 2024", 230.0, 28.0),
+            ],
+        );
+        let inferred = infer_metadata(&[candidate], &body_stats(20, 28.0), 20);
+        assert_eq!(
+            inferred.title.as_deref(),
+            Some("A Natural History of Islands")
+        );
+        assert_eq!(inferred.author, None);
     }
 
     #[test]

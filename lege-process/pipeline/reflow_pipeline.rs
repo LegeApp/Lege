@@ -11,7 +11,8 @@
 
 use crate::pipeline::config::PipelineConfig;
 use crate::pipeline::helper_functions::{
-    await_stage_or_cancel_with_token, init_encode_semaphore, spawn_pdf_writer_actor,
+    await_stage_or_cancel_with_token, bookmarks_to_outline, init_encode_semaphore, merge_outline,
+    spawn_pdf_writer_actor,
 };
 use crate::pipeline::pdf_tokio_pipeline::encode_base_layer_for_jpeg_mode;
 use crate::pipeline::policies::build_inference_image;
@@ -212,6 +213,51 @@ struct ReflowPlan {
     cfg: crate::reflow::RasterReflowConfig,
     doc: crate::reflow::ReflowDocument,
     total_source_pages: usize,
+    /// Source-space title/content boxes retained only long enough to project
+    /// them onto the repaginated output pages.
+    toc_hints: Vec<(usize, crate::engine::Detection)>,
+}
+
+fn mapped_toc_detections(
+    page: &crate::reflow::ReflowPage,
+    hints: &[(usize, crate::engine::Detection)],
+) -> Vec<crate::engine::Detection> {
+    hints
+        .iter()
+        .filter_map(|(source_page, hint)| {
+            let mut bounds: Option<[u32; 4]> = None;
+            for item in &page.items {
+                if item.src.page_index != *source_page {
+                    continue;
+                }
+                let rect = item.src.rect;
+                let cx = rect.x as f32 + rect.w as f32 * 0.5;
+                let cy = rect.y as f32 + rect.h as f32 * 0.5;
+                if cx < hint.bbox[0] || cx > hint.bbox[2] || cy < hint.bbox[1] || cy > hint.bbox[3]
+                {
+                    continue;
+                }
+                let out = item.out_rect;
+                bounds = Some(match bounds {
+                    None => [out.x, out.y, out.x + out.w, out.y + out.h],
+                    Some(old) => [
+                        old[0].min(out.x),
+                        old[1].min(out.y),
+                        old[2].max(out.x + out.w),
+                        old[3].max(out.y + out.h),
+                    ],
+                });
+            }
+            bounds.map(|bbox| crate::engine::Detection {
+                class_id: hint.class_id,
+                class_name: hint.class_name.clone(),
+                confidence: hint.confidence,
+                bbox: bbox.map(|value| value as f32),
+                category: hint.category.clone(),
+                context: hint.context.clone(),
+            })
+        })
+        .collect()
 }
 
 fn cancelled_if_signalled(
@@ -570,6 +616,7 @@ async fn analyze_and_plan(
     let mut full_flow: Vec<crate::reflow::FlowItem> = Vec::new();
     let mut confidence: Vec<crate::reflow::ReflowConfidence> =
         Vec::with_capacity(total_source_pages);
+    let mut toc_hints = Vec::new();
     for local_index in 0..total_source_pages {
         cancelled_if_signalled(shutdown_rx, cancellation)?;
         let analyzed = await_reflow_step(
@@ -588,6 +635,11 @@ async fn analyze_and_plan(
         .await?;
         let (flow, conf) =
             crate::reflow::reflow_page_flow(&analyzed.page, &analyzed.hints, &reflow_cfg);
+        toc_hints.extend(analyzed.hints.iter().filter_map(|hint| {
+            let name = hint.class_name.as_deref()?;
+            matches!(name, "doc_title" | "paragraph_title" | "content")
+                .then(|| (local_index, hint.clone()))
+        }));
         full_flow.extend(flow);
         // Source-page boundary is a safe break between flows.
         full_flow.push(crate::reflow::FlowItem::RegionBreak);
@@ -627,6 +679,7 @@ async fn analyze_and_plan(
         cfg: reflow_cfg,
         doc,
         total_source_pages,
+        toc_hints,
     })
 }
 
@@ -659,6 +712,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
         cfg: reflow_cfg,
         doc,
         total_source_pages,
+        toc_hints,
     } = analyze_and_plan(
         &source,
         &config,
@@ -681,6 +735,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
         false,
         runtime_limits.channel_capacity,
     );
+    let mut toc_pages = Vec::new();
 
     for reflow_page in &doc.pages {
         if let Ok(signal) = shutdown_rx.try_recv() {
@@ -759,6 +814,17 @@ pub(crate) async fn run_raster_reflow_pipeline(
         )
         .await?;
 
+        let toc_detections = mapped_toc_detections(reflow_page, &toc_hints);
+        if config.enable_auto_toc() {
+            toc_pages.push(crate::toc::capture_page(
+                &toc_detections,
+                hocr_text.as_deref(),
+                reflow_page.index,
+                reflow_page.width,
+                reflow_page.height,
+            ));
+        }
+
         let page = crate::accumulator::Page {
             width: reflow_page.width as f32,
             height: reflow_page.height as f32,
@@ -789,19 +855,24 @@ pub(crate) async fn run_raster_reflow_pipeline(
 
     // After all pages are composed, extract bookmarks and send them before finalize.
     // Reflow re-paginates, so we build source-page → first-output-page mapping from SourceMap.
+    let mut source_metadata = lege_pdf_read::DocumentMetadata::default();
     if let Some(session) = source.document_session() {
         let source_map = &doc.source_map;
         let mut src_to_out: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
         for placement in &source_map.placements {
             src_to_out
-                .entry(placement.src.page_index)
+                .entry(page_start + placement.src.page_index)
                 .and_modify(|e| *e = (*e).min(placement.out_page))
                 .or_insert(placement.out_page);
         }
-        let mut outline_task =
-            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session));
-        let bookmarks = tokio::select! {
+        let mut outline_task = crate::runtime_stats::spawn_blocking(move || {
+            (
+                lege_pdf_read::extract_outline(&session),
+                lege_pdf_read::extract_metadata(&session),
+            )
+        });
+        let (bookmarks, metadata) = tokio::select! {
             result = &mut outline_task => result?,
             signal = shutdown_rx.recv() => {
                 cancellation.cancel();
@@ -814,11 +885,40 @@ pub(crate) async fn run_raster_reflow_pipeline(
                 return Err(anyhow!("Processing cancelled during reflow outline extraction: {message}"));
             }
         };
+        source_metadata = metadata;
         if !bookmarks.is_empty() {
             pdf_writer_handle
                 .send_bookmarks(bookmarks, src_to_out)
                 .await?;
         }
+    }
+
+    let candidates = toc_pages
+        .iter()
+        .flat_map(|page| page.candidates.clone())
+        .collect();
+    let stats = toc_pages
+        .iter()
+        .filter_map(|page| page.stats)
+        .collect::<Vec<_>>();
+    let contents = toc_pages
+        .iter()
+        .flat_map(|page| page.printed_contents.clone())
+        .collect::<Vec<_>>();
+    let synthetic =
+        crate::toc::build_outline_with_contents(candidates, &stats, total_out_pages, &contents);
+    pdf_writer_handle.send_synthetic_outline(synthetic).await?;
+    let metadata_candidates = toc_pages
+        .iter()
+        .flat_map(|page| page.metadata_candidates.clone())
+        .collect::<Vec<_>>();
+    let inferred = crate::toc::infer_metadata(&metadata_candidates, &stats, total_out_pages);
+    let title = source_metadata.title.or(inferred.title);
+    let author = source_metadata.author.or(inferred.author);
+    if title.is_some() || author.is_some() {
+        pdf_writer_handle
+            .send_document_identity(title, author)
+            .await?;
     }
 
     pdf_writer_handle.finalize().await?;
@@ -863,6 +963,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         cfg: reflow_cfg,
         doc,
         total_source_pages,
+        toc_hints,
     } = analyze_and_plan(
         &source,
         &config,
@@ -902,6 +1003,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         runtime_limits.channel_capacity,
         encoder_control.clone(),
     );
+    let mut toc_pages = Vec::new();
 
     for reflow_page in &doc.pages {
         if let Ok(signal) = shutdown_rx.try_recv() {
@@ -924,6 +1026,32 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         )
         .await?;
         let canvas = compose_reflow_page_raster(reflow_page, &source_pages, &reflow_cfg);
+        let hocr_text = if config.enable_ocr() {
+            let canvas_ref = Arc::new(canvas.clone());
+            if config.slow_ocr_enabled() {
+                crate::ocr::slow::perform_reflow_page_ocr(reflow_page, &source_pages, &config)
+                    .await?
+            } else {
+                crate::ocr::fast::perform_reflow_page_fast_ocr(
+                    reflow_page,
+                    &canvas_ref,
+                    config.ocr_language(),
+                )
+                .await?
+            }
+        } else {
+            None
+        };
+        let toc_detections = mapped_toc_detections(reflow_page, &toc_hints);
+        if config.enable_auto_toc() {
+            toc_pages.push(crate::toc::capture_page(
+                &toc_detections,
+                hocr_text.as_deref(),
+                reflow_page.index,
+                reflow_page.width,
+                reflow_page.height,
+            ));
+        }
         let binarize_config = config.clone();
         let binarize_cancellation = cancellation.clone();
         let (canvas, binarized) = await_reflow_step(
@@ -982,7 +1110,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
             binarized,
             cleaned_gray: None,
             detections,
-            hocr: None,
+            hocr: hocr_text,
         };
 
         let orchestrator = orchestrator.clone();
@@ -1025,6 +1153,39 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         SOURCE_PAGE_WINDOW
     );
 
+    let candidates = toc_pages
+        .iter()
+        .flat_map(|page| page.candidates.clone())
+        .collect();
+    let stats = toc_pages
+        .iter()
+        .filter_map(|page| page.stats)
+        .collect::<Vec<_>>();
+    let contents = toc_pages
+        .iter()
+        .flat_map(|page| page.printed_contents.clone())
+        .collect::<Vec<_>>();
+    let synthetic =
+        crate::toc::build_outline_with_contents(candidates, &stats, total_out_pages, &contents);
+    let source_outline = if let Some(session) = source.document_session() {
+        let bookmarks =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
+                .await?;
+        let mut source_to_output = std::collections::HashMap::new();
+        for placement in &doc.source_map.placements {
+            source_to_output
+                .entry(page_start + placement.src.page_index)
+                .and_modify(|page: &mut usize| *page = (*page).min(placement.out_page))
+                .or_insert(placement.out_page);
+        }
+        bookmarks_to_outline(&bookmarks, &source_to_output)
+    } else {
+        Vec::new()
+    };
+    let accepted = merge_outline(source_outline, Some(synthetic));
+    if !accepted.is_empty() {
+        djvu_writer.send_outline(accepted).await?;
+    }
     djvu_writer.finalize().await?;
     await_stage_or_cancel_with_token(
         &mut writer_task,
@@ -1110,6 +1271,32 @@ mod tests {
 
     fn active_cancellation() -> lege_pdf_read::CancellationToken {
         lege_pdf_read::CancellationToken::new()
+    }
+
+    #[test]
+    fn title_detection_is_projected_into_output_space() {
+        let mut page = ReflowPage::new(0, 200, 200);
+        page.items.push(PlacedItem {
+            out_rect: PxRect::new(40, 60, 80, 20),
+            src: SourceRef {
+                page_index: 2,
+                rect: PxRect::new(100, 120, 160, 40),
+            },
+            scale: 0.5,
+            kind: PlacedKind::Run,
+        });
+        let hint = crate::engine::Detection {
+            class_id: crate::types::class_id_for("paragraph_title").unwrap_or(0),
+            class_name: Some("paragraph_title".to_string()),
+            confidence: 0.91,
+            bbox: [90.0, 110.0, 280.0, 180.0],
+            category: crate::types::ContentCategory::Text,
+            context: None,
+        };
+        let mapped = mapped_toc_detections(&page, &[(2, hint)]);
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].bbox, [40.0, 60.0, 120.0, 80.0]);
+        assert_eq!(mapped[0].class_name.as_deref(), Some("paragraph_title"));
     }
 
     #[tokio::test]

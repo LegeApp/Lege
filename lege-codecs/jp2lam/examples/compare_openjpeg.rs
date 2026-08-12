@@ -44,10 +44,7 @@ fn main() {
 
     let outdir = match std::env::var_os("JP2LAM_COMPARE_OUTDIR") {
         Some(p) => PathBuf::from(p),
-        None => std::env::temp_dir().join(format!(
-            "jp2lam-opj-compare-{}",
-            std::process::id()
-        )),
+        None => std::env::temp_dir().join(format!("jp2lam-opj-compare-{}", std::process::id())),
     };
     std::fs::create_dir_all(&outdir).expect("create outdir");
     println!("outdir={}", outdir.display());
@@ -106,10 +103,7 @@ fn main() {
         "jp2lam.median_ms={:.3}",
         jp2lam_median.as_secs_f64() * 1_000.0
     );
-    println!(
-        "jp2lam.mean_ms={:.3}",
-        mean_ms(&jp2lam_samples)
-    );
+    println!("jp2lam.mean_ms={:.3}", mean_ms(&jp2lam_samples));
 
     // --- OpenJPEG ---
     let opj_png = outdir.join("opj_out.png");
@@ -149,9 +143,7 @@ fn main() {
         opj_median.as_secs_f64() * 1_000.0
     );
     println!("openjpeg.mean_ms={:.3}", mean_ms(&opj_samples));
-    println!(
-        "note=openjpeg_cli_includes_png_encode; use opj_bench.c for decode-only wall time"
-    );
+    println!("note=openjpeg_cli_includes_png_encode; use opj_bench.c for decode-only wall time");
     println!(
         "ratio_jp2lam_over_opj_cli={:.3}",
         jp2lam_median.as_secs_f64() / opj_median.as_secs_f64().max(f64::MIN_POSITIVE)
@@ -200,16 +192,10 @@ fn main() {
             .output();
         match output {
             Ok(out) if out.status.success() => {
-                print!(
-                    "opj_bench.stdout={}",
-                    String::from_utf8_lossy(&out.stdout)
-                );
+                print!("opj_bench.stdout={}", String::from_utf8_lossy(&out.stdout));
             }
             Ok(out) => {
-                eprintln!(
-                    "opj_bench failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
+                eprintln!("opj_bench failed: {}", String::from_utf8_lossy(&out.stderr));
             }
             Err(e) => eprintln!("opj_bench spawn failed: {e}"),
         }
@@ -234,18 +220,11 @@ fn prepare_jp2(path: &str, outdir: &Path, quality: u8) -> (String, PathBuf, Vec<
     let rgb = dyn_img.to_rgb8();
     let (w, h) = rgb.dimensions();
     let image = Image::from_rgb_bytes(w, h, rgb.as_raw()).expect("Image");
-    let encoded = encode(
-        &image,
-        &EncodeOptions::photo(quality, OutputFormat::Jp2),
-    )
-    .expect("encode jp2");
+    let encoded =
+        encode(&image, &EncodeOptions::photo(quality, OutputFormat::Jp2)).expect("encode jp2");
     let dest = outdir.join(format!("lear_q{quality}.jp2"));
     std::fs::write(&dest, &encoded).expect("write jp2");
-    (
-        format!("{path}->jp2-q{quality}-{w}x{h}"),
-        dest,
-        encoded,
-    )
+    (format!("{path}->jp2-q{quality}-{w}x{h}"), dest, encoded)
 }
 
 fn diff_packed_vs_rgb8(
@@ -317,14 +296,14 @@ fn resolve_opj_decompress() -> PathBuf {
         if candidate.is_file() {
             return candidate;
         }
-        let candidate = PathBuf::from(std::env::var("OPENJPEG_BIN").unwrap()).join("opj_decompress");
+        let candidate =
+            PathBuf::from(std::env::var("OPENJPEG_BIN").unwrap()).join("opj_decompress");
         if candidate.is_file() {
             return candidate;
         }
     }
-    let known = PathBuf::from(
-        r"D:\tools\openjpeg\openjpeg-master\build\bin\Release\opj_decompress.exe",
-    );
+    let known =
+        PathBuf::from(r"D:\tools\openjpeg\openjpeg-master\build\bin\Release\opj_decompress.exe");
     if known.is_file() {
         return known;
     }

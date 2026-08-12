@@ -317,7 +317,7 @@ fn destination_name(value: &PdfObject, session: &RenderSession) -> Option<Vec<u8
     }
 }
 
-fn decode_pdf_text_string(bytes: &[u8]) -> String {
+pub(crate) fn decode_pdf_text_string(bytes: &[u8]) -> String {
     if let Some(body) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units = body
             .chunks_exact(2)

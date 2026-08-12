@@ -1114,7 +1114,9 @@ fn directional_planning_prioritizes_visible_work_and_prefetches_ahead() {
             .iter()
             .all(|demand| demand.page > visible_page)
     );
-    assert!(intent.final_prefetch_tiles.len() <= 32);
+    // The planner admits up to five exact-quality pages within its explicit
+    // 160-tile runway budget.
+    assert!(intent.final_prefetch_tiles.len() <= 160);
     let forward_previews = intent
         .preview_pages
         .iter()

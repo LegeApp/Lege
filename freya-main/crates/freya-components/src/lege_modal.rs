@@ -4,8 +4,8 @@ use torin::{alignment::Alignment, direction::Direction, prelude::Position, size:
 
 use crate::{
     button::Button,
-    popup::{PopupBackground, PopupTheme, PopupThemePartial, PopupThemePreference},
     get_theme,
+    popup::{PopupBackground, PopupTheme, PopupThemePartial, PopupThemePreference},
 };
 
 #[derive(Clone, PartialEq)]

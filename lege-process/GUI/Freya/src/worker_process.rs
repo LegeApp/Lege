@@ -420,6 +420,9 @@ pub fn gui_options_to_cli_args(
     } else {
         args.push("--no-ocr".into());
     }
+    if options.automatic_toc {
+        args.push("--auto-toc".into());
+    }
 
     // Reflow
     if options.reflow {
@@ -928,6 +931,27 @@ mod tests {
         assert!(!options.use_fixed_threshold);
         assert!(!options.use_heavy_binarization);
         assert_eq!(options.k_factor, lege_ipc::DEFAULT_K_FACTOR);
+        assert!(!options.automatic_toc);
+    }
+
+    #[test]
+    fn automatic_toc_worker_args_enable_visible_prerequisites() {
+        let mut options = ProcessingOptions::new();
+        options.use_ocr = false;
+        options.layout_analysis = false;
+        options.automatic_toc = true;
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert!(args.iter().any(|arg| arg == OsStr::new("--auto-toc")));
+        assert!(args.iter().any(|arg| arg == OsStr::new("--ocr-mode")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-ocr")));
     }
 
     #[test]

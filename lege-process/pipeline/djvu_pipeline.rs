@@ -13,8 +13,9 @@ use crate::engine::Detection;
 use crate::margin::DocumentMarginAnalysis;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    build_hocr_from_pdf_text, image_detection_overlaps_substantive_text,
-    merge_overlapping_image_detections, rounded_clamped_bbox, should_preserve_cover_page,
+    bookmarks_to_outline, build_hocr_from_pdf_text, image_detection_overlaps_substantive_text,
+    merge_outline, merge_overlapping_image_detections, rounded_clamped_bbox,
+    should_preserve_cover_page,
 };
 use crate::pipeline::margin_pipeline::{
     CachedDetections, adjust_page_with_margin_analysis, cached_inference_result,
@@ -58,6 +59,7 @@ pub struct DjvuBinarizedData {
     pub original_width_pts: f32,
     pub original_height_pts: f32,
     pub hocr_text: Option<String>,
+    pub toc: crate::toc::PageTocData,
 }
 
 struct ComposedDjvuPage {
@@ -506,6 +508,7 @@ pub async fn create_and_run_djvu_source_pipeline(
 
     let epub_sidecar_output = config.epub_sidecar_output().cloned();
     let epub_hocr_pages = Arc::new(Mutex::new(Vec::new()));
+    let document_toc = Arc::new(Mutex::new(Vec::new()));
 
     // Spawn encoding stage (encodes pages concurrently, then forwards to writer actor)
     let mut encode_task: JoinHandle<Result<()>> = {
@@ -515,6 +518,7 @@ pub async fn create_and_run_djvu_source_pipeline(
         let concurrency = pipeline_config.djvu_encode_workers;
         let epub_sidecar_output = epub_sidecar_output.clone();
         let epub_hocr_pages = epub_hocr_pages.clone();
+        let document_toc = document_toc.clone();
         let encode_cancellation = cancellation.clone();
         tokio::spawn(async move {
             #[cfg(feature = "debug-logging")]
@@ -534,6 +538,9 @@ pub async fn create_and_run_djvu_source_pipeline(
                         djvu_writer.append_entry(composed_page.entry).await?;
                     }
                     Some(binarized_data) = binarize_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
+                        if let Ok(mut pages) = document_toc.lock() {
+                            pages.push(binarized_data.toc.clone());
+                        }
                         if epub_sidecar_output.is_some()
                             && let Some(hocr) = binarized_data.hocr_text.clone()
                             && !hocr.trim().is_empty()
@@ -599,43 +606,6 @@ pub async fn create_and_run_djvu_source_pipeline(
                 }
             }
 
-            djvu_writer.finalize().await?;
-
-            if let Some(epub_path) = epub_sidecar_output {
-                let hocr_pages = epub_hocr_pages
-                    .lock()
-                    .map(|pages| pages.clone())
-                    .unwrap_or_default();
-                if !hocr_pages.is_empty() {
-                    let title = epub_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Document")
-                        .to_string();
-                    info_log!(
-                        "[DJVU-Parallel] Assembling EPUB sidecar from existing OCR: {}",
-                        epub_path.display()
-                    );
-                    crate::runtime_stats::spawn_blocking_stage(
-                        crate::runtime_stats::Stage::Writer,
-                        move || {
-                            crate::pipeline::epub_pipeline::build_epub_from_hocr_pages_cancellable(
-                                &hocr_pages,
-                                &title,
-                                &epub_path,
-                                Some(&encode_cancellation),
-                            )
-                        },
-                    )
-                    .await
-                    .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
-                } else {
-                    warn_log!(
-                        "[DJVU-Parallel] EPUB sidecar requested, but no OCR text was available"
-                    );
-                }
-            }
-
             #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Encode] Encoding stage complete");
             Ok(())
@@ -693,6 +663,76 @@ pub async fn create_and_run_djvu_source_pipeline(
     .await?;
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Encoding stage complete");
+
+    let toc_pages = document_toc
+        .lock()
+        .map(|pages| pages.clone())
+        .unwrap_or_default();
+    let candidates = toc_pages
+        .iter()
+        .flat_map(|page| page.candidates.clone())
+        .collect();
+    let stats = toc_pages
+        .iter()
+        .filter_map(|page| page.stats)
+        .collect::<Vec<_>>();
+    let printed_contents = toc_pages
+        .iter()
+        .flat_map(|page| page.printed_contents.clone())
+        .collect::<Vec<_>>();
+    let synthetic =
+        crate::toc::build_outline_with_contents(candidates, &stats, total_pages, &printed_contents);
+    let source_outline = if let Some(session) = document_session.clone() {
+        let bookmarks =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
+                .await?;
+        let source_to_output = (0..total_pages)
+            .map(|local| (page_index_offset + local, local))
+            .collect::<std::collections::HashMap<_, _>>();
+        bookmarks_to_outline(&bookmarks, &source_to_output)
+    } else {
+        Vec::new()
+    };
+    let accepted_outline = merge_outline(source_outline, Some(synthetic));
+    if !accepted_outline.is_empty() {
+        djvu_writer.send_outline(accepted_outline.clone()).await?;
+    }
+    djvu_writer.finalize().await?;
+
+    if let Some(epub_path) = epub_sidecar_output {
+        let hocr_pages = epub_hocr_pages
+            .lock()
+            .map(|pages| pages.clone())
+            .unwrap_or_default();
+        if !hocr_pages.is_empty() {
+            let title = epub_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Document")
+                .to_string();
+            info_log!(
+                "[DJVU-Parallel] Assembling EPUB sidecar from existing OCR: {}",
+                epub_path.display()
+            );
+            let epub_cancellation = cancellation.clone();
+            crate::runtime_stats::spawn_blocking_stage(
+                crate::runtime_stats::Stage::Writer,
+                move || {
+                    crate::pipeline::epub_pipeline::build_epub_from_hocr_pages_with_outline_cancellable(
+                        &hocr_pages,
+                        &title,
+                        &epub_path,
+                        &accepted_outline,
+                        Some(&epub_cancellation),
+                    )
+                },
+            )
+            .await
+            .map_err(|e| anyhow!("EPUB sidecar task panicked: {}", e))??;
+        } else {
+            warn_log!("[DJVU-Parallel] EPUB sidecar requested, but no OCR text was available");
+        }
+    }
 
     #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Waiting for writer actor to complete document assembly...");
@@ -879,6 +919,17 @@ async fn process_single_djvu_page(
     if cancellation.is_cancelled() {
         return Err(anyhow!("DjVu page processing cancelled after OCR"));
     }
+    let toc = if config.enable_auto_toc() {
+        crate::toc::capture_page(
+            &adjusted_detections,
+            hocr_text.as_deref(),
+            local_index,
+            width as u32,
+            height as u32,
+        )
+    } else {
+        crate::toc::PageTocData::default()
+    };
     Ok(Some(DjvuBinarizedData {
         index: local_index,
         preserve_full_color,
@@ -889,6 +940,7 @@ async fn process_single_djvu_page(
         original_width_pts,
         original_height_pts,
         hocr_text,
+        toc,
     }))
 }
 /// CPU-intensive work for a single DJVU page (to be executed in spawn_blocking)

@@ -12,7 +12,7 @@
 
 use std::io::Write;
 
-use crate::serialize::{write_literal_string, write_name};
+use crate::serialize::{write_literal_string, write_name, write_text_string};
 use crate::sink::PdfSink;
 use crate::types::{ObjectId, Result};
 
@@ -105,16 +105,16 @@ pub fn write_info<W: Write>(sink: &mut PdfSink<W>, meta: &DocumentMeta) -> Resul
     let id = sink.alloc_id();
     let mut d = Vec::new();
     d.extend_from_slice(b"<<");
-    kv_str(&mut d, b"Producer", meta.producer.as_bytes());
-    kv_str(&mut d, b"Creator", meta.creator.as_bytes());
+    kv_text(&mut d, b"Producer", &meta.producer);
+    kv_text(&mut d, b"Creator", &meta.creator);
     if let Some(date) = &meta.pdf_date {
-        kv_str(&mut d, b"CreationDate", date.as_bytes());
-        kv_str(&mut d, b"ModDate", date.as_bytes());
+        kv_text(&mut d, b"CreationDate", date);
+        kv_text(&mut d, b"ModDate", date);
     }
-    kv_str(&mut d, b"Title", meta.title.as_bytes());
-    kv_str(&mut d, b"Author", meta.author.as_bytes());
-    kv_str(&mut d, b"Subject", meta.subject.as_bytes());
-    kv_str(&mut d, b"Keywords", meta.keywords.as_bytes());
+    kv_text(&mut d, b"Title", &meta.title);
+    kv_text(&mut d, b"Author", &meta.author);
+    kv_text(&mut d, b"Subject", &meta.subject);
+    kv_text(&mut d, b"Keywords", &meta.keywords);
     key(&mut d, b"Trapped");
     write_name(&mut d, b"False");
     d.extend_from_slice(b">>");
@@ -127,9 +127,12 @@ fn key(d: &mut Vec<u8>, k: &[u8]) {
     d.push(b' ');
 }
 
-fn kv_str(d: &mut Vec<u8>, k: &[u8], v: &[u8]) {
-    key(d, k);
-    write_literal_string(d, v);
+fn kv_text(d: &mut Vec<u8>, key_name: &[u8], value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    key(d, key_name);
+    write_text_string(d, value);
 }
 
 #[cfg(test)]

@@ -29,6 +29,7 @@
 //! ```
 
 use crate::annotations::{Annotations, hidden_text::HiddenText};
+use crate::doc::DjVmNav;
 use crate::doc::encoder::DocumentEncoder;
 use crate::doc::page_collection::PageCollection;
 use crate::doc::page_encoder::PageEncodeParams;
@@ -605,6 +606,11 @@ impl DjvuDocument {
 
     /// Finalize and return DjVu file bytes
     pub fn finalize(&self) -> Result<Vec<u8>> {
+        self.finalize_with_navigation(None)
+    }
+
+    /// Finalize the document and include an optional document navigation tree.
+    pub fn finalize_with_navigation(&self, navigation: Option<&DjVmNav>) -> Result<Vec<u8>> {
         if !self.is_complete() {
             return Err(DjvuError::InvalidOperation(format!(
                 "Document incomplete: {} of {} pages ready",
@@ -620,6 +626,15 @@ impl DjvuDocument {
 
         // Use internal encoder to assemble the document
         let shared_dicts = self.shared_dicts.lock().unwrap().clone();
-        DocumentEncoder::assemble_pages_with_shared_dictionaries(&pages, &shared_dicts)
+        match navigation {
+            Some(navigation) => {
+                DocumentEncoder::assemble_pages_with_shared_dictionaries_and_navigation(
+                    &pages,
+                    &shared_dicts,
+                    Some(navigation),
+                )
+            }
+            None => DocumentEncoder::assemble_pages_with_shared_dictionaries(&pages, &shared_dicts),
+        }
     }
 }

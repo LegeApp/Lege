@@ -14,6 +14,7 @@ path = "src/bin/lege_ocr_debug.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+blake3 = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 image = { workspace = true }
@@ -23,7 +24,7 @@ rayon = { workspace = true }
 once_cell = { workspace = true }
 html-escape = { workspace = true }
 regex = "1.12.2"
-lege-gpu = { path = "../lege-gpu" }
+lege-gpu = { path = "../lege-gpu", features = ["layout-detection"] }
 env_logger = "0.11.11"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
@@ -46,3 +47,6 @@ default = []
 tesseract-ocr = ["dep:tesseract"]
 paddle-ocr = []
 trocr = []
+
+[dev-dependencies]
+tempfile = { workspace = true }

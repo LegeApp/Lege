@@ -102,8 +102,7 @@ fn run() -> Result<()> {
 
     // ---- output folder ---------------------------------------------------
     let out_dir = output_dir()?;
-    std::fs::create_dir_all(&out_dir)
-        .with_context(|| format!("creating {}", out_dir.display()))?;
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
 
     let options = SchedulerOptions::default();
     let compile_workers = options.compile_workers;
@@ -145,17 +144,16 @@ fn run() -> Result<()> {
     let scheduler = RenderScheduler::new(backend, options);
     // Built per page: `ParseContext` is per-page state, and the shared font
     // provider behind the compiler is the only thing worth keeping alive.
-    let make_request = move |snap: &DocumentSnapshot,
-                             page: PageIndex|
-          -> Result<RenderRequest, RenderError> {
-        let mut ctx = ParseContext::new();
-        let compiled = PageCompiler::new()
-            .with_annotations(true)
-            .with_system_fonts(Arc::clone(&system_fonts))
-            .compile(snap, page, &mut ctx)
-            .map_err(|e| RenderError::Backend(e.to_string()))?;
-        Ok(request_for_page(Arc::new(compiled), scale))
-    };
+    let make_request =
+        move |snap: &DocumentSnapshot, page: PageIndex| -> Result<RenderRequest, RenderError> {
+            let mut ctx = ParseContext::new();
+            let compiled = PageCompiler::new()
+                .with_annotations(true)
+                .with_system_fonts(Arc::clone(&system_fonts))
+                .compile(snap, page, &mut ctx)
+                .map_err(|e| RenderError::Backend(e.to_string()))?;
+            Ok(request_for_page(Arc::new(compiled), scale))
+        };
 
     let mut rendered = 0u32;
     let mut failures: Vec<(u32, String)> = Vec::new();
@@ -204,10 +202,7 @@ fn run() -> Result<()> {
     println!("──────────────────────────────────────────────────────────");
     row("open (mmap + xref)", fmt_dur(open_time));
     row("system font scan", fmt_dur(font_scan));
-    row(
-        &format!("render ({rendered} pages)"),
-        fmt_dur(render_time),
-    );
+    row(&format!("render ({rendered} pages)"), fmt_dur(render_time));
     row(
         "throughput",
         format!(

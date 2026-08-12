@@ -499,6 +499,68 @@ record lege-ecosystem.decode-optimization-handoff/1 : work {
     }
 }
 
+record lege-ecosystem.encode-quality.improve-photographic-rate-control/1 : work {
+    title "Rework jp2lam lossy rate control for perceptual, resolution-stable photographic quality"
+    state proposed
+    scope [
+        path "lege-codecs/jp2lam/src/decode/mod.rs",
+        path "lege-codecs/jp2lam/src/dwt/pcrd.rs",
+        path "lege-codecs/jp2lam/src/encode/**",
+        path "lege-codecs/jp2lam/src/plan/**"
+    ]
+    intent """
+        Raise jp2lam lossy photographic quality-per-byte toward JPEG XL/BPG and make a fixed quality hold constant PERCEPTUAL quality across resolutions. Work the causes in lege-ecosystem.encode-quality.root-cause: replace MSE-only, size-matched, single-image-calibrated rate control with perceptually weighted, butteraugli-anchored, cross-resolution-validated rate control, and connect the existing but disabled perceptual model. Grade every change with butteraugli + ssimulacra2 against a libjxl reference, not by file size.
+        """
+    note """
+        Key code sites: quality->lambda in src/dwt/pcrd.rs quality_to_lambda (resolution_factor ^0.35 term) and select_for_quality; active RD curve build in src/encode/backend/native/rate.rs (raw_records_for_passes uses pass.mse_numerator; curves_from_tier1_layout drops contrast_mask/taubman_weights); quantization step scaling in src/plan/derive.rs (apply_quality_step_scaling, quality_step_scaler); the disabled perceptual model in src/perceptual/ and pcrd.rs (apply_contrast_masking_to_delta, band_distortion_bias, Taubman2000). rate.rs notes the perceptual delta-MSE path (P1.3) was rolled back pending lambda recalibration. A ready-made external grading harness exists at /mnt/Samsung980_1TB/Rust-projects/codec-headsup (butteraugli + ssimulacra2, libjxl FFI).
+        """
+    acceptance {
+        check butteraugli-anchored-quality-mode {
+            statement """
+                Evaluate (accept or reject with evidence) a RateControl mode that targets a butteraugli distance like cjxl -d, via a size/lambda search, so callers can request a perceptual quality directly instead of a compression heuristic.
+                """
+            method manual
+        }
+        check decode-memory-scaling {
+            statement """
+                Default DecodeLimits (max_working_bytes 1 GiB, max_pixels 100M) are raised or made resolution-aware so a ~50MP JP2 decodes within limits by default (observed failure at ~3.0 GB estimated working set).
+                """
+            method manual
+        }
+        check no-quality-regression-gate {
+            statement """
+                A perceptual regression check on the corpus (butteraugli/ssimulacra2 vs the libjxl reference and vs the previous jp2lam revision) is defined and passes, so future changes cannot silently regress photographic quality.
+                """
+            method manual
+        }
+        check perceptual-grading-harness {
+            statement """
+                A repeatable grading step reports butteraugli AND ssimulacra2 for jp2lam vs a libjxl reference on a multi-resolution photographic corpus (>=20 images spanning ~12MP and ~50MP), so rate-control changes are judged perceptually rather than by file size.
+                """
+            method manual
+        }
+        check perceptual-weighting-wired {
+            statement """
+                The active PCRD selection consumes perceptual weighting (re-enable the rolled-back path: contrast/Taubman masking + subband band bias, or an equivalent CSF visual-frequency weighting), with lambda recalibrated, and shows a butteraugli/ssimulacra2 win over the MSE-only baseline at equal size on the corpus.
+                """
+            method manual
+        }
+        check photographic-lambda-recalibration {
+            statement """
+                quality->lambda and quality->step are recalibrated against butteraugli on the multi-image photographic corpus (not lear.png alone / not document pages), so quality is a monotone butteraugli target rather than a reproduction of prior file sizes.
+                """
+            method manual
+        }
+        check resolution-stable-quality {
+            statement """
+                At a fixed jp2lam quality the mean butteraugli gap between the ~12MP and ~50MP subsets is <= 0.5 (currently ~2 vs ~5-10 at q98), achieved by re-deriving or removing the quality_to_lambda resolution_factor and validating on both subsets.
+                """
+            method manual
+        }
+    }
+    derived_from [ @lege-ecosystem.encode-quality.root-cause/1 ]
+}
+
 record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/1 : work {
     title "Remove About email row and reduce Lege GPU initialization overhead"
     state superseded
@@ -690,6 +752,65 @@ record lege-ecosystem.work.approach-c-column-gather-into-reusable-lines/1 : work
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
         excerpt """
             Copy one or several columns into aligned line buffers, transform contiguously, then scatter them back.
+            """
+    }
+}
+
+record lege-ecosystem.work.auto-toc-all-outputs/1 : work {
+    title "Complete automatic TOC and conservative document metadata"
+    state completed
+    scope [
+        path "lege-codecs/djvulibrust/src/**",
+        path "lege-pdf/read/src/**",
+        path "lege-pdf/write/src/**",
+        path "lege-process/core/djvu.rs",
+        path "lege-process/core/toc.rs",
+        path "lege-process/pipeline/**"
+    ]
+    intent """
+        Complete the canonical automatic TOC plan across direct and reflow PDF, DjVu, and EPUB outputs; keep source outlines authoritative and add conservative source-preserving PDF title/author metadata inference.
+        """
+    acceptance {
+        check djvu-tests {
+            statement """
+                DjVu manifest and NAVM tests pass.
+                """
+            method command
+            command "cargo test --manifest-path lege-codecs/djvulibrust/Cargo.toml"
+            verified_by [ @lege-ecosystem.evidence.auto-toc-djvu-tests/1 ]
+        }
+        check lege-tests {
+            statement """
+                Lege TOC, metadata, pipeline, and EPUB unit tests pass.
+                """
+            method command
+            command "cargo test -p lege --lib"
+            verified_by [ @lege-ecosystem.evidence.auto-toc-lege-lib-tests/1 ]
+        }
+        check pdf-tests {
+            statement """
+                PDF read/write outline and metadata tests pass.
+                """
+            method command
+            command "cargo test -p lege-pdf-read -p lege-pdf-write"
+            verified_by [ @lege-ecosystem.evidence.auto-toc-pdf-read-write-tests/1 ]
+        }
+        check workspace-check {
+            statement """
+                The workspace compiles.
+                """
+            method command
+            command "cargo check --workspace"
+            verified_by [ @lege-ecosystem.evidence.auto-toc-workspace-check/1 ]
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    source {
+        kind internal
+        role origin
+        path "to-do-plans/auto-toc-plan.md"
+        use """
+            Canonical design and phased implementation requirements for source-outline preservation, synthesis, DjVu NAVM, and EPUB unification.
             """
     }
 }
@@ -1009,6 +1130,104 @@ record lege-ecosystem.work.level-local-operation/1 : work {
     }
 }
 
+record lege-ecosystem.work.linux-gui-backend-fallback/1 : work {
+    title "Make Linux GUI event-loop startup fall back from unavailable Wayland to X11"
+    state completed
+    scope [ path "freya-main/crates/freya-winit/**", path "lege-process/GUI/Freya/**" ]
+    intent """
+        Make Linux GUI startup select an actually usable winit backend and recover from an unavailable Wayland compositor by trying X11 when available, while preserving explicit backend choices.
+        """
+    claim intent {
+        text """
+            Linux GUI startup must choose an actually usable winit backend and recover from an unavailable Wayland compositor by trying X11 when available, while preserving explicit backend choices.
+            """
+    }
+    acceptance {
+        check backend-policy {
+            statement """
+                Unit tests cover automatic Wayland preference, stale-Wayland-to-X11 fallback, single advertised backend selection, and the no-backend error.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.linux-gui-backend-policy-tests/1 ]
+        }
+        check compile {
+            statement """
+                The affected Freya winit crate and the Lege Freya GUI compile with the Linux backend-selection implementation.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.linux-gui-freya-build/1 ]
+        }
+        check startup-diagnostic {
+            statement """
+                With a stale WAYLAND_DISPLAY and a live DISPLAY the GUI enters its event loop through X11, while exhausting both backends reports a specific diagnostic instead of the opaque winit expect.
+                """
+            method observation
+            verified_by [ @lege-ecosystem.evidence.linux-gui-stale-wayland-fallback/1 ]
+        }
+    }
+}
+
+record lege-ecosystem.work.make-automatic-toc-explicit/1 : work {
+    title "Make synthesized table of contents an explicit option"
+    state completed
+    scope [
+        path "lege-process/GUI/Freya/src/**",
+        path "lege-process/core/main.rs",
+        path "lege-process/core/processing_log.rs",
+        path "lege-process/language_service/**",
+        path "lege-process/lege-ipc/src/processing_log.rs",
+        path "lege-process/pipeline/*_pipeline.rs",
+        path "lege-process/pipeline/config.rs"
+    ]
+    intent """
+        Gate synthesized PDF and DjVu outlines behind an explicit opt-in while preserving source outlines independently.
+        """
+    note """
+        Deliver a GUI Automatic table of contents option and CLI --auto-toc flag with explicit GUI OCR/layout dependencies.
+        """
+    claim explicit-opt-in {
+        text """
+            Synthesized outlines are disabled by default and enabled only by the automatic TOC option.
+            """
+    }
+    claim source-outline-independent {
+        text """
+            Source-provided outlines remain preserved regardless of the automatic TOC setting.
+            """
+    }
+    claim visible-dependencies {
+        text """
+            The Freya GUI makes automatic TOC dependence on OCR and layout detection visible and keeps those settings coherent.
+            """
+    }
+    acceptance {
+        check core-gating {
+            statement """
+                Core TOC synthesis tests pass with capture sites gated by the opt-in configuration.
+                """
+            method command
+            command "cargo test -p lege toc --lib"
+            verified_by [ @lege-ecosystem.evidence.automatic-toc-core-gating/1 ]
+        }
+        check gui-dependencies {
+            statement """
+                GUI option, normalization, localization schema, and worker argument tests pass.
+                """
+            method command
+            command "cargo test -p lege-gui-freya"
+            verified_by [ @lege-ecosystem.evidence.automatic-toc-gui-dependencies/1 ]
+        }
+        check workspace-regression {
+            statement """
+                The workspace test suite completes without failures.
+                """
+            method command
+            command "cargo test --workspace --no-fail-fast"
+            verified_by [ @lege-ecosystem.evidence.automatic-toc-workspace-regression/1 ]
+        }
+    }
+}
+
 record lege-ecosystem.work.material-needed-by-the-implementing-agent/1 : work {
     title "38. Material needed by the implementing agent"
     state proposed
@@ -1174,6 +1393,333 @@ record lege-ecosystem.work.objective/1 : work {
     }
 }
 
+record lege-ecosystem.work.ocr-backend-scheduler/1 : work {
+    title "Implement backend routing and cross-document OCR scheduling"
+    state superseded
+    scope [
+        path "lege-document-ocr/crates/pipeline/**",
+        path "lege-gpu/**",
+        path "lege-ocr/**"
+    ]
+    intent """
+        Add backend capability APIs, Windows AI and legacy routing, Paddle v6 model adapters, bounded ROI batching, and compact recognition output.
+        """
+    acceptance {
+        check backend-tests {
+            statement """
+                Backend and GPU OCR tests pass.
+                """
+            method command
+            command "cargo test -p lege-ocr -p lege-gpu"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    source {
+        kind internal
+        role origin
+        document "dedicated-ocr-plan-2026-08"
+        use """
+            Adopted product plan.
+            """
+    }
+}
+
+record lege-ecosystem.work.ocr-backend-scheduler/2 : work {
+    title "Implement backend routing and cross-document OCR scheduling"
+    state superseded
+    scope [
+        path "lege-document-ocr/crates/pipeline/**",
+        path "lege-gpu/**",
+        path "lege-ocr/**"
+    ]
+    intent """
+        Add backend capability APIs, Windows AI and legacy routing, Paddle v6 model adapters, bounded ROI batching, and compact recognition output.
+        """
+    note """
+        Implemented backend-neutral batch APIs, legacy Windows Runtime routing, verified lazy model packs, per-page Paddle line batching, and bounded low-confidence retry. Windows AI/NPU, cross-document scheduling, session pooling, and compact GPU CTC readback remain required.
+        """
+    acceptance {
+        check backend-tests {
+            statement """
+                Backend and GPU OCR tests pass.
+                """
+            method command
+            command "cargo test -p lege-ocr -p lege-gpu"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-backend-scheduler/1 ]
+}
+
+record lege-ecosystem.work.ocr-backend-scheduler/3 : work {
+    title "Implement backend routing and cross-document OCR scheduling"
+    state superseded
+    scope [
+        path "lege-document-ocr/cli/**",
+        path "lege-document-ocr/crates/docir/**",
+        path "lege-document-ocr/crates/export/**",
+        path "lege-document-ocr/crates/pipeline/**",
+        path "lege-gpu/**",
+        path "lege-ocr/**"
+    ]
+    intent """
+        Add backend capability APIs, Windows AI and legacy routing, Paddle v6 model adapters, bounded ROI batching, and compact recognition output.
+        """
+    note """
+        Implemented bounded cross-document Paddle recognition scheduling, configurable concurrent CLI workers, GPU-side CTC top-two reduction with compact readback, checksum-pinned model-pack layout/table/formula adapters, and structured DocIR integration. Windows AI/NPU support is explicitly deferred until target hardware and deployment requirements are known. The existing performance corpus remains external until its location and provenance are linked. No specialist weights are bundled; model-pack graph parity and corpus qualification remain required before a new model becomes a default.
+        """
+    acceptance {
+        check backend-tests {
+            statement """
+                The OCR backend and GPU test suites pass, including compact recognition parity.
+                """
+            method command
+            command "cargo test -p lege-ocr -p lege-gpu"
+            verified_by [ @lege-ecosystem.evidence.ocr-gpu-scheduler-specialists-2026-08-11/1 ]
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-backend-scheduler/2 ]
+}
+
+record lege-ecosystem.work.ocr-backend-scheduler/4 : work {
+    title "Implement backend routing and cross-document OCR scheduling"
+    state active
+    scope [ path "lege-document-ocr/**", path "lege-gpu/**", path "lege-ocr/**" ]
+    intent """
+        Add backend capability APIs, Windows AI and legacy routing, Paddle v6 model adapters, bounded ROI batching, and compact recognition output.
+        """
+    note """
+        Implemented bounded cross-document Paddle recognition scheduling, configurable concurrent CLI workers, GPU-side CTC top-two reduction with compact readback, checksum-pinned model-pack layout/table/formula adapters, and structured DocIR integration. Windows AI/NPU support is explicitly deferred until target hardware and deployment requirements are known. The existing performance corpus remains external until its location and provenance are linked. No specialist weights are bundled; model-pack graph parity and corpus qualification remain required before a new model becomes a default.
+        """
+    acceptance {
+        check backend-tests {
+            statement """
+                The OCR backend and GPU test suites pass, including compact recognition parity.
+                """
+            method command
+            command "cargo test -p lege-ocr -p lege-gpu"
+            verified_by [ @lege-ecosystem.evidence.ocr-gpu-scheduler-specialists-2026-08-11/1 ]
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-backend-scheduler/3 ]
+}
+
+record lege-ecosystem.work.ocr-correction-exports/1 : work {
+    title "Implement correction and staged document exports"
+    state superseded
+    scope [
+        path "lege-document-ocr/crates/export/**",
+        path "lege-document-ocr/crates/pipeline/**"
+    ]
+    intent """
+        Add evidence-preserving English OCR correction and production exporters for the approved staged formats.
+        """
+    acceptance {
+        check export-tests {
+            statement """
+                Correction and exporter tests pass.
+                """
+            method command
+            command "cargo test -p lege-document-export"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    source {
+        kind internal
+        role origin
+        document "dedicated-ocr-plan-2026-08"
+        use """
+            Adopted product plan.
+            """
+    }
+}
+
+record lege-ecosystem.work.ocr-correction-exports/2 : work {
+    title "Implement correction and staged document exports"
+    state superseded
+    scope [
+        path "lege-document-ocr/crates/export/**",
+        path "lege-document-ocr/crates/pipeline/**"
+    ]
+    intent """
+        Add evidence-preserving English OCR correction and production exporters for the approved staged formats.
+        """
+    note """
+        Implemented conservative evidence-preserving correction and JSON, text, HTML, searchable PDF, DOCX, Markdown, ALTO, PAGE XML, hOCR, LaTeX, CSV, and XLSX exporters. External conformance hardening, specialist layout/table/formula models, and PDF/A remain required.
+        """
+    acceptance {
+        check export-tests {
+            statement """
+                Correction and exporter tests pass.
+                """
+            method command
+            command "cargo test -p lege-document-export"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-correction-exports/1 ]
+}
+
+record lege-ecosystem.work.ocr-correction-exports/3 : work {
+    title "Implement correction and staged document exports"
+    state superseded
+    scope [
+        path "lege-document-ocr/crates/docir/**",
+        path "lege-document-ocr/crates/export/**",
+        path "lege-document-ocr/crates/pipeline/**"
+    ]
+    intent """
+        Add evidence-preserving English OCR correction and production exporters for the approved staged formats.
+        """
+    note """
+        Correction and staged exporters are implemented. Table and formula specialist results now flow through DocIR and existing exporters; formula regions preserve the raw OCR block, and correction/QA accounting traverses table cells and formula evidence. External specialist model qualification, incremental source-PDF text overlay, and validated PDF/A remain open production gates.
+        """
+    acceptance {
+        check export-tests {
+            statement """
+                Correction and exporter tests pass.
+                """
+            method command
+            command "cargo test -p lege-document-export"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-correction-exports/2 ]
+}
+
+record lege-ecosystem.work.ocr-correction-exports/4 : work {
+    title "Implement correction and staged document exports"
+    state active
+    scope [ path "lege-document-ocr/**" ]
+    intent """
+        Add evidence-preserving English OCR correction and production exporters for the approved staged formats.
+        """
+    note """
+        Correction and staged exporters are implemented. Table and formula specialist results now flow through DocIR and existing exporters; formula regions preserve the raw OCR block, and correction/QA accounting traverses table cells and formula evidence. External specialist model qualification, incremental source-PDF text overlay, and validated PDF/A remain open production gates.
+        """
+    acceptance {
+        check export-tests {
+            statement """
+                Correction and exporter tests pass.
+                """
+            method command
+            command "cargo test -p lege-document-export"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-correction-exports/3 ]
+}
+
+record lege-ecosystem.work.ocr-pdf-intake/1 : work {
+    title "Add OCR-aware PDF intake and preservation"
+    state superseded
+    scope [ path "lege-pdf/read/**", path "lege-pdf/write/**" ]
+    intent """
+        Classify native, scanned, hybrid, and render-required pages; expose direct scan extraction and source-preserving searchable-PDF overlay behavior.
+        """
+    acceptance {
+        check intake-tests {
+            statement """
+                PDF intake, classification, and writer tests pass.
+                """
+            method command
+            command "cargo test -p lege-pdf-read -p lege-pdf-write"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    source {
+        kind internal
+        role origin
+        document "dedicated-ocr-plan-2026-08"
+        use """
+            Adopted product plan.
+            """
+    }
+}
+
+record lege-ecosystem.work.ocr-pdf-intake/2 : work {
+    title "Add OCR-aware PDF intake and preservation"
+    state active
+    scope [ path "lege-pdf/read/**", path "lege-pdf/write/**" ]
+    intent """
+        Classify native, scanned, hybrid, and render-required pages; expose direct scan extraction and source-preserving searchable-PDF overlay behavior.
+        """
+    note """
+        Implemented page classification, one-pass semantic compilation, strict direct JPEG extraction, native-source preservation, and opt-in rasterized searchable PDF. A true incremental overlay for scanned source objects remains required.
+        """
+    acceptance {
+        check intake-tests {
+            statement """
+                PDF intake, classification, and writer tests pass.
+                """
+            method command
+            command "cargo test -p lege-pdf-read -p lege-pdf-write"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-pdf-intake/1 ]
+}
+
+record lege-ecosystem.work.ocr-product-foundation/1 : work {
+    title "Create OCR product foundation"
+    state superseded
+    scope [ path "Cargo.toml", path "lege-document-ocr/**" ]
+    intent """
+        Add the grouped product crates, versioned DocIR, persistent batch contracts, CLI surface, and core exporter interfaces.
+        """
+    acceptance {
+        check foundation-tests {
+            statement """
+                Foundation crate tests pass.
+                """
+            method command
+            command "cargo test -p lege-docir -p lege-document-batch -p lege-document-export -p lege-document-ocr-cli"
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    source {
+        kind internal
+        role origin
+        document "dedicated-ocr-plan-2026-08"
+        use """
+            Adopted product plan.
+            """
+    }
+}
+
+record lege-ecosystem.work.ocr-product-foundation/2 : work {
+    title "Create OCR product foundation"
+    state completed
+    scope [ path "Cargo.toml", path "lege-document-ocr/**" ]
+    intent """
+        Add the grouped product crates, versioned DocIR, persistent batch contracts, CLI surface, and core exporter interfaces.
+        """
+    acceptance {
+        check foundation-tests {
+            statement """
+                The DocIR, resumable batch, pipeline, exporters, CLI, PDF intake, and OCR integration tests pass.
+                """
+            method command
+            command "cargo test -p lege-docir -p lege-document-batch -p lege-document-export -p lege-document-pipeline -p lege-document-ocr-cli -p lege-pdf-read -p lege-ocr --features lege-document-pipeline/paddle-ocr --lib --tests"
+            verified_by [ @lege-ecosystem.evidence.ocr-foundation-tests-2026-08-11/1 ]
+        }
+        check production-lints {
+            statement """
+                The new OCR product library and CLI production targets pass clippy with warnings denied.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.ocr-foundation-clippy-cli-2026-08-11/1,
+                @lege-ecosystem.evidence.ocr-foundation-clippy-libs-2026-08-11/1
+            ]
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.work.ocr-product-foundation/1 ]
+}
+
 record lege-ecosystem.work.optimize-flaggrid/1 : work {
     title "23. Optimize `FlagGrid`"
     state proposed
@@ -1330,6 +1876,190 @@ record lege-ecosystem.work.post-precinct-census-2026-07-19-from-pdf/1 : work {
             After the precinct/SOP/EPH + degenerate-DWT round landed, a fresh full-corpus
             `jpxcensus` (451 blank docs, 1224 JPX streams) decodes **1207 (98.6%)**. The 17
             residuals, for this session:
+            """
+    }
+}
+
+record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
+    title "Prefer discrete GPU for compute and presentation"
+    state active
+    scope [
+        path "lege-gpu/src/presentation.rs",
+        path "lege-gpu/src/vision/runtime/device.rs",
+        path "lege-gpu/src/wgpu_setup.rs"
+    ]
+    intent """
+        Make automatic wgpu adapter selection deterministic by trying discrete adapters before integrated, virtual, and CPU adapters for both shared compute/layout detection and surface presentation, while retaining explicit adapter overrides and graceful fallback.
+        """
+    acceptance {
+        check compute-hardware {
+            statement """
+                On a host with an enumerated discrete GPU, the shared compute context selects a discrete adapter.
+                """
+            method command
+            command "LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
+        }
+        check presentation-build {
+            statement """
+                The presentation feature compiles after using the same ordered fallback policy.
+                """
+            method command
+            command "cargo check -p lege-gpu --features presentation,layout-detection"
+        }
+        check selection-policy {
+            statement """
+                Unit tests prove discrete adapters rank ahead of integrated and software adapters.
+                """
+            method command
+            command "cargo test -p lege-gpu wgpu_setup::tests --lib"
+        }
+    }
+}
+
+record lege-ecosystem.work.preserve-jbig2-smask-text-plane/1 : work {
+    title "Preserve native JBIG2 image SMask text planes through PDF processing"
+    state completed
+    scope [
+        path "lege-pdf/read/**",
+        path "lege-pdf/render/crates/pdf-content/**",
+        path "lege-pdf/render/crates/pdf-page-ir/**",
+        path "lege-pdf/render/crates/pdf-render-cpu/**",
+        path "lege-pdf/write/**",
+        path "lege-process/core/**",
+        path "lege-process/pipeline/**"
+    ]
+    intent """
+        Add a conservative PDF-only quality-preservation path for scanned pages whose full-page image foreground carries a one-bit JBIG2 /SMask. Preserve the source JBIG2 page stream, globals, dimensions, decode polarity, and placement for output rather than re-thresholding rendered pixels. Separately decode the mask once and produce a Lanczos3-resized Gray8 ink-coverage plane for target-resolution background cleanup, OCR, layout alignment, and figure compositing; never re-encode that working plane as the authoritative text layer.
+        """
+    note """
+        Initial scope is non-reflow PDF MRC/grayscale output. Eligibility is per page and requires an image /SMask (not /Mask, /ImageMask, page soft mask, or SMaskInData), codec JBIG2, one bit per component, intact page/global streams, binary-representable /Decode polarity, a single unambiguous axis-aligned full-page placement, scan-like image structure, and no unsupported paint whose preservation would depend on the foreground image. Mixed or ineligible pages use the existing full-render/binarize path. The native mask XObject may be scaled by PDF placement without resampling its stored pixels; rectangular crop and richer transforms are follow-ups. Reflow, deskew, DjVu, EPUB, arbitrary soft masks, multiple mask mosaics, and damaged JBIG2 are out of the first implementation.
+        """
+    claim authoritative-plane {
+        text """
+            The source JBIG2 stream and globals are the authoritative final text plane and remain byte-identical; the Lanczos3 Gray8 plane is a derived working surface only.
+            """
+    }
+    claim first-scope-boundary {
+        text """
+            The first implementation targets non-reflow PDF grayscale/MRC output; transformations that require destructive mask raster rewriting remain out of scope.
+            """
+    }
+    claim no-rethreshold {
+        text """
+            Eligible pages bypass scan-derived text binarization; continuous Lanczos3 coverage used by cleanup and OCR is not thresholded back into the final text layer.
+            """
+    }
+    claim per-page-fallback {
+        text """
+            Failure to recognize, decode, place, or validate the preserved mask falls back per page to the existing renderer and processing pipeline without content loss.
+            """
+    }
+    claim strict-eligibility {
+        text """
+            Automatic use is restricted to structurally verified one-bit JBIG2 image /SMask scan pages with representable polarity and full-page placement.
+            """
+    }
+    acceptance {
+        check eligibility-corpus {
+            statement """
+                Focused fixtures accept a full-page one-bit JBIG2 image /SMask with globals and reject maskless JPEG, non-JBIG2 SMask, /Mask, /ImageMask, SMaskInData, arbitrary grayscale SMask, ambiguous multiple masks, corrupt JBIG2, and unsupported placement.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 ]
+        }
+        check lanczos-working-plane {
+            statement """
+                The renderer/read seam decodes only the qualifying SMask at native dimensions and produces exactly one Lanczos3-resized Gray8 ink-coverage plane at the requested output geometry without invoking scan thresholding.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 ]
+        }
+        check mixed-page-fallback {
+            statement """
+                A mixed document processes eligible and ineligible pages in one run, preserving masks only where qualified and producing nonblank fallback pages elsewhere.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.preserved-jbig2-mixed-page-fallback/1 ]
+        }
+        check payload-roundtrip {
+            statement """
+                For eligible fixtures, the output JBIG2 page stream and globals are byte-identical to the input SMask payloads, and output stencil polarity renders black ink exactly where the source SMask opacity is nonzero.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.structures-jbig2-payload-roundtrip-corrected/1
+            ]
+        }
+        check pipeline-bypass {
+            statement """
+                Eligible PDF MRC pages use the preserved mask for cleanup, OCR input, and final text composition while bypassing binarize_image and clean-page mask derivation; detected figure crops remain composited from the normal rendered page.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.structures-layout-preserved-mask-composition/1
+            ]
+        }
+        check quality-oracle {
+            statement """
+                Rendering the output at the source mask grid yields the same ink support and connected-component topology as the decoded source SMask outside explicitly overlaid figure regions.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.structures-jbig2-ink-support-oracle/1 ]
+        }
+        check scope-guards {
+            statement """
+                Reflow, DjVu, EPUB, unsupported crop/deskew transforms, and non-PDF inputs cannot enter the preserved-mask path.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.preserved-jbig2-scope-and-bypass-audit/1 ]
+        }
+    }
+    source {
+        kind external
+        role example
+        url "https://github.com/koreader/koreader-base/pull/2361"
+        use """
+            Demonstrates that rendering only attached image masks is practical, while this work retains the mask as an output-quality source plane.
+            """
+    }
+    source {
+        kind external
+        role rationale
+        url "https://github.com/koreader/koreader/issues/7992"
+        use """
+            Documents the Internet Archive JPX plus JBIG2 SMask scan family and the benefit of isolating its pre-existing text mask.
+            """
+    }
+    source {
+        kind internal
+        role rationale
+        path "lege-pdf/render/crates/pdf-content/src/interpret.rs"
+        use """
+            The interpreter deliberately preserves codec-encoded JBIG2 SMask data instead of decoding it.
+            """
+    }
+    source {
+        kind internal
+        role rationale
+        path "lege-pdf/render/crates/pdf-page-ir/src/lib.rs"
+        use """
+            ImageSMask already retains native dimensions, decode metadata, codec identity, encoded payload, globals and codec parameters.
+            """
+    }
+    source {
+        kind internal
+        role rationale
+        path "lege-pdf/write/src/images.rs"
+        use """
+            The writer already emits JBIG2 streams with optional globals and ImageMask semantics but needs preserved polarity metadata.
+            """
+    }
+    source {
+        kind internal
+        role rationale
+        path "lege-process/pipeline/pdf_tokio_pipeline.rs"
+        use """
+            The current MRC path derives a new mask from rendered pixels and then composes a JP2 background with a JBIG2 mask.
             """
     }
 }

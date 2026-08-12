@@ -127,59 +127,23 @@ impl GpuContext {
         }
 
         // Build an ordered candidate list: the explicit WGPU_ADAPTER_NAME filter
-        // selects a single candidate; otherwise the HighPerformance preference
-        // adapter goes first, followed by remaining enumerated adapters sorted by
-        // device type (Discrete → Integrated → Other → Virtual → Cpu) so that if
-        // the preferred adapter's driver rejects request_device we fall to a real
-        // iGPU before landing on a software rasterizer.
+        // selects a single candidate; otherwise enumerate and explicitly order
+        // by device type (Discrete → Integrated → Other → Virtual → Cpu).
+        // PowerPreference::HighPerformance is only a hint and has returned the
+        // integrated GPU first on Linux hybrid-graphics systems.
         let candidates: Vec<crate::vision::wgpu::Adapter> =
             if let Some(filter) = adapter_name_filter.as_deref() {
-                let needle = filter.to_ascii_lowercase();
                 let matched = enumerated
                     .into_iter()
-                    .find(|a| a.get_info().name.to_ascii_lowercase().contains(&needle))
+                    .find(|a| crate::wgpu_setup::adapter_name_matches(&a.get_info().name, filter))
                     .with_context(|| {
                         format!("WGPU_ADAPTER_NAME=`{filter}` did not match any wgpu adapter")
                     })?;
                 vec![matched]
             } else {
-                let sort_key = |a: &crate::vision::wgpu::Adapter| match a.get_info().device_type {
-                    crate::vision::wgpu::DeviceType::DiscreteGpu => 0u8,
-                    crate::vision::wgpu::DeviceType::IntegratedGpu => 1,
-                    crate::vision::wgpu::DeviceType::Other => 2,
-                    crate::vision::wgpu::DeviceType::VirtualGpu => 3,
-                    crate::vision::wgpu::DeviceType::Cpu => 4,
-                };
-                match instance
-                    .request_adapter(&crate::vision::wgpu::RequestAdapterOptions {
-                        power_preference: crate::vision::wgpu::PowerPreference::HighPerformance,
-                        compatible_surface: None,
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
-                    })
-                    .await
-                {
-                    Ok(preferred) => {
-                        let preferred_name = preferred.get_info().name.clone();
-                        // Keep the preferred adapter first; sort the rest so
-                        // integrated GPUs are tried before software adapters.
-                        let mut rest: Vec<_> = enumerated
-                            .into_iter()
-                            .filter(|a| a.get_info().name != preferred_name)
-                            .collect();
-                        rest.sort_by_key(|a| sort_key(a));
-                        let mut list = vec![preferred];
-                        list.extend(rest);
-                        list
-                    }
-                    Err(_) => {
-                        // No HighPerformance preference returned — order all by
-                        // device type so we prefer real hardware over software.
-                        let mut list = enumerated;
-                        list.sort_by_key(|a| sort_key(&a));
-                        list
-                    }
-                }
+                let mut list = enumerated;
+                crate::wgpu_setup::sort_adapters_by_preference(&mut list);
+                list
             };
 
         if candidates.is_empty() {
@@ -541,6 +505,49 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner())
                 .as_deref(),
             Some("Unknown: simulated driver reset")
+        );
+    }
+
+    #[test]
+    fn shared_context_prefers_discrete_when_available() {
+        if std::env::var("LEGE_TEST_GPU_SELECTION").as_deref() != Ok("1") {
+            eprintln!("skipping hardware adapter test; set LEGE_TEST_GPU_SELECTION=1");
+            return;
+        }
+        assert!(
+            std::env::var_os("WGPU_ADAPTER_NAME").is_none(),
+            "hardware policy test requires WGPU_ADAPTER_NAME to be unset"
+        );
+
+        let instance = crate::wgpu_setup::create_instance();
+        let adapters = pollster::block_on(
+            instance.enumerate_adapters(crate::wgpu_setup::requested_backends()),
+        );
+        let enumerated: Vec<_> = adapters
+            .iter()
+            .map(crate::vision::wgpu::Adapter::get_info)
+            .map(|info| format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type))
+            .collect();
+        eprintln!("hardware test enumerated adapter(s): {enumerated:?}");
+        let discrete: Vec<_> = adapters
+            .iter()
+            .map(crate::vision::wgpu::Adapter::get_info)
+            .filter(|info| info.device_type == crate::vision::wgpu::DeviceType::DiscreteGpu)
+            .map(|info| info.name)
+            .collect();
+        if discrete.is_empty() {
+            eprintln!("skipping hardware adapter test; no discrete adapter enumerated");
+            return;
+        }
+        eprintln!("hardware test enumerated discrete adapter(s): {discrete:?}");
+
+        let selected = pollster::block_on(GpuContext::shared()).expect("initialize GPU context");
+        assert_eq!(
+            selected.adapter_device_type,
+            crate::vision::wgpu::DeviceType::DiscreteGpu,
+            "selected {} ({:?}) despite enumerated discrete adapter(s) {discrete:?}",
+            selected.adapter_name,
+            selected.adapter_device_type
         );
     }
 }

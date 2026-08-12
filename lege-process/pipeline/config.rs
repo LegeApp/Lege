@@ -402,6 +402,9 @@ pub struct PipelineConfig {
     pub(crate) image_region_dither_mode: ImageRegionDitherMode,
     pub(crate) binarization: BinarizationConfig,
     pub(crate) enable_ocr: bool,
+    /// Synthesize a navigable outline from layout title detections and text.
+    /// Source-provided outlines are preserved regardless of this setting.
+    pub(crate) enable_auto_toc: bool,
     pub(crate) ocr_language: String,
     pub(crate) cover_format: CoverFormat,
     pub(crate) text_format: String,
@@ -509,6 +512,7 @@ impl PipelineConfig {
             image_region_dither_mode: ImageRegionDitherMode::None,
             binarization: BinarizationConfig::default(),
             enable_ocr: false,
+            enable_auto_toc: false,
             ocr_language: "eng".to_string(),
             cover_format: CoverFormat::Jpeg,
             text_format: "jbig2".to_string(),
@@ -673,6 +677,9 @@ impl PipelineConfig {
     }
     pub fn enable_ocr(&self) -> bool {
         self.enable_ocr && cfg!(feature = "ocr")
+    }
+    pub fn enable_auto_toc(&self) -> bool {
+        self.enable_auto_toc
     }
     pub fn ocr_language(&self) -> &str {
         &self.ocr_language
@@ -959,6 +966,9 @@ impl PipelineConfig {
     }
     pub fn set_enable_ocr(&mut self, enable: bool) {
         self.enable_ocr = enable && cfg!(feature = "ocr");
+    }
+    pub fn set_enable_auto_toc(&mut self, enable: bool) {
+        self.enable_auto_toc = enable;
     }
     pub fn set_ocr_language(&mut self, language: &str) -> Result<()> {
         let normalized = language.trim().to_ascii_lowercase();

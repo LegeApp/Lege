@@ -1,6 +1,114 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.evidence.auto-toc-djvu-tests/1 : evidence {
+    title "The complete DjVu encoder suite and doctests passed; NAVM output was also decoded by DjVuLibre when available."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test --manifest-path lege-codecs/djvulibrust/Cargo.toml"
+    summary """
+        The complete DjVu encoder suite and doctests passed; NAVM output was also decoded by DjVuLibre when available.
+        """
+}
+
+record lege-ecosystem.evidence.auto-toc-lege-lib-tests/1 : evidence {
+    title "All 213 active lege library tests passed (one corpus-dependent test ignored), including TOC, metadata, EPUB, reflow, and outline precedence regressions."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege --lib"
+    summary """
+        All 213 active lege library tests passed (one corpus-dependent test ignored), including TOC, metadata, EPUB, reflow, and outline precedence regressions.
+        """
+}
+
+record lege-ecosystem.evidence.auto-toc-pdf-read-write-tests/1 : evidence {
+    title "All PDF read/write unit and integration tests passed, including source metadata decoding and explicit PDF 1.7 Info dictionary behavior."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege-pdf-read -p lege-pdf-write"
+    summary """
+        All PDF read/write unit and integration tests passed, including source metadata decoding and explicit PDF 1.7 Info dictionary behavior.
+        """
+}
+
+record lege-ecosystem.evidence.auto-toc-workspace-check/1 : evidence {
+    title "The complete workspace compiled successfully with the automatic TOC and metadata wiring."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo check --workspace"
+    summary """
+        The complete workspace compiled successfully with the automatic TOC and metadata wiring.
+        """
+}
+
+record lege-ecosystem.evidence.automatic-toc-core-gating/1 : evidence {
+    title "All 19 focused TOC tests passed after synthesized page capture was gated by enable_auto_toc."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege toc --lib"
+    summary """
+        All 19 focused TOC tests passed after synthesized page capture was gated by enable_auto_toc.
+        """
+}
+
+record lege-ecosystem.evidence.automatic-toc-gui-dependencies/1 : evidence {
+    title "All 36 Freya GUI tests passed, including automatic TOC prerequisite normalization, worker flags, and locale schema."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege-gui-freya"
+    summary """
+        All 36 Freya GUI tests passed, including automatic TOC prerequisite normalization, worker flags, and locale schema.
+        """
+}
+
+record lege-ecosystem.evidence.automatic-toc-workspace-regression/1 : evidence {
+    title "The complete workspace test suite passed after automatic TOC gating and related regression repairs."
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test --workspace --no-fail-fast --quiet"
+    summary """
+        The complete workspace test suite passed after automatic TOC gating and related regression repairs.
+        """
+}
+
+record lege-ecosystem.evidence.discrete-gpu-presentation-build/1 : evidence {
+    title "GPU presentation and layout features compile"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo check -p lege-gpu --features presentation,layout-detection"
+    summary """
+        lege-gpu compiled with both presentation and layout-detection enabled after the shared discrete-first policy change.
+        """
+}
+
+record lege-ecosystem.evidence.discrete-gpu-selection-policy-tests/1 : evidence {
+    title "Discrete-first adapter policy unit tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege-gpu wgpu_setup::tests --lib"
+    summary """
+        Both deterministic device-type ordering and case-insensitive WGPU_ADAPTER_NAME override matching passed.
+        """
+}
+
 record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 : evidence {
     title "Fresh-process release profiling on Intel Iris Xe/Vulkan showed median first-engine initialization falling from 93.831 ms to 82.591 ms (-11.98%) and median two-session pool initialization from 97.182 ms to 88.091 ms (-9.36%) when full model decoding/preparation overlaps adapter/device discovery. The constructor still joins both jobs before graph allocation and return; adapter selection, fallback ordering, feature requests, buffer allocation, and eager sibling readiness are unchanged."
     state verified
@@ -70,5 +178,216 @@ record lege-ecosystem.evidence.lege-process-about-gpu-focused-checks-2026-08-09/
     command "rustfmt --edition 2024 --check [touched non-legacy-format files]; cargo test -p lege-gui-freya -p lege-music-gui bundled_locales_match_the_gui_schema; cargo test -p lege-gpu --features layout-detection related_dynamic_graph_shares_constant_buffers_and_pipelines; cargo check -p lege; cargo check -p lege-gpu; git diff --check"
     summary """
         Touched Rust modules passed focused formatting, both GUI locale tests passed, the GPU sharing test passed on hardware WGPU, Lege and lege-gpu checks passed, and the patch has no whitespace errors. Existing dependency and legacy-code warnings remain non-fatal.
+        """
+}
+
+record lege-ecosystem.evidence.linux-gui-backend-policy-tests/1 : evidence {
+    title "Linux GUI backend policy tests"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cd freya-main && cargo test -p freya-winit --lib"
+    artifact "freya-main/crates/freya-winit/src/lib.rs"
+    summary """
+        All four Linux backend-selection tests passed: reachable Wayland preference, stale Wayland fallback to X11, single-backend selection, and exhausted-backend diagnostics.
+        """
+}
+
+record lege-ecosystem.evidence.linux-gui-freya-build/1 : evidence {
+    title "Lege Freya GUI build"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo build -p lege-gui-freya --bin lege-gui"
+    artifact "target/debug/lege-gui"
+    summary """
+        The complete Lege Freya GUI compiled successfully against the patched freya-winit crate.
+        """
+}
+
+record lege-ecosystem.evidence.linux-gui-stale-wayland-fallback/1 : evidence {
+    title "Stale Wayland environment falls back to X11"
+    state verified
+    result pass
+    method observation
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    artifact "freya-main/crates/freya-winit/src/lib.rs"
+    summary """
+        With WAYLAND_DISPLAY pointed at a nonexistent socket and DISPLAY=:0 live, target/debug/lege-gui remained running until a five-second timeout instead of panicking; with all display variables removed it exited immediately with the specific exhausted-backends diagnostic.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-foundation-clippy-cli-2026-08-11/1 : evidence {
+    title "OCR CLI lint"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo clippy -p lege-document-ocr-cli --bin lege-ocr --no-deps -- -D warnings"
+    artifact "lege-document-ocr/cli/"
+    summary """
+        The new production CLI target passed clippy with warnings denied.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-foundation-clippy-libs-2026-08-11/1 : evidence {
+    title "OCR production library lint"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo clippy -p lege-docir -p lege-document-batch -p lege-document-export -p lege-document-pipeline --lib --no-deps -- -D warnings"
+    artifact "lege-document-ocr/"
+    summary """
+        The new production library targets passed clippy with warnings denied.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-foundation-tests-2026-08-11/1 : evidence {
+    title "OCR foundation test suite"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege-docir -p lege-document-batch -p lege-document-export -p lege-document-pipeline -p lege-document-ocr-cli -p lege-pdf-read -p lege-ocr --features lege-document-pipeline/paddle-ocr --lib --tests"
+    artifact "lege-document-ocr/"
+    summary """
+        All DocIR, batch, export, pipeline, CLI, PDF intake, and OCR library tests passed, including resume and searchable-PDF text extraction.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-gpu-scheduler-specialists-2026-08-11/1 : evidence {
+    title "GPU scheduler and compact OCR backend tests"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege-ocr -p lege-gpu"
+    artifact "lege-gpu"
+    summary """
+        All lege-ocr tests and 61 lege-gpu tests passed (one manual benchmark ignored), including compact CTC decode parity and the real WGPU top-two reduction test.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-pipeline-specialist-integration-2026-08-11/1 : evidence {
+    title "OCR pipeline specialist integration tests"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p lege-gpu -p lege-ocr -p lege-docir -p lege-document-pipeline -p lege-document-export -p lege-document-ocr-cli --lib --tests"
+    artifact "lege-document-ocr"
+    summary """
+        Focused workspace tests passed across GPU/OCR, DocIR, pipeline, export, and CLI, including scheduler bounds, model-pack checksums, table spans, formula cleanup, structured-region merge, resume, and multi-worker batch behavior.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-production-clippy-2026-08-11/1 : evidence {
+    title "OCR production targets strict Clippy"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo clippy -p lege-ocr -p lege-document-pipeline -p lege-document-export -p lege-docir -p lege-document-ocr-cli --lib --bins --no-deps -- -D warnings"
+    artifact "lege-document-ocr"
+    summary """
+        All selected OCR production libraries and CLI binary passed Clippy with warnings denied.
+        """
+}
+
+record lege-ecosystem.evidence.preserved-jbig2-mixed-page-fallback/1 : evidence {
+    title "Mixed eligible and maskless pages process through independent paths"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "target/debug/lege /tmp/lege-smask-test.RMbBPb/mixed.pdf 1-2 1200 --grayscale --text-format jbig2 --no-layout --no-ocr --no-cover --output /tmp/lege-smask-test.RMbBPb && pdfimages -list /tmp/lege-smask-test.RMbBPb/mixed_processed_2026-08-12_061819.pdf"
+    summary """
+        The eligible first page retained its 2222x3191 56 KiB source stencil, the maskless second page produced the existing 836x1200 fallback stencil, and both rendered nonblank.
+        """
+}
+
+record lege-ecosystem.evidence.preserved-jbig2-scope-and-bypass-audit/1 : evidence {
+    title "Preserved mask path is PDF-only, guarded, and bypasses authoritative rethresholding"
+    state verified
+    result pass
+    method observation
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    summary """
+        Source inspection confirmed entry exists only in the non-reflow PDF grayscale planned path; unsupported placement/crop/rotation, non-SMask mask forms, malformed decode, and ineligible pages return per-page fallback. Eligible cleanup and both OCR modes use source-derived coverage/binary guidance, final composition passes original bytes, and figure crops overlay afterward.
+        """
+}
+
+record lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 : evidence {
+    title "Preserved JBIG2 SMask focused tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "cargo test -p pdf-render-cpu standalone_jbig2_smask_decode --lib && cargo test -p lege-pdf-read -p lege-pdf-write && cargo test -p lege continuous_coverage_whitens_without_thresholding --lib && cargo check -p lege"
+    summary """
+        Renderer decode/polarity/malformed fallback, strict page eligibility including globals and exclusions, Lanczos fractional coverage, writer stencil polarity/globals, continuous background whitening, integration compilation, and all read/write tests passed.
+        """
+}
+
+record lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 : evidence {
+    title "RTX 4060 exists but is not Vulkan-visible in this environment"
+    state verified
+    result inconclusive
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "nvidia-smi -L; env -u WGPU_ADAPTER_NAME LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
+    summary """
+        nvidia-smi saw the RTX 4060, while wgpu enumerated only Intel Iris Xe and llvmpipe. Vulkan loader diagnostics showed the NVIDIA ICD could not load libGLX_nvidia.so.0 because only an i386 library was installed.
+        """
+}
+
+record lege-ecosystem.evidence.structures-jbig2-ink-support-oracle/1 : evidence {
+    title "Structures output stencil exactly preserves source opacity support"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "compare -metric AE /tmp/lege-smask-test.RMbBPb/source-images/img-002.png \\( /tmp/lege-smask-test.RMbBPb/output-images/img-001.png -negate \\) null:"
+    summary """
+        After applying the required SMask-to-ImageMask polarity inversion, ImageMagick reported zero differing pixels across the full 2222x3191 mask grid, preserving ink support and connected-component topology.
+        """
+}
+
+record lege-ecosystem.evidence.structures-jbig2-payload-roundtrip/1 : evidence {
+    title "Structures native JBIG2 stream survives processing byte-identically"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "target/debug/lege /home/dk/Desktop/Structures.pdf 1-1 1200 --grayscale --text-format jbig2 --no-layout --no-ocr --no-cover --output /tmp/lege-smask-test.RMbBPb && mutool show -b /home/dk/Desktop/Structures.pdf 1277 | sha256sum && mutool show -b /tmp/lege-smask-test.RMbBPb/Structures_processed_2026-08-12_061214.pdf 3 | sha256sum"
+    summary """
+        Input SMask object 1277 and output stencil object 3 were both 2222x3191 and had identical SHA-256 13101f05e92f2f0c62d6014dfd14cb7f617ddabfa1febf5013e7ef472cd8fe10.
+        """
+}
+
+record lege-ecosystem.evidence.structures-jbig2-payload-roundtrip-corrected/1 : evidence {
+    title "Structures native JBIG2 stream byte-identical roundtrip (corrected hash)"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "mutool show -b /home/dk/Desktop/Structures.pdf 1277 | sha256sum; mutool show -b /tmp/lege-smask-test.RMbBPb/Structures_processed_2026-08-12_061214.pdf 3 | sha256sum; mutool show -b /tmp/lege-smask-layout.WiDsSL/Structures_processed_2026-08-12_062231.pdf 3 | sha256sum"
+    summary """
+        Source object 1277, no-layout output object 3, and layout-enabled output object 3 all yielded SHA-256 7ed6f9593e753dd7c7e9ac77a9569051c702dc25337b4d8775effc76378e0050. This corrects a stale hash transcribed into the earlier payload-roundtrip evidence note; the observed equality result is unchanged.
+        """
+}
+
+record lege-ecosystem.evidence.structures-layout-preserved-mask-composition/1 : evidence {
+    title "Layout detection composes figures without replacing native text mask"
+    state verified
+    result pass
+    method command
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    command "target/debug/lege /home/dk/Desktop/Structures.pdf 1-1 1200 --grayscale --text-format jbig2 --no-ocr --no-cover --output /tmp/lege-smask-layout.WiDsSL && pdfimages -list /tmp/lege-smask-layout.WiDsSL/Structures_processed_2026-08-12_062231.pdf"
+    summary """
+        Layout inference ran and emitted a separate RGB figure overlay while output retained the native 2222x3191 JBIG2 stencil; its stream SHA-256 exactly matched source object 1277 (7ed6f9593e753dd7c7e9ac77a9569051c702dc25337b4d8775effc76378e0050 in this post-build run).
         """
 }

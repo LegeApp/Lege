@@ -1,6 +1,63 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.papercut.building-the-focused-lege-freya-gui-emitted/1 : papercut {
+    title "Building the focused Lege Freya GUI emitted over a hundred existing…"
+    state verified
+    statement """
+        Building the focused Lege Freya GUI emitted over a hundred existing future-incompatible float-literal warnings, producing roughly 1,800 lines and obscuring the build result. Fixing or centrally suppressing the known warnings would make GUI regression builds substantially easier to audit.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    author "codex"
+    created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.fff-multi-grep-returned-transport-closed-during/1 : papercut {
+    title "FFF multi_grep returned `Transport closed` during a final lookup in…"
+    state verified
+    statement """
+        FFF multi_grep returned `Transport closed` during a final lookup in lege-pdf/read/src/session.rs, requiring a direct source read fallback.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "fff"
+    author "codex"
+    created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 : papercut {
+    title "knowledge.get did not display a work record's acceptance checks even at…"
+    state verified
+    statement """
+        knowledge.get did not display a work record's acceptance checks even at canonical detail, so knowledge.complete had to fail once to reveal the four check IDs needed for evidence mapping.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "akr"
+    author "gpt-5.6-sol"
+    created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 : papercut {
+    title "Strict `cargo clippy -p lege-gpu --lib --no-deps --features…"
+    state verified
+    statement """
+        Strict `cargo clippy -p lege-gpu --lib --no-deps --features layout-detection -- -D warnings` cannot serve as a clean feature gate yet because the crate has 22 pre-existing Clippy findings across unrelated binarization, resize, ONNX, reference, and runtime code. The new useless-conversion finding in the changed recognition batch path was fixed.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    author "codex"
+    created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 : papercut {
+    title "The CLI help says a single page number such as `5` is a valid…"
+    state verified
+    statement """
+        The CLI help says a single page number such as `5` is a valid PAGE-RANGE form, but `lege Structures.pdf 1 ...` exits with “Page range must be in format 'start-end'”. The help and parser should agree.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    author "codex"
+    created_at 2026-08-12
+}
+
 record lege-ecosystem.papercut.while-cleaning-temporary-gpu-probes-a-combined/1 : papercut {
     title "While cleaning temporary GPU probes, a combined apply_patch missed…"
     state verified
@@ -10,4 +67,75 @@ record lege-ecosystem.papercut.while-cleaning-temporary-gpu-probes-a-combined/1 
     observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
     author "codex"
     created_at 2026-08-09
+}
+
+record lege-ecosystem.papercut.while-creating-ocr-work-records-from-a/1 : papercut {
+    title "While creating OCR work records from a registered source, using the…"
+    state verified
+    statement """
+        While creating OCR work records from a registered source, using the apparent @source.<id> derived_from form produced AKR-L001. The tool could make the source-vs-record citation distinction clearer in relation errors; papercut logging also required a namespace only after the first call failed.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "akr"
+    author "codex"
+    created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.while-creating-the-auto-toc-work-record/1 : papercut {
+    title "While creating the auto-TOC work record, `knowledge.propose` accepted a…"
+    state verified
+    statement """
+        While creating the auto-TOC work record, `knowledge.propose` accepted a `topic` argument in its API schema but rejected it at validation because planning kinds cannot use topics. The schema could make that kind-specific restriction visible before submission.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "akr"
+    author "codex"
+    created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/1 : papercut {
+    title "While inspecting PDF metadata wiring, I guessed a conventional…"
+    state verified
+    statement """
+        While inspecting PDF metadata wiring, I guessed a conventional `lege-pdf/write/src/catalog.rs` path; catalog writing actually lives in `pages.rs`. The writer module layout is not obvious from the metadata API and cost a failed read.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    author "codex"
+    created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.while-narrowing-multi-grep-to-lege-process/1 : papercut {
+    title "While narrowing multi_grep to…"
+    state verified
+    statement """
+        While narrowing multi_grep to lege-process/pipeline/pdf_tokio_pipeline.rs, FFF ignored the file constraint and returned matches from .akr/akr.lock. This forced direct reading of the already-discovered file instead.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "FFF"
+    author "codex"
+    created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.while-proposing-the-jbig2-smask-preservation/1 : papercut {
+    title "While proposing the JBIG2 SMask preservation work record, source…"
+    state verified
+    statement """
+        While proposing the JBIG2 SMask preservation work record, source citations with start_line/end_line were rejected because AKR also requires exact start_byte/end_byte. The proposal schema does not make that coupled range requirement obvious at authoring time; I retried with path-level citations.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "akr"
+    author "codex"
+    created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.while-running-focused-rust-tests-i-passed-two/1 : papercut {
+    title "While running focused Rust tests I passed two test-name filters to one…"
+    state verified
+    statement """
+        While running focused Rust tests I passed two test-name filters to one `cargo test` invocation; Cargo accepts only one positional filter, so the suites had to be run separately.
+        """
+    observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    about "cargo"
+    author "gpt-5.6-sol"
+    created_at 2026-08-11
 }

@@ -1,0 +1,41 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.encode-quality.root-cause/1 : assessment {
+    title "jp2lam photographic quality limited by MSE-only, disabled-perceptual, size-matched rate control"
+    state verified
+    scope [
+        path "lege-codecs/jp2lam/src/dwt/pcrd.rs",
+        path "lege-codecs/jp2lam/src/encode/backend/native/rate.rs",
+        path "lege-codecs/jp2lam/src/plan/**"
+    ]
+    statement """
+        jp2lam's lossy photographic quality trails JPEG XL/BPG for structural reasons in the rate-control path, not a coding-correctness bug. The active PCRD selection optimizes measured mean-squared error with no perceptual weighting; the perceptual machinery that exists is disconnected/rolled back; and the quality-to-lambda mapping is calibrated to reproduce old FILE SIZES from one 12MP image, with a resolution term that actively degrades large images. These compound into the measured resolution-dependent quality collapse.
+        """
+    claim mse-not-perceptual {
+        text """
+            The active rate path (src/encode/backend/native/rate.rs raw_records_for_passes) builds RD curves from a measured Annex-J delta-MSE (pass.mse_numerator * quant_step^2 * subband synthesis norm * component weight) and select_for_quality picks passes at an MSE-domain lambda. curves_from_tier1_layout explicitly discards the perceptual inputs (`let _ = (quality, contrast_mask, taubman_weights);`), so selection is MSE-optimal with zero perceptual weighting. butteraugli and ssimulacra2 penalize MSE-optimal allocation, so the codec is optimizing the wrong objective for photographic quality.
+            """
+    }
+    claim perceptual-path-disabled {
+        text """
+            A perceptual model exists but is not wired into selection: src/perceptual/ (contrast_mask.rs, taubman_masking.rs), and pcrd.rs functions apply_contrast_masking_to_delta and band_distortion_bias, plus the Taubman2000 distortion model, are present yet unused by the active curves_from_tier1_layout path. rate.rs documents that the real Annex-J delta-MSE + perceptual weighting effort (P1.3) was ROLLED BACK 'pending lambda recalibration'. So the perceptual rate control is stubbed, not merely missing.
+            """
+    }
+    claim resolution-lambda-backwards {
+        text """
+            pcrd.rs quality_to_lambda multiplies the RD threshold by resolution_factor = (pixel_count / 12_000_000)^0.35, ~1.65x at 50MP. A higher lambda truncates MORE coding passes, so the largest, most detailed images are quantized/truncated hardest - the opposite of holding constant visual quality. This directly explains the measured 12MP->50MP butteraugli collapse (butteraugli ~2 -> ~5-10 at q98).
+            """
+    }
+    claim size-matched-single-image-calibration {
+        text """
+            The whole quality curve is calibrated to REPRODUCE FILE SIZE, not perceptual quality: quality_to_lambda anchors were 'bisected on lear.png' (a single 12MP image) 'so each quality reproduces the file size of the previous heuristic-model curve within ~1%', and plan/derive.rs quality_step_scaler / document_step_scale were tuned on 300-dpi text pages. There is no butteraugli/ssimulacra2-anchored calibration and no cross-resolution or multi-image validation.
+            """
+    }
+    claim uniform-quantization-no-csf {
+        text """
+            plan/derive.rs apply_quality_step_scaling multiplies every subband's ISO expounded step by a single quality-only scalar (quality_step_scaler), with no CSF/visual frequency weighting per subband. Bit emphasis across subbands is thus content- and perception-blind before PCRD, and the only band shaping (band_distortion_bias LL 1.2 / HH 0.82) lives in the unused perceptual path.
+            """
+    }
+    supported_by [ @lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 ]
+}

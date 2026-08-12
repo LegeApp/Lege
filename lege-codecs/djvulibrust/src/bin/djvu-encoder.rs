@@ -18,7 +18,7 @@
 //!   its own layer separation (MRC by default, `--photo`/`--bilevel` to force a
 //!   single layer).
 //!
-//! Manifest schema version: 1.
+//! Manifest schema version: 2.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -30,10 +30,12 @@ use clap::{Args, Parser, Subcommand};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use djvu_encoder::doc::{DjvuBuilder, EncodedPage, Page, PageBuilder, PageEncodeParams};
+use djvu_encoder::doc::{
+    Bookmark, DjVmNav, DjvuBuilder, EncodedPage, Page, PageBuilder, PageEncodeParams,
+};
 use djvu_encoder::image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 // ============================================================================
 // Exit codes (documented, stable)
@@ -155,7 +157,18 @@ struct Manifest {
     /// IW44 background subsample factor (1 = none, 3 = c44 default).
     #[serde(default = "one_u8")]
     bg_subsample: u8,
+    /// Optional document navigation tree. Page indices are zero based.
+    #[serde(default)]
+    outline: Vec<ManifestOutlineEntry>,
     pages: Vec<ManifestPage>,
+}
+
+#[derive(Deserialize)]
+struct ManifestOutlineEntry {
+    title: String,
+    page_index: usize,
+    #[serde(default)]
+    children: Vec<ManifestOutlineEntry>,
 }
 
 #[derive(Deserialize)]
@@ -316,6 +329,7 @@ fn run_encode_document(args: EncodeDocumentArgs) -> CliResult<()> {
     // Resolve page numbers: explicit `index` wins, else position. The result
     // must be a permutation of 0..n (the encoder requires every page present).
     let n = manifest.pages.len();
+    let navigation = manifest_navigation(&manifest.outline, n)?;
     let mut numbered: Vec<(usize, &ManifestPage)> = manifest
         .pages
         .iter()
@@ -348,6 +362,7 @@ fn run_encode_document(args: EncodeDocumentArgs) -> CliResult<()> {
         args.threads,
         &progress,
         &args.output,
+        navigation.as_ref(),
         |page_num| {
             let (_, page) = numbered[page_num];
             build_manifest_page(page_num, page, &base_dir).map(|built| (built, page.bg_subsample))
@@ -456,6 +471,7 @@ fn run_encode_simple(args: EncodeArgs) -> CliResult<()> {
         args.threads,
         &progress,
         &args.output,
+        None,
         |page_num| {
             let path = &args.pages[page_num];
             build_simple_page(page_num, path, args.photo, args.bilevel).map(|page| (page, None))
@@ -567,6 +583,7 @@ fn encode_pages<F>(
     threads: usize,
     progress: &Progress,
     output: &Path,
+    navigation: Option<&DjVmNav>,
     build: F,
 ) -> CliResult<usize>
 where
@@ -626,11 +643,62 @@ where
     }
 
     let bytes = doc
-        .finalize()
+        .finalize_with_navigation(navigation)
         .map_err(|e| CliError::encode(format!("finalize: {e}")))?;
     std::fs::write(output, &bytes)
         .map_err(|e| CliError::input(format!("cannot write {output:?}: {e}")))?;
     Ok(bytes.len())
+}
+
+fn manifest_navigation(
+    entries: &[ManifestOutlineEntry],
+    page_count: usize,
+) -> CliResult<Option<DjVmNav>> {
+    fn convert(
+        entry: &ManifestOutlineEntry,
+        page_count: usize,
+        count: &mut usize,
+    ) -> CliResult<Bookmark> {
+        *count += 1;
+        if *count > u16::MAX as usize {
+            return Err(CliError::input("outline has more than 65535 entries"));
+        }
+        let title = entry.title.trim();
+        if title.is_empty() {
+            return Err(CliError::input("outline entry has an empty title"));
+        }
+        if entry.children.len() > u8::MAX as usize {
+            return Err(CliError::input(format!(
+                "outline entry {title:?} has more than 255 direct children"
+            )));
+        }
+        if entry.page_index >= page_count {
+            return Err(CliError::input(format!(
+                "outline entry {title:?} points to page {}, but document has {page_count} pages",
+                entry.page_index
+            )));
+        }
+        let children = entry
+            .children
+            .iter()
+            .map(|child| convert(child, page_count, count))
+            .collect::<CliResult<Vec<_>>>()?;
+        Ok(Bookmark {
+            title: title.to_owned(),
+            dest: format!("#p{:04}.djvu", entry.page_index + 1),
+            children,
+        })
+    }
+
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let mut count = 0;
+    let bookmarks = entries
+        .iter()
+        .map(|entry| convert(entry, page_count, &mut count))
+        .collect::<CliResult<Vec<_>>>()?;
+    Ok(Some(DjVmNav { bookmarks }))
 }
 
 // ============================================================================

@@ -21,6 +21,8 @@ members = [
     "lege-process/GUI/rfd",     # vendored file-dialog crate used by both GUIs
     "lege-gpu",                 # `lege_gpu`
     "lege-ocr",                 # `lege_ocr`
+    "lege-document-ocr/crates/*", # business-grade OCR product libraries
+    "lege-document-ocr/cli",    # `lege-ocr` batch CLI
     "lege-pdf/read",            # renderer-backed document intake/read seam
     "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
@@ -124,6 +126,9 @@ wait-timeout = "0.2.1"
 byteorder = "1.5.0"
 bitvec = "1.0.1"
 chrono = "0.4.45"
+blake3 = "1.8.2"
+clap = { version = "4.5.60", features = ["derive"] }
+rusqlite = { version = "0.38.0", features = ["bundled"] }
 
 generational-box = "0.7"
 tracing = "0.1.41"

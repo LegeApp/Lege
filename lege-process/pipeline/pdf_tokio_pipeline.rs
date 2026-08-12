@@ -308,13 +308,17 @@ async fn process_single_page(
 
     // Detections and hOCR share the output page's pixel space here, which is the
     // only place the automatic table of contents needs them together.
-    let toc = crate::toc::capture_page(
-        &adjusted_detections,
-        hocr_text.as_deref(),
-        local_index,
-        width as u32,
-        height as u32,
-    );
+    let toc = if config.enable_auto_toc() {
+        crate::toc::capture_page(
+            &adjusted_detections,
+            hocr_text.as_deref(),
+            local_index,
+            width as u32,
+            height as u32,
+        )
+    } else {
+        crate::toc::PageTocData::default()
+    };
 
     // If any region on this page is Abandon and we're using JBIG2 Symbol mode,
     // force the base layer to Generic to avoid Symbol-mode corruption of noisy pixels.
@@ -1975,6 +1979,7 @@ async fn encode_mrc_base_layer(
             global_data: Arc::from(global_data),
             pixel_width: width as u32,
             pixel_height: height as u32,
+            paint_one: false,
         };
 
         // Background: cleaned gray with ink filled white, box-downsampled, then
@@ -2025,6 +2030,71 @@ async fn encode_mrc_base_layer(
     })
     .await
     .map_err(|e| anyhow!("MRC encode task panicked: {e}"))?
+}
+
+/// Encode only the cleaned continuous-tone background while passing the
+/// qualifying source JBIG2 `/SMask` bytes and globals through unchanged.
+/// `working_coverage` affects background cleanup only; it is never encoded as
+/// the foreground text plane.
+async fn encode_preserved_mrc_base_layer(
+    cleaned_gray: Vec<u8>,
+    working_coverage: Vec<u8>,
+    width: usize,
+    height: usize,
+    config: &Arc<PipelineConfig>,
+    page_index: usize,
+    mask: lege_pdf_read::PreservedJbig2Smask,
+) -> Result<(
+    crate::accumulator::ContentType,
+    crate::accumulator::ContentType,
+)> {
+    let bg_quality = config.mrc_bg_quality();
+    let subsample_override = config.mrc_bg_subsample_override();
+    crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Encode, move || {
+        let subsample = subsample_override.unwrap_or(match height {
+            0..=1799 => 1,
+            1800..=2399 => 2,
+            _ => 3,
+        });
+        let (bg, ow, oh) = crate::clean_gray::mrc_background_with_coverage(
+            &cleaned_gray,
+            &working_coverage,
+            width,
+            height,
+            subsample,
+        );
+        let jp2 = crate::encoding::jp2::encode_gray_document(&bg, ow as u32, oh as u32, bg_quality)
+            .map_err(|error| anyhow!("preserved-mask JP2 background encode: {error}"))?;
+        let background = crate::accumulator::ContentType::EncodedImage {
+            data: Arc::from(jp2),
+            pixel_width: ow as u32,
+            pixel_height: oh as u32,
+            format: "jp2-gray".to_string(),
+        };
+        let foreground = crate::accumulator::ContentType::Jbig2Mask {
+            page_data: mask.page_data,
+            global_data: mask.global_data,
+            pixel_width: mask.native_width,
+            pixel_height: mask.native_height,
+            paint_one: matches!(
+                mask.stencil_polarity,
+                lege_pdf_read::Jbig2StencilPolarity::PaintOne
+            ),
+        };
+        crate::bbox_trace!(
+            "PAGE {} preserved MRC bg={}x{} bytes={} native_mask={}x{} bytes={}",
+            page_index,
+            ow,
+            oh,
+            background.as_bytes().len(),
+            mask.native_width,
+            mask.native_height,
+            foreground.as_bytes().len()
+        );
+        Ok((background, foreground))
+    })
+    .await
+    .map_err(|error| anyhow!("preserved MRC encode task panicked: {error}"))?
 }
 
 /// Encode base layer (binarized image) using the full encoding pipeline
@@ -2689,6 +2759,7 @@ struct SpilledHocrPage {
 struct PlannedPdfContext {
     page: Arc<lege_pdf_read::CompiledDocumentPage>,
     plan: lege_pdf_read::PageOutputPlan,
+    preserved_mask: Option<lege_pdf_read::PreservedJbig2Smask>,
     output_width: u32,
     output_height: u32,
     analysis_image: RgbImage,
@@ -2717,8 +2788,7 @@ async fn prepare_planned_pdf_page(
     page_index: usize,
     cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<Option<PlannedPdfContext>> {
-    if config.is_grayscale_mode()
-        || config.text_format() == "jpeg"
+    if config.text_format() == "jpeg"
         || (config.dither_images() && !config.keep_original_images())
         || should_preserve_cover_page(page_index, &config)
     {
@@ -2733,12 +2803,27 @@ async fn prepare_planned_pdf_page(
         let page = session
             .compile(page_index as u32)
             .map_err(|error| anyhow!("page compile failed: {error}"))?;
+        let preserved_mask = if config.is_grayscale_mode() {
+            let preserved = session
+                .preserved_jbig2_smask(&page, output_width, output_height, Some(&cancellation))
+                .map_err(|error| anyhow!("preserved JBIG2 SMask preparation failed: {error}"))?;
+            let Some(preserved) = preserved else {
+                return Ok(None);
+            };
+            Some(preserved)
+        } else {
+            None
+        };
         let mut plan = crate::pipeline::page_output_plan::plan_page_output(
             &config,
             crate::pipeline::page_output_plan::PagePlanInput {
                 output_width,
                 output_height,
-                gray_suitability: page.gray_suitability(),
+                gray_suitability: if preserved_mask.is_some() {
+                    lege_pdf_read::GraySuitability::AcceptableForBilevel
+                } else {
+                    page.gray_suitability()
+                },
             },
         );
         if plan.base.product.format != lege_pdf_read::RasterFormat::Gray8 {
@@ -2759,6 +2844,7 @@ async fn prepare_planned_pdf_page(
         Ok(Some(PlannedPdfContext {
             page,
             plan,
+            preserved_mask,
             output_width,
             output_height,
             analysis_image,
@@ -2857,6 +2943,7 @@ async fn process_planned_pdf_products(
     page_index: usize,
     page_start: usize,
     products: lege_pdf_read::PageRasterProducts,
+    preserved_mask: Option<lege_pdf_read::PreservedJbig2Smask>,
     detections: Vec<crate::engine::Detection>,
     cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<ProcessedPage> {
@@ -2866,6 +2953,11 @@ async fn process_planned_pdf_products(
     let width = base_surface.width;
     let height = base_surface.height;
     let mut gray = compact_gray_surface(base_surface)?;
+    let mut working_coverage = preserved_mask
+        .as_ref()
+        .map(|mask| compact_gray_surface(mask.working_coverage.clone()))
+        .transpose()?;
+    let uses_preserved_mask = working_coverage.is_some();
     for region in &products.regions {
         if let Some(crop) = region.target.product.crop {
             const PAD: u32 = 3;
@@ -2877,14 +2969,39 @@ async fn process_planned_pdf_products(
                 let start = y as usize * width as usize + x1 as usize;
                 let end = y as usize * width as usize + x2 as usize;
                 gray[start..end].fill(255);
+                if let Some(coverage) = working_coverage.as_mut() {
+                    coverage[start..end].fill(0);
+                }
             }
         }
     }
     checkpoint(&cancellation, "after Gray8 region masking")?;
-    let options = crate::pipeline::policies::binarize_options_for(&config, false);
-    let binarized =
-        crate::color::binarization::binarize_gray(&gray, width as usize, height as usize, &options);
-    checkpoint(&cancellation, "after planned Gray8 binarization")?;
+    let binarized = if let Some(coverage) = working_coverage.as_ref() {
+        // This fixed conversion is only an OCR/collar view of the already
+        // decoded source mask. It never thresholds rendered page pixels and
+        // never feeds the authoritative output JBIG2 stream.
+        let mut clean_options = crate::clean_gray::CleanOptions::production_for_height(
+            height as usize,
+            config.invert_input(),
+        );
+        clean_options.halo = None;
+        if let Ok(cleaned) = crate::clean_gray::clean_gray_page(
+            &gray,
+            width as usize,
+            height as usize,
+            &clean_options,
+        ) {
+            gray = cleaned.pixels;
+        }
+        coverage
+            .iter()
+            .map(|&opacity| if opacity >= 128 { 0 } else { 255 })
+            .collect()
+    } else {
+        let options = crate::pipeline::policies::binarize_options_for(&config, false);
+        crate::color::binarization::binarize_gray(&gray, width as usize, height as usize, &options)
+    };
+    checkpoint(&cancellation, "after planned mask preparation")?;
 
     let native_text_transform = NativeTextTransform {
         source_width: width,
@@ -2892,24 +3009,42 @@ async fn process_planned_pdf_products(
         correction: identity_margin_correction(),
     };
     let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
-        let ocr_plane = products
-            .ocr
-            .ok_or_else(|| anyhow!("slow OCR plan did not render an OCR surface"))?;
-        let lege_pdf_read::RasterPlane::Rgb8(surface) = ocr_plane else {
-            return Err(anyhow!("slow OCR target returned a non-RGB plane"));
-        };
-        let ocr_image = RgbImage::from_raw(surface.width, surface.height, surface.pixels.to_vec())
-            .ok_or_else(|| anyhow!("OCR RGB surface was truncated"))?;
-        crate::ocr::slow::perform_slow_ocr(
-            &ocr_image,
-            &[],
-            &detections,
-            width,
-            height,
-            &config,
-            page_index,
-        )
-        .await?
+        if uses_preserved_mask {
+            // On preserved-mask pages OCR must consume the source-derived
+            // binary view instead of re-thresholding a separately rendered
+            // high-resolution composite.
+            let ocr_image = gray_to_rgb_image(&gray, width, height)?;
+            crate::ocr::slow::perform_slow_ocr(
+                &ocr_image,
+                &binarized,
+                &detections,
+                width,
+                height,
+                &config,
+                page_index,
+            )
+            .await?
+        } else {
+            let ocr_plane = products
+                .ocr
+                .ok_or_else(|| anyhow!("slow OCR plan did not render an OCR surface"))?;
+            let lege_pdf_read::RasterPlane::Rgb8(surface) = ocr_plane else {
+                return Err(anyhow!("slow OCR target returned a non-RGB plane"));
+            };
+            let ocr_image =
+                RgbImage::from_raw(surface.width, surface.height, surface.pixels.to_vec())
+                    .ok_or_else(|| anyhow!("OCR RGB surface was truncated"))?;
+            crate::ocr::slow::perform_slow_ocr(
+                &ocr_image,
+                &[],
+                &detections,
+                width,
+                height,
+                &config,
+                page_index,
+            )
+            .await?
+        }
     } else if config.enable_ocr() {
         let ocr_rgb = gray_to_rgb_image(&gray, width, height)?;
         perform_ocr(
@@ -2971,28 +3106,66 @@ async fn process_planned_pdf_products(
         && detections
             .iter()
             .any(|detection| detection.category.force_generic_jbig2());
-    let base = encode_base_layer(
-        binarized,
-        width as usize,
-        height as usize,
-        &config,
-        page_index,
-        force_jbig2_generic,
-    )
-    .await?;
-    elements.insert(
-        0,
-        crate::accumulator::ContentElement {
-            x: 0.0,
-            y: 0.0,
-            width: width as f32,
-            height: height as f32,
-            content: base,
-        },
-    );
+    if let Some(mask) = preserved_mask {
+        let coverage = working_coverage.expect("preserved mask has working coverage");
+        let (background, foreground) = encode_preserved_mrc_base_layer(
+            gray,
+            coverage,
+            width as usize,
+            height as usize,
+            &config,
+            page_index,
+            mask,
+        )
+        .await?;
+        elements.insert(
+            0,
+            crate::accumulator::ContentElement {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+                content: background,
+            },
+        );
+        elements.insert(
+            1,
+            crate::accumulator::ContentElement {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+                content: foreground,
+            },
+        );
+    } else {
+        let base = encode_base_layer(
+            binarized,
+            width as usize,
+            height as usize,
+            &config,
+            page_index,
+            force_jbig2_generic,
+        )
+        .await?;
+        elements.insert(
+            0,
+            crate::accumulator::ContentElement {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+                content: base,
+            },
+        );
+    }
 
     let index = page_index.saturating_sub(page_start);
-    let toc = crate::toc::capture_page(&detections, hocr_text.as_deref(), index, width, height);
+    let toc = if config.enable_auto_toc() {
+        crate::toc::capture_page(&detections, hocr_text.as_deref(), index, width, height)
+    } else {
+        crate::toc::PageTocData::default()
+    };
 
     Ok(ProcessedPage {
         index,
@@ -3187,6 +3360,7 @@ async fn run_page_owned_job(
             page_index,
             page_start,
             products,
+            planned.preserved_mask,
             detections,
             cancellation.clone(),
         )
@@ -3444,6 +3618,8 @@ pub async fn create_and_run_pdf_source_pipeline(
     let mut hocr_pages = Vec::new();
     let mut toc_candidates: Vec<crate::toc::TocCandidate> = Vec::new();
     let mut toc_stats: Vec<crate::toc::PageTextStats> = Vec::new();
+    let mut metadata_candidates: Vec<crate::toc::MetadataCandidate> = Vec::new();
+    let mut printed_contents: Vec<String> = Vec::new();
 
     while next_page < page_end || !jobs.is_empty() {
         while next_page < page_end && jobs.len() < page_concurrency {
@@ -3516,16 +3692,24 @@ pub async fn create_and_run_pdf_source_pipeline(
                 }
                 toc_candidates.extend(output.toc.candidates);
                 toc_stats.extend(output.toc.stats);
+                metadata_candidates.extend(output.toc.metadata_candidates);
+                printed_contents.extend(output.toc.printed_contents);
             }
         }
     }
     info_log!("[PDF-Parallel] Page-owned jobs complete");
 
     // Await extraction so writer finalization cannot race bookmark delivery.
+    let mut source_metadata = lege_pdf_read::DocumentMetadata::default();
+    let mut source_outline = Vec::new();
     if let Some(session) = document_session {
-        let mut outline_task =
-            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session));
-        let bookmarks = tokio::select! {
+        let mut outline_task = crate::runtime_stats::spawn_blocking(move || {
+            (
+                lege_pdf_read::extract_outline(&session),
+                lege_pdf_read::extract_metadata(&session),
+            )
+        });
+        let (bookmarks, metadata) = tokio::select! {
             result = &mut outline_task => {
                 result.map_err(|error| anyhow!("Outline extraction task panicked: {error}"))?
             }
@@ -3540,11 +3724,16 @@ pub async fn create_and_run_pdf_source_pipeline(
                 return Err(anyhow!("Processing cancelled during outline extraction: {message}"));
             }
         };
+        source_metadata = metadata;
         if !bookmarks.is_empty() {
             let source_to_output = (page_start..page_end)
                 .enumerate()
                 .map(|(output, source)| (source, output))
                 .collect();
+            source_outline = crate::pipeline::helper_functions::bookmarks_to_outline(
+                &bookmarks,
+                &source_to_output,
+            );
             pdf_writer_handle
                 .send_bookmarks(bookmarks, source_to_output)
                 .await?;
@@ -3553,16 +3742,32 @@ pub async fn create_and_run_pdf_source_pipeline(
 
     // The synthesized outline is offered, never imposed: the writer uses it only
     // when the source document had no outline that survived remapping.
-    if !toc_candidates.is_empty() {
-        let total_pages = page_end.saturating_sub(page_start);
-        let outline = crate::toc::build_outline(toc_candidates, &toc_stats, total_pages);
-        if !outline.is_empty() {
-            info_log!(
-                "[PDF-Parallel] Synthesized a {}-entry table of contents",
-                outline.len()
-            );
-            pdf_writer_handle.send_synthetic_outline(outline).await?;
-        }
+    let total_pages = page_end.saturating_sub(page_start);
+    let synthetic_outline = crate::toc::build_outline_with_contents(
+        toc_candidates,
+        &toc_stats,
+        total_pages,
+        &printed_contents,
+    );
+    if !synthetic_outline.is_empty() {
+        info_log!(
+            "[PDF-Parallel] Synthesized a {}-entry table of contents",
+            synthetic_outline.len()
+        );
+        pdf_writer_handle
+            .send_synthetic_outline(synthetic_outline.clone())
+            .await?;
+    }
+    let accepted_outline =
+        crate::pipeline::helper_functions::merge_outline(source_outline, Some(synthetic_outline));
+
+    let inferred = crate::toc::infer_metadata(&metadata_candidates, &toc_stats, total_pages);
+    let title = source_metadata.title.or(inferred.title);
+    let author = source_metadata.author.or(inferred.author);
+    if title.is_some() || author.is_some() {
+        pdf_writer_handle
+            .send_document_identity(title, author)
+            .await?;
     }
 
     info_log!("[PDF-Parallel] Finalizing PDF...");
@@ -3612,10 +3817,11 @@ pub async fn create_and_run_pdf_source_pipeline(
             let mut sidecar_task = crate::runtime_stats::spawn_blocking_stage(
                 crate::runtime_stats::Stage::Writer,
                 move || {
-                    crate::pipeline::epub_pipeline::build_epub_from_hocr_pages_cancellable(
+                    crate::pipeline::epub_pipeline::build_epub_from_hocr_pages_with_outline_cancellable(
                         &hocr_pages,
                         &title,
                         &epub_path,
+                        &accepted_outline,
                         Some(&packaging_cancellation),
                     )
                 },

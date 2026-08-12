@@ -65,6 +65,7 @@ pub fn write_image_xobject<W: Write>(
             height,
             globals,
             image_mask,
+            image_mask_paints_one,
         } => {
             // Resolve globals first so the object exists before the image dict.
             let globals_obj = match globals {
@@ -87,7 +88,11 @@ pub fn write_image_xobject<W: Write>(
             key(&mut dict, b"Filter");
             write_name(&mut dict, b"JBIG2Decode");
             key(&mut dict, b"Decode");
-            dict.extend_from_slice(b"[0 1]");
+            dict.extend_from_slice(if *image_mask && *image_mask_paints_one {
+                b"[1 0]"
+            } else {
+                b"[0 1]"
+            });
             if let Some(gobj) = globals_obj {
                 key(&mut dict, b"DecodeParms");
                 dict.extend_from_slice(b"<<");
@@ -256,6 +261,7 @@ mod tests {
             height: 8,
             globals: Some(gid),
             image_mask: false,
+            image_mask_paints_one: false,
         };
         let obj = write_image_xobject(&mut sink, &mut reg, &img).unwrap();
         let t = String::from_utf8_lossy(&sink.finish().unwrap()).into_owned();
@@ -279,6 +285,7 @@ mod tests {
             height: 8,
             globals: None,
             image_mask: true,
+            image_mask_paints_one: false,
         });
         assert!(t.contains("/ImageMask true"));
         assert!(
@@ -286,6 +293,20 @@ mod tests {
             "mask must have no ColorSpace: {t}"
         );
         assert!(t.contains("/Decode [0 1]"));
+    }
+
+    #[test]
+    fn jbig2_mask_can_paint_one_samples() {
+        let t = render(&PdfImageResource::Jbig2 {
+            data: Arc::from(&[0u8; 4][..]),
+            width: 8,
+            height: 8,
+            globals: None,
+            image_mask: true,
+            image_mask_paints_one: true,
+        });
+        assert!(t.contains("/ImageMask true"));
+        assert!(t.contains("/Decode [1 0]"));
     }
 
     #[test]

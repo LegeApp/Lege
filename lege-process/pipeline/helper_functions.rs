@@ -1033,6 +1033,11 @@ pub enum WriterMessage {
     /// Supply a synthesized outline, already in output page space. It is used
     /// only when the source document had no outline that survived remapping.
     SetSyntheticOutline(Vec<lege_pdf_write::outline::OutlineItem>),
+    /// Supply document identity metadata. Empty fields are omitted from Info.
+    SetDocumentIdentity {
+        title: Option<String>,
+        author: Option<String>,
+    },
     /// Signal that all pages have been sent and PDF should be finalized
     Finalize,
 }
@@ -1081,6 +1086,18 @@ impl PdfWriterHandle {
     ) -> Result<(), anyhow::Error> {
         self.sender
             .send(WriterMessage::SetSyntheticOutline(items))
+            .await
+            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+        Ok(())
+    }
+
+    pub async fn send_document_identity(
+        &self,
+        title: Option<String>,
+        author: Option<String>,
+    ) -> Result<(), anyhow::Error> {
+        self.sender
+            .send(WriterMessage::SetDocumentIdentity { title, author })
             .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
@@ -1227,6 +1244,15 @@ pub fn spawn_pdf_writer_actor(
                 WriterMessage::SetSyntheticOutline(items) => {
                     pending_synthetic = Some(items);
                 }
+                WriterMessage::SetDocumentIdentity { title, author } => {
+                    writer.set_metadata(lege_pdf_write::meta::DocumentMeta {
+                        title: title.unwrap_or_default(),
+                        author: author.unwrap_or_default(),
+                        subject: String::new(),
+                        keywords: String::new(),
+                        ..Default::default()
+                    });
+                }
                 WriterMessage::Finalize => {
                     crate::info_log!(
                         "[PdfWriterActor] Finalize requested, written {} of {} pages",
@@ -1301,7 +1327,7 @@ pub fn spawn_pdf_writer_actor(
 /// Preserved nodes keep the page-level `/Fit` destination. Their `top` is in the
 /// *source* page's user space, and the output page is re-rendered at a different
 /// scale, so reusing it would land somewhere arbitrary.
-fn bookmarks_to_outline(
+pub(crate) fn bookmarks_to_outline(
     nodes: &[crate::pagerender::OwnedBookmarkNode],
     source_to_output: &std::collections::HashMap<usize, usize>,
 ) -> Vec<lege_pdf_write::outline::OutlineItem> {
@@ -1331,7 +1357,7 @@ fn bookmarks_to_outline(
 /// Outline precedence. An author's outline is ground truth: when it resolves to
 /// at least one page it wins outright, and nothing is synthesized. A synthesized
 /// outline only ever fills a gap, so the feature's failure mode is absence.
-fn merge_outline(
+pub(crate) fn merge_outline(
     source: Vec<lege_pdf_write::outline::OutlineItem>,
     synthetic: Option<Vec<lege_pdf_write::outline::OutlineItem>>,
 ) -> Vec<lege_pdf_write::outline::OutlineItem> {

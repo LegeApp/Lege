@@ -530,9 +530,7 @@ impl PackedWriteTarget<'_> {
             .ok_or_else(|| invalid("packed write height overflow"))?;
         let need_len = last_row
             .checked_mul(self.stride)
-            .and_then(|o| {
-                o.checked_add(self.origin_x * self.channels + self.width * self.channels)
-            })
+            .and_then(|o| o.checked_add(self.origin_x * self.channels + self.width * self.channels))
             .ok_or_else(|| invalid("packed write buffer size overflow"))?;
         if self.data.len() < need_len {
             return Err(invalid(format!(
@@ -583,14 +581,9 @@ pub(crate) fn reconstruct_packed_u8_into(
             target,
             stats,
         ),
-        ColorSpace::YCbCr => reconstruct_sycc_packed_into(
-            header,
-            channels,
-            layout,
-            tiles,
-            target,
-            stats,
-        ),
+        ColorSpace::YCbCr => {
+            reconstruct_sycc_packed_into(header, channels, layout, tiles, target, stats)
+        }
         other => Err(invalid(format!(
             "unsupported packed output colorspace: {other:?}"
         ))),
@@ -653,9 +646,7 @@ fn reconstruct_grayscale_u8_into(
     }
     record_finalize_time(stats, start);
     stats.update(|stats| {
-        stats.output_pixels = stats
-            .output_pixels
-            .saturating_add((width * height) as u64);
+        stats.output_pixels = stats.output_pixels.saturating_add((width * height) as u64);
     });
     Ok(())
 }
@@ -933,7 +924,15 @@ fn finalize_centered_i32_u8(sample: i32) -> u8 {
 }
 
 #[inline]
-fn store_rgb_layout(out: &mut [u8], layout: PackedLayout, channels: usize, r: u8, g: u8, b: u8, a: u8) {
+fn store_rgb_layout(
+    out: &mut [u8],
+    layout: PackedLayout,
+    channels: usize,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+) {
     match layout {
         PackedLayout::Sequential if channels == 3 => {
             out[0] = r;
@@ -1213,9 +1212,7 @@ fn reconstruct_sycc_packed_into(
         return Err(invalid("sYCC packed write target size mismatch"));
     }
     let precision = header.siz.components[0].precision;
-    if precision != 8
-        || header.siz.components.iter().any(|c| c.precision != 8)
-    {
+    if precision != 8 || header.siz.components.iter().any(|c| c.precision != 8) {
         return Err(invalid(
             "packed sYCC path currently requires 8-bit components",
         ));
@@ -1247,13 +1244,8 @@ fn reconstruct_sycc_packed_into(
                 finalize_i32_samples(centered, precision)
             }
             WaveletTransform::Irreversible97 => {
-                let centered = reconstruct_irreversible_97_centered(
-                    header,
-                    tile.into_real()?,
-                    cw,
-                    ch,
-                    stats,
-                )?;
+                let centered =
+                    reconstruct_irreversible_97_centered(header, tile.into_real()?, cw, ch, stats)?;
                 finalize_f32_samples(centered, precision)
             }
         };
@@ -1281,7 +1273,8 @@ fn reconstruct_sycc_packed_into(
             let cr = cr_plane[cy * crw + cx] - offset;
             // OpenJPEG sycc_to_rgb bit-exact (truncation toward zero).
             let r = (yy + (1.402 * cr as f32) as i32).clamp(0, max_sample) as u8;
-            let g = (yy - (0.344 * cb as f32 + 0.714 * cr as f32) as i32).clamp(0, max_sample) as u8;
+            let g =
+                (yy - (0.344 * cb as f32 + 0.714 * cr as f32) as i32).clamp(0, max_sample) as u8;
             let b = (yy + (1.772 * cb as f32) as i32).clamp(0, max_sample) as u8;
             let off = target.pixel_offset(x, y);
             store_rgb_layout(
@@ -1297,9 +1290,7 @@ fn reconstruct_sycc_packed_into(
     }
     record_finalize_time(stats, start);
     stats.update(|stats| {
-        stats.output_pixels = stats
-            .output_pixels
-            .saturating_add((full_w * full_h) as u64);
+        stats.output_pixels = stats.output_pixels.saturating_add((full_w * full_h) as u64);
     });
     Ok(())
 }
@@ -1821,9 +1812,8 @@ mod tests {
                 let cbv = cb[cy * 2 + cx] - offset;
                 let crv = cr[cy * 2 + cx] - offset;
                 let r = (yv + (1.402 * crv as f32) as i32).clamp(0, max_sample) as u8;
-                let g =
-                    (yv - (0.344 * cbv as f32 + 0.714 * crv as f32) as i32).clamp(0, max_sample)
-                        as u8;
+                let g = (yv - (0.344 * cbv as f32 + 0.714 * crv as f32) as i32).clamp(0, max_sample)
+                    as u8;
                 let b = (yv + (1.772 * cbv as f32) as i32).clamp(0, max_sample) as u8;
                 let o = (yy * yw + xx) * 3;
                 fused[o] = r;

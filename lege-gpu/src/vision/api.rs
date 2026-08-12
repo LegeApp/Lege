@@ -563,6 +563,13 @@ struct RecGraph {
     compiled: CompiledGraph,
 }
 
+struct CompactRecOutput {
+    rows: Vec<crate::vision::runtime::compiled::CompactTop2>,
+    timesteps: usize,
+    nw: u32,
+    bucket: u32,
+}
+
 /// PP-OCRv5 mobile text-line recognizer over the lege-gpu wgpu runtime.
 ///
 /// Feed a tight text-line crop; it resizes to height 48 (width proportional),
@@ -574,6 +581,175 @@ pub struct RecRecognizer {
     model: ModelProto,
     dict: crate::vision::decode::ctc::CtcDict,
     cache: Mutex<Vec<RecGraph>>,
+}
+
+/// Fixed-shape image-to-token model configuration used by document
+/// specialists such as table-structure and formula recognizers.
+#[derive(Debug, Clone)]
+pub struct TokenRecognizerConfig {
+    pub input_width: u32,
+    pub input_height: u32,
+    pub blank_index: Option<usize>,
+    pub collapse_repeats: bool,
+    pub end_token: Option<String>,
+    pub mean: [f32; 3],
+    pub scale: [f32; 3],
+}
+
+impl Default for TokenRecognizerConfig {
+    fn default() -> Self {
+        Self {
+            input_width: 488,
+            input_height: 488,
+            blank_index: Some(0),
+            collapse_repeats: true,
+            end_token: None,
+            mean: [0.5; 3],
+            scale: [2.0; 3],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenSequence {
+    pub tokens: Vec<String>,
+    pub confidence: Option<f32>,
+}
+
+/// Generic WGPU adapter for prepared ONNX specialists whose sole output is
+/// `[1,T,C]`. Token semantics stay in the model pack, keeping table/formula
+/// models replaceable without coupling the core runtime to one vendor.
+pub struct TokenRecognizer {
+    graph: PreparedGraph,
+    compiled: Mutex<CompiledGraph>,
+    tokens: Vec<String>,
+    config: TokenRecognizerConfig,
+}
+
+impl TokenRecognizer {
+    pub fn from_bytes(
+        model_bytes: &[u8],
+        dictionary: &str,
+        config: TokenRecognizerConfig,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            config.input_width > 0 && config.input_height > 0,
+            "specialist input dimensions must be non-zero"
+        );
+        let model =
+            load_model_from_bytes(model_bytes).context("failed to load specialist model bytes")?;
+        let report =
+            ModelReport::from_model(&model).context("failed to inspect specialist model")?;
+        if !report.rejection_reasons.is_empty() {
+            bail!(
+                "specialist model is not compatible with lege-vision: {}",
+                report.rejection_reasons.join("; ")
+            );
+        }
+        let graph = PreparedGraph::from_model_with_input_dims(
+            &model,
+            Some(&[1, 3, config.input_height as i64, config.input_width as i64]),
+        )
+        .context("failed to prepare specialist graph")?;
+        anyhow::ensure!(
+            graph.outputs.len() == 1,
+            "specialist graph must have one output"
+        );
+        let compiled = pollster::block_on(CompiledGraph::build(&graph))
+            .context("failed to compile specialist graph")?;
+        let tokens = dictionary
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(!tokens.is_empty(), "specialist dictionary is empty");
+        Ok(Self {
+            graph,
+            compiled: Mutex::new(compiled),
+            tokens,
+            config,
+        })
+    }
+
+    pub fn recognize_gray(&self, image: &GrayImage) -> Result<TokenSequence> {
+        if image.width() == 0 || image.height() == 0 {
+            return Ok(TokenSequence {
+                tokens: Vec::new(),
+                confidence: None,
+            });
+        }
+        let tensor = specialist_tensor(image, &self.config);
+        let output = pollster::block_on(
+            self.compiled
+                .lock()
+                .map_err(|_| anyhow::anyhow!("specialist graph lock poisoned"))?
+                .run_ctc_top2(&tensor),
+        )
+        .context("specialist inference failed")?;
+        anyhow::ensure!(output.batch == 1, "specialist output batch must be one");
+        anyhow::ensure!(
+            output.classes == self.tokens.len(),
+            "specialist output has {} classes but dictionary has {} entries",
+            output.classes,
+            self.tokens.len()
+        );
+        let mut tokens = Vec::new();
+        let mut confidence = 0.0_f32;
+        let mut emitted = 0_u32;
+        let mut previous = usize::MAX;
+        for row in output.rows {
+            let index = row.class_index;
+            let repeated = self.config.collapse_repeats && index == previous;
+            previous = index;
+            if repeated || self.config.blank_index == Some(index) {
+                continue;
+            }
+            let token = &self.tokens[index];
+            if self.config.end_token.as_deref() == Some(token) {
+                break;
+            }
+            tokens.push(token.clone());
+            confidence += if (0.0..=1.0).contains(&row.best) {
+                row.best
+            } else {
+                1.0 / (1.0 + (row.second - row.best).exp())
+            };
+            emitted += 1;
+        }
+        Ok(TokenSequence {
+            tokens,
+            confidence: (emitted > 0).then_some(confidence / emitted as f32),
+        })
+    }
+
+    pub fn output_name(&self) -> &str {
+        &self.graph.outputs[0]
+    }
+}
+
+fn specialist_tensor(image: &GrayImage, config: &TokenRecognizerConfig) -> Tensor {
+    let resized = image::imageops::resize(
+        image,
+        config.input_width,
+        config.input_height,
+        image::imageops::FilterType::Triangle,
+    );
+    let plane = config.input_width as usize * config.input_height as usize;
+    let mut data = vec![0.0_f32; plane * 3];
+    for (index, pixel) in resized.pixels().enumerate() {
+        let value = f32::from(pixel[0]) / 255.0;
+        for channel in 0..3 {
+            data[channel * plane + index] = (value - config.mean[channel]) * config.scale[channel];
+        }
+    }
+    Tensor {
+        shape: vec![
+            1,
+            3,
+            config.input_height as usize,
+            config.input_width as usize,
+        ],
+        data,
+    }
 }
 
 impl RecRecognizer {
@@ -648,15 +824,15 @@ impl RecRecognizer {
         })
     }
 
-    /// Run the rec graph for one line crop, returning `(logits, nw, bucket)`
-    /// where `nw` is the unpadded resized width and `bucket` the padded width.
-    fn run_preprocessed(&self, tensor: Tensor, nw: u32) -> Result<Option<(Tensor, u32, u32)>> {
+    /// Run one crop and return only device-reduced top-two CTC rows. `nw` is the
+    /// unpadded resized width and `bucket` the padded width.
+    fn run_preprocessed(&self, tensor: Tensor, nw: u32) -> Result<Option<CompactRecOutput>> {
         let bucket = Self::bucket_for(nw);
         let padded = pad_rec_width(tensor, nw, bucket);
 
         // Resolve-or-build the bucket graph under the lock; run + read the output
         // name while still holding it (cheap), then release.
-        let (outputs, out_name) = {
+        let output = {
             let mut cache = self
                 .cache
                 .lock()
@@ -677,31 +853,27 @@ impl RecRecognizer {
                     cache.truncate(REC_CACHE_CAP);
                 }
             }
-            let out_name = cache[0]
-                .graph
-                .outputs
-                .first()
-                .context("rec graph has no output")?
-                .clone();
-            let outputs = pollster::block_on(cache[0].compiled.run(&padded))
-                .context("rec inference failed")?;
-            (outputs, out_name)
+            anyhow::ensure!(
+                cache[0].graph.outputs.len() == 1,
+                "rec graph must have one output"
+            );
+            pollster::block_on(cache[0].compiled.run_ctc_top2(&padded))
+                .context("rec inference failed")?
         };
-        let logits = outputs
-            .get(&out_name)
-            .with_context(|| format!("rec output `{out_name}` missing"))?
-            .clone();
-        let classes = match logits.shape.as_slice() {
-            [1, _, classes] | [_, classes] => *classes,
-            shape => bail!("unexpected rec output shape {shape:?}"),
-        };
-        if classes != self.dict.num_classes() {
+        if output.batch != 1 || output.classes != self.dict.num_classes() {
             bail!(
-                "rec output has {classes} classes but dictionary requires {}",
+                "rec output has batch {} and {} classes but expected batch 1 and {} classes",
+                output.batch,
+                output.classes,
                 self.dict.num_classes()
             );
         }
-        Ok(Some((logits, nw, bucket)))
+        Ok(Some(CompactRecOutput {
+            rows: output.rows,
+            timesteps: output.timesteps,
+            nw,
+            bucket,
+        }))
     }
 
     fn run_preprocessed_batch(
@@ -709,7 +881,7 @@ impl RecRecognizer {
         inputs: Vec<(Tensor, u32)>,
         bucket: u32,
         graph_batch: usize,
-    ) -> Result<Vec<(Tensor, u32, u32)>> {
+    ) -> Result<Vec<CompactRecOutput>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -724,7 +896,7 @@ impl RecRecognizer {
             shape: vec![graph_batch, 3, REC_HEIGHT as usize, bucket as usize],
             data,
         };
-        let (outputs, out_name) = {
+        let output = {
             let mut cache = self
                 .cache
                 .lock()
@@ -748,49 +920,40 @@ impl RecRecognizer {
                     cache.truncate(REC_CACHE_CAP);
                 }
             }
-            let out_name = cache[0]
-                .graph
-                .outputs
-                .first()
-                .context("batched rec graph has no output")?
-                .clone();
-            let outputs = pollster::block_on(cache[0].compiled.run(&batch_tensor))
-                .context("batched rec inference failed")?;
-            (outputs, out_name)
+            anyhow::ensure!(
+                cache[0].graph.outputs.len() == 1,
+                "batched rec graph must have one output"
+            );
+            pollster::block_on(cache[0].compiled.run_ctc_top2(&batch_tensor))
+                .context("batched rec inference failed")?
         };
-        let logits = outputs
-            .get(&out_name)
-            .with_context(|| format!("batched rec output `{out_name}` missing"))?;
-        let (batch, timesteps, classes) = match logits.shape.as_slice() {
-            [batch, timesteps, classes] => (*batch, *timesteps, *classes),
-            shape => bail!("unexpected batched rec output shape {shape:?}"),
-        };
-        if batch != graph_batch || classes != self.dict.num_classes() {
+        if output.batch != graph_batch || output.classes != self.dict.num_classes() {
             bail!(
-                "batched rec output is [{batch}, {timesteps}, {classes}], expected batch {} and {} classes",
+                "batched rec output is [{}, {}, {}], expected batch {} and {} classes",
+                output.batch,
+                output.timesteps,
+                output.classes,
                 graph_batch,
                 self.dict.num_classes()
             );
         }
-        let line_elements = timesteps * classes;
+        let timesteps = output.timesteps;
         inputs
             .into_iter()
             .enumerate()
             .map(|(index, (_, nw))| {
-                let start = index * line_elements;
-                Ok((
-                    Tensor {
-                        shape: vec![1, timesteps, classes],
-                        data: logits.data[start..start + line_elements].to_vec(),
-                    },
+                let start = index * timesteps;
+                Ok(CompactRecOutput {
+                    rows: output.rows[start..start + timesteps].to_vec(),
+                    timesteps,
                     nw,
                     bucket,
-                ))
+                })
             })
             .collect()
     }
 
-    fn run_line(&self, line: &RgbImage) -> Result<Option<(Tensor, u32, u32)>> {
+    fn run_line(&self, line: &RgbImage) -> Result<Option<CompactRecOutput>> {
         if line.width() == 0 || line.height() == 0 {
             return Ok(None);
         }
@@ -798,7 +961,7 @@ impl RecRecognizer {
         self.run_preprocessed(tensor, nw)
     }
 
-    fn run_gray_line(&self, line: &GrayImage) -> Result<Option<(Tensor, u32, u32)>> {
+    fn run_gray_line(&self, line: &GrayImage) -> Result<Option<CompactRecOutput>> {
         if line.width() == 0 || line.height() == 0 {
             return Ok(None);
         }
@@ -811,9 +974,13 @@ impl RecRecognizer {
     pub fn recognize(&self, line: &RgbImage) -> Result<String> {
         match self.run_line(line)? {
             None => Ok(String::new()),
-            Some((logits, _, _)) => Ok(crate::vision::decode::ctc::ctc_greedy_decode(
-                &logits, &self.dict,
-            )),
+            Some(output) => Ok(crate::vision::decode::ctc::ctc_greedy_decode_compact_spans(
+                &output.rows,
+                &self.dict,
+            )
+            .into_iter()
+            .map(|span| self.dict.char_at(span.class_index))
+            .collect()),
         }
     }
 
@@ -872,9 +1039,7 @@ impl RecRecognizer {
                     .collect::<Vec<_>>();
                 match self.run_preprocessed_batch(inputs, bucket, graph_batch) {
                     Ok(outputs) => {
-                        for ((index, _, _, crop_width), output) in
-                            chunk.iter().zip(outputs.into_iter())
-                        {
+                        for ((index, _, _, crop_width), output) in chunk.iter().zip(outputs) {
                             results[*index] = self.decode_words(*crop_width, Some(output))?;
                         }
                     }
@@ -890,16 +1055,19 @@ impl RecRecognizer {
         Ok(results)
     }
 
-    fn decode_words(&self, crop_w: u32, output: Option<(Tensor, u32, u32)>) -> Result<RecLine> {
-        let Some((logits, nw, bucket)) = output else {
+    fn decode_words(&self, crop_w: u32, output: Option<CompactRecOutput>) -> Result<RecLine> {
+        let Some(output) = output else {
             return Ok(RecLine {
                 text: String::new(),
                 words: Vec::new(),
                 confidence: None,
             });
         };
-        let (spans, timesteps) =
-            crate::vision::decode::ctc::ctc_greedy_decode_spans(&logits, &self.dict);
+        let spans =
+            crate::vision::decode::ctc::ctc_greedy_decode_compact_spans(&output.rows, &self.dict);
+        let timesteps = output.timesteps;
+        let nw = output.nw;
+        let bucket = output.bucket;
 
         // Content occupies the first `nw/bucket` fraction of the timesteps (the
         // rest is padding). Map a timestep to an x in the ORIGINAL crop width.

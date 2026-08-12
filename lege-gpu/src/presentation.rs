@@ -294,27 +294,55 @@ impl GpuCompositor {
                 Some(context),
             )
         } else {
-            let adapter = Arc::new(
-                instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::HighPerformance,
-                        compatible_surface: Some(&surface),
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
+            // If the shared compute adapter cannot present, apply the same
+            // deterministic discrete-first policy to surface-compatible
+            // adapters. Try each candidate so a broken dGPU driver can still
+            // fall back to an integrated GPU or software adapter.
+            let mut candidates = instance
+                .enumerate_adapters(crate::wgpu_setup::requested_backends())
+                .await;
+            if let Ok(filter) = std::env::var("WGPU_ADAPTER_NAME") {
+                candidates.retain(|adapter| {
+                    crate::wgpu_setup::adapter_name_matches(&adapter.get_info().name, &filter)
+                });
+            }
+            candidates.retain(|adapter| adapter.is_surface_supported(&surface));
+            crate::wgpu_setup::sort_adapters_by_preference(&mut candidates);
+            if candidates.is_empty() {
+                return Err(PresentationError::Adapter(
+                    "no enumerated adapter supports the window surface".to_owned(),
+                ));
+            }
+
+            let mut failures = Vec::new();
+            let mut selected = None;
+            for candidate in candidates {
+                let info = candidate.get_info();
+                let description =
+                    format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
+                match candidate
+                    .request_device(&wgpu::DeviceDescriptor {
+                        label: Some("lege-presentation"),
+                        required_features: wgpu::Features::empty(),
+                        required_limits: candidate.limits(),
+                        ..Default::default()
                     })
                     .await
-                    .map_err(|error| PresentationError::Adapter(error.to_string()))?,
-            );
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("lege-presentation"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: adapter.limits(),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| PresentationError::Device(error.to_string()))?;
-            (adapter, Arc::new(device), Arc::new(queue), None)
+                {
+                    Ok((device, queue)) => {
+                        selected = Some((Arc::new(candidate), Arc::new(device), Arc::new(queue)));
+                        break;
+                    }
+                    Err(error) => failures.push(format!("{description}: {error}")),
+                }
+            }
+            let (adapter, device, queue) = selected.ok_or_else(|| {
+                PresentationError::Device(format!(
+                    "every surface-compatible adapter rejected request_device: {}",
+                    failures.join("; ")
+                ))
+            })?;
+            (adapter, device, queue, None)
         };
         let info = adapter.get_info();
         let device_failed = Arc::new(AtomicBool::new(false));

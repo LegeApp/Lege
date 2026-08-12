@@ -8,6 +8,13 @@
 //!
 //! The choice is overridable via the `WGPU_BACKEND` environment variable
 //! (comma-separated: `dx12`, `vulkan`, `metal`, `gl`, `webgpu`, or `all`).
+//!
+//! Adapter selection is explicit rather than relying on wgpu's
+//! `PowerPreference::HighPerformance` hint. Some Linux hybrid-graphics drivers
+//! return the integrated GPU for that hint even when a discrete GPU is
+//! available. Every automatic Lege GPU path therefore orders enumerated
+//! adapters Discrete -> Integrated -> Other -> Virtual -> Cpu and tries them in
+//! that order.
 
 /// Backends to enable for lege-gpu compute work, honouring `WGPU_BACKEND`.
 pub fn requested_backends() -> wgpu::Backends {
@@ -59,4 +66,71 @@ pub fn create_instance() -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = requested_backends();
     wgpu::Instance::new(desc)
+}
+
+/// Rank an adapter type for Lege's automatic GPU selection policy.
+///
+/// A lower value is preferred. Explicit `WGPU_ADAPTER_NAME` selection is
+/// applied before this policy and therefore still takes precedence.
+pub(crate) const fn adapter_type_preference(device_type: wgpu::DeviceType) -> u8 {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::Other => 2,
+        wgpu::DeviceType::VirtualGpu => 3,
+        wgpu::DeviceType::Cpu => 4,
+    }
+}
+
+/// Order adapters according to [`adapter_type_preference`].
+///
+/// `sort_by_key` is stable, so the backend's enumeration order remains the
+/// tie-breaker between adapters of the same type.
+pub(crate) fn sort_adapters_by_preference(adapters: &mut [wgpu::Adapter]) {
+    adapters.sort_by_key(|adapter| adapter_type_preference(adapter.get_info().device_type));
+}
+
+/// Match wgpu's explicit adapter-name override consistently across compute and
+/// presentation paths.
+pub(crate) fn adapter_name_matches(name: &str, filter: &str) -> bool {
+    name.to_ascii_lowercase()
+        .contains(&filter.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_adapter_order_prefers_discrete_hardware() {
+        let mut types = [
+            wgpu::DeviceType::Cpu,
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::VirtualGpu,
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::Other,
+        ];
+        types.sort_by_key(|device_type| adapter_type_preference(*device_type));
+
+        assert_eq!(
+            types,
+            [
+                wgpu::DeviceType::DiscreteGpu,
+                wgpu::DeviceType::IntegratedGpu,
+                wgpu::DeviceType::Other,
+                wgpu::DeviceType::VirtualGpu,
+                wgpu::DeviceType::Cpu,
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_adapter_name_filter_is_case_insensitive_and_partial() {
+        assert!(adapter_name_matches("NVIDIA GeForce RTX 4060", "rtx 4060"));
+        assert!(adapter_name_matches(
+            "Intel(R) Iris(R) Xe Graphics",
+            "INTEL"
+        ));
+        assert!(!adapter_name_matches("NVIDIA GeForce RTX 4060", "Intel"));
+    }
 }

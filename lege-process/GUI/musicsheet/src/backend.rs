@@ -607,7 +607,8 @@ pub fn bundled_docs_path_if_exists(file_name: &str) -> Option<PathBuf> {
     }
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
+            .join("../../..")
+            .join("lege-misc")
             .join("docs")
             .join(file_name),
     );

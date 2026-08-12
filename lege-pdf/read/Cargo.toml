@@ -8,6 +8,7 @@ description = "Lege-owned document intake seam over the external PDF renderer"
 
 [dependencies]
 thiserror = { workspace = true }
+image = { workspace = true }
 pdf-content = { workspace = true }
 pdf-document = { workspace = true }
 pdf-object = { workspace = true }
@@ -20,6 +21,7 @@ pdf-source = { workspace = true }
 pdf-text = { workspace = true }
 
 [dev-dependencies]
+jpeg-encoder = { workspace = true }
 pdf-test-support = { workspace = true }
 
 [lints]

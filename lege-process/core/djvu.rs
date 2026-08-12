@@ -26,7 +26,7 @@ use crate::dbglog;
 use crate::engine::Detection;
 
 /// Manifest schema version understood by this driver. Must match the encoder.
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// Basename of the encoder executable searched for on `PATH` and next to Lege.
 const ENCODER_BIN: &str = "djvu-encoder";
@@ -266,7 +266,27 @@ struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     slices: Option<usize>,
     bg_subsample: u8,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    outline: Vec<ManifestOutlineEntry>,
     pages: Vec<ManifestPageEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct ManifestOutlineEntry {
+    title: String,
+    page_index: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<ManifestOutlineEntry>,
+}
+
+impl From<lege_pdf_write::outline::OutlineItem> for ManifestOutlineEntry {
+    fn from(item: lege_pdf_write::outline::OutlineItem) -> Self {
+        Self {
+            title: item.title,
+            page_index: item.page_index as usize,
+            children: item.children.into_iter().map(Self::from).collect(),
+        }
+    }
 }
 
 /// A single OCR word box in page pixel coordinates (neutral interchange form).
@@ -941,6 +961,8 @@ fn paste_regions(
 pub enum DjvuWriterMessage {
     /// Record a composed page's manifest entry.
     AppendEntry(ManifestPageEntry),
+    /// Set the accepted document navigation tree before finalization.
+    SetOutline(Vec<lege_pdf_write::outline::OutlineItem>),
     /// Write the manifest and run the encoder subprocess.
     Finalize,
 }
@@ -959,6 +981,16 @@ impl DjvuWriterHandle {
             .await
             .map_err(|_| anyhow!("DjVu writer actor has stopped"))?;
         Ok(())
+    }
+
+    pub async fn send_outline(
+        &self,
+        outline: Vec<lege_pdf_write::outline::OutlineItem>,
+    ) -> Result<(), anyhow::Error> {
+        self.sender
+            .send(DjvuWriterMessage::SetOutline(outline))
+            .await
+            .map_err(|_| anyhow!("DjVu writer actor has stopped"))
     }
 
     /// Finalize the document (write manifest, run encoder).
@@ -1008,6 +1040,7 @@ pub fn spawn_djvu_writer_actor(
 
     let task = tokio::spawn(async move {
         let mut entries: BTreeMap<usize, ManifestPageEntry> = BTreeMap::new();
+        let mut outline = Vec::new();
 
         crate::info_log!("[DjvuWriterActor] Started, collecting page entries...");
 
@@ -1015,6 +1048,9 @@ pub fn spawn_djvu_writer_actor(
             match msg {
                 DjvuWriterMessage::AppendEntry(entry) => {
                     entries.insert(entry.index, entry);
+                }
+                DjvuWriterMessage::SetOutline(items) => {
+                    outline = items.into_iter().map(ManifestOutlineEntry::from).collect();
                 }
                 DjvuWriterMessage::Finalize => {
                     if entries.len() != total_pages {
@@ -1030,6 +1066,7 @@ pub fn spawn_djvu_writer_actor(
                         dpi,
                         slices: Some(slices),
                         bg_subsample,
+                        outline,
                         pages: entries.into_values().collect(),
                     };
 

@@ -181,6 +181,19 @@ pub struct PreparedImageOpacity {
     pub box_filter: bool,
 }
 
+/// A native-resolution grayscale opacity plane decoded from a one-bit image
+/// `/SMask`.  This is intentionally narrower than the general image decode
+/// seam: callers can preserve the encoded mask bytes separately while using
+/// these samples for analysis or background cleanup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedBilevelSmask {
+    pub width: u32,
+    pub height: u32,
+    pub stride: usize,
+    /// Tight Gray8 opacity, top-down: 0 is transparent and 255 is opaque.
+    pub opacity: Arc<[u8]>,
+}
+
 /// One exact anti-aliased path-clip mask over a bounded device rectangle.
 #[derive(Debug, Clone)]
 pub struct PreparedImageClip {
@@ -1123,6 +1136,109 @@ impl CpuBackend {
             ),
             shared_prepared_gpu_pages: Arc::new(SharedPreparedGpuPageCache::default()),
         }
+    }
+
+    /// Decode a codec-retained one-bit JBIG2 image `/SMask` without rendering
+    /// its base image. The PDF `/Decode` polarity is applied while expanding
+    /// the packed samples, yielding a native-grid opacity plane. Unsupported
+    /// or malformed inputs decline with `Ok(None)` so document processing can
+    /// use its ordinary per-page fallback; cancellation remains an error.
+    pub fn decode_bilevel_jbig2_smask(
+        &self,
+        smask: &pdf_page_ir::ImageSMask,
+        limits: &RenderLimits,
+    ) -> Result<Option<DecodedBilevelSmask>, RenderError> {
+        use pdf_image::{
+            DecodeParameters, DecodedFormat, ImageDescriptor, ImageError, StreamFilter,
+        };
+
+        if limits
+            .cancellation
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            return Err(RenderError::Cancelled);
+        }
+        if smask.bits_per_component != 1
+            || smask.codec != Some(pdf_page_ir::ImageCodecKind::Jbig2)
+            || smask.width == 0
+            || smask.height == 0
+        {
+            return Ok(None);
+        }
+        let Some(data) = smask.codec_data.as_deref().filter(|data| !data.is_empty()) else {
+            return Ok(None);
+        };
+        let decode_inverted = match smask.decode.as_deref() {
+            None => false,
+            Some([[lo, hi]]) if *lo == 0.0 && *hi == 1.0 => false,
+            Some([[lo, hi]]) if *lo == 1.0 && *hi == 0.0 => true,
+            _ => return Ok(None),
+        };
+        let Some(codec) = self.options.codecs.get(StreamFilter::Jbig2) else {
+            return Ok(None);
+        };
+        let decode_limits = image_decode_limits(limits);
+        let descriptor = ImageDescriptor {
+            width: smask.width,
+            height: smask.height,
+            bits_per_component: 1,
+            color_space: Some(pdf_color::ColorSpaceDesc {
+                family: pdf_color::ColorSpaceFamily::DeviceGray,
+                components: 1,
+                object: None,
+            }),
+            is_mask: true,
+            interpolate: false,
+            filters: vec![StreamFilter::Jbig2],
+            object: None,
+        };
+        let params = DecodeParameters {
+            jbig2_globals: smask
+                .codec_parms
+                .as_ref()
+                .and_then(|parms| parms.jbig2_globals.clone()),
+            ..DecodeParameters::default()
+        };
+        let decoded = match codec.decode(data, &descriptor, &params, &decode_limits) {
+            Ok(decoded) => decoded,
+            Err(ImageError::Cancelled) => return Err(RenderError::Cancelled),
+            Err(_) => return Ok(None),
+        };
+        if decoded.format != DecodedFormat::Mono1
+            || decoded.validate(&decode_limits).is_err()
+            || decoded.width != smask.width
+            || decoded.height != smask.height
+        {
+            return Ok(None);
+        }
+
+        let width = decoded.width as usize;
+        let height = decoded.height as usize;
+        let Some(len) = width.checked_mul(height) else {
+            return Ok(None);
+        };
+        if len as u64 > decode_limits.max_output_bytes {
+            return Ok(None);
+        }
+        let mut opacity = Vec::with_capacity(len);
+        for y in 0..height {
+            if y & 0xff == 0 && decode_limits.is_cancelled() {
+                return Err(RenderError::Cancelled);
+            }
+            let row = &decoded.data[y * decoded.stride..y * decoded.stride + width.div_ceil(8)];
+            for x in 0..width {
+                let sample_is_one = row[x / 8] & (0x80 >> (x & 7)) != 0;
+                let opaque = sample_is_one ^ decode_inverted;
+                opacity.push(if opaque { 255 } else { 0 });
+            }
+        }
+        Ok(Some(DecodedBilevelSmask {
+            width: decoded.width,
+            height: decoded.height,
+            stride: width,
+            opacity: Arc::from(opacity),
+        }))
     }
 
     /// Features the rasterizer implements today. Grows phase by phase; the
@@ -2134,6 +2250,62 @@ impl RenderBackend for CpuBackend {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    const JBIG2_L_12X5: &[u8] = &[
+        0x00, 0x00, 0x00, 0x01, 0x30, 0x00, 0x01, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x0c,
+        0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x02, 0x26, 0x00, 0x01, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x0c,
+        0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+        0xff, 0xfd, 0xff, 0x02, 0xfe, 0xfe, 0xfe, 0xd2, 0x47, 0xc5, 0xc3, 0x1b, 0xff, 0xff, 0xac,
+    ];
+
+    fn jbig2_smask(decode: Option<[[f32; 2]; 1]>) -> pdf_page_ir::ImageSMask {
+        pdf_page_ir::ImageSMask {
+            width: 12,
+            height: 5,
+            bits_per_component: 1,
+            decode: decode.map(|pairs| Arc::from(pairs.as_slice())),
+            samples: Arc::from([]),
+            codec: Some(pdf_page_ir::ImageCodecKind::Jbig2),
+            codec_data: Some(Arc::from(JBIG2_L_12X5)),
+            codec_parms: None,
+        }
+    }
+
+    #[test]
+    fn standalone_jbig2_smask_decode_applies_pdf_opacity_polarity() {
+        let backend = CpuBackend::default();
+        let normal = backend
+            .decode_bilevel_jbig2_smask(&jbig2_smask(None), &RenderLimits::default())
+            .unwrap()
+            .unwrap();
+        let inverted = backend
+            .decode_bilevel_jbig2_smask(&jbig2_smask(Some([[1.0, 0.0]])), &RenderLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!((normal.width, normal.height, normal.stride), (12, 5, 12));
+        assert_eq!(normal.opacity[0], 0, "black JBIG2 code becomes sample zero");
+        assert_eq!(normal.opacity[1], 255);
+        assert!(
+            normal
+                .opacity
+                .iter()
+                .zip(inverted.opacity.iter())
+                .all(|(&a, &b)| a == 255 - b)
+        );
+    }
+
+    #[test]
+    fn standalone_jbig2_smask_decode_declines_malformed_data() {
+        let mut smask = jbig2_smask(None);
+        smask.codec_data = Some(Arc::from(&b"not jbig2"[..]));
+        assert!(
+            CpuBackend::default()
+                .decode_bilevel_jbig2_smask(&smask, &RenderLimits::default())
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn image_limits_tighten_defaults_and_share_cancellation() {

@@ -5,12 +5,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use pdf_content::PageCompiler;
 use pdf_document::{DocumentLimits, DocumentSnapshot, PageIndex, ParseContext};
-use pdf_page_ir::{CompiledPage, DeviceRect, DeviceSize, Matrix, PageFeatures};
+use pdf_page_ir::{
+    BlendMode, CompiledPage, DeviceRect, DeviceSize, DisplayOp, ImageCodecKind, ImageSMask, Matrix,
+    PageFeatures, Point,
+};
 use pdf_render_api::{
     AnnotationMode, Background, OutputFormat, OutputResidency, PageTransform, RenderColorPolicy,
     RenderLimits, RenderQuality, RenderRequest,
 };
-use pdf_render_cpu::{CpuBackend, CpuBackendOptions, CpuWorkerContext};
+use pdf_render_cpu::{CpuBackend, CpuBackendOptions, CpuWorkerContext, DecodedBilevelSmask};
 
 use crate::intake::source;
 
@@ -272,6 +275,28 @@ pub struct PageRasterProducts {
     pub ocr: Option<RasterPlane>,
 }
 
+/// Which decoded JBIG2 sample value the output stencil must paint. An image
+/// `/SMask` uses 1 as opaque, while `/ImageMask` uses 0 as paint, so the usual
+/// source `/Decode [0 1]` becomes an output stencil `/Decode [1 0]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Jbig2StencilPolarity {
+    PaintZero,
+    PaintOne,
+}
+
+/// Source-preserving foreground text plane for a conservatively qualified MRC
+/// page. Encoded bytes stay authoritative; `working_coverage` is a separate
+/// Lanczos3-resized opacity plane used only by processing and analysis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreservedJbig2Smask {
+    pub page_data: Arc<[u8]>,
+    pub global_data: Arc<[u8]>,
+    pub native_width: u32,
+    pub native_height: u32,
+    pub stencil_polarity: Jbig2StencilPolarity,
+    pub working_coverage: GraySurface,
+}
+
 /// Per-document immutable renderer state.
 #[derive(Debug)]
 pub struct RenderSession {
@@ -492,12 +517,197 @@ impl RenderSession {
         Ok(PageRasterProducts { base, regions, ocr })
     }
 
+    /// Return the native JBIG2 `/SMask` payload plus a target-grid working
+    /// opacity plane when this compiled page matches Lege's strict MRC shape.
+    /// Any structural or decode mismatch is a normal `None` and leaves the
+    /// caller free to run the existing raster/binarization path for that page.
+    pub fn preserved_jbig2_smask(
+        &self,
+        page: &Arc<CompiledDocumentPage>,
+        target_width: u32,
+        target_height: u32,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Option<PreservedJbig2Smask>, ReadError> {
+        if target_width == 0 || target_height == 0 {
+            return Err(ReadError::InvalidRasterProduct(
+                "preserved mask target dimensions must be non-zero",
+            ));
+        }
+        let Some(candidate) = qualifying_jbig2_smask(&page.raster) else {
+            return Ok(None);
+        };
+        let limits = RenderLimits {
+            cancellation: cancellation.map(|token| token.0.clone()),
+            ..RenderLimits::default()
+        };
+        let decoded = self
+            .backend
+            .decode_bilevel_jbig2_smask(&candidate.smask, &limits)
+            .map_err(|error| ReadError::Render {
+                page: page.page_index,
+                message: format!("JBIG2 SMask decode failed: {error}"),
+            })?;
+        let Some(decoded) = decoded else {
+            return Ok(None);
+        };
+        let working_coverage = resize_smask_coverage(decoded, target_width, target_height)
+            .ok_or_else(|| ReadError::Render {
+                page: page.page_index,
+                message: "JBIG2 SMask decoder returned a truncated opacity plane".to_string(),
+            })?;
+        Ok(Some(PreservedJbig2Smask {
+            page_data: candidate
+                .smask
+                .codec_data
+                .clone()
+                .expect("qualified payload"),
+            global_data: candidate
+                .smask
+                .codec_parms
+                .as_ref()
+                .and_then(|parms| parms.jbig2_globals.clone())
+                .unwrap_or_else(|| Arc::from([])),
+            native_width: candidate.smask.width,
+            native_height: candidate.smask.height,
+            stencil_polarity: candidate.stencil_polarity,
+            working_coverage,
+        }))
+    }
+
     fn page_out_of_range(&self, page: u32) -> ReadError {
         ReadError::PageOutOfRange {
             page,
             page_count: self.page_count(),
         }
     }
+}
+
+fn resize_smask_coverage(
+    decoded: DecodedBilevelSmask,
+    target_width: u32,
+    target_height: u32,
+) -> Option<GraySurface> {
+    if decoded.stride != decoded.width as usize || target_width == 0 || target_height == 0 {
+        return None;
+    }
+    let native =
+        image::GrayImage::from_raw(decoded.width, decoded.height, decoded.opacity.to_vec())?;
+    let resized = if decoded.width == target_width && decoded.height == target_height {
+        native
+    } else {
+        image::imageops::resize(
+            &native,
+            target_width,
+            target_height,
+            image::imageops::FilterType::Lanczos3,
+        )
+    };
+    Some(GraySurface {
+        width: target_width,
+        height: target_height,
+        stride: target_width as usize,
+        pixels: Arc::from(resized.into_raw()),
+    })
+}
+
+#[derive(Clone)]
+struct Jbig2SmaskCandidate {
+    smask: Arc<ImageSMask>,
+    stencil_polarity: Jbig2StencilPolarity,
+}
+
+fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
+    if page.bounds.rotate != 0 {
+        return None;
+    }
+    let mut ctm = Matrix::IDENTITY;
+    let mut stack = Vec::new();
+    let mut candidate = None;
+    let mut image_draws = 0usize;
+
+    for op in page.operations.iter() {
+        match op {
+            DisplayOp::Save => stack.push(ctm),
+            DisplayOp::Restore => ctm = stack.pop()?,
+            DisplayOp::ConcatTransform(matrix) => ctm = matrix.then(ctm),
+            DisplayOp::BeginPaintOrigin(_) | DisplayOp::EndPaintOrigin => {}
+            DisplayOp::DrawGlyphRun { run, .. }
+                if page.glyph_runs.get(run.index())?.render_mode == 3 => {}
+            DisplayOp::DrawImage {
+                image,
+                transform,
+                alpha,
+                blend,
+                ..
+            } => {
+                image_draws += 1;
+                let image = page.images.get(image.index())?;
+                let placement = transform.then(ctm);
+                if *blend != BlendMode::Normal
+                    || (*alpha - 1.0).abs() > f32::EPSILON
+                    || !is_unflipped_full_page(placement, page)
+                    || image.is_stencil
+                    || image.lowering_degraded
+                {
+                    return None;
+                }
+                if let Some(smask) = image.smask.as_ref() {
+                    if candidate.is_some()
+                        || image.mask.is_some()
+                        || image.smask_in_data != 0
+                        || smask.width != image.width
+                        || smask.height != image.height
+                        || smask.bits_per_component != 1
+                        || smask.codec != Some(ImageCodecKind::Jbig2)
+                        || !smask.samples.is_empty()
+                        || smask.codec_data.as_deref().is_none_or(<[u8]>::is_empty)
+                    {
+                        return None;
+                    }
+                    let stencil_polarity = match smask.decode.as_deref() {
+                        None => Jbig2StencilPolarity::PaintOne,
+                        Some([[lo, hi]]) if *lo == 0.0 && *hi == 1.0 => {
+                            Jbig2StencilPolarity::PaintOne
+                        }
+                        Some([[lo, hi]]) if *lo == 1.0 && *hi == 0.0 => {
+                            Jbig2StencilPolarity::PaintZero
+                        }
+                        _ => return None,
+                    };
+                    candidate = Some(Jbig2SmaskCandidate {
+                        smask: Arc::clone(smask),
+                        stencil_polarity,
+                    });
+                } else if image.mask.is_some() || image.smask_in_data != 0 {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    if !stack.is_empty() || image_draws == 0 {
+        return None;
+    }
+    candidate
+}
+
+fn is_unflipped_full_page(matrix: Matrix, page: &CompiledPage) -> bool {
+    if !matrix.is_finite()
+        || matrix.a <= 0.0
+        || matrix.d <= 0.0
+        || matrix.b.abs() > 1e-7
+        || matrix.c.abs() > 1e-7
+    {
+        return false;
+    }
+    let p0 = matrix.apply(Point { x: 0.0, y: 0.0 });
+    let p1 = matrix.apply(Point { x: 1.0, y: 1.0 });
+    let crop = page.bounds.crop;
+    let tolerance = (crop.width().abs().max(crop.height().abs()) * 1e-5).max(1e-4);
+    (p0.x - crop.x0).abs() <= tolerance
+        && (p0.y - crop.y0).abs() <= tolerance
+        && (p1.x - crop.x1).abs() <= tolerance
+        && (p1.y - crop.y1).abs() <= tolerance
 }
 
 fn page_to_device_matrix(page: &CompiledPage, output_width: u32, output_height: u32) -> Matrix {
@@ -561,4 +771,193 @@ fn product_matrix(page: &CompiledPage, product: &RasterProduct) -> Matrix {
     matrix.d *= sy;
     matrix.f = (matrix.f - crop.y as f64) * sy;
     matrix
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use pdf_page_ir::{
+        CodecParms, ImageColorSpace, ImageId, ImageIr, InterpolationMode, PageBounds, PaintId,
+        Rect, ResourceKey,
+    };
+
+    fn eligible_page() -> CompiledPage {
+        let smask = Arc::new(ImageSMask {
+            width: 12,
+            height: 5,
+            bits_per_component: 1,
+            decode: None,
+            samples: Arc::from([]),
+            codec: Some(ImageCodecKind::Jbig2),
+            codec_data: Some(Arc::from(&b"encoded mask"[..])),
+            codec_parms: Some(CodecParms {
+                jbig2_globals: Some(Arc::from(&b"encoded globals"[..])),
+                ..CodecParms::default()
+            }),
+        });
+        let image = ImageIr {
+            key: ResourceKey {
+                object_number: 1,
+                generation: 0,
+                variant: 0,
+            },
+            width: 12,
+            height: 5,
+            is_stencil: false,
+            interpolation: InterpolationMode::Nearest,
+            soft_mask: None,
+            bits_per_component: 8,
+            color_space: ImageColorSpace::Gray,
+            decode: None,
+            samples: Some(Arc::from(&b"base"[..])),
+            codec: None,
+            codec_data: None,
+            codec_parms: None,
+            smask: Some(smask),
+            mask: None,
+            smask_in_data: 0,
+            lowering_degraded: false,
+        };
+        let mut page = CompiledPage::empty(PageBounds {
+            crop: Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 120.0,
+                y1: 50.0,
+            },
+            rotate: 0,
+        });
+        page.images = Arc::from([image]);
+        page.operations = Arc::from([
+            DisplayOp::Save,
+            DisplayOp::ConcatTransform(Matrix::scale(120.0, 50.0)),
+            DisplayOp::DrawImage {
+                image: ImageId(0),
+                paint: PaintId(0),
+                transform: Matrix::IDENTITY,
+                alpha: 1.0,
+                blend: BlendMode::Normal,
+            },
+            DisplayOp::Restore,
+        ]);
+        page
+    }
+
+    #[test]
+    fn qualifies_only_native_full_page_jbig2_smask() {
+        let page = eligible_page();
+        let candidate = qualifying_jbig2_smask(&page).expect("eligible mask");
+        assert_eq!(
+            candidate.smask.codec_data.as_deref(),
+            Some(&b"encoded mask"[..])
+        );
+        assert_eq!(
+            candidate
+                .smask
+                .codec_parms
+                .as_ref()
+                .and_then(|parms| parms.jbig2_globals.as_deref()),
+            Some(&b"encoded globals"[..])
+        );
+        assert_eq!(candidate.stencil_polarity, Jbig2StencilPolarity::PaintOne);
+
+        let mut maskless = page.clone();
+        let maskless_image = &mut Arc::make_mut(&mut maskless.images)[0];
+        maskless_image.smask = None;
+        maskless_image.codec = Some(ImageCodecKind::Dct);
+        maskless_image.codec_data = Some(Arc::from(&b"jpeg"[..]));
+        assert!(qualifying_jbig2_smask(&maskless).is_none());
+
+        let mut non_jbig2 = page.clone();
+        let smask = Arc::make_mut(&mut non_jbig2.images)[0]
+            .smask
+            .as_mut()
+            .unwrap();
+        Arc::make_mut(smask).codec = Some(ImageCodecKind::CcittFax);
+        assert!(qualifying_jbig2_smask(&non_jbig2).is_none());
+
+        let mut grayscale = page.clone();
+        let smask = Arc::make_mut(&mut grayscale.images)[0]
+            .smask
+            .as_mut()
+            .unwrap();
+        let smask = Arc::make_mut(smask);
+        smask.bits_per_component = 8;
+        smask.codec = None;
+        smask.codec_data = None;
+        smask.samples = Arc::from(&b"gray"[..]);
+        assert!(qualifying_jbig2_smask(&grayscale).is_none());
+
+        let mut image_mask = page.clone();
+        Arc::make_mut(&mut image_mask.images)[0].is_stencil = true;
+        assert!(qualifying_jbig2_smask(&image_mask).is_none());
+
+        let mut in_data = page.clone();
+        Arc::make_mut(&mut in_data.images)[0].smask_in_data = 1;
+        assert!(qualifying_jbig2_smask(&in_data).is_none());
+
+        let mut explicit_mask = page;
+        Arc::make_mut(&mut explicit_mask.images)[0].mask =
+            Some(pdf_page_ir::ImageMask::ColorKey(Arc::from([[0, 0]])));
+        assert!(qualifying_jbig2_smask(&explicit_mask).is_none());
+    }
+
+    #[test]
+    fn source_decode_maps_to_opposite_stencil_polarity() {
+        let mut page = eligible_page();
+        {
+            let smask = Arc::make_mut(&mut page.images)[0].smask.as_mut().unwrap();
+            Arc::make_mut(smask).decode = Some(Arc::from([[1.0, 0.0]]));
+        }
+        assert_eq!(
+            qualifying_jbig2_smask(&page)
+                .expect("inverted source decode remains representable")
+                .stencil_polarity,
+            Jbig2StencilPolarity::PaintZero
+        );
+
+        let smask = Arc::make_mut(&mut page.images)[0].smask.as_mut().unwrap();
+        Arc::make_mut(smask).decode = Some(Arc::from([[0.2, 0.8]]));
+        assert!(qualifying_jbig2_smask(&page).is_none());
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unsupported_placement() {
+        let page = eligible_page();
+        let mut duplicate = page.clone();
+        let mut operations = duplicate.operations.to_vec();
+        operations.splice(3..3, duplicate.operations[0..3].iter().cloned());
+        duplicate.operations = Arc::from(operations);
+        assert!(qualifying_jbig2_smask(&duplicate).is_none());
+
+        let mut rotated = page.clone();
+        rotated.bounds.rotate = 90;
+        assert!(qualifying_jbig2_smask(&rotated).is_none());
+
+        let mut offset = page;
+        Arc::make_mut(&mut offset.operations)[1] =
+            DisplayOp::ConcatTransform(Matrix::scale(119.0, 50.0));
+        assert!(qualifying_jbig2_smask(&offset).is_none());
+    }
+
+    #[test]
+    fn lanczos_working_plane_preserves_fractional_edge_coverage() {
+        let decoded = DecodedBilevelSmask {
+            width: 2,
+            height: 2,
+            stride: 2,
+            opacity: Arc::from([0, 255, 255, 0]),
+        };
+        let working = resize_smask_coverage(decoded, 7, 7).expect("valid coverage");
+        assert_eq!((working.width, working.height, working.stride), (7, 7, 7));
+        assert!(
+            working
+                .pixels
+                .iter()
+                .any(|&sample| sample > 0 && sample < 255),
+            "resized analysis mask must retain antialiased edge coverage"
+        );
+    }
 }

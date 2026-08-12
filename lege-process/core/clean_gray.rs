@@ -671,6 +671,49 @@ pub fn mrc_background(
     (out, ow, oh)
 }
 
+/// Produce an MRC background using a continuous source-mask opacity plane.
+/// Unlike [`mrc_background`], this never derives or consumes a thresholded
+/// scan mask: each cleaned pixel is blended toward paper white by its
+/// Lanczos-resampled source `/SMask` coverage before box downsampling.
+pub fn mrc_background_with_coverage(
+    cleaned: &[u8],
+    coverage: &[u8],
+    width: usize,
+    height: usize,
+    subsample: usize,
+) -> (Vec<u8>, usize, usize) {
+    debug_assert_eq!(cleaned.len(), width.saturating_mul(height));
+    debug_assert_eq!(coverage.len(), cleaned.len());
+    let sub = subsample.max(1);
+    let ow = width.div_ceil(sub);
+    let oh = height.div_ceil(sub);
+    let mut out = vec![0u8; ow * oh];
+    out.par_chunks_mut(ow).enumerate().for_each(|(by, row)| {
+        for (bx, dst) in row.iter_mut().enumerate() {
+            let (mut sum, mut n) = (0u32, 0u32);
+            for dy in 0..sub {
+                let y = by * sub + dy;
+                if y >= height {
+                    break;
+                }
+                for dx in 0..sub {
+                    let x = bx * sub + dx;
+                    if x >= width {
+                        break;
+                    }
+                    let idx = y * width + x;
+                    let alpha = u32::from(coverage[idx]);
+                    let value = (u32::from(cleaned[idx]) * (255 - alpha) + 255 * alpha + 127) / 255;
+                    sum += value;
+                    n += 1;
+                }
+            }
+            *dst = (sum / n.max(1)) as u8;
+        }
+    });
+    (out, ow, oh)
+}
+
 fn estimate_background(
     gray: &[u8],
     width: usize,
@@ -806,6 +849,15 @@ fn window_max(src: &[u8], w: usize, h: usize, radius: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_coverage_whitens_without_thresholding() {
+        let cleaned = [10, 20, 30, 40];
+        let coverage = [0, 85, 170, 255];
+        let (out, width, height) = mrc_background_with_coverage(&cleaned, &coverage, 4, 1, 1);
+        assert_eq!((width, height), (4, 1));
+        assert_eq!(out, [10, 98, 180, 255]);
+    }
 
     #[test]
     fn flat_white_stays_white() {

@@ -323,13 +323,13 @@ mod tests {
     }
 
     #[test]
-    fn layout_text_format_uses_image_processing_setting() {
+    fn layout_text_format_pins_jbig2_generic_for_sheet_music() {
         let mut options = ProcessingOptions::new();
         options.layout_analysis = true;
         options.compression_type = CompressionType::Jbig2;
 
         options.image_processing_type = ImageProcessingType::Original;
-        assert_eq!(options.effective_text_format(), "ccitt4");
+        assert_eq!(options.effective_text_format(), "jbig2");
 
         options.image_processing_type = ImageProcessingType::Dithered;
         assert_eq!(options.effective_text_format(), "jbig2");

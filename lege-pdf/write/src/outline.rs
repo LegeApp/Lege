@@ -10,7 +10,7 @@
 use std::io::Write;
 
 use crate::pages::WrittenPageSlots;
-use crate::serialize::{write_i64, write_literal_string, write_name, write_real, write_ref};
+use crate::serialize::{write_i64, write_name, write_real, write_ref, write_text_string};
 use crate::sink::PdfSink;
 use crate::types::{ObjectId, Result};
 
@@ -145,30 +145,6 @@ fn write_nodes<W: Write>(sink: &mut PdfSink<W>, nodes: &[Node], parent: ObjectId
 /// Total number of descendants (open tree), used for `/Count`.
 fn descendants(node: &Node) -> i64 {
     node.children.iter().map(|c| 1 + descendants(c)).sum()
-}
-
-/// Write a PDF text string: a literal for ASCII, else a UTF-16BE hex string
-/// with a byte-order mark.
-fn write_text_string(out: &mut Vec<u8>, s: &str) {
-    if s.is_ascii() {
-        write_literal_string(out, s.as_bytes());
-    } else {
-        out.push(b'<');
-        push_hex(out, 0xFE);
-        push_hex(out, 0xFF);
-        for u in s.encode_utf16() {
-            let [hi, lo] = u.to_be_bytes();
-            push_hex(out, hi);
-            push_hex(out, lo);
-        }
-        out.push(b'>');
-    }
-}
-
-fn push_hex(out: &mut Vec<u8>, b: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    out.push(HEX[(b >> 4) as usize]);
-    out.push(HEX[(b & 0x0f) as usize]);
 }
 
 fn key(d: &mut Vec<u8>, k: &[u8]) {

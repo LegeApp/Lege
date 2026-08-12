@@ -38,6 +38,7 @@ pub struct DocumentWriter<W: Write> {
     saw_text: bool,
     profile: PdfProfile,
     meta: DocumentMeta,
+    metadata_explicit: bool,
     embedded_font: Option<EmbeddedFont>,
     /// Memoized Type0 font id (written on the first text-bearing page).
     font_id: Option<ObjectId>,
@@ -68,6 +69,7 @@ impl<W: Write> DocumentWriter<W> {
                 profile,
                 ..Default::default()
             },
+            metadata_explicit: false,
             embedded_font: None,
             font_id: None,
             helvetica_id: None,
@@ -89,6 +91,7 @@ impl<W: Write> DocumentWriter<W> {
     pub fn set_metadata(&mut self, mut meta: DocumentMeta) {
         meta.profile = self.profile;
         self.meta = meta;
+        self.metadata_explicit = true;
     }
 
     /// Provide the outline (bookmark) tree, keyed by output page index.
@@ -193,13 +196,15 @@ impl<W: Write> DocumentWriter<W> {
             write_outline(&mut self.sink, &self.slots, &items)?
         };
 
-        // PDF/A metadata (only when the profile asks for it).
-        let (output_intent, info) = if self.profile.wants_pdfa_metadata() {
-            let oi = write_output_intent(&mut self.sink)?;
-            let info = write_info(&mut self.sink, &self.meta)?;
-            (Some(oi), Some(info))
+        let output_intent = if self.profile.wants_pdfa_metadata() {
+            Some(write_output_intent(&mut self.sink)?)
         } else {
-            (None, None)
+            None
+        };
+        let info = if self.profile.wants_pdfa_metadata() || self.metadata_explicit {
+            Some(write_info(&mut self.sink, &self.meta)?)
+        } else {
+            None
         };
 
         let catalog = write_catalog(
@@ -312,6 +317,29 @@ mod tests {
                 total: 2
             }
         ));
+    }
+
+    #[test]
+    fn pdf17_writes_info_only_when_identity_was_explicitly_set() {
+        let mut plain = DocumentWriter::new(Vec::new(), 1).unwrap();
+        plain.add_page(&jpeg_page(0)).unwrap();
+        let plain = String::from_utf8_lossy(&plain.finalize().unwrap()).into_owned();
+        assert!(!plain.contains("/Info "));
+
+        let mut identified = DocumentWriter::new(Vec::new(), 1).unwrap();
+        identified.set_metadata(DocumentMeta {
+            title: "The Book".to_string(),
+            author: "Ada Lovelace".to_string(),
+            subject: String::new(),
+            keywords: String::new(),
+            ..Default::default()
+        });
+        identified.add_page(&jpeg_page(0)).unwrap();
+        let identified = String::from_utf8_lossy(&identified.finalize().unwrap()).into_owned();
+        assert!(identified.contains("/Info "));
+        assert!(identified.contains("/Title (The Book)"));
+        assert!(identified.contains("/Author (Ada Lovelace)"));
+        assert!(!identified.contains("/Subject "));
     }
 
     #[test]

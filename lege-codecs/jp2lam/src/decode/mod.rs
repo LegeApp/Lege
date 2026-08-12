@@ -375,9 +375,9 @@ impl Jp2Decoder {
             ));
         }
         let bpp = target.format.bytes_per_pixel();
-        let min_stride = (target.width as usize)
-            .checked_mul(bpp)
-            .ok_or_else(|| crate::Jp2LamError::InvalidInput("decode_into stride overflow".into()))?;
+        let min_stride = (target.width as usize).checked_mul(bpp).ok_or_else(|| {
+            crate::Jp2LamError::InvalidInput("decode_into stride overflow".into())
+        })?;
         if target.stride < min_stride {
             return Err(crate::Jp2LamError::InvalidInput(format!(
                 "decode_into stride {} < minimum {min_stride}",
@@ -412,9 +412,7 @@ impl Jp2Decoder {
         }
         let Self { scratch, pool } = self;
         let pool = &pool.as_ref().expect("decode pool was initialized").1;
-        pool.install(|| {
-            decode_jp2_into_with_scratch(bytes, &into_request, target, scratch)
-        })
+        pool.install(|| decode_jp2_into_with_scratch(bytes, &into_request, target, scratch))
     }
 }
 
@@ -3058,35 +3056,39 @@ mod tests {
         let mut decoder = Jp2Decoder::new();
         let request = DecodeRequest::default();
         let mut tiny = [0u8; 4];
-        assert!(decoder
-            .decode_into(
-                &encoded,
-                &request,
-                DecodeTarget {
-                    data: &mut tiny,
-                    width,
-                    height,
-                    stride: width as usize * 3,
-                    format: DecodeOutputFormat::Rgb8,
-                    premultiplied: false,
-                },
-            )
-            .is_err());
+        assert!(
+            decoder
+                .decode_into(
+                    &encoded,
+                    &request,
+                    DecodeTarget {
+                        data: &mut tiny,
+                        width,
+                        height,
+                        stride: width as usize * 3,
+                        format: DecodeOutputFormat::Rgb8,
+                        premultiplied: false,
+                    },
+                )
+                .is_err()
+        );
         let mut buf = vec![0u8; (width * height * 3) as usize];
-        assert!(decoder
-            .decode_into(
-                &encoded,
-                &request,
-                DecodeTarget {
-                    data: &mut buf,
-                    width,
-                    height,
-                    stride: width as usize * 3,
-                    format: DecodeOutputFormat::NativePlanarI32,
-                    premultiplied: false,
-                },
-            )
-            .is_err());
+        assert!(
+            decoder
+                .decode_into(
+                    &encoded,
+                    &request,
+                    DecodeTarget {
+                        data: &mut buf,
+                        width,
+                        height,
+                        stride: width as usize * 3,
+                        format: DecodeOutputFormat::NativePlanarI32,
+                        premultiplied: false,
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]

@@ -20,8 +20,8 @@ use crate::worker_process::{WorkerProcessingStatus, WorkerProgressUpdate};
 use crate::appearance::{self, Rgb};
 use crate::colors::{
     active_bg, app_bg, border, border_focus, card_bg, control_bg, focus_bg, hover_bg, info_bg,
-    inverse_surface, inverse_surface_secondary, inverse_surface_tertiary, muted_fg,
-    panel_bg, progress_track_bg, selected_bg, text_fg,
+    inverse_surface, inverse_surface_secondary, inverse_surface_tertiary, muted_fg, panel_bg,
+    progress_track_bg, selected_bg, text_fg,
 };
 
 fn rgb(color: Rgb) -> Color {
@@ -772,16 +772,16 @@ fn rail_note_card(
         )
         .corner_radius(6.)
         .padding((8., 10., 8., 10.))
-                .width(Size::fill())
-                .child(
-                    rect().width(Size::fill()).child(
-                        paragraph()
-                            .width(Size::fill())
-                            .span(Span::new(text).font_size(font_size).color(foreground))
-                            .line_height(1.25)
-                            .max_lines(5),
-                    ),
-                )
+        .width(Size::fill())
+        .child(
+            rect().width(Size::fill()).child(
+                paragraph()
+                    .width(Size::fill())
+                    .span(Span::new(text).font_size(font_size).color(foreground))
+                    .line_height(1.25)
+                    .max_lines(5),
+            ),
+        )
         .into()
 }
 
@@ -1762,10 +1762,25 @@ fn PagesDeviceCard(
                     move |_| {
                         let mut s = state.write();
                         let enable = !s.options.use_ocr;
-                        s.options.use_ocr = enable;
-                        if !enable {
-                            s.options.make_epub_also = false;
-                        }
+                        s.options.set_use_ocr(enable);
+                    }
+                },
+            ),
+        ),
+        tooltip_wrap_at(
+            state,
+            TooltipArea::PagesDeviceCard,
+            GUI_TEXT.interactive.tooltips.automatic_toc.clone(),
+            AttachedPosition::Left,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.automatic_toc.clone(),
+                options.automatic_toc,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !s.options.automatic_toc;
+                        s.options.set_automatic_toc(enable);
                     }
                 },
             ),

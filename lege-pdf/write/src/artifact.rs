@@ -80,6 +80,9 @@ pub enum PdfImageResource {
         height: u32,
         globals: Option<SharedResourceId>,
         image_mask: bool,
+        /// For stencil masks, paint decoded sample 1 (`/Decode [1 0]`) rather
+        /// than decoded sample 0 (`/Decode [0 1]`). Ignored for opaque images.
+        image_mask_paints_one: bool,
     },
     /// CCITT Group 4 (T.6) bilevel.
     CcittGroup4 {
@@ -197,6 +200,7 @@ mod tests {
                     height: 10,
                     globals: Some(SharedResourceId(7)),
                     image_mask: false,
+                    image_mask_paints_one: false,
                 },
             }]),
             text_layer: None,

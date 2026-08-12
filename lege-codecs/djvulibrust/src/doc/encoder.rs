@@ -3,14 +3,11 @@
 //! This module handles the low-level encoding and assembly of DjVu documents.
 //! It is used internally by the public builder API and not exposed directly.
 
-use crate::doc::djvu_dir::{DjVmDir, File as DjVuFile, FileType};
-use crate::encode::jb2::{encoder::JB2Encoder, symbol_dict::SharedDict};
-use crate::iff::iff::IffWriter;
-// NAVM-related imports disabled for now - keep for future use
-// use crate::doc::djvu_dir::{Bookmark, DjVmNav};
-// use crate::iff::bs_byte_stream::bzz_compress;
-// use crate::iff::MemoryStream;
 use crate::Result;
+use crate::doc::djvu_dir::{DjVmDir, DjVmNav, File as DjVuFile, FileType};
+use crate::encode::jb2::{encoder::JB2Encoder, symbol_dict::SharedDict};
+use crate::iff::bs_byte_stream::bzz_compress;
+use crate::iff::iff::IffWriter;
 use byteorder::{BigEndian, WriteBytesExt};
 use std::io::Write;
 
@@ -54,7 +51,15 @@ impl DocumentEncoder {
         pages: &[Vec<u8>],
         dictionaries: &[std::sync::Arc<SharedDict>],
     ) -> Result<Vec<u8>> {
-        if dictionaries.is_empty() {
+        Self::assemble_pages_with_shared_dictionaries_and_navigation(pages, dictionaries, None)
+    }
+
+    pub fn assemble_pages_with_shared_dictionaries_and_navigation(
+        pages: &[Vec<u8>],
+        dictionaries: &[std::sync::Arc<SharedDict>],
+        navigation: Option<&DjVmNav>,
+    ) -> Result<Vec<u8>> {
+        if dictionaries.is_empty() && navigation.is_none() {
             return Self::assemble_pages(pages);
         }
 
@@ -80,7 +85,7 @@ impl DocumentEncoder {
         }
 
         let mut output = Vec::new();
-        Self::assemble_djvm_components(&mut output, &components)?;
+        Self::assemble_djvm_components(&mut output, &components, navigation)?;
         Ok(output)
     }
 
@@ -117,12 +122,13 @@ impl DocumentEncoder {
                 bytes,
             })
             .collect();
-        Self::assemble_djvm_components(writer, &components)
+        Self::assemble_djvm_components(writer, &components, None)
     }
 
     fn assemble_djvm_components(
         writer: &mut Vec<u8>,
         components: &[BundledComponent<'_>],
+        navigation: Option<&DjVmNav>,
     ) -> Result<()> {
         // Build cheap slice references, stripping the AT&T prefix where present.
         // No cloning — just pointer + length.
@@ -138,17 +144,24 @@ impl DocumentEncoder {
             })
             .collect();
 
-        // NAVM feature disabled for now - keep code for future use
-        // Create automatic navigation bookmarks for multi-page documents
-        // let navigation = Self::create_default_navigation(pages.len())?;
-        // let mut nav_stream = MemoryStream::new();
-        // navigation.encode(&mut nav_stream)?;
-        // let nav_raw = nav_stream.into_vec();
-        // BZZ-compress the navigation data as required by DjVu spec
-        // let nav_data = bzz_compress(&nav_raw, 100)
-        //     .map_err(|e| crate::DjvuError::EncodingError(format!("BZZ compress NAVM failed: {e}")))?;
-        // let nav_chunk_size = 8 + nav_data.len() + (nav_data.len() % 2);
-        let nav_chunk_size = 0; // NAVM disabled
+        let nav_data = if let Some(navigation) = navigation {
+            let mut raw = Vec::new();
+            navigation.encode(&mut raw)?;
+            if raw.is_empty() {
+                Vec::new()
+            } else {
+                bzz_compress(&raw, 100).map_err(|error| {
+                    crate::DjvuError::EncodingError(format!("BZZ compress NAVM failed: {error}"))
+                })?
+            }
+        } else {
+            Vec::new()
+        };
+        let nav_chunk_size = if nav_data.is_empty() {
+            0
+        } else {
+            8 + nav_data.len() + (nav_data.len() % 2)
+        };
 
         // Create directory and calculate offsets
         let dirm = DjVmDir::new();
@@ -254,16 +267,14 @@ impl DocumentEncoder {
             writer.write_u8(0)?; // padding
         }
 
-        // NAVM chunk disabled - keep code for future use
-        // Write NAVM chunk (automatic navigation bookmarks)
-        // if !nav_data.is_empty() {
-        //     writer.write_all(b"NAVM")?;
-        //     writer.write_u32::<BigEndian>(nav_data.len() as u32)?;
-        //     writer.write_all(&nav_data)?;
-        //     if nav_data.len() % 2 != 0 {
-        //         writer.write_u8(0)?; // padding
-        //     }
-        // }
+        if !nav_data.is_empty() {
+            writer.write_all(b"NAVM")?;
+            writer.write_u32::<BigEndian>(nav_data.len() as u32)?;
+            writer.write_all(&nav_data)?;
+            if nav_data.len() % 2 != 0 {
+                writer.write_u8(0)?;
+            }
+        }
 
         // Write page chunks with alignment
         let mut written_pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
@@ -279,23 +290,6 @@ impl DocumentEncoder {
 
         Ok(())
     }
-
-    // NAVM feature disabled - keep code for future use
-    // /// Creates default navigation structure with simple page bookmarks
-    // fn create_default_navigation(page_count: usize) -> Result<DjVmNav> {
-    //     let mut nav = DjVmNav::new();
-    //
-    //     for i in 0..page_count {
-    //         let bookmark = Bookmark {
-    //             title: format!("Page {}", i + 1),
-    //             dest: format!("#p{:04}.djvu", i + 1),
-    //             children: Vec::new(), // Leaf node (no children)
-    //         };
-    //         nav.bookmarks.push(bookmark);
-    //     }
-    //
-    //     Ok(nav)
-    // }
 }
 
 #[cfg(test)]
@@ -326,13 +320,24 @@ mod tests {
             )
             .unwrap();
 
-        let document =
-            DocumentEncoder::assemble_pages_with_shared_dictionaries(&[page], &[dictionary])
-                .unwrap();
+        let navigation = DjVmNav {
+            bookmarks: vec![crate::doc::Bookmark {
+                title: "Opening".to_string(),
+                dest: "#p0001.djvu".to_string(),
+                children: Vec::new(),
+            }],
+        };
+        let document = DocumentEncoder::assemble_pages_with_shared_dictionaries_and_navigation(
+            &[page],
+            &[dictionary],
+            Some(&navigation),
+        )
+        .unwrap();
 
         assert!(document.windows(4).any(|chunk| chunk == b"DJVI"));
         assert!(document.windows(4).any(|chunk| chunk == b"Djbz"));
         assert!(document.windows(4).any(|chunk| chunk == b"INCL"));
+        assert!(document.windows(4).any(|chunk| chunk == b"NAVM"));
         assert!(
             document
                 .windows(b"dict0001.iff".len())
@@ -355,6 +360,19 @@ mod tests {
                 ])
                 .output()
                 .unwrap();
+            if Command::new("djvused").arg("--help").output().is_ok() {
+                let outline = Command::new("djvused")
+                    .arg(&input)
+                    .args(["-e", "print-outline"])
+                    .output()
+                    .unwrap();
+                assert!(
+                    outline.status.success()
+                        && String::from_utf8_lossy(&outline.stdout).contains("Opening"),
+                    "djvused could not decode NAVM: {}",
+                    String::from_utf8_lossy(&outline.stderr)
+                );
+            }
             let _ = std::fs::remove_file(&input);
             let _ = std::fs::remove_file(&output);
             assert!(

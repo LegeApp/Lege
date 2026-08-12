@@ -403,6 +403,7 @@ struct CliOptions {
     layout_exclusion_pages: Option<String>, // --exclude-layout 1,3,7-10
     ocr: Option<bool>,                      // --ocr / --no-ocr
     ocr_mode: Option<OcrMode>,              // --ocr-mode fast|best / --best-ocr
+    auto_toc: bool,                         // --auto-toc
     slow_ocr_scale: Option<f32>,            // --best-ocr-scale N
     no_cover: bool,                         // --no-cover
     invert: bool,                           // --invert
@@ -793,6 +794,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
             "--best-ocr" => {
                 opts.ocr_mode = Some(OcrMode::Best);
                 opts.ocr = Some(true); // best OCR implies --ocr
+                i += 1;
+            }
+            "--auto-toc" => {
+                opts.auto_toc = true;
                 i += 1;
             }
             "--best-ocr-scale" => {
@@ -2052,6 +2057,7 @@ fn handle_simple_processing(
         pipeline_config.set_enable_layout_detection(false);
     }
     apply_ocr_options(&mut pipeline_config, &cli_opts);
+    pipeline_config.set_enable_auto_toc(cli_opts.auto_toc);
     if let Some(scale) = cli_opts.slow_ocr_scale {
         pipeline_config.set_slow_ocr_scale(scale);
     }

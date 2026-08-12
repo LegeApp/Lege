@@ -25,6 +25,87 @@ use crate::vision::runtime::memory_plan::ResidentMemoryPlan;
 
 const DUMMY_BIAS: &str = "__dummy_zero_bias__";
 
+/// Reduce a CTC output row on the device. Reading one 16-byte record per
+/// timestep replaces reading every class logit (18k+ classes for PP-OCR).
+const CTC_TOP2_WGSL: &str = r#"
+struct Params {
+    rows: u32,
+    classes: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+struct Top2 {
+    class_index: u32,
+    best_bits: u32,
+    second_bits: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<storage, read> logits: array<f32>;
+@group(0) @binding(1) var<storage, read_write> reduced: array<Top2>;
+@group(0) @binding(2) var<storage, read> params: Params;
+
+var<workgroup> group_best: array<f32, 256>;
+var<workgroup> group_second: array<f32, 256>;
+var<workgroup> group_index: array<u32, 256>;
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(workgroup_id) group_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+) {
+    let row = group_id.x;
+    if (row >= params.rows) {
+        return;
+    }
+    let base = row * params.classes;
+    var best = -3.402823466e+38;
+    var second = -3.402823466e+38;
+    var best_index = 0u;
+    for (var class_id = local_id.x; class_id < params.classes; class_id = class_id + 256u) {
+        let value = logits[base + class_id];
+        if (value > best) {
+            second = best;
+            best = value;
+            best_index = class_id;
+        } else if (value > second) {
+            second = value;
+        }
+    }
+    group_best[local_id.x] = best;
+    group_second[local_id.x] = second;
+    group_index[local_id.x] = best_index;
+    workgroupBarrier();
+
+    var stride = 128u;
+    loop {
+        if (local_id.x < stride) {
+            let other_best = group_best[local_id.x + stride];
+            let other_second = group_second[local_id.x + stride];
+            if (other_best > group_best[local_id.x]) {
+                group_second[local_id.x] = max(group_best[local_id.x], other_second);
+                group_best[local_id.x] = other_best;
+                group_index[local_id.x] = group_index[local_id.x + stride];
+            } else {
+                group_second[local_id.x] = max(group_second[local_id.x], other_best);
+            }
+        }
+        workgroupBarrier();
+        if (stride == 1u) {
+            break;
+        }
+        stride = stride / 2u;
+    }
+    if (local_id.x == 0u) {
+        reduced[row].class_index = group_index[0];
+        reduced[row].best_bits = bitcast<u32>(group_best[0]);
+        reduced[row].second_bits = bitcast<u32>(group_second[0]);
+        reduced[row]._pad = 0u;
+    }
+}
+"#;
+
 fn build_pipeline_for_shader(
     device: &crate::vision::wgpu::Device,
     wgsl: &'static str,
@@ -107,6 +188,34 @@ pub(crate) struct CompiledGraph {
     // first session for a document pays the shader-compilation cost.
     pipeline_cache: HashMap<&'static str, Arc<crate::vision::wgpu::ComputePipeline>>,
     bgl_cache: HashMap<&'static str, Arc<crate::vision::wgpu::BindGroupLayout>>,
+    compact_ctc: Option<CompactCtcBuffers>,
+}
+
+struct CompactCtcBuffers {
+    batch: usize,
+    timesteps: usize,
+    classes: usize,
+    rows: usize,
+    bytes: usize,
+    output: crate::vision::wgpu::Buffer,
+    readback: crate::vision::wgpu::Buffer,
+    _params: crate::vision::wgpu::Buffer,
+    bind_group: crate::vision::wgpu::BindGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CompactTop2 {
+    pub(crate) class_index: usize,
+    pub(crate) best: f32,
+    pub(crate) second: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CompactCtcOutput {
+    pub(crate) batch: usize,
+    pub(crate) timesteps: usize,
+    pub(crate) classes: usize,
+    pub(crate) rows: Vec<CompactTop2>,
 }
 
 pub(crate) struct SubmittedRun<'a> {
@@ -356,6 +465,7 @@ impl CompiledGraph {
                         .or_insert(spec.n_read_inputs);
                 }
             }
+            unique_shaders.insert(CTC_TOP2_WGSL, 1);
 
             let device: &crate::vision::wgpu::Device = &ctx.device;
             let compiled: Vec<(
@@ -612,6 +722,94 @@ impl CompiledGraph {
             output_bytes.push(bytes);
         }
 
+        let compact_ctc = if output_shapes.len() == 1 {
+            match output_shapes[0].as_slice() {
+                [batch, timesteps, classes] if *batch > 0 && *timesteps > 0 && *classes > 1 => {
+                    let rows = batch
+                        .checked_mul(*timesteps)
+                        .context("compact CTC row count overflow")?;
+                    let bytes = rows
+                        .checked_mul(4 * std::mem::size_of::<u32>())
+                        .context("compact CTC byte size overflow")?;
+                    let output = ctx
+                        .device
+                        .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                            label: Some("compiled_ctc_top2"),
+                            size: bytes as u64,
+                            usage: crate::vision::wgpu::BufferUsages::STORAGE
+                                | crate::vision::wgpu::BufferUsages::COPY_SRC,
+                            mapped_at_creation: false,
+                        });
+                    let readback =
+                        ctx.device
+                            .create_buffer(&crate::vision::wgpu::BufferDescriptor {
+                                label: Some("compiled_ctc_top2_readback"),
+                                size: bytes as u64,
+                                usage: crate::vision::wgpu::BufferUsages::MAP_READ
+                                    | crate::vision::wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            });
+                    let rows_u32 = u32::try_from(rows).context("too many compact CTC rows")?;
+                    anyhow::ensure!(
+                        rows_u32 <= 65_535,
+                        "compact CTC row count exceeds one-dimensional dispatch limit"
+                    );
+                    let classes_u32 = u32::try_from(*classes).context("too many CTC classes")?;
+                    let params = ctx.device.create_buffer_init(
+                        &crate::vision::wgpu::util::BufferInitDescriptor {
+                            label: Some("compiled_ctc_top2_params"),
+                            contents: bytemuck::cast_slice(&[rows_u32, classes_u32, 0_u32, 0]),
+                            usage: crate::vision::wgpu::BufferUsages::STORAGE,
+                        },
+                    );
+                    let canonical = &output_buf_names[0];
+                    let slot = *tensor_slots.get(canonical).with_context(|| {
+                        format!("compact CTC output buffer `{canonical}` is missing")
+                    })?;
+                    let logits = slot_buffers
+                        .get(slot)
+                        .context("compact CTC output slot is missing")?;
+                    let layout = bgl_cache
+                        .get(CTC_TOP2_WGSL)
+                        .context("compact CTC bind-group layout is missing")?;
+                    let bind_group =
+                        ctx.device
+                            .create_bind_group(&crate::vision::wgpu::BindGroupDescriptor {
+                                label: Some("compiled_ctc_top2_bind_group"),
+                                layout,
+                                entries: &[
+                                    crate::vision::wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: logits.as_entire_binding(),
+                                    },
+                                    crate::vision::wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: output.as_entire_binding(),
+                                    },
+                                    crate::vision::wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: params.as_entire_binding(),
+                                    },
+                                ],
+                            });
+                    Some(CompactCtcBuffers {
+                        batch: *batch,
+                        timesteps: *timesteps,
+                        classes: *classes,
+                        rows,
+                        bytes,
+                        output,
+                        readback,
+                        _params: params,
+                        bind_group,
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             ctx,
             slot_buffers,
@@ -630,6 +828,7 @@ impl CompiledGraph {
             _params_bufs: params_bufs,
             pipeline_cache,
             bgl_cache,
+            compact_ctc,
         })
     }
 
@@ -641,8 +840,39 @@ impl CompiledGraph {
     /// immediately. The resident buffers and readback buffers must not be reused
     /// until `await_result` completes, so one `CompiledGraph` remains single-flight.
     pub(crate) fn submit(&self, input: &reference::Tensor) -> Result<SubmittedRun<'_>> {
+        let submit_elapsed = self.submit_steps(input)?;
         let t0 = std::time::Instant::now();
+        let mut encoder = self.ctx.device.create_command_encoder(
+            &crate::vision::wgpu::CommandEncoderDescriptor {
+                label: Some("compiled_readback"),
+            },
+        );
+        for (i, canonical) in self.output_buf_names.iter().enumerate() {
+            let out_slot = *self.tensor_slots.get(canonical).with_context(|| {
+                format!("compiled run: missing resident slot for output `{canonical}`")
+            })?;
+            let out_buf = self.slot_buffers.get(out_slot).with_context(|| {
+                format!("compiled run: missing resident slot buffer {out_slot}")
+            })?;
+            encoder.copy_buffer_to_buffer(
+                out_buf,
+                0,
+                &self.output_readback_bufs[i],
+                0,
+                self.output_bytes[i] as u64,
+            );
+        }
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
 
+        Ok(SubmittedRun {
+            graph: self,
+            submit_elapsed: submit_elapsed + t0.elapsed(),
+            submission,
+        })
+    }
+
+    fn submit_steps(&self, input: &reference::Tensor) -> Result<Duration> {
+        let t0 = std::time::Instant::now();
         if input.shape != self.input_shape {
             bail!(
                 "compiled input shape mismatch: expected {:?}, got {:?}",
@@ -694,33 +924,80 @@ impl CompiledGraph {
                 self.ctx.wait_for_submission(submission)?;
             }
         }
+        Ok(t0.elapsed())
+    }
 
+    /// Execute a single-output `[B,T,C]` graph and reduce every CTC row to its
+    /// best class plus the top-two values before crossing the GPU/CPU boundary.
+    pub(crate) async fn run_ctc_top2(&self, input: &reference::Tensor) -> Result<CompactCtcOutput> {
+        let compact = self
+            .compact_ctc
+            .as_ref()
+            .context("graph output is not a single [batch,timesteps,classes] CTC tensor")?;
+        self.submit_steps(input)?;
+        let pipeline = self
+            .pipeline_cache
+            .get(CTC_TOP2_WGSL)
+            .context("compact CTC pipeline is missing")?;
         let mut encoder = self.ctx.device.create_command_encoder(
             &crate::vision::wgpu::CommandEncoderDescriptor {
-                label: Some("compiled_readback"),
+                label: Some("compiled_ctc_top2"),
             },
         );
-        for (i, canonical) in self.output_buf_names.iter().enumerate() {
-            let out_slot = *self.tensor_slots.get(canonical).with_context(|| {
-                format!("compiled run: missing resident slot for output `{canonical}`")
-            })?;
-            let out_buf = self.slot_buffers.get(out_slot).with_context(|| {
-                format!("compiled run: missing resident slot buffer {out_slot}")
-            })?;
-            encoder.copy_buffer_to_buffer(
-                out_buf,
-                0,
-                &self.output_readback_bufs[i],
-                0,
-                self.output_bytes[i] as u64,
+        {
+            let mut pass =
+                encoder.begin_compute_pass(&crate::vision::wgpu::ComputePassDescriptor {
+                    label: Some("compiled_ctc_top2"),
+                    timestamp_writes: None,
+                });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &compact.bind_group, &[]);
+            pass.dispatch_workgroups(compact.rows as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(
+            &compact.output,
+            0,
+            &compact.readback,
+            0,
+            compact.bytes as u64,
+        );
+        let submission = self.ctx.queue.submit(Some(encoder.finish()));
+        let slice = compact.readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(crate::vision::wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.ctx.wait_for_submission(submission)?;
+        receiver
+            .recv()
+            .context("compact CTC readback callback was not called")?
+            .context("failed to map compact CTC readback")?;
+        let mapped = slice
+            .get_mapped_range()
+            .context("failed to access compact CTC readback")?;
+        if mapped.len() != compact.bytes {
+            bail!(
+                "compact CTC readback size mismatch: got {} expected {}",
+                mapped.len(),
+                compact.bytes
             );
         }
-        let submission = self.ctx.queue.submit(Some(encoder.finish()));
-
-        Ok(SubmittedRun {
-            graph: self,
-            submit_elapsed: t0.elapsed(),
-            submission,
+        let words: &[u32] = bytemuck::cast_slice(&mapped);
+        let rows = words
+            .chunks_exact(4)
+            .map(|row| CompactTop2 {
+                class_index: row[0] as usize,
+                best: f32::from_bits(row[1]),
+                second: f32::from_bits(row[2]),
+            })
+            .collect();
+        drop(mapped);
+        compact.readback.unmap();
+        Ok(CompactCtcOutput {
+            batch: compact.batch,
+            timesteps: compact.timesteps,
+            classes: compact.classes,
+            rows,
         })
     }
 
@@ -1149,7 +1426,10 @@ mod tests {
     use super::CompiledGraph;
 
     fn add_graph(elements: i64) -> PreparedGraph {
-        let shape = vec![elements];
+        add_graph_shape(vec![elements])
+    }
+
+    fn add_graph_shape(shape: Vec<i64>) -> PreparedGraph {
         PreparedGraph {
             value_count: 3,
             nodes: Vec::new(),
@@ -1200,5 +1480,33 @@ mod tests {
                 "pipeline for shared shader was rebuilt"
             );
         }
+    }
+
+    #[test]
+    fn compact_ctc_gpu_reduction_matches_full_output() {
+        let graph = add_graph_shape(vec![1, 2, 4]);
+        let compiled =
+            pollster::block_on(CompiledGraph::build(&graph)).expect("compile compact graph");
+        let input = Tensor::new(vec![1, 2, 4], vec![0.0, 3.0, 2.0, 1.0, 5.0, -1.0, 7.0, 6.0])
+            .expect("input tensor");
+        let full = pollster::block_on(compiled.run(&input)).expect("full output");
+        let compact = pollster::block_on(compiled.run_ctc_top2(&input)).expect("compact output");
+        assert_eq!(
+            (compact.batch, compact.timesteps, compact.classes),
+            (1, 2, 4)
+        );
+        assert_eq!(
+            compact
+                .rows
+                .iter()
+                .map(|row| row.class_index)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let output = &full["output"].data;
+        assert_eq!(compact.rows[0].best, output[1]);
+        assert_eq!(compact.rows[0].second, output[2]);
+        assert_eq!(compact.rows[1].best, output[6]);
+        assert_eq!(compact.rows[1].second, output[7]);
     }
 }

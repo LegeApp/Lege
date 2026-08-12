@@ -1,0 +1,66 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.milestone.business-pdf-ocr-cli/1 : milestone {
+    title "Business-grade PDF OCR CLI"
+    state active
+    scope [
+        path "Cargo.toml",
+        path "lege-document-ocr/**",
+        path "lege-gpu/**",
+        path "lege-ocr/**",
+        path "lege-pdf/read/**",
+        path "lege-pdf/write/**"
+    ]
+    intent """
+        Deliver the approved local, resumable, backend-neutral PDF OCR pipeline and its staged searchable and structured outputs.
+        """
+    note """
+        Implement the approved dedicated OCR plan in production-sized milestones, preserving raw OCR evidence and existing Lege product compatibility.
+        """
+    acceptance {
+        check backend-routing {
+            statement """
+                OCR backend routing and compatibility tests pass.
+                """
+            method command
+            command "cargo test -p lege-ocr"
+        }
+        check core-cli {
+            statement """
+                The batch CLI and core pipeline tests pass.
+                """
+            method command
+            command "cargo test -p lege-document-ocr-cli"
+        }
+        check core-exports {
+            statement """
+                Canonical JSON, text, HTML, and searchable-PDF export tests pass.
+                """
+            method command
+            command "cargo test -p lege-document-export"
+        }
+        check docir {
+            statement """
+                Versioned canonical document IR tests pass.
+                """
+            method command
+            command "cargo test -p lege-docir"
+        }
+        check workspace-validation {
+            statement """
+                The workspace compiles on the implementation host.
+                """
+            method command
+            command "cargo check --workspace"
+        }
+    }
+    source {
+        kind internal
+        role origin
+        document "dedicated-ocr-plan-2026-08"
+        use """
+            Adopted architecture, backend policy, output stages, quality routing, and benchmark gates.
+            """
+    }
+}

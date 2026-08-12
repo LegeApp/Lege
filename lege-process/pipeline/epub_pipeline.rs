@@ -318,6 +318,21 @@ pub async fn create_and_run_epub_pipeline(
     });
 
     let pages: Vec<PageText> = pages_map.into_values().collect();
+    let synthetic_outline = outline_from_page_text(&pages);
+    let source_outline = if let Some(session) = source.document_session() {
+        let bookmarks =
+            crate::runtime_stats::spawn_blocking(move || lege_pdf_read::extract_outline(&session))
+                .await?;
+        let source_to_output = (page_start..page_end)
+            .enumerate()
+            .map(|(output, source)| (source, output))
+            .collect::<std::collections::HashMap<_, _>>();
+        crate::pipeline::helper_functions::bookmarks_to_outline(&bookmarks, &source_to_output)
+    } else {
+        Vec::new()
+    };
+    let accepted_outline =
+        crate::pipeline::helper_functions::merge_outline(source_outline, Some(synthetic_outline));
 
     // Assemble + package the EPUB (CPU/IO; off the async runtime).
     let title = output_path
@@ -331,10 +346,11 @@ pub async fn create_and_run_epub_pipeline(
     let mut packaging_task = crate::runtime_stats::spawn_blocking_stage(
         crate::runtime_stats::Stage::Writer,
         move || {
-            build_epub_cancellable(
+            build_epub_with_outline_cancellable(
                 &pages,
                 &title,
                 &output_path_buf,
+                &accepted_outline,
                 Some(&packaging_cancellation),
             )
         },
@@ -372,13 +388,29 @@ pub(crate) fn build_epub_from_hocr_pages_cancellable(
     output_path: &Path,
     cancellation: Option<&lege_pdf_read::CancellationToken>,
 ) -> Result<()> {
+    build_epub_from_hocr_pages_with_outline_cancellable(
+        hocr_pages,
+        title,
+        output_path,
+        &[],
+        cancellation,
+    )
+}
+
+pub(crate) fn build_epub_from_hocr_pages_with_outline_cancellable(
+    hocr_pages: &[HocrPage],
+    title: &str,
+    output_path: &Path,
+    outline: &[lege_pdf_write::outline::OutlineItem],
+    cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> Result<()> {
     let mut pages: Vec<PageText> = hocr_pages
         .iter()
         .filter_map(page_text_from_hocr)
         .filter(|page| !page.blocks.is_empty())
         .collect();
     pages.sort_by_key(|page| page.page_index);
-    build_epub_cancellable(&pages, title, output_path, cancellation)
+    build_epub_with_outline_cancellable(&pages, title, output_path, outline, cancellation)
 }
 
 fn page_text_from_hocr(page: &HocrPage) -> Option<PageText> {
@@ -807,14 +839,47 @@ fn heading_title(block: &TextBlock) -> String {
 /// Split the document's blocks into chapters only at heading pages with enough
 /// blank vertical space before body text to look like an intentional chapter
 /// opening. Other detected headings remain headings inside the running flow.
-fn assemble_chapters(pages: &[PageText]) -> Vec<Chapter> {
+fn assemble_chapters(
+    pages: &[PageText],
+    outline: &[lege_pdf_write::outline::OutlineItem],
+) -> Vec<Chapter> {
+    fn flatten<'a>(
+        items: &'a [lege_pdf_write::outline::OutlineItem],
+        output: &mut Vec<&'a lege_pdf_write::outline::OutlineItem>,
+    ) {
+        for item in items {
+            output.push(item);
+            flatten(&item.children, output);
+        }
+    }
+    let mut accepted = Vec::new();
+    flatten(outline, &mut accepted);
+    accepted.sort_by_key(|item| item.page_index);
+
     let mut chapters: Vec<Chapter> = Vec::new();
     let mut current: Option<Chapter> = None;
 
-    for page in pages {
+    for (output_page, page) in pages.iter().enumerate() {
         let blocks = blocks_with_layout_geometry(page);
+        let accepted_title = accepted
+            .iter()
+            .find(|item| item.page_index as usize == output_page)
+            .map(|item| item.title.clone());
+        if let Some(title) = accepted_title {
+            if let Some(chapter) = current.take()
+                && !chapter.body.trim().is_empty()
+            {
+                chapters.push(chapter);
+            }
+            current = Some(Chapter {
+                title: Some(title),
+                body: String::new(),
+            });
+        }
         for (block_index, block) in blocks.iter() {
-            if is_geometric_chapter_start(page, *block_index) {
+            let fallback_start =
+                outline.is_empty() && is_geometric_chapter_start(page, *block_index);
+            if fallback_start {
                 // Close the running chapter and open a new one titled by this heading.
                 if let Some(ch) = current.take()
                     && !ch.body.trim().is_empty()
@@ -869,7 +934,18 @@ fn build_epub_cancellable(
     output_path: &Path,
     cancellation: Option<&lege_pdf_read::CancellationToken>,
 ) -> Result<()> {
-    let chapters = assemble_chapters(pages);
+    let outline = outline_from_page_text(pages);
+    build_epub_with_outline_cancellable(pages, title, output_path, &outline, cancellation)
+}
+
+fn build_epub_with_outline_cancellable(
+    pages: &[PageText],
+    title: &str,
+    output_path: &Path,
+    outline: &[lege_pdf_write::outline::OutlineItem],
+    cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> Result<()> {
+    let chapters = assemble_chapters(pages, outline);
     if chapters.is_empty() {
         return Err(anyhow!(
             "[EPUB] No text content recognized — refusing to write an empty EPUB"
@@ -928,6 +1004,61 @@ fn build_epub_cancellable(
         )
     })?;
     Ok(())
+}
+
+fn outline_from_page_text(pages: &[PageText]) -> Vec<lege_pdf_write::outline::OutlineItem> {
+    let mut candidates = Vec::new();
+    let mut stats = Vec::new();
+    for (page_index, page) in pages.iter().enumerate() {
+        let line_heights = page
+            .blocks
+            .iter()
+            .flat_map(|block| block.lines.iter())
+            .map(|line| line.bbox[3].saturating_sub(line.bbox[1]) as f32)
+            .filter(|height| *height > 0.0)
+            .collect::<Vec<_>>();
+        if !line_heights.is_empty() {
+            let mut sorted = line_heights;
+            sorted.sort_by(f32::total_cmp);
+            stats.push(crate::toc::PageTextStats {
+                page_index,
+                median_line_height: sorted[sorted.len() / 2],
+            });
+        }
+        for (index, block) in page.blocks.iter().enumerate() {
+            let kind = match block.kind {
+                BlockKind::Title => crate::toc::TitleKind::DocTitle,
+                BlockKind::SectionHeading => crate::toc::TitleKind::ParagraphTitle,
+                _ => continue,
+            };
+            let line_height = block
+                .lines
+                .iter()
+                .map(|line| line.bbox[3].saturating_sub(line.bbox[1]) as f32)
+                .filter(|height| *height > 0.0)
+                .max_by(f32::total_cmp)
+                .unwrap_or(0.0);
+            let next_y = page
+                .blocks
+                .iter()
+                .skip(index + 1)
+                .find(|next| !next.is_empty())
+                .map(|next| next.bbox[1])
+                .unwrap_or(block.bbox[3]);
+            candidates.push(crate::toc::TocCandidate {
+                page_index,
+                kind,
+                confidence: 0.9,
+                bbox: block.bbox.map(|value| value as f32),
+                text: block.paragraph_text(),
+                line_height,
+                page_height: page.height_px as f32,
+                gap_below: next_y.saturating_sub(block.bbox[3]) as f32,
+                word_confidence: None,
+            });
+        }
+    }
+    crate::toc::build_outline(candidates, &stats, pages.len())
 }
 
 /// Minimal XML/XHTML text escaping.
@@ -1006,7 +1137,7 @@ mod tests {
             ),
             blk_at(BlockKind::Paragraph, "Body of two.", [100, 635, 900, 900]),
         ])];
-        let chapters = assemble_chapters(&pages);
+        let chapters = assemble_chapters(&pages, &[]);
         assert_eq!(chapters.len(), 1);
         assert_eq!(chapters[0].title.as_deref(), None);
         assert!(chapters[0].body.contains("Chapter One</h1>"));
@@ -1021,7 +1152,7 @@ mod tests {
             blk_at(BlockKind::Title, "Chapter One", [100, 120, 900, 180]),
             blk_at(BlockKind::Paragraph, "Body of one.", [100, 500, 900, 900]),
         ])];
-        let chapters = assemble_chapters(&pages);
+        let chapters = assemble_chapters(&pages, &[]);
         assert_eq!(chapters.len(), 1);
         assert_eq!(chapters[0].title.as_deref(), Some("Chapter One"));
         assert!(
@@ -1056,7 +1187,7 @@ mod tests {
             },
         ];
 
-        let chapters = assemble_chapters(&pages);
+        let chapters = assemble_chapters(&pages, &[]);
         assert_eq!(chapters.len(), 1);
         assert!(
             chapters[0]
@@ -1083,11 +1214,41 @@ mod tests {
                 height_px: 1400,
             },
         ];
-        let chapters = assemble_chapters(&pages);
+        let chapters = assemble_chapters(&pages, &[]);
         assert_eq!(chapters.len(), 1);
         assert_eq!(chapters[0].title.as_deref(), None);
         assert!(chapters[0].body.contains("Page one text."));
         assert!(chapters[0].body.contains("Page two text."));
+    }
+
+    #[test]
+    fn accepted_outline_controls_epub_chapter_boundaries() {
+        let pages = vec![
+            page(vec![blk(BlockKind::Paragraph, "Preface text.")]),
+            PageText {
+                page_index: 1,
+                blocks: vec![blk(
+                    BlockKind::Paragraph,
+                    "Chapter body without a heading box.",
+                )],
+                width_px: 1000,
+                height_px: 1400,
+            },
+        ];
+        let outline = vec![lege_pdf_write::outline::OutlineItem {
+            title: "The Accepted Chapter".to_string(),
+            page_index: 1,
+            top: None,
+            children: Vec::new(),
+        }];
+        let chapters = assemble_chapters(&pages, &outline);
+        assert_eq!(chapters.len(), 2);
+        assert_eq!(chapters[1].title.as_deref(), Some("The Accepted Chapter"));
+        assert!(
+            chapters[1]
+                .body
+                .contains("Chapter body without a heading box.")
+        );
     }
 
     #[test]
@@ -1097,7 +1258,7 @@ mod tests {
             blk(BlockKind::Paragraph, "real content"),
             blk(BlockKind::Footer, "page 3"),
         ])];
-        let chapters = assemble_chapters(&pages);
+        let chapters = assemble_chapters(&pages, &[]);
         assert_eq!(chapters.len(), 1);
         assert!(chapters[0].body.contains("real content"));
         assert!(!chapters[0].body.contains("running head"));

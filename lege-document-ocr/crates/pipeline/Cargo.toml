@@ -1,0 +1,25 @@
+[package]
+name = "lege-document-pipeline"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PDF intake and OCR orchestration for Lege document conversion"
+
+[dependencies]
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+image = { workspace = true }
+lege-docir = { path = "../docir" }
+lege-ocr = { path = "../../../lege-ocr" }
+lege-pdf-read = { path = "../../../lege-pdf/read" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = ["paddle-ocr"]
+paddle-ocr = ["lege-ocr/paddle-ocr"]
+
+[lints]
+workspace = true

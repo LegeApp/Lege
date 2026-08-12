@@ -1,6 +1,7 @@
 use pdf_document::{PageIndex, ParseContext};
 use pdf_page_ir::Rect;
 use pdf_text::{TextPage, TextPageOptions};
+use std::sync::Arc;
 
 use crate::{ReadError, RenderSession};
 
@@ -10,6 +11,179 @@ pub struct NativeTextWord {
     pub text: String,
     /// `[left, top, right, bottom]` in a top-left-origin pixel space.
     pub bbox: [f32; 4],
+}
+
+/// OCR-relevant page classification derived from one semantic compilation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageContentKind {
+    NativeText,
+    ScannedImage,
+    Hybrid,
+    RenderRequired,
+}
+
+/// Native text and image evidence used to decide whether OCR is necessary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageTextEvidence {
+    pub kind: PageContentKind,
+    pub text: String,
+    pub words: Vec<NativeTextWord>,
+    pub character_count: usize,
+    pub replacement_character_count: usize,
+    pub image_count: usize,
+    pub largest_image_pixels: u64,
+    pub trustworthy: bool,
+    /// Original DCT payload for a simple one-image scan page. Callers can
+    /// decode it directly and avoid a full-page render.
+    pub direct_scan: Option<DirectScanImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectScanImage {
+    pub jpeg: Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Compile a page once and return its OCR routing evidence.
+pub fn page_text_evidence(
+    session: &RenderSession,
+    page: u32,
+    source_width: u32,
+    source_height: u32,
+) -> Result<PageTextEvidence, ReadError> {
+    let geometry = session.page_geometry(page)?;
+    let semantic = build_semantic_page(session, page)?;
+    let text_page = TextPage::build(&semantic, &TextPageOptions::default());
+    let text = text_page.all_text();
+    let words = text_page
+        .words()
+        .into_iter()
+        .filter(|word| !word.text.trim().is_empty())
+        .map(|word| NativeTextWord {
+            text: word.text,
+            bbox: rect_to_pixels(
+                word.bbox,
+                geometry.crop_box,
+                geometry.rotate,
+                source_width,
+                source_height,
+            ),
+        })
+        .collect::<Vec<_>>();
+    let character_count = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let replacement_character_count = text
+        .chars()
+        .filter(|character| *character == '\u{fffd}')
+        .count();
+    let valid_word_count = words
+        .iter()
+        .filter(|word| {
+            word.bbox[2] > word.bbox[0]
+                && word.bbox[3] > word.bbox[1]
+                && word.bbox[0] >= 0.0
+                && word.bbox[1] >= 0.0
+                && word.bbox[2] <= source_width as f32 + 1.0
+                && word.bbox[3] <= source_height as f32 + 1.0
+        })
+        .count();
+    let trustworthy = character_count >= 8
+        && replacement_character_count.saturating_mul(100) <= character_count
+        && valid_word_count >= 2;
+    let image_count = semantic.images.len();
+    let largest_image_pixels = semantic
+        .images
+        .iter()
+        .map(|image| u64::from(image.width) * u64::from(image.height))
+        .max()
+        .unwrap_or(0);
+    let direct_scan = direct_scan_image(&semantic);
+    let kind = match (trustworthy, image_count > 0, character_count > 0) {
+        (true, true, _) => PageContentKind::Hybrid,
+        (true, false, _) => PageContentKind::NativeText,
+        (false, true, false) => PageContentKind::ScannedImage,
+        _ => PageContentKind::RenderRequired,
+    };
+    Ok(PageTextEvidence {
+        kind,
+        text,
+        words,
+        character_count,
+        replacement_character_count,
+        image_count,
+        largest_image_pixels,
+        trustworthy,
+        direct_scan,
+    })
+}
+
+fn direct_scan_image(page: &pdf_content::SemanticPage) -> Option<DirectScanImage> {
+    use pdf_content::SemanticOp;
+    if page.bounds.rotate != 0 {
+        return None;
+    }
+    let draws = page
+        .ops
+        .iter()
+        .filter_map(|operation| match operation {
+            SemanticOp::DrawImage(image) => Some(*image),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if draws.len() != 1
+        || page.ops.iter().any(|operation| {
+            !matches!(
+                operation,
+                SemanticOp::Save
+                    | SemanticOp::Restore
+                    | SemanticOp::Concat(_)
+                    | SemanticOp::DrawImage(_)
+            )
+        })
+    {
+        return None;
+    }
+    let matrices = page
+        .ops
+        .iter()
+        .filter_map(|operation| match operation {
+            SemanticOp::Concat(matrix) => Some(*matrix),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let matrix = *matrices.first()?;
+    if matrices.len() != 1 || matrix.b.abs() > 1e-6 || matrix.c.abs() > 1e-6 {
+        return None;
+    }
+    let crop = page.bounds.crop.normalized();
+    let covered_width = matrix.a.abs();
+    let covered_height = matrix.d.abs();
+    if (covered_width - crop.width()).abs() > crop.width().abs() * 0.02
+        || (covered_height - crop.height()).abs() > crop.height().abs() * 0.02
+    {
+        return None;
+    }
+    let image = page.images.get(draws[0].index())?;
+    if image.is_mask
+        || image.smask.is_some()
+        || image.mask.is_some()
+        || image.bits_per_component != 8
+        || image.codec != Some(pdf_page_ir::ImageCodecKind::Dct)
+        || !matches!(
+            image.color_space,
+            Some(pdf_page_ir::ImageColorSpace::Gray | pdf_page_ir::ImageColorSpace::Rgb)
+        )
+    {
+        return None;
+    }
+    Some(DirectScanImage {
+        jpeg: Arc::clone(image.codec_data.as_ref()?),
+        width: image.width,
+        height: image.height,
+    })
 }
 
 pub fn has_text_layer(session: &RenderSession, page: u32) -> Result<bool, ReadError> {
@@ -46,6 +220,14 @@ pub fn positioned_words(
 }
 
 fn build_text_page(session: &RenderSession, page: u32) -> Result<TextPage, ReadError> {
+    let semantic = build_semantic_page(session, page)?;
+    Ok(TextPage::build(&semantic, &TextPageOptions::default()))
+}
+
+fn build_semantic_page(
+    session: &RenderSession,
+    page: u32,
+) -> Result<pdf_content::SemanticPage, ReadError> {
     if page >= session.page_count() {
         return Err(ReadError::PageOutOfRange {
             page,
@@ -60,7 +242,7 @@ fn build_text_page(session: &RenderSession, page: u32) -> Result<TextPage, ReadE
             page,
             message: error.to_string(),
         })?;
-    Ok(TextPage::build(&semantic, &TextPageOptions::default()))
+    Ok(semantic)
 }
 
 fn rect_to_pixels(

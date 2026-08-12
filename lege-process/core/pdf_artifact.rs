@@ -113,6 +113,7 @@ fn content_to_resource(
                 height: *pixel_height,
                 globals: None,
                 image_mask: false,
+                image_mask_paints_one: false,
             }),
             "ccitt" | "ccitt4" => Ok(PdfImageResource::CcittGroup4 {
                 data: data.clone(),
@@ -144,18 +145,21 @@ fn content_to_resource(
             height: *pixel_height,
             globals: register_globals(global_data, globals),
             image_mask: false,
+            image_mask_paints_one: false,
         }),
         ContentType::Jbig2Mask {
             page_data,
             global_data,
             pixel_width,
             pixel_height,
+            paint_one,
         } => Ok(PdfImageResource::Jbig2 {
             data: page_data.clone(),
             width: *pixel_width,
             height: *pixel_height,
             globals: register_globals(global_data, globals),
             image_mask: true,
+            image_mask_paints_one: *paint_one,
         }),
     }
 }

@@ -150,6 +150,21 @@ pub fn write_hex_string(out: &mut Vec<u8>, bytes: &[u8]) {
     out.push(b'>');
 }
 
+/// Append a PDF text string: ASCII as a compact literal, otherwise UTF-16BE
+/// with a byte-order mark in a hexadecimal string.
+pub fn write_text_string(out: &mut Vec<u8>, value: &str) {
+    if value.is_ascii() {
+        write_literal_string(out, value.as_bytes());
+    } else {
+        let mut bytes = Vec::with_capacity(2 + value.len() * 2);
+        bytes.extend_from_slice(&[0xFE, 0xFF]);
+        for unit in value.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        write_hex_string(out, &bytes);
+    }
+}
+
 /// Append an indirect reference, e.g. `12 0 R`.
 pub fn write_ref(out: &mut Vec<u8>, id: ObjectId) {
     write_u64(out, id.num as u64);

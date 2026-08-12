@@ -43,6 +43,9 @@ pub enum ContentType {
         global_data: SharedImageData, // may be empty
         pixel_width: u32,
         pixel_height: u32,
+        /// True when decoded sample 1 is ink. Such masks require output
+        /// stencil `/Decode [1 0]`; false uses `/Decode [0 1]`.
+        paint_one: bool,
     },
 }
 
