@@ -1083,8 +1083,10 @@ fn process_djvu_cpu_intensive_work(
         );
     }
 
-    // Drop false image boxes over text/line art so they do not create a color
-    // seam through a column (mirrors the PDF pipeline).
+    // Drop false image boxes over substantive text so they do not create a
+    // color seam through a column (mirrors the PDF pipeline). The model's
+    // image class remains authoritative for maps, engravings, and line
+    // drawings; luma bimodality cannot distinguish those from line art.
     if config.text_format() != "jpeg" {
         let all_detections = adjusted_detections.clone();
         adjusted_detections.retain(|det| {
@@ -1092,12 +1094,6 @@ fn process_djvu_cpu_intensive_work(
                 return true;
             }
             !image_detection_overlaps_substantive_text(det, &all_detections, classifier)
-                && !crate::clean_gray::region_is_line_art(
-                    adjusted_image.as_raw(),
-                    width,
-                    height,
-                    det.bbox,
-                )
         });
     }
 

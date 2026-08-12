@@ -1,6 +1,17 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/1 : papercut {
+    title "A single Cargo build selecting `lege` and `lege-gui-freya` with bin…"
+    state verified
+    statement """
+        A single Cargo build selecting `lege` and `lege-gui-freya` with bin filters still selected the same-named `lege-gui` target from both packages, producing an output collision. The standard alias must build Freya through the existing integrated `lege --features freya` target (or use an xtask), because Cargo bin filters are not package-scoped.
+        """
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    author "codex"
+    created_at 2026-08-12
+}
+
 record lege-ecosystem.papercut.building-the-focused-lege-freya-gui-emitted/1 : papercut {
     title "Building the focused Lege Freya GUI emitted over a hundred existing…"
     state verified
@@ -24,6 +35,18 @@ record lege-ecosystem.papercut.fff-multi-grep-returned-transport-closed-during/1
     created_at 2026-08-12
 }
 
+record lege-ecosystem.papercut.fff-multi-grep-transport-closed-while-locating/1 : papercut {
+    title "FFF multi_grep transport closed while locating Freya About actions and…"
+    state verified
+    statement """
+        FFF multi_grep transport closed while locating Freya About actions and Cargo aliases, forcing an immediate rg fallback despite the workspace's FFF-first protocol.
+        """
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    about "FFF"
+    author "codex"
+    created_at 2026-08-12
+}
+
 record lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 : papercut {
     title "knowledge.get did not display a work record's acceptance checks even at…"
     state verified
@@ -34,6 +57,17 @@ record lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 :
     about "akr"
     author "gpt-5.6-sol"
     created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 : papercut {
+    title "Running `cargo fmt -- <Rust files>` in this workspace made rustfmt…"
+    state verified
+    statement """
+        Running `cargo fmt -- <Rust files>` in this workspace made rustfmt parse 2024-edition code with an older default and reject valid let-chains. Formatting by package (`cargo fmt --package lege-gui-freya`) correctly supplies the manifest edition.
+        """
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    author "codex"
+    created_at 2026-08-12
 }
 
 record lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 : papercut {
@@ -54,6 +88,17 @@ record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 
         The CLI help says a single page number such as `5` is a valid PAGE-RANGE form, but `lege Structures.pdf 1 ...` exits with “Page range must be in format 'start-end'”. The help and parser should agree.
         """
     observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
+    author "codex"
+    created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/1 : papercut {
+    title "The repository's enabled Git fsmonitor returned an empty `git status…"
+    state verified
+    statement """
+        The repository's enabled Git fsmonitor returned an empty `git status --short` even while `git diff --raw` showed many changes. Disabling fsmonitor per command (`git -c core.fsmonitor=false status --short`) produced the correct worktree state.
+        """
+    observed_at git:5111194256cf31247e1d5157a120595619554520
     author "codex"
     created_at 2026-08-12
 }
@@ -138,4 +183,15 @@ record lege-ecosystem.papercut.while-running-focused-rust-tests-i-passed-two/1 :
     about "cargo"
     author "gpt-5.6-sol"
     created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/1 : papercut {
+    title "While validating a single Structures.pdf page, the documented `lege…"
+    state verified
+    statement """
+        While validating a single Structures.pdf page, the documented `lege book.pdf 195 2000 ...` form parsed `195` as a target dimension rather than a one-page range and began processing all 632 pages. Single-page range syntax is ambiguous with numeric target syntax; `195-195` is the necessary workaround but the help says `5` is valid.
+        """
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    author "codex"
+    created_at 2026-08-12
 }

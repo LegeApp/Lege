@@ -75,7 +75,7 @@ fn to_shared_options(options: &GuiProcessingOptions) -> shared_log::ProcessingOp
     shared.png_folder_mode = options.png_folder_mode;
     shared.layout_analysis = options.layout_analysis;
     shared.use_ocr = options.use_ocr;
-    shared.automatic_toc = options.automatic_toc;
+    shared.automatic_toc = options.use_ocr;
     shared.slow_ocr = matches!(options.ocr_mode, GuiOcrMode::Thorough);
     shared.high_quality_output = options.high_quality_output;
     shared.jpeg_compat = options.jpeg_compat;

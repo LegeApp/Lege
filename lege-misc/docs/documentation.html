@@ -193,33 +193,32 @@
                 purposes only 8 are used.
             </p>
             <p>
-                Layout detection per page takes the same amount of time no
-                matter what options are selected. Windows uses DirectML, Linux
-                uses WebGPU via Dawn, and macOS uses CoreML. As of March 2026,
-                CUDA is also an option again for Windows and Linux, but you need
-                CUDA and cuDNN on <code>PATH</code>. The purpose of layout
-                detection is to identify and protect image regions from
-                binarization, because the binarization methods will ruin picture
-                quality so those regions must be treated separately per page.
-                Layout detection is on by default. The best reason to turn it
-                off is to get image areas processed by the same binarization as
-                text for certain situations like documents with only line art.
+                Layout detection runs through Lege&rsquo;s native wgpu compute
+                path (Vulkan or DirectX 12 on Windows/Linux and Metal on macOS)
+                and prefers a discrete GPU when one is available. Its purpose
+                is to identify and protect image regions from binarization,
+                because the binarization methods will ruin picture quality so
+                those regions must be treated separately per page. Layout
+                detection is on by default. The best reason to turn it off is
+                to get image areas processed by the same binarization as text
+                for situations such as documents containing only line art.
             </p>
 
             <hr />
 
             <h3>OCR Text Layer</h3>
             <p>
-                This is an HOCR layer added via a temporarily created
-                high-quality OCR image per page. Windows uses WinOCR from the
-                Windows SDK while Linux and macOS use Tesseract. If your input
-                PDF already has an OCR layer, the program will retain it in the
-                output if you keep OCR off. If you enable OCR, a new layer will
-                be made instead. From 1.4.52 there is Fast and Thorough OCR,
-                using the principle that good OCR is due to good preprocessing;
-                in thorough mode, the OCR engine is fed the text one word at a
-                time in high resolution, and then logic conjoins it all
-                together.
+                OCR generates the searchable text overlay, inferred metadata,
+                and an automatic table of contents from headings found by layout
+                analysis. Windows uses the system WinRT OCR API; Linux and macOS
+                use the PP-OCRv5 detection and recognition models embedded in
+                Lege and executed by its native wgpu inference engine. If your
+                input PDF already has an OCR layer, Lege retains it when OCR is
+                off. Enabling OCR generates a replacement layer. Fast mode runs
+                full-page recognition for a search overlay. Thorough mode feeds
+                individually prepared text lines to recognition at higher detail
+                and is intended for EPUB creation or when text accuracy matters
+                most.
             </p>
 
             <h3>Page Range</h3>

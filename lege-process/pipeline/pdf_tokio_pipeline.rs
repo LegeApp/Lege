@@ -802,9 +802,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
     let classifier = &crate::types::LABEL_CLASSIFIER;
 
-    // False image detections over text/line art must not become raster
+    // False image detections over substantive text must not become raster
     // overlays. Besides covering a cleaned MRC background, they create the
     // conspicuous "half a text column in color" seam in ordinary bilevel mode.
+    // Do not reject an image-class detection from its luma histogram: maps,
+    // engravings, and other legitimate illustrations are commonly bilevel.
     if config.text_format() != "jpeg" {
         let all_detections = adjusted_detections.clone();
         adjusted_detections.retain(|det| {
@@ -826,23 +828,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 );
                 return false;
             }
-            let line_art = crate::clean_gray::region_is_line_art(
-                adjusted_image.as_raw(),
-                width,
-                height,
-                det.bbox,
-            );
-            if line_art {
-                crate::bbox_trace!(
-                    "PAGE {} bilevel: dropping line-art image region ({:.0},{:.0},{:.0},{:.0})",
-                    page_index,
-                    det.bbox[0],
-                    det.bbox[1],
-                    det.bbox[2],
-                    det.bbox[3]
-                );
-            }
-            !line_art
+            true
         });
     }
 
@@ -2861,6 +2847,25 @@ fn scale_detections_to_output(
     output_width: u32,
     output_height: u32,
 ) -> Vec<crate::engine::Detection> {
+    crate::bbox_trace!(
+        "PAGE {} planned raw detections={} inference={}x{} page_space={}",
+        inference_data.rendered.index,
+        inference_data.inference_result.detections.len(),
+        inference_data.rendered.inference_image.width(),
+        inference_data.rendered.inference_image.height(),
+        inference_data.inference_result.detections_are_page_space
+    );
+    if crate::bbox_trace::enabled() {
+        for detection in &inference_data.inference_result.detections {
+            eprintln!(
+                "  PAGE {} planned raw {} bbox={:?} conf={:.2}",
+                inference_data.rendered.index,
+                crate::types::detection_label(detection),
+                detection.bbox,
+                detection.confidence
+            );
+        }
+    }
     let (source_width, source_height) = if inference_data.inference_result.detections_are_page_space
     {
         (
@@ -2876,18 +2881,9 @@ fn scale_detections_to_output(
     let sx = output_width as f32 / source_width.max(1) as f32;
     let sy = output_height as f32 / source_height.max(1) as f32;
     let mut detections = inference_data.inference_result.detections.clone();
-    if !inference_data.inference_result.detections_are_page_space {
-        let inference = inference_data.rendered.inference_image.as_ref();
-        detections.retain(|detection| {
-            !crate::types::LABEL_CLASSIFIER.is_image_label(detection)
-                || !crate::clean_gray::region_is_line_art(
-                    inference.as_raw(),
-                    inference.width() as usize,
-                    inference.height() as usize,
-                    detection.bbox,
-                )
-        });
-    }
+    // The model's image class is authoritative here. A pixel-only bimodality
+    // test cannot distinguish false positives from real maps, engravings, or
+    // line drawings, all of which need an image overlay to preserve detail.
     for detection in &mut detections {
         detection.scale_bbox(sx, sy);
     }
@@ -2906,6 +2902,114 @@ fn scale_detections_to_output(
         )
     });
     detections
+}
+
+#[cfg(test)]
+mod image_detection_policy_tests {
+    use super::*;
+    use crate::types::ContentCategory;
+
+    fn detection(
+        class_id: i32,
+        category: ContentCategory,
+        bbox: [f32; 4],
+    ) -> crate::engine::Detection {
+        crate::engine::Detection {
+            class_id,
+            class_name: None,
+            confidence: 0.9,
+            bbox,
+            category,
+            context: None,
+        }
+    }
+
+    #[test]
+    fn planned_path_keeps_model_image_label_even_for_bilevel_pixels() {
+        let image = Arc::new(RgbImage::from_fn(100, 100, |x, _| {
+            if x % 2 == 0 {
+                image::Rgb([0, 0, 0])
+            } else {
+                image::Rgb([255, 255, 255])
+            }
+        }));
+        assert!(crate::clean_gray::region_is_line_art(
+            image.as_raw(),
+            100,
+            100,
+            [0.0, 0.0, 100.0, 100.0]
+        ));
+        let rendered = RenderedPageData {
+            index: 0,
+            high_res_image: image.clone(),
+            inference_image: image.clone(),
+            layout_detection_enabled: true,
+            original_width_pts: 100.0,
+            original_height_pts: 100.0,
+        };
+        let inference_result = InferenceResult {
+            index: 0,
+            high_res_image: image.clone(),
+            inference_image: image,
+            detections: vec![detection(
+                1,
+                ContentCategory::Image,
+                [10.0, 10.0, 90.0, 90.0],
+            )],
+            text_layer: None,
+            detections_are_page_space: false,
+            original_width_pts: 100.0,
+            original_height_pts: 100.0,
+            has_no_detections: false,
+        };
+        let detections = scale_detections_to_output(
+            &PdfInferenceData {
+                rendered,
+                inference_result,
+            },
+            200,
+            200,
+        );
+        assert_eq!(detections.len(), 1);
+        assert_eq!(detections[0].bbox, [20.0, 20.0, 180.0, 180.0]);
+    }
+
+    #[test]
+    fn planned_path_still_drops_image_box_over_substantive_text() {
+        let image = Arc::new(RgbImage::from_pixel(100, 100, image::Rgb([255, 255, 255])));
+        let rendered = RenderedPageData {
+            index: 0,
+            high_res_image: image.clone(),
+            inference_image: image.clone(),
+            layout_detection_enabled: true,
+            original_width_pts: 100.0,
+            original_height_pts: 100.0,
+        };
+        let inference_result = InferenceResult {
+            index: 0,
+            high_res_image: image.clone(),
+            inference_image: image,
+            detections: vec![
+                detection(1, ContentCategory::Image, [10.0, 10.0, 90.0, 90.0]),
+                detection(2, ContentCategory::Text, [20.0, 20.0, 80.0, 80.0]),
+            ],
+            text_layer: None,
+            detections_are_page_space: false,
+            original_width_pts: 100.0,
+            original_height_pts: 100.0,
+            has_no_detections: false,
+        };
+        let detections = scale_detections_to_output(
+            &PdfInferenceData {
+                rendered,
+                inference_result,
+            },
+            100,
+            100,
+        );
+        assert_eq!(detections.len(), 1);
+        assert_eq!(detections[0].category, ContentCategory::Text);
+    }
 }
 
 fn compact_gray_surface(surface: lege_pdf_read::GraySurface) -> Result<Vec<u8>> {
@@ -3265,13 +3369,17 @@ async fn run_page_owned_job(
     );
     let high_res_image = Arc::new(source_page.image);
     let page_layout_enabled = config.layout_detection_enabled_for_page(page_index);
-    let inference_image = if page_layout_enabled {
+    let inference_image = if page_layout_enabled && planned_pdf.is_none() {
         let spec = config.inference_resize_spec();
         Arc::new(
             crate::pipeline::policies::build_inference_image(high_res_image.as_ref(), &spec)
                 .unwrap_or_else(|_| (*high_res_image).clone()),
         )
     } else {
+        // Planned PDF analysis is already rendered with a bounded long edge.
+        // Pass its aspect-preserving surface directly to LayoutDetector; the
+        // detector performs the canonical 640x640 model resize itself. An
+        // extra square resize here loses low-contrast scanned illustrations.
         Arc::clone(&high_res_image)
     };
     let rendered = RenderedPageData {

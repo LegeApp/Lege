@@ -1770,24 +1770,6 @@ fn PagesDeviceCard(
         tooltip_wrap_at(
             state,
             TooltipArea::PagesDeviceCard,
-            GUI_TEXT.interactive.tooltips.automatic_toc.clone(),
-            AttachedPosition::Left,
-            compact_checkbox_row(
-                GUI_TEXT.interactive.labels.automatic_toc.clone(),
-                options.automatic_toc,
-                {
-                    let mut state = state;
-                    move |_| {
-                        let mut s = state.write();
-                        let enable = !s.options.automatic_toc;
-                        s.options.set_automatic_toc(enable);
-                    }
-                },
-            ),
-        ),
-        tooltip_wrap_at(
-            state,
-            TooltipArea::PagesDeviceCard,
             GUI_TEXT.interactive.tooltips.make_epub_also.clone(),
             AttachedPosition::Left,
             compact_checkbox_row(
@@ -2906,19 +2888,17 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                 .child(
                     Button::new()
                         .on_press(move |_| {
-                            match backend::bundled_docs_path_if_exists("documentation.html") {
-                                Some(path) => {
-                                    let _ = backend::open_with_system(&path.to_string_lossy());
-                                    (documentation_button.borrow_mut())();
-                                }
-                                None => {
-                                    schedule_popup(
-                                        state_for_docs,
-                                        PopupKind::Warning,
-                                        GUI_TEXT.interactive.popups.docs_not_found.clone(),
-                                        5,
-                                    );
-                                }
+                            match backend::open_embedded_document(
+                                "documentation.html",
+                                backend::DOCUMENTATION_HTML,
+                            ) {
+                                Ok(()) => (documentation_button.borrow_mut())(),
+                                Err(error) => schedule_popup(
+                                    state_for_docs,
+                                    PopupKind::Warning,
+                                    format!("Could not open documentation: {error}"),
+                                    8,
+                                ),
                             }
                         })
                         .child(GUI_TEXT.interactive.popups.documentation.clone()),
@@ -2926,19 +2906,17 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                 .child(
                     Button::new()
                         .on_press(move |_| {
-                            match backend::bundled_docs_path_if_exists("licenses.html") {
-                                Some(path) => {
-                                    let _ = backend::open_with_system(&path.to_string_lossy());
-                                    (licenses_button.borrow_mut())();
-                                }
-                                None => {
-                                    schedule_popup(
-                                        state_for_licenses,
-                                        PopupKind::Warning,
-                                        GUI_TEXT.interactive.popups.docs_not_found.clone(),
-                                        5,
-                                    );
-                                }
+                            match backend::open_embedded_document(
+                                "licenses.html",
+                                backend::LICENSES_HTML,
+                            ) {
+                                Ok(()) => (licenses_button.borrow_mut())(),
+                                Err(error) => schedule_popup(
+                                    state_for_licenses,
+                                    PopupKind::Warning,
+                                    format!("Could not open licenses: {error}"),
+                                    8,
+                                ),
                             }
                         })
                         .child(GUI_TEXT.interactive.popups.licenses.clone()),

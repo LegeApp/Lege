@@ -83,7 +83,7 @@
     <p>Lege itself is released under a strong copyleft license, but third-party components still retain their own licenses and notices.</p>
 
     <h2>Lege License</h2>
-    <p>The Lege project itself is licensed under the GNU Affero General Public License, version 3. See the top-level <a href="../LICENSE">LICENSE</a> file for the full text.</p>
+    <p>The Lege processor and Freya GUI are licensed under the GNU Affero General Public License, version 3. See the embedded <a href="LICENSE.txt">LICENSE.txt</a> file for the full text.</p>
     <p>This means:</p>
     <ul>
       <li>Lege is not an MIT- or Apache-licensed application.</li>
@@ -91,8 +91,8 @@
       <li>Third-party notices still matter and are preserved below.</li>
     </ul>
 
-    <h2>Main Third-Party Components</h2>
-    <p>The entries below reflect the current codebase and packaging layout.</p>
+    <h2>Main Distributed and Linked Components</h2>
+    <p>This is a focused notice for components central to a standard Lege processor/Freya build. It is not a dump of every transitive Rust utility crate.</p>
     <table>
       <thead>
         <tr>
@@ -103,67 +103,40 @@
         </tr>
       </thead>
       <tbody>
-        <tr><td>Freya</td><td>Desktop GUI framework</td><td>MIT</td><td>Current GUI frontend used by <code>lege-gui</code>.</td></tr>
-        <tr><td>jpeg-encoder</td><td>JPEG encoder</td><td>(MIT OR Apache-2.0) AND IJG</td><td>vstroebel's crates.io encoder, pinned to 0.7.1.</td></tr>
-        <tr><td>jbig2enc-rust</td><td>JBIG2 codec dependency</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project.</td></tr>
-        <tr><td>ort</td><td>ONNX Runtime Rust binding</td><td>MIT OR Apache-2.0</td><td>Local fork/configured copy used for inference runtime integration.</td></tr>
-        <tr><td>fast_image_resize</td><td>Image resize library</td><td>MIT OR Apache-2.0</td><td>Used in image processing paths.</td></tr>
-        <tr><td>lopdf</td><td>PDF parsing and writing support</td><td>MIT</td><td>Used in PDF processing and output code.</td></tr>
-        <tr><td>rayon</td><td>Parallel CPU work helper</td><td>MIT OR Apache-2.0</td><td>Used in CPU-heavy processing paths.</td></tr>
-        <tr><td>rfd</td><td>Native file dialogs</td><td>MIT</td><td>Used by the GUI.</td></tr>
+        <tr><td>Freya</td><td>Desktop GUI framework</td><td>MIT</td><td>Frontend used by the standard <code>lege-gui</code> build.</td></tr>
+        <tr><td>PaddleOCR / PP-OCRv5</td><td>Embedded OCR detector, recognizer, and character dictionary</td><td>Apache-2.0</td><td>Derived from the PaddlePaddle/PaddleOCR project; the shipped ONNX models are embedded into <code>lege</code>.</td></tr>
+        <tr><td>wgpu</td><td>Cross-platform GPU compute used for OCR, layout analysis, and image processing</td><td>MIT OR Apache-2.0</td><td>Lege uses its own native inference implementation; it does not ship PaddlePaddle or ONNX Runtime as an execution library.</td></tr>
+        <tr><td>Lege native PDF engine / Hayro-derived code</td><td>PDF reading and rendering</td><td>Apache-2.0 and/or MIT OR Apache-2.0, by component</td><td>Preserves the upstream notices in the PDF source tree.</td></tr>
+        <tr><td>jpeg-encoder</td><td>JPEG encoder</td><td>(MIT OR Apache-2.0) AND IJG</td><td>vstroebel&rsquo;s encoder, pinned to 0.7.1.</td></tr>
+        <tr><td>jbig2enc-rust</td><td>JBIG2 codec</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project and linked by Lege.</td></tr>
+        <tr><td>jp2lam</td><td>JPEG 2000 codec</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project and linked by Lege.</td></tr>
+        <tr><td>fast_image_resize</td><td>CPU image resizing</td><td>MIT OR Apache-2.0</td><td>Used by the CPU resize path.</td></tr>
+        <tr><td>rfd</td><td>Native file dialogs</td><td>MIT</td><td>Vendored with its license text under the GUI source tree.</td></tr>
+        <tr><td>djvu-encoder</td><td>Optional DjVu output helper executable</td><td>AGPL-3.0-only</td><td>Distributed as a separate command-line program and invoked by Lege; it is not linked into Lege.</td></tr>
       </tbody>
     </table>
 
-    <h2>OCR Components</h2>
-    <p>Current OCR usage:</p>
+    <h2>OCR Components and Platform Paths</h2>
+    <p>The standard build uses:</p>
     <ul>
-      <li>Linux and macOS:
-        <ul>
-          <li>Rust crate: <code>tesseract</code></li>
-          <li>Runtime engine: system Tesseract installation</li>
-        </ul>
-      </li>
-      <li>Windows:
-        <ul>
-          <li>Windows OCR / WinRT APIs</li>
-          <li>No Tesseract runtime is required on Windows</li>
-        </ul>
-      </li>
+      <li>Linux and macOS: embedded PP-OCRv5 mobile detection and multilingual recognition models plus the PaddleOCR character dictionary. Lege parses the ONNX files and executes them through its own wgpu backend.</li>
+      <li>Windows: the operating system&rsquo;s WinRT OCR APIs.</li>
     </ul>
-    <p>Notes:</p>
-    <ul>
-      <li>The Rust <code>tesseract</code> crate is MIT-licensed.</li>
-      <li>The Linux package configuration currently depends on <code>tesseract-ocr</code>.</li>
-      <li><code>eng.traineddata</code> may be distributed with packaged builds for convenience.</li>
-    </ul>
+    <p>PaddleOCR is released under Apache-2.0. Lege&rsquo;s two embedded model files are fp16 ONNX conversions of the PP-OCRv5 mobile models. Their source project is <a href="https://github.com/PaddlePaddle/PaddleOCR">PaddlePaddle/PaddleOCR</a>.</p>
+    <p>Tesseract remains an optional legacy compile-time backend on Linux and macOS. It is not enabled by the standard build, and standard release packages do not require a Tesseract runtime or trained-data files.</p>
 
-    <h2>Bundled Runtime Libraries and Assets</h2>
-    <p>Depending on platform and packaging target, Lege may distribute or expect these runtime assets alongside the binaries:</p>
+    <h2>Embedded Models and Data</h2>
+    <p>The standard processor embeds these assets into the executable at compile time:</p>
     <ul>
-      <li>ONNX Runtime shared libraries</li>
-      <li>ONNX model files used for layout detection, deskew/orientation, and heavy binarization</li>
-      <li>Tesseract language data such as <code>eng.traineddata</code></li>
+      <li><code>ppocr-det.onnx</code> &mdash; PP-OCRv5 text detection</li>
+      <li><code>ppocr-rec.onnx</code> and <code>ppocr-dict.txt</code> &mdash; PP-OCRv5 text recognition</li>
+      <li><code>doclayout.onnx</code> &mdash; document layout analysis</li>
+      <li><code>sauvola.onnx</code> &mdash; optional heavy document binarization</li>
     </ul>
-    <p>These assets should be treated separately from ordinary Rust crate dependencies. They may have their own upstream licenses, notices, attribution requirements, or redistribution conditions.</p>
+    <p>Model files are copyrightable assets separate from the Rust code. The PaddleOCR provenance is identified above. Exact source revisions, conversion recipes, checksums, and redistribution terms for the layout and Sauvola models should remain part of the release audit rather than being inferred from the Rust dependencies.</p>
 
-    <h2>Models and Data</h2>
-    <p>Current packaged model and data assets referenced by the build configuration include:</p>
-    <ul>
-      <li><code>yolo-layout.onnx</code></li>
-      <li><code>sauvola.onnx</code></li>
-      <li><code>eng.traineddata</code></li>
-    </ul>
-    <p>This document intentionally does not claim a single uniform license for all models or data files. Their provenance and license terms can differ and should be tracked based on the exact upstream source used for each distributed asset.</p>
-    <p>For release packaging, verify and preserve the relevant notices for:</p>
-    <ul>
-      <li>model source repository or paper release</li>
-      <li>converted ONNX artifact provenance</li>
-      <li>Tesseract traineddata source</li>
-      <li>any bundled native shared libraries</li>
-    </ul>
-
-    <h2>Research Citations and Good-Faith Attribution</h2>
-    <p>The items below are kept as acknowledgements and citations in good faith. They are not included because Lege is legally required to paste them in full, but because the project intentionally wants to credit the work that influenced or powers parts of the binarization pipeline.</p>
+    <h2>Research Citations and Attribution</h2>
+    <p>These acknowledgements credit research or prior implementations that influenced Lege. They are not assertions that the cited projects are linked dependencies.</p>
 
     <h3>Heavy Sauvola Model</h3>
     <p>The <code>sauvola.onnx</code> heavy binarization model is attributed to:</p>
@@ -176,13 +149,13 @@
     </ul>
     <p>This is an acknowledgement of inspiration and prior work, not a statement that Lege is currently shipping that project as a direct dependency.</p>
 
-    <h2>Additional Verification Items</h2>
-    <p>The following areas should be kept under review as the release process evolves:</p>
+    <h2>Release Audit Items</h2>
+    <p>Before publishing a release, keep these items with the reproducible build record:</p>
     <ul>
-      <li>the exact license and provenance of each bundled ONNX model</li>
-      <li>the exact redistribution basis for bundled ONNX Runtime binaries</li>
-      <li>whether <code>eng.traineddata</code> is bundled or required from the host system</li>
-      <li>the local <code>djvu_encoder</code> crate metadata, which should declare its own license explicitly</li>
+      <li>source revision, conversion recipe, and checksum for every embedded model and dictionary</li>
+      <li>the complete Cargo dependency/license report for the exact target and enabled feature set</li>
+      <li>the separate <code>djvu-encoder</code> AGPL license notice when that executable is included</li>
+      <li>platform runtime libraries copied into an installer, if any</li>
     </ul>
   </main>
 </body>

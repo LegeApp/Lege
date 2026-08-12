@@ -376,8 +376,8 @@ impl AppConfig {
             binarization: Some("adaptive".to_string()), // Good for varied lighting conditions
             keep_color_images: Some(false), // Dither by default for smaller files
             disable_layout: Some(true), // Disable layout detection for faster processing
-            confidence_threshold: Some(0.2), // Match PipelineConfig default
-            nms_threshold: Some(0.7),   // Match PipelineConfig default
+            confidence_threshold: Some(0.35), // Match PipelineConfig default
+            nms_threshold: Some(0.5),         // Match PipelineConfig default
         }
     }
 

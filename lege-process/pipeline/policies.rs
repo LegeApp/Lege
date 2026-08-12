@@ -46,7 +46,7 @@ pub struct PaddleResizeConfig {
 impl Default for PaddleResizeConfig {
     fn default() -> Self {
         Self {
-            target: 640,
+            target: 800,
             border_value: 192,
         }
     }

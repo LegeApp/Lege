@@ -110,9 +110,6 @@ pub struct ProcessingOptions {
     pub layout_exclusion_pages: Option<String>,
     pub use_ocr: bool,
     pub ocr_mode: OcrMode,
-    /// Opt-in synthesized PDF/DjVu outline. Scanned documents require OCR and
-    /// all synthesis requires layout title detections.
-    pub automatic_toc: bool,
     pub make_epub_also: bool,
     pub use_jbig2_halftone: bool,
     pub high_quality_output: bool,
@@ -181,23 +178,13 @@ impl ProcessingOptions {
             self.invert_input = false;
         } else {
             self.reflow = false;
-            self.automatic_toc = false;
         }
     }
 
     pub fn set_use_ocr(&mut self, enabled: bool) {
         self.use_ocr = enabled;
         if !enabled {
-            self.automatic_toc = false;
             self.make_epub_also = false;
-        }
-    }
-
-    pub fn set_automatic_toc(&mut self, enabled: bool) {
-        self.automatic_toc = enabled;
-        if enabled {
-            self.use_ocr = true;
-            self.set_layout_analysis(true);
         }
     }
 
@@ -206,7 +193,6 @@ impl ProcessingOptions {
         if enabled {
             self.layout_analysis = false;
             self.reflow = false;
-            self.automatic_toc = false;
         }
     }
 
@@ -226,10 +212,6 @@ impl ProcessingOptions {
     /// arguments. An explicit reflow selection wins over hidden incompatible
     /// state because it is the most constrained mode.
     pub fn normalize_processing_dependencies(&mut self) {
-        if self.automatic_toc {
-            self.use_ocr = true;
-            self.set_layout_analysis(true);
-        }
         if self.reflow {
             self.set_reflow(true);
         } else if self.invert_input {
@@ -292,24 +274,6 @@ mod reflow_tests {
         assert!(options.layout_analysis);
         assert!(!options.invert_input);
         assert!(!options.crop_margins);
-    }
-
-    #[test]
-    fn automatic_toc_makes_ocr_and_layout_dependencies_explicit() {
-        let mut options = ProcessingOptions::new();
-        options.use_ocr = false;
-        options.layout_analysis = false;
-        options.set_automatic_toc(true);
-        assert!(options.automatic_toc);
-        assert!(options.use_ocr);
-        assert!(options.layout_analysis);
-
-        options.set_use_ocr(false);
-        assert!(!options.automatic_toc);
-
-        options.set_automatic_toc(true);
-        options.set_layout_analysis(false);
-        assert!(!options.automatic_toc);
     }
 }
 

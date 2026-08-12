@@ -417,11 +417,12 @@ pub fn gui_options_to_cli_args(
             }
             .into(),
         );
+        // In the desktop GUI, document analysis is one OCR feature: both
+        // recognition modes generate the search overlay, synthesized outline,
+        // and inferred metadata.
+        args.push("--auto-toc".into());
     } else {
         args.push("--no-ocr".into());
-    }
-    if options.automatic_toc {
-        args.push("--auto-toc".into());
     }
 
     // Reflow
@@ -931,27 +932,35 @@ mod tests {
         assert!(!options.use_fixed_threshold);
         assert!(!options.use_heavy_binarization);
         assert_eq!(options.k_factor, lege_ipc::DEFAULT_K_FACTOR);
-        assert!(!options.automatic_toc);
     }
 
     #[test]
-    fn automatic_toc_worker_args_enable_visible_prerequisites() {
-        let mut options = ProcessingOptions::new();
-        options.use_ocr = false;
-        options.layout_analysis = false;
-        options.automatic_toc = true;
+    fn both_ocr_modes_enable_automatic_toc_and_disabled_ocr_does_not() {
+        for mode in [OcrMode::Fast, OcrMode::Thorough] {
+            let mut options = ProcessingOptions::new();
+            options.set_use_ocr(true);
+            options.ocr_mode = mode;
+            let args = gui_options_to_cli_args(
+                &PathBuf::from("input.pdf"),
+                &PathBuf::from("output.pdf"),
+                &options,
+                true,
+            );
 
+            assert!(args.iter().any(|arg| arg == OsStr::new("--auto-toc")));
+            assert!(args.iter().any(|arg| arg == OsStr::new("--ocr-mode")));
+            assert!(!args.iter().any(|arg| arg == OsStr::new("--no-ocr")));
+        }
+
+        let options = ProcessingOptions::new();
         let args = gui_options_to_cli_args(
             &PathBuf::from("input.pdf"),
             &PathBuf::from("output.pdf"),
             &options,
             true,
         );
-
-        assert!(args.iter().any(|arg| arg == OsStr::new("--auto-toc")));
-        assert!(args.iter().any(|arg| arg == OsStr::new("--ocr-mode")));
-        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
-        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-ocr")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--auto-toc")));
+        assert!(args.iter().any(|arg| arg == OsStr::new("--no-ocr")));
     }
 
     #[test]

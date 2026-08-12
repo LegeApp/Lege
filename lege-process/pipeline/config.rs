@@ -58,7 +58,7 @@ pub struct BatchInferenceResult {
 pub struct RenderedPageData {
     pub index: usize,
     pub high_res_image: Arc<RgbImage>,
-    pub inference_image: Arc<RgbImage>, // 640×640 stretched for PP-DocLayout
+    pub inference_image: Arc<RgbImage>, // bounded layout-analysis surface for PP-DocLayout
     pub layout_detection_enabled: bool,
     pub original_width_pts: f32,  // Original PDF page width in points
     pub original_height_pts: f32, // Original PDF page height in points
@@ -503,7 +503,11 @@ impl PipelineConfig {
         let enable_layout_detection = cfg!(feature = "layout-detection");
         let config = Self {
             model_path,
-            confidence_threshold: 0.4,
+            // Keep marginal but valid scanned illustrations. The shipped
+            // model scores some full-page engravings around 0.36-0.42; the
+            // substantive-text overlap guard removes the harmful text-column
+            // false positives downstream.
+            confidence_threshold: 0.35,
             nms_threshold: 0.5,
             output_dpi: 300,
             enable_ocr_hint: true,
@@ -542,7 +546,10 @@ impl PipelineConfig {
             crop_footnotes: false,
             crop_free_aspect: false,
             high_res_render_height: 1200,
-            inference_size: 640,
+            // 640 misses large, low-contrast scanned illustrations (including
+            // Structures.pdf page 195). 800 retains the model's image label
+            // while remaining substantially cheaper than 1024 inference.
+            inference_size: 800,
             keep_original_images: true,
             expand_full_bleed_figure_bboxes: true,
             djvu_iw44_quality: 75, // Default to good quality

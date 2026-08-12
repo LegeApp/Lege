@@ -1698,14 +1698,7 @@ fn split_trailing_epub_command(input: &str) -> (String, bool) {
 }
 
 fn print_licenses() {
-    let licenses_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
-        .join("licenses.html");
-
-    match std::fs::read_to_string(&licenses_path) {
-        Ok(licenses) => println!("{}", licenses),
-        Err(_) => println!("License information is bundled in docs/licenses.html."),
-    }
+    println!("{}", include_str!("../../lege-misc/docs/licenses.html"));
 }
 
 fn print_debug_help() {

@@ -681,6 +681,42 @@ record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/3 : work {
     supersedes [ @lege-ecosystem.lege-process.about-gpu-init-2026-08-09/2 ]
 }
 
+record lege-ecosystem.work.about-image-pdf-agent-tool/1 : work {
+    title "Fix embedded About access and Structures image detection; plan native PDF agent tool"
+    state completed
+    scope [
+        path "lege-pdf/render/docs/agent-pdf-tool-plan.md",
+        path "lege-process/**",
+        path "lege-process/GUI/Freya/src/backend.rs"
+    ]
+    intent """
+        Make compile-time About documents readable by sandboxed browsers, diagnose and correct reproducible image-region loss on Structures.pdf pages 190–210, and document a grounded native Lege PDF agent-tool path.
+        """
+    acceptance {
+        check about-readable {
+            statement """
+                Embedded About documents are delivered without browser access to hidden cache files and the Freya tests pass.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.about-loopback-freya-tests/1 ]
+        }
+        check agent-tool-plan {
+            statement """
+                A Markdown plan describes benefits, limits, protocol, rollout, and validation for a native Lege PDF agent tool.
+                """
+            method manual
+            verified_by [ @lege-ecosystem.evidence.native-pdf-agent-tool-plan/1 ]
+        }
+        check structures-diagnosed {
+            statement """
+                Structures.pdf pages 190–210 are traced through detection/postprocessing and any reproducible Lege filtering defect is narrowly fixed and tested.
+                """
+            method observation
+            verified_by [ @lege-ecosystem.evidence.structures-image-overlay-range/1 ]
+        }
+    }
+}
+
 record lege-ecosystem.work.add-jp2decodestats/1 : work {
     title "3. Add `Jp2DecodeStats`"
     state proposed
@@ -911,6 +947,78 @@ record lege-ecosystem.work.eliminate-temporary-full-image-allocation-for/1 : wor
     }
 }
 
+record lege-ecosystem.work.embed-freya-about-documents/1 : work {
+    title "Embed Freya About documents and separate GUI build aliases"
+    state completed
+    scope [
+        path ".cargo/config.toml",
+        path "lege-misc/docs/documentation.html",
+        path "lege-misc/docs/licenses.html",
+        path "lege-process/GUI/Freya/src/app.rs",
+        path "lege-process/GUI/Freya/src/backend.rs",
+        path "lege-process/core/main.rs"
+    ]
+    intent """
+        Make Freya About documentation and license actions independent of release-folder copies, keep one compile-time source of truth, and make cargo gui build Freya while cargo viewer-gui builds the native viewer.
+        """
+    note """
+        The pre-change project, Linux staging, and MSIX documentation files were byte-identical and included Reflow. The project license page was newer than staging and became the canonical audited source.
+        """
+    claim build-aliases {
+        text """
+            cargo gui builds the Lege worker and integrated Freya GUI; cargo viewer-gui builds the separate native viewer.
+            """
+    }
+    claim current-notices {
+        text """
+            The focused license notice names default PP-OCRv5/wgpu and current codecs while removing unused ort/lopdf and describing Tesseract as optional legacy functionality.
+            """
+    }
+    claim embedded-about {
+        text """
+            Freya embeds documentation.html, licenses.html, and the full AGPL text at compile time, materializing only disposable cache files for the system browser.
+            """
+    }
+    claim opener-errors {
+        text """
+            About buttons close only after a successful system opener result and otherwise show the actual error.
+            """
+    }
+    acceptance {
+        check document-audit {
+            statement """
+                Before editing, project/Linux/MSIX documentation copies had identical SHA-256 c78277275d80915433e541dc2e712d18281dd19c7a855b66e0145929d84c9e5a and included the Reflow section.
+                """
+            method observation
+            verified_by [ @lege-ecosystem.evidence.release-document-copy-audit/1 ]
+        }
+        check embedded-output {
+            statement """
+                Built artifacts contain the canonical documents and the CLI prints the embedded updated notice.
+                """
+            method command
+            command "strings target/debug/lege-gui | rg -m 2 'Margin Correction and Reflow|Lege License and Third-Party Notices'; target/debug/lege --licenses | rg 'PaddleOCR / PP-OCRv5'"
+            verified_by [ @lege-ecosystem.evidence.embedded-about-built-output/1 ]
+        }
+        check freya-tests {
+            statement """
+                The complete Freya suite passes, including embedded-content and stale-cache refresh tests.
+                """
+            method command
+            command "cargo test -p lege-gui-freya"
+            verified_by [ @lege-ecosystem.evidence.freya-embedded-about-tests/1 ]
+        }
+        check gui-builds {
+            statement """
+                Both requested GUI build aliases complete successfully and select their intended applications.
+                """
+            method command
+            command "cargo gui && cargo viewer-gui"
+            verified_by [ @lege-ecosystem.evidence.freya-viewer-build-aliases/1 ]
+        }
+    }
+}
+
 record lege-ecosystem.work.end-to-end-oracle-whole-page-vs-pdfium/1 : work {
     title "End-to-end oracle (whole page vs PDFium)"
     state proposed
@@ -957,6 +1065,103 @@ record lege-ecosystem.work.fixed-point-9-7-is-a-later-experiment/1 : work {
             A fixed-point inverse 9/7 implementation may improve speed and reproducibility, but it will probably change some output samples.
             """
     }
+}
+
+record lege-ecosystem.work.fold-automatic-toc-into-ocr/1 : work {
+    title "Fold automatic table of contents into the GUI OCR feature"
+    state superseded
+    scope [
+        path "lege-process/GUI/Freya/src/**",
+        path "lege-process/language_service/*/gui_text.json"
+    ]
+    intent """
+        Make the Freya OCR control own search-overlay, synthesized-TOC, and metadata generation without a separate automatic-TOC GUI setting.
+        """
+    note """
+        The standalone core CLI --auto-toc switch remains available; this change concerns the Freya product model.
+        """
+    claim both-modes {
+        text """
+            Both Fast and Thorough OCR modes request automatic TOC generation, while disabled OCR does not.
+            """
+    }
+    claim single-control {
+        text """
+            Freya presents no separate automatic table-of-contents control or persisted GUI state.
+            """
+    }
+    claim tooltip {
+        text """
+            The English OCR tooltip states that OCR generates the search overlay, TOC, and metadata.
+            """
+    }
+    acceptance {
+        check gui-behavior {
+            statement """
+                The Freya unit suite passes, including OCR-to-TOC worker argument coverage for Fast, Thorough, and disabled OCR.
+                """
+            method command
+            command "cargo test -p lege-gui-freya"
+        }
+        check locale-schema {
+            statement """
+                Bundled GUI locale JSON remains syntactically valid and matches the Rust schema.
+                """
+            method command
+            command "python3 -m json.tool lege-process/language_service/en/gui_text.json >/dev/null && python3 -m json.tool lege-process/language_service/de/gui_text.json >/dev/null && cargo test -p lege-gui-freya gui_text::tests::bundled_locales_match_the_gui_schema"
+        }
+    }
+    derived_from [ @lege-ecosystem.work.make-automatic-toc-explicit/1 ]
+}
+
+record lege-ecosystem.work.fold-automatic-toc-into-ocr/2 : work {
+    title "Fold automatic table of contents into the GUI OCR feature"
+    state completed
+    scope [
+        path "lege-process/GUI/Freya/src/**",
+        path "lege-process/language_service/*/gui_text.json"
+    ]
+    intent """
+        Make the Freya OCR control own search-overlay, synthesized-TOC, and metadata generation without a separate automatic-TOC GUI setting.
+        """
+    note """
+        The standalone core CLI --auto-toc switch remains available; this change concerns the Freya product model.
+        """
+    claim both-modes {
+        text """
+            Both Fast and Thorough OCR modes request automatic TOC generation, while disabled OCR does not.
+            """
+    }
+    claim single-control {
+        text """
+            Freya presents no separate automatic table-of-contents control or persisted GUI state.
+            """
+    }
+    claim tooltip {
+        text """
+            The English OCR tooltip states that OCR generates the search overlay, TOC, and metadata.
+            """
+    }
+    acceptance {
+        check gui-behavior {
+            statement """
+                The Freya unit suite passes, including OCR-to-TOC worker argument coverage for Fast, Thorough, and disabled OCR.
+                """
+            method command
+            command "cargo test -p lege-gui-freya"
+            verified_by [ @lege-ecosystem.evidence.ocr-owned-toc-gui-suite/1 ]
+        }
+        check locale-schema {
+            statement """
+                Bundled GUI locale JSON remains syntactically valid and matches the Rust schema.
+                """
+            method command
+            command "python3 -m json.tool lege-process/language_service/en/gui_text.json >/dev/null && python3 -m json.tool lege-process/language_service/de/gui_text.json >/dev/null && cargo test -p lege-gui-freya gui_text::tests::bundled_locales_match_the_gui_schema"
+            verified_by [ @lege-ecosystem.evidence.ocr-owned-toc-locales/1 ]
+        }
+    }
+    derived_from [ @lege-ecosystem.work.make-automatic-toc-explicit/1 ]
+    supersedes [ @lege-ecosystem.work.make-automatic-toc-explicit/1 ]
 }
 
 record lege-ecosystem.work.full-resolution-correctness/1 : work {
@@ -1169,7 +1374,7 @@ record lege-ecosystem.work.linux-gui-backend-fallback/1 : work {
 
 record lege-ecosystem.work.make-automatic-toc-explicit/1 : work {
     title "Make synthesized table of contents an explicit option"
-    state completed
+    state superseded
     scope [
         path "lege-process/GUI/Freya/src/**",
         path "lege-process/core/main.rs",

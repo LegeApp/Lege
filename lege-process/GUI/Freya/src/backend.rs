@@ -21,6 +21,12 @@ pub use crate::settings::{
 };
 use std::collections::{BTreeSet, VecDeque};
 
+/// About-page documents are part of the executable, so installers do not need
+/// to keep a second, potentially stale `docs/` tree beside `lege-gui`.
+pub const DOCUMENTATION_HTML: &str = include_str!("../../../../lege-misc/docs/documentation.html");
+pub const LICENSES_HTML: &str = include_str!("../../../../lege-misc/docs/licenses.html");
+const LEGE_LICENSE: &str = include_str!("../../../LICENSE");
+
 /// Information about a spawned processing task
 #[derive(Clone, Debug)]
 pub struct TrackerInfo {
@@ -522,29 +528,149 @@ pub fn open_with_system(target: &str) -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open").arg(target).spawn()?;
+        // A successful spawn is not enough: xdg-open can start and immediately
+        // fail when a desktop has no registered handler. Prefer GIO, inspect
+        // dispatcher exit status, then fall back to common browser launchers.
+        let mut errors = Vec::new();
+        for (program, args) in [("gio", vec!["open", target]), ("xdg-open", vec![target])] {
+            match std::process::Command::new(program).args(args).status() {
+                Ok(status) if status.success() => return Ok(()),
+                Ok(status) => errors.push(format!("{program} exited with {status}")),
+                Err(error) => errors.push(format!("{program}: {error}")),
+            }
+        }
+
+        for program in [
+            "sensible-browser",
+            "x-www-browser",
+            "firefox",
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+        ] {
+            match std::process::Command::new(program).arg(target).spawn() {
+                Ok(_) => return Ok(()),
+                Err(error) => errors.push(format!("{program}: {error}")),
+            }
+        }
+
+        anyhow::bail!(
+            "no system browser accepted the embedded document ({})",
+            errors.join("; ")
+        );
     }
 
+    #[allow(unreachable_code)]
     Ok(())
 }
 
-/// Resolve a bundled docs file located next to the installed binary under `docs/`.
-pub fn bundled_docs_path(file_name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    Some(exe_dir.join("docs").join(file_name))
+fn embedded_document_response(path: &str) -> Option<(&'static str, &'static [u8])> {
+    match path.split('?').next().unwrap_or(path) {
+        "/documentation.html" => Some(("text/html; charset=utf-8", DOCUMENTATION_HTML.as_bytes())),
+        "/licenses.html" => Some(("text/html; charset=utf-8", LICENSES_HTML.as_bytes())),
+        "/LICENSE.txt" => Some(("text/plain; charset=utf-8", LEGE_LICENSE.as_bytes())),
+        _ => None,
+    }
 }
 
-/// Like [`bundled_docs_path`] but returns `None` if the file does not exist.
-/// Also checks next to the exe directly (for flat release layouts).
-pub fn bundled_docs_path_if_exists(file_name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    let candidates = [
-        exe_dir.join("docs").join(file_name),
-        exe_dir.join(file_name),
-    ];
-    candidates.into_iter().find(|p| p.exists())
+fn start_embedded_document_server() -> std::result::Result<u16, String> {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    fn serve(mut stream: TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+
+        let mut request = Vec::with_capacity(1024);
+        while request.len() < 16 * 1024 && !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let mut chunk = [0_u8; 1024];
+            let Ok(bytes_read) = stream.read(&mut chunk) else {
+                return;
+            };
+            if bytes_read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..bytes_read]);
+        }
+        let request = String::from_utf8_lossy(&request);
+        let path = request
+            .lines()
+            .next()
+            .and_then(|line| {
+                let mut fields = line.split_whitespace();
+                (fields.next() == Some("GET"))
+                    .then(|| fields.next())
+                    .flatten()
+            })
+            .unwrap_or("");
+
+        let (status, content_type, body) = match embedded_document_response(path) {
+            Some((content_type, body)) => ("200 OK", content_type, body),
+            None => (
+                "404 Not Found",
+                "text/plain; charset=utf-8",
+                b"Not found" as &[u8],
+            ),
+        };
+        let headers = format!(
+            "HTTP/1.1 {status}\r\n\
+             Content-Type: {content_type}\r\n\
+             Content-Length: {}\r\n\
+             Cache-Control: no-store\r\n\
+             X-Content-Type-Options: nosniff\r\n\
+             Connection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(headers.as_bytes());
+        let _ = stream.write_all(body);
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
+
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| format!("bind About-page loopback server: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("read About-page loopback address: {error}"))?
+        .port();
+    std::thread::Builder::new()
+        .name("lege-about-pages".to_string())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => serve(stream),
+                    Err(_) => break,
+                }
+            }
+        })
+        .map_err(|error| format!("start About-page loopback server: {error}"))?;
+    Ok(port)
+}
+
+fn embedded_document_url(file_name: &str) -> Result<String> {
+    anyhow::ensure!(
+        matches!(file_name, "documentation.html" | "licenses.html"),
+        "unknown embedded document {file_name:?}"
+    );
+
+    static SERVER_PORT: std::sync::OnceLock<std::result::Result<u16, String>> =
+        std::sync::OnceLock::new();
+    let port = SERVER_PORT
+        .get_or_init(start_embedded_document_server)
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!(error.clone()))?;
+    Ok(format!("http://127.0.0.1:{port}/{file_name}"))
+}
+
+/// Open a document embedded in the Freya binary at compile time.
+pub fn open_embedded_document(file_name: &str, contents: &str) -> Result<()> {
+    anyhow::ensure!(
+        embedded_document_response(&format!("/{file_name}"))
+            .is_some_and(|(_, embedded)| embedded == contents.as_bytes()),
+        "the requested document is not the compile-time embedded {file_name}"
+    );
+    open_with_system(&embedded_document_url(file_name)?)
 }
 
 // A helper function to truncate the path from the beginning.
@@ -577,4 +703,60 @@ pub fn truncate_path(path: &std::path::Path, max_len: usize) -> String {
     }
 
     format!("...{}{}", std::path::MAIN_SEPARATOR_STR, result)
+}
+
+#[cfg(test)]
+mod embedded_document_tests {
+    use super::{
+        DOCUMENTATION_HTML, LEGE_LICENSE, LICENSES_HTML, embedded_document_response,
+        embedded_document_url,
+    };
+
+    #[test]
+    fn about_documents_are_embedded_and_current() {
+        assert!(DOCUMENTATION_HTML.contains("Margin Correction and Reflow"));
+        assert!(DOCUMENTATION_HTML.contains("PP-OCRv5"));
+        assert!(LICENSES_HTML.contains("PaddleOCR"));
+        assert!(LICENSES_HTML.contains("LICENSE.txt"));
+        assert!(LEGE_LICENSE.contains("GNU AFFERO GENERAL PUBLIC LICENSE"));
+    }
+
+    #[test]
+    fn embedded_document_server_only_exposes_compile_time_assets() {
+        assert_eq!(
+            embedded_document_response("/documentation.html?cache-bust=1"),
+            Some(("text/html; charset=utf-8", DOCUMENTATION_HTML.as_bytes()))
+        );
+        assert_eq!(
+            embedded_document_response("/LICENSE.txt"),
+            Some(("text/plain; charset=utf-8", LEGE_LICENSE.as_bytes()))
+        );
+        assert!(embedded_document_response("/../documentation.html").is_none());
+        assert!(embedded_document_url("../documentation.html").is_err());
+    }
+
+    #[test]
+    fn embedded_document_url_is_readable_without_filesystem_access() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let url = embedded_document_url("documentation.html").unwrap();
+        let address_and_path = url.strip_prefix("http://").unwrap();
+        let (address, path) = address_and_path.split_once('/').unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "GET /{path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(
+            response
+                .windows(DOCUMENTATION_HTML.len())
+                .any(|window| window == DOCUMENTATION_HTML.as_bytes())
+        );
+    }
 }

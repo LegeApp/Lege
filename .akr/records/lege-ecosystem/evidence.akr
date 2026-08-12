@@ -1,6 +1,18 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.evidence.about-loopback-freya-tests/1 : evidence {
+    title "Embedded About loopback delivery passes Freya suite"
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "cargo test -p lege-gui-freya"
+    summary """
+        All 38 Freya tests passed, including end-to-end loopback readability and exact embedded document allowlisting.
+        """
+}
+
 record lege-ecosystem.evidence.auto-toc-djvu-tests/1 : evidence {
     title "The complete DjVu encoder suite and doctests passed; NAVM output was also decoded by DjVuLibre when available."
     state verified
@@ -106,6 +118,57 @@ record lege-ecosystem.evidence.discrete-gpu-selection-policy-tests/1 : evidence 
     command "cargo test -p lege-gpu wgpu_setup::tests --lib"
     summary """
         Both deterministic device-type ordering and case-insensitive WGPU_ADAPTER_NAME override matching passed.
+        """
+}
+
+record lege-ecosystem.evidence.embedded-about-built-output/1 : evidence {
+    title "The built Freya executable contained both canonical About documents and the CLI emitted the embedded PP-OCRv5-aware license notice."
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "strings target/debug/lege-gui | rg -m 2 'Margin Correction and Reflow|Lege License and Third-Party Notices'; target/debug/lege --licenses | rg 'PaddleOCR / PP-OCRv5'"
+    artifact "target/debug/lege-gui"
+    summary """
+        The built Freya executable contained both canonical About documents and the CLI emitted the embedded PP-OCRv5-aware license notice.
+        """
+}
+
+record lege-ecosystem.evidence.freya-embedded-about-tests/1 : evidence {
+    title "All 37 Freya tests passed, including compile-time document presence, current-content assertions, stale cache refresh, and traversal rejection."
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "cargo test -p lege-gui-freya"
+    artifact "lege-process/GUI/Freya/src/backend.rs"
+    summary """
+        All 37 Freya tests passed, including compile-time document presence, current-content assertions, stale cache refresh, and traversal rejection.
+        """
+}
+
+record lege-ecosystem.evidence.freya-viewer-build-aliases/1 : evidence {
+    title "The standard Freya processor GUI/worker build and the separate native viewer build both completed successfully."
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "cargo gui && cargo viewer-gui"
+    artifact ".cargo/config.toml"
+    summary """
+        The standard Freya processor GUI/worker build and the separate native viewer build both completed successfully.
+        """
+}
+
+record lege-ecosystem.evidence.image-detection-policy-tests/1 : evidence {
+    title "Bilevel image retention policy tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "cargo test -p lege --lib image_detection_policy_tests && cargo test -p lege --lib layout_mode_adds_low_resolution_analysis_surface"
+    summary """
+        Both planned-path image policy regressions and the bounded analysis-surface plan test passed.
         """
 }
 
@@ -219,6 +282,18 @@ record lege-ecosystem.evidence.linux-gui-stale-wayland-fallback/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.native-pdf-agent-tool-plan/1 : evidence {
+    title "Native PDF agent tool plan written"
+    state verified
+    result pass
+    method manual
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    artifact "lege-pdf/render/docs/agent-pdf-tool-plan.md"
+    summary """
+        The plan documents the existing crate foundation, measured baseline, agent protocol, bounded JSON/JSONL contract, phased implementation, limitations, and validation criteria.
+        """
+}
+
 record lege-ecosystem.evidence.ocr-foundation-clippy-cli-2026-08-11/1 : evidence {
     title "OCR CLI lint"
     state verified
@@ -268,6 +343,32 @@ record lege-ecosystem.evidence.ocr-gpu-scheduler-specialists-2026-08-11/1 : evid
     artifact "lege-gpu"
     summary """
         All lege-ocr tests and 61 lege-gpu tests passed (one manual benchmark ignored), including compact CTC decode parity and the real WGPU top-two reduction test.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-owned-toc-gui-suite/1 : evidence {
+    title "All 35 Freya tests passed, including Fast, Thorough, and disabled OCR automatic-TOC argument coverage."
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "cargo test -p lege-gui-freya"
+    artifact "lege-process/GUI/Freya/src/worker_process.rs"
+    summary """
+        All 35 Freya tests passed, including Fast, Thorough, and disabled OCR automatic-TOC argument coverage.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-owned-toc-locales/1 : evidence {
+    title "English and German locale JSON parsed and the bundled-locale GUI schema test passed."
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "python3 -m json.tool lege-process/language_service/en/gui_text.json >/dev/null && python3 -m json.tool lege-process/language_service/de/gui_text.json >/dev/null && cargo test -p lege-gui-freya gui_text::tests::bundled_locales_match_the_gui_schema"
+    artifact "lege-process/language_service/en/gui_text.json"
+    summary """
+        English and German locale JSON parsed and the bundled-locale GUI schema test passed.
         """
 }
 
@@ -332,6 +433,18 @@ record lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 : evidence 
         """
 }
 
+record lege-ecosystem.evidence.release-document-copy-audit/1 : evidence {
+    title "Before canonical edits, project, Linux staging, and MSIX documentation.html copies were byte-identical at SHA-256 c78277275d80915433e541dc2e712d18281dd19c7a855b66e0145929d84c9e5a and all contained the Reflow section."
+    state verified
+    result pass
+    method observation
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    artifact "lege-misc/docs/documentation.html"
+    summary """
+        Before canonical edits, project, Linux staging, and MSIX documentation.html copies were byte-identical at SHA-256 c78277275d80915433e541dc2e712d18281dd19c7a855b66e0145929d84c9e5a and all contained the Reflow section.
+        """
+}
+
 record lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 : evidence {
     title "RTX 4060 exists but is not Vulkan-visible in this environment"
     state verified
@@ -341,6 +454,18 @@ record lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 : evidence {
     command "nvidia-smi -L; env -u WGPU_ADAPTER_NAME LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
     summary """
         nvidia-smi saw the RTX 4060, while wgpu enumerated only Intel Iris Xe and llvmpipe. Vulkan loader diagnostics showed the NVIDIA ICD could not load libGLX_nvidia.so.0 because only an i386 library was installed.
+        """
+}
+
+record lege-ecosystem.evidence.structures-image-overlay-range/1 : evidence {
+    title "Structures pages 190–210 retain all detected illustrations"
+    state verified
+    result pass
+    method command
+    observed_at git:5111194256cf31247e1d5157a120595619554520
+    command "target/debug/lege /home/dk/Desktop/Structures.pdf 190-210 2000 --no-ocr --text-format ccitt4 --output /tmp/lege-final-190210-jinmEL && pdfimages -list /tmp/lege-final-190210-jinmEL/Structures_processed_2026-08-12_085033.pdf"
+    summary """
+        The 21-page output had two image objects (CCITT base plus JP2 overlay) exactly on source pages 195, 197, 198, 199, 202, 204, and 208; every other page had only the CCITT base.
         """
 }
 
