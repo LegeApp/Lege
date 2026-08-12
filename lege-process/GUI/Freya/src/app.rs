@@ -2843,7 +2843,14 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     let state_for_licenses = state;
 
     let content = rect()
-        .width(Size::px(if show_chooser { 480. } else { 300. }))
+        // In the normal About view the version header is above the actions, so
+        // the dialog can size itself to the compact button row. The theme
+        // chooser is the one view that needs a deliberate fixed width.
+        .width(if show_chooser {
+            Size::px(480.)
+        } else {
+            Size::auto()
+        })
         .padding(10.)
         .spacing(6.)
         .child(

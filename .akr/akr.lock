@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:799f1c9bc2d23ac7f0d93c9eb58aa03c1bc77b554f77e77c5faa3a550ed4ac63"
+    source_graph "sha256:fd6d9294db5c707a892c339be60569781521ade66a46cf5fb4005644b8043faf"
 }
 
 source ".akr/project.akr" {
@@ -59,8 +59,8 @@ source ".akr/records/lege-ecosystem/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:a51c91d40211cd91f8a140db10ca9e7e641586273ed431a18643622a08f8c73d"
-    records 44
+    hash "sha256:7f199793c2d36a746dd8f7f09667e910a94c30554eefb9c697e829630d8e99bf"
+    records 45
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -89,8 +89,8 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:cf75269c789d80d2931ed9f3e6ce819b4eaaf5d691774ef70416a83dfb646e0f"
-    records 93
+    hash "sha256:7d2f337de07e468a4137d4e15440c6bb99835d3b088d4d77292e1fb4e6dc9be5"
+    records 94
 }
 
 seal @lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 {
@@ -101,6 +101,11 @@ seal @lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 {
 seal @lege-ecosystem.encode-quality.root-cause/1 {
     state verified
     hash "sha256:6060cc46281a3dd1e8cad1fa5b1f25e1ed2077d460348a804cb6cbe3bf2d1276"
+}
+
+seal @lege-ecosystem.evidence.about-auto-width-freya-test/1 {
+    state verified
+    hash "sha256:9f6433fb5b60153832fac0021e1315848ef93a9da9f1a392ad7695479405ea88"
 }
 
 seal @lege-ecosystem.evidence.about-loopback-freya-tests/1 {
@@ -436,6 +441,11 @@ seal @lege-ecosystem.work.about-image-pdf-agent-tool/1 {
 seal @lege-ecosystem.work.auto-toc-all-outputs/1 {
     state completed
     hash "sha256:22e27177fb0425b462b6c2db8fc2ae8e075024818ac864b8e64e55e5a39e2686"
+}
+
+seal @lege-ecosystem.work.auto-width-about-dialog/1 {
+    state completed
+    hash "sha256:9f9ae4b5c33667c74573c6ff58166188605bd00c596c00556382e5cb8fdda7fe"
 }
 
 seal @lege-ecosystem.work.embed-freya-about-documents/1 {

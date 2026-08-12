@@ -1,6 +1,18 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.evidence.about-auto-width-freya-test/1 : evidence {
+    title "About auto-width focused test passes"
+    state verified
+    result pass
+    method command
+    observed_at git:e62ecbe637f25d08def916a9416680502bffc7cb
+    command "cargo test -p lege-gui-freya embedded_document_tests && git diff --check"
+    summary """
+        The focused embedded About tests passed after the normal dialog content switched to automatic width; the theme chooser remains fixed at 480px.
+        """
+}
+
 record lege-ecosystem.evidence.about-loopback-freya-tests/1 : evidence {
     title "Embedded About loopback delivery passes Freya suite"
     state verified

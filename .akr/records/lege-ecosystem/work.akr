@@ -851,6 +851,24 @@ record lege-ecosystem.work.auto-toc-all-outputs/1 : work {
     }
 }
 
+record lege-ecosystem.work.auto-width-about-dialog/1 : work {
+    title "Auto-size the compact About dialog"
+    state completed
+    scope [ path "lege-process/GUI/Freya/src/app.rs" ]
+    intent """
+        Allow the normal About dialog to shrink to its version header and compact action row while keeping the theme chooser wide enough for its controls.
+        """
+    acceptance {
+        check about-auto-width {
+            statement """
+                The normal About content uses automatic width, the chooser retains its fixed width, and focused Freya tests pass.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.about-auto-width-freya-test/1 ]
+        }
+    }
+}
+
 record lege-ecosystem.work.component-level-parallelism/1 : work {
     title "26. Component-level parallelism"
     state proposed
