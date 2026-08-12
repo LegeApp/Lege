@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>com.legeapp.Lege</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>AGPL-3.0-only</project_license>
+  <project_license>MIT</project_license>
   <name>Lege</name>
   <summary>Prepare scanned documents for E-Ink readers</summary>
   <description>

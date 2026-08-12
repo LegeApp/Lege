@@ -718,7 +718,7 @@ mod embedded_document_tests {
         assert!(DOCUMENTATION_HTML.contains("PP-OCRv5"));
         assert!(LICENSES_HTML.contains("PaddleOCR"));
         assert!(LICENSES_HTML.contains("LICENSE.txt"));
-        assert!(LEGE_LICENSE.contains("GNU AFFERO GENERAL PUBLIC LICENSE"));
+        assert!(LEGE_LICENSE.contains("MIT License"));
     }
 
     #[test]

@@ -282,6 +282,30 @@ record lege-ecosystem.evidence.linux-gui-stale-wayland-fallback/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.mit-license-notice-audit/1 : evidence {
+    title "MIT main license and separate notices audited"
+    state verified
+    result pass
+    method command
+    observed_at git:2a86e460a862cff4c792c5e2ea1dd9ed63881ce6
+    command "rg -n \"MIT License|Leptonica-derived compatibility|djvu-encoder.*AGPL|Readme\" lege-process/LICENSE lege-misc/docs/licenses.html lege-process/GUI/Freya/src/app.rs lege-process/language_service/en/gui_text.json"
+    summary """
+        Lege's main text is MIT; the notice retains the small BSD-2-Clause Leptonica-derived compatibility portion and the separate AGPL djvu-encoder executable.
+        """
+}
+
+record lege-ecosystem.evidence.mit-license-readme-freya/1 : evidence {
+    title "MIT license presentation and Readme About control validated"
+    state verified
+    result pass
+    method command
+    observed_at git:2a86e460a862cff4c792c5e2ea1dd9ed63881ce6
+    command "cargo test -p lege-gui-freya && cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == \"lege\") | .license' && git diff --check"
+    summary """
+        All 38 Freya tests passed; embedded license delivery contains the MIT text; Cargo metadata reports MIT; and the compact About actions expose the localized Readme label.
+        """
+}
+
 record lege-ecosystem.evidence.native-pdf-agent-tool-plan/1 : evidence {
     title "Native PDF agent tool plan written"
     state verified

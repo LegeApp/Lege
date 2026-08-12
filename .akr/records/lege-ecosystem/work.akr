@@ -1568,6 +1568,42 @@ record lege-ecosystem.work.milestone-8-roi-decode/1 : work {
     }
 }
 
+record lege-ecosystem.work.mit-license-readme-about/1 : work {
+    title "Present Lege as MIT-licensed and relabel About readme"
+    state completed
+    scope [
+        path "Cargo.toml",
+        path "lege-misc/docs/documentation.html",
+        path "lege-misc/docs/licenses.html",
+        path "lege-process/Cargo.toml",
+        path "lege-process/GUI/Freya/src/app.rs",
+        path "lege-process/GUI/Freya/src/backend.rs",
+        path "lege-process/LICENSE",
+        path "lege-process/README.md",
+        path "lege-process/language_service/**/*.json",
+        path "lege-process/packaging/appimage/com.legeapp.Lege.appdata.xml"
+    ]
+    intent """
+        Replace stale AGPL presentation for Lege with MIT license material and metadata while retaining the separately distributed AGPL djvu-encoder notice, and make the compact About-page Readme button fit its neighbors.
+        """
+    acceptance {
+        check mit-license-material {
+            statement """
+                Lege's shipped license text, crate metadata, AppStream metadata, README, and embedded notices identify MIT while leaving the separate djvu-encoder AGPL notice intact.
+                """
+            method manual
+            verified_by [ @lege-ecosystem.evidence.mit-license-notice-audit/1 ]
+        }
+        check readme-about-ui {
+            statement """
+                The embedded About document tests pass with the Readme label and compact About action buttons.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.mit-license-readme-freya/1 ]
+        }
+    }
+}
+
 record lege-ecosystem.work.next-audit-phases-after-structural-dwt-openjpeg/1 : work {
     title "Next audit phases (after structural DWT + OpenJPEG baseline)"
     state proposed

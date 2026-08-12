@@ -9,6 +9,7 @@ homepage = "https://www.legeapp.com"
 repository = "https://github.com/LegeApp/Lege/"
 keywords = ["pdf", "ocr", "ebook", "e-ink", "image-processing"]
 categories = ["multimedia::images", "text-processing"]
+license = "MIT"
 
 [lib]
 path = "core/lib.rs"

@@ -2837,7 +2837,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     }));
     let on_close_request = on_close.clone();
     let on_close_button = on_close.clone();
-    let documentation_button = on_close.clone();
+    let readme_button = on_close.clone();
     let licenses_button = on_close.clone();
     let state_for_docs = state;
     let state_for_licenses = state;
@@ -2879,6 +2879,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
             PopupButtons::new()
                 .child(
                     Button::new()
+                        .compact()
                         .on_press(move |_| {
                             // Opens the theme chooser in place; About stays open.
                             state.write().show_theme_chooser = true;
@@ -2887,16 +2888,17 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                 )
                 .child(
                     Button::new()
+                        .compact()
                         .on_press(move |_| {
                             match backend::open_embedded_document(
                                 "documentation.html",
                                 backend::DOCUMENTATION_HTML,
                             ) {
-                                Ok(()) => (documentation_button.borrow_mut())(),
+                                Ok(()) => (readme_button.borrow_mut())(),
                                 Err(error) => schedule_popup(
                                     state_for_docs,
                                     PopupKind::Warning,
-                                    format!("Could not open documentation: {error}"),
+                                    format!("Could not open Readme: {error}"),
                                     8,
                                 ),
                             }
@@ -2905,6 +2907,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                 )
                 .child(
                     Button::new()
+                        .compact()
                         .on_press(move |_| {
                             match backend::open_embedded_document(
                                 "licenses.html",
@@ -2923,6 +2926,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                 )
                 .child(
                     Button::new()
+                        .compact()
                         .filled()
                         .on_press(move |_| (on_close_button.borrow_mut())())
                         .child(

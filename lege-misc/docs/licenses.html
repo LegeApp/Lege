@@ -80,14 +80,15 @@
   <main>
     <h1>Lege License and Third-Party Notices</h1>
     <p class="lede">This file summarizes the current license position of Lege and the main third-party components that are distributed with, linked by, or required by the program.</p>
-    <p>Lege itself is released under a strong copyleft license, but third-party components still retain their own licenses and notices.</p>
+    <p>Lege itself is released under the MIT License. Third-party components retain their own licenses and notices.</p>
 
     <h2>Lege License</h2>
-    <p>The Lege processor and Freya GUI are licensed under the GNU Affero General Public License, version 3. See the embedded <a href="LICENSE.txt">LICENSE.txt</a> file for the full text.</p>
+    <p>The Lege processor and Freya GUI are licensed under the MIT License. See the embedded <a href="LICENSE.txt">LICENSE.txt</a> file for the full text.</p>
     <p>This means:</p>
     <ul>
-      <li>Lege is not an MIT- or Apache-licensed application.</li>
-      <li>More permissive licenses used by dependencies do not change Lege&rsquo;s own license.</li>
+      <li>Lege is MIT-licensed.</li>
+      <li>A small Leptonica-derived compatibility portion retains its BSD-2-Clause notice while it is being removed.</li>
+      <li>The separately distributed <code>djvu-encoder</code> executable is AGPL-3.0-only; it is not linked into Lege.</li>
       <li>Third-party notices still matter and are preserved below.</li>
     </ul>
 
@@ -112,6 +113,7 @@
         <tr><td>jp2lam</td><td>JPEG 2000 codec</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project and linked by Lege.</td></tr>
         <tr><td>fast_image_resize</td><td>CPU image resizing</td><td>MIT OR Apache-2.0</td><td>Used by the CPU resize path.</td></tr>
         <tr><td>rfd</td><td>Native file dialogs</td><td>MIT</td><td>Vendored with its license text under the GUI source tree.</td></tr>
+        <tr><td>Leptonica-derived compatibility code</td><td>Small temporary compatibility portion</td><td>BSD-2-Clause</td><td>Retains its applicable notice while the code is being removed.</td></tr>
         <tr><td>djvu-encoder</td><td>Optional DjVu output helper executable</td><td>AGPL-3.0-only</td><td>Distributed as a separate command-line program and invoked by Lege; it is not linked into Lege.</td></tr>
       </tbody>
     </table>

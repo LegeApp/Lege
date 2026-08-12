@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:368facfd728d84fe1099fcd74f3c02521f55e72c93f5110888359dd79203484e"
+    source_graph "sha256:799f1c9bc2d23ac7f0d93c9eb58aa03c1bc77b554f77e77c5faa3a550ed4ac63"
 }
 
 source ".akr/project.akr" {
@@ -59,8 +59,8 @@ source ".akr/records/lege-ecosystem/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:e60d1975091ea3b4b406bdc0275a3e400d1ea3365ed10e943eb8e84e697cb1ec"
-    records 42
+    hash "sha256:a51c91d40211cd91f8a140db10ca9e7e641586273ed431a18643622a08f8c73d"
+    records 44
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -89,8 +89,8 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:6a5df021c29560ef57b315418a2d6807e653450eb018621af267195e9b1b6fd6"
-    records 92
+    hash "sha256:cf75269c789d80d2931ed9f3e6ce819b4eaaf5d691774ef70416a83dfb646e0f"
+    records 93
 }
 
 seal @lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 {
@@ -216,6 +216,16 @@ seal @lege-ecosystem.evidence.linux-gui-freya-build/1 {
 seal @lege-ecosystem.evidence.linux-gui-stale-wayland-fallback/1 {
     state verified
     hash "sha256:ee7a4f181a4f6ee5dbfb11af612c9e2de5206083d390631fa56df5ddfb2d9043"
+}
+
+seal @lege-ecosystem.evidence.mit-license-notice-audit/1 {
+    state verified
+    hash "sha256:8ea31d4244c6b30d2a35c6f7a264e13e2720a20f2d3173f4521ee3c9639ac7d4"
+}
+
+seal @lege-ecosystem.evidence.mit-license-readme-freya/1 {
+    state verified
+    hash "sha256:453349f26b7160f2f90472198bda1f794d132e3d8508854e754f75dec8d223ee"
 }
 
 seal @lege-ecosystem.evidence.native-pdf-agent-tool-plan/1 {
@@ -451,6 +461,11 @@ seal @lege-ecosystem.work.linux-gui-backend-fallback/1 {
 seal @lege-ecosystem.work.make-automatic-toc-explicit/1 {
     state superseded
     hash "sha256:f1749ef02edcf606b10c39383974309ea6d5753411163ed69374746a8f16628f"
+}
+
+seal @lege-ecosystem.work.mit-license-readme-about/1 {
+    state completed
+    hash "sha256:8b08acec10fb57e36c91569721fd50d0b3c95501189734302d25a7059bd0295a"
 }
 
 seal @lege-ecosystem.work.ocr-backend-scheduler/1 {

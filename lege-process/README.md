@@ -248,6 +248,7 @@ location at `../lege-pdf/render`.
 
 ## License
 
-AGPL-3.0. See `LICENSE`. Third-party licenses are documented under `docs/`.
+MIT. See `LICENSE`. The separately distributed `djvu-encoder` executable is
+AGPL-3.0-only; third-party licenses are documented under `docs/`.
 
 ---
