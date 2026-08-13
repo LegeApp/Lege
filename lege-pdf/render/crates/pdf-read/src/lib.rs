@@ -50,6 +50,78 @@ pub struct EncryptionInfo {
     pub user_password_empty: bool,
 }
 
+/// The `%PDF` header, and how far into the file it was found.
+#[derive(Debug, Clone)]
+pub struct HeaderInfo {
+    /// `/Version` major from the header, e.g. 1 in `%PDF-1.7`.
+    pub major: u8,
+    /// `/Version` minor from the header, e.g. 7 in `%PDF-1.7`.
+    pub minor: u8,
+    /// Bytes of leading garbage before `%PDF`. Zero for a well-formed file;
+    /// non-zero means every structural offset in the file is shifted by this
+    /// much relative to the source.
+    pub header_offset: u64,
+}
+
+/// Identity and provenance the document declares about itself.
+///
+/// Neutral facts only: these are what the file *says*, with no judgement about
+/// whether it is telling the truth. The trailer `/ID` pair is the interesting
+/// one — its first element is meant to persist across a document's whole edit
+/// history while the second changes on each save, so the pair carries lineage
+/// that survives independently of any metadata a writer chose to update.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentIdentity {
+    /// Lowercase hex of the permanent trailer `/ID[0]`, if present.
+    pub id_permanent: Option<String>,
+    /// Lowercase hex of the changing trailer `/ID[1]`, if present.
+    pub id_changing: Option<String>,
+    /// `/Info` dictionary entries with string values, by key. Includes the
+    /// conventional `/Producer`, `/Creator`, `/CreationDate` and `/ModDate`,
+    /// and any non-standard keys a writer added, which are often the more
+    /// telling ones.
+    pub info: BTreeMap<String, String>,
+    /// Whether the catalog carries an XMP `/Metadata` stream. The stream's
+    /// contents — including the `xmpMM` lineage identifiers — are not parsed
+    /// here yet.
+    pub has_xmp_metadata: bool,
+}
+
+/// One signature field and what it covers.
+#[derive(Debug, Clone)]
+pub struct SignatureInfo {
+    /// The field's `/T` name, if it has one.
+    pub field_name: Option<String>,
+    /// `/Filter` — the handler that produced the signature, e.g. `Adobe.PPKLite`.
+    pub filter: Option<String>,
+    /// `/SubFilter` — the signature encoding, e.g. `ETSI.CAdES.detached`.
+    pub sub_filter: Option<String>,
+    /// `/M` — the claimed signing time, verbatim and unparsed.
+    pub signed_at: Option<String>,
+    /// `/ByteRange`, verbatim. Conventionally four numbers: two
+    /// offset/length pairs straddling the signature itself.
+    pub byte_range: Vec<i64>,
+    /// Whether `/ByteRange` spans the entire file — that is, starts at zero
+    /// and its last pair ends at the final byte.
+    ///
+    /// A signature covering less than the whole file is the structural half of
+    /// the classic incremental-update attack: content appended after the
+    /// signed range is not signed, however valid the cryptography over the
+    /// range turns out to be. This says nothing about whether the signature
+    /// verifies; that is a separate, later question.
+    pub covers_whole_file: bool,
+}
+
+/// Signature fields found in the `/AcroForm`.
+#[derive(Debug, Clone, Default)]
+pub struct SignatureInventory {
+    /// Every `/FT /Sig` field, in `/Fields` order.
+    pub signatures: Vec<SignatureInfo>,
+    /// Signature fields present but carrying no `/V` signature dictionary —
+    /// an unsigned signature field, which is ordinary in a blank form.
+    pub unsigned_fields: u32,
+}
+
 /// Cross-reference health.
 #[derive(Debug, Clone, Default)]
 pub struct XrefHealth {
@@ -109,16 +181,26 @@ pub struct FeatureFlags {
     pub has_outlines: bool,
     pub has_optional_content: bool,
     pub uses_object_streams: bool,
+    /// The name tree carries `/EmbeddedFiles` — the document has file
+    /// attachments.
+    pub has_embedded_files: bool,
 }
 
 /// The full examination result.
 #[derive(Debug, Clone)]
 pub struct DocumentReport {
     pub open: OpenOutcome,
+    /// The `%PDF` header. `None` only when no header could be found at all,
+    /// which is also the reason the document failed to open.
+    pub header: Option<HeaderInfo>,
     pub encryption: Option<EncryptionInfo>,
     pub xref: XrefHealth,
+    /// What the document declares about its own identity and provenance.
+    pub identity: DocumentIdentity,
     pub pages: Vec<PageStatus>,
     pub annotations: AnnotationInventory,
+    /// Signature fields and the byte ranges they cover.
+    pub signatures: SignatureInventory,
     pub features: FeatureFlags,
 }
 
@@ -167,13 +249,18 @@ fn examine_open(snapshot: &DocumentSnapshot) -> DocumentReport {
     let pages = examine_pages(snapshot);
     let annotations = inventory_annotations(snapshot, &mut ctx);
     let features = read_features(snapshot, &mut ctx);
+    let identity = read_identity(snapshot, &mut ctx);
+    let signatures = inventory_signatures(snapshot, &mut ctx);
 
     DocumentReport {
         open,
+        header: Some(read_header(snapshot.structure())),
         encryption,
         xref,
+        identity,
         pages,
         annotations,
+        signatures,
         features,
     }
 }
@@ -188,10 +275,13 @@ fn examine_failed(
 ) -> DocumentReport {
     let mut report = DocumentReport {
         open: OpenOutcome::Failed { error },
+        header: None,
         encryption: None,
         xref: XrefHealth::default(),
+        identity: DocumentIdentity::default(),
         pages: Vec::new(),
         annotations: AnnotationInventory::default(),
+        signatures: SignatureInventory::default(),
         features: FeatureFlags::default(),
     };
 
@@ -215,6 +305,11 @@ fn examine_failed(
         revision_count: structure.revisions.len(),
     };
     report.features.uses_object_streams = xref_uses_object_streams(&structure.xref);
+    report.header = Some(read_header(&structure));
+    // The trailer `/ID` pair is never encrypted, so lineage survives even for
+    // a document we cannot open. `/Info` does not: its strings are encrypted
+    // like any others, so it is left to the open path.
+    read_file_id(&structure.trailer, &mut report.identity);
 
     // A security-less snapshot over the loaded structure lets the existing
     // resolver read the (never-encrypted) /Encrypt dictionary for us.
@@ -299,6 +394,255 @@ fn dict_get_resolved(
     ctx: &mut ParseContext,
 ) -> Option<Arc<PdfObject>> {
     resolve_value(snapshot, dict.get(key)?, ctx)
+}
+
+// ── header and identity ─────────────────────────────────────────────────────
+
+fn read_header(structure: &pdf_structure::DocumentStructure) -> HeaderInfo {
+    HeaderInfo {
+        major: structure.version.major,
+        minor: structure.version.minor,
+        header_offset: structure.header_offset,
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// The trailer `/ID` pair, which needs no decryption.
+fn read_file_id(trailer: &pdf_structure::Trailer, identity: &mut DocumentIdentity) {
+    if let Some([permanent, changing]) = trailer.file_id.as_ref() {
+        identity.id_permanent = Some(hex(permanent.as_bytes()));
+        identity.id_changing = Some(hex(changing.as_bytes()));
+    }
+}
+
+fn read_identity(snapshot: &DocumentSnapshot, ctx: &mut ParseContext) -> DocumentIdentity {
+    let mut identity = DocumentIdentity::default();
+    let structure = snapshot.structure();
+    read_file_id(&structure.trailer, &mut identity);
+
+    let names = snapshot.names();
+
+    // Every /Info entry with a string value, standard or not. Non-standard
+    // keys are kept deliberately: a writer that adds its own is identifying
+    // itself as surely as /Producer does.
+    if let Some(info_id) = structure.trailer.info
+        && let Some(info) = resolve(snapshot, info_id, ctx)
+        && let Some(info) = info.as_dict()
+    {
+        for (key, value) in info.iter() {
+            let Some(value) = resolve_value(snapshot, value, ctx) else {
+                continue;
+            };
+            let PdfObject::String(text) = value.as_ref() else {
+                continue;
+            };
+            let key = String::from_utf8_lossy(&names.resolve(key)).into_owned();
+            identity
+                .info
+                .insert(key, String::from_utf8_lossy(text.as_bytes()).into_owned());
+        }
+    }
+
+    let root = structure.trailer.root;
+    if let Some(catalog) = resolve(snapshot, root, ctx)
+        && let Some(catalog) = catalog.as_dict()
+        && let Some(metadata_key) = names.lookup(b"Metadata")
+    {
+        identity.has_xmp_metadata = dict_get_resolved(snapshot, catalog, metadata_key, ctx)
+            .is_some_and(|v| !matches!(v.as_ref(), PdfObject::Null));
+    }
+
+    identity
+}
+
+// ── signatures ──────────────────────────────────────────────────────────────
+
+/// Walk `/AcroForm` `/Fields` for `/FT /Sig` fields and read what each covers.
+///
+/// Reads the signature dictionaries only; nothing here validates cryptography.
+/// The `/Contents` blob is deliberately not extracted — structural coverage
+/// comes first, and the cryptographic layer is a separate concern.
+fn inventory_signatures(
+    snapshot: &DocumentSnapshot,
+    ctx: &mut ParseContext,
+) -> SignatureInventory {
+    let mut inventory = SignatureInventory::default();
+    let names = snapshot.names();
+
+    let root = snapshot.structure().trailer.root;
+    let Some(catalog) = resolve(snapshot, root, ctx) else {
+        return inventory;
+    };
+    let Some(catalog) = catalog.as_dict() else {
+        return inventory;
+    };
+    let Some(acroform_key) = names.lookup(b"AcroForm") else {
+        return inventory;
+    };
+    let Some(acroform) = dict_get_resolved(snapshot, catalog, acroform_key, ctx) else {
+        return inventory;
+    };
+    let Some(acroform) = acroform.as_dict() else {
+        return inventory;
+    };
+    let Some(fields_key) = names.lookup(b"Fields") else {
+        return inventory;
+    };
+    let Some(fields) = dict_get_resolved(snapshot, acroform, fields_key, ctx) else {
+        return inventory;
+    };
+
+    let source_len = snapshot.source().len();
+    let mut seen = 0usize;
+    collect_signature_fields(snapshot, &fields, source_len, &mut inventory, &mut seen, ctx);
+    inventory
+}
+
+/// Cap on fields visited, so a cyclic or adversarial `/Kids` graph cannot make
+/// the doctor run away.
+const MAX_FORM_FIELDS: usize = 65_536;
+
+fn collect_signature_fields(
+    snapshot: &DocumentSnapshot,
+    node: &PdfObject,
+    source_len: u64,
+    inventory: &mut SignatureInventory,
+    seen: &mut usize,
+    ctx: &mut ParseContext,
+) {
+    if *seen >= MAX_FORM_FIELDS {
+        return;
+    }
+    let names = snapshot.names();
+
+    if let PdfObject::Array(entries) = node {
+        for entry in entries.iter() {
+            let Some(field) = resolve_value(snapshot, entry, ctx) else {
+                continue;
+            };
+            collect_signature_fields(snapshot, &field, source_len, inventory, seen, ctx);
+        }
+        return;
+    }
+
+    let Some(field) = node.as_dict() else {
+        return;
+    };
+    *seen += 1;
+
+    // A field's type may be inherited from its parent, but a signature field
+    // that declares nothing is not one we can identify; read what is here.
+    let is_signature = names
+        .lookup(b"FT")
+        .and_then(|k| field.get(k))
+        .and_then(PdfObject::as_name)
+        .is_some_and(|n| names.resolve(n).as_ref() == b"Sig");
+
+    if is_signature {
+        match names
+            .lookup(b"V")
+            .and_then(|k| dict_get_resolved(snapshot, field, k, ctx))
+            .filter(|v| !matches!(v.as_ref(), PdfObject::Null))
+        {
+            Some(value) => {
+                if let Some(sig) = value.as_dict() {
+                    inventory
+                        .signatures
+                        .push(read_signature(snapshot, field, sig, source_len, ctx));
+                }
+            }
+            None => inventory.unsigned_fields += 1,
+        }
+    }
+
+    // Descend into /Kids for nested field trees.
+    if let Some(kids) = names
+        .lookup(b"Kids")
+        .and_then(|k| dict_get_resolved(snapshot, field, k, ctx))
+    {
+        collect_signature_fields(snapshot, &kids, source_len, inventory, seen, ctx);
+    }
+}
+
+fn read_signature(
+    snapshot: &DocumentSnapshot,
+    field: &Dictionary,
+    sig: &Dictionary,
+    source_len: u64,
+    ctx: &mut ParseContext,
+) -> SignatureInfo {
+    let names = snapshot.names();
+
+    let text = |dict: &Dictionary, key: &[u8], ctx: &mut ParseContext| -> Option<String> {
+        let k = names.lookup(key)?;
+        let value = dict_get_resolved(snapshot, dict, k, ctx)?;
+        match value.as_ref() {
+            PdfObject::String(s) => Some(String::from_utf8_lossy(s.as_bytes()).into_owned()),
+            PdfObject::Name(n) => Some(String::from_utf8_lossy(&names.resolve(*n)).into_owned()),
+            _ => None,
+        }
+    };
+
+    let byte_range: Vec<i64> = names
+        .lookup(b"ByteRange")
+        .and_then(|k| dict_get_resolved(snapshot, sig, k, ctx))
+        .and_then(|v| match v.as_ref() {
+            PdfObject::Array(entries) => Some(
+                entries
+                    .iter()
+                    .filter_map(|e| resolve_value(snapshot, e, ctx))
+                    .filter_map(|e| e.as_int())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    SignatureInfo {
+        field_name: text(field, b"T", ctx),
+        filter: text(sig, b"Filter", ctx),
+        sub_filter: text(sig, b"SubFilter", ctx),
+        signed_at: text(sig, b"M", ctx),
+        covers_whole_file: byte_range_covers_all(&byte_range, source_len),
+        byte_range,
+    }
+}
+
+/// Whether `/ByteRange` starts at zero and its final pair reaches the last
+/// byte of the file.
+///
+/// Offsets in `/ByteRange` are absolute source positions, so this comparison is
+/// against the source length rather than the post-header length.
+fn byte_range_covers_all(byte_range: &[i64], source_len: u64) -> bool {
+    if byte_range.len() < 2 || !byte_range.len().is_multiple_of(2) {
+        return false;
+    }
+    if byte_range[0] != 0 {
+        return false;
+    }
+    // Pairs must be ascending and non-overlapping for the span to mean
+    // anything; a scrambled range is not "whole-file" whatever it sums to.
+    let mut reach = 0i64;
+    for pair in byte_range.chunks_exact(2) {
+        let (offset, length) = (pair[0], pair[1]);
+        if offset < reach || length < 0 {
+            return false;
+        }
+        let Some(end) = offset.checked_add(length) else {
+            return false;
+        };
+        reach = end;
+    }
+    u64::try_from(reach).is_ok_and(|reach| reach == source_len)
 }
 
 // ── encryption ──────────────────────────────────────────────────────────────
@@ -570,6 +914,7 @@ fn read_features(snapshot: &DocumentSnapshot, ctx: &mut ParseContext) -> Feature
         && let Some(names_dict) = names_dict.as_dict()
     {
         flags.has_javascript = has(snapshot, names_dict, b"JavaScript", ctx).is_some();
+        flags.has_embedded_files = has(snapshot, names_dict, b"EmbeddedFiles", ctx).is_some();
     }
     flags
 }
@@ -604,6 +949,18 @@ impl DocumentReport {
             }
             OpenOutcome::Failed { error } => writeln_ok(&mut s, &format!("open: FAILED: {error}")),
         }
+        match &self.header {
+            None => writeln_ok(&mut s, "header: not found"),
+            Some(h) => {
+                let line = format!("header: %PDF-{}.{}", h.major, h.minor);
+                let line = if h.header_offset == 0 {
+                    line
+                } else {
+                    format!("{line} [{} bytes of leading garbage]", h.header_offset)
+                };
+                writeln_ok(&mut s, &line);
+            }
+        }
         writeln_ok(
             &mut s,
             &format!(
@@ -626,15 +983,26 @@ impl DocumentReport {
             &mut s,
             &format!(
                 "features: acroform={} xfa={} javascript={} outlines={} \
-                 optional-content={} object-streams={}",
+                 optional-content={} object-streams={} embedded-files={}",
                 f.has_acroform,
                 f.has_xfa,
                 f.has_javascript,
                 f.has_outlines,
                 f.has_optional_content,
-                f.uses_object_streams
+                f.uses_object_streams,
+                f.has_embedded_files
             ),
         );
+        let id = &self.identity;
+        if let (Some(permanent), Some(changing)) = (&id.id_permanent, &id.id_changing) {
+            writeln_ok(&mut s, &format!("id: permanent={permanent} changing={changing}"));
+        }
+        if id.has_xmp_metadata {
+            writeln_ok(&mut s, "metadata: /Info + XMP");
+        }
+        for (key, value) in &id.info {
+            writeln_ok(&mut s, &format!("  /{key}: {value}"));
+        }
         writeln_ok(&mut s, &format!("pages: {}", self.pages.len()));
         for p in &self.pages {
             let line = match &p.compile {
@@ -664,6 +1032,30 @@ impl DocumentReport {
             );
             for (subtype, count) in &self.annotations.count_per_subtype {
                 writeln_ok(&mut s, &format!("  {subtype}: {count}"));
+            }
+        }
+        let sigs = &self.signatures;
+        if sigs.signatures.is_empty() && sigs.unsigned_fields == 0 {
+            writeln_ok(&mut s, "signatures: none");
+        } else {
+            writeln_ok(
+                &mut s,
+                &format!(
+                    "signatures: {} signed, {} unsigned field(s)",
+                    sigs.signatures.len(),
+                    sigs.unsigned_fields
+                ),
+            );
+            for sig in &sigs.signatures {
+                let name = sig.field_name.as_deref().unwrap_or("(unnamed)");
+                let sub_filter = sig.sub_filter.as_deref().unwrap_or("(no /SubFilter)");
+                writeln_ok(&mut s, &format!("  {name}: {sub_filter}"));
+                let coverage = if sig.covers_whole_file {
+                    "covers whole file".to_owned()
+                } else {
+                    format!("DOES NOT cover whole file; /ByteRange {:?}", sig.byte_range)
+                };
+                writeln_ok(&mut s, &format!("    {coverage}"));
             }
         }
         s

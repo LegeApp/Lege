@@ -197,6 +197,190 @@ fn features_and_annotations_are_inventoried() {
 }
 
 #[test]
+fn header_version_and_leading_garbage_are_reported() {
+    let report = examine_bytes(builder::multipage_classic(1));
+    let header = report.header.as_ref().expect("a clean fixture has a header");
+    assert_eq!((header.major, header.minor), (1, 7));
+    assert_eq!(header.header_offset, 0);
+    assert!(report.summary().contains("%PDF-1.7"), "{}", report.summary());
+
+    // Leading garbage shifts every structural offset; the doctor must say by
+    // how much rather than silently absorbing it.
+    let junk = b"%!PS-Adobe-3.0\n";
+    let report = examine_bytes(builder::with_leading_garbage(
+        builder::multipage_classic(1),
+        junk,
+    ));
+    let header = report.header.as_ref().expect("the header is found past the garbage");
+    assert_eq!(header.header_offset, junk.len() as u64);
+    let summary = report.summary();
+    assert!(summary.contains("leading garbage"), "{summary}");
+}
+
+#[test]
+fn a_document_that_will_not_open_still_reports_its_lineage() {
+    // /Encrypt with a scheme the handler declines: open fails, but the trailer
+    // /ID is never encrypted, so lineage survives.
+    let report = examine_bytes(builder::aes256_encrypted_fixture());
+    assert!(matches!(report.open, OpenOutcome::Failed { .. }));
+    assert_eq!(report.identity.id_permanent.as_deref(), Some("01"));
+    assert_eq!(report.identity.id_changing.as_deref(), Some("02"));
+    assert!(report.header.is_some());
+    // /Info strings are encrypted like any others, so they stay out of reach.
+    assert!(report.identity.info.is_empty());
+}
+
+#[test]
+fn garbage_reports_no_header_at_all() {
+    let report = examine_bytes(b"this is not a pdf at all".to_vec());
+    assert!(report.header.is_none());
+    assert!(report.identity.id_permanent.is_none());
+}
+
+/// Fixture with an /Info dictionary, an XMP metadata stream, an embedded file
+/// and a trailer /ID pair.
+fn identity_fixture() -> Vec<u8> {
+    let mut b = PdfBuilder::new();
+    b.add_object(
+        1,
+        "<</Type/Catalog/Pages 2 0 R/Metadata 5 0 R\
+         /Names<</EmbeddedFiles 6 0 R>>>>",
+    );
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 100 100]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R>>");
+    b.add_object(
+        4,
+        "<</Producer(Acrobat Distiller 23.0)/Creator(Microsoft Word)\
+         /ModDate(D:20260713120000Z)/CustomKey(private)>>",
+    );
+    b.add_stream(5, "/Type/Metadata/Subtype/XML", b"<x:xmpmeta/>");
+    b.add_object(6, "<</Names[]>>");
+    b.finish_classic_xref("/Root 1 0 R/Info 4 0 R/ID[<deadbeef><0badf00d>]");
+    b.into_bytes()
+}
+
+#[test]
+fn identity_and_metadata_are_inventoried() {
+    let report = examine_bytes(identity_fixture());
+    assert!(matches!(report.open, OpenOutcome::Ok), "{:?}", report.open);
+
+    let id = &report.identity;
+    assert_eq!(id.id_permanent.as_deref(), Some("deadbeef"));
+    assert_eq!(id.id_changing.as_deref(), Some("0badf00d"));
+    assert!(id.has_xmp_metadata);
+    assert_eq!(
+        id.info.get("Producer").map(String::as_str),
+        Some("Acrobat Distiller 23.0")
+    );
+    assert_eq!(
+        id.info.get("Creator").map(String::as_str),
+        Some("Microsoft Word")
+    );
+    // Non-standard keys are kept: a writer that invents one identifies itself.
+    assert_eq!(id.info.get("CustomKey").map(String::as_str), Some("private"));
+
+    assert!(report.features.has_embedded_files);
+    let summary = report.summary();
+    assert!(summary.contains("deadbeef"), "{summary}");
+    assert!(summary.contains("embedded-files=true"), "{summary}");
+}
+
+/// A signed document whose `/ByteRange` is patched, after the bytes are final,
+/// to span the file exactly the way a real signer does. `split` is where the
+/// two covered ranges meet; leaving `gap` bytes uncovered at the end models a
+/// signature that does not reach the end of the file.
+fn signed_fixture(gap: usize) -> Vec<u8> {
+    let mut b = PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R/AcroForm 6 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 100 100]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R/Annots[4 0 R]>>");
+    // The signature field, carrying its signature dictionary.
+    b.add_object(
+        4,
+        "<</Type/Annot/Subtype/Widget/FT/Sig/T(Signature1)/Rect[0 0 10 10]/V 5 0 R>>",
+    );
+    // Ten-digit zero-padded slots, overwritten in place below so the xref
+    // offsets built around them stay correct.
+    b.add_object(
+        5,
+        "<</Type/Sig/Filter/Adobe.PPKLite/SubFilter/ETSI.CAdES.detached\
+         /M(D:20241201120000Z)/ByteRange[0 0000000010 0000000010 0000000000]>>",
+    );
+    // A second, unsigned signature field.
+    b.add_object(7, "<</FT/Sig/T(Signature2)>>");
+    b.add_object(6, "<</Fields[4 0 R 7 0 R]>>");
+    b.finish_classic_xref("/Root 1 0 R");
+    let mut bytes = b.into_bytes();
+
+    let total = bytes.len();
+    let tail = total - 10 - gap;
+    let patched = format!("{tail:010}");
+    let needle = b"[0 0000000010 0000000010 0000000000]";
+    let at = bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("the ByteRange placeholder is present");
+    let last = at + needle.len() - 11;
+    bytes[last..last + 10].copy_from_slice(patched.as_bytes());
+    bytes
+}
+
+#[test]
+fn a_signature_covering_the_whole_file_is_reported_as_such() {
+    let report = examine_bytes(signed_fixture(0));
+    assert!(matches!(report.open, OpenOutcome::Ok), "{:?}", report.open);
+
+    assert_eq!(report.signatures.signatures.len(), 1);
+    assert_eq!(report.signatures.unsigned_fields, 1);
+
+    let sig = &report.signatures.signatures[0];
+    assert_eq!(sig.field_name.as_deref(), Some("Signature1"));
+    assert_eq!(sig.filter.as_deref(), Some("Adobe.PPKLite"));
+    assert_eq!(sig.sub_filter.as_deref(), Some("ETSI.CAdES.detached"));
+    assert_eq!(sig.signed_at.as_deref(), Some("D:20241201120000Z"));
+    assert_eq!(sig.byte_range.len(), 4);
+    assert!(
+        sig.covers_whole_file,
+        "byte_range {:?} should span the file",
+        sig.byte_range
+    );
+
+    let summary = report.summary();
+    assert!(summary.contains("1 signed, 1 unsigned"), "{summary}");
+    assert!(summary.contains("covers whole file"), "{summary}");
+}
+
+#[test]
+fn a_signature_leaving_bytes_uncovered_is_flagged() {
+    // Twenty bytes past the signed range: the structural shape of an
+    // incremental update appended after signing.
+    let report = examine_bytes(signed_fixture(20));
+    let sig = &report.signatures.signatures[0];
+    assert!(
+        !sig.covers_whole_file,
+        "byte_range {:?} leaves 20 bytes unsigned",
+        sig.byte_range
+    );
+
+    let summary = report.summary();
+    assert!(summary.contains("DOES NOT cover whole file"), "{summary}");
+}
+
+#[test]
+fn a_document_without_signatures_reports_none() {
+    let report = examine_bytes(builder::multipage_classic(1));
+    assert!(report.signatures.signatures.is_empty());
+    assert_eq!(report.signatures.unsigned_fields, 0);
+    assert!(report.summary().contains("signatures: none"));
+}
+
+#[test]
 fn wrong_stream_length_surfaces_as_degraded_or_recovered() {
     // The lazy /Length repair happens during content gathering; the doctor
     // must surface it (either as an open-time recovery or per-page
