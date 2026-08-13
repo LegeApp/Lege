@@ -167,7 +167,7 @@ record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/
 
 record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/2 : papercut {
     title "The targeted renderer/image clippy check is blocked by an unrelated…"
-    state verified
+    state superseded
     statement """
         The targeted renderer/image clippy check is blocked by an unrelated existing `-D clippy::expect-used` violation in `lege-pdf/render/crates/pdf-document/src/pages.rs:594`, reached through `pdf-cli` dependencies. Renderer/image tests pass, but the documented clippy gate cannot complete until that pre-existing lint is resolved or the check is scoped differently.
 
@@ -177,6 +177,16 @@ record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/
     supersedes [ @lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/1 ]
     author "codex"
     created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/3 : papercut {
+    title "The targeted renderer/image clippy check is blocked by an unrelated…"
+    state withdrawn
+    statement """
+        RESOLVED in the record body: expect-used is gone and the documented clippy gate completes. Withdrawn so it no longer reads as open friction.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/2 ]
 }
 
 record lege-ecosystem-perf.papercut.while-correcting-a-sealed-evidence-record/1 : papercut {
@@ -227,7 +237,7 @@ record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 :
 
 record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/3 : papercut {
     title "While reproducing the Structures.pdf MRC profile, the performance…"
-    state verified
+    state superseded
     statement """
         While reproducing the Structures.pdf MRC profile, the performance handoff labels the 2222x3191 run as scale 2.0833333, but the supplied 444.4x638.2-point page produces 926x1330 at that scale and 2222x3191 at scale 5.0. Benchmark records should store both requested scale and resulting dimensions so comparisons cannot silently mix them.
 
@@ -237,6 +247,16 @@ record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/3 :
     supersedes [ @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 ]
     author "codex"
     created_at 2026-08-09
+}
+
+record lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/4 : papercut {
+    title "While reproducing the Structures.pdf MRC profile, the performance…"
+    state withdrawn
+    statement """
+        RESOLVED in the record body: scale 2.0833333 is 926x1330; 2222x3191 is the embedded JPX source. Withdrawn so it no longer reads as open friction.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/3 ]
 }
 
 record lege-ecosystem-perf.papercut.while-validating-the-jpx-output-ownership/1 : papercut {

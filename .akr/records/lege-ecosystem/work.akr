@@ -502,63 +502,16 @@ record lege-ecosystem.decode-optimization-handoff/1 : work {
 record lege-ecosystem.encode-quality.improve-photographic-rate-control/1 : work {
     title "Rework jp2lam lossy rate control for perceptual, resolution-stable photographic quality"
     state proposed
-    scope [
-        path "lege-codecs/jp2lam/src/decode/mod.rs",
-        path "lege-codecs/jp2lam/src/dwt/pcrd.rs",
-        path "lege-codecs/jp2lam/src/encode/**",
-        path "lege-codecs/jp2lam/src/plan/**"
-    ]
     intent """
         Raise jp2lam lossy photographic quality-per-byte toward JPEG XL/BPG and make a fixed quality hold constant PERCEPTUAL quality across resolutions. Work the causes in lege-ecosystem.encode-quality.root-cause: replace MSE-only, size-matched, single-image-calibrated rate control with perceptually weighted, butteraugli-anchored, cross-resolution-validated rate control, and connect the existing but disabled perceptual model. Grade every change with butteraugli + ssimulacra2 against a libjxl reference, not by file size.
         """
     note """
-        Key code sites: quality->lambda in src/dwt/pcrd.rs quality_to_lambda (resolution_factor ^0.35 term) and select_for_quality; active RD curve build in src/encode/backend/native/rate.rs (raw_records_for_passes uses pass.mse_numerator; curves_from_tier1_layout drops contrast_mask/taubman_weights); quantization step scaling in src/plan/derive.rs (apply_quality_step_scaling, quality_step_scaler); the disabled perceptual model in src/perceptual/ and pcrd.rs (apply_contrast_masking_to_delta, band_distortion_bias, Taubman2000). rate.rs notes the perceptual delta-MSE path (P1.3) was rolled back pending lambda recalibration. A ready-made external grading harness exists at /mnt/Samsung980_1TB/Rust-projects/codec-headsup (butteraugli + ssimulacra2, libjxl FFI).
+        Partial implementation landed in the current working tree: the native lossy allocator now size-matches perceptually weighted Annex-J curves to the established MSE byte target, maps luma masking through tile/subband origins, and uses smooth strength plus actual-bpp gates. Qualified same-size improvements at q25/q50/q75; q90 remains deliberately weak and mixed; q98 stays on the byte-identical baseline. The larger butteraugli-anchored quality mapping and resolution-stability objective remains open.
         """
-    acceptance {
-        check butteraugli-anchored-quality-mode {
-            statement """
-                Evaluate (accept or reject with evidence) a RateControl mode that targets a butteraugli distance like cjxl -d, via a size/lambda search, so callers can request a perceptual quality directly instead of a compression heuristic.
-                """
-            method manual
-        }
-        check decode-memory-scaling {
-            statement """
-                Default DecodeLimits (max_working_bytes 1 GiB, max_pixels 100M) are raised or made resolution-aware so a ~50MP JP2 decodes within limits by default (observed failure at ~3.0 GB estimated working set).
-                """
-            method manual
-        }
-        check no-quality-regression-gate {
-            statement """
-                A perceptual regression check on the corpus (butteraugli/ssimulacra2 vs the libjxl reference and vs the previous jp2lam revision) is defined and passes, so future changes cannot silently regress photographic quality.
-                """
-            method manual
-        }
-        check perceptual-grading-harness {
-            statement """
-                A repeatable grading step reports butteraugli AND ssimulacra2 for jp2lam vs a libjxl reference on a multi-resolution photographic corpus (>=20 images spanning ~12MP and ~50MP), so rate-control changes are judged perceptually rather than by file size.
-                """
-            method manual
-        }
-        check perceptual-weighting-wired {
-            statement """
-                The active PCRD selection consumes perceptual weighting (re-enable the rolled-back path: contrast/Taubman masking + subband band bias, or an equivalent CSF visual-frequency weighting), with lambda recalibrated, and shows a butteraugli/ssimulacra2 win over the MSE-only baseline at equal size on the corpus.
-                """
-            method manual
-        }
-        check photographic-lambda-recalibration {
-            statement """
-                quality->lambda and quality->step are recalibrated against butteraugli on the multi-image photographic corpus (not lear.png alone / not document pages), so quality is a monotone butteraugli target rather than a reproduction of prior file sizes.
-                """
-            method manual
-        }
-        check resolution-stable-quality {
-            statement """
-                At a fixed jp2lam quality the mean butteraugli gap between the ~12MP and ~50MP subsets is <= 0.5 (currently ~2 vs ~5-10 at q98), achieved by re-deriving or removing the quality_to_lambda resolution_factor and validating on both subsets.
-                """
-            method manual
-        }
-    }
-    derived_from [ @lege-ecosystem.encode-quality.root-cause/1 ]
+    supported_by [
+        @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1,
+        @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-validation-2026-08-13/1
+    ]
 }
 
 record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/1 : work {
@@ -1336,6 +1289,17 @@ record lege-ecosystem.work.jp2lam-jpeg-2000-decoder-optimization-plan/1 : work {
         kind legacy
         path "lege-codecs/jp2lam/decode-fix-plan/decode-optimize.md"
     }
+}
+
+record lege-ecosystem.work.layout-vertical-bands-ocr-horizontal/1 : work {
+    title "Correct DocLayout underdetection with vertical bands"
+    state proposed
+    intent """
+        After DocLayout NMS, keep the model's vertical text bands, expand those boxes horizontally from OCR-det line boxes plus ink, insert synthetic text boxes for uncovered ink/OCR gaps, grow image boxes to nearby illustration pixels, and optionally re-detect on an inverted raster when a large uncovered high-variance region looks like a missed plate. Apply the same correction in `--layout-visualize`.
+        """
+    note """
+        Implemented in lege-process/core/layout_correct.rs and hooked from LayoutEngine::detect_single_blocking. LEGE_LAYOUT_OCR_DET=0 skips the extra DBNet pass; LEGE_LAYOUT_IMAGE_REDETECT=0/1 forces the invert pass off/on.
+        """
 }
 
 record lege-ecosystem.work.level-local-operation/1 : work {
@@ -2141,7 +2105,7 @@ record lege-ecosystem.work.post-precinct-census-2026-07-19-from-pdf/1 : work {
 
 record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
     title "Prefer discrete GPU for compute and presentation"
-    state active
+    state completed
     scope [
         path "lege-gpu/src/presentation.rs",
         path "lege-gpu/src/vision/runtime/device.rs",
@@ -2157,6 +2121,7 @@ record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
                 """
             method command
             command "LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
+            verified_by [ @lege-ecosystem.evidence.discrete-auto-selection-20260813/1 ]
         }
         check presentation-build {
             statement """
@@ -2164,6 +2129,7 @@ record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
                 """
             method command
             command "cargo check -p lege-gpu --features presentation,layout-detection"
+            verified_by [ @lege-ecosystem.evidence.presentation-layout-build-20260813/1 ]
         }
         check selection-policy {
             statement """
@@ -2171,6 +2137,37 @@ record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
                 """
             method command
             command "cargo test -p lege-gpu wgpu_setup::tests --lib"
+            verified_by [ @lege-ecosystem.evidence.adapter-order-tests-20260813/1 ]
+        }
+    }
+}
+
+record lege-ecosystem.work.prepared-onnx-shared-gpu-session/1 : work {
+    title "Expose prepared ONNX sessions on the shared GPU executor"
+    state completed
+    intent """
+        Expose a public OnnxSession GPU execution method for prepared scene_image ONNX
+        graphs. Build each single-flight compiled graph on Lege's process-wide shared
+        wgpu device, retain the deterministic CPU reference method, and verify a real
+        consumer executes prepared scene graphs on the Linux RTX 4060 Vulkan adapter.
+        """
+    acceptance {
+        check linux-4060-consumer {
+            statement """
+                A real raw-autotune consumer run executes both prepared scene graphs on the
+                Linux RTX 4060 Vulkan adapter without CPU fallback.
+                """
+            method command
+            command "cd ../raw-autotune && WGPU_ADAPTER_NAME=4060 WGPU_REQUIRE_REAL_GPU=1 cargo run --release -- raw/raw_3rd_batch/_DSC1289.ARW --output .agent/scratch/scene-gpu-4060-20260813 --format png --sidecar --no-summary --overwrite --jobs 1 --semantic"
+            verified_by [ @lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 ]
+        }
+        check session-build {
+            statement """
+                lege-gpu release-checks with the public prepared-session GPU method.
+                """
+            method command
+            command "cargo check -p lege-gpu --release"
+            verified_by [ @lege-ecosystem.evidence.prepared-onnx-session-build-20260813/1 ]
         }
     }
 }

@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:fd6d9294db5c707a892c339be60569781521ade66a46cf5fb4005644b8043faf"
+    source_graph "sha256:8967055d216a4e630f8afe3524bb38da535e2cb8c9fc0aaaed9e5a2475b3b34d"
 }
 
 source ".akr/project.akr" {
@@ -34,8 +34,8 @@ source ".akr/records/lege-ecosystem-perf/observations.akr" {
 }
 
 source ".akr/records/lege-ecosystem-perf/papercuts.akr" {
-    hash "sha256:16bbf92ceee2ed33da2113f5951de25471a71c8786d53581cd6b30602c241ac3"
-    records 21
+    hash "sha256:200e0416e0b886f8ab43980d82cb718a837a4625e55597a825b1caa46e5af81e"
+    records 23
 }
 
 source ".akr/records/lege-ecosystem-perf/policies.akr" {
@@ -59,8 +59,8 @@ source ".akr/records/lege-ecosystem/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:7f199793c2d36a746dd8f7f09667e910a94c30554eefb9c697e829630d8e99bf"
-    records 45
+    hash "sha256:80b6b5e2a0c6bf523b6397672948218562a82fa4a0c2bf281cba3d34559e2b6e"
+    records 64
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -69,13 +69,13 @@ source ".akr/records/lege-ecosystem/milestones.akr" {
 }
 
 source ".akr/records/lege-ecosystem/observations.akr" {
-    hash "sha256:097bbbeb07cd984d81b04b7a3cb9b6f19d7769c3644823d45c4b7475d28d4cec"
-    records 1
+    hash "sha256:1ad1675c9a4dd1c9cd5c3fbb001e2b0b2121c6aebd66c5d86c0d032a5dfff0d0"
+    records 3
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
-    hash "sha256:7703e7263887b62531e2d9acff2a118e03821839328dd9a9b132d1379e5d6bdf"
-    records 17
+    hash "sha256:40842535c9c66e5cf1fdc73515e68eeb8226ab8f37277dc8001878cd4174e4cf"
+    records 36
 }
 
 source ".akr/records/lege-ecosystem/policies.akr" {
@@ -89,8 +89,18 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:7d2f337de07e468a4137d4e15440c6bb99835d3b088d4d77292e1fb4e6dc9be5"
-    records 94
+    hash "sha256:6b3c24227b34bd9aa398917ca12a9751a57faf61f4818190b735ee43fbcaaaca"
+    records 96
+}
+
+seal @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1 {
+    state verified
+    hash "sha256:75c14c1501c584e55ce3f5a970a86925373026b48883e9917df09623a86553cf"
+}
+
+seal @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-validation-2026-08-13/1 {
+    state verified
+    hash "sha256:38127c32c6bad821ad342c6689143eaf96f9c4591c720efdd94f279c93352197"
 }
 
 seal @lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 {
@@ -111,6 +121,11 @@ seal @lege-ecosystem.evidence.about-auto-width-freya-test/1 {
 seal @lege-ecosystem.evidence.about-loopback-freya-tests/1 {
     state verified
     hash "sha256:e8502736ac04a4b0ab1dba413d48ff711f6098802cf2b427877e7262880453e6"
+}
+
+seal @lege-ecosystem.evidence.adapter-order-tests-20260813/1 {
+    state verified
+    hash "sha256:831234ec8731b29399b1ab5a67545af1fb4d5d046169fbc75a507d67f6819610"
 }
 
 seal @lege-ecosystem.evidence.auto-toc-djvu-tests/1 {
@@ -148,6 +163,11 @@ seal @lege-ecosystem.evidence.automatic-toc-workspace-regression/1 {
     hash "sha256:5e1fe0624d4d57fa3252069b1a8d7cfd8a4d805b9c3c55d3ceaab54c88e45af4"
 }
 
+seal @lege-ecosystem.evidence.discrete-auto-selection-20260813/1 {
+    state verified
+    hash "sha256:190dd79ffa3ce6ef5fc0621c73cbb6b5f95a221f4fd519b4751e066a8cb27e8e"
+}
+
 seal @lege-ecosystem.evidence.discrete-gpu-presentation-build/1 {
     state verified
     hash "sha256:f885e1a908407753aac62be262239ade10d4533e73ea3bcb6c7385570eae6ff3"
@@ -176,6 +196,21 @@ seal @lege-ecosystem.evidence.freya-viewer-build-aliases/1 {
 seal @lege-ecosystem.evidence.image-detection-policy-tests/1 {
     state verified
     hash "sha256:450698a591cc328d0bb17abeb65f0b822bd66b0cd6a89fc70f189e0863911f72"
+}
+
+seal @lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 {
+    state verified
+    hash "sha256:de37f457dec3223017db3b2dd24d9dba70666477c126420aca8423e8103df649"
+}
+
+seal @lege-ecosystem.evidence.jp2lam-perceptual-pcrd-check-2026-08-12/1 {
+    state verified
+    hash "sha256:6f6f9c8fc4c18635d4b07ecf061750e5da85debb2803700820738b6de196f085"
+}
+
+seal @lege-ecosystem.evidence.jp2lam-perceptual-pcrd-tests-2026-08-12/1 {
+    state verified
+    hash "sha256:e4c4f1ff11b512afad1f0d1d28ee7e4773633829b77cf04d9b9a67a20a038c77"
 }
 
 seal @lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 {
@@ -278,6 +313,16 @@ seal @lege-ecosystem.evidence.ocr-production-clippy-2026-08-11/1 {
     hash "sha256:46c3b360ece164a40f9ee954a5a46d753725b3ac8f80037945e43812d7113070"
 }
 
+seal @lege-ecosystem.evidence.prepared-onnx-session-build-20260813/1 {
+    state verified
+    hash "sha256:25db8b443ff3df6ad9f3682c3933787bad8d7b2bc54fb8acde1a3ed651acd748"
+}
+
+seal @lege-ecosystem.evidence.presentation-layout-build-20260813/1 {
+    state verified
+    hash "sha256:a2f3fb8b12a2246d7b078fdb2771866da921c0094036a78efe4d641163fea7e3"
+}
+
 seal @lege-ecosystem.evidence.preserved-jbig2-mixed-page-fallback/1 {
     state verified
     hash "sha256:6878bad482b3a2348eee3e3e47062aa0c933cbe47c3c22043ee6cbcf19952b78"
@@ -293,6 +338,11 @@ seal @lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 {
     hash "sha256:79212edfb66db1e2208dd3322e46a395080511be726ad42864fb59032a4952ed"
 }
 
+seal @lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 {
+    state verified
+    hash "sha256:2b2e5a35e031d8f3e3e88e0e3b513196f3cc20fe316ac5d87a452aa6922f01be"
+}
+
 seal @lege-ecosystem.evidence.release-document-copy-audit/1 {
     state verified
     hash "sha256:b176760822559a232f182cc301222c33271f4c7a32ddf4f7dedd769ede606256"
@@ -303,9 +353,29 @@ seal @lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 {
     hash "sha256:db8273b0af54bb225159a1d8d3f3b5a4b13f430e3bd0ff2f2407376d352d71f1"
 }
 
+seal @lege-ecosystem.evidence.smask-layout-regressions/1 {
+    state verified
+    hash "sha256:ee0857e531ae6822f6a44cac96109e068d1dd33b15b18a88a0a472d31557e6d2"
+}
+
+seal @lege-ecosystem.evidence.structures-ccitt-dither-policy/1 {
+    state verified
+    hash "sha256:8459bb7dbe88c96b85266d7830986a60e01defd0bb2ed2e76b06f1c8bf19a4ec"
+}
+
+seal @lege-ecosystem.evidence.structures-flattened-jpeg-detections/1 {
+    state verified
+    hash "sha256:d1acd7acca4770131cb7379575d852d18f2f6bd152f2ee2d5abd8612990d2519"
+}
+
 seal @lege-ecosystem.evidence.structures-image-overlay-range/1 {
     state verified
     hash "sha256:cf6e4340ff1c1749154a23e8f6e6a9b12748b31a80153e6f528188d769e140dd"
+}
+
+seal @lege-ecosystem.evidence.structures-image-threshold-sample/1 {
+    state verified
+    hash "sha256:0557fbaa5aa965681a217d45669f61180faee94ff139e0fa087a493b02d72be2"
 }
 
 seal @lege-ecosystem.evidence.structures-jbig2-ink-support-oracle/1 {
@@ -323,9 +393,34 @@ seal @lege-ecosystem.evidence.structures-jbig2-payload-roundtrip-corrected/1 {
     hash "sha256:de8e976b84cc5fddfaab206320212a033cbab637020aa792452569dfab625bb5"
 }
 
+seal @lege-ecosystem.evidence.structures-layout-nms-trace/1 {
+    state verified
+    hash "sha256:617ad307881e8e2b45014b294616343a5e6d4e166da1c46dd814fcd7baa8e1d2"
+}
+
 seal @lege-ecosystem.evidence.structures-layout-preserved-mask-composition/1 {
     state verified
     hash "sha256:e5fb1cd55255d6223b419e8bee2ddcf2fa6e6a4d1a2137a11731819087a69e61"
+}
+
+seal @lege-ecosystem.evidence.structures-original-policy/1 {
+    state verified
+    hash "sha256:b85797540cf9839ce66df5f0b22d4298feddf4760a9c617b1fd08fc39d5bfc60"
+}
+
+seal @lege-ecosystem.evidence.structures-page66-layout-trace/1 {
+    state verified
+    hash "sha256:0f8056a60496dde731c5c5ed30ba45e28c5a9ef54ac30c5f72ce8e664e5f6874"
+}
+
+seal @lege-ecosystem.evidence.structures-paper-normalization-path/1 {
+    state verified
+    hash "sha256:8926d0e8c7f07c17922732ed3407b1065b484cceb832a99f555b9b2952498e06"
+}
+
+seal @lege-ecosystem.evidence.structures-smask-policy/1 {
+    state verified
+    hash "sha256:c50cffa2d9391d25326a01d9b77f45c0c01f7cdf9f4c4f155f802f359e9fa231"
 }
 
 seal @lege-ecosystem.lege-process.about-gpu-init-2026-08-09/1 {
@@ -348,9 +443,44 @@ seal @lege-ecosystem.milestone.business-pdf-ocr-cli/1 {
     hash "sha256:688eace70abe98436e3fd71f3b0e704a84726503b26860a89b56b29b237bd189"
 }
 
-seal @lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/1 {
+seal @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 {
+    state superseded
+    hash "sha256:f2c46bbe7d16bcdfe4d36172f06e855ca2896c87b10263880d1bc7746c1adc93"
+}
+
+seal @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 {
     state verified
-    hash "sha256:34aca9e56d89616b9697b9e8030e3022615746c80ffaf7d2549fb7e094b7dbb9"
+    hash "sha256:a4535cb463a0ac8744dfb77f8924eaf89de3b8eff7d5c81ab685d4bd4fd4e13a"
+}
+
+seal @lege-ecosystem.papercut.a-scratch-corpus-setup-command-was-rejected/1 {
+    state verified
+    hash "sha256:1a9d66c4c47e57ee33d5f209274ad8969416d4701c5fea2c44df28a6fc160961"
+}
+
+seal @lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/1 {
+    state superseded
+    hash "sha256:4332d9f4ffe3dbf57934a6c5d176fe691dc4a1c4274729113484c23f031fd3a1"
+}
+
+seal @lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/2 {
+    state withdrawn
+    hash "sha256:3a5ab2348c5c11406838ac71d4164f81f6f8617d858425ea23a897ce6cbf7924"
+}
+
+seal @lege-ecosystem.papercut.akr-mcp-server-failed-to-connect-at-session/1 {
+    state verified
+    hash "sha256:db42378356493fe3efa574ed32620720147faa286f28bf420ce89a9a0064b51d"
+}
+
+seal @lege-ecosystem.papercut.akr-papercut-collate-defaults-to-scanning/1 {
+    state verified
+    hash "sha256:6fffcd1a28447d91830ed517fdb5325061541ae2ac7ec7f6da5892cff712fcce"
+}
+
+seal @lege-ecosystem.papercut.akr-propose-from-rejected-a-yaml-like-statement/1 {
+    state verified
+    hash "sha256:e308f9c7657ee0439e06c9e29f5084604233ae4f60dd31767544a7e38517c6b3"
 }
 
 seal @lege-ecosystem.papercut.building-the-focused-lege-freya-gui-emitted/1 {
@@ -368,14 +498,39 @@ seal @lege-ecosystem.papercut.fff-multi-grep-transport-closed-while-locating/1 {
     hash "sha256:625016d14dee5e0635dd1c332589594476e608a640586abc185406c045599b60"
 }
 
+seal @lege-ecosystem.papercut.knowledge-evidence-add-many-rejected-an/1 {
+    state verified
+    hash "sha256:68f430a9a01820ab7f3c4eb80ff1c1c6ef74b8304de1b1b89cc868a14de4d802"
+}
+
 seal @lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 {
     state verified
     hash "sha256:caa5080957cff0c16be36fc7e4f53d2d04d81320f91bd0f42e7e2b448fc07221"
 }
 
-seal @lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 {
+seal @lege-ecosystem.papercut.knowledge-papercut-failed-on-first-use-because/1 {
     state verified
-    hash "sha256:6f0bed05c4b4f05300206a8e9a699651dd086a0f4b784067e33f26e609ab95d9"
+    hash "sha256:55cefb4d3ad0ca7d9cd092fe09094a2896203ee6c26b5b5f167b9166410bb58d"
+}
+
+seal @lege-ecosystem.papercut.knowledge-start-returned-a-2350-token-compact/1 {
+    state verified
+    hash "sha256:203f121cd36cb6327834f3955b56c994248c5afc77e8883c2ef527165c742ca6"
+}
+
+seal @lege-ecosystem.papercut.pdf-verification-attempted-qpdf-check-but-qpdf/1 {
+    state verified
+    hash "sha256:a38387d539da19520de6f4eb34ad06e94da108edab6783a10af598024e192de4"
+}
+
+seal @lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 {
+    state superseded
+    hash "sha256:75c0205977a568abaacee80c985ba36ee1dd30e0851e8ef250719ddbd229cb4d"
+}
+
+seal @lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/2 {
+    state withdrawn
+    hash "sha256:fa8ae0b1af7dd938bc17327e83c6b111a712da08f6ff6d210dc1a68c600c9dc1"
 }
 
 seal @lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 {
@@ -384,13 +539,43 @@ seal @lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 {
 }
 
 seal @lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 {
-    state verified
-    hash "sha256:d10f75d63ccdaa8c068e1b620a7125f41c44dc9afd2145ac0a08158f208f1107"
+    state superseded
+    hash "sha256:1411ccbdf4dd645957dd4843af75e5369f461f581c89537aa832781746773aa5"
+}
+
+seal @lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/2 {
+    state withdrawn
+    hash "sha256:d6284a47f5365c1efaee9f32979846fb03bea351384b609d1272350fb7a22ee3"
+}
+
+seal @lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/1 {
+    state superseded
+    hash "sha256:49c59b9cd0094891e5f0c26fc33f3c048ad4840fa1a9f8161f7e71a376b3fddf"
+}
+
+seal @lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/2 {
+    state withdrawn
+    hash "sha256:964541f9329310a8580486ef019d7d5f74296b89c07c3b7474e667423a3b7429"
 }
 
 seal @lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/1 {
+    state superseded
+    hash "sha256:53f721e85f85d67166942825fb5865bb109a3978024eabf8ae886379bcbda54a"
+}
+
+seal @lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/2 {
+    state withdrawn
+    hash "sha256:912c8a9777356e157ff1fa295daf6212cc3a50add9afd55188807920401b8c60"
+}
+
+seal @lege-ecosystem.papercut.the-repository-wide-strict-akr-check-is/1 {
     state verified
-    hash "sha256:7303438ad8cd1de7fa752fb054cf730eed581aa51b93c760d0d4a54c05579509"
+    hash "sha256:7a8882d7bc767fd35a3eb88fe0f753955e234d2c5ab88e99869663292e4831e0"
+}
+
+seal @lege-ecosystem.papercut.the-shared-context-prefers-discrete-when/1 {
+    state verified
+    hash "sha256:2a20a0be68a5e08c4b6cc8d8ff5d174253a4052227d4fb649876568c5e7b65eb"
 }
 
 seal @lege-ecosystem.papercut.while-cleaning-temporary-gpu-probes-a-combined/1 {
@@ -408,9 +593,19 @@ seal @lege-ecosystem.papercut.while-creating-the-auto-toc-work-record/1 {
     hash "sha256:038c7a46618b957cd1b7609c42c9da8ec233fd27092fb9345da088eb6fb4a48e"
 }
 
-seal @lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/1 {
+seal @lege-ecosystem.papercut.while-diagnosing-structures-pdf-smask/1 {
     state verified
-    hash "sha256:a85fdd62c9c120cab8f244c92dc9b5f0c545e8a9825f9129afabb2206a759ff4"
+    hash "sha256:1c4b6ad19e1f8c6d95609d74b7a0d0df5d7f862f602d119018dac416bd9b90c6"
+}
+
+seal @lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/1 {
+    state superseded
+    hash "sha256:01a58f8f343a0e6b53c4e8649cd7ec8c27d61d477e9368354c3833aaef276bab"
+}
+
+seal @lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/2 {
+    state withdrawn
+    hash "sha256:c4fe80221775df0be41d3f8f183f393c159d627e8d1117ddf8ce4141a8992b87"
 }
 
 seal @lege-ecosystem.papercut.while-narrowing-multi-grep-to-lege-process/1 {
@@ -429,8 +624,13 @@ seal @lege-ecosystem.papercut.while-running-focused-rust-tests-i-passed-two/1 {
 }
 
 seal @lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/1 {
-    state verified
-    hash "sha256:83312d8be3d17376d43cf5f7e825375f23d6cae95b80fd5f052e1a27db3c803a"
+    state superseded
+    hash "sha256:c8747b5ec40c9d6e68e83dcef1691cc7e212ffd814dd04e5845f2384453a77a6"
+}
+
+seal @lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/2 {
+    state withdrawn
+    hash "sha256:da54f51fa91cf5e1ca059deea592a66fe8f05bca6beb4077885756618947fd6b"
 }
 
 seal @lege-ecosystem.work.about-image-pdf-agent-tool/1 {
@@ -539,8 +739,13 @@ seal @lege-ecosystem.work.ocr-product-foundation/2 {
 }
 
 seal @lege-ecosystem.work.prefer-discrete-gpu/1 {
-    state active
-    hash "sha256:2c1df1bb2ab42c619a03fbd057c3a0a53aa8d7fe9a4681d0ffce5a0f82c0fccf"
+    state completed
+    hash "sha256:0c8abc55a1a7e79bfb50869618c78748dad747e5166392f2ab4ba396dc4b0c13"
+}
+
+seal @lege-ecosystem.work.prepared-onnx-shared-gpu-session/1 {
+    state completed
+    hash "sha256:b0a3bd62576f5a62b43e2c33cb145807e37772261b753dee0ebe622b70570dc6"
 }
 
 seal @lege-ecosystem.work.preserve-jbig2-smask-text-plane/1 {
@@ -759,8 +964,13 @@ seal @lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/1
 }
 
 seal @lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/2 {
-    state verified
-    hash "sha256:1b44d83c77edc92d9e218b4e075bee10be58e54f887abe54d16c893eca22f4f5"
+    state superseded
+    hash "sha256:b45472ab9b9e9afee7ecea2f6977037f8da56ee80880783f6954f19849f0e0a6"
+}
+
+seal @lege-ecosystem-perf.papercut.the-targeted-renderer-image-clippy-check-is/3 {
+    state withdrawn
+    hash "sha256:e5524f561ae1892790022318066ad08dd8a61f9b02970ba053785c2da4a57181"
 }
 
 seal @lege-ecosystem-perf.papercut.while-correcting-a-sealed-evidence-record/1 {
@@ -784,8 +994,13 @@ seal @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/2 {
 }
 
 seal @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/3 {
-    state verified
-    hash "sha256:40fc67d47b85b4caa1c0546db8c5879236323e598afa87d3106dbc7523eda62b"
+    state superseded
+    hash "sha256:0398d46934d83a89875ef6d25bc1939f319aa0a20169fd2b6076b66eb5ec1b25"
+}
+
+seal @lege-ecosystem-perf.papercut.while-reproducing-the-structures-pdf-mrc/4 {
+    state withdrawn
+    hash "sha256:7f05ff1812028972dfdcfa2db97a3cab2934f1603cd89c0f49df4803d5450105"
 }
 
 seal @lege-ecosystem-perf.papercut.while-validating-the-jpx-output-ownership/1 {

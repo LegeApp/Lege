@@ -9,13 +9,13 @@ use crate::vision::onnx::types::{
 use crate::vision::ops::winograd::{input_transform_f23, output_transform_f23};
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Tensor {
-    pub(crate) shape: Vec<usize>,
-    pub(crate) data: Vec<f32>,
+pub struct Tensor {
+    pub shape: Vec<usize>,
+    pub data: Vec<f32>,
 }
 
 impl Tensor {
-    pub(crate) fn new(shape: Vec<usize>, data: Vec<f32>) -> Result<Self> {
+    pub fn new(shape: Vec<usize>, data: Vec<f32>) -> Result<Self> {
         let expected = shape.iter().try_fold(1usize, |elements, &dim| {
             elements
                 .checked_mul(dim)

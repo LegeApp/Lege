@@ -17,3 +17,37 @@ record lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 : observat
     observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
     method observation
 }
+
+record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 : observation {
+    title "DocLayout-M underdetects text and some images"
+    state superseded
+    statement """
+        PP-DocLayout-M on Structures.pdf (Braudel scan) systematically underdetects: whole body paragraphs are omitted (pages 191, 194, 200), captions and run-on last lines are clipped horizontally (pages 195, 198, 200), and image boxes are occasionally tight but never oversized. The default Linux Paddle OCR path (`perform_page_rgb_ocr`) already runs DBNet on the full page and does not crop to DocLayout boxes. DocLayout still drives image overlays/premask, crop/margins, reflow, slow OCR regions, and the Tesseract region path.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    method manual
+    watches [
+        "lege-process/ocr/fast.rs",
+        "lege-process/pipeline/pdf_tokio_pipeline.rs",
+        "lege-process/core/layout_correct.rs",
+        "lege-process/core/types.rs"
+    ]
+    review_after 2026-11-13
+}
+
+record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 : observation {
+    title "DocLayout-M underdetects text and some images"
+    state verified
+    statement """
+        PP-DocLayout-M on Structures.pdf (Braudel scan) systematically underdetects: whole body paragraphs are omitted (pages 191, 194, 200), captions and run-on last lines are clipped horizontally (pages 195, 198, 200), and image boxes are occasionally tight but never oversized. The default Linux Paddle OCR path (`perform_page_rgb_ocr`) already runs DBNet on the full page and does not crop to DocLayout boxes. DocLayout still drives image overlays/premask, crop/margins, reflow, slow OCR regions, and the Tesseract region path.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    method manual
+    watches [
+        "lege-process/ocr/fast.rs",
+        "lege-process/pipeline/pdf_tokio_pipeline.rs",
+        "lege-process/core/types.rs"
+    ]
+    review_after 2026-11-13
+    supersedes [ @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 ]
+}

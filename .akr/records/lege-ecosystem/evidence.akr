@@ -1,6 +1,31 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1 : evidence {
+    title "Size-matched perceptual PCRD curve benchmark"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cargo run --release --example perceptual_curve -- test-set 25,50,75,90,98 7; cargo run --release --example perceptual_curve -- .agent/scratch/encode-quality/corpus6-20260812 50,75,90,98; compare against detached 70147b50 CSV baselines"
+    artifact "lege-codecs/jp2lam/.agent/scratch/encode-quality/summary-2026-08-12.md"
+    summary """
+        On the working tree rooted at 70147b50, decoded-RGB Butteraugli and SSIMULACRA2 comparisons preserved mean output size within 0.0603% at q25 and 0.0016% at q50/q75/q90/q98; q25/q50/q75 improved both perceptual metrics on the seven-photo mean, q50/q75 improved both on the mixed-resolution six-photo mean, q90 improved the mixed-resolution mean, and q98 was byte-identical.
+        """
+}
+
+record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-validation-2026-08-13/1 : evidence {
+    title "Perceptual PCRD full validation"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cargo fmt -- --check && cargo check --all-targets && cargo test --all-targets && git diff --check -- Cargo.toml src/encode/backend/native/backend.rs src/encode/backend/native/rate.rs examples/perceptual_curve.rs"
+    summary """
+        On the working tree rooted at 70147b50, cargo check and all-target tests passed (343 library tests, 5 expected ignores, 19 lossless integration tests, 4 exhaustive lossy quality-ladder tests, and the remaining safety/visual suites); formatting and diff whitespace checks passed.
+        """
+}
+
 record lege-ecosystem.evidence.about-auto-width-freya-test/1 : evidence {
     title "About auto-width focused test passes"
     state verified
@@ -22,6 +47,18 @@ record lege-ecosystem.evidence.about-loopback-freya-tests/1 : evidence {
     command "cargo test -p lege-gui-freya"
     summary """
         All 38 Freya tests passed, including end-to-end loopback readability and exact embedded document allowlisting.
+        """
+}
+
+record lege-ecosystem.evidence.adapter-order-tests-20260813/1 : evidence {
+    title "All three adapter policy tests passed, including deterministic discrete-before-integrated ordering."
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "cargo test -p lege-gpu wgpu_setup::tests --lib"
+    summary """
+        All three adapter policy tests passed, including deterministic discrete-before-integrated ordering.
         """
 }
 
@@ -109,6 +146,18 @@ record lege-ecosystem.evidence.automatic-toc-workspace-regression/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.discrete-auto-selection-20260813/1 : evidence {
+    title "The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060."
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "WGPU_REQUIRE_REAL_GPU=1 LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
+    summary """
+        The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060.
+        """
+}
+
 record lege-ecosystem.evidence.discrete-gpu-presentation-build/1 : evidence {
     title "GPU presentation and layout features compile"
     state verified
@@ -181,6 +230,45 @@ record lege-ecosystem.evidence.image-detection-policy-tests/1 : evidence {
     command "cargo test -p lege --lib image_detection_policy_tests && cargo test -p lege --lib layout_mode_adds_low_resolution_analysis_surface"
     summary """
         Both planned-path image policy regressions and the bounded analysis-surface plan test passed.
+        """
+}
+
+record lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 : evidence {
+    title "Size-matched jp2lam perceptual curve qualification"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cargo run --release --example perceptual_curve -- <jpegXL-rs corpus subsets> <quality sweeps>; compare CSV against detached baseline 70147b5"
+    artifact "lege-codecs/jp2lam/.agent/scratch/encode-quality/summary-2026-08-12.md"
+    summary """
+        On the supplied 0.8/4.3/12 MP photographic corpus, output size stayed within +0.0603% mean at q25 and within ±0.0016% at q50/q75/q90/q98; q25 improved mean Butteraugli by 0.6149 and SSIMULACRA2 by 0.1996, q90 improved Butteraugli by 0.1242 and SSIMULACRA2 by 0.6638, and q98 remained byte/metric identical by policy.
+        """
+}
+
+record lege-ecosystem.evidence.jp2lam-perceptual-pcrd-check-2026-08-12/1 : evidence {
+    title "jp2lam perceptual PCRD build and formatting checks"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cd lege-codecs/jp2lam && cargo check --all-targets && cargo fmt -- --check && git diff --check -- Cargo.toml src/encode/backend/native/backend.rs src/encode/backend/native/rate.rs examples/perceptual_curve.rs"
+    artifact "lege-codecs/jp2lam"
+    summary """
+        All-target compilation, rustfmt verification, and whitespace checks passed for the jp2lam changes.
+        """
+}
+
+record lege-ecosystem.evidence.jp2lam-perceptual-pcrd-tests-2026-08-12/1 : evidence {
+    title "jp2lam perceptual PCRD full regression suite"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cd lege-codecs/jp2lam && cargo test --all-targets"
+    artifact "lege-codecs/jp2lam"
+    summary """
+        All jp2lam targets passed after the size-matched perceptual allocator: 342 library tests passed, 5 ignored, and all integration/example targets passed.
         """
 }
 
@@ -434,6 +522,31 @@ record lege-ecosystem.evidence.ocr-production-clippy-2026-08-11/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.prepared-onnx-session-build-20260813/1 : evidence {
+    title "lege-gpu release check passed with the public OnnxSession::run_gpu entry point."
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "cargo check -p lege-gpu --release"
+    artifact "lege-gpu/src/vision/session.rs"
+    summary """
+        lege-gpu release check passed with the public OnnxSession::run_gpu entry point.
+        """
+}
+
+record lege-ecosystem.evidence.presentation-layout-build-20260813/1 : evidence {
+    title "The presentation and layout-detection feature combination compiled successfully."
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "cargo check -p lege-gpu --features presentation,layout-detection"
+    summary """
+        The presentation and layout-detection feature combination compiled successfully.
+        """
+}
+
 record lege-ecosystem.evidence.preserved-jbig2-mixed-page-fallback/1 : evidence {
     title "Mixed eligible and maskless pages process through independent paths"
     state verified
@@ -469,6 +582,19 @@ record lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 : evidence 
         """
 }
 
+record lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 : evidence {
+    title "A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback."
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "cd ../raw-autotune && WGPU_ADAPTER_NAME=4060 WGPU_REQUIRE_REAL_GPU=1 cargo run --release -- raw/raw_3rd_batch/_DSC1289.ARW --output .agent/scratch/scene-gpu-4060-20260813 --format png --sidecar --no-summary --overwrite --jobs 1 --semantic"
+    artifact "../raw-autotune/.agent/scratch/scene-gpu-4060-20260813/_DSC1289_auto.json"
+    summary """
+        A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback.
+        """
+}
+
 record lege-ecosystem.evidence.release-document-copy-audit/1 : evidence {
     title "Before canonical edits, project, Linux staging, and MSIX documentation.html copies were byte-identical at SHA-256 c78277275d80915433e541dc2e712d18281dd19c7a855b66e0145929d84c9e5a and all contained the Reflow section."
     state verified
@@ -493,6 +619,42 @@ record lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.smask-layout-regressions/1 : evidence {
+    title "SMask and layout regression tests"
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "cargo test -q -p lege-pdf-read session::tests && cargo test -q -p lege --lib layout_correct::tests && cargo check -p lege --bin lege"
+    summary """
+        Five session mask-qualification tests and eight layout-correction tests passed; the Lege binary check completed.
+        """
+}
+
+record lege-ecosystem.evidence.structures-ccitt-dither-policy/1 : evidence {
+    title "Structures preserved-mask CCITT dither policy"
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "target/debug/lege /home/dk/Desktop/Structures.pdf 49 1400 --output /tmp/lege-structures-ccitt-dither --text-format ccitt4 --cover-format jpeg --no-ocr --dither; pdfimages -list output"
+    summary """
+        Page 49 emitted one full-page 1-bit CCITT image plus the source-resolution JBIG2 stencil.
+        """
+}
+
+record lege-ecosystem.evidence.structures-flattened-jpeg-detections/1 : evidence {
+    title "Structures flattened JPEG detection behavior"
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "pdftoppm -f 49 -l 72 -jpeg -r 140 Structures.pdf; magick page-*.jpg structures-49-72-jpeg.pdf; LEGE_LAYOUT_TRACE=1 target/debug/lege structures-49-72-jpeg.pdf 1-24 1400 --no-cover --no-ocr --dither; pdfimages -list output"
+    summary """
+        On JPEG-only pages, source page 49 was detected as image at 0.9497 and emitted a 958x1058 overlay; page 67 was detected at 0.9683 and emitted an 826x847 overlay; page 66 correctly had no image; page 72 emitted no image overlay.
+        """
+}
+
 record lege-ecosystem.evidence.structures-image-overlay-range/1 : evidence {
     title "Structures pages 190–210 retain all detected illustrations"
     state verified
@@ -502,6 +664,17 @@ record lege-ecosystem.evidence.structures-image-overlay-range/1 : evidence {
     command "target/debug/lege /home/dk/Desktop/Structures.pdf 190-210 2000 --no-ocr --text-format ccitt4 --output /tmp/lege-final-190210-jinmEL && pdfimages -list /tmp/lege-final-190210-jinmEL/Structures_processed_2026-08-12_085033.pdf"
     summary """
         The 21-page output had two image objects (CCITT base plus JP2 overlay) exactly on source pages 195, 197, 198, 199, 202, 204, and 208; every other page had only the CCITT base.
+        """
+}
+
+record lege-ecosystem.evidence.structures-image-threshold-sample/1 : evidence {
+    title "Structures image-confidence separation sample"
+    state verified
+    result pass
+    method observation
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    summary """
+        Across flattened source pages 49-72, non-image page trace blocks had maximum independent image scores of 0.0565-0.0793 except missed page 72 at 0.3067; page 72 had an image-winning anchor at 0.1627 but a competing doc_title at 0.8156 over the illustration.
         """
 }
 
@@ -541,6 +714,17 @@ record lege-ecosystem.evidence.structures-jbig2-payload-roundtrip-corrected/1 : 
         """
 }
 
+record lege-ecosystem.evidence.structures-layout-nms-trace/1 : evidence {
+    title "Structures Paddle and NMS trace"
+    state verified
+    result pass
+    method observation
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    summary """
+        Page 49's 0.949 image box survived both NMS stages and was later collapsed by image-growth correction; page 72's illustration was classified as doc_title and its independent image score was 0.3048, below the 0.35 threshold, so NMS did not suppress it.
+        """
+}
+
 record lege-ecosystem.evidence.structures-layout-preserved-mask-composition/1 : evidence {
     title "Layout detection composes figures without replacing native text mask"
     state verified
@@ -550,5 +734,52 @@ record lege-ecosystem.evidence.structures-layout-preserved-mask-composition/1 : 
     command "target/debug/lege /home/dk/Desktop/Structures.pdf 1-1 1200 --grayscale --text-format jbig2 --no-ocr --no-cover --output /tmp/lege-smask-layout.WiDsSL && pdfimages -list /tmp/lege-smask-layout.WiDsSL/Structures_processed_2026-08-12_062231.pdf"
     summary """
         Layout inference ran and emitted a separate RGB figure overlay while output retained the native 2222x3191 JBIG2 stencil; its stream SHA-256 exactly matched source object 1277 (7ed6f9593e753dd7c7e9ac77a9569051c702dc25337b4d8775effc76378e0050 in this post-build run).
+        """
+}
+
+record lege-ecosystem.evidence.structures-original-policy/1 : evidence {
+    title "Structures preserved-mask JP2 and JPEG policy"
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "target/debug/lege /home/dk/Desktop/Structures.pdf 49-72 1400 --output /tmp/lege-structures-original --text-format jbig2 --cover-format jpeg --no-ocr --original-images; pdfimages -list output; repeat page 49 with --jpeg-compat"
+    summary """
+        Pages 49, 66, and 72 each emitted one full-page JP2 image plus native JBIG2 stencil; JPEG compatibility mode emitted a JPEG image plus the same native stencil.
+        """
+}
+
+record lege-ecosystem.evidence.structures-page66-layout-trace/1 : evidence {
+    title "Structures page 66 Paddle and NMS trace"
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "LEGE_LAYOUT_TRACE=1 target/debug/lege /home/dk/Desktop/Structures.pdf 66 1400 --output /tmp/lege-structures-trace-p66 --text-format jbig2 --cover-format jpeg --no-ocr --dither"
+    summary """
+        Page 66 had no viable image proposal: the top independent image score was 0.0770, far below the 0.35 confidence threshold; both NMS stages retained all eight thresholded non-image detections.
+        """
+}
+
+record lege-ecosystem.evidence.structures-paper-normalization-path/1 : evidence {
+    title "Preserved-mask background paper normalization"
+    state verified
+    result pass
+    method observation
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    summary """
+        The source non-mask/background content includes the yellow paper cast, but the preserved-mask pipeline renders Gray8 and applies clean_gray_page before mrc_background_with_coverage; background normalization therefore pushes the paper tone toward white before dither or JP2/JPEG encoding.
+        """
+}
+
+record lege-ecosystem.evidence.structures-smask-policy/1 : evidence {
+    title "Structures preserved-mask dither policy"
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "target/debug/lege /home/dk/Desktop/Structures.pdf 49-72 1400 --output /tmp/lege-structures-dither --text-format jbig2 --cover-format jpeg --no-ocr --dither --binarization adaptive --sauvola-k 0.05; pdfimages -list output"
+    summary """
+        Pages 49, 66, and 72 each emitted exactly one full-page 1-bit dithered image plus the source-resolution JBIG2 stencil; all 24 pages in 49-72 logged preserved MRC mode=Stucki.
         """
 }

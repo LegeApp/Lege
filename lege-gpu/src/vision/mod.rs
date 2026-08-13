@@ -12,6 +12,7 @@ pub(crate) mod ops;
 pub(crate) mod preprocess;
 pub(crate) mod reference;
 pub(crate) mod runtime;
+pub(crate) mod session;
 
 mod api;
 
@@ -24,3 +25,5 @@ pub use api::{
     LayoutConfig, LayoutDetection, LayoutDetector, is_layout_gpu_device_error,
     is_layout_software_adapter_error,
 };
+pub use reference::Tensor;
+pub use session::OnnxSession;

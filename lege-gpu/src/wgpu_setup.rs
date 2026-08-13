@@ -14,7 +14,9 @@
 //! return the integrated GPU for that hint even when a discrete GPU is
 //! available. Every automatic Lege GPU path therefore orders enumerated
 //! adapters Discrete -> Integrated -> Other -> Virtual -> Cpu and tries them in
-//! that order.
+//! that order. `WGPU_PREFER_INTEGRATED` swaps the first two ranks;
+//! `WGPU_ADAPTER_SKIP` drops name-matched adapters for driver-specific
+//! troubleshooting or deployments that reserve a device for other work.
 
 /// Backends to enable for lege-gpu compute work, honouring `WGPU_BACKEND`.
 pub fn requested_backends() -> wgpu::Backends {
@@ -72,14 +74,45 @@ pub fn create_instance() -> wgpu::Instance {
 ///
 /// A lower value is preferred. Explicit `WGPU_ADAPTER_NAME` selection is
 /// applied before this policy and therefore still takes precedence.
-pub(crate) const fn adapter_type_preference(device_type: wgpu::DeviceType) -> u8 {
-    match device_type {
-        wgpu::DeviceType::DiscreteGpu => 0,
-        wgpu::DeviceType::IntegratedGpu => 1,
-        wgpu::DeviceType::Other => 2,
-        wgpu::DeviceType::VirtualGpu => 3,
-        wgpu::DeviceType::Cpu => 4,
+///
+/// `WGPU_PREFER_INTEGRATED=1` swaps discrete and integrated when a deployment
+/// wants to reserve the discrete device. Default production order is unchanged.
+pub(crate) fn adapter_type_preference(device_type: wgpu::DeviceType) -> u8 {
+    let prefer_integrated = std::env::var_os("WGPU_PREFER_INTEGRATED").is_some_and(|value| {
+        let value = value.to_string_lossy();
+        value != "0" && !value.eq_ignore_ascii_case("false")
+    });
+    match (device_type, prefer_integrated) {
+        (wgpu::DeviceType::IntegratedGpu, true) => 0,
+        (wgpu::DeviceType::DiscreteGpu, true) => 1,
+        (wgpu::DeviceType::DiscreteGpu, false) => 0,
+        (wgpu::DeviceType::IntegratedGpu, false) => 1,
+        (wgpu::DeviceType::Other, _) => 2,
+        (wgpu::DeviceType::VirtualGpu, _) => 3,
+        (wgpu::DeviceType::Cpu, _) => 4,
     }
+}
+
+/// Comma-separated name fragments from `WGPU_ADAPTER_SKIP`. Empty if unset.
+pub(crate) fn adapter_skip_filters() -> Vec<String> {
+    std::env::var("WGPU_ADAPTER_SKIP")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True when `name` matches any `WGPU_ADAPTER_SKIP` fragment.
+pub(crate) fn adapter_is_skipped(name: &str, filters: &[String]) -> bool {
+    filters
+        .iter()
+        .any(|filter| adapter_name_matches(name, filter))
 }
 
 /// Order adapters according to [`adapter_type_preference`].
@@ -103,6 +136,12 @@ mod tests {
 
     #[test]
     fn automatic_adapter_order_prefers_discrete_hardware() {
+        // This test documents the default production order. It must not
+        // inherit WGPU_PREFER_INTEGRATED from the surrounding environment.
+        let original = std::env::var_os("WGPU_PREFER_INTEGRATED");
+        unsafe {
+            std::env::remove_var("WGPU_PREFER_INTEGRATED");
+        }
         let mut types = [
             wgpu::DeviceType::Cpu,
             wgpu::DeviceType::IntegratedGpu,
@@ -111,6 +150,10 @@ mod tests {
             wgpu::DeviceType::Other,
         ];
         types.sort_by_key(|device_type| adapter_type_preference(*device_type));
+        match original {
+            Some(value) => unsafe { std::env::set_var("WGPU_PREFER_INTEGRATED", value) },
+            None => unsafe { std::env::remove_var("WGPU_PREFER_INTEGRATED") },
+        }
 
         assert_eq!(
             types,
@@ -122,6 +165,18 @@ mod tests {
                 wgpu::DeviceType::Cpu,
             ]
         );
+    }
+
+    #[test]
+    fn adapter_skip_matches_name_fragments() {
+        assert!(adapter_is_skipped(
+            "NVIDIA GeForce RTX 4060",
+            &["4060".to_string()]
+        ));
+        assert!(!adapter_is_skipped(
+            "Intel(R) Iris(R) Xe Graphics",
+            &["4060".to_string()]
+        ));
     }
 
     #[test]

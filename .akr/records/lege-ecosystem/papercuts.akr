@@ -1,15 +1,72 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.papercut.a-scratch-corpus-setup-command-was-rejected/1 : papercut {
+    title "A scratch-corpus setup command was rejected because it contained `rm…"
+    state verified
+    statement """
+        A scratch-corpus setup command was rejected because it contained `rm -rf` even though the target was a disposable `.agent/scratch` directory. Reusing a timestamped/new directory avoids the policy rejection; the error guidance was clear.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    about "exec_command"
+    author "fugu-ultra"
+    created_at 2026-08-12
+}
+
 record lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/1 : papercut {
     title "A single Cargo build selecting `lege` and `lege-gui-freya` with bin…"
-    state verified
+    state superseded
     statement """
         A single Cargo build selecting `lege` and `lege-gui-freya` with bin filters still selected the same-named `lege-gui` target from both packages, producing an output collision. The standard alias must build Freya through the existing integrated `lege --features freya` target (or use an xtask), because Cargo bin filters are not package-scoped.
         """
     observed_at git:5111194256cf31247e1d5157a120595619554520
     author "codex"
     created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/2 : papercut {
+    title "A single Cargo build selecting `lege` and `lege-gui-freya` with bin…"
+    state withdrawn
+    statement """
+        RESOLVED: .cargo/config.toml documents that Freya is package lege --features freya --bin lege-gui, and must not be combined with package lege-gui in one invocation.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.a-single-cargo-build-selecting-lege-and-lege/1 ]
+}
+
+record lege-ecosystem.papercut.akr-mcp-server-failed-to-connect-at-session/1 : papercut {
+    title "AKR MCP server failed to connect at session start, so…"
+    state verified
+    statement """
+        AKR MCP server failed to connect at session start, so knowledge.start/context had to go through the akr CLI. akr search also rejects --budget even though start/context advertise that flag.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    author "grok"
+    created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.akr-papercut-collate-defaults-to-scanning/1 : papercut {
+    title "akr papercut collate defaults to scanning sibling workspaces of the…"
+    state verified
+    statement """
+        akr papercut collate defaults to scanning sibling workspaces of the current root, so running it in Lege-ecosystem looks like it should list this folder's cuts but instead walks Rust-projects/*. Local review is akr view papercuts; collate is an aggregator. Defaulting --projects to the current workspace (and requiring --projects .. to scan sisters) would match the obvious meaning.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    about "akr"
+    author "grok"
+    created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.akr-propose-from-rejected-a-yaml-like-statement/1 : papercut {
+    title "akr propose --from rejected a YAML-like statement: fragment with…"
+    state verified
+    statement """
+        akr propose --from rejected a YAML-like statement: fragment with expected a value, found :. The accepted shape is an AKR slot-list (statement """ ... """), which CLI help does not show.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    about "akr"
+    author "grok"
+    created_at 2026-08-13
 }
 
 record lege-ecosystem.papercut.building-the-focused-lege-freya-gui-emitted/1 : papercut {
@@ -47,6 +104,18 @@ record lege-ecosystem.papercut.fff-multi-grep-transport-closed-while-locating/1 
     created_at 2026-08-12
 }
 
+record lege-ecosystem.papercut.knowledge-evidence-add-many-rejected-an/1 : papercut {
+    title "knowledge.evidence_add_many rejected an otherwise valid evidence batch…"
+    state verified
+    statement """
+        knowledge.evidence_add_many rejected an otherwise valid evidence batch because the repository shorthand `lege` is not the declared `lege-ecosystem` namespace; surfacing valid namespaces in the write error or start bundle would avoid the retry.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    about "akr"
+    author "codex"
+    created_at 2026-08-13
+}
+
 record lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 : papercut {
     title "knowledge.get did not display a work record's acceptance checks even at…"
     state verified
@@ -59,15 +128,60 @@ record lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 :
     created_at 2026-08-11
 }
 
+record lege-ecosystem.papercut.knowledge-papercut-failed-on-first-use-because/1 : papercut {
+    title "knowledge.papercut failed on first use because this multi-namespace…"
+    state verified
+    statement """
+        knowledge.papercut failed on first use because this multi-namespace workspace required an explicit namespace, but knowledge.start did not surface the available namespace choices in its session head. Including them in the handoff would prevent the retry.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    about "akr"
+    author "codex"
+    created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.knowledge-start-returned-a-2350-token-compact/1 : papercut {
+    title "knowledge.start returned a 2350-token compact preview that exceeded its…"
+    state verified
+    statement """
+        knowledge.start returned a 2350-token compact preview that exceeded its own 2000-token hard limit and required a second narrower call; honoring the requested/default hard limit on the first response would avoid the retry.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    about "akr"
+    author "codex"
+    created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.pdf-verification-attempted-qpdf-check-but-qpdf/1 : papercut {
+    title "PDF verification attempted `qpdf --check`, but qpdf is not installed in…"
+    state verified
+    statement """
+        PDF verification attempted `qpdf --check`, but qpdf is not installed in the development environment; pdfimages and Poppler rendering remained available as fallback checks.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    author "codex"
+    created_at 2026-08-13
+}
+
 record lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 : papercut {
     title "Running `cargo fmt -- <Rust files>` in this workspace made rustfmt…"
-    state verified
+    state superseded
     statement """
         Running `cargo fmt -- <Rust files>` in this workspace made rustfmt parse 2024-edition code with an older default and reject valid let-chains. Formatting by package (`cargo fmt --package lege-gui-freya`) correctly supplies the manifest edition.
         """
     observed_at git:5111194256cf31247e1d5157a120595619554520
     author "codex"
     created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/2 : papercut {
+    title "Running `cargo fmt -- <Rust files>` in this workspace made rustfmt…"
+    state withdrawn
+    statement """
+        RESOLVED: a root rustfmt.toml now sets edition/style_edition 2024 so `cargo fmt -- <files>` parses let-chains without requiring --package.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 ]
 }
 
 record lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 : papercut {
@@ -83,7 +197,7 @@ record lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 : pa
 
 record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 : papercut {
     title "The CLI help says a single page number such as `5` is a valid…"
-    state verified
+    state superseded
     statement """
         The CLI help says a single page number such as `5` is a valid PAGE-RANGE form, but `lege Structures.pdf 1 ...` exits with “Page range must be in format 'start-end'”. The help and parser should agree.
         """
@@ -92,15 +206,78 @@ record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 
     created_at 2026-08-12
 }
 
+record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/2 : papercut {
+    title "The CLI help says a single page number such as `5` is a valid…"
+    state withdrawn
+    statement """
+        RESOLVED: PageRange::parse accepts a lone page number, `lege book.pdf 195 2000` is page 195 at height 2000, and help lists both forms. `lege book.pdf 5` no longer requires 5-5.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 ]
+}
+
+record lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/1 : papercut {
+    title "The encode-quality work record points to…"
+    state superseded
+    statement """
+        The encode-quality work record points to `/mnt/Samsung980_1TB/Rust-projects/codec-headsup` as the ready-made perceptual grading harness, but that path is absent in this workspace. I had to fall back to the in-repo corpus/metrics and locally available image tools; the work record should name a durable/available harness location or setup procedure.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    author "fugu-ultra"
+    created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/2 : papercut {
+    title "The encode-quality work record points to…"
+    state withdrawn
+    statement """
+        RESOLVED: the encode-quality work note now names the in-repo harness at lege-codecs/jp2lam/.agent/scratch/encode-quality/ and examples/perceptual_curve.rs. codec-headsup remains a historical measurement source, not a required checkout.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/1 ]
+}
+
 record lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/1 : papercut {
     title "The repository's enabled Git fsmonitor returned an empty `git status…"
-    state verified
+    state superseded
     statement """
         The repository's enabled Git fsmonitor returned an empty `git status --short` even while `git diff --raw` showed many changes. Disabling fsmonitor per command (`git -c core.fsmonitor=false status --short`) produced the correct worktree state.
         """
     observed_at git:5111194256cf31247e1d5157a120595619554520
     author "codex"
     created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/2 : papercut {
+    title "The repository's enabled Git fsmonitor returned an empty `git status…"
+    state withdrawn
+    statement """
+        RESOLVED for this checkout: `git config --local core.fsmonitor false`. The hook is still present as a sample only; empty status was the enabled-watchman path.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/1 ]
+}
+
+record lege-ecosystem.papercut.the-repository-wide-strict-akr-check-is/1 : papercut {
+    title "The repository-wide strict akr check is currently unusable for an…"
+    state verified
+    statement """
+        The repository-wide strict akr check is currently unusable for an otherwise-valid scoped change: it promotes four existing warnings to errors, including three lege-ecosystem-perf observed_at commits that are not ancestors of the current branch. Lenient check confirms parse, type-check, link, and resolve are clean.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    author "codex"
+    created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.the-shared-context-prefers-discrete-when/1 : papercut {
+    title "The shared_context_prefers_discrete_when_available hardware test fails…"
+    state verified
+    statement """
+        The shared_context_prefers_discrete_when_available hardware test fails immediately when WGPU_ADAPTER_NAME is set, although an explicit adapter override is a natural way to target a real GPU test. Its acceptance command or test docs should say that the override must be unset and that explicit-device execution needs a separate probe.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    author "codex"
+    created_at 2026-08-13
 }
 
 record lege-ecosystem.papercut.while-cleaning-temporary-gpu-probes-a-combined/1 : papercut {
@@ -138,15 +315,36 @@ record lege-ecosystem.papercut.while-creating-the-auto-toc-work-record/1 : paper
     created_at 2026-08-11
 }
 
+record lege-ecosystem.papercut.while-diagnosing-structures-pdf-smask/1 : papercut {
+    title "While diagnosing Structures.pdf SMask preservation,…"
+    state verified
+    statement """
+        While diagnosing Structures.pdf SMask preservation, preserved_jbig2_smask returned None with no rejection reason; the run log only showed fallback MRC. An opt-in eligibility trace naming the failed predicate and placement values would make source-mask regressions much faster to isolate.
+        """
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    author "codex"
+    created_at 2026-08-13
+}
+
 record lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/1 : papercut {
     title "While inspecting PDF metadata wiring, I guessed a conventional…"
-    state verified
+    state superseded
     statement """
         While inspecting PDF metadata wiring, I guessed a conventional `lege-pdf/write/src/catalog.rs` path; catalog writing actually lives in `pages.rs`. The writer module layout is not obvious from the metadata API and cost a failed read.
         """
     observed_at git:7cf7bac3cee07919b12bdf545661ef7ee502bebb
     author "codex"
     created_at 2026-08-11
+}
+
+record lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/2 : papercut {
+    title "While inspecting PDF metadata wiring, I guessed a conventional…"
+    state withdrawn
+    statement """
+        RESOLVED: lege-pdf/write/src/catalog.rs now exists and re-exports write_catalog/CatalogExtras from pages.rs.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/1 ]
 }
 
 record lege-ecosystem.papercut.while-narrowing-multi-grep-to-lege-process/1 : papercut {
@@ -187,11 +385,21 @@ record lege-ecosystem.papercut.while-running-focused-rust-tests-i-passed-two/1 :
 
 record lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/1 : papercut {
     title "While validating a single Structures.pdf page, the documented `lege…"
-    state verified
+    state superseded
     statement """
         While validating a single Structures.pdf page, the documented `lege book.pdf 195 2000 ...` form parsed `195` as a target dimension rather than a one-page range and began processing all 632 pages. Single-page range syntax is ambiguous with numeric target syntax; `195-195` is the necessary workaround but the help says `5` is valid.
         """
     observed_at git:5111194256cf31247e1d5157a120595619554520
     author "codex"
     created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/2 : papercut {
+    title "While validating a single Structures.pdf page, the documented `lege…"
+    state withdrawn
+    statement """
+        RESOLVED: two bare numbers where the first is page-like (<500) and the second is a target height are treated as page+height, not WIDTH HEIGHT. Single-page `195` also parses.
+        """
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    supersedes [ @lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/1 ]
 }

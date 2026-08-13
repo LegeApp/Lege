@@ -112,6 +112,7 @@ impl GpuContext {
         let backends = crate::wgpu_setup::requested_backends();
         let instance = Arc::new(crate::wgpu_setup::create_instance());
         let adapter_name_filter = std::env::var("WGPU_ADAPTER_NAME").ok();
+        let adapter_skip = crate::wgpu_setup::adapter_skip_filters();
 
         let enumerated: Vec<crate::vision::wgpu::Adapter> =
             instance.enumerate_adapters(backends).await;
@@ -165,6 +166,13 @@ impl GpuContext {
             let adapter_desc =
                 format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
             let is_cpu = info.device_type == crate::vision::wgpu::DeviceType::Cpu;
+
+            if crate::wgpu_setup::adapter_is_skipped(&info.name, &adapter_skip) {
+                adapter_errors.push(format!(
+                    "`{adapter_desc}` skipped: matches WGPU_ADAPTER_SKIP"
+                ));
+                continue;
+            }
 
             if is_cpu && require_real_gpu {
                 adapter_errors.push(format!(

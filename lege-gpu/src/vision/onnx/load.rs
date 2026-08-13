@@ -76,6 +76,14 @@ pub(crate) const TARGETS: &[ModelTarget] = &[
         layout: Layout::Nchw,
         dims: [None, Some(3), Some(48), None],
     },
+    // raw-autotune scene pack: YuNet / MobileOne / LR-ASPP prepared graphs.
+    // H/W may be static in the artifact or stamped at prep time.
+    ModelTarget {
+        input_name: "scene_image",
+        dtype: "FLOAT",
+        layout: Layout::Nchw,
+        dims: [Some(1), Some(3), None, None],
+    },
 ];
 
 /// Finds the registered target matching a model input by name.
