@@ -21,6 +21,9 @@ use pdf_object::{Dictionary, NameId, NameTable, ObjectId, PdfObject};
 use pdf_source::PdfSource;
 use pdf_structure::{ObjectLocation, RecoveryEvent};
 
+mod xmp;
+pub use xmp::{XmpHistoryEvent, XmpLineage};
+
 /// How the document opened.
 #[derive(Debug, Clone)]
 pub enum OpenOutcome {
@@ -81,10 +84,17 @@ pub struct DocumentIdentity {
     /// and any non-standard keys a writer added, which are often the more
     /// telling ones.
     pub info: BTreeMap<String, String>,
-    /// Whether the catalog carries an XMP `/Metadata` stream. The stream's
-    /// contents — including the `xmpMM` lineage identifiers — are not parsed
-    /// here yet.
+    /// Whether the catalog carries an XMP `/Metadata` stream.
     pub has_xmp_metadata: bool,
+    /// The `xmpMM` media-management properties read out of that stream, when
+    /// it is present, decodable, and carries any.
+    ///
+    /// This is the lineage the trailer `/ID` pair only hints at:
+    /// `xmpMM:DocumentID` is meant to survive a document's entire edit
+    /// history while `xmpMM:InstanceID` changes on every save, and
+    /// `xmpMM:DerivedFrom` names the instance a file was derived from
+    /// outright.
+    pub xmp: Option<XmpLineage>,
 }
 
 /// One signature field and what it covers.
@@ -456,9 +466,21 @@ fn read_identity(snapshot: &DocumentSnapshot, ctx: &mut ParseContext) -> Documen
     if let Some(catalog) = resolve(snapshot, root, ctx)
         && let Some(catalog) = catalog.as_dict()
         && let Some(metadata_key) = names.lookup(b"Metadata")
+        && let Some(metadata) = dict_get_resolved(snapshot, catalog, metadata_key, ctx)
+        && !matches!(metadata.as_ref(), PdfObject::Null)
     {
-        identity.has_xmp_metadata = dict_get_resolved(snapshot, catalog, metadata_key, ctx)
-            .is_some_and(|v| !matches!(v.as_ref(), PdfObject::Null));
+        identity.has_xmp_metadata = true;
+        // The packet is a stream like any other; an undecodable one leaves
+        // `xmp` as None while `has_xmp_metadata` still records that it exists,
+        // so "no XMP" and "XMP we could not read" stay distinguishable.
+        if let PdfObject::Stream(stream) = metadata.as_ref()
+            && let Ok(packet) = snapshot.decode_stream_data(stream, ctx)
+        {
+            let lineage = xmp::parse(&packet);
+            if !lineage.is_empty() {
+                identity.xmp = Some(lineage);
+            }
+        }
     }
 
     identity
@@ -1002,6 +1024,26 @@ impl DocumentReport {
         }
         for (key, value) in &id.info {
             writeln_ok(&mut s, &format!("  /{key}: {value}"));
+        }
+        if let Some(xmp) = &id.xmp {
+            writeln_ok(&mut s, "xmp lineage:");
+            for (label, value) in [
+                ("DocumentID", &xmp.document_id),
+                ("InstanceID", &xmp.instance_id),
+                ("OriginalDocumentID", &xmp.original_document_id),
+                ("DerivedFrom.documentID", &xmp.derived_from_document_id),
+                ("DerivedFrom.instanceID", &xmp.derived_from_instance_id),
+            ] {
+                if let Some(value) = value {
+                    writeln_ok(&mut s, &format!("  {label}: {value}"));
+                }
+            }
+            for event in &xmp.history {
+                let action = event.action.as_deref().unwrap_or("(no action)");
+                let when = event.when.as_deref().unwrap_or("(no time)");
+                let agent = event.software_agent.as_deref().unwrap_or("(no agent)");
+                writeln_ok(&mut s, &format!("  history: {action} {when} by {agent}"));
+            }
         }
         writeln_ok(&mut s, &format!("pages: {}", self.pages.len()));
         for p in &self.pages {

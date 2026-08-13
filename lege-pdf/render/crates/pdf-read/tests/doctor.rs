@@ -288,6 +288,82 @@ fn identity_and_metadata_are_inventoried() {
     assert!(summary.contains("embedded-files=true"), "{summary}");
 }
 
+/// A document carrying a real XMP packet with media-management lineage: same
+/// DocumentID as its ancestor, a fresh InstanceID, an explicit DerivedFrom,
+/// and a two-event history ending in an Acrobat save.
+fn xmp_lineage_fixture() -> Vec<u8> {
+    let packet = br#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <rdf:Description rdf:about="" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
+   xmpMM:DocumentID="xmp.did:ORIGINAL-1234"
+   xmpMM:InstanceID="xmp.iid:RESAVED-9999">
+  <xmpMM:DerivedFrom rdf:parseType="Resource">
+   <stRef:documentID>xmp.did:ORIGINAL-1234</stRef:documentID>
+   <stRef:instanceID>xmp.iid:FIRSTSAVE-0001</stRef:instanceID>
+  </xmpMM:DerivedFrom>
+  <xmpMM:History><rdf:Seq>
+   <rdf:li stEvt:action="created" stEvt:when="2024-12-01T12:00:00Z"
+     stEvt:softwareAgent="Microsoft Word"/>
+   <rdf:li stEvt:action="saved" stEvt:when="2026-07-13T09:30:00Z"
+     stEvt:softwareAgent="Adobe Acrobat 23.0" stEvt:changed="/"/>
+  </rdf:Seq></xmpMM:History>
+ </rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#;
+
+    let mut b = PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R/Metadata 5 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 100 100]>>",
+    );
+    b.add_object(3, "<</Type/Page/Parent 2 0 R>>");
+    b.add_stream(5, "/Type/Metadata/Subtype/XML", packet);
+    b.finish_classic_xref("/Root 1 0 R");
+    b.into_bytes()
+}
+
+#[test]
+fn xmp_lineage_is_read_from_the_metadata_stream() {
+    let report = examine_bytes(xmp_lineage_fixture());
+    assert!(matches!(report.open, OpenOutcome::Ok), "{:?}", report.open);
+    assert!(report.identity.has_xmp_metadata);
+
+    let xmp = report.identity.xmp.as_ref().expect("lineage present");
+    // The signature of a save-and-edit cycle: the document identity carried
+    // over while the instance identity was minted fresh.
+    assert_eq!(xmp.document_id.as_deref(), Some("xmp.did:ORIGINAL-1234"));
+    assert_eq!(xmp.instance_id.as_deref(), Some("xmp.iid:RESAVED-9999"));
+    assert_eq!(
+        xmp.derived_from_document_id.as_deref(),
+        Some("xmp.did:ORIGINAL-1234")
+    );
+    assert_eq!(
+        xmp.derived_from_instance_id.as_deref(),
+        Some("xmp.iid:FIRSTSAVE-0001")
+    );
+
+    assert_eq!(xmp.history.len(), 2);
+    assert_eq!(xmp.history[0].software_agent.as_deref(), Some("Microsoft Word"));
+    assert_eq!(xmp.history[1].action.as_deref(), Some("saved"));
+    assert_eq!(
+        xmp.history[1].software_agent.as_deref(),
+        Some("Adobe Acrobat 23.0")
+    );
+
+    let summary = report.summary();
+    assert!(summary.contains("xmp.did:ORIGINAL-1234"), "{summary}");
+    assert!(summary.contains("Adobe Acrobat 23.0"), "{summary}");
+}
+
+#[test]
+fn an_xmp_packet_without_lineage_reports_presence_only() {
+    // identity_fixture's packet is `<x:xmpmeta/>` — present, but carrying no
+    // media-management properties. Presence and lineage stay distinguishable.
+    let report = examine_bytes(identity_fixture());
+    assert!(report.identity.has_xmp_metadata);
+    assert!(report.identity.xmp.is_none());
+}
+
 /// A signed document whose `/ByteRange` is patched, after the bytes are final,
 /// to span the file exactly the way a real signer does. `split` is where the
 /// two covered ranges meet; leaving `gap` bytes uncovered at the end models a
