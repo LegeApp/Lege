@@ -5,7 +5,6 @@ pub mod correction;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use lege_docir::{
     Document, GeometrySource, Page, PageSourceKind, Point, ProcessingManifest, Provenance,
@@ -14,6 +13,7 @@ use lege_docir::{
 };
 pub use lege_ocr::backend::OcrSchedulerConfig;
 use lege_ocr::backend::{LegacyPageAdapter, PageBatch, PageOcrBackend, RecognitionBatch};
+pub use lege_ocr::engine_tensorrt::TensorRtPaddleConfig;
 use lege_pdf_read::{RasterPlane, RasterProduct, RenderSession};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -24,8 +24,15 @@ pub struct PipelineConfig {
     pub language: String,
     pub render_dpi: u32,
     pub max_page_pixels: u64,
+    /// Ignore trustworthy embedded text and run OCR. Intended for evaluation
+    /// against a PDF's existing text layer; normal production runs leave this
+    /// disabled so native text is preserved.
+    pub force_ocr: bool,
     pub scheduler: lege_ocr::backend::OcrSchedulerConfig,
     pub paddle_model_pack: Option<std::path::PathBuf>,
+    /// Native TensorRT PP-OCRv6 worker. `None` permits auto-discovery when the
+    /// backend is `auto` or `tensorrt-paddle`.
+    pub tensorrt_paddle: Option<TensorRtPaddleConfig>,
     pub correction_mode: correction::CorrectionMode,
     pub correction_dictionary: Option<std::path::PathBuf>,
 }
@@ -39,8 +46,10 @@ impl Default for PipelineConfig {
             language: "eng".to_string(),
             render_dpi: 300,
             max_page_pixels: 40_000_000,
+            force_ocr: false,
             scheduler: lege_ocr::backend::OcrSchedulerConfig::default(),
             paddle_model_pack: None,
+            tensorrt_paddle: None,
             correction_mode: correction::CorrectionMode::Conservative,
             correction_dictionary: None,
         }
@@ -57,6 +66,16 @@ impl PipelineConfig {
         if let Some(model_pack) = &self.paddle_model_pack {
             hasher.update(&std::fs::read(model_pack.join("manifest.json"))?);
         }
+        if let Some(runtime) = &self.tensorrt_paddle {
+            for path in [
+                &runtime.executable,
+                &runtime.detector,
+                &runtime.recognizer,
+                &runtime.dictionary,
+            ] {
+                hasher.update(&std::fs::read(path)?);
+            }
+        }
         Ok(format!("blake3:{}", hasher.finalize().to_hex()))
     }
 }
@@ -65,6 +84,8 @@ impl PipelineConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum BackendChoice {
     Auto,
+    #[serde(rename = "tensorrt-paddle")]
+    TensorRtPaddle,
     Paddle,
     WindowsAi,
     WinOcrLegacy,
@@ -72,9 +93,10 @@ pub enum BackendChoice {
 
 pub struct DocumentProcessor {
     config: PipelineConfig,
-    backend: OnceLock<Result<Box<dyn PageOcrBackend>, String>>,
+    backend: Box<dyn PageOcrBackend>,
     corrector: Option<correction::EnglishCorrector>,
     model_identity: Option<lege_docir::ModelIdentity>,
+    backend_selection_warning: Option<String>,
 }
 
 impl std::fmt::Debug for DocumentProcessor {
@@ -82,103 +104,81 @@ impl std::fmt::Debug for DocumentProcessor {
         formatter
             .debug_struct("DocumentProcessor")
             .field("config", &self.config)
-            .field("backend_initialized", &self.backend.get().is_some())
+            .field("backend", &self.backend.name())
             .field("model_identity", &self.model_identity)
             .finish()
     }
 }
 
 impl DocumentProcessor {
-    pub fn new(config: PipelineConfig) -> Result<Self, PipelineError> {
+    pub fn new(mut config: PipelineConfig) -> Result<Self, PipelineError> {
         if config.backend == BackendChoice::WindowsAi {
             return Err(PipelineError::UnavailableBackend("windows-ai"));
         }
+        let (backend, resolved, tensorrt_paddle, backend_selection_warning) =
+            initialize_backend(&config)?;
+        config.backend = resolved;
+        config.tensorrt_paddle = tensorrt_paddle;
         let corrector = config
             .correction_dictionary
             .as_deref()
-            .map(correction::EnglishCorrector::from_frequency_file)
-            .transpose()?;
-        let model_identity = config
-            .paddle_model_pack
-            .as_deref()
-            .map(|directory| {
-                let manifest_path = directory.join("manifest.json");
-                let manifest_bytes = std::fs::read(&manifest_path)?;
-                let manifest =
-                    lege_ocr::engine_paddle::PaddleOcrEngine::verify_model_pack(directory)
-                        .map_err(|error| PipelineError::ModelPack(error.to_string()))?;
-                Ok::<_, PipelineError>(lege_docir::ModelIdentity {
-                    provider: manifest.provider,
-                    name: manifest.name,
-                    version: manifest.version,
-                    content_hash: Some(format!(
-                        "blake3:{}",
-                        blake3::hash(&manifest_bytes).to_hex()
-                    )),
-                    license: Some(manifest.license),
-                    source: Some(manifest.source),
-                })
+            .map(|path| {
+                correction::EnglishCorrector::from_frequency_file_for_mode(
+                    path,
+                    config.correction_mode,
+                )
             })
-            .transpose()?
-            .or_else(|| builtin_model_identity(config.backend));
+            .transpose()?;
+        let model_identity = if config.backend == BackendChoice::Paddle {
+            config
+                .paddle_model_pack
+                .as_deref()
+                .map(|directory| {
+                    let manifest_path = directory.join("manifest.json");
+                    let manifest_bytes = std::fs::read(&manifest_path)?;
+                    let manifest =
+                        lege_ocr::engine_paddle::PaddleOcrEngine::verify_model_pack(directory)
+                            .map_err(|error| PipelineError::ModelPack(error.to_string()))?;
+                    Ok::<_, PipelineError>(lege_docir::ModelIdentity {
+                        provider: manifest.provider,
+                        name: manifest.name,
+                        version: manifest.version,
+                        content_hash: Some(format!(
+                            "blake3:{}",
+                            blake3::hash(&manifest_bytes).to_hex()
+                        )),
+                        license: Some(manifest.license),
+                        source: Some(manifest.source),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        }
+        .or_else(|| builtin_model_identity(&config));
         Ok(Self {
             config,
-            backend: OnceLock::new(),
+            backend,
             corrector,
             model_identity,
+            backend_selection_warning,
         })
     }
 
     fn backend(&self) -> Result<&dyn PageOcrBackend, PipelineError> {
-        let selected = self.backend.get_or_init(|| {
-            if self.config.backend == BackendChoice::Paddle
-                || (self.config.backend == BackendChoice::Auto
-                    && (self.config.paddle_model_pack.is_some() || !cfg!(target_os = "windows")))
-            {
-                #[cfg(feature = "paddle-ocr")]
-                {
-                    let engine = if let Some(directory) = self.config.paddle_model_pack.as_deref() {
-                        lege_ocr::engine_paddle::PaddleOcrEngine::from_model_pack_with_scheduler(
-                            directory,
-                            self.config.scheduler,
-                        )
-                        .map_err(|error| error.to_string())?
-                        .0
-                    } else {
-                        lege_ocr::engine_paddle::PaddleOcrEngine::from_embedded_with_scheduler(
-                            self.config.scheduler,
-                        )
-                        .map_err(|error| error.to_string())?
-                    };
-                    return Ok(Box::new(engine) as Box<dyn PageOcrBackend>);
-                }
-                #[cfg(not(feature = "paddle-ocr"))]
-                return Err("paddle is not compiled into this build".to_string());
-            }
-            let engine: Box<dyn lege_ocr::engine::OcrEngine> = match self.config.backend {
-                BackendChoice::Auto => lege_ocr::engine::default_engine(),
-                #[cfg(feature = "paddle-ocr")]
-                BackendChoice::Paddle => unreachable!("handled above"),
-                #[cfg(not(feature = "paddle-ocr"))]
-                BackendChoice::Paddle => {
-                    return Err("paddle is not compiled into this build".to_string());
-                }
-                #[cfg(target_os = "windows")]
-                BackendChoice::WinOcrLegacy => Box::new(lege_ocr::engine::WinOcrEngine),
-                #[cfg(not(target_os = "windows"))]
-                BackendChoice::WinOcrLegacy => {
-                    return Err("winocr-legacy is available only on Windows".to_string());
-                }
-                BackendChoice::WindowsAi => {
-                    return Err("windows-ai backend is not installed".to_string());
-                }
-            };
-            Ok(Box::new(LegacyPageAdapter::new(engine)) as Box<dyn PageOcrBackend>)
-        });
-        match selected {
-            Ok(backend) => Ok(backend.as_ref()),
-            Err(message) => Err(PipelineError::BackendInitialization(message.clone())),
-        }
+        Ok(self.backend.as_ref())
+    }
+
+    pub fn selected_backend(&self) -> BackendChoice {
+        self.config.backend
+    }
+
+    pub fn selected_backend_name(&self) -> &'static str {
+        self.backend.name()
+    }
+
+    pub fn configuration_hash(&self) -> Result<String, PipelineError> {
+        self.config.hash()
     }
 
     pub fn process_path(&self, path: &Path) -> Result<Document, PipelineError> {
@@ -247,7 +247,7 @@ impl DocumentProcessor {
                 quality: self.config.quality,
                 configuration_hash,
                 models: self.model_identity.clone().into_iter().collect(),
-                warnings: Vec::new(),
+                warnings: self.backend_selection_warning.clone().into_iter().collect(),
             },
         );
         document.metadata.title = path
@@ -311,7 +311,7 @@ impl DocumentProcessor {
             self.config.max_page_pixels,
         )?;
         let evidence = lege_pdf_read::page_text_evidence(session, page_index, width, height)?;
-        let (source_kind, regions, warnings) = if evidence.trustworthy {
+        let (source_kind, regions, warnings) = if evidence.trustworthy && !self.config.force_ocr {
             (
                 match evidence.kind {
                     lege_pdf_read::PageContentKind::Hybrid => PageSourceKind::Hybrid,
@@ -350,7 +350,12 @@ impl DocumentProcessor {
                 .map_err(PipelineError::Backend)?;
             let mut lines = pages.pop().unwrap_or_default();
             let retry_count = selective_retry(backend, &gray, &mut lines, &self.config.language)?;
-            let mut warnings = if evidence.text.trim().is_empty() {
+            let mut warnings = if self.config.force_ocr && evidence.trustworthy {
+                vec![
+                    "Trustworthy native PDF text was deliberately ignored for OCR evaluation"
+                        .to_string(),
+                ]
+            } else if evidence.text.trim().is_empty() {
                 Vec::new()
             } else {
                 vec![
@@ -970,10 +975,163 @@ pub enum PipelineError {
     Correction(#[from] correction::CorrectionError),
 }
 
-fn builtin_model_identity(backend: BackendChoice) -> Option<lege_docir::ModelIdentity> {
-    let paddle = backend == BackendChoice::Paddle
-        || (backend == BackendChoice::Auto && !cfg!(target_os = "windows"));
-    if paddle {
+type InitializedBackend = (
+    Box<dyn PageOcrBackend>,
+    BackendChoice,
+    Option<TensorRtPaddleConfig>,
+    Option<String>,
+);
+
+fn initialize_backend(config: &PipelineConfig) -> Result<InitializedBackend, PipelineError> {
+    match config.backend {
+        BackendChoice::Auto => {
+            #[cfg(target_os = "windows")]
+            {
+                let candidate = config.tensorrt_paddle.clone().or_else(|| {
+                    TensorRtPaddleConfig::discover(config.scheduler.max_batch_lines.min(8))
+                });
+                if let Some(runtime) = candidate {
+                    match lege_ocr::engine_tensorrt::TensorRtPaddleEngine::start(&runtime) {
+                        Ok(engine) => {
+                            return Ok((
+                                Box::new(engine),
+                                BackendChoice::TensorRtPaddle,
+                                Some(runtime),
+                                None,
+                            ));
+                        }
+                        Err(tensorrt_error) => {
+                            let fallback = initialize_winocr().map_err(|winocr_error| {
+                                PipelineError::BackendInitialization(format!(
+                                    "TensorRT preflight failed ({tensorrt_error:#}); Windows OCR fallback also failed ({winocr_error})"
+                                ))
+                            })?;
+                            return Ok((
+                                fallback,
+                                BackendChoice::WinOcrLegacy,
+                                None,
+                                Some(format!(
+                                    "TensorRT PP-OCRv6 preflight failed before the job; selected Windows Runtime OCR for the complete job: {tensorrt_error:#}"
+                                )),
+                            ));
+                        }
+                    }
+                }
+                Ok((
+                    initialize_winocr()?,
+                    BackendChoice::WinOcrLegacy,
+                    None,
+                    Some(
+                        "TensorRT PP-OCRv6 runtime was not discovered; selected Windows Runtime OCR for the complete job"
+                            .to_string(),
+                    ),
+                ))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Ok((
+                    initialize_paddle(config)?,
+                    BackendChoice::Paddle,
+                    None,
+                    None,
+                ))
+            }
+        }
+        BackendChoice::TensorRtPaddle => {
+            let runtime = config.tensorrt_paddle.clone().or_else(|| {
+                TensorRtPaddleConfig::discover(config.scheduler.max_batch_lines.min(8))
+            });
+            let runtime = runtime.ok_or_else(|| {
+                PipelineError::BackendInitialization(
+                    "TensorRT OCR runtime was not found; pass --tensorrt-ocr-root or set LEGE_TENSORRT_OCR_ROOT"
+                        .to_string(),
+                )
+            })?;
+            let engine = lege_ocr::engine_tensorrt::TensorRtPaddleEngine::start(&runtime)
+                .map_err(|error| PipelineError::BackendInitialization(format!("{error:#}")))?;
+            Ok((
+                Box::new(engine),
+                BackendChoice::TensorRtPaddle,
+                Some(runtime),
+                None,
+            ))
+        }
+        BackendChoice::Paddle => Ok((
+            initialize_paddle(config)?,
+            BackendChoice::Paddle,
+            None,
+            None,
+        )),
+        BackendChoice::WinOcrLegacy => Ok((
+            initialize_winocr()?,
+            BackendChoice::WinOcrLegacy,
+            None,
+            None,
+        )),
+        BackendChoice::WindowsAi => Err(PipelineError::UnavailableBackend("windows-ai")),
+    }
+}
+
+#[cfg(feature = "paddle-ocr")]
+fn initialize_paddle(config: &PipelineConfig) -> Result<Box<dyn PageOcrBackend>, PipelineError> {
+    let engine = if let Some(directory) = config.paddle_model_pack.as_deref() {
+        lege_ocr::engine_paddle::PaddleOcrEngine::from_model_pack_with_scheduler(
+            directory,
+            config.scheduler,
+        )
+        .map_err(|error| PipelineError::BackendInitialization(error.to_string()))?
+        .0
+    } else {
+        lege_ocr::engine_paddle::PaddleOcrEngine::from_embedded_with_scheduler(config.scheduler)
+            .map_err(|error| PipelineError::BackendInitialization(error.to_string()))?
+    };
+    let probe = image::GrayImage::from_pixel(32, 32, image::Luma([255]));
+    engine
+        .recognize_pages(PageBatch {
+            pages: std::slice::from_ref(&probe),
+            language: &config.language,
+        })
+        .map_err(|error| {
+            PipelineError::BackendInitialization(format!("Paddle/WGPU preflight failed: {error:#}"))
+        })?;
+    Ok(Box::new(engine))
+}
+
+#[cfg(not(feature = "paddle-ocr"))]
+fn initialize_paddle(_config: &PipelineConfig) -> Result<Box<dyn PageOcrBackend>, PipelineError> {
+    Err(PipelineError::BackendInitialization(
+        "paddle is not compiled into this build".to_string(),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn initialize_winocr() -> Result<Box<dyn PageOcrBackend>, PipelineError> {
+    Ok(Box::new(LegacyPageAdapter::new(Box::new(
+        lege_ocr::engine::WinOcrEngine,
+    ))))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn initialize_winocr() -> Result<Box<dyn PageOcrBackend>, PipelineError> {
+    Err(PipelineError::UnavailableBackend("winocr-legacy"))
+}
+
+fn builtin_model_identity(config: &PipelineConfig) -> Option<lege_docir::ModelIdentity> {
+    if config.backend == BackendChoice::TensorRtPaddle {
+        let runtime = config.tensorrt_paddle.as_ref()?;
+        let mut hasher = blake3::Hasher::new();
+        for path in [&runtime.detector, &runtime.recognizer, &runtime.dictionary] {
+            hasher.update(&std::fs::read(path).ok()?);
+        }
+        Some(lege_docir::ModelIdentity {
+            provider: "PaddlePaddle/TurboOCR".into(),
+            name: "PP-OCRv6-tiny TensorRT".into(),
+            version: "native-windows-worker-v1".into(),
+            content_hash: Some(format!("blake3:{}", hasher.finalize().to_hex())),
+            license: Some("Apache-2.0".into()),
+            source: Some("https://github.com/aiptimizer/TurboOCR".into()),
+        })
+    } else if config.backend == BackendChoice::Paddle {
         Some(lege_docir::ModelIdentity {
             provider: "PaddlePaddle".into(),
             name: "PP-OCRv5 embedded compatibility".into(),
@@ -982,7 +1140,7 @@ fn builtin_model_identity(backend: BackendChoice) -> Option<lege_docir::ModelIde
             license: Some("Apache-2.0".into()),
             source: Some("https://github.com/PaddlePaddle/PaddleOCR".into()),
         })
-    } else if matches!(backend, BackendChoice::Auto | BackendChoice::WinOcrLegacy) {
+    } else if config.backend == BackendChoice::WinOcrLegacy {
         Some(lege_docir::ModelIdentity {
             provider: "Microsoft".into(),
             name: "Windows Runtime OCR".into(),
@@ -1003,6 +1161,14 @@ mod tests {
     fn render_dimensions_respect_pixel_budget() {
         let (width, height) = raster_dimensions(720.0, 720.0, 300, 1_000_000).unwrap();
         assert!((width as u64 * height as u64) <= 1_001_000);
+    }
+
+    #[test]
+    fn force_ocr_changes_the_resumable_configuration_identity() {
+        let normal = PipelineConfig::default();
+        let mut forced = normal.clone();
+        forced.force_ocr = true;
+        assert_ne!(normal.hash().unwrap(), forced.hash().unwrap());
     }
 
     fn text_region(id: &str, bbox: [f32; 4], text: &str) -> Region {

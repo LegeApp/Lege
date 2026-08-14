@@ -8,7 +8,7 @@ use lege_document_batch::{JobStatus, JobStore, atomic_checkpoint, fingerprint};
 use lege_document_export::{ExportFormat, ExportRequest, SearchablePdfPolicy, export_all};
 use lege_document_pipeline::correction::CorrectionMode;
 use lege_document_pipeline::{
-    BackendChoice, DocumentProcessor, OcrSchedulerConfig, PipelineConfig,
+    BackendChoice, DocumentProcessor, OcrSchedulerConfig, PipelineConfig, TensorRtPaddleConfig,
 };
 
 #[derive(Debug, Parser)]
@@ -63,9 +63,30 @@ struct BatchArgs {
     dictionary: Option<PathBuf>,
     #[arg(long)]
     no_spellcheck: bool,
+    /// Also apply edit-distance spelling candidates; conservative mode only applies spacing repairs.
+    #[arg(long, conflicts_with = "no_spellcheck")]
+    apply_spelling_edits: bool,
+    /// Ignore trustworthy embedded text and run OCR for benchmark/quality evaluation.
+    #[arg(long)]
+    force_ocr: bool,
+    /// Rasterization target for pages that require OCR.
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u32).range(72..=600))]
+    render_dpi: u32,
+    /// Safety cap for rasterized page area.
+    #[arg(long, default_value_t = 40_000_000)]
+    max_page_pixels: u64,
     /// Directory containing a checksum-pinned Paddle `manifest.json` model pack.
     #[arg(long)]
     model_pack: Option<PathBuf>,
+    /// TurboOCR root containing the native worker and PP-OCRv6 TensorRT models.
+    #[arg(long)]
+    tensorrt_ocr_root: Option<PathBuf>,
+    /// Additional DLL directory inherited by the TensorRT worker. Repeatable.
+    #[arg(long)]
+    tensorrt_dll_dir: Vec<PathBuf>,
+    /// TensorRT recognizer batch size; 8 is recommended for an 8 GB GPU.
+    #[arg(long, default_value_t = 8)]
+    tensorrt_rec_batch: usize,
     /// Preserve trustworthy native PDFs or explicitly permit raster fallback.
     #[arg(long, value_enum, default_value_t = PdfModeArg::Preserve)]
     pdf_mode: PdfModeArg,
@@ -91,6 +112,8 @@ enum ProfileArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum BackendArg {
     Auto,
+    #[value(name = "tensorrt-paddle", alias = "tensor-rt-paddle")]
+    TensorRtPaddle,
     Paddle,
     WindowsAi,
     WinocrLegacy,
@@ -141,6 +164,9 @@ fn main() {
 }
 
 fn run_batch(args: BatchArgs) -> Result<(), String> {
+    if !(1..=32).contains(&args.tensorrt_rec_batch) {
+        return Err("--tensorrt-rec-batch must be in 1..=32".to_string());
+    }
     let formats = args
         .formats
         .iter()
@@ -156,18 +182,39 @@ fn run_batch(args: BatchArgs) -> Result<(), String> {
     if sources.is_empty() {
         return Err("no PDF inputs were found".to_string());
     }
+    let mut tensorrt_paddle = match args.tensorrt_ocr_root.as_deref() {
+        Some(root) => Some(
+            TensorRtPaddleConfig::from_root(root, args.tensorrt_rec_batch)
+                .map_err(|error| error.to_string())?,
+        ),
+        None => TensorRtPaddleConfig::discover(args.tensorrt_rec_batch),
+    };
+    if !args.tensorrt_dll_dir.is_empty() {
+        let runtime = tensorrt_paddle.as_mut().ok_or_else(|| {
+            "--tensorrt-dll-dir requires a discoverable runtime or --tensorrt-ocr-root".to_string()
+        })?;
+        runtime
+            .dll_directories
+            .extend(args.tensorrt_dll_dir.iter().cloned());
+    }
     let config = PipelineConfig {
         profile: profile(args.profile),
         quality: QualityMode::Thorough,
         backend: backend(args.backend),
         language: args.language.clone(),
+        render_dpi: args.render_dpi,
+        max_page_pixels: args.max_page_pixels,
+        force_ocr: args.force_ocr,
         correction_mode: if args.no_spellcheck {
             CorrectionMode::Disabled
+        } else if args.apply_spelling_edits {
+            CorrectionMode::Aggressive
         } else {
             CorrectionMode::Conservative
         },
         correction_dictionary: args.dictionary.clone(),
         paddle_model_pack: args.model_pack.clone(),
+        tensorrt_paddle,
         scheduler: OcrSchedulerConfig {
             max_batch_lines: args.gpu_batch_lines,
             max_batch_pixels: args.gpu_batch_pixels,
@@ -177,9 +224,15 @@ fn run_batch(args: BatchArgs) -> Result<(), String> {
         .normalized(),
         ..PipelineConfig::default()
     };
-    let config_hash = config.hash().map_err(|error| error.to_string())?;
     let processor =
         std::sync::Arc::new(DocumentProcessor::new(config).map_err(|error| error.to_string())?);
+    let config_hash = processor
+        .configuration_hash()
+        .map_err(|error| error.to_string())?;
+    eprintln!(
+        "lege-ocr: selected `{}` before starting the batch; this backend is fixed for every job",
+        processor.selected_backend_name()
+    );
     let database_path = args.output.join(".lege-ocr/jobs.sqlite");
     let mut jobs = JobStore::open(&database_path).map_err(|error| error.to_string())?;
     let mut failures = 0_u32;
@@ -555,6 +608,7 @@ fn profile(value: ProfileArg) -> ProcessingProfile {
 fn backend(value: BackendArg) -> BackendChoice {
     match value {
         BackendArg::Auto => BackendChoice::Auto,
+        BackendArg::TensorRtPaddle => BackendChoice::TensorRtPaddle,
         BackendArg::Paddle => BackendChoice::Paddle,
         BackendArg::WindowsAi => BackendChoice::WindowsAi,
         BackendArg::WinocrLegacy => BackendChoice::WinOcrLegacy,
@@ -631,7 +685,14 @@ mod tests {
             json_progress: false,
             dictionary: None,
             no_spellcheck: true,
+            apply_spelling_edits: false,
+            force_ocr: false,
+            render_dpi: 300,
+            max_page_pixels: 40_000_000,
             model_pack: None,
+            tensorrt_ocr_root: None,
+            tensorrt_dll_dir: Vec::new(),
+            tensorrt_rec_batch: 8,
             pdf_mode: PdfModeArg::Preserve,
             workers: 2,
             gpu_batch_lines: 64,
