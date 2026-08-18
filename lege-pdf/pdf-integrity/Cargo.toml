@@ -1,0 +1,50 @@
+# pdf-integrity — PDF integrity / forensic-triage checker.
+#
+# Its own Cargo workspace, nested inside the Lege-ecosystem checkout at
+# lege-pdf/pdf-integrity. The renderer crates are consumed through in-tree path
+# dependencies so this tool's dependency surface stays small and independently
+# auditable, and its release cadence does not track the renderer's. See
+# @audit.decision.forensics-repo-home.
+#
+#   * crates/pdf-forensics — report schema, findings policy, interpretation
+#
+# The lege-pdf-audit binary joins once it has facts to print.
+[workspace]
+resolver = "3"
+members = ["crates/pdf-forensics"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+
+# Renderer crates, consumed by path from the sibling render tree. They keep
+# inheriting from the ecosystem workspace root; only the dependency edge is
+# ours.
+#
+# The ecosystem root's [patch] entries for jbig2enc-rust and jp2lam rewrite
+# git-sourced codecs, and the ecosystem declares both by path, so they do not
+# need repeating here. If a transitive git-sourced codec dependency ever
+# appears, it must be re-patched in this manifest.
+pdf-read = { path = "../render/crates/pdf-read" }
+pdf-source = { path = "../render/crates/pdf-source" }
+pdf-document = { path = "../render/crates/pdf-document" }
+pdf-test-support = { path = "../render/crates/pdf-test-support" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+
+# A forensic tool must not abort mid-report on a malformed input.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "warn"

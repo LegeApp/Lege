@@ -1,0 +1,12 @@
+akr 0.1
+project pdf-integrity
+
+record audit.term.logical-revision/1 : term {
+    title "Logical revision"
+    state proposed
+    scope [ all ]
+    definition """
+        One user-visible save of the document: the set of xref sections that together represent a single incremental update, ordered oldest to newest. A hybrid-reference save (classic table plus /XRefStm) is one logical revision with two xref sections, and linearization stub structures are not logical revisions. Never equate the raw xref-section count with the number of times a document was edited.
+        """
+    aliases [ "revision", "incremental save" ]
+}

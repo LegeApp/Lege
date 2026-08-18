@@ -1,0 +1,261 @@
+akr 0.1
+project pdf-integrity
+
+record audit.milestone.m1-factual-audit/1 : milestone {
+    title "M1 — factual audit utility"
+    state proposed
+    intent """
+        A `pdf-cli audit` run (later `lege-pdf-audit inspect`) over any PDF emits a
+        versioned JSON and terminal report of neutral facts: SHA-256 and size, PDF
+        version and header offset, clean-versus-recovered parse with recovery events,
+        xref-section inventory, linearization, encryption, metadata and XMP inventory,
+        AcroForm, XFA, JavaScript, embedded-file and optional-content flags, annotation
+        objects with identity and forensic metadata, signature dictionary and ByteRange
+        inventory, per-page representation classification (Vector, RasterOnly,
+        RasterWithTextLayer, Mixed, Blank, Unknown), and font and image inventories.
+        This alone identifies PDF-Verse-style flattened output and most
+        explicit-annotation cases.
+        """
+    acceptance {
+        check encrypted-mode-labelled {
+            statement """
+                An encrypted fixture audited without a password yields a report whose analysis mode is structure-only, whose unreachable sections are explicitly marked unavailable rather than absent or zero, and which raises no finding that rests on a fact the structure-only pass could not have reached; supplying the correct password yields analysis mode full over the same file.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test encrypted_modes"
+        }
+        check fixture-suite-green {
+            statement """
+                The M1 fixture suite (clean vector, ordinary scan, scan with OCR layer, PDF-Verse output, one-raster-page outlier, form-filled, annotation-heavy, malformed-recoverable, linearized, hybrid-xref) passes with the expected representation classification and flags for every fixture.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m1_fixtures"
+        }
+        check pdfverse-identified {
+            statement """
+                Inspecting a PDF-Verse export reports all pages raster-only, zero visible text objects, zero embedded fonts, and disposition INCONCLUSIVE with the flattened-export interpretation.
+                """
+            method command
+            command "cargo run -p lege-pdf-audit -- inspect fixtures/pdfverse-export.pdf --json -"
+        }
+        check schema-versioned {
+            statement """
+                The JSON report validates against the versioned AuditReport schema and carries schema_version.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test report_schema"
+        }
+    }
+    depends_on [
+        @audit.decision.crate-shape,
+        @audit.decision.encrypted-input-handling,
+        @audit.decision.forensics-repo-home,
+        @audit.decision.product-framing
+    ]
+}
+
+record audit.milestone.m2-revision-history/1 : milestone {
+    title "M2 — correct logical revision history"
+    state proposed
+    intent """
+        The structure layer preserves per-section xref entries and the checker
+        reconstructs logical revisions correctly: classic and stream sections with
+        entries, hybrid /XRefStm grouping into one logical save, valid
+        startxref-plus-EOF boundary pairing, oldest-to-newest ordering, linearization
+        stubs distinguished from human edits, per-revision object changes classified as
+        Added, Redefined, Freed or RepeatedIdentically with raw and semantic hashes,
+        object-role classification, reverse object-to-page mapping, and PrefixSource
+        opening of any reliable historical revision through the ordinary
+        DocumentSnapshot path. When the xref was rebuilt by scanning, the report states
+        that original revision membership cannot be established.
+        """
+    acceptance {
+        check historical-replay {
+            statement """
+                For an incrementally saved fixture, revision 0 opens through
+                PrefixSource and renders, and its extracted text matches the
+                pre-edit content.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m2_replay"
+        }
+        check hybrid-counts-once {
+            statement """
+                A hybrid-reference save (classic table plus /XRefStm) is reported as one
+                logical revision with two xref sections, not two revisions.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m2_revisions -- hybrid"
+        }
+        check qpdf-oracle-agrees {
+            statement """
+                Object inventory per revision agrees with qpdf --json output across the
+                fixture corpus (differential oracle only; qpdf is not a runtime
+                dependency).
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m2_qpdf_oracle -- --ignored"
+        }
+        check revision-fixtures-green {
+            statement """
+                Generated fixtures for classic xref, xref stream, hybrid, object-stream,
+                linearized and malformed variants each report the expected logical
+                revision count and per-revision object-change sets.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m2_revisions"
+        }
+    }
+    after [ @audit.milestone.m1-factual-audit ]
+    depends_on [ @audit.decision.revision-model, @audit.term.logical-revision ]
+}
+
+record audit.milestone.m3-diff-and-overlay/1 : milestone {
+    title "M3 — revision comparison and overlay evidence"
+    state proposed
+    intent """
+        The checker compares consecutive logical revisions at three levels — object
+        diff, semantic diff (words, glyphs, fonts, images, page relationships) and
+        deterministic visual diff with connected changed-region extraction — and
+        detects overlays: annotation-on versus annotation-off render diffs intersected
+        with glyph boxes, underlying-text and appearance-text extraction, and
+        painter-order occlusion candidates for content flattened into page streams
+        (opaque rectangle, form XObject or image painted over earlier text). An
+        optional PageTrace provenance sidecar maps operators back to source stream
+        objects and byte spans in audit mode only. Findings ship with evidence PNGs or
+        SVG overlays. This milestone delivers the genuinely useful product: reports
+        like `previous "2.84" / current "3.84"` with page rectangle, object history
+        and revision index.
+        """
+    acceptance {
+        check annotation-overlay-evidence {
+            statement """
+                Fixtures with FreeText/Stamp/Redact appearances covering text yield
+                EXPLICIT_ANNOTATION_OVER_TEXT findings with subtype, rectangle,
+                affected underlying text, appearance text and glyph-area coverage,
+                and benign fixtures (highlights, form widgets) yield none.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m3_overlays"
+        }
+        check deterministic-artifacts {
+            statement """
+                Two runs over the same fixture produce byte-identical evidence PNGs.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m3_determinism"
+        }
+        check flattened-occlusion-candidates {
+            statement """
+                The white-rectangle-plus-replacement-text fixture and the
+                image-patch-over-text fixture each produce a PAGE_CONTENT_COVERS_TEXT
+                or RASTER_PATCH_ON_VECTOR_PAGE candidate finding with painter-order
+                justification, at contextual-indicator strength.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m3_occlusion"
+        }
+        check gpa-scenario-end-to-end {
+            statement """
+                The controlled GPA-edit fixture (content stream redefined in an
+                incremental save, same embedded font) yields a
+                TEXT_CHANGED_BETWEEN_REVISIONS finding with the exact previous and
+                current strings, page rectangle, object ids and revision index, plus
+                before/after/diff PNGs.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m3_revision_diff"
+        }
+    }
+    after [ @audit.milestone.m2-revision-history ]
+    depends_on [ @audit.req.deterministic-evidence ]
+}
+
+record audit.milestone.m4-signatures/1 : milestone {
+    title "M4 — signature verification"
+    state proposed
+    intent """
+        Signature reporting reaches both layers of the layering decision: strict
+        ByteRange validation against original bytes, association of each signature
+        with its logical revision, exact post-signature object-change lists, DocMDP
+        and FieldMDP policy parsing and compliance, then CMS/CAdES digest
+        verification, certificate chain and trust reporting, and timestamp status via
+        the chosen external cryptographic implementation. The report always keeps the
+        five statuses separate: digest valid, certificate trusted, certificate
+        time-valid, later revision present, later change permitted.
+        """
+    acceptance {
+        check byterange-and-coverage {
+            statement """
+                Signed fixtures with valid, truncated, overlapping and
+                gap-containing /ByteRange values are each classified correctly, and a
+                signature's byte range is verified to end at the %%EOF of the revision
+                that introduced it.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m4_byterange"
+        }
+        check digest-verifies {
+            statement """
+                A known-good signed fixture verifies its CMS digest, and a fixture with
+                one flipped byte inside the signed range fails digest verification
+                while still reporting structural coverage correctly.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m4_digest"
+        }
+        check post-signature-changes {
+            statement """
+                The permitted-form-fill fixture reports no policy violation, and the
+                post-signature page-content-edit fixture reports POST_SIGNATURE_REVISION
+                plus DOCMDP_POLICY_VIOLATION with the exact changed objects.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m4_docmdp"
+        }
+    }
+    after [ @audit.milestone.m3-diff-and-overlay ]
+    depends_on [ @audit.decision.signature-layering, @audit.req.repairs-are-visible ]
+}
+
+record audit.milestone.m5-consistency-heuristics/1 : milestone {
+    title "M5 — consistency heuristics, validated against a legitimate corpus"
+    state proposed
+    intent """
+        The weak-signal layer for documents whose history is gone (full rewrite,
+        Save As): embedded font-program hashes and per-line font-identity outliers;
+        text-run spacing, matrix and TJ-style outliers against surrounding lines; font
+        subsets with unusual glyph coverage; stream-filter and serialization-style
+        outliers; resource-name and object-number clustering; metadata timeline
+        inconsistencies (CreationDate, ModDate, XMP, producer disagreement); image
+        DPI, codec, quantization and colorspace outliers; and producer fingerprints.
+        Every heuristic emits at ContextualIndicator or WeakHeuristic strength only,
+        and none ships until its false-positive rate is measured against the
+        legitimate-producer corpus of the fixture track.
+        """
+    acceptance {
+        check false-positive-budget {
+            statement """
+                Across the legitimate corpus (Acrobat, browser print-to-PDF, Chrome
+                drawing, Preview, Office, LibreOffice, scanners, OCR tools,
+                optimizers, signers, pdf-lib, jsPDF), no heuristic fires at
+                review-recommending strength on more than 1 percent of documents,
+                measured per producer.
+                """
+            method command
+            command "cargo run -p pdf-forensics --bin corpus-sweep -- --legit-corpus corpus/legit --report fp-rates.json"
+        }
+        check seeded-edit-recall {
+            statement """
+                On the controlled rewritten-document fixture set (coherent full
+                rewrites with one edited line), the heuristic layer flags the edited
+                region in at least half the cases while respecting the false-positive
+                budget.
+                """
+            method command
+            command "cargo test -p pdf-forensics --test m5_heuristics"
+        }
+    }
+    after [ @audit.milestone.m4-signatures ]
+    depends_on [ @audit.decision.product-framing, @audit.req.explainable-findings ]
+}

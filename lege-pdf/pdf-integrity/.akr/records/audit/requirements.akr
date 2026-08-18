@@ -1,0 +1,50 @@
+akr 0.1
+project pdf-integrity
+
+record audit.req.deterministic-evidence/1 : requirement {
+    title "Evidence renders are deterministic"
+    state proposed
+    scope [ all ]
+    statement """
+        All rendered evidence artifacts (revision diffs, annotation on/off diffs, region crops) are produced by the CPU renderer with system-font substitution disabled by default, so that two runs on the same input produce identical pixels. GPU rendering may exist only as an optional fast preview, never as the evidence path.
+        """
+    rationale """
+        Evidence that cannot be reproduced byte-for-byte is not evidence; it is an anecdote about one machine's font stack.
+        """
+}
+
+record audit.req.explainable-findings/1 : requirement {
+    title "Every finding is categorical, explained, and bounded"
+    state proposed
+    scope [ all ]
+    statement """
+        Every emitted finding carries a finding code, an evidence-strength category (structural fact, cryptographic fact, strong derived, contextual indicator, or weak heuristic), a plain-language explanation, and a stated limitation where one exists. The report never emits a single numeric fraud score, and every report states that absence of findings does not prove authenticity.
+        """
+    rationale """
+        A percentage-style fraud score would be scientifically weak and potentially harmful in admissions or employment workflows. Categorical evidence with explicit limitations is defensible; an opaque score is not.
+        """
+}
+
+record audit.req.read-only-analysis/1 : requirement {
+    title "The tool never modifies its input"
+    state proposed
+    scope [ all ]
+    statement """
+        The checker opens inputs read-only and never rewrites, repairs, or cleans a document. All output goes to separate report and evidence files. There is no rollback, deletion, or sanitization feature in any release covered by the current milestones.
+        """
+    rationale """
+        Automatic cleanup complicates evidence preservation and risks destroying the very bytes an examiner needs. A triage tool that mutates its subject undermines its own findings.
+        """
+}
+
+record audit.req.repairs-are-visible/1 : requirement {
+    title "Structural repairs never silently become facts"
+    state proposed
+    scope [ all ]
+    statement """
+        Every claim in a report that rests on recovered or repaired structure (rebuilt xref, scanned-for objects, tolerated syntax) is marked as such, and the tool refuses to make cryptographic or revision-history claims when reconstruction is ambiguous. The parse assessment reports strict and tolerant outcomes separately, with the full recovery-event list.
+        """
+    rationale """
+        The renderer is right to tolerate malformed files; forensics has the opposite duty. Tolerant PDF processing has historically contributed to signature-validation vulnerabilities, and a rebuilt xref cannot support statements about original revision membership.
+        """
+}

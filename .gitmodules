@@ -1,3 +1,0 @@
-[submodule "pdf-integrity"]
-	path = lege-pdf/pdf-integrity
-	url = https://github.com/LegeApp/pdf-integrity.git

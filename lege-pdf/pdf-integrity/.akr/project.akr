@@ -1,0 +1,11 @@
+akr 0.1
+project pdf-integrity
+
+namespace pdf-integrity "Project-wide knowledge."
+namespace audit "The PDF integrity checker: product framing, milestones, findings engine."
+namespace lege "Upgrades required in the lege-pdf codebase (Lege-ecosystem repo) to support the checker."
+
+defaults {
+    review_after_days 90
+    view_output "docs/generated"
+}

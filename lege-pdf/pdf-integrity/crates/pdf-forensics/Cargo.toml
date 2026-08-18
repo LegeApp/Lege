@@ -1,0 +1,21 @@
+[package]
+name = "pdf-forensics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Interpretation layer for PDF integrity triage: report schema, findings, dispositions"
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+pdf-read = { workspace = true }
+pdf-source = { workspace = true }
+pdf-document = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+pdf-test-support = { workspace = true }
+
+[lints]
+workspace = true

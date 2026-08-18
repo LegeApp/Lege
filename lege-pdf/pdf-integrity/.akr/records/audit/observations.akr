@@ -1,0 +1,133 @@
+akr 0.1
+project pdf-integrity
+
+record audit.observation.fact-layer-surface-gap/1 : observation {
+    title "pdf-read surfaces about a quarter of the M1 inventory"
+    state superseded
+    statement """
+        Measured against the M1 milestone's required inventory, pdf-read's DocumentReport currently reports: open outcome with recovery events rendered as strings, EncryptionInfo (/V, /R, method, and whether the empty user password genuinely validates against /U), XrefHealth (recovery_used, rebuilt, revision_count), per-page PageStatus (index, media_box_present, CompileStatus), AnnotationInventory as counts per /Subtype only, and six FeatureFlags. Everything else M1 names is absent: PDF version and header offset, per-xref-section detail, linearization, /Info and XMP metadata, embedded files, per-annotation object identity, signature dictionaries and ByteRange, page representation classification, and font and image inventories — plus the lineage identifiers and edit markers from @audit.work.edit-provenance-facts. That is roughly a quarter of the inventory by section count, and the twelve missing sections are enumerated in DocumentFacts::pending in crates/pdf-forensics/src/intake.rs.
+
+        Two findings that change the M1 plan's shape. First, pdf-read already implements the structure-only path the encryption decision needs: examine_failed retries pdf_structure::load_structure alone and reads /Encrypt through a security-less snapshot, so a document that will not open still yields xref health and the encryption declaration. No new work is required there. Second, the M1 plan's claim that 'no new parsing work is required for M1' holds, but only in the sense that pdf-read reaches these facts through the existing resolvers — it does not currently report them. Step 2 is therefore surfacing work of real size, not the thin assembly pass the wording suggests.
+
+        Separately, the ecosystem's fixtures cannot express one case M1 needs: an encrypted document under a non-empty user password on a scheme the standard handler supports. encrypted_fixture() is RC4 V2/R3 whose empty user password validates, so it opens unprompted; aes256_encrypted_fixture() is V5/R6, which the handler declines outright, so no password opens it. Until a fixture exists between those two, the password-upgrade half of the encrypted-mode-labelled acceptance check cannot be tested.
+        """
+    observed_at git:84d2c43a6e1e558876a421b2f0cc3cb82c373d0d
+    method manual
+    watches [ "crates/pdf-forensics/src/intake.rs" ]
+    blocks [ @audit.work.m1-plan ]
+}
+
+record audit.observation.fact-layer-surface-gap/2 : observation {
+    title "pdf-read surfaces about a quarter of the M1 inventory"
+    state superseded
+    statement """
+        Measured against the M1 milestone's required inventory, pdf-read's DocumentReport currently reports: open outcome with recovery events rendered as strings, EncryptionInfo (/V, /R, method, and whether the empty user password genuinely validates against /U), XrefHealth (recovery_used, rebuilt, revision_count), per-page PageStatus (index, media_box_present, CompileStatus), AnnotationInventory as counts per /Subtype only, and six FeatureFlags. Everything else M1 names is absent: PDF version and header offset, per-xref-section detail, linearization, /Info and XMP metadata, embedded files, per-annotation object identity, signature dictionaries and ByteRange, page representation classification, and font and image inventories — plus the lineage identifiers and edit markers from @audit.work.edit-provenance-facts. That is roughly a quarter of the inventory by section count, and the twelve missing sections are enumerated in DocumentFacts::pending in crates/pdf-forensics/src/intake.rs.
+
+        Two findings that change the M1 plan's shape. First, pdf-read already implements the structure-only path the encryption decision needs: examine_failed retries pdf_structure::load_structure alone and reads /Encrypt through a security-less snapshot, so a document that will not open still yields xref health and the encryption declaration. No new work is required there. Second, the M1 plan's claim that 'no new parsing work is required for M1' holds, but only in the sense that pdf-read reaches these facts through the existing resolvers — it does not currently report them. Step 2 is therefore surfacing work of real size, not the thin assembly pass the wording suggests.
+
+        Separately, the ecosystem's fixtures cannot express one case M1 needs: an encrypted document under a non-empty user password on a scheme the standard handler supports. encrypted_fixture() is RC4 V2/R3 whose empty user password validates, so it opens unprompted; aes256_encrypted_fixture() is V5/R6, which the handler declines outright, so no password opens it. Until a fixture exists between those two, the password-upgrade half of the encrypted-mode-labelled acceptance check cannot be tested.
+        """
+    observed_at git:84d2c43a6e1e558876a421b2f0cc3cb82c373d0d
+    method manual
+    watches [ "crates/pdf-forensics/src/intake.rs" ]
+    blocks [ @audit.work.m1-plan ]
+    supersedes [ @audit.observation.fact-layer-surface-gap/1 ]
+}
+
+record audit.observation.fact-layer-surface-gap/3 : observation {
+    title "pdf-read surfaces about half the M1 inventory"
+    state superseded
+    statement """
+        Updated after the pdf-read extension (Lege-ecosystem 09cf36e) and its consumption here (dd97c79).
+
+        pdf-read now reports: open outcome with recovery events, the %PDF header with its leading-garbage offset, EncryptionInfo, XrefHealth, the trailer /ID pair, every /Info entry with a string value, XMP /Metadata presence, per-page PageStatus, annotation counts per /Subtype, a signature inventory (/FT /Sig fields walked through /Kids, each with /Filter, /SubFilter, /M, verbatim /ByteRange and whether that range spans the whole file), and seven FeatureFlags including has_embedded_files. Header and /ID are filled on the failed-open path too, since neither needs decryption — an unopenable encrypted document still yields its version, its garbage offset and its lineage identifiers.
+
+        Still absent, and enumerated in DocumentFacts::pending in crates/pdf-forensics/src/intake.rs: per-xref-section offsets, types and entry counts; linearization; the XMP packet's contents (it is detected but not parsed, so the xmpMM DocumentID, InstanceID, OriginalDocumentID, DerivedFrom and History lineage inside it is unread); per-annotation object identity; page representation classification; font and image inventories; and marked-content edit markers. Signature cryptography is deliberately out of scope until M4 — what exists is structural coverage only.
+
+        The two shape findings from the previous revision still hold. pdf-read already implemented the structure-only path the encryption decision needs, via examine_failed. And the M1 plan's 'no new parsing work is required' is accurate but easy to misread: every fact added in 09cf36e was already reachable through the existing resolvers and simply unreported, so step 2 is surfacing work of real size rather than a thin assembly pass.
+
+        The fixture gap is unchanged: the ecosystem has no document encrypted under a non-empty user password on a scheme the standard handler supports, so the password-upgrade half of the encrypted-mode-labelled acceptance check still cannot be tested. encrypted_fixture() opens with no password; aes256_encrypted_fixture() opens with none.
+        """
+    observed_at git:dd97c79d52ec5d653a3848b684430d060bbd7085
+    method manual
+    watches [ "crates/pdf-forensics/src/intake.rs" ]
+    blocks [ @audit.work.m1-plan ]
+    supersedes [ @audit.observation.fact-layer-surface-gap/2 ]
+}
+
+record audit.observation.fact-layer-surface-gap/4 : observation {
+    title "pdf-read surfaces most of the M1 inventory; the visual half remains"
+    state superseded
+    statement """
+        Updated after the XMP work (Lege-ecosystem 1ea79e4) and its consumption here (c03bcc4).
+
+        pdf-read now reports: open outcome with recovery events; the %PDF header with its leading-garbage offset; EncryptionInfo; XrefHealth; the trailer /ID pair; every /Info entry with a string value; XMP presence plus the xmpMM media-management lineage (DocumentID, InstanceID, OriginalDocumentID, the DerivedFrom document/instance pair, and the History event list with action, timestamp, software agent and changed-parts); per-page PageStatus; annotation counts per /Subtype; a signature inventory with verbatim /ByteRange and whole-file coverage; and seven FeatureFlags. Header and /ID are filled on the failed-open path, since neither needs decryption.
+
+        Six sections remain pending, and they divide cleanly into two groups. Three are structural and cheap: per-xref-section offsets, types and entry counts (needs the XrefSection type from @audit.decision.revision-model, and is really M2 work); linearization; and per-annotation object identity (@lege.work.annotation-forensic-metadata). Three are visual or content-level and are the substance of the remaining M1 effort: page representation classification (Vector/RasterOnly/RasterWithTextLayer/Mixed/Blank/Unknown, needing per-page SemImage and SemFont counts, image coverage and effective DPI), font and image inventories, and marked-content edit markers (@audit.work.edit-provenance-facts). Signature cryptography is deliberately M4.
+
+        The practical consequence: the checker can now establish document *lineage* — that one file descends from another, and what tool touched it when — but cannot yet say anything about what a page *looks like*. For the in-place-editing case that motivated @audit.work.edit-provenance-facts, the DocumentID/InstanceID comparison and the missing-signature-structure finding are reachable today; the /TouchUp_TextEdit markers and the intra-run font fragmentation are not.
+
+        The XMP parser is a targeted scanner in pdf-read's xmp module, not a general XML parser. It matches on local names after the namespace prefix, which is deliberate — the xmpMM prefix is conventional rather than mandated — and accepts a theoretical collision with another namespace defining the same local name in exchange for working on files with non-standard prefixes.
+
+        The fixture gap is unchanged: no fixture is encrypted under a non-empty user password on a scheme the standard handler supports, so the password-upgrade half of the encrypted-mode-labelled acceptance check still cannot be tested.
+        """
+    observed_at git:c03bcc495a3cdee94c8a6c178d18bcf7f9c4ead3
+    method manual
+    watches [ "crates/pdf-forensics/src/intake.rs" ]
+    blocks [ @audit.work.m1-plan ]
+    supersedes [ @audit.observation.fact-layer-surface-gap/3 ]
+}
+
+record audit.observation.fact-layer-surface-gap/5 : observation {
+    title "pdf-read surfaces the visual M1 inventory; edit markers remain"
+    state superseded
+    statement """
+        Updated after the visual-fact work: pdf-read now compiles each page's SemanticPage into PageMetrics (text-run counts, visible vs invisible, path/shading paints, image coverage in crop-box basis points, effective DPI of the largest placement) plus document-level FontRecord and ImageRecord inventories. `embedded` on a font means the PDF carries a /FontFile* stream, not that the engine substituted a bundled Standard-14 face. pdf-forensics classifies each compiled page as Vector, RasterOnly, RasterWithTextLayer, Mixed, Blank, or Unknown, and those three former pending sections (page_representation, fonts, images) are gone from the report.
+
+        pdf-read now reports: open outcome with recovery events; the %PDF header with its leading-garbage offset; EncryptionInfo; XrefHealth; the trailer /ID pair; every /Info entry with a string value; XMP presence plus the xmpMM media-management lineage; per-page PageStatus including representation metrics; annotation counts per /Subtype; a signature inventory with verbatim /ByteRange and whole-file coverage; seven FeatureFlags; and font and image inventories. Header and /ID are filled on the failed-open path, since neither needs decryption.
+
+        Four sections remain pending. Three are structural and cheap: per-xref-section offsets, types and entry counts (needs the XrefSection type from @audit.decision.revision-model, and is really M2 work); linearization; and per-annotation object identity (@lege.work.annotation-forensic-metadata). One is the remaining M1 content-level gap: marked-content edit markers (@audit.work.edit-provenance-facts), which pdf-content currently keeps only for /OC and /ActualText and drops every other tag name, so /TouchUp_TextEdit is not recoverable without a lege-namespace accessor. Signature cryptography is deliberately M4.
+
+        The practical consequence: the checker can now say both what lineage a file claims and what a page looks like — vector vs full-page raster vs raster-plus-invisible-text vs blank. For the in-place-editing case that motivated @audit.work.edit-provenance-facts, the DocumentID/InstanceID comparison, the missing-signature-structure finding, and a PDF-Verse-style flattened-export classification are reachable today; the /TouchUp_TextEdit markers and the intra-run font fragmentation are not.
+
+        The XMP parser is a targeted scanner in pdf-read's xmp module, not a general XML parser. It matches on local names after the namespace prefix, which is deliberate — the xmpMM prefix is conventional rather than mandated — and accepts a theoretical collision with another namespace defining the same local name in exchange for working on files with non-standard prefixes.
+
+        The fixture gap is unchanged: no fixture is encrypted under a non-empty user password on a scheme the standard handler supports, so the password-upgrade half of the encrypted-mode-labelled acceptance check still cannot be tested.
+
+        pdf-integrity now lives at lege-pdf/pdf-integrity inside the Lege-ecosystem checkout as its own Cargo workspace, with path dependencies at ../render/crates/*.
+        """
+    observed_at git:03490dde438e7e86c0959d5d80c34a5faf2743f2
+    method manual
+    watches [
+        "crates/pdf-forensics/src/intake.rs",
+        "crates/pdf-forensics/src/representation.rs",
+        "crates/pdf-forensics/src/document.rs"
+    ]
+    blocks [ @audit.work.m1-plan ]
+    supersedes [ @audit.observation.fact-layer-surface-gap/4 ]
+}
+
+record audit.observation.fact-layer-surface-gap/6 : observation {
+    title "pdf-read surfaces the visual M1 inventory; edit markers remain"
+    state verified
+    statement """
+        Updated after the visual-fact work: pdf-read now compiles each page's SemanticPage into PageMetrics (text-run counts, visible vs invisible, path/shading paints, image coverage in crop-box basis points, effective DPI of the largest placement) plus document-level FontRecord and ImageRecord inventories. `embedded` on a font means the PDF carries a /FontFile* stream, not that the engine substituted a bundled Standard-14 face. pdf-forensics classifies each compiled page as Vector, RasterOnly, RasterWithTextLayer, Mixed, Blank, or Unknown, and those three former pending sections (page_representation, fonts, images) are gone from the report.
+
+        pdf-read now reports: open outcome with recovery events; the %PDF header with its leading-garbage offset; EncryptionInfo; XrefHealth; the trailer /ID pair; every /Info entry with a string value; XMP presence plus the xmpMM media-management lineage; per-page PageStatus including representation metrics; annotation counts per /Subtype; a signature inventory with verbatim /ByteRange and whole-file coverage; seven FeatureFlags; and font and image inventories. Header and /ID are filled on the failed-open path, since neither needs decryption.
+
+        Four sections remain pending. Three are structural and cheap: per-xref-section offsets, types and entry counts (needs the XrefSection type from @audit.decision.revision-model, and is really M2 work); linearization; and per-annotation object identity (@lege.work.annotation-forensic-metadata). One is the remaining M1 content-level gap: marked-content edit markers (@audit.work.edit-provenance-facts), which pdf-content currently keeps only for /OC and /ActualText and drops every other tag name, so /TouchUp_TextEdit is not recoverable without a lege-namespace accessor. Signature cryptography is deliberately M4.
+
+        The practical consequence: the checker can now say both what lineage a file claims and what a page looks like — vector vs full-page raster vs raster-plus-invisible-text vs blank. For the in-place-editing case that motivated @audit.work.edit-provenance-facts, the DocumentID/InstanceID comparison, the missing-signature-structure finding, and a PDF-Verse-style flattened-export classification are reachable today; the /TouchUp_TextEdit markers and the intra-run font fragmentation are not.
+
+        The XMP parser is a targeted scanner in pdf-read's xmp module, not a general XML parser. It matches on local names after the namespace prefix, which is deliberate — the xmpMM prefix is conventional rather than mandated — and accepts a theoretical collision with another namespace defining the same local name in exchange for working on files with non-standard prefixes.
+
+        The fixture gap is unchanged: no fixture is encrypted under a non-empty user password on a scheme the standard handler supports, so the password-upgrade half of the encrypted-mode-labelled acceptance check still cannot be tested.
+
+        pdf-integrity now lives at lege-pdf/pdf-integrity inside the Lege-ecosystem checkout as its own Cargo workspace, with path dependencies at ../render/crates/*.
+        """
+    observed_at git:03490dde438e7e86c0959d5d80c34a5faf2743f2
+    method manual
+    watches [ "crates/pdf-forensics/src/intake.rs", "crates/pdf-forensics/src/document.rs" ]
+    blocks [ @audit.work.m1-plan ]
+    supersedes [ @audit.observation.fact-layer-surface-gap/5 ]
+}

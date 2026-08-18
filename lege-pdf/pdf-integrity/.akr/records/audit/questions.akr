@@ -1,0 +1,73 @@
+akr 0.1
+project pdf-integrity
+
+record audit.question.crypto-crate/1 : question {
+    title "Which cryptographic implementation backs M4 layer two?"
+    state open
+    question """
+        Which mature Rust implementation handles CMS/CAdES parsing, digest verification, certificate chains and trust for signature layer two — the RustCrypto cms/x509-cert stack, rasn-based CMS, something over ring/aws-lc-rs, or shelling out to an external verifier for trust decisions only? Criteria: CAdES coverage, timestamp (RFC 3161) support, maintenance health, and how a trust store gets configured on an offline machine.
+        """
+    blocks [ @audit.milestone.m4-signatures ]
+}
+
+record audit.question.encrypted-input-policy/1 : question {
+    title "What does the checker do with encrypted PDFs?"
+    state superseded
+    question """
+        Encryption was the number-one gap in the renderer's 11k-PDF corpus sweep, and encrypted documents are common in exactly the workflows this tool serves. Does M1 report encryption as a fact and stop, decrypt with a supplied password via pdf-security and audit normally, or audit structure-only (xref sections and object changes are visible without decrypting stream contents)? Revision diffing of encrypted revisions also needs a defined story for per-revision encryption changes.
+        """
+    blocks [ @audit.milestone.m1-factual-audit ]
+}
+
+record audit.question.encrypted-input-policy/2 : question {
+    title "What does the checker do with encrypted PDFs?"
+    state resolved
+    question """
+        Encryption was the number-one gap in the renderer's 11k-PDF corpus sweep, and encrypted documents are common in exactly the workflows this tool serves. Does M1 report encryption as a fact and stop, decrypt with a supplied password via pdf-security and audit normally, or audit structure-only (xref sections and object changes are visible without decrypting stream contents)? Revision diffing of encrypted revisions also needs a defined story for per-revision encryption changes.
+        """
+    resolution """
+        Structure-only audit by default, upgraded to a full audit by a supplied or empty-validating password; encryption always reported as a fact and the analysis mode always recorded in the report. Per-revision encryption changes remain open for M2/M3. See @audit.decision.encrypted-input-handling.
+        """
+    blocks [ @audit.milestone.m1-factual-audit ]
+    supersedes [ @audit.question.encrypted-input-policy/1 ]
+}
+
+record audit.question.forensics-crate-home/1 : question {
+    title "Where does pdf-forensics live?"
+    state superseded
+    question """
+        Does the pdf-forensics crate join the Lege-ecosystem workspace next to the renderer crates it consumes, or live in this pdf-integrity repo depending on lege-pdf via path or git dependencies? In-workspace gets atomic refactors (the XrefSection change touches both sides); out-of-workspace keeps the audit tool's dependency surface auditable and its release cadence independent.
+        """
+    blocks [ @audit.work.m1-plan ]
+}
+
+record audit.question.forensics-crate-home/2 : question {
+    title "Where does pdf-forensics live?"
+    state resolved
+    question """
+        Does the pdf-forensics crate join the Lege-ecosystem workspace next to the renderer crates it consumes, or live in this pdf-integrity repo depending on lege-pdf via path or git dependencies? In-workspace gets atomic refactors (the XrefSection change touches both sides); out-of-workspace keeps the audit tool's dependency surface auditable and its release cadence independent.
+        """
+    resolution """
+        Out of workspace. pdf-forensics and the lege-pdf-audit binary live in the pdf-integrity repo as their own Cargo workspace, path-depending on the lege-pdf render crates. See @audit.decision.forensics-repo-home.
+        """
+    blocks [ @audit.work.m1-plan ]
+    supersedes [ @audit.question.forensics-crate-home/1 ]
+}
+
+record audit.question.heuristic-validation-corpus/1 : question {
+    title "How big must the legitimate corpus be before M5 heuristics can ship?"
+    state open
+    question """
+        The M5 acceptance budget is a per-producer false-positive rate under 1 percent, but a rate needs a denominator: how many documents per producer, across how many producer versions, before that number means anything? And can the existing 11k-PDF oracle-sweep corpus be reused as the legitimate baseline, given it was collected for rendering coverage rather than provenance labeling?
+        """
+    blocks [ @audit.milestone.m5-consistency-heuristics ]
+}
+
+record audit.question.ocr-accuracy-sufficient/1 : question {
+    title "Is lege-ocr accurate enough for cross-check findings?"
+    state open
+    question """
+        For the OCR cross-check layer to flag hidden-vs-visible text disagreement without drowning in its own recognition errors, what character error rate does lege-ocr achieve on typical scanned-document fixtures, and what disagreement threshold does that imply before a finding is worth emitting?
+        """
+    blocks [ @audit.work.ocr-crosscheck ]
+}

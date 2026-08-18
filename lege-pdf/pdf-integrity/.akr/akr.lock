@@ -1,0 +1,491 @@
+akr-lock 0.1
+project pdf-integrity
+
+build {
+    tool "akr 0.3.1"
+    grammar "0.1"
+    vocabulary "0.2"
+    source_graph "sha256:0177562aeb0587a498252cfddc560470780accce88e779d6a65ca05ecca250f7"
+}
+
+source ".akr/project.akr" {
+    hash "sha256:783911301c0a0adbfce828f62837d110043bb20f9bf41593604972408d1bf8f0"
+    records 0
+}
+
+source ".akr/records/audit/decisions.akr" {
+    hash "sha256:2ee390e48b6b6453db401833864ff003d5aea00a8ae1b95ca7d4411251e15186"
+    records 7
+}
+
+source ".akr/records/audit/milestones.akr" {
+    hash "sha256:1009438ada5cf5f46fd85be62371e9094c3f7d2a145755143ccb973cedd738fc"
+    records 5
+}
+
+source ".akr/records/audit/observations.akr" {
+    hash "sha256:cf29bc3c9d811fd1460c815f2a35d4873b55bd8a6111d40594e047f3b993fc9d"
+    records 6
+}
+
+source ".akr/records/audit/papercuts.akr" {
+    hash "sha256:f25bc2405e18367d86a55d2cb9761a37d7bf1a8761b445c75d91b8a3430b81d8"
+    records 4
+}
+
+source ".akr/records/audit/questions.akr" {
+    hash "sha256:8ca60fc769d3923403511d625695ecac910762dc4927fa5494398524eaf80d29"
+    records 7
+}
+
+source ".akr/records/audit/requirements.akr" {
+    hash "sha256:772716db1ae5fe4da7279b726f251941ce1aa707612032bad63148daae932efd"
+    records 4
+}
+
+source ".akr/records/audit/terms.akr" {
+    hash "sha256:6343f17f585a57632b7ff972178bc3e9696376399baee5af0c4ec9c1c411fe8f"
+    records 1
+}
+
+source ".akr/records/audit/tracks.akr" {
+    hash "sha256:70b8bc1597dd4e3268c0185d31c0d52ebccb943f60b0fa87517912cbb1cd90bc"
+    records 1
+}
+
+source ".akr/records/audit/work.akr" {
+    hash "sha256:4c6b709dc282c4cddb292b63eb1237c20a30e70a90da411ad90c6cf26dd15007"
+    records 9
+}
+
+source ".akr/records/lege/work.akr" {
+    hash "sha256:82e091440c1cb000d97252e62b64257fe16e2003fbedd1717d03d2a4ba53d442"
+    records 4
+}
+
+resolution @audit.decision.encrypted-input-handling/1 {
+    slot depends_on
+    to @audit.req.explainable-findings/1
+    hash "sha256:3afdd8f214a5b49bf3d45a9051638d7334215c9929566fa0120a5bb7123c260f"
+}
+
+resolution @audit.decision.encrypted-input-handling/1 {
+    slot resolves
+    to @audit.question.encrypted-input-policy/2
+    hash "sha256:a7f8e209bcbb5b522127c03393116826a295826c1cd6628f097f263f16f3bfad"
+}
+
+resolution @audit.decision.forensics-repo-home/1 {
+    slot depends_on
+    to @audit.decision.crate-shape/1
+    hash "sha256:bef800875311e474eea08341fa76470ae79f94d015609bd6c0a3bcb1b3e2d46b"
+}
+
+resolution @audit.decision.forensics-repo-home/1 {
+    slot resolves
+    to @audit.question.forensics-crate-home/2
+    hash "sha256:df1659afa8ce8adbcdfe38d61d858cb7672268e8831bb08f4631d67da40a5073"
+}
+
+resolution @audit.decision.product-framing/1 {
+    slot implements
+    to @audit.req.explainable-findings/1
+    hash "sha256:3afdd8f214a5b49bf3d45a9051638d7334215c9929566fa0120a5bb7123c260f"
+}
+
+resolution @audit.decision.revision-model/1 {
+    slot depends_on
+    to @audit.term.logical-revision/1
+    hash "sha256:af88a4033986d8f69f943a1beaeca118aaf03a0f993043c05f101dd6fab25cc5"
+}
+
+resolution @audit.decision.strict-and-tolerant-parse/1 {
+    slot implements
+    to @audit.req.repairs-are-visible/1
+    hash "sha256:16319838afc1c3a56c033bc481833caf13709cca053ac6bc31dce0cd9ec36e54"
+}
+
+resolution @audit.milestone.m1-factual-audit/1 {
+    slot depends_on
+    to @audit.decision.crate-shape/1
+    hash "sha256:bef800875311e474eea08341fa76470ae79f94d015609bd6c0a3bcb1b3e2d46b"
+}
+
+resolution @audit.milestone.m1-factual-audit/1 {
+    slot depends_on
+    to @audit.decision.encrypted-input-handling/1
+    hash "sha256:77523e021b95283b6f6c17d24380686d85e2b82b595aaae61b5b66ea46bfbe4e"
+}
+
+resolution @audit.milestone.m1-factual-audit/1 {
+    slot depends_on
+    to @audit.decision.forensics-repo-home/1
+    hash "sha256:68b03cdb5d94a7258a99697fe8e8d011b6cd55328b00641aecf95f6dc23f5031"
+}
+
+resolution @audit.milestone.m1-factual-audit/1 {
+    slot depends_on
+    to @audit.decision.product-framing/1
+    hash "sha256:1249dcb0f7c6e017709bde3dee0fae1c4625a371b521931a00cda17d79a5dec0"
+}
+
+resolution @audit.milestone.m2-revision-history/1 {
+    slot after
+    to @audit.milestone.m1-factual-audit/1
+    hash "sha256:ab0f33a10f4509c28b311fc7cad105bb265ca2dd8323da3f722f6230eae9f0fb"
+}
+
+resolution @audit.milestone.m2-revision-history/1 {
+    slot depends_on
+    to @audit.decision.revision-model/1
+    hash "sha256:e283c5327a58f1c8d82f367f98ba40ce403497e64646780cf315fb9dcf560d48"
+}
+
+resolution @audit.milestone.m2-revision-history/1 {
+    slot depends_on
+    to @audit.term.logical-revision/1
+    hash "sha256:af88a4033986d8f69f943a1beaeca118aaf03a0f993043c05f101dd6fab25cc5"
+}
+
+resolution @audit.milestone.m3-diff-and-overlay/1 {
+    slot after
+    to @audit.milestone.m2-revision-history/1
+    hash "sha256:67029605073aa10e7966f7e2592cbf8139d97093a5adb4ab51c21fa5217a2f7b"
+}
+
+resolution @audit.milestone.m3-diff-and-overlay/1 {
+    slot depends_on
+    to @audit.req.deterministic-evidence/1
+    hash "sha256:12514b72e27bd87d8d1c226206033bd404d3cf975a02284c3d61bd82b7931462"
+}
+
+resolution @audit.milestone.m4-signatures/1 {
+    slot after
+    to @audit.milestone.m3-diff-and-overlay/1
+    hash "sha256:8cc5329b9df392845deec62f5fce5bceb15a2767015bb80b4d1ead2a6f5e73e4"
+}
+
+resolution @audit.milestone.m4-signatures/1 {
+    slot depends_on
+    to @audit.decision.signature-layering/1
+    hash "sha256:2d50ca86639550fe78a3b1acd7eff53e9fb4e3428ae8f8cfdf0a08cf6e963795"
+}
+
+resolution @audit.milestone.m4-signatures/1 {
+    slot depends_on
+    to @audit.req.repairs-are-visible/1
+    hash "sha256:16319838afc1c3a56c033bc481833caf13709cca053ac6bc31dce0cd9ec36e54"
+}
+
+resolution @audit.milestone.m5-consistency-heuristics/1 {
+    slot after
+    to @audit.milestone.m4-signatures/1
+    hash "sha256:7bdf29f19dc7e70bd0b6d0739c9f7ea3ca52f1b51a60a8c514ee472c762c65bd"
+}
+
+resolution @audit.milestone.m5-consistency-heuristics/1 {
+    slot depends_on
+    to @audit.decision.product-framing/1
+    hash "sha256:1249dcb0f7c6e017709bde3dee0fae1c4625a371b521931a00cda17d79a5dec0"
+}
+
+resolution @audit.milestone.m5-consistency-heuristics/1 {
+    slot depends_on
+    to @audit.req.explainable-findings/1
+    hash "sha256:3afdd8f214a5b49bf3d45a9051638d7334215c9929566fa0120a5bb7123c260f"
+}
+
+resolution @audit.observation.fact-layer-surface-gap/1 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.observation.fact-layer-surface-gap/2 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.observation.fact-layer-surface-gap/3 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.observation.fact-layer-surface-gap/4 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.observation.fact-layer-surface-gap/5 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.observation.fact-layer-surface-gap/6 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.question.crypto-crate/1 {
+    slot blocks
+    to @audit.milestone.m4-signatures/1
+    hash "sha256:7bdf29f19dc7e70bd0b6d0739c9f7ea3ca52f1b51a60a8c514ee472c762c65bd"
+}
+
+resolution @audit.question.encrypted-input-policy/1 {
+    slot blocks
+    to @audit.milestone.m1-factual-audit/1
+    hash "sha256:ab0f33a10f4509c28b311fc7cad105bb265ca2dd8323da3f722f6230eae9f0fb"
+}
+
+resolution @audit.question.encrypted-input-policy/2 {
+    slot blocks
+    to @audit.milestone.m1-factual-audit/1
+    hash "sha256:ab0f33a10f4509c28b311fc7cad105bb265ca2dd8323da3f722f6230eae9f0fb"
+}
+
+resolution @audit.question.forensics-crate-home/1 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.question.forensics-crate-home/2 {
+    slot blocks
+    to @audit.work.m1-plan/1
+    hash "sha256:1eae6984058b1070f9549f63512fdf975b100838f5d7eaca2dff57d7c3006aca"
+}
+
+resolution @audit.question.heuristic-validation-corpus/1 {
+    slot blocks
+    to @audit.milestone.m5-consistency-heuristics/1
+    hash "sha256:3df9da6be9988445df720a8505450b4a43997d8f5341f55d09cd3e4ba38a8309"
+}
+
+resolution @audit.question.ocr-accuracy-sufficient/1 {
+    slot blocks
+    to @audit.work.ocr-crosscheck/1
+    hash "sha256:60d5208c57628d279ac0d17c6ab6a07faff4e89f32ee0245497d501a1c67c775"
+}
+
+resolution @audit.work.compare-command/1 {
+    slot depends_on
+    to @audit.req.deterministic-evidence/1
+    hash "sha256:12514b72e27bd87d8d1c226206033bd404d3cf975a02284c3d61bd82b7931462"
+}
+
+resolution @audit.work.edit-provenance-facts/1 {
+    slot implements
+    to @audit.decision.crate-shape/1
+    hash "sha256:bef800875311e474eea08341fa76470ae79f94d015609bd6c0a3bcb1b3e2d46b"
+}
+
+resolution @audit.work.edit-provenance-facts/1 {
+    slot part_of
+    to @audit.milestone.m1-factual-audit/1
+    hash "sha256:ab0f33a10f4509c28b311fc7cad105bb265ca2dd8323da3f722f6230eae9f0fb"
+}
+
+resolution @audit.work.intra-run-font-fragmentation/1 {
+    slot depends_on
+    to @audit.req.explainable-findings/1
+    hash "sha256:3afdd8f214a5b49bf3d45a9051638d7334215c9929566fa0120a5bb7123c260f"
+}
+
+resolution @audit.work.intra-run-font-fragmentation/1 {
+    slot depends_on
+    to @audit.track.fixture-corpus/1
+    hash "sha256:b33f2d2c0f87899b0ce09602a445f1108556926e92246312cb17a85ad7bdc801"
+}
+
+resolution @audit.work.m1-plan/1 {
+    slot implements
+    to @audit.decision.crate-shape/1
+    hash "sha256:bef800875311e474eea08341fa76470ae79f94d015609bd6c0a3bcb1b3e2d46b"
+}
+
+resolution @audit.work.m1-plan/1 {
+    slot plan_of_record
+    to @audit.milestone.m1-factual-audit/1
+    hash "sha256:ab0f33a10f4509c28b311fc7cad105bb265ca2dd8323da3f722f6230eae9f0fb"
+}
+
+resolution @audit.work.m2-plan/1 {
+    slot implements
+    to @audit.decision.revision-model/1
+    hash "sha256:e283c5327a58f1c8d82f367f98ba40ce403497e64646780cf315fb9dcf560d48"
+}
+
+resolution @audit.work.m2-plan/1 {
+    slot plan_of_record
+    to @audit.milestone.m2-revision-history/1
+    hash "sha256:67029605073aa10e7966f7e2592cbf8139d97093a5adb4ab51c21fa5217a2f7b"
+}
+
+resolution @audit.work.m3-plan/1 {
+    slot implements
+    to @audit.req.deterministic-evidence/1
+    hash "sha256:12514b72e27bd87d8d1c226206033bd404d3cf975a02284c3d61bd82b7931462"
+}
+
+resolution @audit.work.m3-plan/1 {
+    slot plan_of_record
+    to @audit.milestone.m3-diff-and-overlay/1
+    hash "sha256:8cc5329b9df392845deec62f5fce5bceb15a2767015bb80b4d1ead2a6f5e73e4"
+}
+
+resolution @audit.work.m4-plan/1 {
+    slot implements
+    to @audit.decision.signature-layering/1
+    hash "sha256:2d50ca86639550fe78a3b1acd7eff53e9fb4e3428ae8f8cfdf0a08cf6e963795"
+}
+
+resolution @audit.work.m4-plan/1 {
+    slot plan_of_record
+    to @audit.milestone.m4-signatures/1
+    hash "sha256:7bdf29f19dc7e70bd0b6d0739c9f7ea3ca52f1b51a60a8c514ee472c762c65bd"
+}
+
+resolution @audit.work.m5-plan/1 {
+    slot implements
+    to @audit.decision.product-framing/1
+    hash "sha256:1249dcb0f7c6e017709bde3dee0fae1c4625a371b521931a00cda17d79a5dec0"
+}
+
+resolution @audit.work.m5-plan/1 {
+    slot plan_of_record
+    to @audit.milestone.m5-consistency-heuristics/1
+    hash "sha256:3df9da6be9988445df720a8505450b4a43997d8f5341f55d09cd3e4ba38a8309"
+}
+
+resolution @audit.work.ocr-crosscheck/1 {
+    slot depends_on
+    to @audit.decision.crate-shape/1
+    hash "sha256:bef800875311e474eea08341fa76470ae79f94d015609bd6c0a3bcb1b3e2d46b"
+}
+
+resolution @lege.work.annotation-forensic-metadata/1 {
+    slot implements
+    to @audit.decision.crate-shape/1
+    hash "sha256:bef800875311e474eea08341fa76470ae79f94d015609bd6c0a3bcb1b3e2d46b"
+}
+
+resolution @lege.work.annotation-forensic-metadata/1 {
+    slot part_of
+    to @audit.work.m3-plan/1
+    hash "sha256:f3013188315f2baab0ffbbec390efff37e8012e4a5dff25baaaec6d323dfea39"
+}
+
+resolution @lege.work.page-trace-sidecar/1 {
+    slot part_of
+    to @audit.work.m3-plan/1
+    hash "sha256:f3013188315f2baab0ffbbec390efff37e8012e4a5dff25baaaec6d323dfea39"
+}
+
+resolution @lege.work.prefix-source/1 {
+    slot part_of
+    to @audit.work.m2-plan/1
+    hash "sha256:e0c7f25976f9a3e979e1a534874f656e8b71e18a51421e590ee14b30d3992ad1"
+}
+
+resolution @lege.work.xref-section-preservation/1 {
+    slot implements
+    to @audit.decision.revision-model/1
+    hash "sha256:e283c5327a58f1c8d82f367f98ba40ce403497e64646780cf315fb9dcf560d48"
+}
+
+resolution @lege.work.xref-section-preservation/1 {
+    slot part_of
+    to @audit.work.m2-plan/1
+    hash "sha256:e0c7f25976f9a3e979e1a534874f656e8b71e18a51421e590ee14b30d3992ad1"
+}
+
+seal @audit.observation.fact-layer-surface-gap/1 {
+    state superseded
+    hash "sha256:7783c703ec8b8684d11b48e049a64e94a7a8f92dde839221788edf732d494bde"
+}
+
+seal @audit.observation.fact-layer-surface-gap/2 {
+    state superseded
+    hash "sha256:b733378c8d68c5f17ca17701212a083bad5abba51e09f1bbd4a8512c62ed5bab"
+}
+
+seal @audit.observation.fact-layer-surface-gap/3 {
+    state superseded
+    hash "sha256:52cdeae6987a27699f2baf93c26b51f678f24b0dbbda4fb3f9d1ebad49631686"
+}
+
+seal @audit.observation.fact-layer-surface-gap/4 {
+    state superseded
+    hash "sha256:d72c4dff2ea01792e0216e69fbcb3ee1e77e073c34aa268e7dea5e80a550a67b"
+}
+
+seal @audit.observation.fact-layer-surface-gap/5 {
+    state superseded
+    hash "sha256:21a2d4a505b20717f079e2cfdd6c64f684efd38b1d590682f03f6e0751179573"
+}
+
+seal @audit.observation.fact-layer-surface-gap/6 {
+    state verified
+    hash "sha256:641191533f2cb5d14aad365ea53f738a3868333b82a42046422434bba8cb925a"
+}
+
+seal @audit.papercut.after-the-move-into-lege-ecosystem-cargo-test-p/1 {
+    state verified
+    hash "sha256:1427dfdd061ec779ab230ff5880b2695c023f2555f4bab7dfa483480c8df23cc"
+}
+
+seal @audit.papercut.akr-mcp-failed-to-connect-at-session-start/1 {
+    state verified
+    hash "sha256:4fde994f1966613ea97470ffbe0675bf314039c574e1f76a70f800329f86de5f"
+}
+
+seal @audit.papercut.knowledge-propose-accepted-an-observation-with/1 {
+    state verified
+    hash "sha256:e55e6dc82e9c52f9da69d97a79a552291c65117b914226290a7bebce7058adbf"
+}
+
+seal @audit.papercut.revising-the-proposed-forensics-repo-home/1 {
+    state verified
+    hash "sha256:d3899c3f336539b7b1e8fb40b5e96634143350d360c7f2909284a2a723ca3e36"
+}
+
+seal @audit.question.crypto-crate/1 {
+    state open
+    hash "sha256:fcbd5b2203574e3d0f6889dff2749ebc3a868aed0669895f547ee673ee8735a8"
+}
+
+seal @audit.question.encrypted-input-policy/1 {
+    state superseded
+    hash "sha256:87632b6d54d14f23678d3bc5595cefd771ba392e36ce6395f26c6fb3b7933e15"
+}
+
+seal @audit.question.encrypted-input-policy/2 {
+    state resolved
+    hash "sha256:a7f8e209bcbb5b522127c03393116826a295826c1cd6628f097f263f16f3bfad"
+}
+
+seal @audit.question.forensics-crate-home/1 {
+    state superseded
+    hash "sha256:ef1c091ddfc05fd1b8e1e45916b6884109275ce7e88c9092ba597f184a555a6d"
+}
+
+seal @audit.question.forensics-crate-home/2 {
+    state resolved
+    hash "sha256:df1659afa8ce8adbcdfe38d61d858cb7672268e8831bb08f4631d67da40a5073"
+}
+
+seal @audit.question.heuristic-validation-corpus/1 {
+    state open
+    hash "sha256:79a268b7091b7238722d02ec406a411875b16cea8861aed5a61a47339c3d950c"
+}
+
+seal @audit.question.ocr-accuracy-sufficient/1 {
+    state open
+    hash "sha256:82728292d465e01f34f955b358273695e65fa60b0bf93423979bc0da89cf8858"
+}

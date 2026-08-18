@@ -1,0 +1,13 @@
+akr 0.1
+project pdf-integrity
+
+record audit.track.fixture-corpus/1 : track {
+    title "Fixture and legitimate-producer corpus"
+    state proposed
+    intent """
+        Standing collection work no milestone contains: extend pdf-test-support to generate controlled tampering fixtures (annotation-in-later-revision, appearance-over-text, white-rectangle-plus-text, same-font content redefinition, /Contents object-to-array change, image patch, full-page raster, OCR-layer-behind-image, metadata-only update, signature-only update, permitted form fill, post-signature edit, every xref variant, linearized and malformed forms), and continuously capture legitimate outputs from Acrobat, browser print-to-PDF, Chrome drawing, macOS Preview, Office, LibreOffice, scanner and OCR software, optimizers, signers, PDF-Verse, pdf-lib and jsPDF. Label every fixture with the operation that produced it, never with a fraud judgement.
+        """
+    cadence """
+        grows with every milestone; legitimate-producer captures at least once per milestone
+        """
+}

@@ -1,0 +1,49 @@
+akr 0.1
+project pdf-integrity
+
+record audit.papercut.after-the-move-into-lege-ecosystem-cargo-test-p/1 : papercut {
+    title "After the move into Lege-ecosystem, cargo test -p pdf-forensics from…"
+    state verified
+    statement """
+        After the move into Lege-ecosystem, cargo test -p pdf-forensics from the ecosystem root cannot see the crate because pdf-integrity is a nested workspace (now listed in root exclude). Tests must be run with --manifest-path lege-pdf/pdf-integrity/Cargo.toml.
+        """
+    observed_at git:03490dde438e7e86c0959d5d80c34a5faf2743f2
+    author "grok"
+    created_at 2026-08-13
+}
+
+record audit.papercut.akr-mcp-failed-to-connect-at-session-start/1 : papercut {
+    title "AKR MCP failed to connect at session start (codegraph also timed out),…"
+    state verified
+    statement """
+        AKR MCP failed to connect at session start (codegraph also timed out), so knowledge.start/context had to go through the akr CLI with --dir pointed at the nested lege-pdf/pdf-integrity ledger rather than the ecosystem root.
+        """
+    observed_at git:03490dde438e7e86c0959d5d80c34a5faf2743f2
+    about "akr"
+    author "grok"
+    created_at 2026-08-13
+}
+
+record audit.papercut.knowledge-propose-accepted-an-observation-with/1 : papercut {
+    title "knowledge_propose accepted an observation with `method: \"inspection\"`,…"
+    state verified
+    statement """
+        knowledge_propose accepted an observation with `method: "inspection"`, but the store's CHECK constraint only permits manual/command/observation/instrumented, so the record was written to .akr/records/ and then every subsequent `akr build` failed with AKR-I002 — the ledger was unbuildable until the bad revision was repaired. Revising the key to a valid method did not help, because build parses all revisions including the superseded one, so the only way out was hand-editing the .akr file that the protocol says never to hand-edit. Two fixes: validate the `method` enum in knowledge_propose before writing (the write path already aborts on relation violations, so this one is just missing), and have AKR-I002 name the offending record, revision and slot rather than only the constraint text.
+        """
+    observed_at git:84d2c43a6e1e558876a421b2f0cc3cb82c373d0d
+    about "akr"
+    author "claude"
+    created_at 2026-08-13
+}
+
+record audit.papercut.revising-the-proposed-forensics-repo-home/1 : papercut {
+    title "Revising the proposed forensics-repo-home decision in place dropped its…"
+    state verified
+    statement """
+        Revising the proposed forensics-repo-home decision in place dropped its existing resolves relation and then refused both omitting it (T031: nothing resolves the question) and pointing at the live resolved head (L021: may not reference a resolved record). In-place --from of a proposed decision that already resolved a question needs a way to keep existing relations.
+        """
+    observed_at git:03490dde438e7e86c0959d5d80c34a5faf2743f2
+    about "akr"
+    author "grok"
+    created_at 2026-08-13
+}

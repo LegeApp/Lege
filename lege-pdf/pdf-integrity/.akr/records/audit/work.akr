@@ -1,0 +1,140 @@
+akr 0.1
+project pdf-integrity
+
+record audit.work.compare-command/1 : work {
+    title "Two-file compare mode (suspect vs trusted original)"
+    state proposed
+    intent """
+        A `compare suspect.pdf trusted-original.pdf` command. A trusted original changes the problem class entirely: coherent full rewrites and rasterized replacements become directly detectable instead of merely anomalous. Compare at the same three levels as revision diff — object inventory, semantic text/font/image, deterministic visual — and report per-page divergence with evidence artifacts. Reuses the whole M3 diff engine; the new work is input pairing, page correspondence (documents may differ in page count), and a report section that distinguishes 'derived from the original' from 'unrelated document'.
+        """
+    note """
+        Speculative until M3 ships; deliberately not attached to a milestone yet. Promote to part_of a post-M4 plan when scheduled.
+        """
+    depends_on [ @audit.req.deterministic-evidence ]
+}
+
+record audit.work.edit-provenance-facts/1 : work {
+    title "Direct-edit provenance facts: touch-up markers and document lineage identifiers"
+    state proposed
+    intent """
+        Two neutral fact families the M1 inventory currently omits, both cheap to reach and both decisive in the derived-document case.
+
+        First, an editing-marker inventory. Acrobat's interactive Edit Text tool wraps re-typed runs in marked content tagged /TouchUp_TextEdit (and related /TouchUp_* tags). Record every occurrence per page with its content-stream offset and the bounding box of the enclosed run. These tags are not emitted by print-to-PDF, Distiller from PostScript, OCR layers, or filing-portal conversion, so their presence — and especially their clustering around the regions that differ from a comparison document — is one of the few direct indicators of interactive text editing that survives in the file.
+
+        Second, document lineage identifiers as a first-class report section rather than loose XMP keys: xmpMM:DocumentID, xmpMM:InstanceID, xmpMM:OriginalDocumentID, xmpMM:DerivedFrom, the xmpMM:History event list, and both elements of the trailer /ID array. A save-as-and-edit cycle preserves DocumentID and trailer /ID[0] while minting a new InstanceID and /ID[1]; a genuine regeneration from the source application mints all of them fresh. Report these as facts and let the compare command and the findings engine interpret them.
+
+        Both are M1 fact-layer work under the pdf-read-facts / pdf-forensics-interpretation split. The marker inventory may need a neutral marked-content accessor surfaced from pdf-content, in which case that half becomes lege-namespace work.
+        """
+    note """
+        Prompted by a public account of a court filing whose page 1 had been edited in place: same XMP DocumentID with a new InstanceID, /TouchUp_TextEdit markers clustered on the altered page, and a signature that survived visually but not cryptographically. Neither the ledger nor initial-plan-shape.md covered either fact family.
+        """
+    implements [ @audit.decision.crate-shape ]
+    part_of [ @audit.milestone.m1-factual-audit ]
+    source {
+        kind external
+        role origin
+        url "https://www.reddit.com/"
+        excerpt """
+            The two PDFs have the same XMP DocumentID, but different InstanceIDs. ... The 2026 PDF has multiple /TouchUp_TextEdit markers in the decoded content stream on page 1, around the areas that differ from the original.
+            """
+        use """
+            Taken as a use-case description motivating two missing fact families; the account is unverified and no files were attached.
+            """
+    }
+}
+
+record audit.work.intra-run-font-fragmentation/1 : work {
+    title "Heuristic: font-resource fragmentation within a single text run"
+    state proposed
+    intent """
+        Detect the case where a contiguous visible text run is drawn from more than one font resource, and the minority resource covers only the characters that carry the semantic change — for example a date where the two altered digits use one font resource while the surrounding digits and the separator stay in the original.
+
+        The mechanism is specific: when text is re-typed in place, the glyphs needed for the new characters are often absent from the original embedded subset, so the editor emits a second font resource — typically a fresh subset with very small glyph coverage, or a non-embedded substitute — for just those glyphs. A document regenerated from its source application draws the whole run from one resource. The signal is therefore strongest when the minority resource's glyph coverage is tiny and its subset tag differs from the majority resource's while the underlying base font name matches.
+
+        Report as a bounded finding with the run's text, the two resources, their subset tags and glyph coverage, and the page location. Legitimate producers do split runs across resources — script and symbol fallback, mixed-language text, and some form-field flattening all do it — so this must be validated against the legitimate-producer corpus before it can carry weight, and it should never be a standalone basis for a suspicion finding.
+        """
+    note """
+        Same public account as @audit.work.edit-provenance-facts. Deliberately not attached to a milestone: it is an M5-class heuristic that needs corpus validation, and it is much stronger when a trusted original is available, so it may land with @audit.work.compare-command instead.
+        """
+    depends_on [ @audit.req.explainable-findings, @audit.track.fixture-corpus ]
+    source {
+        kind external
+        role origin
+        url "https://www.reddit.com/"
+        excerpt """
+            rather than the entire DOB being replaced as one new text string, only the digits that needed to change appear to use a different font resource, while unchanged characters such as the slash and the rest of the DOB remain in the original font resource.
+            """
+        use """
+            Taken as a use-case description motivating a new heuristic; the account is unverified and no files were attached.
+            """
+    }
+}
+
+record audit.work.m1-plan/1 : work {
+    title "M1 plan of record"
+    state proposed
+    intent """
+        Order of work: (1) define the AuditReport JSON schema and Finding/EvidenceStrength types in the new pdf-forensics crate; (2) extend pdf-read's existing doctor output with the missing inventories (annotation identity fields, signature dictionaries and ByteRange, per-page representation metrics from SemImage/SemFont counts, image coverage and effective DPI); (3) implement the PageRepresentation classifier over prepare_rgb_image_page and the semantic page; (4) wire a `pdf-cli audit` subcommand emitting JSON and terminal output; (5) build the ten M1 acceptance fixtures in pdf-test-support plus real captured producer outputs. No new parsing work is required for M1 — it is assembly and classification over facts pdf-read already reaches.
+        """
+    target 2026-09-15
+    implements [ @audit.decision.crate-shape ]
+    plan_of_record [ @audit.milestone.m1-factual-audit ]
+}
+
+record audit.work.m2-plan/1 : work {
+    title "M2 plan of record"
+    state proposed
+    intent """
+        Order of work: (1) land the XrefSection refactor in pdf-structure (lege repo) so section entries survive loading; (2) land PrefixSource in pdf-source; (3) build LogicalRevision grouping in pdf-forensics — hybrid /XRefStm pairing, boundary confidence, linearization-stub filtering, startxref-paired EOF boundary detection; (4) object-change classification (Added/Redefined/Freed/RepeatedIdentically) with raw and semantic hashes and object-role mapping; (5) historical snapshot replay through DocumentSnapshot::open over PrefixSource; (6) fixtures for every xref variant plus the qpdf differential oracle. Steps 1–2 are lege-pdf upgrades tracked as their own work records; the rest is pdf-forensics.
+        """
+    target 2026-10-15
+    implements [ @audit.decision.revision-model ]
+    plan_of_record [ @audit.milestone.m2-revision-history ]
+}
+
+record audit.work.m3-plan/1 : work {
+    title "M3 plan of record"
+    state proposed
+    intent """
+        Order of work: (1) revision text diff over SemanticPage word/glyph output; (2) deterministic CPU render diff with connected changed-region extraction; (3) annotation-on/annotation-off diff using AnnotationMode::None vs StaticAppearances, intersected with glyph boxes, plus appearance-stream text extraction; (4) PageAnnotation forensic-metadata fields in pdf-document (lege upgrade); (5) painter-order occlusion candidate detection over CompiledPage and the attribution map — cheap geometry first, then high-resolution rasterization of candidate regions only; (6) optional PageTrace op-provenance sidecar behind an audit-mode flag (lege upgrade); (7) evidence artifact writer (PNGs, region crops, object-history text). Ship (1)-(3) before starting (5); the annotation path alone is the quickest high-value feature.
+        """
+    target 2026-12-01
+    implements [ @audit.req.deterministic-evidence ]
+    plan_of_record [ @audit.milestone.m3-diff-and-overlay ]
+}
+
+record audit.work.m4-plan/1 : work {
+    title "M4 plan of record"
+    state proposed
+    intent """
+        Order of work: (1) structural layer — /FT /Sig discovery, signature dictionary parsing, strict ByteRange shape/order/bounds validation against raw bytes, revision association, post-signature object-change lists; (2) DocMDP and FieldMDP policy parsing and compliance evaluation; (3) crypto layer behind the crate chosen by the open crypto-crate question — CMS/CAdES digest verification first, then certificate chain, trust and timestamp reporting. The structural layer must not depend on the crypto layer compiling: layer one ships even if the crate decision slips.
+        """
+    target 2027-01-15
+    implements [ @audit.decision.signature-layering ]
+    plan_of_record [ @audit.milestone.m4-signatures ]
+}
+
+record audit.work.m5-plan/1 : work {
+    title "M5 plan of record"
+    state proposed
+    intent """
+        Order of work, gated on the M1-M4 utility already proving useful: (1) stand up the corpus-sweep harness and false-positive measurement over the legitimate corpus before writing any heuristic; (2) font-layer heuristics (font-program hashes, per-line font-identity outliers, subset glyph-coverage anomalies) — SemFont already preserves everything needed, no OCR; (3) text-layout heuristics (spacing, matrix, TJ-style outliers); (4) serialization heuristics (stream filters, object-number and resource-name clusters); (5) metadata timeline checks; (6) image-statistics outliers (DPI, codec, quantization, colorspace); (7) producer fingerprints, as corroboration only, never primary evidence. Each heuristic lands with its measured per-producer false-positive rate or it does not land.
+        """
+    note """
+        This is the most speculative milestone. If M3 evidence output is already serving real triage well, it is acceptable to stop before M5 entirely.
+        """
+    implements [ @audit.decision.product-framing ]
+    plan_of_record [ @audit.milestone.m5-consistency-heuristics ]
+}
+
+record audit.work.ocr-crosscheck/1 : work {
+    title "OCR cross-check layer (lege-ocr)"
+    state proposed
+    intent """
+        Optional OCR-backed checks for raster and mixed pages, using the existing lege-ocr crate rather than a new dependency: (1) compare a page image against its invisible OCR text layer and flag hidden-vs-visible disagreement; (2) read a raster patch placed over vector content and compare its text against the prior revision's text at that rectangle; (3) baseline and typeface anomaly hints in raster-only documents. Ships as a feature-gated module so the core checker keeps its no-OCR dependency footprint; findings emit at ContextualIndicator strength or below.
+        """
+    note """
+        Speculative. Blocked on measuring whether lege-ocr's accuracy on document scans is sufficient — see the open question.
+        """
+    depends_on [ @audit.decision.crate-shape ]
+}
