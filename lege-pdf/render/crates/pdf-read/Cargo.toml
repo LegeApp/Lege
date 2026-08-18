@@ -17,6 +17,7 @@ pdf-structure = { workspace = true }
 pdf-document = { workspace = true }
 pdf-security = { workspace = true }
 pdf-content = { workspace = true }
+pdf-page-ir = { workspace = true }
 
 [dev-dependencies]
 pdf-test-support = { workspace = true }

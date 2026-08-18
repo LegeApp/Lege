@@ -71,8 +71,8 @@ $env:WGPU_REQUIRE_REAL_GPU = "1"
 $env:LEGE_PDF_IMAGE_RENDERER = "auto"
 
 cargo test -p pdf-render-wgpu --all-targets -- --nocapture
-cargo build --release -p lege-viewer --example pdf_tile_profile
-cargo build --release -p lege-viewer --example pdf_parallel_profile
+cargo build --release -p lege-gui --example pdf_tile_profile
+cargo build --release -p lege-gui --example pdf_parallel_profile
 ```
 
 Copy or mount the established fixtures and set their local paths:

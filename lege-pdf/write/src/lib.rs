@@ -7,6 +7,7 @@
 //! no linearization. See ../../PLAN.md for the module contract.
 
 pub mod artifact;
+pub mod catalog;
 pub mod content;
 pub mod font;
 pub mod images;

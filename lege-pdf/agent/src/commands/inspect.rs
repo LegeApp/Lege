@@ -12,8 +12,8 @@ use crate::open::{self, DocumentIdentity};
 use crate::pages::{PageZero, parse_page_range};
 use crate::schema::{Envelope, OutputMode, Status};
 use crate::views::report::{
-    AnnotationView, CompileView, EncryptionView, FeaturesView, InspectData, MetadataView,
-    OpenView, PageView, XrefView,
+    AnnotationView, CompileView, EncryptionView, FeaturesView, InspectData, MetadataView, OpenView,
+    PageView, XrefView,
 };
 
 #[derive(Debug)]
@@ -28,7 +28,8 @@ pub struct InspectArgs<'a> {
 }
 
 pub fn run(args: InspectArgs<'_>) -> Result<i32> {
-    let (identity, source, snapshot) = prepare(args.path, args.password, args.snapshot, args.identity)?;
+    let (identity, source, snapshot) =
+        prepare(args.path, args.password, args.snapshot, args.identity)?;
     let report = pdf_read::examine_with_password(
         Arc::clone(&source) as Arc<dyn PdfSource>,
         DocumentLimits::default(),
@@ -48,7 +49,15 @@ pub fn run(args: InspectArgs<'_>) -> Result<i32> {
 
     let snapshot = match snapshot {
         Some(s) => s,
-        None => Arc::new(open::open_with_identity(&identity, args.password)?),
+        // Reuse the bytes we already read above instead of reading the file
+        // off disk a second time (the parse itself still runs a second time,
+        // since `examine_with_password` above doesn't hand back the
+        // `DocumentSnapshot` it built internally).
+        None => Arc::new(open::open_from_source(
+            &identity,
+            Arc::clone(&source),
+            args.password,
+        )?),
     };
 
     let (page_indices, range_warnings) =
@@ -69,21 +78,11 @@ pub fn inspect_value(
     pages: Option<&str>,
     bounds: Bounds,
 ) -> Result<serde_json::Value> {
-    let source: Arc<dyn PdfSource> = match std::fs::read(&identity.path) {
-        Ok(bytes) => Arc::new(pdf_source::OwnedBytesSource::new(bytes)),
-        Err(_) => {
-            // Fall back to a synthetic report from the live snapshot.
-            let report = synthesize_report(snapshot);
-            let mut warnings = Vec::new();
-            let (page_indices, range_warnings) =
-                parse_page_range(pages, snapshot.page_count(), bounds.max_pages)?;
-            warnings.extend(range_warnings);
-            let data = build_data(Some(snapshot), &report, &page_indices, &mut warnings)?;
-            return Ok(serde_json::to_value(data)?);
-        }
-    };
-    let report =
-        pdf_read::examine_with_password(source, DocumentLimits::default(), password);
+    // The cache handed us an already-open snapshot; reuse its source instead
+    // of re-reading the file from disk on every `pdf_inspect` call.
+    let _ = identity;
+    let source: Arc<dyn PdfSource> = Arc::clone(snapshot.source());
+    let report = pdf_read::examine_with_password(source, DocumentLimits::default(), password);
     let mut warnings = Vec::new();
     let (page_indices, range_warnings) =
         parse_page_range(pages, snapshot.page_count(), bounds.max_pages)?;
@@ -97,64 +96,26 @@ fn prepare(
     password: Option<&str>,
     snapshot: Option<Arc<DocumentSnapshot>>,
     identity: Option<DocumentIdentity>,
-) -> Result<(DocumentIdentity, Arc<dyn PdfSource>, Option<Arc<DocumentSnapshot>>)> {
+) -> Result<(
+    DocumentIdentity,
+    Arc<dyn PdfSource>,
+    Option<Arc<DocumentSnapshot>>,
+)> {
     if let Some(snapshot) = snapshot {
         let identity = identity.unwrap_or_else(|| DocumentIdentity {
             path: path.to_path_buf(),
             len: 0,
             modified: None,
         });
-        let source: Arc<dyn PdfSource> = match std::fs::read(&identity.path) {
-            Ok(bytes) => Arc::new(pdf_source::OwnedBytesSource::new(bytes)),
-            Err(_) => Arc::clone(snapshot.source()),
-        };
+        // Reuse the already-open snapshot's source instead of re-reading the
+        // file from disk (`source()` is infallible, so no fallback is
+        // needed).
+        let source: Arc<dyn PdfSource> = Arc::clone(snapshot.source());
         return Ok((identity, source, Some(snapshot)));
     }
     let (identity, owned) = open::load_source(path)?;
     let _ = password;
     Ok((identity, owned as Arc<dyn PdfSource>, None))
-}
-
-fn synthesize_report(snapshot: &DocumentSnapshot) -> DocumentReport {
-    let recovery = snapshot.recovery_events();
-    let open = if recovery.is_empty() {
-        OpenOutcome::Ok
-    } else {
-        OpenOutcome::Recovered {
-            how: recovery.iter().map(|e| format!("{e:?}")).collect(),
-        }
-    };
-    DocumentReport {
-        open,
-        // Free and exact from the already-loaded structure.
-        header: Some(pdf_read::HeaderInfo {
-            major: snapshot.structure().version.major,
-            minor: snapshot.structure().version.minor,
-            header_offset: snapshot.structure().header_offset,
-        }),
-        encryption: None,
-        // Left empty like `encryption` and `annotations` above: this
-        // synthesizes a report from a cached snapshot rather than running
-        // `examine`, so anything needing a resolver pass is not attempted.
-        identity: pdf_read::DocumentIdentity::default(),
-        signatures: pdf_read::SignatureInventory::default(),
-        xref: pdf_read::XrefHealth {
-            recovery_used: !recovery.is_empty(),
-            rebuilt: recovery
-                .iter()
-                .any(|e| matches!(e, pdf_structure::RecoveryEvent::XrefRebuilt)),
-            revision_count: snapshot.structure().revisions.len(),
-        },
-        pages: (0..snapshot.page_count())
-            .map(|i| pdf_read::PageStatus {
-                index: i,
-                media_box_present: true,
-                compile: CompileStatus::Ok { op_count: 0 },
-            })
-            .collect(),
-        annotations: pdf_read::AnnotationInventory::default(),
-        features: pdf_read::FeatureFlags::default(),
-    }
 }
 
 fn build_data(
@@ -173,55 +134,54 @@ fn build_data(
         },
     };
 
-    let (page_count, version, outline_item_count, metadata, pages) = if let Some(snapshot) =
-        snapshot
-    {
-        let version = {
-            let v = snapshot.structure().version;
-            Some(format!("{}.{}", v.major, v.minor))
-        };
-        let mut ctx = ParseContext::new();
-        let outline = snapshot.outline(&mut ctx);
-        let metadata = extract_metadata(snapshot, &mut ctx);
-        let status_by: std::collections::HashMap<u32, &pdf_read::PageStatus> =
-            report.pages.iter().map(|p| (p.index, p)).collect();
-        let mut pages = Vec::new();
-        for pz in page_indices {
-            let pref = snapshot.page(PageIndex(pz.0))?;
-            let status = status_by.get(&pz.0).copied();
-            let compile = match status.map(|s| &s.compile) {
-                Some(CompileStatus::Ok { op_count }) => CompileView::Ok {
-                    op_count: *op_count,
-                },
-                Some(CompileStatus::Degraded { op_count, detail }) => CompileView::Degraded {
-                    op_count: *op_count,
-                    detail: detail.clone(),
-                },
-                Some(CompileStatus::Failed { error }) => CompileView::Failed {
-                    error: error.clone(),
-                },
-                None => CompileView::Unknown,
+    let (page_count, version, outline_item_count, metadata, pages) =
+        if let Some(snapshot) = snapshot {
+            let version = {
+                let v = snapshot.structure().version;
+                Some(format!("{}.{}", v.major, v.minor))
             };
-            pages.push(PageView {
-                page: pz.one_based(),
-                page_index: pz.0,
-                media_box: pref.media_box,
-                crop_box: pref.crop_box,
-                rotate: pref.rotate,
-                media_box_present: status.map(|s| s.media_box_present).unwrap_or(true),
-                compile,
-            });
-        }
-        (
-            snapshot.page_count(),
-            version,
-            outline.items.len(),
-            metadata,
-            pages,
-        )
-    } else {
-        (0, None, 0, MetadataView::default(), Vec::new())
-    };
+            let mut ctx = ParseContext::new();
+            let outline = snapshot.outline(&mut ctx);
+            let metadata = extract_metadata(snapshot, &mut ctx);
+            let status_by: std::collections::HashMap<u32, &pdf_read::PageStatus> =
+                report.pages.iter().map(|p| (p.index, p)).collect();
+            let mut pages = Vec::new();
+            for pz in page_indices {
+                let pref = snapshot.page(PageIndex(pz.0))?;
+                let status = status_by.get(&pz.0).copied();
+                let compile = match status.map(|s| &s.compile) {
+                    Some(CompileStatus::Ok { op_count }) => CompileView::Ok {
+                        op_count: *op_count,
+                    },
+                    Some(CompileStatus::Degraded { op_count, detail }) => CompileView::Degraded {
+                        op_count: *op_count,
+                        detail: detail.clone(),
+                    },
+                    Some(CompileStatus::Failed { error }) => CompileView::Failed {
+                        error: error.clone(),
+                    },
+                    None => CompileView::Unknown,
+                };
+                pages.push(PageView {
+                    page: pz.one_based(),
+                    page_index: pz.0,
+                    media_box: pref.media_box,
+                    crop_box: pref.crop_box,
+                    rotate: pref.rotate,
+                    media_box_present: status.map(|s| s.media_box_present).unwrap_or(true),
+                    compile,
+                });
+            }
+            (
+                snapshot.page_count(),
+                version,
+                outline.items.len(),
+                metadata,
+                pages,
+            )
+        } else {
+            (0, None, 0, MetadataView::default(), Vec::new())
+        };
 
     Ok(InspectData {
         open,
@@ -279,9 +239,7 @@ fn extract_metadata(snapshot: &DocumentSnapshot, ctx: &mut ParseContext) -> Meta
             other => Arc::new(other.clone()),
         };
         match &*obj {
-            PdfObject::String(text) => {
-                Some(pdf_object::decode_text_string_lossy(text.as_bytes()))
-            }
+            PdfObject::String(text) => Some(pdf_object::decode_text_string_lossy(text.as_bytes())),
             _ => None,
         }
     };

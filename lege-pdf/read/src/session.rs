@@ -645,7 +645,7 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
                 let placement = transform.then(ctm);
                 if *blend != BlendMode::Normal
                     || (*alpha - 1.0).abs() > f32::EPSILON
-                    || !is_unflipped_full_page(placement, page)
+                    || !is_unflipped_full_page(placement, page, image.width, image.height)
                     || image.is_stencil
                     || image.lowering_degraded
                 {
@@ -691,7 +691,12 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
     candidate
 }
 
-fn is_unflipped_full_page(matrix: Matrix, page: &CompiledPage) -> bool {
+fn is_unflipped_full_page(
+    matrix: Matrix,
+    page: &CompiledPage,
+    image_width: u32,
+    image_height: u32,
+) -> bool {
     if !matrix.is_finite()
         || matrix.a <= 0.0
         || matrix.d <= 0.0
@@ -703,11 +708,16 @@ fn is_unflipped_full_page(matrix: Matrix, page: &CompiledPage) -> bool {
     let p0 = matrix.apply(Point { x: 0.0, y: 0.0 });
     let p1 = matrix.apply(Point { x: 1.0, y: 1.0 });
     let crop = page.bounds.crop;
-    let tolerance = (crop.width().abs().max(crop.height().abs()) * 1e-5).max(1e-4);
-    (p0.x - crop.x0).abs() <= tolerance
-        && (p0.y - crop.y0).abs() <= tolerance
-        && (p1.x - crop.x1).abs() <= tolerance
-        && (p1.y - crop.y1).abs() <= tolerance
+    let numeric_tolerance = (crop.width().abs().max(crop.height().abs()) * 1e-5).max(1e-4);
+    // PDF producers commonly place a full-page raster on half-pixel boundaries.
+    // That is still the same full-page image, and rejecting it prevents lossless
+    // preservation of an otherwise qualifying native JBIG2 soft mask.
+    let tolerance_x = numeric_tolerance.max(matrix.a.abs() / f64::from(image_width.max(1)) * 0.5);
+    let tolerance_y = numeric_tolerance.max(matrix.d.abs() / f64::from(image_height.max(1)) * 0.5);
+    (p0.x - crop.x0).abs() <= tolerance_x
+        && (p0.y - crop.y0).abs() <= tolerance_y
+        && (p1.x - crop.x1).abs() <= tolerance_x
+        && (p1.y - crop.y1).abs() <= tolerance_y
 }
 
 fn page_to_device_matrix(page: &CompiledPage, output_width: u32, output_height: u32) -> Matrix {
@@ -938,8 +948,34 @@ mod tests {
 
         let mut offset = page;
         Arc::make_mut(&mut offset.operations)[1] =
-            DisplayOp::ConcatTransform(Matrix::scale(119.0, 50.0));
+            DisplayOp::ConcatTransform(Matrix::scale(109.0, 50.0));
         assert!(qualifying_jbig2_smask(&offset).is_none());
+    }
+
+    #[test]
+    fn accepts_full_page_placement_within_half_a_source_pixel() {
+        let mut page = eligible_page();
+        // The 12x5 base raster spans 120x50 points, so half a source pixel is
+        // 5 points on either axis. Keep both edges just inside that allowance.
+        Arc::make_mut(&mut page.operations)[1] = DisplayOp::ConcatTransform(Matrix {
+            a: 112.0,
+            b: 0.0,
+            c: 0.0,
+            d: 42.0,
+            e: 4.0,
+            f: 4.0,
+        });
+        assert!(qualifying_jbig2_smask(&page).is_some());
+
+        Arc::make_mut(&mut page.operations)[1] = DisplayOp::ConcatTransform(Matrix {
+            a: 108.0,
+            b: 0.0,
+            c: 0.0,
+            d: 38.0,
+            e: 6.0,
+            f: 6.0,
+        });
+        assert!(qualifying_jbig2_smask(&page).is_none());
     }
 
     #[test]

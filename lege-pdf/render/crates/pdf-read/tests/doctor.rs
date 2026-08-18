@@ -199,10 +199,17 @@ fn features_and_annotations_are_inventoried() {
 #[test]
 fn header_version_and_leading_garbage_are_reported() {
     let report = examine_bytes(builder::multipage_classic(1));
-    let header = report.header.as_ref().expect("a clean fixture has a header");
+    let header = report
+        .header
+        .as_ref()
+        .expect("a clean fixture has a header");
     assert_eq!((header.major, header.minor), (1, 7));
     assert_eq!(header.header_offset, 0);
-    assert!(report.summary().contains("%PDF-1.7"), "{}", report.summary());
+    assert!(
+        report.summary().contains("%PDF-1.7"),
+        "{}",
+        report.summary()
+    );
 
     // Leading garbage shifts every structural offset; the doctor must say by
     // how much rather than silently absorbing it.
@@ -211,7 +218,10 @@ fn header_version_and_leading_garbage_are_reported() {
         builder::multipage_classic(1),
         junk,
     ));
-    let header = report.header.as_ref().expect("the header is found past the garbage");
+    let header = report
+        .header
+        .as_ref()
+        .expect("the header is found past the garbage");
     assert_eq!(header.header_offset, junk.len() as u64);
     let summary = report.summary();
     assert!(summary.contains("leading garbage"), "{summary}");
@@ -280,7 +290,10 @@ fn identity_and_metadata_are_inventoried() {
         Some("Microsoft Word")
     );
     // Non-standard keys are kept: a writer that invents one identifies itself.
-    assert_eq!(id.info.get("CustomKey").map(String::as_str), Some("private"));
+    assert_eq!(
+        id.info.get("CustomKey").map(String::as_str),
+        Some("private")
+    );
 
     assert!(report.features.has_embedded_files);
     let summary = report.summary();
@@ -343,7 +356,10 @@ fn xmp_lineage_is_read_from_the_metadata_stream() {
     );
 
     assert_eq!(xmp.history.len(), 2);
-    assert_eq!(xmp.history[0].software_agent.as_deref(), Some("Microsoft Word"));
+    assert_eq!(
+        xmp.history[0].software_agent.as_deref(),
+        Some("Microsoft Word")
+    );
     assert_eq!(xmp.history[1].action.as_deref(), Some("saved"));
     assert_eq!(
         xmp.history[1].software_agent.as_deref(),
@@ -470,4 +486,94 @@ fn wrong_stream_length_surfaces_as_degraded_or_recovered() {
         report.pages[0].compile,
         report.open
     );
+}
+
+#[test]
+fn a_vector_page_reports_text_and_a_font_not_an_image() {
+    let report = examine_bytes(builder::multipage_classic(1));
+    let metrics = report.pages[0].metrics.as_ref().expect("compiled");
+    assert!(metrics.visible_text_runs >= 1, "{metrics:?}");
+    assert_eq!(metrics.images, 0);
+    assert_eq!(metrics.image_coverage_bps, 0);
+    assert_eq!(report.fonts.len(), 1);
+    assert_eq!(report.fonts[0].base_font, "Helvetica");
+    assert!(!report.fonts[0].embedded);
+    assert!(report.images.is_empty());
+}
+
+#[test]
+fn a_full_page_image_reports_complete_coverage() {
+    let report = examine_bytes(full_page_image_fixture(false));
+    let metrics = report.pages[0].metrics.as_ref().expect("compiled");
+    assert_eq!(metrics.images, 1);
+    assert_eq!(metrics.visible_text_runs, 0);
+    assert_eq!(metrics.image_coverage_bps, 10_000);
+    assert_eq!(metrics.max_image_coverage_bps, 10_000);
+    assert_eq!(report.images.len(), 1);
+    assert_eq!((report.images[0].width, report.images[0].height), (2, 2));
+    // 2×2 pixels painted into a 72×72 pt square is 2 dpi.
+    assert_eq!(metrics.effective_dpi, Some(2));
+}
+
+#[test]
+fn an_invisible_text_layer_is_counted_separately() {
+    let report = examine_bytes(full_page_image_fixture(true));
+    let metrics = report.pages[0].metrics.as_ref().expect("compiled");
+    assert_eq!(metrics.images, 1);
+    assert_eq!(metrics.image_coverage_bps, 10_000);
+    assert_eq!(metrics.visible_text_runs, 0);
+    assert!(metrics.invisible_text_runs >= 1, "{metrics:?}");
+}
+
+#[test]
+fn a_blank_page_reports_zero_metrics_not_a_gap() {
+    let report = examine_bytes(blank_page_fixture());
+    let metrics = report.pages[0].metrics.as_ref().expect("compiled");
+    assert_eq!(metrics.text_runs, 0);
+    assert_eq!(metrics.images, 0);
+    assert_eq!(metrics.path_paints, 0);
+    assert_eq!(metrics.image_coverage_bps, 0);
+}
+
+/// One 72×72 pt page painted with a 2×2 DeviceRGB image covering the crop.
+/// When `ocr_layer` is set, an invisible (`Tr 3`) Helvetica run is added.
+fn full_page_image_fixture(ocr_layer: bool) -> Vec<u8> {
+    let mut b = PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(2, "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 72 72]>>");
+    let resources = if ocr_layer {
+        "/XObject<</Im 5 0 R>>/Font<</F1 6 0 R>>"
+    } else {
+        "/XObject<</Im 5 0 R>>"
+    };
+    b.add_object(
+        3,
+        &format!("<</Type/Page/Parent 2 0 R/Contents 4 0 R/Resources<<{resources}>>>>"),
+    );
+    let content = if ocr_layer {
+        b"q 72 0 0 72 0 0 cm /Im Do Q BT 3 Tr /F1 12 Tf 0 0 Td (hidden) Tj ET".as_slice()
+    } else {
+        b"q 72 0 0 72 0 0 cm /Im Do Q".as_slice()
+    };
+    b.add_stream(4, "", content);
+    b.add_stream(
+        5,
+        "/Type/XObject/Subtype/Image/Width 2/Height 2/BitsPerComponent 8/ColorSpace/DeviceRGB",
+        &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
+    );
+    if ocr_layer {
+        b.add_object(6, "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>");
+    }
+    b.finish_classic_xref("/Root 1 0 R");
+    b.into_bytes()
+}
+
+fn blank_page_fixture() -> Vec<u8> {
+    let mut b = PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(2, "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 72 72]>>");
+    b.add_object(3, "<</Type/Page/Parent 2 0 R/Contents 4 0 R>>");
+    b.add_stream(4, "", b"");
+    b.finish_classic_xref("/Root 1 0 R");
+    b.into_bytes()
 }

@@ -21,7 +21,9 @@ use pdf_object::{Dictionary, NameId, NameTable, ObjectId, PdfObject};
 use pdf_source::PdfSource;
 use pdf_structure::{ObjectLocation, RecoveryEvent};
 
+mod metrics;
 mod xmp;
+pub use metrics::{FontRecord, ImageRecord, PageMetrics};
 pub use xmp::{XmpHistoryEvent, XmpLineage};
 
 /// How the document opened.
@@ -167,6 +169,9 @@ pub struct PageStatus {
     /// (as opposed to defaulted during page-tree flattening).
     pub media_box_present: bool,
     pub compile: CompileStatus,
+    /// Representation metrics from the compiled semantic page. `None` when
+    /// compilation failed, so a failed page cannot be mistaken for a blank one.
+    pub metrics: Option<PageMetrics>,
 }
 
 /// Count of annotations per `/Subtype`.
@@ -212,6 +217,11 @@ pub struct DocumentReport {
     /// Signature fields and the byte ranges they cover.
     pub signatures: SignatureInventory,
     pub features: FeatureFlags,
+    /// Distinct font resources referenced by any compiled page.
+    pub fonts: Vec<FontRecord>,
+    /// Distinct image XObjects (plus every inline image) referenced by any
+    /// compiled page.
+    pub images: Vec<ImageRecord>,
 }
 
 /// Cap on `/Parent` hops when walking inherited attributes (cycle guard).
@@ -256,7 +266,7 @@ fn examine_open(snapshot: &DocumentSnapshot) -> DocumentReport {
 
     let mut ctx = ParseContext::new();
     let encryption = read_encryption(snapshot, &mut ctx);
-    let pages = examine_pages(snapshot);
+    let (pages, fonts, images) = examine_pages(snapshot);
     let annotations = inventory_annotations(snapshot, &mut ctx);
     let features = read_features(snapshot, &mut ctx);
     let identity = read_identity(snapshot, &mut ctx);
@@ -272,6 +282,8 @@ fn examine_open(snapshot: &DocumentSnapshot) -> DocumentReport {
         annotations,
         signatures,
         features,
+        fonts,
+        images,
     }
 }
 
@@ -293,6 +305,8 @@ fn examine_failed(
         annotations: AnnotationInventory::default(),
         signatures: SignatureInventory::default(),
         features: FeatureFlags::default(),
+        fonts: Vec::new(),
+        images: Vec::new(),
     };
 
     let names = NameTable::new();
@@ -493,10 +507,7 @@ fn read_identity(snapshot: &DocumentSnapshot, ctx: &mut ParseContext) -> Documen
 /// Reads the signature dictionaries only; nothing here validates cryptography.
 /// The `/Contents` blob is deliberately not extracted — structural coverage
 /// comes first, and the cryptographic layer is a separate concern.
-fn inventory_signatures(
-    snapshot: &DocumentSnapshot,
-    ctx: &mut ParseContext,
-) -> SignatureInventory {
+fn inventory_signatures(snapshot: &DocumentSnapshot, ctx: &mut ParseContext) -> SignatureInventory {
     let mut inventory = SignatureInventory::default();
     let names = snapshot.names();
 
@@ -525,7 +536,14 @@ fn inventory_signatures(
 
     let source_len = snapshot.source().len();
     let mut seen = 0usize;
-    collect_signature_fields(snapshot, &fields, source_len, &mut inventory, &mut seen, ctx);
+    collect_signature_fields(
+        snapshot,
+        &fields,
+        source_len,
+        &mut inventory,
+        &mut seen,
+        ctx,
+    );
     inventory
 }
 
@@ -771,42 +789,56 @@ fn crypt_filter_is_aes(
 
 // ── pages ───────────────────────────────────────────────────────────────────
 
-fn examine_pages(snapshot: &DocumentSnapshot) -> Vec<PageStatus> {
+fn examine_pages(
+    snapshot: &DocumentSnapshot,
+) -> (Vec<PageStatus>, Vec<FontRecord>, Vec<ImageRecord>) {
     // Annotations on: the render default is `AnnotationMode::StaticAppearances`,
     // so the doctor's per-page compile health must exercise the same path a
     // default render would (annotation appearance streams included).
     let compiler = PageCompiler::new().with_annotations(true);
     let mut out = Vec::with_capacity(snapshot.page_count() as usize);
+    // One inventory for the whole document: it carries the dedup indexes and
+    // the `/FontFile*` answers across pages, so a font shared by every page is
+    // keyed and resolved once rather than once per page.
+    let mut inventory = metrics::Inventory::new();
     for index in 0..snapshot.page_count() {
         // Fresh context per page: repairs and budgets attribute to the page.
         let mut ctx = ParseContext::new();
         let media_box_present = page_has_media_box(snapshot, index, &mut ctx);
         let repairs_before = ctx.recovery.len();
-        let compile = match compiler.compile_semantic(snapshot, PageIndex(index), &mut ctx) {
-            Ok(page) => {
-                let op_count = page.ops.len();
-                if ctx.recovery.len() > repairs_before {
-                    let detail = ctx.recovery[repairs_before..]
-                        .iter()
-                        .map(describe_recovery)
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    CompileStatus::Degraded { op_count, detail }
-                } else {
-                    CompileStatus::Ok { op_count }
+        let (compile, metrics) =
+            match compiler.compile_semantic(snapshot, PageIndex(index), &mut ctx) {
+                Ok(page) => {
+                    let op_count = page.ops.len();
+                    let metrics = inventory.absorb_page(snapshot, &page);
+                    let compile = if ctx.recovery.len() > repairs_before {
+                        let detail = ctx.recovery[repairs_before..]
+                            .iter()
+                            .map(describe_recovery)
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        CompileStatus::Degraded { op_count, detail }
+                    } else {
+                        CompileStatus::Ok { op_count }
+                    };
+                    (compile, Some(metrics))
                 }
-            }
-            Err(e) => CompileStatus::Failed {
-                error: e.to_string(),
-            },
-        };
+                Err(e) => (
+                    CompileStatus::Failed {
+                        error: e.to_string(),
+                    },
+                    None,
+                ),
+            };
         out.push(PageStatus {
             index,
             media_box_present,
             compile,
+            metrics,
         });
     }
-    out
+    let (fonts, images) = inventory.into_parts();
+    (out, fonts, images)
 }
 
 /// Whether `/MediaBox` is genuinely present on the page or an inherited
@@ -1017,7 +1049,10 @@ impl DocumentReport {
         );
         let id = &self.identity;
         if let (Some(permanent), Some(changing)) = (&id.id_permanent, &id.id_changing) {
-            writeln_ok(&mut s, &format!("id: permanent={permanent} changing={changing}"));
+            writeln_ok(
+                &mut s,
+                &format!("id: permanent={permanent} changing={changing}"),
+            );
         }
         if id.has_xmp_metadata {
             writeln_ok(&mut s, "metadata: /Info + XMP");
@@ -1063,8 +1098,23 @@ impl DocumentReport {
             } else {
                 format!("{line} [no /MediaBox — defaulted]")
             };
+            let line = match &p.metrics {
+                Some(m) => format!(
+                    "{line} text={} vis={} images={} fonts={} coverage={}/10000",
+                    m.text_runs, m.visible_text_runs, m.images, m.fonts, m.image_coverage_bps
+                ),
+                None => line,
+            };
             writeln_ok(&mut s, &line);
         }
+        writeln_ok(
+            &mut s,
+            &format!(
+                "inventories: {} font(s), {} image(s)",
+                self.fonts.len(),
+                self.images.len()
+            ),
+        );
         if self.annotations.count_per_subtype.is_empty() {
             writeln_ok(&mut s, "annotations: none");
         } else {

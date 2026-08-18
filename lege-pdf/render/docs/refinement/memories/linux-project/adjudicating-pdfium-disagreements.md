@@ -15,7 +15,7 @@ that none may be assumed correct and none may be assumed to agree:**
 | Control | How to run |
 |---|---|
 | **pdf.js** | Firefox. Headless screenshotting fights a running instance; asking the user is faster. |
-| **hayro** | **now at `pdf-renderer/tools/hayro/`** (moved 2026-07-22; do NOT use `renderer-corpus/hayro-source/`, that is the corpus the sweep reads), `cargo build --release --example render -p hayro`, then `target/release/examples/render <file.pdf> <outdir> <scale>` -> `rendered_<n>.png`. Builds in ~22 s. Integration notes for the multi-renderer harness: `tools/HAYRO-INTEGRATION.md`. **This is the corpus's own upstream**, so its regression PDFs are exactly the ones it is tuned for. |
+| **hayro** | **now at `pdf-renderer/tools/hayro/`** (moved 2026-07-22; do NOT use `renderer-corpus/hayro-source/`, that is the corpus the sweep reads), `cargo build --release --manifest-path pdf-renderer/tools/hayro/Cargo.toml --example render`, then `target/release/examples/render <file.pdf> <outdir> <scale>` -> `rendered_<n>.png`. Builds in ~22 s. Integration notes for the multi-renderer harness: `tools/HAYRO-INTEGRATION.md`. **This is the corpus's own upstream**, so its regression PDFs are exactly the ones it is tuned for. |
 | **PDFium** | the sweep oracle. |
 | **poppler** | Okular, qpdfview — **these two are one vote, not two.** Source at `tools/poppler-26.07.0/`. |
 | **mupdf / ghostscript** | `tools/mupdf/`, `tools/ghostscript-10.07.1/` — added 2026-07-22 by another agent, who is building a 5-renderer harness. |

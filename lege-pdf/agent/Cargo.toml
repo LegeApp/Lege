@@ -1,0 +1,45 @@
+[package]
+name = "lege-pdf-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Agent-facing structured PDF CLI (lege-pdf)"
+readme = "README.md"
+
+[[bin]]
+name = "lege-pdf"
+path = "src/main.rs"
+
+[lib]
+name = "lege_pdf_agent"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+png = "0.17"
+image = { workspace = true }
+lege-ocr = { path = "../../lege-ocr", features = ["tesseract-ocr"] }
+pdf-source = { workspace = true }
+pdf-document = { workspace = true }
+pdf-content = { workspace = true }
+pdf-object = { workspace = true }
+pdf-page-ir = { workspace = true }
+pdf-read = { workspace = true }
+pdf-text = { workspace = true }
+pdf-render-api = { workspace = true }
+pdf-render-cpu = { workspace = true }
+pdf-font = { workspace = true }
+pdf-structure = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+pdf-test-support = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

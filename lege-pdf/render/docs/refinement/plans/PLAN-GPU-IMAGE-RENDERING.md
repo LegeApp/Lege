@@ -204,7 +204,7 @@ readback. CPU/GPU output differed only at resampling level: normalized MAE
 The viewer-specific harness is:
 
 ```sh
-LEGE_PDF_IMAGE_RENDERER=gpu cargo run --release -p lege-viewer \
+LEGE_PDF_IMAGE_RENDERER=gpu cargo run --release -p lege-gui \
   --example pdf_tile_profile -- FILE PAGE ZOOM_BUCKET WARM_PASSES TILE_COUNT
 ```
 
@@ -220,7 +220,7 @@ Parallel page scheduling has also been validated through the production
 viewer worker contract:
 
 ```sh
-LEGE_PDF_IMAGE_RENDERER=auto cargo run --release -p lege-viewer \
+LEGE_PDF_IMAGE_RENDERER=auto cargo run --release -p lege-gui \
   --example pdf_parallel_profile -- \
   FILE FIRST_PAGE PAGE_COUNT ZOOM_BUCKET TILES_PER_PAGE THREADS PASSES
 ```
