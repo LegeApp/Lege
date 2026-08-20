@@ -82,8 +82,17 @@ pub fn default_engine() -> Box<dyn OcrEngine> {
     return Box::new(WinOcrEngine);
 
     // Prefer PP-OCR on Linux/macOS: it replaces the native Tesseract dependency
-    // that blocks the macOS cross-compile.
-    #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))]
+    // that blocks the macOS cross-compile. Android uses it for the same reason
+    // and has no alternative — there is no system OCR service to fall back to,
+    // and PP-OCR's models are embedded, so nothing needs installing.
+    #[cfg(all(
+        any(
+            target_os = "linux",
+            target_os = "macos",
+            all(target_os = "android", feature = "android")
+        ),
+        feature = "paddle-ocr"
+    ))]
     {
         match crate::engine_paddle::PaddleOcrEngine::shared_embedded() {
             Ok(engine) => return Box::new(engine),
@@ -526,19 +535,13 @@ impl OcrEngine for WinOcrEngine {
         width: usize,
         height: usize,
         is_binary: bool,
-        _lang: &str,
+        lang: &str,
     ) -> Option<OcrResult> {
         let _com = initialize_com().ok()?;
-        match run_winocr_impl(data, width, height, is_binary) {
-            Some(r) => Some(r),
-            None => Some(OcrResult {
-                hocr: String::new(),
-                plain_text: String::new(),
-            }),
-        }
+        run_winocr_impl(data, width, height, is_binary, lang)
     }
 
-    fn ocr_line(&self, image: &GrayImage, _lang: &str) -> Result<OcrLineResult> {
+    fn ocr_line(&self, image: &GrayImage, lang: &str) -> Result<OcrLineResult> {
         let w = image.width() as usize;
         let h = image.height() as usize;
         let data = image.as_raw();
@@ -553,7 +556,7 @@ impl OcrEngine for WinOcrEngine {
             });
         }
 
-        match run_winocr_lines_inner(data, w, h) {
+        match run_winocr_lines_inner(data, w, h, lang) {
             Some(lines) => {
                 let mut text = String::new();
                 let mut words = Vec::new();
@@ -579,22 +582,18 @@ impl OcrEngine for WinOcrEngine {
                     bbox_highres: bbox,
                 })
             }
-            None => Ok(OcrLineResult {
-                text: String::new(),
-                confidence: None,
-                words: Vec::new(),
-                bbox_highres: bbox,
-            }),
+            None => Err(anyhow::anyhow!("Windows OCR failed to recognize a line")),
         }
     }
 
-    fn ocr_region(&self, image: &GrayImage, _lang: &str) -> Result<Vec<OcrLineResult>> {
-        Ok(run_winocr_lines_inner(
+    fn ocr_region(&self, image: &GrayImage, lang: &str) -> Result<Vec<OcrLineResult>> {
+        run_winocr_lines_inner(
             image.as_raw(),
             image.width() as usize,
             image.height() as usize,
+            lang,
         )
-        .unwrap_or_default())
+        .ok_or_else(|| anyhow::anyhow!("Windows OCR failed to recognize a region"))
     }
 }
 
@@ -602,7 +601,12 @@ impl OcrEngine for WinOcrEngine {
 /// are relative to the supplied image and all word bboxes are relative to their
 /// containing line.
 #[cfg(target_os = "windows")]
-fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Vec<OcrLineResult>> {
+fn run_winocr_lines_inner(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    language: &str,
+) -> Option<Vec<OcrLineResult>> {
     use windows::Graphics::Imaging::{BitmapBufferAccessMode, BitmapPixelFormat, SoftwareBitmap};
     use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
     use windows_core::Interface;
@@ -652,7 +656,7 @@ fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Ve
         }
     }
 
-    let engine = create_ocr_engine()?;
+    let engine = create_ocr_engine(language)?;
     let result = engine.RecognizeAsync(&bitmap).ok()?.join().ok()?;
 
     let lines = result.Lines().ok()?;
@@ -744,7 +748,13 @@ fn run_winocr_lines_inner(data: &[u8], width: usize, height: usize) -> Option<Ve
 /// Full WinRT OCR: converts any raw image to BGRA, runs OcrEngine, builds hOCR + plain text.
 /// Mirrors the logic in the original src/ocr/winocr.rs `run_winocr_impl`.
 #[cfg(target_os = "windows")]
-fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) -> Option<OcrResult> {
+fn run_winocr_impl(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    is_binary: bool,
+    language: &str,
+) -> Option<OcrResult> {
     use windows::Graphics::Imaging::{BitmapBufferAccessMode, BitmapPixelFormat, SoftwareBitmap};
     use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
     use windows_core::Interface;
@@ -799,7 +809,7 @@ fn run_winocr_impl(data: &[u8], width: usize, height: usize, is_binary: bool) ->
         }
     }
 
-    let engine = create_ocr_engine()?;
+    let engine = create_ocr_engine(language)?;
     let ocr_result = engine.RecognizeAsync(&bitmap).ok()?.join().ok()?;
     let lines = ocr_result.Lines().ok()?;
     let x_scale = width as f32 / final_w as f32;
@@ -920,22 +930,24 @@ fn initialize_com() -> windows::core::Result<ComGuard> {
 }
 
 #[cfg(target_os = "windows")]
-fn create_ocr_engine() -> Option<windows::Media::Ocr::OcrEngine> {
+fn create_ocr_engine(language: &str) -> Option<windows::Media::Ocr::OcrEngine> {
     use windows::Globalization::Language;
     use windows::Media::Ocr::OcrEngine;
-    OcrEngine::TryCreateFromUserProfileLanguages()
+    let normalized = match language.to_ascii_lowercase().as_str() {
+        "eng" => "en",
+        "deu" | "ger" => "de",
+        "fra" | "fre" => "fr",
+        "spa" => "es",
+        "ita" => "it",
+        "por" => "pt",
+        "nld" | "dut" => "nl",
+        "chi_sim" => "zh-Hans",
+        "chi_tra" => "zh-Hant",
+        _ => language,
+    };
+    Language::CreateLanguage(&windows_core::HSTRING::from(normalized))
         .ok()
-        .or_else(|| {
-            Language::CreateLanguage(&windows_core::HSTRING::from("en"))
-                .ok()
-                .and_then(|lang| OcrEngine::TryCreateFromLanguage(&lang).ok())
-        })
-        .or_else(|| {
-            OcrEngine::AvailableRecognizerLanguages()
-                .ok()
-                .and_then(|langs| langs.GetAt(0).ok())
-                .and_then(|lang| OcrEngine::TryCreateFromLanguage(&lang).ok())
-        })
+        .and_then(|lang| OcrEngine::TryCreateFromLanguage(&lang).ok())
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

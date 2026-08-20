@@ -30,8 +30,20 @@ wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl"
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl", "metal"] }
 
+# Android. Not feature-gated: without this section the crate has no `wgpu`
+# dependency at all on Android and cannot compile, since 15 modules reference
+# `wgpu::` unconditionally. A target section that does not match is never
+# resolved, so this is inert on desktop.
+#
+# Vulkan only — no `gl`. See `src/android.rs` for why GLES is not viable here.
+[target.'cfg(target_os = "android")'.dependencies]
+wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl", "vulkan"] }
+
 [features]
 default = []
+# Android platform support. Gates `src/android.rs` and the Android backend
+# policy; building for Android without it is a hard error (see `src/lib.rs`).
+android = []
 layout-detection = []
 presentation = ["dep:winit"]
 debug-logging = []

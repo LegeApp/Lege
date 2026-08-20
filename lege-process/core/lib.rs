@@ -1,6 +1,29 @@
 // lib.rs
 // Module declarations
 
+// Several shared fallbacks compile cleanly on Android and then misbehave
+// silently rather than failing: `get_available_ram_gb` falls past its
+// Windows/Linux arms to a hardcoded 8 GB, and `app_dirs::data_dir` resolves to
+// `PathBuf::from(".")` once every `dirs::*` lookup returns `None`. The platform
+// feature therefore must not be optional — an unfeatured Android build is
+// rejected here rather than shipped.
+#[cfg(all(target_os = "android", not(feature = "android")))]
+compile_error!(
+    "building lege for Android requires the `android` feature (--features android)"
+);
+
+// And the converse, so the feature cannot be switched on for a desktop build
+// where its platform dependencies (android_logger, Android libc) do not exist.
+#[cfg(all(feature = "android", not(target_os = "android")))]
+compile_error!(
+    "the `android` feature is only valid for Android targets \
+     (--target aarch64-linux-android)"
+);
+
+#[cfg(feature = "android")]
+#[path = "../android/mod.rs"]
+pub mod android;
+
 /// PP-DocLayout-M layout model (fp16), embedded in the binary as a payload so
 /// layout detection works with no external asset. A `doclayout.onnx` found next
 /// to the executable (or via `LEGE_LAYOUT_MODEL`) overrides this. The runtime
@@ -22,6 +45,7 @@ pub mod cli_progress;
 pub mod color;
 #[path = "../colorquant/mod.rs"]
 pub mod colorquant;
+pub mod content_class; // Line-art vs photo (bpg-rs preanalysis port)
 pub mod debug_log;
 pub mod djvu; // Native Rust DJVU encoder
 #[path = "../encoding/mod.rs"]
@@ -36,6 +60,8 @@ pub mod engine;
 pub mod glyphless_font; // Minimal glyphless TTF for the invisible OCR text layer
 pub mod hocr; // hOCR parsing + line grouping (moved out of accumulator)
 pub mod icon;
+#[cfg(feature = "layout-detection")]
+pub mod layout_correct;
 #[cfg(feature = "layout-detection")]
 pub mod layout_visualize;
 #[cfg(not(feature = "layout-detection"))]
@@ -70,7 +96,9 @@ pub mod toc; // Automatic table of contents: title capture + outline synthesis
 pub mod types;
 pub mod unicode_font;
 pub mod windows_dirs;
-pub use layout_visualize::run_layout_visualize_mode;
+pub use layout_visualize::{
+    run_image_debug_mode, run_layout_visualize_image, run_layout_visualize_mode,
+};
 pub use pdf_to_png::{run_pdf_to_jp2_debug_mode, run_pdf_to_png_mode};
 pub use pnginference::{
     DebugCropKind, run_folder_layout_crop_debug, run_images_to_images_mode,

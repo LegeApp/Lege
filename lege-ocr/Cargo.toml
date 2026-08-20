@@ -27,6 +27,14 @@ regex = "1.12.2"
 lege-gpu = { path = "../lege-gpu", features = ["layout-detection"] }
 env_logger = "0.11.11"
 
+# blake3's build script compiles a NEON C kernel on aarch64, which drags an
+# NDK C toolchain into what is otherwise a pure-Rust build — including for
+# `cargo check`, which does not otherwise need one. `pure` selects the portable
+# Rust implementation instead. blake3 is used here for cache keys, not on any
+# hot path, so the throughput difference does not register.
+[target.'cfg(target_os = "android")'.dependencies]
+blake3 = { workspace = true, features = ["pure"] }
+
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tesseract = { version = "0.15.2", optional = true }
 
@@ -44,6 +52,9 @@ windows-core = { workspace = true }
 
 [features]
 default = []
+# Android platform support: routes `default_engine()` to the embedded PP-OCR
+# backend, which is pure Rust on lege-gpu and needs no system OCR service.
+android = []
 tesseract-ocr = ["dep:tesseract"]
 paddle-ocr = []
 trocr = []

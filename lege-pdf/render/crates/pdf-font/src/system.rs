@@ -235,6 +235,8 @@ pub fn default_font_paths() -> Vec<PathBuf> {
     paths.push(PathBuf::from("/usr/share/X11/fonts/Type1"));
     paths.push(PathBuf::from("/usr/share/X11/fonts/TTF"));
     paths.push(PathBuf::from("/usr/local/share/fonts"));
+    // Android. Flat directory, no fontconfig, none of the Debian layout above.
+    paths.push(PathBuf::from("/system/fonts"));
     // Per-user locations.
     if let Some(home) = std::env::var_os("HOME") {
         paths.push(Path::new(&home).join(".fonts"));

@@ -56,7 +56,20 @@ fn default_backends() -> wgpu::Backends {
     wgpu::Backends::METAL
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+// Must match the `cfg` on the `android` module itself. Keying this on
+// `target_os` alone would make an unfeatured Android build report an
+// unresolved-import error on top of the `compile_error!` that already explains
+// the real problem.
+#[cfg(all(target_os = "android", feature = "android"))]
+fn default_backends() -> wgpu::Backends {
+    crate::android::default_backends()
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(target_os = "android", feature = "android")
+)))]
 fn default_backends() -> wgpu::Backends {
     wgpu::Backends::all()
 }

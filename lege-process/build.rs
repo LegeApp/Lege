@@ -1,7 +1,39 @@
 use std::env;
 use std::path::Path;
 
+/// Emit `lege_paddle_ocr` when PP-OCR is the active OCR backend.
+///
+/// The condition — "the `paddle-ocr` feature is on *and* this platform uses it"
+/// — was previously spelled out at sixteen `#[cfg]` sites across six files as
+/// `all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")`.
+/// Adding a platform meant editing all sixteen. Deriving it once here keeps
+/// platform knowledge in one place and leaves those sites reading
+/// `#[cfg(lege_paddle_ocr)]`, which is also what they actually mean.
+fn emit_paddle_ocr_cfg() {
+    println!("cargo::rustc-check-cfg=cfg(lege_paddle_ocr)");
+
+    if env::var_os("CARGO_FEATURE_PADDLE_OCR").is_none() {
+        return;
+    }
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let platform_uses_paddle = match target_os.as_str() {
+        "linux" | "macos" => true,
+        // Android has no system OCR service to fall back to, so PP-OCR is the
+        // only backend. Gated on the platform feature to match the rest of the
+        // Android surface.
+        "android" => env::var_os("CARGO_FEATURE_ANDROID").is_some(),
+        _ => false,
+    };
+
+    if platform_uses_paddle {
+        println!("cargo::rustc-cfg=lege_paddle_ocr");
+    }
+}
+
 fn main() {
+    emit_paddle_ocr_cfg();
+
     let profile = env::var("PROFILE").unwrap_or_default();
     let debug_logging_enabled = env::var_os("CARGO_FEATURE_DEBUG_LOGGING").is_some();
     if profile == "release" && debug_logging_enabled {

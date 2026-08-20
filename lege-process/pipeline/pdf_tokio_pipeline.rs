@@ -7,7 +7,7 @@ use crate::pipeline::config::{
 use crate::pipeline::helper_functions::{
     build_hocr_from_positioned_words, image_detection_overlaps_substantive_text,
     init_encode_semaphore, merge_overlapping_image_detections, rounded_clamped_bbox,
-    should_preserve_cover_page, spawn_pdf_writer_actor,
+    should_keep_image_overlay, should_preserve_cover_page, spawn_pdf_writer_actor,
 };
 use crate::pipeline::margin_pipeline::{
     CachedDetections, adjust_page_with_margin_analysis, cached_inference_result,
@@ -805,21 +805,26 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // False image detections over substantive text must not become raster
     // overlays. Besides covering a cleaned MRC background, they create the
     // conspicuous "half a text column in color" seam in ordinary bilevel mode.
-    // Do not reject an image-class detection from its luma histogram: maps,
-    // engravings, and other legitimate illustrations are commonly bilevel.
+    // Line art (diagrams, music, schematics) is also dropped so it is
+    // binarized with the page or carried by the MRC JBIG2 mask. The
+    // variance/orientation classifier from bpg-rs keeps maps, engravings,
+    // and photographs as overlays.
     if config.text_format() != "jpeg" {
         let all_detections = adjusted_detections.clone();
         adjusted_detections.retain(|det| {
             if !classifier.is_image_label(det) {
                 return true;
             }
-            if image_detection_overlaps_substantive_text(
+            if !should_keep_image_overlay(
                 det,
+                adjusted_image.as_raw(),
+                width,
+                height,
                 &all_detections,
                 classifier,
             ) {
                 crate::bbox_trace!(
-                    "PAGE {}: dropping image region overlapping substantive text ({:.0},{:.0},{:.0},{:.0})",
+                    "PAGE {}: dropping image region (text overlap or line art) ({:.0},{:.0},{:.0},{:.0})",
                     page_index,
                     det.bbox[0],
                     det.bbox[1],
@@ -1780,7 +1785,7 @@ async fn perform_ocr(
 
     // PP-OCR (paddle) backend: DBNet needs natural grayscale, not the 1bpp mask,
     // and does its own text-line detection. Run it on the page raster directly.
-    #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))]
+    #[cfg(lege_paddle_ocr)]
     {
         let _ = (binarized, width, height, detections);
         let result = crate::ocr::fast::perform_page_rgb_ocr(
@@ -1796,7 +1801,7 @@ async fn perform_ocr(
         };
     }
 
-    #[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+    #[cfg(not(lege_paddle_ocr))]
     {
         let _ = (page_rgb, cleaned_gray);
         perform_ocr_binarized(binarized, width, height, detections, config, page_index).await
@@ -1804,7 +1809,7 @@ async fn perform_ocr(
 }
 
 /// Tesseract/WinOCR fast path: region- or tile-based OCR over the 1bpp mask.
-#[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+#[cfg(not(lege_paddle_ocr))]
 async fn perform_ocr_binarized(
     binarized: &[u8],
     width: usize,
@@ -2035,27 +2040,142 @@ async fn encode_preserved_mrc_base_layer(
     crate::accumulator::ContentType,
 )> {
     let bg_quality = config.mrc_bg_quality();
-    let subsample_override = config.mrc_bg_subsample_override();
+    let image_mode = if config.keep_original_images() {
+        ImageRegionDitherMode::None
+    } else {
+        config.image_region_dither_mode()
+    };
+    let text_format = config.text_format().to_string();
+    let cover_format = *config.cover_format();
+    let high_quality = config.high_quality_output();
+    let jpeg_compat = config.jpeg_compat();
     crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Encode, move || {
-        let subsample = subsample_override.unwrap_or(match height {
-            0..=1799 => 1,
-            1800..=2399 => 2,
-            _ => 3,
-        });
+        use crate::encoding::{
+            EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
+            Jbig2Settings,
+        };
+
+        // Preserve all source pixels outside the native text mask. Downsampling
+        // here would make the selected dither/original policy less than global.
         let (bg, ow, oh) = crate::clean_gray::mrc_background_with_coverage(
             &cleaned_gray,
             &working_coverage,
             width,
             height,
-            subsample,
+            1,
         );
-        let jp2 = crate::encoding::jp2::encode_gray_document(&bg, ow as u32, oh as u32, bg_quality)
-            .map_err(|error| anyhow!("preserved-mask JP2 background encode: {error}"))?;
-        let background = crate::accumulator::ContentType::EncodedImage {
-            data: Arc::from(jp2),
-            pixel_width: ow as u32,
-            pixel_height: oh as u32,
-            format: "jp2-gray".to_string(),
+        let ow = ow as u32;
+        let oh = oh as u32;
+        let rgb = bg
+            .iter()
+            .flat_map(|&gray| [gray, gray, gray])
+            .collect::<Vec<_>>();
+
+        let background = match image_mode {
+            ImageRegionDitherMode::None => {
+                let (data, format) = encode_region_image_sync(
+                    &rgb,
+                    ow,
+                    oh,
+                    cover_format,
+                    false,
+                    high_quality,
+                    jpeg_compat,
+                )
+                .map_err(|error| anyhow!("preserved-mask original background encode: {error}"))?;
+                crate::accumulator::ContentType::EncodedImage {
+                    data: Arc::from(data),
+                    pixel_width: ow,
+                    pixel_height: oh,
+                    format,
+                }
+            }
+            ImageRegionDitherMode::GrayJp2 => {
+                let jp2 = crate::encoding::jp2::encode_gray_document(&bg, ow, oh, bg_quality)
+                    .map_err(|error| anyhow!("preserved-mask JP2 background encode: {error}"))?;
+                crate::accumulator::ContentType::EncodedImage {
+                    data: Arc::from(jp2),
+                    pixel_width: ow,
+                    pixel_height: oh,
+                    format: "jp2-gray".to_string(),
+                }
+            }
+            ImageRegionDitherMode::Halftone => {
+                let inverted = bg
+                    .iter()
+                    .map(|&gray| {
+                        if gray >= crate::color::color_processing::PAPER_WHITE_FLOOR {
+                            0
+                        } else {
+                            255 - crate::color::linearize::SRGB_GRAY_TO_LINEAR_U8[gray as usize]
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let (global_data, page_data) =
+                    crate::encoding::encode_halftone_region_grayscale(&inverted, ow, oh)
+                        .map_err(|error| anyhow!("preserved-mask halftone encode: {error}"))?;
+                crate::accumulator::ContentType::Jbig2ImageWithGlobals {
+                    page_data: Arc::from(page_data),
+                    global_data: Arc::from(global_data),
+                    pixel_width: ow,
+                    pixel_height: oh,
+                }
+            }
+            ImageRegionDitherMode::Stucki | ImageRegionDitherMode::Ccitt4ClusteredDot4x4 => {
+                let (dithered, dithered_width, dithered_height) =
+                    crate::color::color_processing::process_image_region(
+                        &rgb,
+                        ow,
+                        oh,
+                        [0.0, 0.0, ow as f32, oh as f32],
+                        image_mode,
+                        &text_format,
+                        false,
+                    )?;
+                let bilevel = dithered
+                    .chunks_exact(3)
+                    .map(|pixel| pixel[0])
+                    .collect::<Vec<_>>();
+                let buffer = LegeImageBuffer {
+                    data: &bilevel,
+                    width: dithered_width,
+                    height: dithered_height,
+                    channels: 1,
+                };
+                let (settings, format) = if text_format == "ccitt4" {
+                    (EncodingSettings::Ccitt4, "ccitt")
+                } else {
+                    (
+                        EncodingSettings::Jbig2(Jbig2Settings {
+                            pdf_fragment_mode: true,
+                            mode: Jbig2Mode::Generic,
+                            use_jbig2_halftone_segments: false,
+                        }),
+                        "jbig2",
+                    )
+                };
+                match EncodingManager::encode(&buffer, &settings)
+                    .map_err(|error| anyhow!("preserved-mask dither encode: {error}"))?
+                {
+                    EncodingResult::Standard(data) => {
+                        crate::accumulator::ContentType::EncodedImage {
+                            data: Arc::from(data),
+                            pixel_width: dithered_width,
+                            pixel_height: dithered_height,
+                            format: format.to_string(),
+                        }
+                    }
+                    EncodingResult::Jbig2WithGlobals {
+                        page_data,
+                        global_data,
+                    } => crate::accumulator::ContentType::Jbig2ImageWithGlobals {
+                        page_data: Arc::from(page_data),
+                        global_data: Arc::from(global_data),
+                        pixel_width: dithered_width,
+                        pixel_height: dithered_height,
+                    },
+                }
+            }
         };
         let foreground = crate::accumulator::ContentType::Jbig2Mask {
             page_data: mask.page_data,
@@ -2068,8 +2188,9 @@ async fn encode_preserved_mrc_base_layer(
             ),
         };
         crate::bbox_trace!(
-            "PAGE {} preserved MRC bg={}x{} bytes={} native_mask={}x{} bytes={}",
+            "PAGE {} preserved MRC mode={:?} bg={}x{} bytes={} native_mask={}x{} bytes={}",
             page_index,
+            image_mode,
             ow,
             oh,
             background.as_bytes().len(),
@@ -2774,10 +2895,7 @@ async fn prepare_planned_pdf_page(
     page_index: usize,
     cancellation: lege_pdf_read::CancellationToken,
 ) -> Result<Option<PlannedPdfContext>> {
-    if config.text_format() == "jpeg"
-        || (config.dither_images() && !config.keep_original_images())
-        || should_preserve_cover_page(page_index, &config)
-    {
+    if config.text_format() == "jpeg" || should_preserve_cover_page(page_index, &config) {
         return Ok(None);
     }
     crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Render, move || {
@@ -2789,17 +2907,19 @@ async fn prepare_planned_pdf_page(
         let page = session
             .compile(page_index as u32)
             .map_err(|error| anyhow!("page compile failed: {error}"))?;
-        let preserved_mask = if config.is_grayscale_mode() {
-            let preserved = session
-                .preserved_jbig2_smask(&page, output_width, output_height, Some(&cancellation))
-                .map_err(|error| anyhow!("preserved JBIG2 SMask preparation failed: {error}"))?;
-            let Some(preserved) = preserved else {
-                return Ok(None);
-            };
-            Some(preserved)
-        } else {
-            None
-        };
+        // Native MRC mask preservation is a source property, not a page-mode
+        // preference. When it qualifies, use it for both dithered and original
+        // image policies so layout detection cannot accidentally threshold the
+        // continuous-tone layer.
+        let preserved_mask = session
+            .preserved_jbig2_smask(&page, output_width, output_height, Some(&cancellation))
+            .map_err(|error| anyhow!("preserved JBIG2 SMask preparation failed: {error}"))?;
+        if preserved_mask.is_none()
+            && (config.is_grayscale_mode()
+                || (config.dither_images() && !config.keep_original_images()))
+        {
+            return Ok(None);
+        }
         let mut plan = crate::pipeline::page_output_plan::plan_page_output(
             &config,
             crate::pipeline::page_output_plan::PagePlanInput {
@@ -2881,9 +3001,8 @@ fn scale_detections_to_output(
     let sx = output_width as f32 / source_width.max(1) as f32;
     let sy = output_height as f32 / source_height.max(1) as f32;
     let mut detections = inference_data.inference_result.detections.clone();
-    // The model's image class is authoritative here. A pixel-only bimodality
-    // test cannot distinguish false positives from real maps, engravings, or
-    // line drawings, all of which need an image overlay to preserve detail.
+    // Geometry only. Line-art vs photo is decided later on the output raster
+    // (see should_keep_image_overlay), after boxes are scaled.
     for detection in &mut detections {
         detection.scale_bbox(sx, sy);
     }
@@ -2933,7 +3052,9 @@ mod image_detection_policy_tests {
                 image::Rgb([255, 255, 255])
             }
         }));
-        assert!(crate::clean_gray::region_is_line_art(
+        // Checkerboard hatching is line art (engraving-like). This test only
+        // checks that scale_detections_to_output still keeps the model box.
+        assert!(crate::content_class::region_is_line_art(
             image.as_raw(),
             100,
             100,
@@ -3429,26 +3550,34 @@ async fn run_page_owned_job(
         let has_text = detections
             .iter()
             .any(|detection| crate::types::LABEL_CLASSIFIER.is_substantive_text(detection));
-        planned.plan.regions = detections
-            .iter()
-            .filter(|detection| crate::types::LABEL_CLASSIFIER.is_image_label(detection))
-            .filter(|detection| {
-                !(has_text
-                    && bbox_is_effectively_full_page(
+        planned.plan.regions = if planned.preserved_mask.is_some() {
+            // The source mask identifies text precisely. Process the entire
+            // remaining continuous-tone plane with the selected image policy;
+            // adding layout-selected crops would duplicate content and make
+            // correctness depend on Paddle's labels.
+            Vec::new()
+        } else {
+            detections
+                .iter()
+                .filter(|detection| crate::types::LABEL_CLASSIFIER.is_image_label(detection))
+                .filter(|detection| {
+                    !(has_text
+                        && bbox_is_effectively_full_page(
+                            detection.bbox,
+                            planned.output_width,
+                            planned.output_height,
+                            0.90,
+                        ))
+                })
+                .filter_map(|detection| {
+                    crate::pipeline::page_output_plan::region_target(
                         detection.bbox,
                         planned.output_width,
                         planned.output_height,
-                        0.90,
-                    ))
-            })
-            .filter_map(|detection| {
-                crate::pipeline::page_output_plan::region_target(
-                    detection.bbox,
-                    planned.output_width,
-                    planned.output_height,
-                )
-            })
-            .collect();
+                    )
+                })
+                .collect()
+        };
         let render_session = session.clone();
         let compiled_page = planned.page.clone();
         let plan = planned.plan.clone();

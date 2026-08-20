@@ -5,7 +5,15 @@ pub const ICON_PNG: &[u8] = include_bytes!("../../lege-misc/assets/icon.png");
 
 /// Install icons on Linux using XDG paths and create a .desktop entry.
 /// On Windows, icon is embedded in the .exe (no-op here).
+/// On Android this is a no-op — see the arm below.
+#[cfg_attr(feature = "android", allow(unreachable_code))]
 pub fn install_icon() -> std::io::Result<()> {
+    // Android matches `cfg(unix)` but has no XDG desktop database, no
+    // `update-desktop-database`, and no writable `$HOME` (the lookup below
+    // falls back to `/tmp`, which is not app-writable). Nothing to install.
+    #[cfg(feature = "android")]
+    return Ok(());
+
     #[cfg(unix)]
     {
         use std::fs;

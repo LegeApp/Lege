@@ -13,7 +13,7 @@ use lege_ocr::fast as ocr_fast;
 use lege_ocr::hocr::{adjust_offsets, finalize, strip_to_body};
 
 use crate::reflow::ReflowPage;
-#[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+#[cfg(not(lege_paddle_ocr))]
 use crate::reflow::{PlacedKind, PxRect};
 
 /// Limit concurrent OCR operations. Paddle shares one GPU engine, so two jobs
@@ -313,7 +313,7 @@ pub async fn perform_reflow_page_fast_ocr(
 
     // PP-OCR (paddle) runs on the composed raster directly — DBNet does its own
     // line detection and needs grayscale, not the binarized composite.
-    #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))]
+    #[cfg(lege_paddle_ocr)]
     {
         let _ = page;
         let hocr = perform_page_rgb_ocr(composed, None, language, false).await?;
@@ -324,7 +324,7 @@ pub async fn perform_reflow_page_fast_ocr(
         return Ok(Some(hocr));
     }
 
-    #[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+    #[cfg(not(lege_paddle_ocr))]
     {
         let blocks = reflow_output_text_blocks(page);
         if blocks.is_empty() {
@@ -388,7 +388,7 @@ pub async fn perform_reflow_page_fast_ocr(
 
 /// Binarize a composed reflow raster (black text on white) into the 1bpp buffer
 /// the fast engine expects: `0` = ink, `255` = background.
-#[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+#[cfg(not(lege_paddle_ocr))]
 fn binarize_composed(img: &RgbImage) -> Vec<u8> {
     img.pixels()
         .map(|p| {
@@ -403,7 +403,7 @@ fn binarize_composed(img: &RgbImage) -> Vec<u8> {
 /// (by vertical-band overlap); lines separated by no more than a body line's
 /// height then merge into a block, so paragraph spacers and figures — which
 /// reflow renders as larger vertical gaps — naturally split blocks apart.
-#[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+#[cfg(not(lege_paddle_ocr))]
 fn reflow_output_text_blocks(page: &ReflowPage) -> Vec<PxRect> {
     let mut rects: Vec<PxRect> = page
         .items
@@ -453,10 +453,7 @@ fn reflow_output_text_blocks(page: &ReflowPage) -> Vec<PxRect> {
     blocks
 }
 
-#[cfg(all(
-    test,
-    not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))
-))]
+#[cfg(all(test, not(lege_paddle_ocr)))]
 mod reflow_fast_tests {
     use super::*;
     use crate::reflow::{PlacedItem, PlacedKind, PxRect, ReflowPage, SourceRef};

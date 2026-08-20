@@ -15,7 +15,15 @@ fn ensure_directory(path: &Path) -> PathBuf {
 /// app-data dir: the tree holds logs and scratch data, which are
 /// machine-specific and must not roam, and it keeps all Lege state in the one
 /// folder the GUI already uses. Must stay in sync with `lege_ipc::data_dir`.
+#[cfg_attr(feature = "android", allow(unreachable_code))]
 pub fn data_dir() -> PathBuf {
+    // Android has no HOME and no XDG dirs, so every `dirs::*` lookup below
+    // returns None and the chain lands on `PathBuf::from(".")` — the process
+    // working directory, which is not writable in an app sandbox. The host
+    // passes its Context directories in through `android::init` instead.
+    #[cfg(feature = "android")]
+    return ensure_directory(&crate::android::data_dir());
+
     let base = dirs::data_local_dir()
         .or_else(dirs::data_dir)
         .or_else(|| {

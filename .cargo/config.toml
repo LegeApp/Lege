@@ -1,10 +1,15 @@
 [alias]
 appimage = "run --package xtask -- appimage"
+fmt-all = "fmt --all"
+fmt-all-check = "fmt --all -- --check"
 
 # Main sub-programs
 process = "build --package lege --bin lege"
 process-check = "check --package lege --bin lege"
 process-run = "run --package lege --bin lege --"
+# Freya GUI is the `lege-gui` bin of package `lege` (`--features freya`).
+# Do not also select package `lege-gui` / `lege-gui-freya` in the same
+# invocation: both expose a `lege-gui` bin and Cargo collides the outputs.
 gui = "build --package lege --bin lege --bin lege-gui --features freya"
 gui-check = "check --package lege --bin lege --bin lege-gui --features freya"
 music-gui = "build --package lege-music-gui"
@@ -26,8 +31,17 @@ gpu = "build --package lege-gpu"
 gpu-check = "check --package lege-gpu"
 ocr = "build --package lege-ocr"
 ocr-check = "check --package lege-ocr"
+document-ocr = "build --package lege-document-ocr-cli"
+document-ocr-check = "check --package lege-document-ocr-cli"
+document-ocr-run = "run --package lege-document-ocr-cli --"
 pdf-write = "build --package lege-pdf-write"
 pdf-write-check = "check --package lege-pdf-write"
+pdf-tool = "build --package lege-pdf-agent --bin lege-pdf"
+pdf-tool-check = "check --package lege-pdf-agent --bin lege-pdf"
+pdf-tool-run = "run --package lege-pdf-agent --bin lege-pdf --"
+lege-pdf = "build --package lege-pdf-agent --bin lege-pdf"
+lege-pdf-check = "check --package lege-pdf-agent --bin lege-pdf"
+lege-pdf-run = "run --package lege-pdf-agent --bin lege-pdf --"
 ipc = "build --package lege-ipc"
 xtask-help = "run --package xtask -- help"
 
@@ -36,6 +50,20 @@ xtask-help = "run --package xtask -- help"
 jbig2 = "build --manifest-path lege-codecs/jbig2enc-rust/Cargo.toml"
 jp2 = "build --manifest-path lege-codecs/jp2lam/Cargo.toml"
 djvu = "build --manifest-path lege-codecs/djvulibrust/Cargo.toml --features cli --bin djvu-encoder"
+
+# Android. `cargo check` for this target needs only
+# `rustup target add aarch64-linux-android` — no NDK, because checking does not
+# link. Keep it that way: it is why lege-ocr pins blake3 to its `pure` feature
+# on Android rather than letting its build script reach for an NDK C compiler.
+android-check = "check --package lege --target aarch64-linux-android --features android"
+android-check-jni = "check --package lege-android --target aarch64-linux-android"
+# Asserts the platform gate still fires. Expected to FAIL, with the
+# `compile_error!` from lege-gpu/src/lib.rs as the only error.
+android-check-gate = "check --package lege --target aarch64-linux-android"
+# Building the .so does need the NDK plus `cargo install cargo-ndk`. The
+# `android` profile exists because release sets panic = "abort", which would
+# make the catch_unwind guards at the JNI boundary inert.
+android-build = "ndk -t arm64-v8a build --package lege-android --profile android"
 
 # Workspace-wide verification and common editions
 ecosystem-check = "check --workspace"

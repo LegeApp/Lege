@@ -66,3 +66,15 @@ lege-codecs/jp2lam/lear.png
 # AKR: a rebuildable cache and disposable agent notes.
 .akr/cache/
 .agent/scratch/
+# The pattern above contains a slash, so git anchors it to this directory and
+# it misses nested crates (e.g. lege-codecs/jp2lam/.agent/scratch/).
+**/.agent/scratch/
+
+# Scratch render output from pipeline runs. Page PNGs at 12MP run to tens of
+# megabytes and git history is permanent.
+/tmp/
+
+# Logo exploration and export renders. Large JPEG sets; the shipped icons live
+# in lege-misc/assets/ directly.
+lege-misc/assets/logo-concepts/
+lege-misc/assets/logo-export/

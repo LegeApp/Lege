@@ -1805,7 +1805,7 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
     // parsing alone does not prove that the selected GPU can compile and run
     // them. Execute a tiny detector + recognizer probe before rendering pages.
     if config.enable_ocr() {
-        #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))]
+        #[cfg(lege_paddle_ocr)]
         lege_ocr::engine_paddle::PaddleOcrEngine::preflight_embedded().map_err(|e| {
             anyhow::anyhow!(
                 "PaddleOCR could not start on this system. OCR processing was not started.\n{e:#}"

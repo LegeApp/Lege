@@ -5,6 +5,11 @@ pub mod document;
 pub mod engine;
 #[cfg(feature = "paddle-ocr")]
 pub mod engine_paddle;
+// Drives an out-of-process CUDA/TensorRT worker binary. There is no such
+// binary on Android and no way to ship one, so the module is excluded rather
+// than compiled into a path that can only fail at runtime.
+#[cfg(not(target_os = "android"))]
+pub mod engine_tensorrt;
 pub mod fast;
 pub mod hocr;
 pub mod normalize;

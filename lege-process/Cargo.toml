@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.74"
+version = "1.4.75"
 edition = "2024"
 description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -28,8 +28,8 @@ winres = "0.1.12"  # Updated
 chrono = "0.4"
 
 [dependencies]
-app_dirs2 = "2.5.5"
-directories = "6.0.0"
+# NOTE: `app_dirs2` and `directories` were removed here as unreferenced; the
+# directory resolution in core/app_dirs.rs goes through `dirs` (below).
 fax = { version = "0.3.0", default-features = false }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -71,7 +71,8 @@ html-escape = { workspace = true }
 chrono = { version = "0.4.45", features = ["serde"] }
 memmap2 = "0.9.9"
 winres = "0.1.12"
-libloading = "0.9.0"
+# `libloading` removed: unreferenced, and its dlopen surface is a liability in
+# an APK where the only loadable objects are the ones in jniLibs.
 num_cpus = { workspace = true }
 ttf-parser = { workspace = true }
 raw-window-handle = { workspace = true, optional = true }
@@ -116,6 +117,15 @@ tesseract = { version = "0.15.2", optional = true }
 wgpu = "30.0.0"
 pollster = "1.0.1"
 libc = "0.2"
+
+# Android-specific dependencies. Mirrors the Linux/macOS sections; `wgpu` and
+# `pollster` are needed for the same reasons there. Inert on desktop — a target
+# section that does not match is never resolved.
+[target.'cfg(target_os = "android")'.dependencies]
+wgpu = "30.0.0"
+pollster = "1.0.1"
+libc = "0.2"
+android_logger = { version = "0.15.1", optional = true }
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -163,6 +173,16 @@ viewer = [
     "dep:lege_viewer",
 ]
 default = ["jp2-lam", "paddle-ocr", "layout-detection"]
+# Android platform support. Gates everything under `android/`; nothing new
+# compiles with the feature off, so desktop builds are unaffected. Building for
+# Android without it is a hard error (see `core/lib.rs`).
+android = [
+    "dep:android_logger",
+    "lege-gpu/android",
+    # `?/` so enabling `android` does not itself pull in the optional OCR
+    # crate — it only forwards when an OCR feature already enabled it.
+    "lege-ocr?/android",
+]
 debug-logging = ["lege-gpu/debug-logging"]
 jp2-lam = ["dep:jp2lam"]
 layout-detection = ["lege-gpu/layout-detection"]

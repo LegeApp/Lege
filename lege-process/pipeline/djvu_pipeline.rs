@@ -13,8 +13,8 @@ use crate::engine::Detection;
 use crate::margin::DocumentMarginAnalysis;
 use crate::pipeline::config::{InferenceResult, PipelineConfig, RenderedPageData};
 use crate::pipeline::helper_functions::{
-    bookmarks_to_outline, build_hocr_from_pdf_text, image_detection_overlaps_substantive_text,
-    merge_outline, merge_overlapping_image_detections, rounded_clamped_bbox,
+    bookmarks_to_outline, build_hocr_from_pdf_text, merge_outline,
+    merge_overlapping_image_detections, rounded_clamped_bbox, should_keep_image_overlay,
     should_preserve_cover_page,
 };
 use crate::pipeline::margin_pipeline::{
@@ -1083,17 +1083,22 @@ fn process_djvu_cpu_intensive_work(
         );
     }
 
-    // Drop false image boxes over substantive text so they do not create a
-    // color seam through a column (mirrors the PDF pipeline). The model's
-    // image class remains authoritative for maps, engravings, and line
-    // drawings; luma bimodality cannot distinguish those from line art.
+    // Drop false image boxes over substantive text, and line-art boxes that
+    // should stay in the bilevel / MRC mask path (mirrors the PDF pipeline).
     if config.text_format() != "jpeg" {
         let all_detections = adjusted_detections.clone();
         adjusted_detections.retain(|det| {
             if !classifier.is_image_label(det) {
                 return true;
             }
-            !image_detection_overlaps_substantive_text(det, &all_detections, classifier)
+            should_keep_image_overlay(
+                det,
+                adjusted_image.as_raw(),
+                width,
+                height,
+                &all_detections,
+                classifier,
+            )
         });
     }
 
@@ -1288,7 +1293,7 @@ async fn extract_djvu_text_layer(
     } else if config.enable_ocr() {
         // PP-OCR (paddle) backend runs on the page raster (DBNet needs grayscale,
         // not the 1bpp mask) and does its own line detection.
-        #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr"))]
+        #[cfg(lege_paddle_ocr)]
         let result = {
             let _ = (binarized, detections);
             let page_rgb = ocr_image.unwrap_or(adjusted_image);
@@ -1307,7 +1312,7 @@ async fn extract_djvu_text_layer(
             .await
         };
 
-        #[cfg(not(all(any(target_os = "linux", target_os = "macos"), feature = "paddle-ocr")))]
+        #[cfg(not(lege_paddle_ocr))]
         let result = {
             let _ = cleaned_gray;
             let use_regions = crate::ocr::fast::should_use_region_ocr(

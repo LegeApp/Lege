@@ -1,0 +1,32 @@
+[package]
+name = "lege-android"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+description = "JNI bindings exposing the Lege processing pipeline to an Android host app"
+publish = false
+
+[lib]
+name = "lege_android"
+# cdylib only — this crate exists solely to produce libleg_android.so for the
+# APK's jniLibs. Nothing in the workspace links it as a Rust library.
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21"
+log = { workspace = true }
+
+# `lege` is pulled in only for Android. The `android` feature it needs is
+# rejected on desktop targets by a compile_error, so a host-side
+# `cargo check --workspace` would fail if this were an unconditional dependency.
+# Off Android this crate compiles to an empty cdylib instead — see src/lib.rs.
+[target.'cfg(target_os = "android")'.dependencies]
+lege = { path = "../lege-process", features = ["android"] }
+anyhow = { workspace = true }
+# Named to hold the receiver `lege::progress` hands out; same version the
+# pipeline itself uses, so the types match.
+flume = { workspace = true }
+
+[lints]
+workspace = true

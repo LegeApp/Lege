@@ -6,6 +6,7 @@
 #   * lege-ocr       — OCR pipeline library + debug binary
 #   * lege-pdf/write — typed, append-only PDF emitter
 #   * lege-pdf/read  — Lege-owned document intake/read seam
+#   * lege-pdf/agent — agent-facing structured PDF CLI (`lege-pdf`)
 #   * lege-pdf/render— native Lege PDF document and rendering engine
 #   * lege-codecs/*  — JBIG2 / JPEG2000 / DjVu codecs (own build graphs — excluded,
 #                      linked codecs are wired in via [patch] below)
@@ -23,18 +24,23 @@ members = [
     "lege-ocr",                 # `lege_ocr`
     "lege-document-ocr/crates/*", # business-grade OCR product libraries
     "lege-document-ocr/cli",    # `lege-ocr` batch CLI
+    "lege-document-ocr/installer-winsafe", # native Windows installer/uninstaller
     "lege-pdf/read",            # renderer-backed document intake/read seam
+    "lege-pdf/agent",           # agent-facing `lege-pdf` CLI (structured PDF tool)
     "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
     "lege-viewer",              # `lege-gui`: native viewer + processing workspace
     "lege-misc/xtask",          # packaging tasks (`cargo appimage`)
+    "lege-android",             # JNI cdylib for the Android APK
 ]
 # Kept out of the workspace on purpose:
 #   freya-main               — vendored upstream fork with its own workspace
 #   lege-codecs/*            — separate build graphs / licenses (patched in below)
+#   lege-pdf/pdf-integrity   — nested forensic-triage workspace (own lockfile)
 exclude = [
     "freya-main",
     "lege-codecs",
+    "lege-pdf/pdf-integrity",
 ]
 default-members = [
     "lege-process",
@@ -206,6 +212,21 @@ codegen-units = 16  # Allow more codegen units for faster builds
 incremental = true  # Enable incremental compilation
 debug = true
 strip = false
+
+# Android cdylib profile.
+#
+# `release` sets panic = "abort", which would make the `catch_unwind` guards at
+# the JNI boundary inert — a panic anywhere in the pipeline would abort the
+# host app instead of surfacing as a Java exception. Unwinding is required for
+# those guards to do anything, so the Android artifact gets its own profile.
+#
+# Thin LTO rather than fat: the cdylib carries ~23 MB of embedded ONNX and fat
+# LTO on it is punishing for the benefit.
+[profile.android]
+inherits = "release"
+panic = "unwind"
+lto = "thin"
+strip = "symbols"
 
 # Profile for debug-logging builds without LTO for faster compilation
 [profile.debug-fast]

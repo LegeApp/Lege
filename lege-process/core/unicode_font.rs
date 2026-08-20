@@ -185,7 +185,17 @@ fn candidate_paths() -> Vec<PathBuf> {
     .collect()
 }
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[cfg(feature = "android")]
+#[allow(dead_code)]
+fn candidate_paths() -> Vec<PathBuf> {
+    crate::android::platform::font_candidate_paths()
+}
+
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "macos"),
+    not(feature = "android")
+))]
 #[allow(dead_code)]
 fn candidate_paths() -> Vec<PathBuf> {
     [
