@@ -1,10 +1,18 @@
 f:
     taplo fmt
-    cargo +nightly-2026-03-15 fmt --all -- --error-on-unformatted --unstable-features
+    cargo fmt --all
 
 f-check:
     taplo fmt --check
-    cargo +nightly-2026-03-15 fmt --all --check -- --error-on-unformatted --unstable-features
+    cargo fmt --all --check
+
+f-nightly:
+    taplo fmt
+    cargo +nightly-2026-03-15 fmt --all -- --config-path rustfmt-nightly.toml --error-on-unformatted --unstable-features
+
+f-nightly-check:
+    taplo fmt --check
+    cargo +nightly-2026-03-15 fmt --all --check -- --config-path rustfmt-nightly.toml --error-on-unformatted --unstable-features
 
 c:
     taplo check

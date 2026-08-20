@@ -8,8 +8,8 @@ use windows_sys::Win32::{
 
 #[cfg(not(feature = "common-controls-v6"))]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MB_YESNO,
-    MB_YESNOCANCEL, MESSAGEBOX_STYLE,
+    MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
+    MESSAGEBOX_STYLE, MessageBoxW,
 };
 
 use raw_window_handle::RawWindowHandle;
@@ -70,13 +70,13 @@ impl WinMessageDialog {
     #[cfg(feature = "common-controls-v6")]
     pub fn run(self) -> MessageDialogResult {
         use windows_sys::{
-            core::BOOL,
             Win32::UI::Controls::{
-                TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1,
-                TASKDIALOG_BUTTON, TDCBF_CANCEL_BUTTON, TDCBF_NO_BUTTON, TDCBF_OK_BUTTON,
-                TDCBF_YES_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
-                TD_ERROR_ICON, TD_INFORMATION_ICON, TD_WARNING_ICON,
+                TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1,
+                TD_ERROR_ICON, TD_INFORMATION_ICON, TD_WARNING_ICON, TDCBF_CANCEL_BUTTON,
+                TDCBF_NO_BUTTON, TDCBF_OK_BUTTON, TDCBF_YES_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
+                TDF_SIZE_TO_CONTENT, TaskDialogIndirect,
             },
+            core::BOOL,
         };
 
         let mut pf_verification_flag_checked = 0;

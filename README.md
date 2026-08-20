@@ -58,6 +58,7 @@ cargo process
 cargo gui
 cargo music-gui
 cargo viewer
+cargo document-ocr
 
 # Shared crates
 cargo gpu
@@ -78,10 +79,15 @@ cargo gpu-check
 cargo ocr-check
 cargo pdf-write-check
 cargo ecosystem-check
+cargo fmt-all
+cargo fmt-all-check
+# For pdf-render workspace crates specifically, run package-scoped format checks, e.g.
+cargo fmt --package pdf-read --package pdf-text -- --check
 
 # Run the processor CLI
 cargo process-run -- path/to/input.pdf
 cargo viewer-run -- path/to/input.pdf
+cargo document-ocr-run batch <input.pdf-dir> --output <out-dir> --workers 4
 
 # Packaging task help
 cargo xtask-help

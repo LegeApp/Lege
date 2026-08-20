@@ -9,6 +9,7 @@ use lege_document_export::{ExportFormat, ExportRequest, SearchablePdfPolicy, exp
 use lege_document_pipeline::correction::CorrectionMode;
 use lege_document_pipeline::{
     BackendChoice, DocumentProcessor, OcrSchedulerConfig, PipelineConfig, TensorRtPaddleConfig,
+    nvidia_hardware_present,
 };
 
 #[derive(Debug, Parser)]
@@ -25,6 +26,26 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Batch(BatchArgs),
+    /// Preflight the installed OCR backend without processing a document.
+    Doctor(DoctorArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct DoctorArgs {
+    #[arg(long, alias = "device", value_enum, default_value_t = BackendArg::Auto)]
+    backend: BackendArg,
+    #[arg(long, default_value = "eng")]
+    language: String,
+    /// Packaged TensorRT root containing bin, models, and runtime directories.
+    #[arg(long)]
+    tensorrt_ocr_root: Option<PathBuf>,
+    /// Additional DLL directory inherited by the TensorRT worker. Repeatable.
+    #[arg(long)]
+    tensorrt_dll_dir: Vec<PathBuf>,
+    #[arg(long, default_value_t = 8)]
+    tensorrt_rec_batch: usize,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -156,6 +177,7 @@ struct BatchTask {
 fn main() {
     let code = match Cli::parse().command {
         Command::Batch(args) => run_batch(args),
+        Command::Doctor(args) => run_doctor(args),
     };
     if let Err(error) = code {
         eprintln!("lege-ocr: {error}");
@@ -182,21 +204,11 @@ fn run_batch(args: BatchArgs) -> Result<(), String> {
     if sources.is_empty() {
         return Err("no PDF inputs were found".to_string());
     }
-    let mut tensorrt_paddle = match args.tensorrt_ocr_root.as_deref() {
-        Some(root) => Some(
-            TensorRtPaddleConfig::from_root(root, args.tensorrt_rec_batch)
-                .map_err(|error| error.to_string())?,
-        ),
-        None => TensorRtPaddleConfig::discover(args.tensorrt_rec_batch),
-    };
-    if !args.tensorrt_dll_dir.is_empty() {
-        let runtime = tensorrt_paddle.as_mut().ok_or_else(|| {
-            "--tensorrt-dll-dir requires a discoverable runtime or --tensorrt-ocr-root".to_string()
-        })?;
-        runtime
-            .dll_directories
-            .extend(args.tensorrt_dll_dir.iter().cloned());
-    }
+    let tensorrt_paddle = resolve_tensorrt_runtime(
+        args.tensorrt_ocr_root.as_deref(),
+        &args.tensorrt_dll_dir,
+        args.tensorrt_rec_batch,
+    )?;
     let config = PipelineConfig {
         profile: profile(args.profile),
         quality: QualityMode::Thorough,
@@ -372,6 +384,67 @@ fn run_batch(args: BatchArgs) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn run_doctor(args: DoctorArgs) -> Result<(), String> {
+    if !(1..=32).contains(&args.tensorrt_rec_batch) {
+        return Err("--tensorrt-rec-batch must be in 1..=32".to_string());
+    }
+    let tensorrt_paddle = resolve_tensorrt_runtime(
+        args.tensorrt_ocr_root.as_deref(),
+        &args.tensorrt_dll_dir,
+        args.tensorrt_rec_batch,
+    )?;
+    let config = PipelineConfig {
+        backend: backend(args.backend),
+        language: args.language,
+        tensorrt_paddle,
+        correction_mode: CorrectionMode::Disabled,
+        ..PipelineConfig::default()
+    };
+    let processor = DocumentProcessor::new(config).map_err(|error| error.to_string())?;
+    let selected = processor.selected_backend_name();
+    let warning = processor.backend_selection_warning();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "backend": selected,
+                "nvidia_hardware_present": nvidia_hardware_present(),
+                "warning": warning,
+            })
+        );
+    } else {
+        println!("lege-ocr doctor: OK; selected backend `{selected}`");
+        if let Some(warning) = warning {
+            println!("lege-ocr doctor: {warning}");
+        }
+    }
+    Ok(())
+}
+
+fn resolve_tensorrt_runtime(
+    root: Option<&Path>,
+    dll_directories: &[PathBuf],
+    recognition_batch: usize,
+) -> Result<Option<TensorRtPaddleConfig>, String> {
+    let mut runtime = match root {
+        Some(root) => Some(
+            TensorRtPaddleConfig::from_root(root, recognition_batch)
+                .map_err(|error| error.to_string())?,
+        ),
+        None => TensorRtPaddleConfig::discover_result(recognition_batch)
+            .map_err(|error| error.to_string())?,
+    };
+    if !dll_directories.is_empty() {
+        let runtime = runtime.as_mut().ok_or_else(|| {
+            "--tensorrt-dll-dir requires a discoverable runtime or --tensorrt-ocr-root".to_string()
+        })?;
+        runtime.dll_directories.extend_from_slice(dll_directories);
+        runtime.validate().map_err(|error| error.to_string())?;
+    }
+    Ok(runtime)
 }
 
 fn process_batch_task(
@@ -648,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn native_text_batch_exports_and_resumes_without_ocr_backend() {
+    fn native_text_batch_exports_and_resumes_without_invoking_ocr() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("book.pdf");
         let output = directory.path().join("out");
@@ -675,7 +748,7 @@ mod tests {
             output: output.clone(),
             recursive: false,
             profile: ProfileArg::Search,
-            backend: BackendArg::Auto,
+            backend: BackendArg::WinocrLegacy,
             language: "eng".into(),
             formats: vec!["json".into(), "text".into(), "docx".into()],
             text_view: TextViewArg::Corrected,

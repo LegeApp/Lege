@@ -1172,8 +1172,12 @@ fn select_layout_passes(
     }
 
     let pixel_count = u64::from(context.image.width) * u64::from(context.image.height);
-    let contrast_mask = build_luma_contrast_mask(context);
     let document_trim = matches!(context.plan.rate_mode, crate::plan::RateMode::DocumentTrim);
+    let build_perceptual =
+        !document_trim && rate::perceptual_weighting_candidate(context.plan.quality);
+    let contrast_mask = build_perceptual
+        .then(|| build_luma_contrast_mask(context))
+        .flatten();
 
     let mut all_selections = Vec::with_capacity(layouts.len());
     for (component_index, layout) in layouts.iter().enumerate() {
@@ -1186,7 +1190,7 @@ fn select_layout_passes(
             .first()
             .map(|c| c.precision)
             .unwrap_or(8);
-        let curves = rate::curves_from_tier1_layout(
+        let baseline_curves = rate::curves_from_tier1_layout(
             layout,
             context.plan.num_resolutions,
             &context.plan.subband_quants,
@@ -1195,17 +1199,47 @@ fn select_layout_passes(
             component_weight,
             contrast_mask.as_ref(),
             taubman_weights.as_deref(),
+            false,
         )
         .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+        let perceptual_curves = if !build_perceptual {
+            None
+        } else {
+            Some(
+                rate::curves_from_tier1_layout(
+                    layout,
+                    context.plan.num_resolutions,
+                    &context.plan.subband_quants,
+                    precision,
+                    quality,
+                    component_weight,
+                    contrast_mask.as_ref(),
+                    taubman_weights.as_deref(),
+                    true,
+                )
+                .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?,
+            )
+        };
 
         let selection = if document_trim {
-            crate::dwt::pcrd::select_for_document_trim(&curves)
+            crate::dwt::pcrd::select_for_document_trim(&baseline_curves)
         } else {
-            select_for_quality(&curves, quality, pixel_count)
+            let baseline = select_for_quality(&baseline_curves, quality, pixel_count)
+                .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+            if rate::perceptual_weighting_enabled(quality, baseline.actual_bytes, pixel_count) {
+                crate::dwt::pcrd::select_for_target_bytes(
+                    perceptual_curves
+                        .as_deref()
+                        .expect("perceptual curves exist when weighting is enabled"),
+                    baseline.actual_bytes,
+                )
+            } else {
+                Ok(baseline)
+            }
         }
         .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
 
-        let mut flat_selected_passes = vec![0u16; curves.len()];
+        let mut flat_selected_passes = vec![0u16; baseline_curves.len()];
         for block in selection.selections {
             if let Some(slot) = flat_selected_passes.get_mut(block.block_id) {
                 *slot = block.passes;
@@ -1237,8 +1271,16 @@ fn select_stored_tile_passes(
             .collect();
     }
 
+    let document_trim = matches!(context.plan.rate_mode, crate::plan::RateMode::DocumentTrim);
+    let pixel_count = u64::from(context.image.width) * u64::from(context.image.height);
+    let build_perceptual =
+        !document_trim && rate::perceptual_weighting_candidate(context.plan.quality);
+    let contrast_mask = build_perceptual
+        .then(|| build_luma_contrast_mask(context))
+        .flatten();
     let mut curves = Vec::new();
-    for (_, layouts) in stored_tiles {
+    let mut baseline_curves = Vec::new();
+    for (tile, layouts) in stored_tiles {
         for layout in layouts {
             let component_index = usize::from(layout.component);
             let precision = context
@@ -1254,17 +1296,54 @@ fn select_stored_tile_passes(
                 &context.plan.subband_quants,
                 precision,
                 pcrd_component_weight(context, component_index),
+                context.plan.quality,
+                contrast_mask.as_ref(),
+                tile.x0 as usize,
+                tile.y0 as usize,
+                build_perceptual,
             )
             .map_err(|error| Jp2LamError::EncodeFailed(error.to_string()))?;
+            if build_perceptual && target_body_bytes.is_none() {
+                let mut baseline_component_curves = rate::curves_from_stored_layout(
+                    layout,
+                    baseline_curves.len(),
+                    context.plan.num_resolutions,
+                    &context.plan.subband_quants,
+                    precision,
+                    pcrd_component_weight(context, component_index),
+                    context.plan.quality,
+                    contrast_mask.as_ref(),
+                    tile.x0 as usize,
+                    tile.y0 as usize,
+                    false,
+                )
+                .map_err(|error| Jp2LamError::EncodeFailed(error.to_string()))?;
+                baseline_curves.append(&mut baseline_component_curves);
+            }
             curves.append(&mut component_curves);
         }
     }
 
-    let pixel_count = u64::from(context.image.width) * u64::from(context.image.height);
     let selection = if let Some(target_body_bytes) = target_body_bytes {
+        // Explicit-rate plans use quality 99 as their quantizer precision, so
+        // `build_perceptual` is false and `curves` is the measured-MSE baseline.
+        // Preserve exact-rate behavior until the API exposes an independent
+        // perceptual policy for byte/bpp/ratio targets.
         crate::dwt::pcrd::select_for_target_bytes(&curves, target_body_bytes)
-    } else if matches!(context.plan.rate_mode, crate::plan::RateMode::DocumentTrim) {
+    } else if document_trim {
         crate::dwt::pcrd::select_for_document_trim(&curves)
+    } else if build_perceptual {
+        let baseline = select_for_quality(&baseline_curves, context.plan.quality, pixel_count)
+            .map_err(|error| Jp2LamError::EncodeFailed(error.to_string()))?;
+        if rate::perceptual_weighting_enabled(
+            context.plan.quality,
+            baseline.actual_bytes,
+            pixel_count,
+        ) {
+            crate::dwt::pcrd::select_for_target_bytes(&curves, baseline.actual_bytes)
+        } else {
+            Ok(baseline)
+        }
     } else {
         select_for_quality(&curves, context.plan.quality, pixel_count)
     }
@@ -1583,6 +1662,24 @@ fn build_luma_contrast_mask(context: &EncodeContext<'_>) -> Option<ContrastMaskM
     ))
 }
 
+#[cfg(test)]
+fn contrast_weight_for_stored_block(
+    mask: &ContrastMaskMap,
+    layout: &StoredTier1Layout,
+    tile: TileRect,
+    num_resolutions: u8,
+    block_id: usize,
+) -> Option<f64> {
+    rate::contrast_weight_for_stored_block(
+        layout,
+        Some(mask),
+        tile.x0 as usize,
+        tile.y0 as usize,
+        num_resolutions,
+        block_id,
+    )
+}
+
 fn native_emit_plan(plan: &EncodingPlan) -> EncodingPlan {
     let mut adjusted = plan.clone();
     adjusted.use_mct = native_use_mct(plan);
@@ -1700,13 +1797,15 @@ fn mssim_8x8(orig: &[f32], recon: &[f32], width: usize, height: usize, sample_pe
 mod tests {
     use super::{
         IctTileInputs, NativeBackend, allow_component_parallelism,
-        component_parallel_working_memory_floor, irreversible_input_component_rect,
+        component_parallel_working_memory_floor, contrast_weight_for_stored_block,
+        irreversible_input_component_rect,
     };
     use crate::encode::block_store::EncodedBlockStore;
     use crate::encode::context::EncodeContext;
     use crate::model::{
         ColorSpace, Component, EncodeOptions, Image, OutputFormat, Preset, ResourceLimits,
     };
+    use crate::perceptual::{ContrastMask, ContrastMaskMap};
     use crate::tiling::TileRect;
 
     fn rgb_context(
@@ -2036,5 +2135,55 @@ mod tests {
         assert!(stats.payload_count > 0);
         assert!(stats.spilled_payload_count > 0);
         assert!(stats.memory_bytes <= 1);
+    }
+
+    #[test]
+    fn perceptual_block_mapping_includes_tile_origin() {
+        let context = gray_context(32, 16, 75);
+        let mask = ContrastMaskMap {
+            blocks_x: 4,
+            blocks_y: 2,
+            masks: (0..8)
+                .map(|index| ContrastMask {
+                    weighted_energy: 0.0,
+                    edge_delta: 0.0,
+                    masking_energy: 0.0,
+                    normalized_masking: 0.0,
+                    visibility_weight: if index % 4 < 2 { 0.25 } else { 1.0 },
+                })
+                .collect(),
+            normalizer: 1.0,
+        };
+        let backend = NativeBackend;
+        let tile = TileRect {
+            tile_index: 1,
+            x0: 16,
+            y0: 0,
+            x1: 32,
+            y1: 16,
+        };
+        let mut store = EncodedBlockStore::from_resource_limits(&ResourceLimits::default());
+        let layouts = backend
+            .prepare_stored_tier1_for_tile_rect(&context, tile, &mut store)
+            .expect("stored tile");
+        let weight = contrast_weight_for_stored_block(
+            &mask,
+            &layouts[0],
+            tile,
+            context.plan.num_resolutions,
+            0,
+        )
+        .expect("first block weight");
+        let weight_without_tile_origin = contrast_weight_for_stored_block(
+            &mask,
+            &layouts[0],
+            TileRect { x0: 0, ..tile },
+            context.plan.num_resolutions,
+            0,
+        )
+        .expect("first block weight without tile origin");
+
+        assert_eq!(weight, 1.0);
+        assert_eq!(weight_without_tile_origin, 0.25);
     }
 }

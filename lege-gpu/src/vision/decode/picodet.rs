@@ -102,6 +102,8 @@ pub(crate) fn decode(
     let orig_w = meta.orig_w as f32;
     let orig_h = meta.orig_h as f32;
 
+    let trace = std::env::var_os("LEGE_LAYOUT_TRACE").is_some();
+    let mut image_candidates = trace.then(Vec::new);
     let mut detections = Vec::new();
     for anchor in 0..num_anchors {
         // Best class for this anchor. scores are laid out [C, N] row-major.
@@ -113,6 +115,21 @@ pub(crate) fn decode(
                 best_score = score;
                 best_class = class_id;
             }
+        }
+        if let Some(candidates) = image_candidates.as_mut() {
+            let base = anchor * 4;
+            candidates.push((
+                scores.data[num_anchors + anchor],
+                best_class,
+                best_score,
+                anchor,
+                [
+                    (boxes.data[base] * sx).clamp(0.0, orig_w),
+                    (boxes.data[base + 1] * sy).clamp(0.0, orig_h),
+                    (boxes.data[base + 2] * sx).clamp(0.0, orig_w),
+                    (boxes.data[base + 3] * sy).clamp(0.0, orig_h),
+                ],
+            ));
         }
         if best_score < conf_threshold {
             continue;
@@ -137,7 +154,40 @@ pub(crate) fn decode(
     }
 
     detections.sort_by(|a, b| b.score.total_cmp(&a.score));
-    Ok(class_aware_nms(&detections, iou_threshold, max_detections))
+    let kept = class_aware_nms(&detections, iou_threshold, max_detections);
+    if let Some(mut candidates) = image_candidates {
+        candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+        eprintln!(
+            "LEGE_LAYOUT_TRACE PicoDet anchors={} thresholded={} first_nms={} conf={:.3} iou={:.3}",
+            num_anchors,
+            detections.len(),
+            kept.len(),
+            conf_threshold,
+            iou_threshold
+        );
+        for (image_score, best_class, best_score, anchor, bbox) in candidates.into_iter().take(12) {
+            eprintln!(
+                "  image-candidate anchor={} image={:.4} best={}({:.4}) bbox={:?}",
+                anchor,
+                image_score,
+                class_name(best_class),
+                best_score,
+                bbox
+            );
+        }
+        for detection in &kept {
+            eprintln!(
+                "  first-nms {} score={:.4} bbox=[{:.1},{:.1},{:.1},{:.1}]",
+                class_name(detection.class_id),
+                detection.score,
+                detection.x1,
+                detection.y1,
+                detection.x2,
+                detection.y2
+            );
+        }
+    }
+    Ok(kept)
 }
 
 fn class_aware_nms(

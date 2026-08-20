@@ -2842,17 +2842,87 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     let state_for_docs = state;
     let state_for_licenses = state;
 
-    let content = rect()
-        // In the normal About view the version header is above the actions, so
-        // the dialog can size itself to the compact button row. The theme
-        // chooser is the one view that needs a deliberate fixed width.
+    // The version header sits above the actions, so with no theme chooser open the
+    // dialog only has to be as wide as the button row. The chooser is the one view
+    // that needs a deliberate fixed width.
+    let buttons = rect()
+        .direction(Direction::Horizontal)
+        // Only the wider chooser view has slack to align the row against; on its own
+        // the row is what sets the dialog width.
         .width(if show_chooser {
-            Size::px(480.)
+            Size::fill()
         } else {
             Size::auto()
         })
-        .padding(10.)
         .spacing(6.)
+        .cross_align(Alignment::Center)
+        .maybe(show_chooser, |row| row.main_align(Alignment::End))
+        .font_size(13.)
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| {
+                    // Opens the theme chooser in place; About stays open.
+                    state.write().show_theme_chooser = true;
+                })
+                .child("Theme"),
+        )
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| {
+                    match backend::open_embedded_document(
+                        "documentation.html",
+                        backend::DOCUMENTATION_HTML,
+                    ) {
+                        Ok(()) => (readme_button.borrow_mut())(),
+                        Err(error) => schedule_popup(
+                            state_for_docs,
+                            PopupKind::Warning,
+                            format!("Could not open Readme: {error}"),
+                            8,
+                        ),
+                    }
+                })
+                .child(GUI_TEXT.interactive.popups.documentation.clone()),
+        )
+        .child(
+            Button::new()
+                .compact()
+                .on_press(move |_| {
+                    match backend::open_embedded_document("licenses.html", backend::LICENSES_HTML) {
+                        Ok(()) => (licenses_button.borrow_mut())(),
+                        Err(error) => schedule_popup(
+                            state_for_licenses,
+                            PopupKind::Warning,
+                            format!("Could not open licenses: {error}"),
+                            8,
+                        ),
+                    }
+                })
+                .child(GUI_TEXT.interactive.popups.licenses.clone()),
+        )
+        .child(
+            Button::new()
+                .compact()
+                .filled()
+                .on_press(move |_| (on_close_button.borrow_mut())())
+                .child(GUI_TEXT.interactive.popups.close.clone()),
+        );
+
+    // One body rect instead of PopupContent + PopupButtons: those wrappers each add
+    // their own 8px padding on top of the popup's, which is what used to pad the
+    // dialog out well past its content.
+    let content = rect()
+        .width(if show_chooser {
+            Size::fill()
+        } else {
+            Size::auto()
+        })
+        // The popup frame already contributes 8px; 4 more keeps the content clear of
+        // the 12px corner radius without padding the dialog out.
+        .padding(4.)
+        .spacing(10.)
         .child(
             rect()
                 .direction(Direction::Horizontal)
@@ -2880,70 +2950,13 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
 
     Popup::new()
         .show(true)
+        .width(if show_chooser {
+            Size::px(480.)
+        } else {
+            Size::auto()
+        })
         .on_close_request(move |_| (on_close_request.borrow_mut())())
-        .child(PopupContent::new().child(content))
-        .child(
-            PopupButtons::new()
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press(move |_| {
-                            // Opens the theme chooser in place; About stays open.
-                            state.write().show_theme_chooser = true;
-                        })
-                        .child("Theme"),
-                )
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press(move |_| {
-                            match backend::open_embedded_document(
-                                "documentation.html",
-                                backend::DOCUMENTATION_HTML,
-                            ) {
-                                Ok(()) => (readme_button.borrow_mut())(),
-                                Err(error) => schedule_popup(
-                                    state_for_docs,
-                                    PopupKind::Warning,
-                                    format!("Could not open Readme: {error}"),
-                                    8,
-                                ),
-                            }
-                        })
-                        .child(GUI_TEXT.interactive.popups.documentation.clone()),
-                )
-                .child(
-                    Button::new()
-                        .compact()
-                        .on_press(move |_| {
-                            match backend::open_embedded_document(
-                                "licenses.html",
-                                backend::LICENSES_HTML,
-                            ) {
-                                Ok(()) => (licenses_button.borrow_mut())(),
-                                Err(error) => schedule_popup(
-                                    state_for_licenses,
-                                    PopupKind::Warning,
-                                    format!("Could not open licenses: {error}"),
-                                    8,
-                                ),
-                            }
-                        })
-                        .child(GUI_TEXT.interactive.popups.licenses.clone()),
-                )
-                .child(
-                    Button::new()
-                        .compact()
-                        .filled()
-                        .on_press(move |_| (on_close_button.borrow_mut())())
-                        .child(
-                            label()
-                                .text(GUI_TEXT.interactive.popups.close.clone())
-                                .font_size(13.)
-                                .color(text_fg()),
-                        ),
-                ),
-        )
+        .child(content.child(buttons))
         .into()
 }
 

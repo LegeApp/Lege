@@ -40,8 +40,7 @@ if (-not $SkipBuild) {
         -TextPipeline `
         -TensorRTDir $TensorRTDir `
         -CudaDir $CudaDir `
-        -OpenCVDir $OpenCVDir `
-        -CudaArchitectures 89
+        -OpenCVDir $OpenCVDir
     if ($LASTEXITCODE -ne 0) { throw "TurboOCR build failed with exit code $LASTEXITCODE" }
 }
 

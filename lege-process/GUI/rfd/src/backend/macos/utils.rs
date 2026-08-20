@@ -6,8 +6,8 @@ pub use focus_manager::FocusManager;
 pub use policy_manager::PolicyManager;
 pub use user_alert::{async_pop_dialog, sync_pop_dialog};
 
-use objc2::rc::Retained;
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSView, NSWindow};
 use objc2_foundation::NSThread;
 use raw_window_handle::RawWindowHandle;
@@ -26,7 +26,9 @@ pub fn run_on_main<R: Send, F: FnOnce(MainThreadMarker) -> R + Send>(run: F) -> 
         if unsafe { app.isRunning() } {
             dispatch2::run_on_main(run)
         } else {
-            panic!("You are running RFD in NonWindowed environment, it is impossible to spawn dialog from thread different than main in this env.");
+            panic!(
+                "You are running RFD in NonWindowed environment, it is impossible to spawn dialog from thread different than main in this env."
+            );
         }
     }
 }

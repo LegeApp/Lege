@@ -78,11 +78,11 @@ Before any destructive git operation, stop and ask. The only exception is deleti
 cargo test
 
 # Tests for a specific crate
-cargo test -p djvu_encoder
+cargo test --manifest-path lege-codecs/djvulibrust/Cargo.toml
 cargo test -p lege
 
 # Single test by name
-cargo test -p djvu_encoder jb2_pipeline
+cargo test --manifest-path lege-codecs/djvulibrust/Cargo.toml jb2_pipeline
 
 # Tests with debug-logging output visible
 cargo test --features debug-logging -- --nocapture
@@ -162,7 +162,7 @@ encode-document --manifest … --output … --progress-json`, streaming progress
 into the `ProgressTracker`. Both `djvu_pipeline.rs` and `reflow_pipeline.rs` use
 this via `spawn_djvu_writer_actor`.
 
-- Build the encoder: `cargo build -p djvu_encoder --features cli --bin djvu-encoder`
+- Build the encoder: `cargo build --manifest-path lege-codecs/djvulibrust/Cargo.toml --features cli --bin djvu-encoder`
   (behind the `cli` feature; the library build stays lean). It also has a simple
   standalone mode: `djvu-encoder encode PAGE.png… -o out.djvu [--photo|--bilevel]`.
 - Resolution order (`djvu::resolve_encoder_path`): `--djvu-encoder-path` flag →

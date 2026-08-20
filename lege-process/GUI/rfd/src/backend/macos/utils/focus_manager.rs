@@ -1,5 +1,5 @@
-use objc2::rc::Retained;
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSWindow};
 
 pub struct FocusManager {

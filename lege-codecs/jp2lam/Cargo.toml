@@ -38,7 +38,9 @@ wide = { version = "=0.7.33", optional = true }
 zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+butteraugli = "0.9.3"
 image = { version = "0.25.9", default-features = false, features = ["png"] }
+ssimulacra2 = "0.5.1"
 
 [profile.release]
 debug = true

@@ -1,12 +1,12 @@
 use std::ffi::CString;
 use std::ptr;
 
+use super::AsGtkDialog;
 use super::gtk_future::GtkDialogFuture;
 use super::utils::GtkGlobalThread;
-use super::AsGtkDialog;
 
-use crate::message_dialog::{MessageButtons, MessageDialog, MessageLevel};
 use crate::MessageDialogResult;
+use crate::message_dialog::{MessageButtons, MessageDialog, MessageLevel};
 
 pub struct GtkMessageDialog {
     buttons: MessageButtons,

@@ -377,7 +377,7 @@ impl AppConfig {
             keep_color_images: Some(false), // Dither by default for smaller files
             disable_layout: Some(true), // Disable layout detection for faster processing
             confidence_threshold: Some(0.35), // Match PipelineConfig default
-            nms_threshold: Some(0.5),         // Match PipelineConfig default
+            nms_threshold: Some(0.5),   // Match PipelineConfig default
         }
     }
 
@@ -649,7 +649,7 @@ impl CliConfigBuilder {
                     config.use_fixed_threshold = true;
                     fixed_selected = true;
                 }
-                "3" | "heavy" | "sauvola_ai" | "onnx" => {
+                "3" | "heavy" | "sauvola_ai" | "sauvola-ai" | "onnx" => {
                     config.use_heavy_duty = true;
                     config.use_fixed_threshold = false;
                 }
@@ -747,6 +747,7 @@ impl CliConfigBuilder {
                 | "thr"
                 | "3"
                 | "heavy"
+                | "sauvola-ai"
                 | "sauvola_ai"
                 | "onnx"
         );

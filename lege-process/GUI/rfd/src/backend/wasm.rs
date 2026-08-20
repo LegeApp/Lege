@@ -1,10 +1,10 @@
 mod file_dialog;
 
 use crate::{
-    file_dialog::FileDialog, file_handle::WasmFileHandleKind, FileHandle, MessageDialogResult,
+    FileHandle, MessageDialogResult, file_dialog::FileDialog, file_handle::WasmFileHandleKind,
 };
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlAnchorElement, HtmlButtonElement, HtmlElement, HtmlInputElement};
 
 #[derive(Clone, Debug)]
@@ -391,7 +391,9 @@ impl FileHandle {
     pub async fn write(&self, data: &[u8]) -> std::io::Result<()> {
         let dialog = match &self.0 {
             WasmFileHandleKind::Writable(dialog) => dialog,
-            _ => panic!("This File Handle doesn't support writing. Use `save_file` to get a writeable FileHandle in Wasm"),
+            _ => panic!(
+                "This File Handle doesn't support writing. Use `save_file` to get a writeable FileHandle in Wasm"
+            ),
         };
         let dialog = WasmDialog::new(&FileKind::Out(dialog.clone(), data));
         dialog.show().await;

@@ -4,13 +4,13 @@ use crate::message_dialog::{MessageButtons, MessageDialog, MessageDialogResult, 
 use super::modal_future::AsModal;
 use super::{
     modal_future::{InnerModal, ModalFuture},
-    utils::{self, run_on_main, FocusManager, PolicyManager},
+    utils::{self, FocusManager, PolicyManager, run_on_main},
 };
 
 use super::utils::window_from_raw_window_handle;
 use block2::Block;
-use objc2::rc::{autoreleasepool, Retained};
 use objc2::MainThreadMarker;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertStyle,
     NSAlertThirdButtonReturn, NSApplication, NSModalResponse, NSWindow,

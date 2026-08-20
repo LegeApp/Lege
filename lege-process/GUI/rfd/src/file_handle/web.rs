@@ -1,6 +1,6 @@
 use crate::file_dialog::FileDialog;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 #[derive(Clone, Debug)]
 pub(crate) enum WasmFileHandleKind {
@@ -53,7 +53,9 @@ impl FileHandle {
             if let WasmFileHandleKind::Readable(reader) = &self.0 {
                 file_reader.read_as_array_buffer(reader).unwrap();
             } else {
-                panic!("This File Handle doesn't support reading. Use `pick_file` to get a readable FileHandle");
+                panic!(
+                    "This File Handle doesn't support reading. Use `pick_file` to get a readable FileHandle"
+                );
             }
         });
 
@@ -73,7 +75,9 @@ impl FileHandle {
         if let WasmFileHandleKind::Readable(reader) = &self.0 {
             reader
         } else {
-            panic!("This File Handle doesn't support reading. Use `pick_file` to get a readable FileHandle");
+            panic!(
+                "This File Handle doesn't support reading. Use `pick_file` to get a readable FileHandle"
+            );
         }
     }
 }

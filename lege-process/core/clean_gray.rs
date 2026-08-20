@@ -471,67 +471,15 @@ pub fn clean_page_for_mrc_with_mask(
 
 /// Decide whether a detected image region is actually line art (music systems,
 /// diagrams, ruled tables) rather than continuous-tone content. Line-art
-/// regions in grayscale/MRC mode should NOT be overlaid as original raster
-/// crops — the ink-mask + cleaned-background path renders them far better
-/// (full-res crisp mask vs a gray-paper crop) — while true photos must keep
-/// their original tone via the overlay.
+/// regions should NOT be overlaid as original raster crops — bilevel
+/// binarization or the MRC JBIG2 mask + cleaned background renders them
+/// far better — while true photos, maps, and engravings keep their overlay.
 ///
-/// Metric: luma histogram of the (subsampled) crop. Continuous-tone content
-/// fills the mid-band between its dark and light extremes; line art is
-/// bimodal (ink + paper) with only antialiasing in between. A near-flat
-/// region (tiny dark-light spread) is paper/show-through, also not a photo.
+/// Metric: per-32×32-cell variance / Sobel / orientation features ported
+/// from the bpg-rs preanalysis classifier. A luma-histogram bimodality
+/// test cannot tell maps and engravings from line art.
 pub fn region_is_line_art(rgb: &[u8], width: usize, height: usize, bbox: [f32; 4]) -> bool {
-    let x1 = (bbox[0].max(0.0) as usize).min(width);
-    let y1 = (bbox[1].max(0.0) as usize).min(height);
-    let x2 = (bbox[2].max(0.0) as usize).min(width);
-    let y2 = (bbox[3].max(0.0) as usize).min(height);
-    if x2 <= x1 || y2 <= y1 {
-        return true;
-    }
-    let (rw, rh) = (x2 - x1, y2 - y1);
-    // Sample at most ~64k pixels.
-    let step = (((rw * rh) as f64 / 65536.0).sqrt().ceil() as usize).max(1);
-
-    let mut hist = [0u32; 256];
-    let mut total = 0u32;
-    for y in (y1..y2).step_by(step) {
-        for x in (x1..x2).step_by(step) {
-            let i = (y * width + x) * 3;
-            let l =
-                (299 * rgb[i] as u32 + 587 * rgb[i + 1] as u32 + 114 * rgb[i + 2] as u32) / 1000;
-            hist[l as usize] += 1;
-            total += 1;
-        }
-    }
-    if total == 0 {
-        return true;
-    }
-
-    let percentile = |p: f64| -> usize {
-        let target = (total as f64 * p) as u32;
-        let mut acc = 0u32;
-        for (v, &c) in hist.iter().enumerate() {
-            acc += c;
-            if acc >= target {
-                return v;
-            }
-        }
-        255
-    };
-    let lo = percentile(0.05);
-    let hi = percentile(0.95);
-    let spread = hi.saturating_sub(lo);
-    if spread < 60 {
-        // Near-uniform region: paper, show-through, or a flat fill — no
-        // continuous-tone content worth preserving via an original crop.
-        return true;
-    }
-
-    // Fraction of samples in the middle half of the dark-light range.
-    let band_lo = lo + spread / 4;
-    let band_hi = lo + spread * 3 / 4;
-    let mid: u32 = hist[band_lo..=band_hi.min(255)].iter().sum();
-    (mid as f64 / total as f64) < 0.20
+    crate::content_class::region_is_line_art(rgb, width, height, bbox)
 }
 
 /// Detect thin horizontal line structure that only the grayscale background

@@ -3,22 +3,18 @@
 use std::ffi::c_void;
 use windows_sys::core::{HRESULT, PCWSTR, PWSTR};
 pub use windows_sys::{
-    core::GUID,
     Win32::{
         Foundation::HWND,
         UI::Shell::{Common::COMDLG_FILTERSPEC, FILEOPENDIALOGOPTIONS, SIGDN, SIGDN_FILESYSPATH},
     },
+    core::GUID,
 };
 
 pub(crate) type Result<T> = std::result::Result<T, HRESULT>;
 
 #[inline]
 pub(super) fn wrap_err(hresult: HRESULT) -> Result<()> {
-    if hresult >= 0 {
-        Ok(())
-    } else {
-        Err(hresult)
-    }
+    if hresult >= 0 { Ok(()) } else { Err(hresult) }
 }
 
 #[inline]

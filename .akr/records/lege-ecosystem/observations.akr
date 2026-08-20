@@ -18,6 +18,41 @@ record lege-ecosystem.encode-quality.headsup-measurement-2026-08-11/1 : observat
     method observation
 }
 
+record lege-ecosystem.observation.bpg-variance-separates-line-art/1 : observation {
+    title "bpg-rs variance features separate line art from photos"
+    state superseded
+    statement """
+        The bpg-rs still265 preanalysis (RegionClass / classify in crates/still265/src/preanalysis.rs) distinguishes line art from photographs using per-32x32-cell luma variance, Sobel edge density, 4-bin gradient orientation entropy, and chroma activity. The measurement corpus is gone; the surviving result is those thresholds (FLAT_VAR=12, TEXTURE_VAR=64, TEXT_EDGE_Q8=64, AXIS_ALIGNED_Q8=160, LOW_ENTROPY_Q8=110). A page-global luma-histogram bimodality test cannot make the same cut: it also fires on maps and engravings, which is why 2a86e46 removed region_is_line_art from the overlay retain.
+        """
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    method manual
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.observation.bpg-variance-separates-line-art/2 : observation {
+    title "bpg-rs variance features separate line art from photos"
+    state superseded
+    statement """
+        The bpg-rs still265 preanalysis (RegionClass / classify in crates/still265/src/preanalysis.rs) distinguishes line art from photographs using per-32x32-cell luma variance, Sobel edge density, 4-bin gradient orientation entropy, and chroma activity. The measurement corpus is gone; the surviving result is those thresholds (FLAT_VAR=12, TEXTURE_VAR=64, TEXT_EDGE_Q8=64, AXIS_ALIGNED_Q8=160, LOW_ENTROPY_Q8=110). A page-global luma-histogram bimodality test cannot make the same cut: it also fires on maps and engravings, which is why 2a86e46 removed region_is_line_art from the overlay retain.
+        """
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    method manual
+    supersedes [ @lege-ecosystem.observation.bpg-variance-separates-line-art/1 ]
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.observation.bpg-variance-separates-line-art/3 : observation {
+    title "bpg-rs variance features separate line art from photos"
+    state verified
+    statement """
+        The bpg-rs still265 32x32 cell features (variance, Sobel, orientation, chroma) plus paper-share and luma mid-band separate line art from colour/filled plates on two real books. Structures.pdf: painting cover and terracotta photo stay overlays (chroma 269 / filled flat 0.16); line-only Paris map, pencil sketch, and bimodal ink maps skip (flat 0.67-0.69 or mid 0.07-0.16). buddhasahibsmenw0000alle_1.pdf: photo cover stays (chroma 485, flat 0.06); interior engravings, sculpture drawings, and plans skip. Cream scan paper plus black ink must not count as a colour plate (gate 80, those pages land at 4-59).
+        """
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    method observation
+    supersedes [ @lege-ecosystem.observation.bpg-variance-separates-line-art/2 ]
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 : observation {
     title "DocLayout-M underdetects text and some images"
     state superseded
@@ -50,4 +85,51 @@ record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 : o
     ]
     review_after 2026-11-13
     supersedes [ @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 ]
+}
+
+record lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/1 : observation {
+    title "Windows OCR first-pass benchmark on a 200-page scanned book"
+    state superseded
+    scope [
+        path "lege-document-ocr/**",
+        path "lege-gpu/**",
+        path "lege-ocr/**",
+        path "lege-pdf/read/**"
+    ]
+    statement """
+        On the Windows i7-13700H/RTX 4060 host, four Windows Runtime OCR document workers at a 12 MP page cap processed the 200-page sample in 42.161 seconds (4.744 pages/s), versus 184.148 seconds for one document worker and 727.013 seconds for four Paddle/WGPU workers; Windows and Paddle scored 1.14%/4.49% and 1.11%/5.88% CER/WER proxies respectively against the source OCR layer.
+        """
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    method command
+    watches [ "lege-document-ocr/**", "lege-ocr/**", "lege-gpu/**", "lege-pdf/read/**" ]
+    derived_from [ @lege-ecosystem.work.ocr-backend-scheduler/4 ]
+    verified_by [ @lege-ecosystem.evidence.windows-ocr-200-page-benchmark-20260814/1 ]
+    source {
+        kind internal
+        role evidence
+        path "lege-document-ocr/WINDOWS-BENCHMARK.md"
+        use """
+            Records the host, corpus, commands, timings, proxy accuracy, caveats, and first-pass optimization priorities.
+            """
+    }
+}
+
+record lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/2 : observation {
+    title "Windows OCR first-pass benchmark on a 200-page scanned book"
+    state verified
+    scope [
+        path "lege-document-ocr/**",
+        path "lege-gpu/**",
+        path "lege-ocr/**",
+        path "lege-pdf/read/**"
+    ]
+    statement """
+        On the Windows i7-13700H/RTX 4060 host, four Windows Runtime OCR document workers at a 12 MP page cap processed the 200-page sample in 42.161 seconds (4.744 pages/s), versus 184.148 seconds for one document worker and 727.013 seconds for four Paddle/WGPU workers. The integrated PP-OCRv6-tiny TensorRT path later processed the 10-page sample in 2.731 seconds during post-commit validation; conservative spacing correction improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%, with a warm 2.225-second corrected run versus 2.134 seconds without correction.
+        """
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    method command
+    watches [ "lege-document-ocr/**", "lege-ocr/**", "lege-gpu/**", "lege-pdf/read/**" ]
+    derived_from [ @lege-ecosystem.work.ocr-backend-scheduler/4 ]
+    supersedes [ @lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/1 ]
+    verified_by [ @lege-ecosystem.evidence.windows-ocr-200-page-benchmark-20260814/1 ]
 }

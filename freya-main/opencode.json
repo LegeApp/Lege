@@ -4,9 +4,6 @@
     "cargofmt": {
       "command": [
         "rustfmt",
-        "+nightly-2026-03-15",
-        "--error-on-unformatted",
-        "--unstable-features",
         "$FILE"
       ],
       "extensions": [".rs"]

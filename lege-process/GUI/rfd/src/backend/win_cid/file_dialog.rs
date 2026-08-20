@@ -3,9 +3,9 @@ pub mod dialog_ffi;
 
 use dialog_ffi::{IDialog, Result};
 
-use crate::backend::DialogFutureType;
 use crate::FileDialog;
 use crate::FileHandle;
+use crate::backend::DialogFutureType;
 
 use std::path::PathBuf;
 

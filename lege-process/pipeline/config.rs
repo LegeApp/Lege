@@ -242,16 +242,29 @@ impl PageRange {
     }
 
     pub fn parse(s: &str) -> Result<Self> {
-        let parts: Vec<&str> = s.split('-').collect();
-        if parts.len() != 2 {
-            return Err(anyhow!("Page range must be in format 'start-end'"));
+        let trimmed = s.trim();
+        // A single page number is a one-page range. Help advertises `5` as a
+        // PAGE-RANGE form; requiring `5-5` made `lege book.pdf 5` and
+        // `lege book.pdf 195 2000` fail or process the whole book.
+        if let Ok(page) = trimmed.parse::<usize>() {
+            return Self::new(page, page);
         }
-        let start: usize = parts[0]
+        let Some((start, end)) = trimmed.split_once('-') else {
+            return Err(anyhow!(
+                "Page range must be a page number or 'start-end', got '{trimmed}'"
+            ));
+        };
+        if start.is_empty() || end.is_empty() || end.contains('-') {
+            return Err(anyhow!(
+                "Page range must be a page number or 'start-end', got '{trimmed}'"
+            ));
+        }
+        let start: usize = start
             .parse()
-            .map_err(|_| anyhow!("Invalid start page number: {}", parts[0]))?;
-        let end: usize = parts[1]
+            .map_err(|_| anyhow!("Invalid start page number: {}", start))?;
+        let end: usize = end
             .parse()
-            .map_err(|_| anyhow!("Invalid end page number: {}", parts[1]))?;
+            .map_err(|_| anyhow!("Invalid end page number: {}", end))?;
         Self::new(start, end)
     }
 
@@ -372,6 +385,21 @@ mod page_selection_tests {
         let selected = PageRange::new(300, 400).unwrap();
 
         assert!(PageSelection::parse_with_page_range("120-130", Some(&selected)).is_err());
+    }
+
+    #[test]
+    fn page_range_parse_accepts_a_single_page_number() {
+        let range = PageRange::parse("5").unwrap();
+        assert_eq!(range.start, 5);
+        assert_eq!(range.end, 5);
+        assert!(range.contains(4));
+        assert!(!range.contains(5));
+    }
+
+    #[test]
+    fn page_range_parse_still_accepts_start_end() {
+        let range = PageRange::parse("195-195").unwrap();
+        assert_eq!((range.start, range.end), (195, 195));
     }
 }
 

@@ -1,18 +1,18 @@
 use crate::{
     backend::{
-        macos::utils::{FocusManager, PolicyManager},
         DialogFutureType,
+        macos::utils::{FocusManager, PolicyManager},
     },
     message_dialog::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel},
 };
 
 use objc2::MainThreadMarker;
 use objc2_core_foundation::{
+    CFOptionFlags, CFRetained, CFString, CFTimeInterval, CFURL, CFUserNotificationDisplayAlert,
     kCFUserNotificationAlternateResponse, kCFUserNotificationCancelResponse,
     kCFUserNotificationCautionAlertLevel, kCFUserNotificationDefaultResponse,
     kCFUserNotificationNoteAlertLevel, kCFUserNotificationOtherResponse,
-    kCFUserNotificationStopAlertLevel, CFOptionFlags, CFRetained, CFString, CFTimeInterval,
-    CFUserNotificationDisplayAlert, CFURL,
+    kCFUserNotificationStopAlertLevel,
 };
 
 use std::{mem::MaybeUninit, thread};

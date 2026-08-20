@@ -1317,6 +1317,18 @@ record lege-ecosystem.work.level-local-operation/1 : work {
     }
 }
 
+record lege-ecosystem.work.line-art-variance-postprocess/1 : work {
+    title "Skip line-art image detections via bpg-rs variance classifier"
+    state proposed
+    intent """
+        After DocLayout image-class detections, classify each box with the bpg-rs 32x32 variance / Sobel / orientation preanalysis. Skip line-art boxes as raster overlays so they are binarized with the page or carried by the MRC JBIG2 mask; keep photographs, maps, and engravings as overlays. Do not revive the luma-histogram bimodality test removed in 2a86e46.
+        """
+    note """
+        Classifier lives in lege-process/core/content_class.rs (thresholds copied from bpg-rs still265 preanalysis). PDF and DJVU pipelines call should_keep_image_overlay before premask. layout_correct also demotes line-art image boxes to text.
+        """
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.work.linux-gui-backend-fallback/1 : work {
     title "Make Linux GUI event-loop startup fall back from unavailable Wayland to X11"
     state completed
@@ -1835,6 +1847,46 @@ record lege-ecosystem.work.ocr-correction-exports/4 : work {
     supersedes [ @lege-ecosystem.work.ocr-correction-exports/3 ]
 }
 
+record lege-ecosystem.work.ocr-missing-space-correction/1 : work {
+    title "Conservative missing-space OCR correction"
+    state completed
+    scope [
+        path "lege-document-ocr/README.md",
+        path "lege-document-ocr/cli/src/main.rs",
+        path "lege-document-ocr/crates/pipeline/src/correction.rs",
+        path "lege-document-ocr/crates/pipeline/src/lib.rs"
+    ]
+    intent """
+        Apply high-confidence missing-space repairs without overwriting raw OCR, keep risky edit-distance spelling opt-in, and measure accuracy and throughput on the TensorRT sample.
+        """
+    acceptance {
+        check correction-tests {
+            statement """
+                Pipeline and CLI correction behavior passes focused and integration tests.
+                """
+            method command
+            command "$env:LEGE_TENSORRT_OCR_ROOT='Z:\\missing'; cargo test -p lege-document-pipeline -p lege-document-ocr-cli"
+            verified_by [ @lege-ecosystem.evidence.ocr-missing-space-tests/1 ]
+        }
+        check export-tests {
+            statement """
+                Corrected/raw evidence remains exportable through the document export crate.
+                """
+            method command
+            command "cargo test -p lege-document-export"
+            verified_by [ @lege-ecosystem.evidence.ocr-missing-space-export-tests/1 ]
+        }
+        check sample-quality {
+            statement """
+                A ten-page TensorRT sample shows audited spacing repairs with no identified false split and no material steady-state throughput regression.
+                """
+            method observation
+            verified_by [ @lege-ecosystem.evidence.ocr-missing-space-sample/1 ]
+        }
+    }
+    derived_from [ @lege-ecosystem.work.ocr-correction-exports/4 ]
+}
+
 record lege-ecosystem.work.ocr-pdf-intake/1 : work {
     title "Add OCR-aware PDF intake and preservation"
     state superseded
@@ -1971,6 +2023,80 @@ record lege-ecosystem.work.optimize-mqdecoder-only-after-direct-attribution/1 : 
             The MQ arithmetic state is inherently serial within one codeword segment. SIMD is unlikely to help materially inside one MQ stream.
             """
     }
+}
+
+record lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 : work {
+    title "Package TensorRT as the primary Windows OCR runtime"
+    state completed
+    scope [
+        path "lege-document-ocr/README.md",
+        path "lege-document-ocr/cli/src/main.rs",
+        path "lege-document-ocr/crates/pipeline/src/lib.rs",
+        path "lege-document-ocr/scripts/**",
+        path "lege-document-ocr/turboocr/CMakeLists.txt",
+        path "lege-document-ocr/turboocr/scripts/build_windows_trt.ps1",
+        path "lege-ocr/src/engine_tensorrt.rs"
+    ]
+    intent """
+        Make the Windows OCR distribution self-discover its packaged TensorRT worker, models, and native runtime; require TensorRT on NVIDIA systems; reserve WinOCR for machines without an NVIDIA driver; provide a portable GPU build and an installer-ready staging/preflight workflow.
+        """
+    claim packaged-layout {
+        text """
+            The release layout keeps the CLI beside a self-contained tensorrt directory containing the worker, models, and runtime DLLs, and is discoverable without environment variables.
+            """
+    }
+    claim portable-worker {
+        text """
+            The published CUDA worker includes forward-compatible PTX so it is not limited to the build machine's Ada compute capability.
+            """
+    }
+    claim primary-routing {
+        text """
+            On Windows, automatic backend selection must fail closed when an NVIDIA driver is present and TensorRT is missing or fails preflight; WinOCR is only the no-NVIDIA fallback.
+            """
+    }
+    acceptance {
+        check installer-staging {
+            statement """
+                The staging script produces an installer-ready payload including cold engine-build dependencies and the packaged CLI doctor passes against it.
+                """
+            method command
+            command "powershell -File lege-document-ocr/scripts/package_windows_tensorrt.ps1 ..."
+            verified_by [
+                @lege-ecosystem.evidence.sdk-isolated-cold-tensorrt-package-smoke-20260815/1
+            ]
+        }
+        check packaged-discovery {
+            statement """
+                Tests prove the installed tensorrt/bin, tensorrt/models, and tensorrt/runtime layout is discovered with its DLL directory.
+                """
+            method command
+            command "cargo test -p lege-ocr engine_tensorrt"
+            verified_by [
+                @lege-ecosystem.evidence.packaged-tensorrt-layout-discovery-20260815/1
+            ]
+        }
+        check portable-build {
+            statement """
+                The production worker build defaults to a CUDA architecture set containing forward-compatible PTX rather than Ada-only sm_89.
+                """
+            method observation
+            verified_by [ @lege-ecosystem.evidence.portable-tensorrt-worker-images-20260815/1 ]
+        }
+        check primary-routing {
+            statement """
+                Automated tests prove Auto uses WinOCR only when no NVIDIA driver is present and returns an initialization error for missing or broken TensorRT on an NVIDIA system.
+                """
+            method command
+            command "cargo test -p lege-document-pipeline"
+            verified_by [ @lege-ecosystem.evidence.primary-tensorrt-routing-tests-20260815/1 ]
+        }
+    }
+    derived_from [
+        @lege-ecosystem.assessment.document-ocr-installer-readiness-20260815,
+        @lege-ecosystem.work.windows-tensorrt-document-ocr-integration
+    ]
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli ]
 }
 
 record lege-ecosystem.work.pdf-renderer-follow-ups-outside-pure-codec/1 : work {
@@ -2654,6 +2780,165 @@ record lege-ecosystem.work.what-was-already-fixed-do-not-redo/1 : work {
             color). See `pdf-renderer/DEFERRED.md` corpus item 1 for the full writeup.
             """
     }
+}
+
+record lege-ecosystem.work.windows-document-ocr-winsafe-installer/1 : work {
+    title "Package Lege Document OCR in a WinSafe Windows installer"
+    state completed
+    intent """
+        Adapt the native WinSafe SinoRAG installer shell into an offline Lege Document OCR installer that embeds the complete TensorRT-first Windows payload in an LZMA2-compressed 7z archive, verifies installation readiness, and uninstalls only its registered product directory.
+        """
+    acceptance {
+        check lzma2-payload {
+            statement """
+                The installer build creates and embeds the complete staged TensorRT OCR payload as a 7z archive using LZMA2.
+                """
+            method command
+            command "powershell -File lege-document-ocr/scripts/build_windows_installer.ps1"
+            verified_by [
+                @lege-ecosystem.evidence.document-ocr-lzma2-installer-build-20260815/1
+            ]
+        }
+        check offline-install {
+            statement """
+                An offline install extracts the CLI, TensorRT worker, models, cold engine builder, app-local runtime, licenses, and package manifest without SDK paths.
+                """
+            method command
+            command "lege-document-ocr-installer.exe --install-dir <temp> --quiet --no-shortcuts"
+            verified_by [ @lege-ecosystem.evidence.document-ocr-installer-smoke-20260815/1 ]
+        }
+        check safe-uninstall {
+            statement """
+                Uninstall is restricted to the registered Lege Document OCR install location and removes only product-created shortcuts, registry metadata, and install files.
+                """
+            method manual
+            verified_by [
+                @lege-ecosystem.evidence.document-ocr-safe-uninstall-smoke-20260815/1
+            ]
+        }
+        check winsafe-shell {
+            statement """
+                A Lege-branded WinSafe installer and matching safe uninstaller build as workspace binaries.
+                """
+            method command
+            command "cargo test -p lege-document-ocr-installer-winsafe && cargo build -p lege-document-ocr-installer-winsafe --release --bins"
+            verified_by [ @lege-ecosystem.evidence.document-ocr-winsafe-crate-tests-20260815/1 ]
+        }
+    }
+    derived_from [
+        @lege-ecosystem.assessment.document-ocr-installer-readiness-20260815,
+        @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime
+    ]
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli ]
+}
+
+record lege-ecosystem.work.windows-tensorrt-document-ocr-integration/1 : work {
+    title "Integrate Windows TensorRT PP-OCRv6 with job-scoped WinOCR fallback"
+    state completed
+    scope [
+        path "lege-document-ocr/README.md",
+        path "lege-document-ocr/cli/src/main.rs",
+        path "lege-document-ocr/crates/pipeline/src/lib.rs",
+        path "lege-document-ocr/scripts/test_windows_tensorrt.ps1",
+        path "lege-document-ocr/turboocr/**",
+        path "lege-ocr/src/engine_tensorrt.rs",
+        path "lege-ocr/src/lib.rs"
+    ]
+    intent """
+        Integrate the native Windows PP-OCRv6 TensorRT worker into lege-document-ocr, selecting WinOCR only when GPU startup preflight is unavailable or fails and never changing OCR engines after a job starts.
+        """
+    claim backend-selection {
+        text """
+            On Windows, auto performs a real TensorRT detector/recognizer inference preflight before processing and selects either TensorRT or WinOCR for the complete batch.
+            """
+    }
+    claim explicit-gpu-test {
+        text """
+            The tensorrt-paddle selection is fail-closed and the Windows smoke script exercises both the native probe and integrated PDF path.
+            """
+    }
+    claim no-mid-job-switch {
+        text """
+            A TensorRT failure after processing starts fails the job and never retries its pages with WinOCR.
+            """
+    }
+    acceptance {
+        check gpu-integration {
+            statement """
+                The explicit TensorRT backend completes the restored 10-page PDF in a release build and records TensorRT model provenance.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.windows-tensorrt-integrated-release-pdf/1 ]
+        }
+        check operator-test {
+            statement """
+                The reusable Windows TensorRT smoke script passes its native probe and integrated PDF test.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.windows-tensorrt-smoke-script/1 ]
+        }
+        check regression-tests {
+            statement """
+                The OCR engine, document pipeline, and CLI test suites pass with formatting checks.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.windows-tensorrt-ocr-regression-tests/1 ]
+        }
+        check startup-routing {
+            statement """
+                Auto selects TensorRT when its real-inference preflight succeeds and selects WinOCR for the whole batch when the runtime is unavailable.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.windows-ocr-startup-routing/1 ]
+        }
+    }
+    derived_from [
+        @lege-ecosystem.work.ocr-backend-scheduler,
+        @lege-ecosystem.work.windows-tensorrt-ocr-runtime
+    ]
+}
+
+record lege-ecosystem.work.windows-tensorrt-ocr-runtime/1 : work {
+    title "Port TurboOCR TensorRT text runtime to Windows"
+    state completed
+    scope [ path "lege-document-ocr/turboocr/**" ]
+    intent """
+        Create a native Windows/MSVC CUDA and TensorRT runtime seam, execute PP-OCRv6 detection and recognition on restored benchmark pages, and measure speed, memory, and text-layer accuracy before adapting the runtime for OCDNet/OCRNet.
+        """
+    acceptance {
+        check relative-benchmark {
+            statement """
+                A restored multi-page sample has recorded TensorRT throughput, memory, and text-layer accuracy proxy results comparable with the prior Windows OCR and Paddle/WGPU runs.
+                """
+            method observation
+            verified_by [
+                @lege-ecosystem.evidence.windows-tensorrt-relative-benchmark-20260814/1
+            ]
+        }
+        check text-pipeline-smoke {
+            statement """
+                The lean PP-OCRv6 detector and recognizer build with Windows CUDA and produce OCR text from a rendered benchmark page.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.windows-tensorrt-text-smoke-20260814/1 ]
+        }
+        check windows-runbook {
+            statement """
+                A Windows runbook documents prerequisites, build/model commands, port boundaries, and measured results.
+                """
+            method manual
+            verified_by [ @lege-ecosystem.evidence.windows-tensorrt-runbook-20260814/1 ]
+        }
+        check windows-runtime-build {
+            statement """
+                The isolated TensorRT runtime configures and builds with MSVC on Windows and its CUDA/TensorRT device probe passes.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.windows-tensorrt-runtime-build-20260814/1 ]
+        }
+    }
+    derived_from [ @lege-ecosystem.work.ocr-backend-scheduler/4 ]
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli ]
 }
 
 record lege-ecosystem.work.zero-length-code-block-contribution-truncated/1 : work {

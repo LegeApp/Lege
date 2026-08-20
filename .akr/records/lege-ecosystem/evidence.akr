@@ -182,6 +182,120 @@ record lege-ecosystem.evidence.discrete-gpu-selection-policy-tests/1 : evidence 
         """
 }
 
+record lege-ecosystem.evidence.document-ocr-component-tests-20260815/1 : evidence {
+    title "Document OCR component test suites passed during installer review"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "cargo test --locked -p lege-document-ocr-cli -p lege-document-export -p lege-docir -p lege-document-batch -p lege-document-pipeline -p lege-ocr"
+    summary """
+        All 90 unit tests across the CLI, batch, export, DocIR, pipeline, and OCR packages passed; no tests failed or were ignored.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-installer-smoke-20260815/1 : evidence {
+    title "Offline installer, backend doctor, and manifest smoke test"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command ".\\lege-document-ocr\\scripts\\build_windows_installer.ps1 -PayloadDirectory .\\.agent\\scratch\\ocr-package\\lege-ocr-windows-x64-primary-trt-20260815 -SkipPayloadBuild"
+    artifact ".agent/scratch/ocr-installer/build-20260815-221549/dist/build-metadata.json"
+    summary """
+        The single setup executable installed offline into a clean directory, passed the installed auto-backend doctor, and every payload file matched the packaged SHA-256 manifest.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-lzma2-installer-build-20260815/1 : evidence {
+    title "Solid LZMA2 Lege Document OCR installer build"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command ".\\lege-document-ocr\\scripts\\build_windows_installer.ps1 -PayloadDirectory .\\.agent\\scratch\\ocr-package\\lege-ocr-windows-x64-primary-trt-20260815 -SkipPayloadBuild"
+    artifact ".agent/scratch/ocr-installer/build-20260815-221549/dist/Lege-Document-OCR-Setup-x64.exe"
+    summary """
+        7-Zip verified a solid LZMA2 archive containing 32 payload files; 2,356,896,423 payload bytes compressed to 761,823,698 bytes and embedded in a 762,604,544-byte single-file setup.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-release-build-20260815/1 : evidence {
+    title "Document OCR release build passed during installer review"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "cargo build --release --locked -p lege-document-ocr-cli"
+    summary """
+        The x86_64-pc-windows-msvc release build completed and produced target/release/lege-ocr.exe, version 0.1.0, 24,374,272 bytes.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-safe-uninstall-smoke-20260815/1 : evidence {
+    title "Guarded Lege Document OCR uninstall smoke test"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command ".\\lege-document-ocr\\scripts\\build_windows_installer.ps1 -PayloadDirectory .\\.agent\\scratch\\ocr-package\\lege-ocr-windows-x64-primary-trt-20260815 -SkipPayloadBuild"
+    artifact "lege-document-ocr/installer-winsafe/src/uninstaller.rs"
+    summary """
+        The installed uninstaller accepted only the marker-validated OCR product root, removed the smoke installation through an out-of-directory helper, and left no smoke install directory.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/1 : evidence {
+    title "TensorRT OCR preflight and integrated PDF smoke test passed"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "lege-document-ocr/scripts/test_windows_tensorrt.ps1 -Pdf lege-pdf/render/crates/pdf-chaos-tests/tests/fixtures/hello_world.pdf -SkipBuild"
+    artifact ".agent/scratch/ocr-benchmark/tensorrt-smoke-20260815-210140"
+    summary """
+        The cached PP-OCRv6 TensorRT detector and recognizer passed real CUDA inference preflight on an RTX 4060 Laptop GPU, then the release CLI completed the PDF job in 0.569 seconds.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-windows-dependency-audit-20260815/1 : evidence {
+    title "Windows OCR installer dependency inventory completed"
+    state verified
+    result pass
+    method observation
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    artifact "target/release/lege-ocr.exe"
+    summary """
+        PE inspection found lege-ocr.exe imports VCRUNTIME140.dll and Windows system DLLs. Recursive static-import inspection of the TensorRT worker found nine non-system binaries totaling 424.58 MiB before the 6.0 MiB models and 23.25 MiB Rust CLI; all inspected executables were unsigned.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/1 : evidence {
+    title "Release CLI completed a Windows Runtime OCR smoke test"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "target/release/lege-ocr.exe batch lege-pdf/render/crates/pdf-chaos-tests/tests/fixtures/hello_world.pdf --output .agent/scratch/package-review-winocr-20260815-205905 --backend winocr-legacy --force-ocr --format json,text --workers 1 --force --no-spellcheck"
+    artifact ".agent/scratch/package-review-winocr-20260815-205905"
+    summary """
+        The release executable selected winocr, processed a forced-OCR PDF, and wrote DocIR JSON, manifest, QA JSON, text, checkpoints, and resumable SQLite state.
+        """
+}
+
+record lege-ecosystem.evidence.document-ocr-winsafe-crate-tests-20260815/1 : evidence {
+    title "Lege Document OCR WinSafe crate tests and lint"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "cargo clippy -p lege-document-ocr-installer-winsafe --all-targets -- -D warnings && cargo test -p lege-document-ocr-installer-winsafe"
+    artifact "lege-document-ocr/installer-winsafe"
+    summary """
+        The adapted WinSafe installer/uninstaller compiled on Windows, Clippy passed with warnings denied, and both guarded-deletion unit tests passed.
+        """
+}
+
 record lege-ecosystem.evidence.embedded-about-built-output/1 : evidence {
     title "The built Freya executable contained both canonical About documents and the CLI emitted the embedded PP-OCRv5-aware license notice."
     state verified
@@ -230,6 +344,19 @@ record lege-ecosystem.evidence.image-detection-policy-tests/1 : evidence {
     command "cargo test -p lege --lib image_detection_policy_tests && cargo test -p lege --lib layout_mode_adds_low_resolution_analysis_surface"
     summary """
         Both planned-path image policy regressions and the bounded analysis-surface plan test passed.
+        """
+}
+
+record lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/1 : evidence {
+    title "The staging workflow produced a 2.195 GiB self-discovering Windows payload with 31 hashed payload files, app-local VC/OpenCV/TensorRT DLLs, models, licenses, the cold builder resource, and a passing packaged TensorRT doctor."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "powershell -File lege-document-ocr/scripts/package_windows_tensorrt.ps1 -OutputDirectory .agent/scratch/ocr-package/lege-ocr-windows-x64-primary-trt-20260815 -SkipRustBuild -SkipWorkerBuild"
+    artifact ".agent/scratch/ocr-package/lege-ocr-windows-x64-primary-trt-20260815/package-manifest.json"
+    summary """
+        The staging workflow produced a 2.195 GiB self-discovering Windows payload with 31 hashed payload files, app-local VC/OpenCV/TensorRT DLLs, models, licenses, the cold builder resource, and a passing packaged TensorRT doctor.
         """
 }
 
@@ -470,6 +597,44 @@ record lege-ecosystem.evidence.ocr-gpu-scheduler-specialists-2026-08-11/1 : evid
         """
 }
 
+record lege-ecosystem.evidence.ocr-missing-space-export-tests/1 : evidence {
+    title "Document export tests passed 2/2 with correction evidence changes present."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "cargo test -p lege-document-export"
+    artifact "lege-document-ocr/crates/export"
+    summary """
+        Document export tests passed 2/2 with correction evidence changes present.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-missing-space-sample/1 : evidence {
+    title "On the 10-page TensorRT sample, 16 unique audited missing-space repairs improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%; warm timing was 2.225 s corrected versus 2.134 s baseline."
+    state verified
+    result pass
+    method observation
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    artifact ".agent/scratch/ocr-benchmark/lazy-corrected-20260814-193958-211"
+    summary """
+        On the 10-page TensorRT sample, 16 unique audited missing-space repairs improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%; warm timing was 2.225 s corrected versus 2.134 s baseline.
+        """
+}
+
+record lege-ecosystem.evidence.ocr-missing-space-tests/1 : evidence {
+    title "CLI tests passed 3/3 and pipeline tests passed 13/13, including nine correction tests."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "$env:LEGE_TENSORRT_OCR_ROOT='Z:\\missing'; cargo test -p lege-document-pipeline -p lege-document-ocr-cli"
+    artifact "lege-document-ocr/crates/pipeline/src/correction.rs"
+    summary """
+        CLI tests passed 3/3 and pipeline tests passed 13/13, including nine correction tests.
+        """
+}
+
 record lege-ecosystem.evidence.ocr-owned-toc-gui-suite/1 : evidence {
     title "All 35 Freya tests passed, including Fast, Thorough, and disabled OCR automatic-TOC argument coverage."
     state verified
@@ -519,6 +684,32 @@ record lege-ecosystem.evidence.ocr-production-clippy-2026-08-11/1 : evidence {
     artifact "lege-document-ocr"
     summary """
         All selected OCR production libraries and CLI binary passed Clippy with warnings denied.
+        """
+}
+
+record lege-ecosystem.evidence.packaged-tensorrt-layout-discovery-20260815/1 : evidence {
+    title "Both TensorRT module tests passed, including discovery of bin, models, and runtime DLL directories in the packaged layout."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "cargo test -p lege-ocr engine_tensorrt --lib"
+    artifact "lege-ocr/src/engine_tensorrt.rs"
+    summary """
+        Both TensorRT module tests passed, including discovery of bin, models, and runtime DLL directories in the packaged layout.
+        """
+}
+
+record lege-ecosystem.evidence.portable-tensorrt-worker-images-20260815/1 : evidence {
+    title "The rebuilt packaged worker contains four sm_89 cubins and four compute_75 PTX images, providing native Ada code plus forward-JIT coverage for Turing and newer GPUs."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "D:\\cuda\\bin\\cuobjdump.exe --list-elf turboocr-text.exe; D:\\cuda\\bin\\cuobjdump.exe --list-ptx turboocr-text.exe"
+    artifact "lege-document-ocr/turboocr/scripts/build_windows_trt.ps1"
+    summary """
+        The rebuilt packaged worker contains four sm_89 cubins and four compute_75 PTX images, providing native Ada code plus forward-JIT coverage for Turing and newer GPUs.
         """
 }
 
@@ -582,6 +773,32 @@ record lege-ecosystem.evidence.preserved-jbig2-smask-focused-tests/1 : evidence 
         """
 }
 
+record lege-ecosystem.evidence.primary-tensorrt-ocr-regression-suite-20260815/1 : evidence {
+    title "The affected regression suites passed: 61 lege-ocr tests, 15 pipeline tests, and 3 CLI tests."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "cargo test -p lege-ocr --lib; cargo test -p lege-document-pipeline --lib --quiet; cargo test -p lege-document-ocr-cli --quiet"
+    artifact "lege-document-ocr"
+    summary """
+        The affected regression suites passed: 61 lege-ocr tests, 15 pipeline tests, and 3 CLI tests.
+        """
+}
+
+record lege-ecosystem.evidence.primary-tensorrt-routing-tests-20260815/1 : evidence {
+    title "All 15 pipeline tests and all 3 CLI tests passed; routing tests prove NVIDIA-present failures are fail-closed and WinOCR fallback is allowed only without NVIDIA hardware."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "cargo test -p lege-document-pipeline --lib --quiet; cargo test -p lege-document-ocr-cli --quiet"
+    artifact "lege-document-ocr/crates/pipeline/src/lib.rs"
+    summary """
+        All 15 pipeline tests and all 3 CLI tests passed; routing tests prove NVIDIA-present failures are fail-closed and WinOCR fallback is allowed only without NVIDIA hardware.
+        """
+}
+
 record lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 : evidence {
     title "A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback."
     state verified
@@ -616,6 +833,19 @@ record lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 : evidence {
     command "nvidia-smi -L; env -u WGPU_ADAPTER_NAME LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
     summary """
         nvidia-smi saw the RTX 4060, while wgpu enumerated only Intel Iris Xe and llvmpipe. Vulkan loader diagnostics showed the NVIDIA ICD could not load libGLX_nvidia.so.0 because only an i386 library was installed.
+        """
+}
+
+record lege-ecosystem.evidence.sdk-isolated-cold-tensorrt-package-smoke-20260815/1 : evidence {
+    title "The exact final staged package cold-built detector and recognizer engines without SDK paths, selected tensorrt-paddle through Auto, processed all 10 pages, and produced 10 page shards plus JSON and text exports."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "Set PATH to Windows system directories only; set TRT_ENGINE_CACHE to an empty directory; run staged lege-ocr.exe batch <10-page PDF> --backend auto --force-ocr --format json,text"
+    artifact ".agent/scratch/ocr-package/packaged-auto-smoke-final"
+    summary """
+        The exact final staged package cold-built detector and recognizer engines without SDK paths, selected tensorrt-paddle through Auto, processed all 10 pages, and produced 10 page shards plus JSON and text exports.
         """
 }
 
@@ -781,5 +1011,145 @@ record lege-ecosystem.evidence.structures-smask-policy/1 : evidence {
     command "target/debug/lege /home/dk/Desktop/Structures.pdf 49-72 1400 --output /tmp/lege-structures-dither --text-format jbig2 --cover-format jpeg --no-ocr --dither --binarization adaptive --sauvola-k 0.05; pdfimages -list output"
     summary """
         Pages 49, 66, and 72 each emitted exactly one full-page 1-bit dithered image plus the source-resolution JBIG2 stencil; all 24 pages in 49-72 logged preserved MRC mode=Stucki.
+        """
+}
+
+record lege-ecosystem.evidence.windows-ocr-200-page-benchmark-20260814/1 : evidence {
+    title "Four Windows OCR workers processed 200 pages in 42.161 seconds (4.744 pages/s); all normalized page texts matched the single-worker result."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "target/release/lege-ocr.exe batch .agent/scratch/ocr-benchmark/shards --recursive --output .agent/scratch/ocr-benchmark/out-winocr-12mp-200-sharded --profile search --backend winocr-legacy --format json,text --text-view raw --force-ocr --max-page-pixels 12000000 --workers 4 --no-spellcheck --on-error stop --json-progress"
+    artifact "lege-document-ocr/WINDOWS-BENCHMARK.md"
+    summary """
+        Four Windows OCR workers processed 200 pages in 42.161 seconds (4.744 pages/s); all normalized page texts matched the single-worker result.
+        """
+}
+
+record lege-ecosystem.evidence.windows-ocr-release-build-20260814/1 : evidence {
+    title "The optimized OCR CLI built successfully on Windows 11 with Rust 1.97.1."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "cargo build -p lege-document-ocr-cli --release"
+    artifact "target/release/lege-ocr.exe"
+    summary """
+        The optimized OCR CLI built successfully on Windows 11 with Rust 1.97.1.
+        """
+}
+
+record lege-ecosystem.evidence.windows-ocr-startup-routing/1 : evidence {
+    title "Auto selected tensorrt-paddle when the real-inference preflight succeeded and selected winocr before processing when runtime discovery was forced to fail; the WinOCR manifest says it was selected for the complete job."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "Run the same release 10-page batch twice with --backend auto: once with the discovered runtime and once with LEGE_TENSORRT_OCR_ROOT=Z:\\definitely-missing-tensorrt-runtime."
+    artifact ".agent/scratch/ocr-benchmark/release-auto-winocr-20260814-183905"
+    summary """
+        Auto selected tensorrt-paddle when the real-inference preflight succeeded and selected winocr before processing when runtime discovery was forced to fail; the WinOCR manifest says it was selected for the complete job.
+        """
+}
+
+record lege-ecosystem.evidence.windows-ocr-tests-20260814/1 : evidence {
+    title "All 3 CLI and 5 pipeline tests passed, including force-OCR configuration identity."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "cargo test -p lege-document-ocr-cli -p lege-document-pipeline"
+    artifact "lege-document-ocr"
+    summary """
+        All 3 CLI and 5 pipeline tests passed, including force-OCR configuration identity.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-integrated-release-pdf/1 : evidence {
+    title "The explicit fail-closed TensorRT backend completed all 10 pages in 5.030 seconds; its manifest records PP-OCRv6-tiny TensorRT provenance with no warnings."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command ".\\target\\release\\lege-ocr.exe batch .agent\\scratch\\ocr-benchmark\\social-justice-pages-0021-0030.pdf --output .agent\\scratch\\ocr-benchmark\\release-tensorrt-20260814-183852 --backend tensorrt-paddle --tensorrt-ocr-root .\\lege-document-ocr\\turboocr --tensorrt-dll-dir D:\\TensorRT\\lib --tensorrt-dll-dir D:\\TensorRT\\bin --tensorrt-dll-dir D:\\cuda\\bin --tensorrt-dll-dir D:\\tools\\vcpkg\\installed\\x64-windows\\bin --tensorrt-rec-batch 8 --force-ocr --render-dpi 300 --max-page-pixels 12000000 --format json,text --workers 1 --force --no-spellcheck"
+    artifact ".agent/scratch/ocr-benchmark/release-tensorrt-20260814-183852"
+    summary """
+        The explicit fail-closed TensorRT backend completed all 10 pages in 5.030 seconds; its manifest records PP-OCRv6-tiny TensorRT provenance with no warnings.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-ocr-regression-tests/1 : evidence {
+    title "Formatting checks passed and all 76 unit/integration tests passed: CLI 3, document pipeline 5, and OCR engine 68."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "$env:LEGE_TENSORRT_OCR_ROOT='Z:\\definitely-missing-tensorrt-runtime'; cargo fmt -p lege-ocr -p lege-document-pipeline -p lege-document-ocr-cli -- --check; cargo test -p lege-ocr -p lege-document-pipeline -p lege-document-ocr-cli"
+    summary """
+        Formatting checks passed and all 76 unit/integration tests passed: CLI 3, document pipeline 5, and OCR engine 68.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-relative-benchmark-20260814/1 : evidence {
+    title "Ten 12 MP pages ran at 27.4 OCR-stage pages/s including first-page warmup; steady inference was 28.7 pages/s, batch-8 peak was 2.23 GiB private commit and 1.67 GiB GPU memory, with 2.16% CER and 9.33% WER text-layer proxies."
+    state verified
+    result pass
+    method observation
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    artifact ".agent/scratch/ocr-benchmark/turboocr-10pages-12mp.txt"
+    summary """
+        Ten 12 MP pages ran at 27.4 OCR-stage pages/s including first-page warmup; steady inference was 28.7 pages/s, batch-8 peak was 2.23 GiB private commit and 1.67 GiB GPU memory, with 2.16% CER and 9.33% WER text-layer proxies.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-runbook-20260814/1 : evidence {
+    title "The Windows runbook documents SDK requirements, reproducible scripts, port boundaries, measured throughput/memory/accuracy, and next integration steps."
+    state verified
+    result pass
+    method manual
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    artifact "lege-document-ocr/turboocr/docs/build/windows.md"
+    summary """
+        The Windows runbook documents SDK requirements, reproducible scripts, port boundaries, measured throughput/memory/accuracy, and next integration steps.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-runtime-build-20260814/1 : evidence {
+    title "MSVC and CUDA 13.2 built the lean Windows TensorRT targets; the probe enumerated the RTX 4060 and CTest passed."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command ".\\scripts\\build_windows_trt.ps1 -TextPipeline -TensorRTDir D:\\TensorRT -CudaDir D:\\cuda -OpenCVDir D:\\tools\\vcpkg\\installed\\x64-windows\\share\\opencv4 -CudaArchitectures 89; ctest --test-dir build-windows-trt-text-ninja --output-on-failure"
+    artifact "lege-document-ocr/turboocr/build-windows-trt-text-ninja/turboocr-trt-probe.exe"
+    summary """
+        MSVC and CUDA 13.2 built the lean Windows TensorRT targets; the probe enumerated the RTX 4060 and CTest passed.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-smoke-script/1 : evidence {
+    title "The reusable script reported a real CUDA/TensorRT detector+recognizer probe in 0.897 seconds and completed the integrated 10-page release PDF job in 2.786 seconds."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command ".\\lege-document-ocr\\scripts\\test_windows_tensorrt.ps1 -Pdf .\\.agent\\scratch\\ocr-benchmark\\social-justice-pages-0021-0030.pdf -SkipBuild"
+    artifact ".agent/scratch/ocr-benchmark/tensorrt-smoke-20260814-184251"
+    summary """
+        The reusable script reported a real CUDA/TensorRT detector+recognizer probe in 0.897 seconds and completed the integrated 10-page release PDF job in 2.786 seconds.
+        """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-text-smoke-20260814/1 : evidence {
+    title "PP-OCRv6-tiny detection and recognition produced 39 ordered text lines from a restored 12 MP benchmark page."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "turboocr-text.exe --rec-batch 8 <rendered 12 MP benchmark page>"
+    artifact ".agent/scratch/ocr-benchmark/turboocr-page21-12mp.txt"
+    summary """
+        PP-OCRv6-tiny detection and recognition produced 39 ordered text lines from a restored 12 MP benchmark page.
         """
 }

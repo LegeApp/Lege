@@ -41,16 +41,29 @@ pub fn run_png_mode_with_config(
     mut pipeline_config: PipelineConfig,
     progress_tracker: Option<ProgressTracker>,
 ) -> Result<()> {
-    if !folder.is_dir() {
-        return Err(anyhow!("Path is not a directory: {}", folder.display()));
+    let single_image = folder.is_file()
+        && folder
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
+    if !folder.is_dir() && !single_image {
+        return Err(anyhow!(
+            "Path is not a directory or supported image: {}",
+            folder.display()
+        ));
     }
 
     pipeline_config.set_high_res_render_height(pipeline_config.target_height())?;
     let output_path = output.unwrap_or_else(|| {
-        if pipeline_config.text_format() == "djvu" {
-            folder.join("output.djvu")
+        let dest_dir = if single_image {
+            folder.parent().unwrap_or_else(|| Path::new("."))
         } else {
-            folder.join("output.pdf")
+            folder.as_path()
+        };
+        if pipeline_config.text_format() == "djvu" {
+            dest_dir.join("output.djvu")
+        } else {
+            dest_dir.join("output.pdf")
         }
     });
     let parent = output_path
@@ -69,7 +82,11 @@ pub fn run_png_mode_with_config(
         }
     );
 
-    let image_files = crate::pipeline::source::collect_largest_sequential_image_run(&folder)?;
+    let image_files = if single_image {
+        vec![folder.clone()]
+    } else {
+        crate::pipeline::source::collect_largest_sequential_image_run(&folder)?
+    };
     if image_files.is_empty() {
         return Err(anyhow!(
             "No supported image files found in {}",

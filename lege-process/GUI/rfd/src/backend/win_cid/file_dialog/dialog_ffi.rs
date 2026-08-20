@@ -1,20 +1,20 @@
 use super::super::utils::str_to_vec_u16;
 pub(crate) use super::com::Result;
 use super::com::{
-    wrap_err, IFileDialog, IFileDialogV, IFileOpenDialog, IShellItem, COMDLG_FILTERSPEC,
-    FILEOPENDIALOGOPTIONS, HWND,
+    COMDLG_FILTERSPEC, FILEOPENDIALOGOPTIONS, HWND, IFileDialog, IFileDialogV, IFileOpenDialog,
+    IShellItem, wrap_err,
 };
 use crate::FileDialog;
 
 use windows_sys::{
-    core::GUID,
     Win32::{
-        System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
         UI::Shell::{
-            FileOpenDialog, FileSaveDialog, SHCreateItemFromParsingName, FOS_ALLOWMULTISELECT,
-            FOS_FORCESHOWHIDDEN, FOS_PICKFOLDERS,
+            FOS_ALLOWMULTISELECT, FOS_FORCESHOWHIDDEN, FOS_PICKFOLDERS, FileOpenDialog,
+            FileSaveDialog, SHCreateItemFromParsingName,
         },
     },
+    core::GUID,
 };
 
 use std::{ffi::c_void, path::PathBuf};

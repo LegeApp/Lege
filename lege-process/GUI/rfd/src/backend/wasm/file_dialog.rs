@@ -3,9 +3,9 @@
 //
 
 use crate::{
+    FileHandle,
     backend::{AsyncFileSaveDialogImpl, DialogFutureType},
     file_dialog::FileDialog,
-    FileHandle,
 };
 use std::future::ready;
 impl AsyncFileSaveDialogImpl for FileDialog {

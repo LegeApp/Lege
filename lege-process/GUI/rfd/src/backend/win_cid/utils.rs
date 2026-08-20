@@ -1,8 +1,8 @@
 use windows_sys::{
-    core::HRESULT,
     Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
     },
+    core::HRESULT,
 };
 
 #[inline]

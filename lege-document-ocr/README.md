@@ -69,11 +69,14 @@ sample.
 
 On Windows, `--backend auto` discovers the native PP-OCRv6/TensorRT worker and
 runs a real detector/recognizer inference probe before any document starts. If
-that startup probe succeeds, the complete batch uses `tensorrt-paddle`. If no
-runtime is found or the probe fails, the complete batch uses Windows Runtime
-OCR. The selected backend is included in the resumable configuration hash and
-printed before processing begins. A runtime failure after processing starts
-fails the affected job; it never switches that job to a different OCR engine.
+that startup probe succeeds, the complete batch uses `tensorrt-paddle`.
+TensorRT is the required production backend whenever an NVIDIA driver is
+present: a missing package or failed probe is reported as an installation error
+instead of silently reducing throughput. Windows Runtime OCR is selected by
+`auto` only on systems without an NVIDIA driver. The selected backend is
+included in the resumable configuration hash and printed before processing
+begins. A runtime failure after processing starts fails the affected job; it
+never switches that job to a different OCR engine.
 
 Use `--backend tensorrt-paddle` to test or require the GPU path. This selection
 fails closed instead of falling back. `--backend winocr-legacy` selects the CPU
@@ -99,6 +102,59 @@ decode/conversion in this worker, so a CUDA-enabled OpenCV build is neither
 required nor used for inference. See
 [`turboocr/docs/build/windows.md`](turboocr/docs/build/windows.md) for cold-cache
 behavior and lower-level probe commands.
+
+`doctor` performs the same real startup preflight without processing a PDF:
+
+```powershell
+.\target\release\lege-ocr.exe doctor --backend tensorrt-paddle --json
+```
+
+For an installer build, stage the complete self-discovering payload with:
+
+```powershell
+.\lege-document-ocr\scripts\package_windows_tensorrt.ps1
+```
+
+The output places `lege-ocr.exe` beside `tensorrt\bin`, `tensorrt\models`, and
+`tensorrt\runtime`; no SDK paths or environment variables are needed after
+installation. The staging script also runs the packaged doctor. Its cold-start
+payload deliberately includes `nvinfer_builder_resource_10.dll`, because a new
+machine must compile GPU-specific engines from ONNX. That DLL makes the
+uncompressed package roughly 2.2 GiB; omitting it only works when compatible
+engines have already been provisioned for the exact GPU/driver combination.
+Serialized engines are written to the user's local application-data cache, not
+the installation directory.
+
+The native Windows installer lives in `installer-winsafe`. It is adapted from
+the SinoRAG WinSafe shell and does not use MSI, NSIS, WiX, or a Nix-style
+installer. Build a single sendable setup executable with:
+
+```powershell
+.\lege-document-ocr\scripts\build_windows_installer.ps1
+```
+
+To reuse an already verified staging directory:
+
+```powershell
+.\lege-document-ocr\scripts\build_windows_installer.ps1 `
+  -PayloadDirectory .\.agent\scratch\ocr-package\lege-ocr-windows-x64-primary-trt-20260815 `
+  -SkipPayloadBuild
+```
+
+The build script creates a solid 7z payload using LZMA2 at maximum compression
+with a 128 MiB dictionary, embeds both that payload and the safe uninstaller in
+`Lege-Document-OCR-Setup-x64.exe`, checks the 7z stream, performs an unattended
+install, verifies every SHA-256 entry in the installed package manifest, runs
+the installed backend doctor, and smoke-tests uninstall. Its `dist` directory
+also contains a build metadata JSON file and `SHA256SUMS.txt`.
+
+Installation is entirely offline. On an NVIDIA system the post-install
+`--backend auto` doctor must start the packaged TensorRT worker and complete a
+real inference probe. A missing or broken GPU runtime fails installation; it
+does not quietly use WinOCR. WinOCR remains the hard fallback only when no
+NVIDIA driver is present. The default per-user destination is
+`%LOCALAPPDATA%\Programs\Lege Document OCR`, so the installer does not require
+administrator privileges.
 
 The embedded Paddle assets are the compatibility PP-OCRv5 models. A v6 or
 customer model can be installed with `--model-pack DIRECTORY`; assets are not
@@ -164,9 +220,10 @@ default.
 ## Known production gates
 
 The Windows AI NPU adapter remains deferred until its supported hardware and
-deployment requirements are selected; Windows Runtime OCR remains the supported
-Windows path. The existing performance corpus will be wired into automated
-quality/performance gates once its location and provenance are linked.
+deployment requirements are selected. TensorRT is the primary Windows path;
+Windows Runtime OCR is the hard fallback for machines without NVIDIA hardware.
+The existing performance corpus will be wired into automated quality/performance
+gates once its location and provenance are linked.
 
 Model-pack-driven PP-DocLayout, table-structure, and formula-to-LaTeX adapters
 are implemented, and specialist output retains underlying OCR evidence in

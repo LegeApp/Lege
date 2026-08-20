@@ -108,7 +108,16 @@ impl LayoutEngine {
 
     pub fn detect_single_blocking(&mut self, image: &RgbImage) -> Result<Vec<Detection>> {
         let detections = self.detector.detect_rgb(image)?;
-        Ok(self.finalize_detections(detections, image.width(), image.height()))
+        let mut detections = self.finalize_detections(detections, image.width(), image.height());
+        if crate::layout_correct::should_redetect_images(&detections, image) {
+            let inverted = crate::layout_correct::invert_rgb(image);
+            if let Ok(extra) = self.detector.detect_rgb(&inverted) {
+                let extra = self.finalize_detections(extra, image.width(), image.height());
+                crate::layout_correct::merge_image_redetects(&mut detections, &extra, image);
+            }
+        }
+        crate::layout_correct::correct_layout_detections(&mut detections, image);
+        Ok(detections)
     }
 
     pub async fn detect_single_async(&mut self, image: &RgbImage) -> Result<Vec<Detection>> {
@@ -184,21 +193,39 @@ impl LayoutEngine {
             })
             .collect::<Vec<_>>();
 
-        two_pass_nms(
+        let finalized = two_pass_nms(
             nms_detections,
             self.config.nms_threshold,
             self.config.iou_threshold,
-        )
-        .into_iter()
-        .map(|d| Detection {
-            class_id: d.class_id,
-            category: crate::types::category_for_class(d.class_id),
-            class_name: d.class_name,
-            confidence: d.confidence,
-            bbox: d.bbox,
-            context: d.context,
-        })
-        .collect()
+        );
+        if std::env::var_os("LEGE_LAYOUT_TRACE").is_some() {
+            eprintln!(
+                "LEGE_LAYOUT_TRACE second_nms input={} output={} aware_iou={:.3} agnostic_iou={:.3}",
+                detections.len(),
+                finalized.len(),
+                self.config.nms_threshold,
+                self.config.iou_threshold
+            );
+            for detection in &finalized {
+                eprintln!(
+                    "  second-nms {} score={:.4} bbox={:?}",
+                    detection.class_name.as_deref().unwrap_or("unknown"),
+                    detection.confidence,
+                    detection.bbox
+                );
+            }
+        }
+        finalized
+            .into_iter()
+            .map(|d| Detection {
+                class_id: d.class_id,
+                category: crate::types::category_for_class(d.class_id),
+                class_name: d.class_name,
+                confidence: d.confidence,
+                bbox: d.bbox,
+                context: d.context,
+            })
+            .collect()
     }
 }
 

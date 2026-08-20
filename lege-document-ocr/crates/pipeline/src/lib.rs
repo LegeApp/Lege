@@ -12,8 +12,10 @@ use lege_docir::{
     SourceIdentity, TextBlock, TextEvidence, TextLine, TextWord, Transform, rect_polygon,
 };
 pub use lege_ocr::backend::OcrSchedulerConfig;
-use lege_ocr::backend::{LegacyPageAdapter, PageBatch, PageOcrBackend, RecognitionBatch};
-pub use lege_ocr::engine_tensorrt::TensorRtPaddleConfig;
+#[cfg(target_os = "windows")]
+use lege_ocr::backend::LegacyPageAdapter;
+use lege_ocr::backend::{PageBatch, PageOcrBackend, RecognitionBatch};
+pub use lege_ocr::engine_tensorrt::{TensorRtPaddleConfig, nvidia_hardware_present};
 use lege_pdf_read::{RasterPlane, RasterProduct, RenderSession};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -175,6 +177,10 @@ impl DocumentProcessor {
 
     pub fn selected_backend_name(&self) -> &'static str {
         self.backend.name()
+    }
+
+    pub fn backend_selection_warning(&self) -> Option<&str> {
+        self.backend_selection_warning.as_deref()
     }
 
     pub fn configuration_hash(&self) -> Result<String, PipelineError> {
@@ -982,14 +988,39 @@ type InitializedBackend = (
     Option<String>,
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(test, target_os = "windows"))]
+enum AutoTensorRtFailureAction {
+    FailClosed,
+    UseWinOcrFallback,
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn auto_tensorrt_failure_action(nvidia_hardware_present: bool) -> AutoTensorRtFailureAction {
+    if nvidia_hardware_present {
+        AutoTensorRtFailureAction::FailClosed
+    } else {
+        AutoTensorRtFailureAction::UseWinOcrFallback
+    }
+}
+
 fn initialize_backend(config: &PipelineConfig) -> Result<InitializedBackend, PipelineError> {
     match config.backend {
         BackendChoice::Auto => {
             #[cfg(target_os = "windows")]
             {
-                let candidate = config.tensorrt_paddle.clone().or_else(|| {
-                    TensorRtPaddleConfig::discover(config.scheduler.max_batch_lines.min(8))
-                });
+                let nvidia_hardware_present = lege_ocr::engine_tensorrt::nvidia_hardware_present();
+                let candidate = match config.tensorrt_paddle.clone() {
+                    Some(runtime) => Some(runtime),
+                    None => TensorRtPaddleConfig::discover_result(
+                        config.scheduler.max_batch_lines.min(8),
+                    )
+                    .map_err(|error| {
+                        PipelineError::BackendInitialization(format!(
+                            "TensorRT runtime discovery failed: {error:#}"
+                        ))
+                    })?,
+                };
                 if let Some(runtime) = candidate {
                     match lege_ocr::engine_tensorrt::TensorRtPaddleEngine::start(&runtime) {
                         Ok(engine) => {
@@ -1001,31 +1032,43 @@ fn initialize_backend(config: &PipelineConfig) -> Result<InitializedBackend, Pip
                             ));
                         }
                         Err(tensorrt_error) => {
-                            let fallback = initialize_winocr().map_err(|winocr_error| {
-                                PipelineError::BackendInitialization(format!(
-                                    "TensorRT preflight failed ({tensorrt_error:#}); Windows OCR fallback also failed ({winocr_error})"
-                                ))
-                            })?;
-                            return Ok((
-                                fallback,
-                                BackendChoice::WinOcrLegacy,
-                                None,
-                                Some(format!(
-                                    "TensorRT PP-OCRv6 preflight failed before the job; selected Windows Runtime OCR for the complete job: {tensorrt_error:#}"
-                                )),
-                            ));
+                            match auto_tensorrt_failure_action(nvidia_hardware_present) {
+                                AutoTensorRtFailureAction::FailClosed => {
+                                    return Err(PipelineError::BackendInitialization(format!(
+                                        "an NVIDIA driver is present, so TensorRT OCR is required; TensorRT preflight failed: {tensorrt_error:#}"
+                                    )));
+                                }
+                                AutoTensorRtFailureAction::UseWinOcrFallback => {
+                                    return Ok((
+                                        initialize_winocr(&config.language)?,
+                                        BackendChoice::WinOcrLegacy,
+                                        None,
+                                        Some(format!(
+                                            "TensorRT preflight failed on a system without an NVIDIA driver; selected Windows Runtime OCR for the complete job: {tensorrt_error:#}"
+                                        )),
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
-                Ok((
-                    initialize_winocr()?,
-                    BackendChoice::WinOcrLegacy,
-                    None,
-                    Some(
-                        "TensorRT PP-OCRv6 runtime was not discovered; selected Windows Runtime OCR for the complete job"
-                            .to_string(),
-                    ),
-                ))
+                match auto_tensorrt_failure_action(nvidia_hardware_present) {
+                    AutoTensorRtFailureAction::FailClosed => {
+                        Err(PipelineError::BackendInitialization(
+                            "an NVIDIA driver is present, but the packaged TensorRT OCR runtime was not found; reinstall the application or pass --tensorrt-ocr-root"
+                                .to_string(),
+                        ))
+                    }
+                    AutoTensorRtFailureAction::UseWinOcrFallback => Ok((
+                        initialize_winocr(&config.language)?,
+                        BackendChoice::WinOcrLegacy,
+                        None,
+                        Some(
+                            "No NVIDIA driver was detected; selected Windows Runtime OCR for the complete job"
+                                .to_string(),
+                        ),
+                    )),
+                }
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -1038,9 +1081,17 @@ fn initialize_backend(config: &PipelineConfig) -> Result<InitializedBackend, Pip
             }
         }
         BackendChoice::TensorRtPaddle => {
-            let runtime = config.tensorrt_paddle.clone().or_else(|| {
-                TensorRtPaddleConfig::discover(config.scheduler.max_batch_lines.min(8))
-            });
+            let runtime = match config.tensorrt_paddle.clone() {
+                Some(runtime) => Some(runtime),
+                None => {
+                    TensorRtPaddleConfig::discover_result(config.scheduler.max_batch_lines.min(8))
+                        .map_err(|error| {
+                        PipelineError::BackendInitialization(format!(
+                            "TensorRT runtime discovery failed: {error:#}"
+                        ))
+                    })?
+                }
+            };
             let runtime = runtime.ok_or_else(|| {
                 PipelineError::BackendInitialization(
                     "TensorRT OCR runtime was not found; pass --tensorrt-ocr-root or set LEGE_TENSORRT_OCR_ROOT"
@@ -1063,7 +1114,7 @@ fn initialize_backend(config: &PipelineConfig) -> Result<InitializedBackend, Pip
             None,
         )),
         BackendChoice::WinOcrLegacy => Ok((
-            initialize_winocr()?,
+            initialize_winocr(&config.language)?,
             BackendChoice::WinOcrLegacy,
             None,
             None,
@@ -1105,14 +1156,14 @@ fn initialize_paddle(_config: &PipelineConfig) -> Result<Box<dyn PageOcrBackend>
 }
 
 #[cfg(target_os = "windows")]
-fn initialize_winocr() -> Result<Box<dyn PageOcrBackend>, PipelineError> {
+fn initialize_winocr(_language: &str) -> Result<Box<dyn PageOcrBackend>, PipelineError> {
     Ok(Box::new(LegacyPageAdapter::new(Box::new(
         lege_ocr::engine::WinOcrEngine,
     ))))
 }
 
 #[cfg(not(target_os = "windows"))]
-fn initialize_winocr() -> Result<Box<dyn PageOcrBackend>, PipelineError> {
+fn initialize_winocr(_language: &str) -> Result<Box<dyn PageOcrBackend>, PipelineError> {
     Err(PipelineError::UnavailableBackend("winocr-legacy"))
 }
 
@@ -1169,6 +1220,22 @@ mod tests {
         let mut forced = normal.clone();
         forced.force_ocr = true;
         assert_ne!(normal.hash().unwrap(), forced.hash().unwrap());
+    }
+
+    #[test]
+    fn auto_fails_closed_when_an_nvidia_driver_is_present() {
+        assert_eq!(
+            auto_tensorrt_failure_action(true),
+            AutoTensorRtFailureAction::FailClosed
+        );
+    }
+
+    #[test]
+    fn auto_allows_winocr_only_without_an_nvidia_driver() {
+        assert_eq!(
+            auto_tensorrt_failure_action(false),
+            AutoTensorRtFailureAction::UseWinOcrFallback
+        );
     }
 
     fn text_region(id: &str, bbox: [f32; 4], text: &str) -> Region {

@@ -13,7 +13,9 @@ fn main() {
             if gtk && xdg {
                 panic!("You can't enable both `gtk3` and `xdg-portal` features at once");
             } else if !gtk && !xdg {
-                panic!("You need to choose at least one backend: `gtk3` or `xdg-portal` features for {target_arch}-{target_os}");
+                panic!(
+                    "You need to choose at least one backend: `gtk3` or `xdg-portal` features for {target_arch}-{target_os}"
+                );
             }
         }
     }

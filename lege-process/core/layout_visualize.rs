@@ -1,26 +1,11 @@
-use crate::engine::Detection;
+use crate::engine::{Detection, LayoutEngine, LayoutEngineConfig};
 use crate::pagerender::prelude::{PdfRenderer, RasterConfig as PdfRasterConfig};
-use crate::types::{AppConfig, ContentCategory};
+use crate::types::AppConfig;
 use crate::{debug_println, info_println};
 use anyhow::{Context, Result, anyhow};
 use image::{RgbImage, Rgba, RgbaImage};
-use lege_gpu::vision::{LayoutConfig, LayoutDetector};
 use std::path::PathBuf;
 use std::sync::Arc;
-
-/// Collapse a layout label (YOLO or PP-DocLayout vocabulary) into the four
-/// pipeline categories, by name. Used only for the visualization tint; the
-/// detector's own `class_name` drives the drawn label.
-fn category_for_name(name: &str) -> ContentCategory {
-    match name {
-        "figure" | "image" | "chart" | "seal" | "header_image" | "footer_image" => {
-            ContentCategory::Image
-        }
-        "table" => ContentCategory::Table,
-        "abandon" | "header" | "footer" | "number" | "page_number" => ContentCategory::Abandon,
-        _ => ContentCategory::Text,
-    }
-}
 
 const CLASS_COLORS: &[Rgba<u8>] = &[
     Rgba([255, 107, 107, 255]), // coral
@@ -134,7 +119,20 @@ fn draw_annotations(img: &RgbImage, detections: &[Detection]) -> RgbaImage {
 
         if let Some(ref f) = font {
             let class_name = crate::types::detection_label(det);
-            let label = format!("{} ({:.0}%)", class_name, det.confidence * 100.0);
+            let mut label = format!("{} ({:.0}%)", class_name, det.confidence * 100.0);
+            if crate::types::category_for_class(det.class_id).is_image() {
+                let verdict = crate::content_class::classify_image_region(
+                    img.as_raw(),
+                    width as usize,
+                    height as usize,
+                    det.bbox,
+                );
+                if verdict.is_line_art {
+                    label.push_str(" line-art");
+                } else {
+                    label.push_str(" photo");
+                }
+            }
             let label_y = y1.saturating_sub(22).max(0);
             draw_label(&mut canvas, f, &label, x1, label_y, color);
         }
@@ -151,6 +149,9 @@ fn load_font() -> Option<fontdue::Font> {
         "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\calibri.ttf",
     ];
     for path in &candidates {
         if let Ok(data) = std::fs::read(path) {
@@ -231,17 +232,22 @@ pub fn run_layout_visualize_mode(
             &model_path
         }
     );
-    let layout_config = LayoutConfig {
-        model_path: model_path.clone().into(),
-        confidence_threshold: pipeline_config.confidence_threshold(),
-        iou_threshold: pipeline_config.nms_threshold(),
-        max_detections: 300,
-    };
-    let detector = if model_path.is_empty() {
-        LayoutDetector::from_model_bytes(crate::EMBEDDED_LAYOUT_MODEL, layout_config)?
-    } else {
-        LayoutDetector::new(layout_config)?
-    };
+    // Use LayoutEngine so visualize applies the same NMS + underdetection
+    // correction as the production pipeline (vertical bands from DocLayout,
+    // horizontal extent from OCR-det / ink).
+    let mut detector = LayoutEngine::new(
+        &model_path,
+        LayoutEngineConfig::new(
+            pipeline_config.confidence_threshold(),
+            pipeline_config.nms_threshold(),
+            pipeline_config.nms_threshold(),
+            1,
+        ),
+    )?;
+    let csv_path = output_dir.join("image_boxes.csv");
+    let mut csv = String::from(
+        "page,class,conf,x0,y0,x1,y1,verdict,cells,ink,texture,chroma,structured,flat,mean_chroma,mid\n",
+    );
 
     info_println!(
         "Processing {} pages from PDF with {} total pages",
@@ -262,20 +268,11 @@ pub fn run_layout_visualize_mode(
             .ok_or_else(|| anyhow!("Failed to construct image buffer for page {}", page_num))?;
 
         let detections: Vec<Detection> = detector
-            .detect_rgb(&img)
-            .with_context(|| format!("Layout inference failed on page {}", page_num))?
-            .into_iter()
-            .map(|d| Detection {
-                class_id: d.class_id,
-                class_name: Some(d.class_name.to_string()),
-                confidence: d.confidence,
-                bbox: d.bbox,
-                category: category_for_name(d.class_name),
-                context: None,
-            })
-            .collect();
+            .detect_single_blocking(&img)
+            .with_context(|| format!("Layout inference failed on page {}", page_num))?;
 
         let output_path = output_dir.join(format!("page_{:04}.png", page_num));
+        append_image_box_csv(&mut csv, page_num, &img, &detections);
 
         if detections.is_empty() {
             debug_println!("  Page {} — no detections, saving raw render", page_num);
@@ -301,13 +298,234 @@ pub fn run_layout_visualize_mode(
         crate::progress::cancellation_checkpoint("after layout-visualization page")?;
     }
 
+    std::fs::write(&csv_path, csv)
+        .with_context(|| format!("Failed to write {}", csv_path.display()))?;
     info_println!(
         "Layout visualization complete. {} pages saved to {}",
         pages_to_render.len(),
         output_dir.display()
     );
+    println!("  Image-box CSV: {}", csv_path.display());
     println!("\nOutput: {}", output_dir.display());
 
+    Ok(())
+}
+
+fn append_image_box_csv(
+    csv: &mut String,
+    page_num: usize,
+    img: &RgbImage,
+    detections: &[Detection],
+) {
+    let width = img.width() as usize;
+    let height = img.height() as usize;
+    for det in detections {
+        if !crate::types::category_for_class(det.class_id).is_image() {
+            continue;
+        }
+        let v = crate::content_class::classify_image_region(img.as_raw(), width, height, det.bbox);
+        let verdict = if v.is_line_art { "line-art" } else { "photo" };
+        println!(
+            "    p{} {} {} ink={:.2} tex={:.2} flat={:.2} chroma={:.1} mid={:.2} cells={}",
+            page_num,
+            crate::types::detection_label(det),
+            verdict,
+            v.ink_share,
+            v.texture_share,
+            v.avg_flat,
+            v.mean_chroma,
+            v.mid_share,
+            v.cells
+        );
+        csv.push_str(&format!(
+            "{},{},{:.3},{:.1},{:.1},{:.1},{:.1},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.1},{:.3}\n",
+            page_num,
+            crate::types::detection_label(det),
+            det.confidence,
+            det.bbox[0],
+            det.bbox[1],
+            det.bbox[2],
+            det.bbox[3],
+            verdict,
+            v.cells,
+            v.ink_share,
+            v.texture_share,
+            v.chroma_share,
+            v.structured,
+            v.avg_flat,
+            v.mean_chroma,
+            v.mid_share
+        ));
+    }
+}
+
+/// Overlay DocLayout boxes on a single JPEG/PNG (or other raster) image.
+pub fn run_layout_visualize_image(image_path: PathBuf, target_height: u32) -> Result<()> {
+    let img = load_and_scale_raster(&image_path, Some(target_height))?;
+    let output_dir = dated_debug_dir(&image_path, "layout_vis");
+    std::fs::create_dir_all(&output_dir)?;
+    info_println!("Layout Visualize Mode");
+    info_println!("  Input image: {}", image_path.display());
+    info_println!("  Output: {}", output_dir.display());
+    info_println!("  Raster: {}x{}", img.width(), img.height());
+
+    let mut detector = layout_engine_from_defaults()?;
+    let output_path = output_dir.join("page_0001.png");
+    write_layout_overlay(&mut detector, &img, &output_path)?;
+    println!("\nOutput: {}", output_dir.display());
+    Ok(())
+}
+
+/// Debug a single raster image: layout overlay plus a binarized PNG.
+///
+/// Height is optional. When omitted the native pixel size is used so a scan
+/// can be inspected without an extra resize. `--binarization heavy` / `--heavy`
+/// selects the ONNX Sauvola model.
+pub fn run_image_debug_mode(
+    image_path: PathBuf,
+    target_height: Option<u32>,
+    binarization: Option<crate::color::BinarizationConfig>,
+    invert_input: bool,
+    output_dir: Option<PathBuf>,
+) -> Result<()> {
+    let img = load_and_scale_raster(&image_path, target_height)?;
+    let output_dir = output_dir.unwrap_or_else(|| dated_debug_dir(&image_path, "image_debug"));
+    std::fs::create_dir_all(&output_dir)?;
+
+    let method = if binarization
+        .as_ref()
+        .is_some_and(|cfg| cfg.use_heavy_duty && !cfg.use_fixed_threshold)
+    {
+        "heavy Sauvola (ONNX)"
+    } else if binarization
+        .as_ref()
+        .is_some_and(|cfg| cfg.use_fixed_threshold)
+    {
+        "fixed threshold"
+    } else {
+        "adaptive Sauvola/Otsu"
+    };
+
+    info_println!("Image Debug Mode");
+    info_println!("  Input: {}", image_path.display());
+    info_println!("  Output: {}", output_dir.display());
+    info_println!("  Raster: {}x{}", img.width(), img.height());
+    info_println!("  Binarization: {method}");
+
+    img.save(output_dir.join("original.png"))
+        .map_err(anyhow::Error::msg)
+        .context("failed to save original raster")?;
+
+    let mut detector = layout_engine_from_defaults()?;
+    write_layout_overlay(&mut detector, &img, &output_dir.join("layout.png"))?;
+
+    let mut bin_cfg = binarization.unwrap_or_default();
+    if invert_input {
+        bin_cfg.invert_input = true;
+    }
+    let options = crate::color::BinarizationOptions {
+        invert: bin_cfg.invert,
+        invert_input: bin_cfg.invert_input,
+        k_factor: bin_cfg.k_factor,
+        use_heavy_duty: bin_cfg.use_heavy_duty && !bin_cfg.use_fixed_threshold,
+        patch_percentage: bin_cfg.patch_percentage,
+        no_patch: bin_cfg.no_patch,
+        use_fixed_threshold: bin_cfg.use_fixed_threshold,
+        fixed_threshold: bin_cfg.fixed_threshold,
+        disable_gpu: false,
+    };
+    let width = img.width() as usize;
+    let height = img.height() as usize;
+    let binary =
+        crate::color::binarization::binarize_image_raw(img.as_raw(), width, height, &options);
+    let bin_img = image::GrayImage::from_raw(img.width(), img.height(), binary)
+        .ok_or_else(|| anyhow!("failed to wrap binarized buffer"))?;
+    bin_img
+        .save(output_dir.join("binarized.png"))
+        .map_err(anyhow::Error::msg)
+        .context("failed to save binarized PNG")?;
+
+    println!("\nOutput: {}", output_dir.display());
+    Ok(())
+}
+
+fn dated_debug_dir(input: &std::path::Path, kind: &str) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    input
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!("{stem}_{kind}_{stamp}"))
+}
+
+fn layout_engine_from_defaults() -> Result<LayoutEngine> {
+    let model_override = std::env::var("LEGE_LAYOUT_MODEL").ok();
+    let pipeline_config = crate::PipelineConfig::default();
+    let model_path = model_override.unwrap_or_else(|| pipeline_config.model_path().to_string());
+    info_println!(
+        "  Model: {}",
+        if model_path.is_empty() {
+            "<embedded>"
+        } else {
+            &model_path
+        }
+    );
+    LayoutEngine::new(
+        &model_path,
+        LayoutEngineConfig::new(
+            pipeline_config.confidence_threshold(),
+            pipeline_config.nms_threshold(),
+            pipeline_config.nms_threshold(),
+            1,
+        ),
+    )
+}
+
+fn load_and_scale_raster(path: &std::path::Path, target_height: Option<u32>) -> Result<RgbImage> {
+    let dynamic = image::open(path)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("Failed to open image: {}", path.display()))?;
+    let rgb = dynamic.to_rgb8();
+    let Some(target_h) = target_height.filter(|h| *h > 0 && *h != rgb.height()) else {
+        return Ok(rgb);
+    };
+    let width = ((u64::from(rgb.width()) * u64::from(target_h)) / u64::from(rgb.height()).max(1))
+        .max(1) as u32;
+    Ok(image::imageops::resize(
+        &rgb,
+        width,
+        target_h,
+        image::imageops::FilterType::Triangle,
+    ))
+}
+
+fn write_layout_overlay(
+    detector: &mut LayoutEngine,
+    img: &RgbImage,
+    output_path: &std::path::Path,
+) -> Result<()> {
+    let detections = detector
+        .detect_single_blocking(img)
+        .with_context(|| format!("Layout inference failed on {}", output_path.display()))?;
+    if detections.is_empty() {
+        img.save(output_path)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("Failed to save PNG: {}", output_path.display()))?;
+    } else {
+        draw_annotations(img, &detections)
+            .save(output_path)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("Failed to save annotated PNG: {}", output_path.display()))?;
+    }
+    info_println!(
+        "  {} detections -> {}",
+        detections.len(),
+        output_path.display()
+    );
     Ok(())
 }
 

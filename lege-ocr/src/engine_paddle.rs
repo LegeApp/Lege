@@ -600,6 +600,16 @@ impl PaddleOcrEngine {
         self.inner.recognition.recognize(lines.to_vec())
     }
 
+    /// Run DBNet only and return page-space text-line boxes. Used by layout
+    /// correction so DocLayout can stay authoritative for vertical bands
+    /// while OCR-det supplies the horizontal extent.
+    pub fn detect_gray_boxes(&self, gray: &GrayImage) -> Result<Vec<TextBox>> {
+        self.inner
+            .detector
+            .detect_gray(gray)
+            .context("grayscale detection failed")
+    }
+
     /// Detect text lines on `rgb`, recognize each, and return per-line results
     /// with page-global bboxes in column-aware reading order.
     fn ocr_rgb_linked(

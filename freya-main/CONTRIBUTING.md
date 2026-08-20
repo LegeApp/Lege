@@ -15,14 +15,14 @@ cd freya
 
 You will need the following tools installed:
 
-- [Rust](https://www.rust-lang.org/tools/install) (stable and nightly toolchains)
+- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain; nightly optional for optional style checks)
 - [just](https://github.com/casey/just) - Command runner
 - [taplo](https://taplo.tamasfe.dev/) - TOML formatter
 - [cargo-nextest](https://nexte.st/) - Test runner
 
-Install nightly Rust (required for formatting):
+Nightly toolchain is optional:
 ```sh
-rustup toolchain install nightly-2026-03-15
+rustup toolchain install nightly-2026-03-15 # optional, for `just f-nightly` only
 ```
 
 Install `just`, `taplo` and `cargo-nextest`:

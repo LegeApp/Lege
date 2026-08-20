@@ -5,6 +5,8 @@ mod appearance;
 mod backend;
 mod colors;
 mod gui_text;
+#[cfg(target_os = "linux")]
+mod linux_desktop;
 mod logging;
 mod models;
 mod sanzowada;
@@ -35,6 +37,12 @@ fn main() {
             ShowWindow(console_window, SW_HIDE);
         }
     }
+
+    // Zip-portable Linux: extract the embedded PNG + register a .desktop entry
+    // so the app menu / launcher show the correct icon without a sidecar file.
+    // Run before stdout/stderr are redirected to /dev/null.
+    #[cfg(target_os = "linux")]
+    linux_desktop::ensure_desktop_integration(ICON);
 
     #[cfg(all(target_os = "linux", not(debug_assertions)))]
     {

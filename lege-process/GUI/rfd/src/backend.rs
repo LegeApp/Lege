@@ -1,5 +1,5 @@
-use crate::message_dialog::MessageDialogResult;
 use crate::FileHandle;
+use crate::message_dialog::MessageDialogResult;
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;

@@ -522,10 +522,13 @@ mod tests {
             eprintln!("skipping hardware adapter test; set LEGE_TEST_GPU_SELECTION=1");
             return;
         }
-        assert!(
-            std::env::var_os("WGPU_ADAPTER_NAME").is_none(),
-            "hardware policy test requires WGPU_ADAPTER_NAME to be unset"
-        );
+        if let Some(adapter_name) = std::env::var_os("WGPU_ADAPTER_NAME") {
+            eprintln!(
+                "skipping hardware policy test; unset WGPU_ADAPTER_NAME to test automatic selection (current: {:?})",
+                adapter_name
+            );
+            return;
+        }
 
         let instance = crate::wgpu_setup::create_instance();
         let adapters = pollster::block_on(

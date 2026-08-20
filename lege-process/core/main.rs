@@ -5,9 +5,9 @@ use lege::text_loader::CLI_TEXT;
 use lege::{
     AppConfig, CoverFormat, DebugCropKind, ImageRegionDitherMode, PageRange, PageSelection,
     PipelineConfig, error_println, info_println, is_ocr_available, run_folder_layout_crop_debug,
-    run_images_to_images_mode, run_layout_visualize_mode, run_pdf_layout_crop_debug,
-    run_pdf_to_images_mode, run_pdf_to_png_mode, run_png_mode, run_png_mode_with_config,
-    run_zip_mode_with_config,
+    run_image_debug_mode, run_images_to_images_mode, run_layout_visualize_image,
+    run_layout_visualize_mode, run_pdf_layout_crop_debug, run_pdf_to_images_mode,
+    run_pdf_to_png_mode, run_png_mode, run_png_mode_with_config, run_zip_mode_with_config,
 };
 
 mod version;
@@ -382,6 +382,7 @@ struct CliOptions {
     binarization: Option<String>, // --binarization adaptive|fixed|heavy
     threshold: Option<u8>,        // --threshold 200
     sauvola_k: Option<f32>,       // --sauvola-k 0.3
+    heavy: bool,                  // --heavy / --heavy-sauvola (ONNX Sauvola)
 
     // --- Quality ---
     djvu_quality: Option<u8>, // --djvu-quality 100
@@ -430,17 +431,18 @@ struct CliOptions {
     language: Option<String>, // --language <code>
 
     // --- Debug / data-generation modes ---
-    pdf_to_png: Option<u32>,       // --pdf-to-png HEIGHT
-    png_folder: bool,              // --png-folder  (first positional arg is the folder)
-    crop_areas: Option<String>,    // --crop-areas text|image|both
-    debug_format: Option<String>,  // --format png|jpg  (for --crop-areas)
-    pdf_to_images: bool,           // --pdf-to-images
-    images_to_images: bool,        // --images-to-images
-    png_quantize: bool,            // --png-quantize
-    png_colors: u16,               // --png-colors N
-    jp2_debug: Option<u32>,        // --jp2-debug HEIGHT  (render pages → JP2 + size log)
-    gray_jp2: bool,                // --gray-jp2  (image regions → grayscale JP2 overlay)
+    pdf_to_png: Option<u32>,          // --pdf-to-png HEIGHT
+    png_folder: bool,                 // --png-folder  (first positional arg is the folder)
+    crop_areas: Option<String>,       // --crop-areas text|image|both
+    debug_format: Option<String>,     // --format png|jpg  (for --crop-areas)
+    pdf_to_images: bool,              // --pdf-to-images
+    images_to_images: bool,           // --images-to-images
+    png_quantize: bool,               // --png-quantize
+    png_colors: u16,                  // --png-colors N
+    jp2_debug: Option<u32>,           // --jp2-debug HEIGHT  (render pages → JP2 + size log)
+    gray_jp2: bool,                   // --gray-jp2  (image regions → grayscale JP2 overlay)
     layout_visualize: Option<u32>, // --layout-visualize HEIGHT  (render pages with detection bbox overlays)
+    image_debug: Option<Option<u32>>, // --image-debug [HEIGHT]  (single JPEG/PNG layout + binarize)
     debug_runtime_stats: bool,     // --debug-runtime-stats (Phase 0 process/stage metrics)
 
     // --- GUI integration modes ---
@@ -539,14 +541,23 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
                     // `fixed` is the legacy spelling of `threshold`, still accepted.
-                    "adaptive" | "threshold" | "fixed" | "heavy" => {}
+                    // `sauvola-ai` / `onnx` are aliases for the heavy ONNX Sauvola model.
+                    "adaptive" | "threshold" | "fixed" | "heavy" | "sauvola-ai" | "sauvola_ai"
+                    | "onnx" => {}
                     _ => bail!(
-                        "Invalid --binarization '{}'. Use: adaptive, threshold, or heavy",
+                        "Invalid --binarization '{}'. Use: adaptive, threshold, or heavy (ONNX Sauvola)",
                         val
                     ),
                 }
-                opts.binarization = Some(normalized);
+                opts.binarization = Some(match normalized.as_str() {
+                    "sauvola-ai" | "sauvola_ai" | "onnx" => "heavy".to_string(),
+                    other => other.to_string(),
+                });
                 i += 2;
+            }
+            "--heavy" | "--heavy-sauvola" => {
+                opts.heavy = true;
+                i += 1;
             }
             "--threshold" => {
                 let val = args
@@ -712,6 +723,23 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     }
                 } else {
                     opts.layout_visualize = Some(default_height);
+                    i += 1;
+                }
+            }
+            "--image-debug" => {
+                if let Some(next) = args.get(i + 1) {
+                    if let Ok(height) = next.parse::<u32>() {
+                        if height < 100 || height > 10000 {
+                            bail!("--image-debug height must be between 100 and 10000 pixels");
+                        }
+                        opts.image_debug = Some(Some(height));
+                        i += 2;
+                    } else {
+                        opts.image_debug = Some(None);
+                        i += 1;
+                    }
+                } else {
+                    opts.image_debug = Some(None);
                     i += 1;
                 }
             }
@@ -936,6 +964,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 i += 1;
             }
         }
+    }
+
+    if opts.heavy {
+        opts.binarization = Some("heavy".to_string());
     }
 
     if opts.music_sheet {
@@ -1287,6 +1319,7 @@ fn run_main() -> Result<()> {
         && cli_opts.pdf_to_png.is_none()
         && cli_opts.jp2_debug.is_none()
         && cli_opts.layout_visualize.is_none()
+        && cli_opts.image_debug.is_none()
         && !cli_opts.png_folder
         && cli_opts.crop_areas.is_none()
         && !cli_opts.pdf_to_images
@@ -1366,14 +1399,17 @@ fn run_main() -> Result<()> {
         );
     }
 
-    // Layout visualize: lege <file.pdf> [page-range] --layout-visualize HEIGHT
+    // Layout visualize: PDF pages or a single raster image.
     if let Some(vis_height) = cli_opts.layout_visualize {
-        let pdf_arg = args
+        let input_arg = args
             .get(1)
-            .ok_or_else(|| anyhow!("Missing PDF path for --layout-visualize"))?;
-        let pdf_path = PathBuf::from(sanitize_path_arg(pdf_arg));
+            .ok_or_else(|| anyhow!("Missing input path for --layout-visualize"))?;
+        let input_path = PathBuf::from(sanitize_path_arg(input_arg));
+        if is_raster_image_path(&input_path) {
+            return run_layout_visualize_image(input_path, vis_height);
+        }
         validate_pdf_file(
-            pdf_path
+            input_path
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid PDF path"))?,
         )?;
@@ -1389,7 +1425,28 @@ fn run_main() -> Result<()> {
             // "all" / "full" / "*" mean "every page" (None), consistent with the main
             // pipeline and the documented `book.pdf all --crop-areas` example.
             .and_then(interpret_page_range_arg);
-        return run_layout_visualize_mode(pdf_path, page_range, vis_height, AppConfig::default());
+        return run_layout_visualize_mode(input_path, page_range, vis_height, AppConfig::default());
+    }
+
+    // Single JPEG/PNG debug: layout overlay + binarized raster.
+    if let Some(debug_height) = cli_opts.image_debug {
+        let input_arg = args
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing image path for --image-debug"))?;
+        let input_path = PathBuf::from(sanitize_path_arg(input_arg));
+        if !is_raster_image_path(&input_path) {
+            bail!(
+                "--image-debug expects a JPEG or PNG (or other raster image), got {}",
+                input_path.display()
+            );
+        }
+        return run_image_debug_mode(
+            input_path,
+            debug_height,
+            cli_binarization_config(&cli_opts),
+            cli_opts.invert,
+            cli_opts.output_dir.clone(),
+        );
     }
 
     // PNG-folder inference: lege <folder> --png-folder
@@ -1600,8 +1657,7 @@ fn run_main() -> Result<()> {
             let last = &positional[last_idx];
             if !looks_like_input_arg(prev)
                 && !looks_like_input_arg(last)
-                && looks_like_target_dimension_number(prev)
-                && looks_like_target_dimension_number(last)
+                && two_numbers_are_target_dimensions(prev, last)
             {
                 let width = positional.pop().unwrap();
                 let height = positional.pop().unwrap();
@@ -1616,14 +1672,15 @@ fn run_main() -> Result<()> {
                 // the start-end page-range validation and processes just that page.
                 if lone_number_is_page_like(last) {
                     let candidate = positional.pop().unwrap();
-                    let range = format!("{c}-{c}", c = candidate.trim());
+                    let range = canonicalize_page_range_token(&candidate);
                     validate_page_range(&range)?;
                     page_range = Some(range);
                 } else if parse_target_argument(last).is_ok() {
                     target_arg = positional.pop();
                 } else if looks_like_page_range(last) {
                     let candidate = positional.pop().unwrap();
-                    let interpreted = interpret_page_range_arg(candidate.clone());
+                    let interpreted =
+                        interpret_page_range_arg(canonicalize_page_range_token(&candidate));
                     if let Some(ref range) = interpreted {
                         validate_page_range(range)?;
                     }
@@ -1639,7 +1696,8 @@ fn run_main() -> Result<()> {
             if !looks_like_input_arg(last) {
                 if looks_like_page_range(last) {
                     let candidate = positional.pop().unwrap();
-                    let interpreted = interpret_page_range_arg(candidate.clone());
+                    let interpreted =
+                        interpret_page_range_arg(canonicalize_page_range_token(&candidate));
                     if let Some(ref range) = interpreted {
                         validate_page_range(range)?;
                     }
@@ -1744,6 +1802,24 @@ fn looks_like_target_dimension_number(input: &str) -> bool {
         .is_ok_and(|value| (100..=20000).contains(&value))
 }
 
+/// `HEIGHT WIDTH` as two bare numbers. A page-like first number plus a
+/// height (`lege book.pdf 195 2000`) is page+target, not a 2000×195 canvas.
+fn two_numbers_are_target_dimensions(prev: &str, last: &str) -> bool {
+    looks_like_target_dimension_number(prev)
+        && looks_like_target_dimension_number(last)
+        && !lone_number_is_page_like(prev)
+}
+
+fn canonicalize_page_range_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if let Ok(page) = trimmed.parse::<u32>() {
+        if page > 0 {
+            return format!("{page}-{page}");
+        }
+    }
+    trimmed.to_string()
+}
+
 /// A lone positional integer is ambiguous: it could be a target height or a page number.
 /// Anything below a usable page height can't be a target (no device renders a sub-500px
 /// page), so treat it as a page. This makes `lege book.pdf 215` mean "page 215" instead of
@@ -1803,7 +1879,17 @@ fn looks_like_input_arg(input: &str) -> bool {
     }
 
     let lower = input.to_ascii_lowercase();
-    lower.ends_with(".pdf") || lower.ends_with(".zip")
+    lower.ends_with(".pdf") || lower.ends_with(".zip") || is_raster_image_path(Path::new(input))
+}
+
+fn is_raster_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff" | "webp" | "ppm" | "pgm")
+    )
 }
 
 fn parse_target_argument(spec: &str) -> Result<Option<TargetSelection>> {
@@ -3461,6 +3547,68 @@ mod cli_parser_tests {
             err.to_string().contains("Format number must be"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn usage_mentions_heavy_sauvola_flag() {
+        assert!(
+            CLI_TEXT.main.usage_block.contains("--heavy"),
+            "main help should name --heavy"
+        );
+        assert!(
+            CLI_TEXT.main.debug_help_block.contains("--image-debug"),
+            "debug help should name --image-debug"
+        );
+    }
+
+    #[test]
+    fn heavy_flag_selects_onnx_sauvola() {
+        let (rest, opts) =
+            extract_cli_options(vec!["lege".into(), "scan.jpg".into(), "--heavy".into()])
+                .expect("parse --heavy");
+        assert_eq!(rest, vec!["lege", "scan.jpg"]);
+        assert_eq!(opts.binarization.as_deref(), Some("heavy"));
+        assert!(opts.heavy);
+        let cfg = cli_binarization_config(&opts).expect("heavy config");
+        assert!(cfg.use_heavy_duty);
+        assert!(!cfg.use_fixed_threshold);
+    }
+
+    #[test]
+    fn image_debug_flag_accepts_optional_height() {
+        let (_, opts) = extract_cli_options(vec![
+            "lege".into(),
+            "scan.jpg".into(),
+            "--image-debug".into(),
+        ])
+        .expect("parse --image-debug");
+        assert_eq!(opts.image_debug, Some(None));
+        let (_, opts) = extract_cli_options(vec![
+            "lege".into(),
+            "scan.jpg".into(),
+            "--image-debug".into(),
+            "1600".into(),
+            "--heavy-sauvola".into(),
+        ])
+        .expect("parse --image-debug 1600");
+        assert_eq!(opts.image_debug, Some(Some(1600)));
+        assert_eq!(opts.binarization.as_deref(), Some("heavy"));
+        assert!(is_raster_image_path(Path::new("scan.JPEG")));
+        assert!(!is_raster_image_path(Path::new("book.pdf")));
+    }
+
+    #[test]
+    fn page_plus_height_is_not_read_as_width_height() {
+        assert!(
+            !two_numbers_are_target_dimensions("195", "2000"),
+            "195 2000 is page 195 at height 2000"
+        );
+        assert!(
+            two_numbers_are_target_dimensions("1920", "1440"),
+            "1920 1440 remains HEIGHT WIDTH"
+        );
+        assert_eq!(canonicalize_page_range_token("5"), "5-5");
+        assert_eq!(canonicalize_page_range_token("1-10"), "1-10");
     }
 
     #[test]
