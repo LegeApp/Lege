@@ -2394,10 +2394,15 @@ fn stream_source_row<'a>(
     if sy < band_start {
         &above[..stride]
     } else if sy >= band_start + band_rows {
-        let Some(next) = below else {
-            unreachable!("a non-edge fancy-upsample row always has lower context")
-        };
-        &next[..stride]
+        match below {
+            Some(next) => &next[..stride],
+            // If lookahead is unexpectedly absent, use image-edge behavior
+            // instead of panicking: replicate the band's final source row.
+            None => {
+                let last = band_rows.saturating_sub(1);
+                &band[last * stride..last * stride + stride]
+            }
+        }
     } else {
         let local = sy - band_start;
         &band[local * stride..(local + 1) * stride]
@@ -3221,6 +3226,21 @@ mod assemble_tests {
             &img.data[..8],
             &[10u8, 200, 11, 201, 12, 202, 13, 203],
             "both channels interleaved"
+        );
+    }
+}
+
+#[cfg(test)]
+mod streaming_row_tests {
+    use super::stream_source_row;
+
+    #[test]
+    fn missing_lower_lookahead_replicates_final_band_row() {
+        let band = [10, 11, 20, 21];
+        let above = [1, 2];
+        assert_eq!(
+            stream_source_row(4, 2, 2, 2, &band, &above, None),
+            &[20, 21]
         );
     }
 }

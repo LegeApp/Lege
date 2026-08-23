@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use pdf_page_ir::{
-    Color, CompiledPage, DeviceSize, DisplayOp, FillRule, FontId, FontResource, GlyphRun, Matrix,
-    PageBounds, PageComplexity, PageFeatures, Paint, PathData, PathVerb, PlacedGlyph, Point, Rect,
-    ResourceKey, TilingId, TilingPattern,
+    Color, CompiledPage, DeviceSize, DisplayOp, FillRule, FontId, FontResource, GlyphRun, LineCap,
+    LineJoin, Matrix, PageBounds, PageComplexity, PageFeatures, Paint, PathData, PathVerb,
+    PlacedGlyph, Point, Rect, ResourceKey, StrokeStyle, TilingId, TilingPattern,
 };
 use pdf_render_api::{
     AnnotationMode, Background, HostPage, OutputFormat, OutputResidency, PageTransform,
@@ -105,6 +105,55 @@ fn page_with_tiling(tiling: TilingPattern) -> CompiledPage {
         shadings: Arc::from([]),
         tilings: Arc::from([tiling]),
         features: PageFeatures::PATTERNS,
+        complexity: PageComplexity::default(),
+    }
+}
+
+fn page_with_tiling_stroke(tiling: TilingPattern) -> CompiledPage {
+    let line = PathData {
+        verbs: Arc::from([PathVerb::MoveTo, PathVerb::LineTo]),
+        points: Arc::from([Point { x: 2.0, y: 6.0 }, Point { x: 10.0, y: 6.0 }]),
+    };
+    CompiledPage {
+        schema_version: pdf_page_ir::IR_SCHEMA_VERSION,
+        content_bounds: None,
+        bounds: PageBounds {
+            crop: Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 12.0,
+                y1: 12.0,
+            },
+            rotate: 0,
+        },
+        operations: Arc::from([DisplayOp::StrokePath {
+            path: pdf_page_ir::PathId(0),
+            paint: pdf_page_ir::PaintId(0),
+            style: pdf_page_ir::StrokeStyleId(0),
+            alpha: 1.0,
+            blend: pdf_page_ir::BlendMode::Normal,
+        }]),
+        paths: Arc::from([line]),
+        paints: Arc::from([Paint::Pattern {
+            tiling: TilingId(0),
+            matrix: Matrix::IDENTITY,
+        }]),
+        stroke_styles: Arc::from([StrokeStyle {
+            width: 4.0,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+            miter_limit: 10.0,
+            dash_pattern: Arc::from([]),
+            dash_phase: 0.0,
+        }]),
+        glyph_runs: Arc::from([]),
+        fonts: Arc::from([]),
+        images: Arc::from([]),
+        masks: Arc::from([]),
+        groups: Arc::from([]),
+        shadings: Arc::from([]),
+        tilings: Arc::from([tiling]),
+        features: PageFeatures::BASIC_PATHS | PageFeatures::PATTERNS,
         complexity: PageComplexity::default(),
     }
 }
@@ -269,6 +318,32 @@ fn uncolored_tiling_uses_under_color() {
         "stencil painted with under-color"
     );
     assert_eq!(px(&host, 3, 3), [255, 255, 255, 255], "gap stays white");
+}
+
+#[test]
+fn tiling_pattern_paints_stroke_outline() {
+    let tiling = TilingPattern {
+        key: ResourceKey {
+            object_number: 0,
+            generation: 0,
+            variant: 0,
+        },
+        uncolored: false,
+        under_color: Color::BLACK,
+        bbox: [0.0, 0.0, 2.0, 2.0],
+        x_step: 2.0,
+        y_step: 2.0,
+        cell: Arc::new(red_cell(Color::from_rgb(1.0, 0.0, 0.0))),
+    };
+    let (host, _) = CpuBackend::default()
+        .render_to_host(&request(page_with_tiling_stroke(tiling), 12))
+        .unwrap();
+
+    assert_eq!(px(&host, 6, 6), [255, 0, 0, 255], "stroke band center");
+    assert_eq!(px(&host, 3, 5), [255, 0, 0, 255], "stroke band interior");
+    assert_eq!(px(&host, 6, 1), [255, 255, 255, 255], "above the band");
+    assert_eq!(px(&host, 6, 10), [255, 255, 255, 255], "below the band");
+    assert_eq!(px(&host, 1, 6), [255, 255, 255, 255], "left of the band");
 }
 
 #[test]

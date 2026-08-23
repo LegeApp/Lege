@@ -217,14 +217,30 @@ fn run_image_source_with_config(
         cpu_workers
     );
     init_encode_semaphore(cpu_workers);
-    let owned_runtime;
+    // An ambient runtime (GUI worker) is used through its Handle. A
+    // standalone CLI run must drive its own control runtime with
+    // `Runtime::block_on`: `Handle::block_on` against an undriven
+    // current-thread runtime polls only the root future, so the pipeline's
+    // `tokio::spawn`ed page jobs would never execute and the run would
+    // deadlock before the first page (observed on the image-folder path).
+    enum PipelineRuntime {
+        Ambient(tokio::runtime::Handle),
+        Owned(tokio::runtime::Runtime),
+    }
+    impl PipelineRuntime {
+        fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+            match self {
+                PipelineRuntime::Ambient(handle) => handle.block_on(future),
+                PipelineRuntime::Owned(runtime) => runtime.block_on(future),
+            }
+        }
+    }
     let runtime = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle,
+        Ok(handle) => PipelineRuntime::Ambient(handle),
         Err(_) => {
             // We are not inside a runtime; create the single-thread control
             // runtime. CPU work is dispatched through the compute/Rayon path.
-            owned_runtime = crate::runtime_stats::build_control_runtime()?;
-            owned_runtime.handle().clone()
+            PipelineRuntime::Owned(crate::runtime_stats::build_control_runtime()?)
         }
     };
 

@@ -1625,8 +1625,8 @@ fn lower_impl(
                 // identical to the fill case above. pdfjs/issue968 draws its
                 // 96 petals as `/Pattern CS /p1 SCN … S`, and dropping
                 // non-solid stroke paint left the page as eight bare centres.
-                // A *tiling* stroke would need the outline fed through
-                // `lower_tiled`, which takes a fill shape; it stays skipped.
+                // A tiling stroke feeds the same expanded outline through the
+                // ordinary tiling fill machinery as its fill shape.
                 let (color, stroke_shading) = match &page.paints[paint.index()] {
                     Paint::Solid(color) => (recolor(*color, paint_policy), None),
                     Paint::Shading { shading, matrix } => {
@@ -1641,7 +1641,22 @@ fn lower_impl(
                             None => continue,
                         }
                     }
-                    _ => continue,
+                    Paint::Pattern { tiling, matrix } => {
+                        let b = lower_tiled_stroke(
+                            &mut out,
+                            &page.paths[path.index()],
+                            ctm,
+                            &page.stroke_styles[style.index()],
+                            &page.tilings[tiling.index()],
+                            matrix.then(base),
+                            *alpha,
+                            clip_stack.last().copied(),
+                            *blend,
+                            paint_policy,
+                        );
+                        accumulate_scope_bounds(&mut scope_stack, b);
+                        continue;
+                    }
                 };
                 let clip = clip_stack.last().copied();
                 let b = lower_stroke(
@@ -3176,6 +3191,39 @@ fn finish_tiled_fill(
     Some(bounds)
 }
 
+/// Lower a tiling-pattern stroke by expanding its device-space outline and
+/// using that outline as the ordinary tiling fill shape. This keeps dashes,
+/// anisotropic pens, bounds checks, clipping, alpha, blend, and color policy
+/// aligned with solid and shading strokes.
+#[allow(clippy::too_many_arguments)]
+fn lower_tiled_stroke(
+    out: &mut CpuPreparedPage,
+    path: &PathData,
+    ctm: Matrix,
+    style: &StrokeStyle,
+    tiling: &TilingPattern,
+    pattern_to_device: Matrix,
+    op_alpha: f32,
+    clip: Option<u32>,
+    blend: pdf_page_ir::BlendMode,
+    color_policy: pdf_render_api::RenderColorPolicy,
+) -> Option<DeviceRect> {
+    let (range_start, pt_start, _) = append_stroke_outline(out, path, ctm, style)?;
+    finish_tiled_fill(
+        out,
+        range_start,
+        pt_start,
+        pdf_page_ir::FillRule::NonZero,
+        tiling,
+        pattern_to_device,
+        op_alpha,
+        clip,
+        blend,
+        color_policy,
+        None,
+    )
+}
+
 /// Enumerate the device transforms of every lattice tile whose cell bbox
 /// overlaps `bounds`, capped at [`MAX_TILES`]. Returns empty when the step is
 /// degenerate or the transform is singular.
@@ -3303,21 +3351,16 @@ fn decompose_pen(ctm: Matrix) -> Option<(Matrix, Matrix)> {
     Some((m1, m2))
 }
 
-/// Expand a stroked path into fill geometry (advice §4E) and push one
-/// non-zero fill command for the stroke.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn lower_stroke(
+/// Expand a stroked path into device-space fill geometry in the shared arena.
+/// Returns the appended ranges and raw device bounds, rolling the arena back
+/// when the pen or outline is invalid. Solid, shading, and tiling strokes all
+/// share this geometry path.
+fn append_stroke_outline(
     out: &mut CpuPreparedPage,
     path: &PathData,
     ctm: Matrix,
     style: &StrokeStyle,
-    color: pdf_page_ir::Color,
-    op_alpha: f32,
-    clip: Option<u32>,
-    blend: pdf_page_ir::BlendMode,
-    shading: Option<Box<PreparedShading>>,
-) -> Option<DeviceRect> {
+) -> Option<(u32, usize, (i32, i32, i32, i32))> {
     // A stroke pen is circular in *user* space, so under an anisotropic or
     // rotated CTM it lands as an ellipse on the device. Expanding the stroke
     // directly in device space can only ever produce a circular pen, so it
@@ -3423,6 +3466,26 @@ fn lower_stroke(
         out.subpaths.truncate(range_start as usize);
         return None;
     };
+    Some((range_start, pt_start, (bx0, by0, bx1, by1)))
+}
+
+/// Expand a stroked path into fill geometry (advice §4E) and push one
+/// non-zero fill command for the stroke.
+#[allow(clippy::too_many_arguments)]
+fn lower_stroke(
+    out: &mut CpuPreparedPage,
+    path: &PathData,
+    ctm: Matrix,
+    style: &StrokeStyle,
+    color: pdf_page_ir::Color,
+    op_alpha: f32,
+    clip: Option<u32>,
+    blend: pdf_page_ir::BlendMode,
+    shading: Option<Box<PreparedShading>>,
+) -> Option<DeviceRect> {
+    let (range_start, pt_start, (bx0, by0, bx1, by1)) =
+        append_stroke_outline(out, path, ctm, style)?;
+    let range_end = out.subpaths.len() as u32;
     let mut bounds = DeviceRect {
         x: bx0,
         y: by0,

@@ -88,6 +88,16 @@ impl ImageCodec for Jbig2Codec {
             .jbig2_globals
             .as_ref()
             .filter(|globals| !globals.is_empty());
+
+        // PDF streams use the embedded JBIG2 organization. A standalone T.88
+        // file header is invalid here; allowing the decoder to auto-detect it
+        // would paint content that PDFium declines and leaves blank.
+        if jbig2enc_rust::decode::file::has_file_magic(data) {
+            return Err(ImageError::Decode(
+                "JBIG2: standalone file header in embedded stream".into(),
+            ));
+        }
+
         let input_bytes = data
             .len()
             .checked_add(globals.map_or(0, |g| g.len()))
@@ -320,6 +330,21 @@ mod tests {
             &limits,
         );
         assert!(matches!(result, Err(ImageError::Cancelled)));
+    }
+
+    /// ISO 32000-1 §7.4.7 requires the embedded organization for a
+    /// `/JBIG2Decode` stream, so standalone T.88 file magic must fail typed.
+    #[test]
+    fn standalone_file_header_is_rejected_in_embedded_stream() {
+        let mut with_header = jbig2enc_rust::decode::file::FILE_MAGIC.to_vec();
+        with_header.extend_from_slice(JBIG2_L_12X5);
+        let err = Jbig2Codec::default().decode(
+            &with_header,
+            &descriptor(),
+            &DecodeParameters::default(),
+            &DecodeLimits::default(),
+        );
+        assert!(matches!(err, Err(ImageError::Decode(_))));
     }
 
     #[test]
