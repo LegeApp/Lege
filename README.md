@@ -8,10 +8,10 @@ share the renderer and lower-level crates without becoming one monolithic app.
 ## Folder contract
 
 ```text
-Lege-ecosystem/
+Lege/
 ├── Cargo.toml                 ecosystem workspace + shared dependency policy
 ├── .cargo/config.toml         short build/check commands
-├── lege-process/              existing PDF processing application family
+├── lege-process/              PDF processing CLI, library, and legacy GUIs
 │   ├── core/                  `lege` library and CLI roots + core services
 │   ├── pipeline/              processing pipelines
 │   ├── encoding/              encoder dispatch/adapters
@@ -22,22 +22,29 @@ Lege-ecosystem/
 │   ├── resize/                processor-facing resize helpers
 │   ├── lege-ipc/              CLI/GUI IPC types
 │   └── GUI/
-│       ├── Freya/             retired desktop frontend (theme source retained)
+│       ├── Freya/             legacy desktop frontend
 │       ├── musicsheet/        `lege-music-gui`
 │       └── rfd/               vendored file dialog crate
+├── lege-viewer/               native `lege-gui`: reader + processing workspace
+├── lege-document-ocr/         business-grade OCR product
+│   ├── crates/                document IR, pipeline, batch, and export libraries
+│   ├── cli/                   `lege-ocr` batch CLI
+│   └── installer-winsafe/     native Windows installer and uninstaller
+├── lege-android/              JNI library and Gradle Android application
 ├── lege-gpu/                  shared GPU compute and ONNX runtime
 ├── lege-ocr/                  shared OCR library and debug program
 ├── lege-pdf/
+│   ├── agent/                 structured, agent-facing `lege-pdf` CLI
 │   ├── read/                  document intake/read seam
 │   ├── write/                 shared typed PDF writer
-│   └── render/                native document and rendering engine
-├── lege-viewer/               native `lege-gui`: reader + processing workspace
+│   ├── render/                native document and rendering engine
+│   └── pdf-integrity/         standalone forensic-triage workspace
 ├── lege-codecs/
-│   ├── jbig2enc-rust/         JBIG2 codec project
-│   ├── jp2lam/                JPEG2000 codec project
-│   └── djvulibrust/           standalone DjVu encoder project
+│   ├── jbig2enc-rust/         canonical JBIG2 codec source
+│   ├── jp2lam/                canonical JPEG 2000 codec source
+│   └── djvulibrust/           canonical DjVu codec source
 ├── lege-misc/                 assets, docs, packaging, scripts, and xtask
-└── freya-main/                vendored legacy UI workspace (music edition only)
+└── freya-main/                vendored upstream UI workspace
 ```
 
 `lege-pdf/render` and `lege-viewer` are direct workspace members and evolve
