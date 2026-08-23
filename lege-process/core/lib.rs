@@ -8,9 +8,7 @@
 // feature therefore must not be optional — an unfeatured Android build is
 // rejected here rather than shipped.
 #[cfg(all(target_os = "android", not(feature = "android")))]
-compile_error!(
-    "building lege for Android requires the `android` feature (--features android)"
-);
+compile_error!("building lege for Android requires the `android` feature (--features android)");
 
 // And the converse, so the feature cannot be switched on for a desktop build
 // where its platform dependencies (android_logger, Android libc) do not exist.

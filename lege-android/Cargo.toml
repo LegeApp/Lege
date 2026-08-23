@@ -3,7 +3,7 @@ name = "lege-android"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "JNI bindings exposing the Lege processing pipeline to an Android host app"
 publish = false
 

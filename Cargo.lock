@@ -1606,6 +1606,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "djvu_encoder"
+version = "0.11.0"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "log",
+ "rayon",
+ "thiserror 1.0.69",
+ "wide 0.7.33",
+]
+
+[[package]]
 name = "dlib"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3469,7 +3481,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lege"
-version = "1.4.75"
+version = "1.4.76"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -3486,6 +3498,7 @@ dependencies = [
  "copypasta",
  "dialoguer",
  "dirs",
+ "djvu_encoder",
  "encoding_rs",
  "env_logger",
  "epub-builder",
@@ -3540,7 +3553,6 @@ dependencies = [
  "ttf-parser 0.25.1",
  "unicode-normalization",
  "uuid",
- "wait-timeout",
  "wgpu",
  "winapi",
  "windows",
@@ -3639,6 +3651,7 @@ dependencies = [
  "lege-pdf-read",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 
@@ -7620,15 +7633,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
- "libc",
-]
-
-[[package]]
-name = "wait-timeout"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
-dependencies = [
  "libc",
 ]
 

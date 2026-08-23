@@ -1,0 +1,32 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.decision.top-level-application-license-agpl/1 : decision {
+    title "License the top-level Lege applications under AGPL-3.0-only"
+    state active
+    scope [
+        path "Cargo.toml",
+        path "LICENSE",
+        path "NOTICE",
+        path "README.md",
+        path "lege-android/**",
+        path "lege-misc/docs/licenses.html",
+        path "lege-process/**",
+        path "lege-viewer/**"
+    ]
+    topic top-level-application-license
+    decision """
+        The Lege top-level workspace and combined application products are licensed AGPL-3.0-only, authorizing direct linking to the AGPL-3.0-only DJVULibRust crate. The root and application package metadata and included license texts must say AGPL-3.0-only. Independently usable codec and third-party subtrees retain their explicit licenses: DJVULibRust remains AGPL-3.0-only, while jbig2enc-rust and jp2lam remain MIT OR Apache-2.0.
+        """
+    context """
+        The user selected the plan's recommended D1 outcome: everything is AGPL again at the top level. The former MIT application declaration existed to support the now-retired arms-length subprocess boundary.
+        """
+    consequences """
+        Lege may restore the in-process DJVULibRust API. Application crates that directly link lege-process, including lege-android, must not continue to claim MIT. Mixed-license subtrees and third-party notices remain explicitly mapped rather than being relabeled.
+        """
+    derived_from [ @lege-ecosystem.work.open-source-monorepo-relaunch/1 ]
+    supported_by [
+        @lege-ecosystem.evidence.djvu-license-linkage-boundary-audit-20260822/1,
+        @lege-ecosystem.evidence.djvu-subprocess-license-surface-audit-20260822/1
+    ]
+}

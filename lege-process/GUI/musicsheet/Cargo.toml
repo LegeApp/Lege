@@ -2,6 +2,7 @@
 name = "lege-music-gui"
 version = "1.0.0"
 edition = "2024"
+license.workspace = true
 
 [[bin]]
 name = "lege-music-gui"

@@ -63,7 +63,7 @@ android-check-gate = "check --package lege --target aarch64-linux-android"
 # Building the .so does need the NDK plus `cargo install cargo-ndk`. The
 # `android` profile exists because release sets panic = "abort", which would
 # make the catch_unwind guards at the JNI boundary inert.
-android-build = "ndk -t arm64-v8a build --package lege-android --profile android"
+android-build = "ndk -t arm64-v8a --platform 26 build --package lege-android --profile android"
 
 # Workspace-wide verification and common editions
 ecosystem-check = "check --workspace"

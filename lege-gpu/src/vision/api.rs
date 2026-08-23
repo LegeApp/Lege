@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, bail};
 use image::{GrayImage, Luma, RgbImage};
 
+use crate::vision::decode::db::PpOcrGeneration;
 #[cfg(feature = "layout-detection")]
 use crate::vision::decode::picodet;
 use crate::vision::onnx::{ModelReport, PreparedGraph, load_model, load_model_from_bytes};
@@ -521,7 +522,7 @@ impl SauvolaCpuProcessor {
 
 // ── PP-OCR text-line recognition ──────────────────────────────────────────
 
-/// Fixed input height for PP-OCRv5 mobile recognition.
+/// Fixed input height for PP-OCR text-line recognition (unchanged v5 -> v6).
 const REC_HEIGHT: i64 = 48;
 
 /// Width buckets a text-line crop is padded up to before recognition. Lines are
@@ -570,7 +571,7 @@ struct CompactRecOutput {
     bucket: u32,
 }
 
-/// PP-OCRv5 mobile text-line recognizer over the lege-gpu wgpu runtime.
+/// PP-OCR text-line recognizer over the lege-gpu wgpu runtime.
 ///
 /// Feed a tight text-line crop; it resizes to height 48 (width proportional),
 /// pads to the next width bucket, runs the SVTR recognition head on the GPU, and
@@ -1184,8 +1185,33 @@ fn pad_rec_width(tensor: Tensor, nw: u32, bucket: u32) -> Tensor {
 
 // ── PP-OCR text detection (DBNet) ──────────────────────────────────────────
 
-/// Longest side the detector resizes a page down to (PP-OCR `limit_side_len`).
-const DET_LIMIT_SIDE: u32 = 960;
+/// Longest side the detector resizes a page down to (PP-OCR `limit_side_len`
+/// with `limit_type = "max"`; smaller pages are left alone).
+///
+/// PaddleOCR publishes v6 with `limit_type = "min"` instead — hold the *short*
+/// side above a floor and cap the long side far higher — which in practice
+/// means near-native resolution. We keep the "max" form because a page-scale
+/// pipeline needs a bounded input, but v6 detects on a lower probability
+/// threshold and was trained for more pixels per glyph, so squashing a 300 DPI
+/// scan to 960 costs it accuracy. 1280 matches the cap TurboOCR uses for the
+/// same weights, at ~1.8x the pixels.
+fn det_limit_side(generation: PpOcrGeneration) -> u32 {
+    match generation {
+        PpOcrGeneration::V5 => 960,
+        PpOcrGeneration::V6 => 1280,
+    }
+}
+
+#[cfg(test)]
+mod detector_resolution_policy_tests {
+    use super::{PpOcrGeneration, det_limit_side};
+
+    #[test]
+    fn detector_limit_side_tracks_model_generation() {
+        assert_eq!(det_limit_side(PpOcrGeneration::V5), 960);
+        assert_eq!(det_limit_side(PpOcrGeneration::V6), 1280);
+    }
+}
 
 /// Distinct det input sizes kept compiled at once. Pages in a job are usually a
 /// single size, so a tiny cache suffices (a couple of sizes for mixed jobs).
@@ -1220,12 +1246,16 @@ struct DetGraph {
     compiled: CompiledGraph,
 }
 
-/// PP-OCRv5 mobile DBNet text detector over the lege-gpu wgpu runtime.
+/// PP-OCR DBNet text detector over the lege-gpu wgpu runtime.
 ///
-/// Feed a page image; it resizes to a 32-aligned size (long side ≤ 960),
+/// Feed a page image; it resizes to a generation-specific, 32-aligned maximum,
 /// ImageNet-normalizes, runs the detection head on the GPU to get a text
 /// probability map, then DB-post-processes (threshold → connected components →
 /// unclip) into axis-aligned text-line boxes mapped back to original coords.
+///
+/// The post-processing thresholds depend on which PP-OCR generation produced
+/// the weights, so a caller embedding anything other than v5 must say so with
+/// [`Detector::from_bytes_for_generation`].
 pub struct Detector {
     model: ModelProto,
     db: crate::vision::decode::db::DbConfig,
@@ -1234,20 +1264,30 @@ pub struct Detector {
 }
 
 impl Detector {
-    /// Build from raw prepared-det model bytes (for `include_bytes!` embedding).
+    /// Build from raw prepared-det model bytes (for `include_bytes!` embedding),
+    /// using the PP-OCRv5 post-processing thresholds.
     pub fn from_bytes(model_bytes: &[u8]) -> Result<Self> {
-        let model = load_model_from_bytes(model_bytes).context("failed to load det model bytes")?;
-        Self::from_model(model)
+        Self::from_bytes_for_generation(model_bytes, PpOcrGeneration::V5)
     }
 
-    /// Build from a prepared det model file.
+    /// Build from raw prepared-det model bytes, post-processing them with
+    /// `generation`'s published thresholds.
+    pub fn from_bytes_for_generation(
+        model_bytes: &[u8],
+        generation: PpOcrGeneration,
+    ) -> Result<Self> {
+        let model = load_model_from_bytes(model_bytes).context("failed to load det model bytes")?;
+        Self::from_model(model, generation)
+    }
+
+    /// Build from a prepared det model file, using the PP-OCRv5 thresholds.
     pub fn from_path(model_path: impl AsRef<Path>) -> Result<Self> {
         let model = load_model(model_path.as_ref())
             .with_context(|| format!("failed to load det model {:?}", model_path.as_ref()))?;
-        Self::from_model(model)
+        Self::from_model(model, PpOcrGeneration::V5)
     }
 
-    fn from_model(model: ModelProto) -> Result<Self> {
+    fn from_model(model: ModelProto, generation: PpOcrGeneration) -> Result<Self> {
         let report = ModelReport::from_model(&model).context("failed to inspect det model")?;
         if !report.rejection_reasons.is_empty() {
             bail!(
@@ -1257,8 +1297,8 @@ impl Detector {
         }
         Ok(Self {
             model,
-            db: crate::vision::decode::db::DbConfig::default(),
-            limit_side: DET_LIMIT_SIDE,
+            db: crate::vision::decode::db::DbConfig::for_generation(generation),
+            limit_side: det_limit_side(generation),
             cache: Mutex::new(Vec::new()),
         })
     }
@@ -1520,7 +1560,7 @@ mod pp_doclayout_tests {
         assert!(box_rel < 0.02, "detection box drift too large: {box_rel}");
     }
 
-    /// Exercises the new ReduceMean + AveragePool ops through the whole PP-OCRv5
+    /// Exercises the new ReduceMean + AveragePool ops through the whole PP-OCR
     /// recognition graph (SVTR), on both the CPU reference executor and the GPU
     /// kernels, against an ORT golden. Env-gated:
     ///   LEGE_REC_MODEL  = rec.prepared.onnx

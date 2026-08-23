@@ -1,16 +1,16 @@
 [package]
 name = "jbig2enc-rust"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2024"
 description = "JBIG2 encoder implementation in Rust with PDF fragment support"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 documentation = "https://docs.rs/jbig2enc-rust"
-homepage = "https://github.com/LegeApp/jbig2enc-rust"
-repository = "https://github.com/LegeApp/jbig2enc-rust"
+homepage = "https://github.com/LegeApp/Lege/tree/main/lege-codecs/jbig2enc-rust"
+repository = "https://github.com/LegeApp/Lege"
 keywords = ["jbig2", "encoder", "compression", "image", "pdf"]
 categories = ["multimedia::encoding", "multimedia::images"]
-include = ["Cargo.toml", "Cargo.lock", "README.md", "build.rs", "src/**"]
+include = ["Cargo.toml", "Cargo.lock", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "build.rs", "src/**", "tests/**", "benches/**"]
 
 [lib]
 name = "jbig2enc_rust"

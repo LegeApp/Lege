@@ -45,6 +45,15 @@ together through retained semantic, text, compiled-IR, and tiled-raster APIs.
 The codec projects keep independent build graphs, while the root workspace
 uses the in-tree JBIG2 and JPEG2000 sources.
 
+## Canonical codec source
+
+`lege-codecs/djvulibrust`, `lege-codecs/jbig2enc-rust`, and
+`lege-codecs/jp2lam` are the only maintained source locations for Lege's
+codecs. Their former standalone GitHub repositories are redirect-only archive
+pages; use this repository for source, issues, and development. Rust consumers
+should use published crate versions where available rather than a moving Git
+dependency.
+
 ## Common commands
 
 Run these from the ecosystem root:
@@ -95,3 +104,9 @@ cargo xtask-help
 
 Build profiles and shared dependency versions belong in the root
 `Cargo.toml`, not in application member manifests.
+
+## License
+
+The top-level Lege workspace and application packages are AGPL-3.0-only. See
+`LICENSE` and `NOTICE`. Independently usable codec and vendored third-party
+subtrees retain the licenses declared in their own manifests and license files.

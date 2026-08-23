@@ -17,6 +17,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [features]
 default = ["paddle-ocr"]
 paddle-ocr = ["lege-ocr/paddle-ocr"]

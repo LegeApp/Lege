@@ -621,13 +621,6 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.djvu_quality = Some(q);
                 i += 2;
             }
-            "--djvu-encoder-path" => {
-                let val = args
-                    .get(i + 1)
-                    .ok_or_else(|| anyhow!("Missing value after --djvu-encoder-path"))?;
-                lege::djvu::set_encoder_path_override(std::path::PathBuf::from(val));
-                i += 2;
-            }
             "--output" | "--out" => {
                 let val = args
                     .get(i + 1)

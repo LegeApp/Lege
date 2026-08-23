@@ -1,0 +1,4 @@
+7d990ee5e3ea1c2d3956a276e4f1de956652a5169ce10f03aba8aaca52bce40e  lege-process/models/doclayout.onnx
+88274fab8bd8a201b4f67e89b58d774cb9176bd87e8687e3a4eb68dc80e44f2a  lege-process/models/sauvola.onnx
+1398b2fb1178e3d82337dc886363a634c31a464be6770aec5a3e8f827a25e988  lege-ocr/assets/ppocr-det.onnx
+f39a0c630afdfc27706e00dc90313e0ef125a41ed4db4cda0ea3796e074ed91c  lege-ocr/assets/ppocr-rec.onnx

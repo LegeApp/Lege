@@ -7,6 +7,13 @@ edition = "2024"
 description = "Safe, native Rust JPEG 2000 encoder for document and photographic workloads"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
+readme = "README.md"
+documentation = "https://docs.rs/jp2lam"
+homepage = "https://github.com/LegeApp/Lege/tree/main/lege-codecs/jp2lam"
+repository = "https://github.com/LegeApp/Lege"
+keywords = ["jpeg2000", "jpeg-2000", "jp2", "j2k", "encoder"]
+categories = ["multimedia::encoding", "multimedia::images"]
+include = ["Cargo.toml", "Cargo.lock", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "src/**", "tests/**", "examples/**"]
 
 [lib]
 path = "src/lib.rs"

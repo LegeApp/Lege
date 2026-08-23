@@ -1023,6 +1023,27 @@ record lege-ecosystem.work.end-to-end-oracle-whole-page-vs-pdfium/1 : work {
     }
 }
 
+record lege-ecosystem.work.evidence-broker-ocr-provider/1 : work {
+    title "Route Lege page OCR through the Evidence broker"
+    state completed
+    scope [ path "lege-document-ocr/**", path "lege-ocr/**" ]
+    intent """
+        Add a brokered TensorRT page-OCR provider that preserves Lege's PDF, scheduling, checkpoint, DocIR and exporter ownership while delegating live OCR inference to the versioned Evidence broker.
+        """
+    acceptance {
+        check broker-provider {
+            statement """
+                The Lege CLI processes a PDF through the Evidence broker provider, records the pinned model revision in DocIR, and resumes without starting a second native TensorRT worker.
+                """
+            method command
+            command "cargo test -p lege-ocr -p lege-document-ocr-cli"
+            verified_by [ @lege-ecosystem.evidence.evidence-broker-ocr-provider-20260822/1 ]
+        }
+    }
+    part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.work.fixed-point-9-7-is-a-later-experiment/1 : work {
     title "19. Fixed-point 9/7 is a later experiment"
     state proposed
@@ -1995,6 +2016,95 @@ record lege-ecosystem.work.ocr-product-foundation/2 : work {
     supersedes [ @lege-ecosystem.work.ocr-product-foundation/1 ]
 }
 
+record lege-ecosystem.work.open-source-monorepo-relaunch/1 : work {
+    title "Relaunch Lege as the canonical open-source codec monorepo"
+    state proposed
+    scope [
+        path ".gitignore",
+        path "Cargo.toml",
+        path "README.md",
+        path "lege-codecs/**",
+        path "lege-document-ocr/**",
+        path "lege-process/**",
+        path "to-do-plans/**"
+    ]
+    intent """
+        Publish one sanitized Lege ecosystem source repository, restore Lege's direct DJVULibRust API integration without rolling back later behavior, retire duplicate codec mirrors, and provide checksum-pinned downloads for excluded Document OCR models.
+        """
+    note """
+        Plan of record is to-do-plans/open-source-monorepo-relaunch.md. Licensing of the AGPL DJVULibRust/MIT Lege combined work and the rewritten public-history cutover are explicit blocking decisions.
+        """
+    claim asset-policy {
+        text """
+            The four required embedded Lege ONNX models remain tracked, while optional large Document OCR/TurboOCR model tiers are fetched atomically from an immutable checksum-pinned manifest.
+            """
+    }
+    claim canonical-codecs {
+        text """
+            The canonical codec source will be lege-codecs/djvulibrust, lege-codecs/jbig2enc-rust, and lege-codecs/jp2lam in LegeApp/Lege; old repositories will preserve history as archived signposts rather than mirrors.
+            """
+    }
+    claim historical-djvu-seam {
+        text """
+            The reachable history's last direct DJVULibRust integration is Lege v1.4.61 at b47958d; the subprocess boundary begins at v1.4.64 commit 8382568, and no exact v1.4.72 revision is reachable.
+            """
+    }
+    acceptance {
+        check canonical-codec-source {
+            statement """
+                All three codec repositories identify LegeApp/Lege as canonical and no workflow mirrors codec source out of the monorepo.
+                """
+            method observation
+        }
+        check integrated-djvu-api {
+            statement """
+                Lege's current DjVu modes pass without spawning or locating the standalone djvu-encoder helper.
+                """
+            method command
+        }
+        check license-consistency {
+            statement """
+                Root, application, and crate license declarations and included texts are consistent with the selected direct-linking license decision.
+                """
+            method observation
+        }
+        check public-cutover {
+            statement """
+                The public Lege repository passes clean-clone Linux and Windows smoke tests and the old codec repositories are archived with migration notices and preserved history.
+                """
+            method manual
+        }
+        check sanitized-public-tree {
+            statement """
+                A fresh publication clone passes secret scanning and contains no unapproved tracked or historical large development artifacts.
+                """
+            method command
+        }
+        check verified-model-bootstrap {
+            statement """
+                A clean clone downloads and verifies required Document OCR model assets atomically from the pinned manifest, while embedded runtime models remain allowlisted and intact.
+                """
+            method command
+        }
+    }
+    source {
+        kind external
+        role rationale
+        url "https://www.gnu.org/licenses/agpl-3.0.html"
+        use """
+            Primary license text for the blocking combined-work licensing review.
+            """
+    }
+    source {
+        kind internal
+        role origin
+        path "to-do-plans/open-source-monorepo-relaunch.md"
+        use """
+            Implementation plan, established inventory, decisions, gates, and cutover sequence.
+            """
+    }
+}
+
 record lege-ecosystem.work.optimize-flaggrid/1 : work {
     title "23. Optimize `FlagGrid`"
     state proposed
@@ -2461,6 +2571,24 @@ record lege-ecosystem.work.produce-packed-output-directly/1 : work {
     }
 }
 
+record lege-ecosystem.work.public-monorepo-reupload/1 : work {
+    title "Prepare the public Lege monorepo reupload"
+    state active
+    intent """
+        Prepare LegeApp/Lege for the approved public force cutover, with canonical in-tree codecs, redirect-only sister repositories, and release-ready metadata.
+        """
+    claim goal {
+        text """
+            LegeApp/Lege is the only maintained source repository; the three codec subtrees are canonical and their standalone repositories become redirect-only archives after the public force cutover.
+            """
+    }
+    claim release {
+        text """
+            The public application release is 1.4.76 and jbig2enc-rust is prepared for a 0.5.4 crates.io release from the monorepo.
+            """
+    }
+}
+
 record lege-ecosystem.work.quick-reference/1 : work {
     title "6. Quick reference"
     state proposed
@@ -2662,6 +2790,63 @@ record lege-ecosystem.work.specialize-the-common-code-block-style/1 : work {
         excerpt """
             The general Tier-1 loop carries runtime decisions for:
             """
+    }
+}
+
+record lege-ecosystem.work.thorough-ppocrv6-performance-and-output-preflight/1 : work {
+    title "Audit thorough PP-OCRv6 throughput without sacrificing accuracy"
+    state completed
+    scope [
+        path "lege-document-ocr/scripts/benchmarks/**",
+        path "lege-gpu/src/vision/**",
+        path "lege-ocr/**",
+        path "lege-process/**/tests/**",
+        path "lege-process/core/main.rs",
+        path "lege-process/pipeline/epub_pipeline.rs"
+    ]
+    intent """
+        Profile the current thorough EPUB OCR path after the embedded PP-OCRv6 upgrade, retain V6 detector quality policy and all thorough recognition/recovery behavior, land only optimizations whose structured OCR output is unchanged or whose accuracy is independently demonstrated, and prevent an unwritable destination from wasting a full OCR run.
+        """
+    acceptance {
+        check focused-tests {
+            statement """
+                Focused lege-ocr, lege-gpu vision, and EPUB pipeline tests pass.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.thorough-ppocrv6-focused-tests-20260822/1 ]
+        }
+        check generation-resolution-policy {
+            statement """
+                Tests retain detector limit_side 960 for PP-OCRv5 and 1280 for PP-OCRv6.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.thorough-ppocrv6-focused-tests-20260822/1 ]
+        }
+        check output-preflight {
+            statement """
+                An unwritable EPUB destination is rejected or safely redirected before page processing begins, with a focused regression test.
+                """
+            method command
+            verified_by [ @lege-ecosystem.evidence.epub-output-preflight-cli-20260822/1 ]
+        }
+        check quality-preserved {
+            statement """
+                Optimized thorough OCR emits identical structured text and geometry on the fixed benchmark inputs, or any intentional difference has ground-truth evidence that it is not a regression.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.thorough-ppocrv6-throughput-quality-20260822/1
+            ]
+        }
+        check throughput-measured {
+            statement """
+                A representative release-mode benchmark attributes stage time and records the before/after throughput result; performance code is changed only when the result is faster without a quality loss.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.thorough-ppocrv6-throughput-quality-20260822/1
+            ]
+        }
     }
 }
 

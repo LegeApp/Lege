@@ -1,0 +1,59 @@
+name: Codecs
+
+on:
+  pull_request:
+    paths:
+      - "lege-codecs/**"
+      - ".github/workflows/codecs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "lege-codecs/**"
+      - ".github/workflows/codecs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.codec.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        codec:
+          - name: djvulibrust
+            manifest: lege-codecs/djvulibrust/Cargo.toml
+            minimal_features: ""
+          - name: jbig2enc-rust
+            manifest: lege-codecs/jbig2enc-rust/Cargo.toml
+            minimal_features: "--features decode"
+          - name: jp2lam
+            manifest: lege-codecs/jp2lam/Cargo.toml
+            minimal_features: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --manifest-path "$MANIFEST" -- --check
+        env:
+          MANIFEST: ${{ matrix.codec.manifest }}
+      - name: Default build and tests
+        run: cargo test --manifest-path "$MANIFEST" --all-targets
+        env:
+          MANIFEST: ${{ matrix.codec.manifest }}
+      - name: Minimal feature build
+        run: cargo check --manifest-path "$MANIFEST" --no-default-features $MINIMAL_FEATURES
+        env:
+          MANIFEST: ${{ matrix.codec.manifest }}
+          MINIMAL_FEATURES: ${{ matrix.codec.minimal_features }}
+      - name: Clippy
+        run: cargo clippy --manifest-path "$MANIFEST" --all-targets --all-features
+        env:
+          MANIFEST: ${{ matrix.codec.manifest }}
+      - name: Package dry run
+        run: cargo package --manifest-path "$MANIFEST" --allow-dirty
+        env:
+          MANIFEST: ${{ matrix.codec.manifest }}

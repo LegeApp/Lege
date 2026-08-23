@@ -34,6 +34,39 @@ pub struct TensorRtPaddleConfig {
     pub dll_directories: Vec<PathBuf>,
 }
 
+/// Evidence TensorRT broker bridge configuration.
+///
+/// The bridge preserves Lege's persistent page-worker boundary while the
+/// model itself is owned and supervised by the Evidence broker.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BrokeredTensorRtConfig {
+    pub executable: PathBuf,
+    pub endpoint: String,
+    pub model: String,
+    pub revision: String,
+}
+
+impl BrokeredTensorRtConfig {
+    pub fn validate(&self) -> Result<()> {
+        if !self.executable.is_file() {
+            bail!(
+                "Evidence OCR bridge executable does not exist: {}",
+                self.executable.display()
+            );
+        }
+        for (label, value) in [
+            ("endpoint", self.endpoint.as_str()),
+            ("model", self.model.as_str()),
+            ("revision", self.revision.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("Evidence OCR broker {label} is empty");
+            }
+        }
+        Ok(())
+    }
+}
+
 impl TensorRtPaddleConfig {
     /// Resolve the development or packaged runtime layout rooted at `root`.
     pub fn from_root(root: &Path, recognition_batch: usize) -> Result<Self> {
@@ -204,6 +237,7 @@ pub fn nvidia_hardware_present() -> bool {
 pub struct TensorRtPaddleEngine {
     worker: Mutex<TensorRtWorker>,
     gpu_name: String,
+    backend_name: &'static str,
 }
 
 impl std::fmt::Debug for TensorRtPaddleEngine {
@@ -225,6 +259,20 @@ impl TensorRtPaddleEngine {
         Ok(Self {
             worker: Mutex::new(worker),
             gpu_name,
+            backend_name: "tensorrt-paddle",
+        })
+    }
+
+    /// Start the Evidence broker bridge and require its real broker/model
+    /// preflight before accepting any page.
+    pub fn start_brokered(config: &BrokeredTensorRtConfig) -> Result<Self> {
+        config.validate()?;
+        let worker = TensorRtWorker::start_brokered(config)?;
+        let gpu_name = worker.gpu_name.clone();
+        Ok(Self {
+            worker: Mutex::new(worker),
+            gpu_name,
+            backend_name: "brokered-tensorrt",
         })
     }
 
@@ -247,7 +295,7 @@ impl TensorRtPaddleEngine {
 
 impl PageOcrBackend for TensorRtPaddleEngine {
     fn name(&self) -> &'static str {
-        "tensorrt-paddle"
+        self.backend_name
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -353,9 +401,42 @@ impl TensorRtWorker {
         if !config.dll_directories.is_empty() {
             command.env("PATH", augmented_path(&config.dll_directories)?);
         }
-        let mut child = command.spawn().with_context(|| {
-            format!("start TensorRT OCR worker {}", config.executable.display())
-        })?;
+        Self::start_command(
+            command,
+            format!("TensorRT OCR worker {}", config.executable.display()),
+        )
+    }
+
+    fn start_brokered(config: &BrokeredTensorRtConfig) -> Result<Self> {
+        let executable =
+            std::fs::canonicalize(&config.executable).unwrap_or_else(|_| config.executable.clone());
+        let mut command = Command::new(executable);
+        command
+            .arg("--server")
+            .arg("--endpoint")
+            .arg(&config.endpoint)
+            .arg("--model")
+            .arg(&config.model)
+            .arg("--revision")
+            .arg(&config.revision)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        Self::start_command(
+            command,
+            format!(
+                "Evidence OCR bridge {} for model {}@{}",
+                config.executable.display(),
+                config.model,
+                config.revision
+            ),
+        )
+    }
+
+    fn start_command(mut command: Command, description: String) -> Result<Self> {
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("start {description}"))?;
         let stdin = child
             .stdin
             .take()
@@ -371,25 +452,25 @@ impl TensorRtWorker {
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(error).context("read TensorRT OCR READY response");
+                return Err(error).with_context(|| format!("read {description} READY response"));
             }
         };
         if ready_bytes == 0 {
             let status = child.wait().ok();
-            bail!("TensorRT OCR preflight exited before READY ({status:?})");
+            bail!("{description} preflight exited before READY ({status:?})");
         }
         let ready: ReadyResponse = match serde_json::from_str(ready_line.trim_end()) {
             Ok(ready) => ready,
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(error).context("parse TensorRT OCR READY response");
+                return Err(error).with_context(|| format!("parse {description} READY response"));
             }
         };
         if ready.protocol != PROTOCOL || ready.version != PROTOCOL_VERSION || !ready.ready {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("TensorRT OCR worker returned an incompatible READY response");
+            bail!("{description} returned an incompatible READY response");
         }
         Ok(Self {
             child,

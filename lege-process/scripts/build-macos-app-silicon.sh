@@ -43,10 +43,6 @@
 #   CODESIGN_ID   codesign identity — macOS only (default: "-" = ad-hoc)
 #   SKIP_BUILD    set to 1 to repackage already-built target artifacts
 #   SKIP_CLI_BUILD set to 1 to reuse an existing lege CLI binary
-#   DJVU_ENCODER_MANIFEST path to the standalone AGPL encoder's Cargo.toml
-#                 (default: <workspace>/lege-codecs/djvulibrust/Cargo.toml)
-#   DJVU_ENCODER_LICENSE path to its AGPLv3 license text
-#                 (default: LICENSE next to that Cargo.toml)
 #   AUTO_CONTAINER set to 0 to disable automatic Docker/Podman use on Linux
 #   CONTAINER_RUNTIME Docker/Podman executable (auto-detected by default)
 #   MACOS_CROSS_IMAGE cross-compiler image override
@@ -64,12 +60,9 @@
 #     macOS edge cases tend to live) and produces the same "Lege.app" structure
 #     with the CLI as its main executable: launching the app from Finder opens
 #     the `lege` CLI in a Terminal window. Everything else is bundled the same
-#     way — the djvu-encoder helper, its AGPL license text (a legal AGPL
-#     component requires the license to travel with the binary), sauvola.onnx,
-#     docs and icon.
-#   * DjVu encoding remains a separate AGPL executable, built from the sibling
-#     djvulibrust project and bundled under Contents/Helpers; Lege does not link
-#     it as a library.
+#     way — sauvola.onnx, docs and icon.
+#   * DjVu encoding is linked into the AGPL application; no helper executable
+#     is built or bundled.
 #   * Gatekeeper: an ad-hoc signature seals the bundle but does not establish a
 #     trusted developer identity. On current macOS, first try to launch the app,
 #     then approve it in System Settings -> Privacy & Security -> Open Anyway.
@@ -99,8 +92,7 @@ Options:
   --intel    Build for Intel / x86_64.
   --cli      Build only the 'lege' CLI bundle — no GUI binary. The bundle still
              ships as "Lege.app", but its main executable opens the CLI in a
-             Terminal window when launched from Finder. The djvu-encoder helper
-             and its AGPL license are still built and bundled.
+             Terminal window when launched from Finder.
   -h, --help Show this help.
 
 The selected architecture also controls the default output directory.
@@ -173,10 +165,6 @@ SAUVOLA_ONNX="${SAUVOLA_ONNX:-$PROCESS_DIR/packaging/macos/sauvola.onnx}"
 CODESIGN_ID="${CODESIGN_ID:--}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_CLI_BUILD="${SKIP_CLI_BUILD:-0}"
-DJVU_ENCODER_MANIFEST="${DJVU_ENCODER_MANIFEST:-$ROOT/lege-codecs/djvulibrust/Cargo.toml}"
-DJVU_ENCODER_DIR="$(dirname "$DJVU_ENCODER_MANIFEST")"
-DJVU_ENCODER_TARGET_DIR="${DJVU_ENCODER_TARGET_DIR:-$ROOT/target/djvu-encoder}"
-DJVU_ENCODER_LICENSE="${DJVU_ENCODER_LICENSE:-$(dirname "$DJVU_ENCODER_MANIFEST")/LICENSE}"
 AUTO_CONTAINER="${AUTO_CONTAINER:-1}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}"
 MACOS_CROSS_IMAGE="${MACOS_CROSS_IMAGE:-ghcr.io/shepherdjerred/macos-cross-compiler:latest}"
@@ -185,7 +173,6 @@ VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$PROCESS_DIR/Cargo.tom
 APP_NAME="Lege"
 BUNDLE_ID="com.legeapp.lege"
 ARCH_PREFIX="${TARGET%%-*}"
-DJVU_ENCODER_BIN="$DJVU_ENCODER_TARGET_DIR/$TARGET/release/djvu-encoder"
 
 # The bundle's main executable. Normally the GUI; in --cli mode a small launcher
 # script that opens the `lege` CLI in a Terminal window (no GUI binary is built
@@ -221,10 +208,6 @@ if [[ "$(uname -s)" != "Darwin" \
     fi
   fi
 
-  if [[ ! -d "$DJVU_ENCODER_DIR" ]]; then
-    echo "DjVu encoder source directory not found: $DJVU_ENCODER_DIR" >&2
-    exit 1
-  fi
   mkdir -p "$ROOT/target/macos-cross-cache/cargo" \
     "$ROOT/target/macos-cross-cache/rustup"
 
@@ -257,7 +240,7 @@ if [[ "$(uname -s)" != "Darwin" \
     echo "== Ad-hoc signing the macOS bundle with host rcodesign"
     # A host signing pass replaces the deliberately unsigned cross-build.
     rcodesign sign "$HOST_APP"
-    SIGNED_PATHS=(Contents/MacOS/lege Contents/Helpers/djvu-encoder)
+    SIGNED_PATHS=(Contents/MacOS/lege)
     if [[ "$CLI_ONLY" != "1" ]]; then
       SIGNED_PATHS+=(Contents/MacOS/lege-gui)
     fi
@@ -291,18 +274,6 @@ if [[ -z "$SAUVOLA_ONNX" || ! -f "$SAUVOLA_ONNX" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$DJVU_ENCODER_MANIFEST" ]]; then
-  echo "Standalone DjVu encoder manifest not found: $DJVU_ENCODER_MANIFEST" >&2
-  echo "Set DJVU_ENCODER_MANIFEST to the djvulibrust Cargo.toml." >&2
-  exit 1
-fi
-
-if [[ ! -f "$DJVU_ENCODER_LICENSE" ]]; then
-  echo "Standalone DjVu encoder license not found: $DJVU_ENCODER_LICENSE" >&2
-  echo "Set DJVU_ENCODER_LICENSE to its AGPLv3 license text." >&2
-  exit 1
-fi
-
 if [[ "$SKIP_BUILD" == "1" ]]; then
   BINARIES=(lege)
   if [[ "$CLI_ONLY" != "1" ]]; then
@@ -314,10 +285,6 @@ if [[ "$SKIP_BUILD" == "1" ]]; then
       exit 1
     fi
   done
-  if [[ ! -x "$DJVU_ENCODER_BIN" ]]; then
-    echo "SKIP_BUILD=1 but $DJVU_ENCODER_BIN is missing." >&2
-    exit 1
-  fi
   echo "== Repackaging existing $TARGET release binaries"
 else
   # Cross-compile toolchain env (not needed when merely repackaging).
@@ -352,22 +319,6 @@ else
       --no-default-features --features jp2-lam,paddle-ocr,layout-detection
   fi
 
-  echo "== Building standalone djvu-encoder for $TARGET"
-  # Build from a temporary source copy. The helper's package version can move
-  # ahead of its lockfile between releases; Cargo may refresh that root entry,
-  # but the sibling source checkout must remain untouched by this packager.
-  DJVU_BUILD_DIR="$(mktemp -d /tmp/lege-djvu-build.XXXXXX)"
-  cp "$DJVU_ENCODER_MANIFEST" "$DJVU_BUILD_DIR/Cargo.toml"
-  cp "$DJVU_ENCODER_DIR/Cargo.lock" "$DJVU_BUILD_DIR/Cargo.lock"
-  cp -R "$DJVU_ENCODER_DIR/src" "$DJVU_BUILD_DIR/src"
-  (
-    cd "$DJVU_BUILD_DIR"
-    cargo build --release --target "$TARGET" \
-      --target-dir "$DJVU_ENCODER_TARGET_DIR" \
-      --bin djvu-encoder --features cli,simd
-  )
-  rm -rf "$DJVU_BUILD_DIR"
-
   if [[ "$CLI_ONLY" != "1" ]]; then
     echo "== Building lege-gui (main GUI) for $TARGET"
     cargo build --release --target "$TARGET" -p lege-gui --bin lege-gui \
@@ -381,9 +332,8 @@ APP="$OUT_DIR/$APP_NAME.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
-HELPERS_DIR="$APP/Contents/Helpers"
 rm -rf "$APP"
-mkdir -p "$MACOS_DIR" "$RES_DIR/docs" "$FRAMEWORKS_DIR" "$HELPERS_DIR"
+mkdir -p "$MACOS_DIR" "$RES_DIR/docs" "$FRAMEWORKS_DIR"
 
 # The GUI resolves the worker CLI next to its own executable. In --cli mode the
 # bundle has no GUI; a launcher script (CFBundleExecutable) opens the CLI in a
@@ -392,10 +342,6 @@ install -m755 "$ROOT/target/$TARGET/release/lege" "$MACOS_DIR/lege"
 if [[ "$CLI_ONLY" != "1" ]]; then
   install -m755 "$ROOT/target/$TARGET/release/lege-gui" "$MACOS_DIR/lege-gui"
 fi
-# Keep the AGPL encoder as a separately launched helper, not a linked library.
-install -m755 "$DJVU_ENCODER_BIN" "$HELPERS_DIR/djvu-encoder"
-mkdir -p "$RES_DIR/licenses"
-install -m644 "$DJVU_ENCODER_LICENSE" "$RES_DIR/licenses/djvu-encoder-AGPL-3.0.txt"
 
 # In --cli mode the bundle's main executable is a launcher that opens the `lege`
 # CLI in a Terminal window when the app is launched from Finder, while still
@@ -516,7 +462,6 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   if [[ "$CODESIGN_ID" != "-" ]]; then
     CODESIGN_ARGS+=(--options runtime --timestamp)
   fi
-  codesign "${CODESIGN_ARGS[@]}" "$HELPERS_DIR/djvu-encoder"
   codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege"
   if [[ "$CLI_ONLY" != "1" ]]; then
     codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege-gui"

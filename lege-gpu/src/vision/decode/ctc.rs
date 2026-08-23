@@ -19,8 +19,8 @@ pub(crate) struct CtcDict {
 
 impl CtcDict {
     /// Build from raw dictionary text (one character per line), adding the CTC
-    /// blank at index 0 and a trailing space (PP-OCRv5 layout: for an N-line
-    /// dictionary the head has N+2 classes).
+    /// blank at index 0 and a trailing space (the PP-OCR layout, unchanged from
+    /// v5 to v6: for an N-line dictionary the head has N+2 classes).
     pub(crate) fn from_dict_text(text: &str) -> Self {
         // Keep one owned dictionary buffer plus byte ranges instead of allocating
         // a separate String for each of the 18k+ glyphs.

@@ -18,25 +18,24 @@ pub fn build_analysis_binary(source: &[u8], image: &RgbImage) -> Vec<u8> {
         &gray
     };
 
+    // A uniform page carries no ink to segment; report it as all background.
     if pixels.is_empty() || pixels.iter().all(|&p| p == pixels[0]) {
         return vec![255; expected];
     }
 
-    if pixels.iter().all(|&p| p == 0 || p == 255) {
-        let mut binary = pixels.to_vec();
-        standardize_polarity(&mut binary);
-        return binary;
-    }
-    if pixels.iter().all(|&p| p <= 1) {
-        let mut binary: Vec<u8> = pixels
+    let mut binary = if pixels.iter().all(|&p| p == 0 || p == 255) {
+        // Already a 0/255 mask.
+        pixels.to_vec()
+    } else if pixels.iter().all(|&p| p <= 1) {
+        // A 0/1 mask, as some callers produce.
+        pixels
             .iter()
             .map(|&p| if p == 0 { 0 } else { 255 })
-            .collect();
-        standardize_polarity(&mut binary);
-        return binary;
-    }
-
-    let mut binary = otsu_binarize(pixels);
+            .collect()
+    } else {
+        // Grayscale (e.g. a JPEG text buffer): threshold it.
+        otsu_binarize(pixels)
+    };
     standardize_polarity(&mut binary);
     binary
 }
@@ -53,13 +52,14 @@ pub fn binarize_page(image: &RgbImage) -> Vec<u8> {
     binary
 }
 
+/// BT.709 luma of one RGB pixel — the single definition used for every
+/// grayscale conversion in this module.
+fn luma_bt709(px: &image::Rgb<u8>) -> u8 {
+    (0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32).round() as u8
+}
+
 fn rgb_to_gray(image: &RgbImage) -> Vec<u8> {
-    image
-        .pixels()
-        .map(|px| {
-            (0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32).round() as u8
-        })
-        .collect()
+    image.pixels().map(luma_bt709).collect()
 }
 
 fn standardize_polarity(binary: &mut [u8]) {
@@ -97,19 +97,11 @@ pub fn extract_gray_crop(image: &RgbImage, bbox: [u32; 4]) -> Result<(GrayImage,
 
     for cy in 0..h {
         for cx in 0..w {
-            let px = image.get_pixel(x1 + cx, y1 + cy);
-            // BT.709 luma
-            let luma = (0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32)
-                .round() as u8;
+            let luma = luma_bt709(image.get_pixel(x1 + cx, y1 + cy));
             gray.put_pixel(cx, cy, Luma([luma]));
         }
     }
     Ok((gray, w, h))
-}
-
-/// Extract a flat grayscale byte slice from a GrayImage (borrows the underlying buffer).
-pub fn gray_image_to_flat(img: &GrayImage) -> &[u8] {
-    img.as_raw()
 }
 
 /// Binarize a grayscale region using Sauvola adaptive thresholding via lege-gpu.

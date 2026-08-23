@@ -473,6 +473,21 @@ fn winograd_output_transform(
     Tensor::new(vec![1, cout, h, w], out)
 }
 
+/// Gauss error function, Abramowitz & Stegun 7.1.26 (worst-case absolute error
+/// 1.5e-7). `f32::erf` is still unstable, and this has to match
+/// `ops::activations::ERF_WGSL` term for term anyway — the reference exists to
+/// be compared against the GPU, so an independently more accurate CPU erf would
+/// report parity failures rather than prevent them.
+fn erf(x: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
+    let poly = t
+        * (0.254_829_592
+            + t * (-0.284_496_736
+                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    let magnitude = 1.0 - poly * (-x * x).exp();
+    if x >= 0.0 { magnitude } else { -magnitude }
+}
+
 fn unary(kind: &UnaryKind, inputs: &[&Tensor]) -> Result<Tensor> {
     let input = exactly_one(inputs)?;
     let data = match kind {
@@ -494,6 +509,7 @@ fn unary(kind: &UnaryKind, inputs: &[&Tensor]) -> Result<Tensor> {
             .map(|x| (alpha * x + beta).clamp(0.0, 1.0))
             .collect(),
         UnaryKind::Sqrt => input.data.iter().map(|x| x.sqrt()).collect(),
+        UnaryKind::Erf => input.data.iter().copied().map(erf).collect(),
         UnaryKind::Pow { exponent } => input.data.iter().map(|x| x.powf(*exponent)).collect(),
     };
     Tensor::new(input.shape.clone(), data)

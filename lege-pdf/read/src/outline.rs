@@ -65,11 +65,10 @@ impl<'a> OutlineReader<'a> {
         };
         self.collect_named_destinations(&catalog);
 
-        let outlines_key = self.key(b"Outlines");
         let Some(catalog_dict) = catalog.as_dict() else {
             return Vec::new();
         };
-        let Some(outlines) = catalog_dict.get(outlines_key).cloned() else {
+        let Some(outlines) = catalog_dict.get(self.key(b"Outlines")).cloned() else {
             return Vec::new();
         };
         let Some(outline_root) = self.resolve_value(&outlines) else {
@@ -151,12 +150,10 @@ impl<'a> OutlineReader<'a> {
             }
         }
 
-        let kids = match dict.get(self.key(b"Kids")) {
-            Some(PdfObject::Array(kids)) => kids.iter().cloned().collect::<Vec<_>>(),
-            _ => Vec::new(),
-        };
-        for kid in kids {
-            self.collect_name_tree(kid, depth + 1);
+        if let Some(PdfObject::Array(kids)) = dict.get(self.key(b"Kids")) {
+            for kid in kids.iter().cloned() {
+                self.collect_name_tree(kid, depth + 1);
+            }
         }
     }
 
@@ -271,22 +268,22 @@ impl<'a> OutlineReader<'a> {
             .get(1)
             .and_then(PdfObject::as_name)
             .map(|name| self.session.snapshot.names().resolve(name));
+        // Where the destination's Y coordinate sits inside the array depends
+        // on the fit mode: `[page /XYZ left top zoom]`, `[page /FitH top]`,
+        // `[page /FitR left bottom right top]`. Other modes carry no Y at all.
         let top_index = match fit.as_deref() {
-            Some(name) if name == b"XYZ" => Some(3),
-            Some(name) if name == b"FitH" || name == b"FitBH" => Some(2),
-            Some(name) if name == b"FitR" => Some(5),
+            Some(b"XYZ") => Some(3),
+            Some(b"FitH" | b"FitBH") => Some(2),
+            Some(b"FitR") => Some(5),
             _ => None,
         };
         let top = top_index
             .and_then(|index| items.get(index))
-            .and_then(|value| self.resolve_number(value))
+            .and_then(|value| self.resolve_value(value))
+            .and_then(|value| value.as_number())
             .filter(|value| value.is_finite())
             .map(|value| value as f32);
         Some((source_page, top))
-    }
-
-    fn resolve_number(&mut self, value: &PdfObject) -> Option<f64> {
-        self.resolve_value(value)?.as_number()
     }
 
     fn resolve_value(&mut self, value: &PdfObject) -> Option<Arc<PdfObject>> {
@@ -319,20 +316,10 @@ fn destination_name(value: &PdfObject, session: &RenderSession) -> Option<Vec<u8
 
 pub(crate) fn decode_pdf_text_string(bytes: &[u8]) -> String {
     if let Some(body) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        let units = body
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]));
-        return char::decode_utf16(units)
-            .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect();
+        return decode_utf16_body(body, u16::from_be_bytes);
     }
     if let Some(body) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        let units = body
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
-        return char::decode_utf16(units)
-            .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect();
+        return decode_utf16_body(body, u16::from_le_bytes);
     }
     if let Some(body) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(body).into_owned();
@@ -341,6 +328,16 @@ pub(crate) fn decode_pdf_text_string(bytes: &[u8]) -> String {
     bytes
         .iter()
         .filter_map(|byte| pdf_doc_char(*byte))
+        .collect()
+}
+
+/// Decode a BOM-stripped UTF-16 body of one endianness. Damaged text strings
+/// degrade rather than fail: a trailing odd byte is dropped and an unpaired
+/// surrogate becomes U+FFFD.
+fn decode_utf16_body(body: &[u8], to_unit: fn([u8; 2]) -> u16) -> String {
+    let units = body.chunks_exact(2).map(|pair| to_unit([pair[0], pair[1]]));
+    char::decode_utf16(units)
+        .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect()
 }
 

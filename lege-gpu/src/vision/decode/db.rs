@@ -8,6 +8,22 @@
 //! upstream, so axis-aligned boxes are sufficient — we skip the rotated
 //! min-area-rectangle fit that opencv-based pipelines use.
 
+/// Which PP-OCR generation a detection model comes from.
+///
+/// The thresholds below are published per generation and are not
+/// interchangeable: v6 detects on a lower probability floor and unclips less,
+/// so running v6 weights on v5's numbers under-detects faint lines and
+/// over-expands the boxes that do survive.
+/// Defaults to V5 so existing callers — notably v5 model packs loaded through
+/// `lege-document-ocr` — keep the behaviour they were tuned against. The
+/// embedded assets select their generation explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PpOcrGeneration {
+    #[default]
+    V5,
+    V6,
+}
+
 /// DB post-processing thresholds (PP-OCR defaults).
 #[derive(Debug, Clone)]
 pub(crate) struct DbConfig {
@@ -23,15 +39,27 @@ pub(crate) struct DbConfig {
     pub(crate) min_side: f32,
 }
 
-impl Default for DbConfig {
-    fn default() -> Self {
+impl DbConfig {
+    /// Published post-processing thresholds for one PP-OCR generation. The
+    /// size filters are ours, not PaddleOCR's, and are generation-independent.
+    pub(crate) fn for_generation(generation: PpOcrGeneration) -> Self {
+        let (thresh, box_thresh, unclip_ratio) = match generation {
+            PpOcrGeneration::V5 => (0.3, 0.6, 1.5),
+            PpOcrGeneration::V6 => (0.2, 0.45, 1.4),
+        };
         Self {
-            thresh: 0.3,
-            box_thresh: 0.6,
-            unclip_ratio: 1.5,
+            thresh,
+            box_thresh,
+            unclip_ratio,
             min_area: 16,
             min_side: 3.0,
         }
+    }
+}
+
+impl Default for DbConfig {
+    fn default() -> Self {
+        Self::for_generation(PpOcrGeneration::default())
     }
 }
 

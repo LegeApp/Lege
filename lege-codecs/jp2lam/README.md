@@ -1,5 +1,7 @@
 # jp2lam
 
+The canonical source is the [Lege monorepo](https://github.com/LegeApp/Lege/tree/main/lege-codecs/jp2lam).
+
 JPEG 2000 Part 1 encoding in Rust, with focused JP2 decoding for document image workflows.
 
 `jp2lam` writes unsigned 8–16-bit grayscale or sRGB images as JP2 files or raw J2K codestreams. It also includes a focused native decoder used for encoder conformance and Internet Archive-style JP2 page images.
@@ -23,7 +25,7 @@ The current goal is practical document-image interoperability first: a small Rus
 
 ```toml
 [dependencies]
-jp2lam = "0.1"
+jp2lam = "0.3"
 ```
 
 Minimum Rust version from the crate manifest:

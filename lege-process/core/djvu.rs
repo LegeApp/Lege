@@ -1,152 +1,39 @@
 // djvu.rs
 // DjVu output driver.
 //
-// Lege does not link a DjVu encoder library. It composes each page's layers
-// (bilevel ink mask, IW44 background canvas, OCR word boxes), writes them to the
-// work directory as ordinary interchange files, and hands a neutral JSON
-// manifest to a separate `djvu-encoder` program invoked over the command line.
-// This keeps the AGPL encoder at arms length: no FFI, no shared memory, no
-// callbacks, and the encoder is user-replaceable via `LEGE_DJVU_ENCODER` or the
-// `--djvu-encoder-path` flag.
+// Native Rust DjVu encoding through the typed DJVULibrust API.
 
 use anyhow::{Context, Result, anyhow};
-use image::{GrayImage, RgbImage};
+use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use unicode_normalization::UnicodeNormalization;
+
+use djvu_encoder::doc::{
+    Bookmark, DjVmNav, DjvuBuilder, DjvuDocument, EncodedPage, Page, PageBuilder, PageEncodeParams,
+};
+use djvu_encoder::image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 
 use crate::app_dirs;
 use crate::dbglog;
 use crate::engine::Detection;
 
-/// Manifest schema version understood by this driver. Must match the encoder.
-const MANIFEST_SCHEMA_VERSION: u32 = 2;
-
-/// Basename of the encoder executable searched for on `PATH` and next to Lege.
-const ENCODER_BIN: &str = "djvu-encoder";
-
-/// Process-wide encoder path override, set once from `--djvu-encoder-path`.
-static ENCODER_PATH_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// Record the encoder path supplied on the command line (`--djvu-encoder-path`).
-/// First value wins; call once during startup before any DJVU job runs.
-pub fn set_encoder_path_override(path: PathBuf) {
-    let _ = ENCODER_PATH_OVERRIDE.set(path);
-}
-
 fn djvu_hidden_text_enabled() -> bool {
     std::env::var("LEGE_DJVU_HIDDEN_TEXT").ok().as_deref() != Some("0")
 }
 
-/// Locate the standalone `djvu-encoder` program.
-///
-/// Search order: explicit path (config/flag) → `LEGE_DJVU_ENCODER` → the macOS
-/// app's `Contents/Helpers` directory → next to the running Lege executable →
-/// `PATH`. Returns a clear, actionable error if none is found so the DJVU output
-/// mode fails fast (PDF output is unaffected).
-pub fn resolve_encoder_path(explicit: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = explicit {
-        if path.exists() {
-            return Ok(path.to_path_buf());
-        }
-        return Err(anyhow!(
-            "configured DjVu encoder path does not exist: {}",
-            path.display()
-        ));
-    }
-
-    if let Some(path) = ENCODER_PATH_OVERRIDE.get() {
-        if path.exists() {
-            return Ok(path.clone());
-        }
-        return Err(anyhow!(
-            "--djvu-encoder-path points to a missing file: {}",
-            path.display()
-        ));
-    }
-
-    if let Some(env_path) = std::env::var_os("LEGE_DJVU_ENCODER") {
-        let path = PathBuf::from(env_path);
-        if path.exists() {
-            return Ok(path);
-        }
-        return Err(anyhow!(
-            "LEGE_DJVU_ENCODER points to a missing file: {}",
-            path.display()
-        ));
-    }
-
-    if let Ok(exe) = std::env::current_exe() {
-        for candidate in bundled_encoder_candidates(&exe) {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-
-    if let Some(found) = search_path(ENCODER_BIN) {
-        return Ok(found);
-    }
-
-    Err(anyhow!(
-        "{ENCODER_BIN} wasn't found. Install the AGPL DjVu encoder \
-         package, put it next to Lege or on your PATH, or point Lege at it with \
-         --djvu-encoder-path or the LEGE_DJVU_ENCODER environment variable. \
-         (PDF output does not require it.)"
-    ))
-}
-
-/// Candidate paths relative to the running executable. A macOS application
-/// keeps helper tools in `Contents/Helpers`; loose CLI distributions retain the
-/// long-standing next-to-executable lookup.
-fn bundled_encoder_candidates(exe: &Path) -> Vec<PathBuf> {
-    let Some(exe_dir) = exe.parent() else {
-        return Vec::new();
-    };
-
-    let mut dirs = Vec::with_capacity(2);
-    if exe_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS") {
-        if let Some(contents_dir) = exe_dir.parent() {
-            dirs.push(contents_dir.join("Helpers"));
-        }
-    }
-    dirs.push(exe_dir.to_path_buf());
-
-    dirs.into_iter()
-        .flat_map(|dir| {
-            [ENCODER_BIN, "djvu-encoder.exe"]
-                .into_iter()
-                .map(move |name| dir.join(name))
-        })
-        .collect()
-}
-
-/// Minimal `PATH` search for an executable basename.
-fn search_path(bin: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        for name in [bin, "djvu-encoder.exe"] {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// Diagnostic string describing the DjVu encoder that will be used.
+/// Diagnostic string for the active native DjVu acceleration paths.
 pub fn active_backend_info() -> String {
-    match resolve_encoder_path(None) {
-        Ok(path) => format!("subprocess {}", path.display()),
-        Err(_) => format!("subprocess '{ENCODER_BIN}' (not yet resolved)"),
-    }
+    format!(
+        "primitives={}, parallel={}",
+        djvu_encoder::active_primitives_backend(),
+        djvu_encoder::active_parallel_backend()
+    )
 }
 
 /// Configuration for DJVU encoding
@@ -163,7 +50,7 @@ pub struct DjvuConfig {
     /// 50 = 74 slices (C44 default)
     /// 0 = 50 slices (lower quality, smaller files)
     pub iw44_quality: u8,
-    /// Working directory for page-layer files and the manifest.
+    /// Working directory for optional debug dumps (encoding is in memory).
     pub work_dir: PathBuf,
     /// When true, apply PBM (binarized background) as a transparency mask for color layer
     pub pre_mask_color_layer: bool,
@@ -177,10 +64,6 @@ pub struct DjvuConfig {
     pub crop_margins: bool,
     /// Early page assembly flag (kept for compatibility, unused)
     pub early_page_assembly: bool,
-    /// Explicit path to the `djvu-encoder` program (from `--djvu-encoder-path`).
-    /// `None` falls back to env / next-to-exe / PATH resolution.
-    #[serde(default)]
-    pub encoder_path: Option<PathBuf>,
 }
 
 impl Default for DjvuConfig {
@@ -197,7 +80,6 @@ impl Default for DjvuConfig {
             center_margins: false,
             crop_margins: false,
             early_page_assembly: false,
-            encoder_path: None,
         }
     }
 }
@@ -235,90 +117,38 @@ pub struct PageData {
     pub hocr: Option<String>,
 }
 
-// ============================================================================
-// Manifest schema (neutral interchange written for the encoder subprocess)
-// ============================================================================
-
-/// One page's contribution to the manifest: paths (relative to the manifest
-/// directory) of the layer files this driver wrote, plus dimensions. A page
-/// with neither `mask` nor `background` is a blank page (encoder fills white).
-#[derive(Debug, Clone, Serialize)]
-pub struct ManifestPageEntry {
-    index: usize,
-    width: u32,
-    height: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mask: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    background: Option<String>,
-    /// Per-page IW44 background subsampling override. Full-page covers use 1
-    /// so the document-wide ×3 body-background policy cannot blur them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bg_subsample: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ocr: Option<String>,
+/// A typed page ready for DJVULibrust's page encoder. Covers override the
+/// document background subsampling so their full-page color remains full-res.
+pub struct PreparedDjvuPage {
+    pub page: Page,
+    pub bg_subsample: Option<u8>,
 }
 
-#[derive(Debug, Serialize)]
-struct Manifest {
-    version: u32,
-    dpi: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    slices: Option<usize>,
-    bg_subsample: u8,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    outline: Vec<ManifestOutlineEntry>,
-    pages: Vec<ManifestPageEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct ManifestOutlineEntry {
-    title: String,
-    page_index: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<ManifestOutlineEntry>,
-}
-
-impl From<lege_pdf_write::outline::OutlineItem> for ManifestOutlineEntry {
-    fn from(item: lege_pdf_write::outline::OutlineItem) -> Self {
-        Self {
-            title: item.title,
-            page_index: item.page_index as usize,
-            children: item.children.into_iter().map(Self::from).collect(),
-        }
+impl PreparedDjvuPage {
+    /// Compress this page with the document policy, applying a cover-specific
+    /// background-subsampling override when present.
+    pub fn encode(
+        self,
+        document: &DjvuDocument,
+        iw44_quality: u8,
+        document_bg_subsample: usize,
+    ) -> Result<EncodedPage> {
+        let mut params = PageEncodeParams::default();
+        params.slices = Some(quality_to_slices(iw44_quality));
+        params.bg_subsample = self
+            .bg_subsample
+            .unwrap_or_else(|| document_bg_subsample.clamp(1, 12) as u8);
+        document
+            .encode_page_with_params(self.page, &params)
+            .context("Failed to encode DjVu page")
     }
 }
 
-/// A single OCR word box in page pixel coordinates (neutral interchange form).
-#[derive(Serialize)]
-struct OcrWord {
-    text: String,
-    x: u16,
-    y: u16,
-    w: u16,
-    h: u16,
-}
-
-#[derive(Serialize)]
-struct OcrDoc {
-    words: Vec<OcrWord>,
-}
-
-/// Progress line emitted by the encoder's `--progress-json` output.
-#[derive(Deserialize)]
-struct ProgressLine {
-    event: String,
-    #[serde(default)]
-    page: Option<usize>,
-    #[serde(default)]
-    of: Option<usize>,
-}
-
 // ============================================================================
-// Orchestrator: composes page layers and writes them to the work directory
+// Orchestrator: composes typed page layers in memory
 // ============================================================================
 
-/// Composes DjVu page layers and writes them as interchange files.
+/// Composes DjVu page layers using DJVULibrust's typed API.
 pub struct DjvuOrchestrator {
     config: DjvuConfig,
 }
@@ -334,21 +164,19 @@ impl DjvuOrchestrator {
         Ok(Self { config })
     }
 
-    /// Directory where page-layer files and the manifest are written.
+    /// Directory used only for optional PBM debug dumps.
     pub fn work_dir(&self) -> &Path {
         &self.config.work_dir
     }
 
-    /// Compose a single page's layers, write them to the work directory, and
-    /// return the manifest entry describing them. Thread-safe: each page writes
-    /// its own uniquely-named files.
-    pub fn process_page(&self, page_data: PageData) -> Result<ManifestPageEntry> {
+    /// Compose a single page's typed layers in memory. Thread-safe.
+    pub fn process_page(&self, page_data: PageData) -> Result<PreparedDjvuPage> {
         let page_index = page_data.index;
 
         #[cfg(feature = "debug-logging")]
         crate::info_log!("[DJVU] process_page START: page {}", page_index);
 
-        let result = self.compose_page_entry(page_data);
+        let result = self.compose_page(page_data);
 
         #[cfg(feature = "debug-logging")]
         match &result {
@@ -360,7 +188,7 @@ impl DjvuOrchestrator {
         result
     }
 
-    fn compose_page_entry(&self, page_data: PageData) -> Result<ManifestPageEntry> {
+    fn compose_page(&self, page_data: PageData) -> Result<PreparedDjvuPage> {
         let page_num = page_data.index;
         let width = page_data.rgb_image.width();
         let height = page_data.rgb_image.height();
@@ -410,17 +238,17 @@ impl DjvuOrchestrator {
         page_data: &PageData,
         width: u32,
         height: u32,
-    ) -> Result<ManifestPageEntry> {
-        let background = self.write_background(page_num, &page_data.rgb_image)?;
-        let ocr = self.write_ocr(page_num, page_data, width, height)?;
-        Ok(ManifestPageEntry {
-            index: page_num,
-            width,
-            height,
-            mask: None,
-            background: Some(background),
+    ) -> Result<PreparedDjvuPage> {
+        let pixmap = rgb_image_to_pixmap(&page_data.rgb_image);
+        let builder = PageBuilder::new(page_num, width, height)
+            .with_background(pixmap)
+            .context("Failed to set full-page DjVu background")?;
+        let builder = self.add_ocr(builder, page_data, width, height)?;
+        Ok(PreparedDjvuPage {
+            page: builder
+                .build()
+                .context("Failed to build full-color DjVu page")?,
             bg_subsample: page_data.preserve_full_color.then_some(1),
-            ocr,
         })
     }
 
@@ -432,25 +260,23 @@ impl DjvuOrchestrator {
         image_regions: &[ImageRegion],
         width: u32,
         height: u32,
-    ) -> Result<ManifestPageEntry> {
+    ) -> Result<PreparedDjvuPage> {
         self.maybe_dump_preencode_pbm(page_num, &page_data.binarized, width, height)?;
 
-        // Blank page with no figures: no layer files; encoder synthesizes white.
+        // Preserve the current blank-page semantics with an explicit white page.
         if self.is_binarized_blank(&page_data.binarized, width, height) && image_regions.is_empty()
         {
-            return Ok(ManifestPageEntry {
-                index: page_num,
-                width,
-                height,
-                mask: None,
-                background: None,
+            let builder = PageBuilder::new(page_num, width, height)
+                .with_background(Pixmap::from_pixel(width, height, Pixel::white()))
+                .context("Failed to set blank DjVu page background")?;
+            return Ok(PreparedDjvuPage {
+                page: builder.build().context("Failed to build blank DjVu page")?,
                 bg_subsample: None,
-                ocr: None,
             });
         }
 
         // 1. Prepare the bilevel ink mask (raw Luma8 buffer).
-        let mut mask = self.mask_from_binarized(&page_data.binarized, width, height)?;
+        let mut mask = self.bitmap_from_binarized(&page_data.binarized, width, height)?;
 
         let use_color_background = !self.config.dither_image_regions;
 
@@ -467,26 +293,26 @@ impl DjvuOrchestrator {
             let canvas =
                 self.compose_grayscale_canvas(cleaned, page_data, image_regions, width, height);
             dbglog!("[djvu] IW44 grayscale MRC background composed");
-            Some(self.write_background(page_num, &canvas)?)
+            Some(rgb_image_to_pixmap(&canvas))
         } else if use_color_background && !image_regions.is_empty() {
             let canvas = self.compose_color_canvas(page_data, image_regions, width, height);
             dbglog!("[djvu] IW44 color background composed");
-            Some(self.write_background(page_num, &canvas)?)
+            Some(rgb_image_to_pixmap(&canvas))
         } else {
             None
         };
 
-        let mask_name = self.write_mask(page_num, &mask, width, height)?;
-        let ocr = self.write_ocr(page_num, page_data, width, height)?;
+        let mut builder = PageBuilder::new(page_num, width, height).with_foreground(mask, 0, 0);
+        if let Some(background) = background {
+            builder = builder
+                .with_background(background)
+                .context("Failed to set DjVu MRC background")?;
+        }
+        builder = self.add_ocr(builder, page_data, width, height)?;
 
-        Ok(ManifestPageEntry {
-            index: page_num,
-            width,
-            height,
-            mask: Some(mask_name),
-            background,
+        Ok(PreparedDjvuPage {
+            page: builder.build().context("Failed to build DjVu page")?,
             bg_subsample: None,
-            ocr,
         })
     }
 
@@ -541,9 +367,8 @@ impl DjvuOrchestrator {
         Ok(())
     }
 
-    /// Build the bilevel ink mask as a raw Luma8 buffer: ink → 0 (black),
-    /// else 255. The encoder thresholds at <128, so this round-trips bit-exactly.
-    fn mask_from_binarized(&self, binarized: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    /// Build the bilevel ink mask: ink → black, background → white.
+    fn bitmap_from_binarized(&self, binarized: &[u8], width: u32, height: u32) -> Result<Bitmap> {
         let n = (width as usize) * (height as usize);
         if binarized.len() < n {
             return Err(anyhow!(
@@ -555,21 +380,26 @@ impl DjvuOrchestrator {
         let mut buf = Vec::with_capacity(n);
         for &val in &binarized[..n] {
             let is_black = if val <= 1 { val == 0 } else { val < 128 };
-            buf.push(if is_black { 0u8 } else { 255u8 });
+            buf.push(if is_black {
+                GrayPixel::black()
+            } else {
+                GrayPixel::white()
+            });
         }
-        Ok(buf)
+        Ok(Bitmap::from_vec(width, height, buf))
     }
 
     /// White out image regions in the ink mask (set to 255/background) so JB2
     /// text does not bleed through color/photo regions.
     fn whiteout_image_regions(
         &self,
-        mask: &mut [u8],
+        mask: &mut Bitmap,
         regions: &[ImageRegion],
         width: u32,
         height: u32,
     ) {
         let w = width as usize;
+        let pixels = mask.pixels_mut();
         for region in regions {
             let x1 = region.bbox[0].max(0.0).floor() as usize;
             let y1 = region.bbox[1].max(0.0).floor() as usize;
@@ -578,8 +408,8 @@ impl DjvuOrchestrator {
             for row in y1..y2 {
                 let start = row * w + x1;
                 let end = row * w + x2;
-                if let Some(slice) = mask.get_mut(start..end) {
-                    slice.fill(255);
+                if let Some(slice) = pixels.get_mut(start..end) {
+                    slice.fill(GrayPixel::white());
                 }
             }
         }
@@ -634,56 +464,25 @@ impl DjvuOrchestrator {
         RgbImage::from_raw(width, height, canvas).expect("color canvas buffer sized w*h*3")
     }
 
-    // --- File writers ------------------------------------------------------
-
-    fn write_mask(&self, page_num: usize, mask: &[u8], width: u32, height: u32) -> Result<String> {
-        let img: GrayImage = GrayImage::from_raw(width, height, mask.to_vec())
-            .ok_or_else(|| anyhow!("Failed to build mask image buffer"))?;
-        let name = format!("page-{:05}-mask.png", page_num);
-        let path = self.config.work_dir.join(&name);
-        img.save(&path)
-            .with_context(|| format!("Failed to write mask {:?}", path))?;
-        Ok(name)
-    }
-
-    fn write_background(&self, page_num: usize, bg: &RgbImage) -> Result<String> {
-        let name = format!("page-{:05}-bg.png", page_num);
-        let path = self.config.work_dir.join(&name);
-        bg.save(&path)
-            .with_context(|| format!("Failed to write background {:?}", path))?;
-        Ok(name)
-    }
-
-    fn write_ocr(
+    fn add_ocr(
         &self,
-        page_num: usize,
+        builder: PageBuilder,
         page_data: &PageData,
         width: u32,
         height: u32,
-    ) -> Result<Option<String>> {
+    ) -> Result<PageBuilder> {
         if !djvu_hidden_text_enabled() {
-            return Ok(None);
+            return Ok(builder);
         }
         let Some(hocr) = page_data.hocr.as_deref() else {
-            return Ok(None);
+            return Ok(builder);
         };
         let words = self.parse_hocr_to_words(hocr, width, height)?;
         if words.is_empty() {
-            return Ok(None);
+            return Ok(builder);
         }
-
-        let doc = OcrDoc {
-            words: words
-                .into_iter()
-                .map(|(text, x, y, w, h)| OcrWord { text, x, y, w, h })
-                .collect(),
-        };
-        let name = format!("page-{:05}-ocr.json", page_num);
-        let path = self.config.work_dir.join(&name);
-        let json = serde_json::to_vec(&doc).context("Failed to serialize OCR words")?;
-        fs::write(&path, json).with_context(|| format!("Failed to write OCR {:?}", path))?;
-        dbglog!("[djvu] OCR text layer written for page {}", page_num);
-        Ok(Some(name))
+        dbglog!("[djvu] OCR text layer prepared ({} words)", words.len());
+        Ok(builder.with_ocr_words(words))
     }
 
     /// Parse HOCR into (text, x, y, width, height) word boxes in page coords.
@@ -779,145 +578,22 @@ impl DjvuOrchestrator {
         Ok(words)
     }
 
-    /// Preflight: verify the work directory is writable and the encoder program
-    /// can be located, so DJVU jobs fail fast with a clear message.
+    /// Preflight: the native encoder has no runtime helper; only debug output
+    /// needs a writable work directory.
     pub fn preflight_check(&self, _require_text_layer: bool) -> Result<()> {
         fs::create_dir_all(&self.config.work_dir)
             .with_context(|| format!("Work directory not writable: {:?}", self.config.work_dir))?;
-        resolve_encoder_path(self.config.encoder_path.as_deref())?;
         Ok(())
     }
 
-    /// Clean up the manifest and page-layer files written for this job.
-    ///
-    /// A job directory below the managed DjVu temp base is removed whole. Any
-    /// other work directory — one the caller chose — keeps its directory and
-    /// loses only the interchange files this job wrote, so a cleanup can never
-    /// delete a location the user owns.
+    /// Native encoding creates no page staging files.
     pub fn cleanup(&self) -> Result<()> {
-        let work_dir = self.config.work_dir.as_path();
-        dbglog!("[djvu] cleanup() removing {:?}", work_dir);
-        if !work_dir.exists() {
-            return Ok(());
-        }
-
-        let base = app_dirs::djvu_base_dir();
-        if work_dir != base && work_dir.starts_with(&base) {
-            return fs::remove_dir_all(work_dir)
-                .or_else(|error| {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(error)
-                    }
-                })
-                .with_context(|| format!("Failed to remove DjVu work directory: {:?}", work_dir));
-        }
-
-        let entries = fs::read_dir(work_dir)
-            .with_context(|| format!("Failed to read DjVu work directory: {:?}", work_dir))?;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let is_job_file = name == "manifest.json"
-                || (name.starts_with("page-")
-                    && (name.ends_with("-mask.png")
-                        || name.ends_with("-bg.png")
-                        || name.ends_with("-ocr.json")));
-            if is_job_file {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-        let _ = fs::remove_dir_all(work_dir.join("preencode-pbm"));
+        dbglog!("[djvu] cleanup() called (native encoder has no staging files)");
         Ok(())
     }
 
     pub fn cleanup_work_dir_only(&self) -> Result<()> {
         self.cleanup()
-    }
-}
-
-/// Job-scoped control channel to the `djvu-encoder` child process.
-///
-/// The child runs inside the writer actor's blocking task, which a broadcast
-/// cancel cannot interrupt. The pipeline holds this control, sets `cancelled`
-/// when the job unwinds, and waits for the encoder loop to kill and reap the
-/// child. Without it a cancelled DjVu job leaves an orphan encoder.
-#[derive(Default)]
-pub struct DjvuEncoderControl {
-    cancelled: std::sync::atomic::AtomicBool,
-    running: std::sync::atomic::AtomicBool,
-}
-
-impl DjvuEncoderControl {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn cancel(&self) {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
-            || crate::progress::termination_requested()
-    }
-
-    fn mark_running(&self, running: bool) {
-        self.running
-            .store(running, std::sync::atomic::Ordering::Release);
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.running.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Block until the encoder child is reaped, or the timeout expires.
-    /// Returns true when no encoder is running any more.
-    pub fn wait_until_stopped(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        while self.is_running() {
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        true
-    }
-}
-
-/// Ends a DjVu job cleanly when the job ends, whatever the reason — success,
-/// failure, or cancellation. It stops the encoder child and then removes the
-/// work directory. Phase 8 requires that a cancelled job leave neither behind.
-pub struct DjvuWorkDirGuard {
-    orchestrator: std::sync::Arc<DjvuOrchestrator>,
-    encoder: std::sync::Arc<DjvuEncoderControl>,
-}
-
-impl DjvuWorkDirGuard {
-    pub fn new(
-        orchestrator: std::sync::Arc<DjvuOrchestrator>,
-        encoder: std::sync::Arc<DjvuEncoderControl>,
-    ) -> Self {
-        Self {
-            orchestrator,
-            encoder,
-        }
-    }
-}
-
-impl Drop for DjvuWorkDirGuard {
-    fn drop(&mut self) {
-        if self.encoder.is_running() {
-            self.encoder.cancel();
-            if !self.encoder.wait_until_stopped(Duration::from_secs(5)) {
-                crate::warn_log!("[djvu] Encoder did not stop before work-directory cleanup");
-            }
-        }
-        if let Err(_error) = self.orchestrator.cleanup() {
-            crate::warn_log!("[djvu] Failed to clean up work directory: {}", _error);
-        }
     }
 }
 
@@ -953,31 +629,98 @@ fn paste_regions(
     }
 }
 
+fn rgb_image_to_pixmap(image: &RgbImage) -> Pixmap {
+    let (width, height) = image.dimensions();
+    let pixels = image
+        .as_raw()
+        .chunks_exact(3)
+        .map(|rgb| Pixel::new(rgb[0], rgb[1], rgb[2]))
+        .collect();
+    Pixmap::from_vec(width, height, pixels)
+}
+
+fn outline_to_navigation(
+    outline: Vec<lege_pdf_write::outline::OutlineItem>,
+    total_pages: usize,
+) -> Result<DjVmNav> {
+    fn convert(
+        item: lege_pdf_write::outline::OutlineItem,
+        total_pages: usize,
+        count: &mut usize,
+    ) -> Result<Bookmark> {
+        *count += 1;
+        if *count > u16::MAX as usize {
+            return Err(anyhow!("DjVu outline has more than 65535 entries"));
+        }
+        let title = item.title.trim();
+        if title.is_empty() {
+            return Err(anyhow!("DjVu outline entry has an empty title"));
+        }
+        if item.children.len() > u8::MAX as usize {
+            return Err(anyhow!(
+                "DjVu outline entry {title:?} has more than 255 direct children"
+            ));
+        }
+        let page_index = item.page_index as usize;
+        if page_index >= total_pages {
+            return Err(anyhow!(
+                "DjVu outline entry {title:?} points to page {page_index}, but document has {total_pages} pages"
+            ));
+        }
+        Ok(Bookmark {
+            title: title.to_owned(),
+            dest: format!("#p{:04}.djvu", page_index + 1),
+            children: item
+                .children
+                .into_iter()
+                .map(|child| convert(child, total_pages, count))
+                .collect::<Result<Vec<_>>>()?,
+        })
+    }
+
+    let mut count = 0;
+    Ok(DjVmNav {
+        bookmarks: outline
+            .into_iter()
+            .map(|item| convert(item, total_pages, &mut count))
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
 //==============================================================================
-// DjVu Writer Actor - collects manifest entries, then runs the encoder
+// DjVu Writer Actor - deterministic in-memory document assembly
 //==============================================================================
 
 /// Message types for the DjVu writer actor.
 pub enum DjvuWriterMessage {
-    /// Record a composed page's manifest entry.
-    AppendEntry(ManifestPageEntry),
+    /// Insert an already encoded page into the document.
+    AppendEncoded {
+        encoded: EncodedPage,
+        page_index: usize,
+    },
     /// Set the accepted document navigation tree before finalization.
     SetOutline(Vec<lege_pdf_write::outline::OutlineItem>),
-    /// Write the manifest and run the encoder subprocess.
+    /// Finalize and atomically publish the document.
     Finalize,
 }
 
-/// Handle for sending composed page entries to the DjVu writer actor.
+/// Handle for sending encoded pages to the DjVu writer actor.
 #[derive(Clone)]
 pub struct DjvuWriterHandle {
     sender: mpsc::Sender<DjvuWriterMessage>,
 }
 
 impl DjvuWriterHandle {
-    /// Record a composed page (its layer files are already on disk).
-    pub async fn append_entry(&self, entry: ManifestPageEntry) -> Result<(), anyhow::Error> {
+    pub async fn append_encoded(
+        &self,
+        encoded: EncodedPage,
+        page_index: usize,
+    ) -> Result<(), anyhow::Error> {
         self.sender
-            .send(DjvuWriterMessage::AppendEntry(entry))
+            .send(DjvuWriterMessage::AppendEncoded {
+                encoded,
+                page_index,
+            })
             .await
             .map_err(|_| anyhow!("DjVu writer actor has stopped"))?;
         Ok(())
@@ -993,7 +736,7 @@ impl DjvuWriterHandle {
             .map_err(|_| anyhow!("DjVu writer actor has stopped"))
     }
 
-    /// Finalize the document (write manifest, run encoder).
+    /// Finalize and atomically publish the document.
     pub async fn finalize(&self) -> Result<(), anyhow::Error> {
         self.sender
             .send(DjvuWriterMessage::Finalize)
@@ -1001,6 +744,15 @@ impl DjvuWriterHandle {
             .map_err(|_| anyhow!("DjVu writer actor has stopped"))?;
         Ok(())
     }
+}
+
+fn drain_ready_pages<T>(buffer: &mut BTreeMap<usize, T>, next_expected: &mut usize) -> Vec<T> {
+    let mut ready = Vec::new();
+    while let Some(page) = buffer.remove(next_expected) {
+        ready.push(page);
+        *next_expected += 1;
+    }
+    ready
 }
 
 /// Map IW44 quality (0-100) to a slice count (kept from the previous encoder).
@@ -1012,92 +764,99 @@ fn quality_to_slices(iw44_quality: u8) -> usize {
     }
 }
 
-/// Spawn the DjVu writer actor. It buffers per-page manifest entries and, on
-/// `Finalize`, writes the manifest and invokes the `djvu-encoder` subprocess,
-/// streaming its progress into `progress_tracker` and surfacing its stderr
-/// verbatim on failure.
-#[allow(clippy::too_many_arguments)]
+/// Spawn the DjVu writer actor. Page compression happens concurrently in the
+/// pipeline; this actor inserts completed pages in deterministic order and
+/// performs the final atomic publication.
 pub fn spawn_djvu_writer_actor(
     output_path: PathBuf,
     total_pages: usize,
     dpi: u32,
     iw44_quality: u8,
     bg_subsample: usize,
-    work_dir: PathBuf,
-    encoder_path: PathBuf,
     progress_tracker: crate::progress::ProgressTracker,
     channel_capacity: usize,
-    encoder_control: std::sync::Arc<DjvuEncoderControl>,
+    cancel: lege_pdf_read::CancellationToken,
 ) -> (
     DjvuWriterHandle,
+    Arc<DjvuDocument>,
     tokio::task::JoinHandle<Result<(), anyhow::Error>>,
 ) {
     let (tx, mut rx) = mpsc::channel::<DjvuWriterMessage>(channel_capacity.max(1));
     let handle = DjvuWriterHandle { sender: tx };
 
-    let slices = quality_to_slices(iw44_quality);
-    let bg_subsample = bg_subsample.clamp(1, 12) as u8;
+    let mut params = PageEncodeParams::default();
+    params.slices = Some(quality_to_slices(iw44_quality));
+    params.bg_subsample = bg_subsample.clamp(1, 12) as u8;
+    let doc = Arc::new(
+        DjvuBuilder::new(total_pages)
+            .with_dpi(dpi)
+            .with_params(params)
+            .build(),
+    );
+    let writer_doc = Arc::clone(&doc);
 
     let task = tokio::spawn(async move {
-        let mut entries: BTreeMap<usize, ManifestPageEntry> = BTreeMap::new();
-        let mut outline = Vec::new();
+        let mut page_buffer: BTreeMap<usize, EncodedPage> = BTreeMap::new();
+        let mut next_expected = 0usize;
+        let mut pages_written = 0usize;
+        let mut navigation = DjVmNav::default();
 
-        crate::info_log!("[DjvuWriterActor] Started, collecting page entries...");
+        crate::info_log!("[DjvuWriterActor] Started, waiting for encoded pages...");
 
         while let Some(msg) = rx.recv().await {
             match msg {
-                DjvuWriterMessage::AppendEntry(entry) => {
-                    entries.insert(entry.index, entry);
+                DjvuWriterMessage::AppendEncoded {
+                    encoded,
+                    page_index,
+                } => {
+                    page_buffer.insert(page_index, encoded);
+                    for encoded in drain_ready_pages(&mut page_buffer, &mut next_expected) {
+                        writer_doc.add_encoded_page(encoded).with_context(|| {
+                            format!(
+                                "Failed to append DjVu page {}",
+                                next_expected.saturating_sub(1)
+                            )
+                        })?;
+                        pages_written += 1;
+                        progress_tracker.update(crate::progress::ProcessingStatus::PdfAppend {
+                            current: pages_written,
+                            total: total_pages,
+                        });
+                    }
                 }
                 DjvuWriterMessage::SetOutline(items) => {
-                    outline = items.into_iter().map(ManifestOutlineEntry::from).collect();
+                    navigation = outline_to_navigation(items, total_pages)?;
                 }
                 DjvuWriterMessage::Finalize => {
-                    if entries.len() != total_pages {
+                    if pages_written != total_pages {
                         return Err(anyhow!(
-                            "Document incomplete: {} of {} pages composed",
-                            entries.len(),
+                            "Document incomplete: {} of {} pages encoded",
+                            pages_written,
                             total_pages
                         ));
                     }
-
-                    let manifest = Manifest {
-                        version: MANIFEST_SCHEMA_VERSION,
-                        dpi,
-                        slices: Some(slices),
-                        bg_subsample,
-                        outline,
-                        pages: entries.into_values().collect(),
-                    };
-
-                    let manifest_path = work_dir.join("manifest.json");
-                    let manifest_json = serde_json::to_vec_pretty(&manifest)
-                        .context("Failed to serialize DjVu manifest")?;
-                    fs::write(&manifest_path, manifest_json).with_context(|| {
-                        format!("Failed to write DjVu manifest: {:?}", manifest_path)
-                    })?;
-
-                    // Run the encoder off the async runtime; it streams progress
-                    // back through the tracker.
-                    let progress = progress_tracker.clone();
-                    let encoder_path = encoder_path.clone();
+                    let writer_doc = Arc::clone(&writer_doc);
+                    let navigation = navigation.clone();
                     let output_path = output_path.clone();
-                    let control = encoder_control.clone();
+                    let cancel = cancel.clone();
                     crate::runtime_stats::spawn_blocking_stage(
                         crate::runtime_stats::Stage::Writer,
                         move || {
-                            run_encoder(
-                                &encoder_path,
-                                &manifest_path,
+                            finalize_document_atomic(
+                                &writer_doc,
+                                &navigation,
                                 &output_path,
-                                total_pages,
-                                &progress,
-                                &control,
+                                &cancel,
                             )
                         },
                     )
                     .await
-                    .map_err(|e| anyhow!("DjVu encoder task panicked: {}", e))??;
+                    .map_err(|e| anyhow!("DjVu finalizer task panicked: {}", e))??;
+
+                    progress_tracker.update(crate::progress::ProcessingStatus::PdfAppend {
+                        current: total_pages,
+                        total: total_pages,
+                    });
 
                     crate::success_log!("[DjvuWriterActor] Document finalized successfully");
                     break;
@@ -1108,224 +867,197 @@ pub fn spawn_djvu_writer_actor(
         Ok(())
     });
 
-    (handle, task)
+    (handle, doc, task)
 }
 
-/// Run the `djvu-encoder` subprocess, streaming NDJSON progress into the
-/// tracker and returning its stderr verbatim on failure.
-/// Clears the encoder's running flag when `run_encoder` returns, so a waiting
-/// [`DjvuWorkDirGuard`] can proceed with cleanup.
-struct RunningGuard<'a>(&'a DjvuEncoderControl);
-
-impl Drop for RunningGuard<'_> {
-    fn drop(&mut self) {
-        self.0.mark_running(false);
-    }
-}
-
-fn run_encoder(
-    encoder_path: &Path,
-    manifest_path: &Path,
+fn finalize_document_atomic(
+    doc: &DjvuDocument,
+    navigation: &DjVmNav,
     output_path: &Path,
-    total_pages: usize,
-    progress: &crate::progress::ProgressTracker,
-    control: &DjvuEncoderControl,
+    cancel: &lege_pdf_read::CancellationToken,
 ) -> Result<()> {
-    let output_parent = output_path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(output_parent)?;
-    let temporary_output = tempfile::NamedTempFile::new_in(output_parent)
-        .context("Failed to create temporary DjVu output")?
-        .into_temp_path();
-    let mut child = Command::new(encoder_path)
-        .arg("encode-document")
-        .arg("--manifest")
-        .arg(manifest_path)
-        .arg("--output")
-        .arg(temporary_output.as_os_str())
-        .arg("--progress-json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("Failed to launch DjVu encoder: {}", encoder_path.display()))?;
-    control.mark_running(true);
-    // Report the child as stopped on every exit path of this function.
-    let _running = RunningGuard(control);
-
-    // Drain stderr on a separate thread to avoid a full-pipe deadlock.
-    let stderr = child.stderr.take();
-    let stderr_thread = std::thread::spawn(move || {
-        let mut buf = String::new();
-        if let Some(mut stderr) = stderr {
-            let _ = stderr.read_to_string(&mut buf);
-        }
-        buf
-    });
-
-    let stdout = child.stdout.take();
-    let progress_clone = progress.clone();
-    let stdout_thread = std::thread::spawn(move || {
-        if let Some(stdout) = stdout {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if let Ok(evt) = serde_json::from_str::<ProgressLine>(&line)
-                    && evt.event == "page_done"
-                    && let (Some(current), Some(total)) = (evt.page, evt.of)
-                {
-                    progress_clone
-                        .update(crate::progress::ProcessingStatus::PdfAppend { current, total });
-                }
-            }
-        }
-    });
-
-    let timeout = std::env::var("LEGE_DJVU_ENCODER_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|&seconds| seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(30 * 60));
-    let started = Instant::now();
-    let status = loop {
-        // On a kill path the drain threads are left detached on purpose: a
-        // grandchild of the encoder can hold the pipe open, and joining would
-        // then make the cancel latency unbounded.
-        if control.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(anyhow!("djvu-encoder cancelled by shutdown request"));
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(anyhow!(
-                "djvu-encoder timed out after {} seconds",
-                timeout.as_secs()
-            ));
-        }
-        match child
-            .try_wait()
-            .context("Failed to poll DjVu encoder process")?
-        {
-            Some(status) => break status,
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    };
-    let _ = stdout_thread.join();
-    let stderr_str = stderr_thread.join().unwrap_or_default();
-
-    if !status.success() {
-        let code = status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".into());
+    if cancel.is_cancelled() || crate::progress::termination_requested() {
         return Err(anyhow!(
-            "djvu-encoder failed (exit {code}): {}",
-            stderr_str.trim()
+            "DjVu finalization cancelled before output publication"
         ));
     }
-    if control.is_cancelled() {
-        return Err(anyhow!("djvu-encoder cancelled before output publish"));
+
+    let nav = (!navigation.bookmarks.is_empty()).then_some(navigation);
+    let bytes = doc
+        .finalize_with_navigation(nav)
+        .context("Failed to finalize DjVu document")?;
+
+    let output_parent = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(output_parent).with_context(|| {
+        format!(
+            "Failed to create DjVu output directory {}",
+            output_parent.display()
+        )
+    })?;
+    let mut temporary = tempfile::NamedTempFile::new_in(output_parent)
+        .context("Failed to create temporary DjVu output")?;
+    temporary
+        .write_all(&bytes)
+        .context("Failed to write temporary DjVu output")?;
+
+    if cancel.is_cancelled() || crate::progress::termination_requested() {
+        return Err(anyhow!(
+            "DjVu finalization cancelled before output publication"
+        ));
     }
-    temporary_output.persist(output_path).map_err(|error| {
+
+    temporary.persist(output_path).map_err(|error| {
         anyhow!(
             "Failed to publish DjVu output {}: {}",
             output_path.display(),
             error.error
         )
     })?;
-
-    // Ensure the writer-side progress reaches 100% even if the encoder batched.
-    progress.update(crate::progress::ProcessingStatus::PdfAppend {
-        current: total_pages,
-        total: total_pages,
-    });
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
+    use djvu_encoder::doc::{DjvuBuilder, PageBuilder, PageEncodeParams};
+    use djvu_encoder::image::image_formats::{Pixel, Pixmap};
+    use image::{Rgb, RgbImage};
     use tokio::sync::mpsc;
     use tokio::time::{Duration, timeout};
 
     use super::{
-        DjvuConfig, DjvuEncoderControl, DjvuOrchestrator, DjvuWorkDirGuard, DjvuWriterHandle,
-        DjvuWriterMessage, bundled_encoder_candidates,
+        DjVmNav, DjvuConfig, DjvuOrchestrator, DjvuWriterHandle, DjvuWriterMessage, PageData,
+        drain_ready_pages, finalize_document_atomic,
     };
 
-    /// A job directory inside the managed DjVu temp base, holding one page's
-    /// interchange files and a manifest.
-    fn populated_job_dir(name: &str) -> PathBuf {
-        let dir = crate::app_dirs::djvu_work_dir_for(Some(Path::new(name)));
-        std::fs::create_dir_all(&dir).expect("work dir");
-        std::fs::write(dir.join("manifest.json"), b"{}").expect("manifest");
-        std::fs::write(dir.join("page-00000-mask.png"), b"x").expect("mask");
-        std::fs::write(dir.join("page-00000-bg.png"), b"x").expect("bg");
-        dir
+    fn contains_chunk(bytes: &[u8], chunk: &[u8; 4]) -> bool {
+        bytes.windows(4).any(|window| window == chunk)
     }
 
-    fn orchestrator_for(work_dir: PathBuf) -> std::sync::Arc<DjvuOrchestrator> {
-        std::sync::Arc::new(
-            DjvuOrchestrator::new(DjvuConfig {
-                work_dir,
-                ..Default::default()
+    fn one_page_document() -> djvu_encoder::doc::DjvuDocument {
+        let doc = DjvuBuilder::new(1).with_dpi(300).build();
+        let page = PageBuilder::new(0, 8, 8)
+            .with_background(Pixmap::from_pixel(8, 8, Pixel::white()))
+            .expect("background")
+            .build()
+            .expect("page");
+        doc.add_page(page).expect("encode page");
+        doc
+    }
+
+    #[test]
+    fn out_of_order_djvu_pages_drain_in_order() {
+        let mut buffer = std::collections::BTreeMap::new();
+        let mut next_expected = 0usize;
+        buffer.insert(2usize, "two");
+        buffer.insert(0usize, "zero");
+        buffer.insert(1usize, "one");
+
+        let ready = drain_ready_pages(&mut buffer, &mut next_expected);
+
+        assert_eq!(ready, vec!["zero", "one", "two"]);
+        assert!(buffer.is_empty());
+        assert_eq!(next_expected, 3);
+    }
+
+    #[test]
+    fn typed_pages_preserve_cover_mrc_mask_and_hidden_text() {
+        let work_dir = tempfile::tempdir().expect("tempdir");
+        let orchestrator = DjvuOrchestrator::new(DjvuConfig {
+            work_dir: work_dir.path().to_path_buf(),
+            ..Default::default()
+        })
+        .expect("orchestrator");
+
+        let cover = orchestrator
+            .process_page(PageData {
+                index: 0,
+                preserve_full_color: true,
+                rgb_image: RgbImage::from_pixel(8, 8, Rgb([20, 80, 140])),
+                binarized: vec![255; 64],
+                cleaned_gray: None,
+                detections: Vec::new(),
+                hocr: None,
             })
-            .expect("orchestrator"),
-        )
-    }
+            .expect("cover");
+        assert_eq!(cover.bg_subsample, Some(1));
 
-    #[test]
-    fn cleanup_removes_a_managed_job_directory() {
-        let dir = populated_job_dir("cleanup_removes_managed_dir.djvu");
-        orchestrator_for(dir.clone()).cleanup().expect("cleanup");
-        assert!(!dir.exists(), "job directory {dir:?} was left behind");
-    }
+        let mut mask = vec![255; 64];
+        mask[9] = 0;
+        mask[10] = 0;
+        let mrc = orchestrator
+            .process_page(PageData {
+                index: 1,
+                preserve_full_color: false,
+                rgb_image: RgbImage::from_pixel(8, 8, Rgb([180, 180, 180])),
+                binarized: mask,
+                cleaned_gray: Some(vec![190; 64]),
+                detections: Vec::new(),
+                hocr: Some(
+                    "<span class='ocrx_word' title='bbox 1 1 6 6'>caf&amp;eacute;</span>"
+                        .to_string(),
+                ),
+            })
+            .expect("MRC page");
+        assert_eq!(mrc.bg_subsample, None);
 
-    #[test]
-    fn cleanup_keeps_an_unmanaged_directory_but_removes_the_job_files() {
-        let dir = std::env::temp_dir().join("lege_djvu_unmanaged_cleanup_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("dir");
-        std::fs::write(dir.join("manifest.json"), b"{}").expect("manifest");
-        std::fs::write(dir.join("page-00000-mask.png"), b"x").expect("mask");
-        std::fs::write(dir.join("keep-me.txt"), b"user file").expect("user file");
-
-        orchestrator_for(dir.clone()).cleanup().expect("cleanup");
-
-        assert!(dir.exists());
-        assert!(!dir.join("manifest.json").exists());
-        assert!(!dir.join("page-00000-mask.png").exists());
-        assert!(dir.join("keep-me.txt").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn work_dir_guard_cleans_up_when_a_job_unwinds() {
-        let dir = populated_job_dir("guard_cleans_up_on_unwind.djvu");
-        {
-            let _guard = DjvuWorkDirGuard::new(
-                orchestrator_for(dir.clone()),
-                std::sync::Arc::new(DjvuEncoderControl::new()),
-            );
-            assert!(dir.exists());
-        }
-        assert!(!dir.exists(), "cancelled job left {dir:?} behind");
-    }
-
-    #[test]
-    fn macos_bundle_prefers_helpers_then_executable_directory() {
-        let candidates =
-            bundled_encoder_candidates(Path::new("/Applications/Lege.app/Contents/MacOS/lege"));
-        assert_eq!(
-            candidates,
-            vec![
-                PathBuf::from("/Applications/Lege.app/Contents/Helpers/djvu-encoder"),
-                PathBuf::from("/Applications/Lege.app/Contents/Helpers/djvu-encoder.exe"),
-                PathBuf::from("/Applications/Lege.app/Contents/MacOS/djvu-encoder"),
-                PathBuf::from("/Applications/Lege.app/Contents/MacOS/djvu-encoder.exe"),
-            ]
+        let mut params = PageEncodeParams::default();
+        params.bg_subsample = 3;
+        let doc = Arc::new(
+            DjvuBuilder::new(2)
+                .with_dpi(300)
+                .with_params(params)
+                .build(),
         );
+        let encoded_cover = cover.encode(&doc, 75, 3).expect("encode cover");
+        let encoded_mrc = mrc.encode(&doc, 75, 3).expect("encode MRC");
+
+        // The document collection accepts out-of-order completion while final
+        // assembly remains page-index ordered.
+        doc.add_encoded_page(encoded_mrc).expect("add MRC");
+        doc.add_encoded_page(encoded_cover).expect("add cover");
+        let bytes = doc.finalize().expect("finalize");
+
+        assert!(bytes.starts_with(b"AT&TFORM"));
+        assert!(contains_chunk(&bytes, b"BG44"));
+        assert!(contains_chunk(&bytes, b"Sjbz"));
+        assert!(contains_chunk(&bytes, b"TXTz"));
+    }
+
+    #[test]
+    fn cancellation_before_publication_preserves_existing_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("existing.djvu");
+        std::fs::write(&output, b"old output").expect("seed output");
+        let cancel = lege_pdf_read::CancellationToken::new();
+        cancel.cancel();
+
+        let error =
+            finalize_document_atomic(&one_page_document(), &DjVmNav::default(), &output, &cancel)
+                .expect_err("cancelled finalization");
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(std::fs::read(&output).expect("output"), b"old output");
+    }
+
+    #[test]
+    fn atomic_publication_writes_a_complete_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("published.djvu");
+        finalize_document_atomic(
+            &one_page_document(),
+            &DjVmNav::default(),
+            &output,
+            &lege_pdf_read::CancellationToken::new(),
+        )
+        .expect("publish");
+
+        let bytes = std::fs::read(output).expect("output");
+        assert!(bytes.starts_with(b"AT&TFORM"));
     }
 
     #[tokio::test(flavor = "current_thread")]

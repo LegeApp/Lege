@@ -581,16 +581,12 @@ fn configure_cli_command(cmd: &mut std::process::Command, cli_path: &Path) {
     #[cfg(target_os = "macos")]
     if let Some(contents_dir) = macos_bundle_contents_dir(cli_path) {
         let resources_dir = contents_dir.join("Resources");
-        let encoder_path = contents_dir.join("Helpers/djvu-encoder");
 
         // App bundles do not inherit a useful shell environment when launched
         // from Finder. Pin runtime assets to the bundle so heavy binarization
         // and DjVu processing use the same inputs as Linux and Windows.
         cmd.env("LEGE_ASSET_DIR", &resources_dir);
         cmd.env("LEGE_DATA_DIR", &resources_dir);
-        if encoder_path.is_file() {
-            cmd.env("LEGE_DJVU_ENCODER", encoder_path);
-        }
     }
 }
 

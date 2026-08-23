@@ -1,0 +1,20 @@
+Lege ecosystem licensing map
+============================
+
+The top-level Lege workspace and application packages are distributed under
+GNU Affero General Public License version 3 only (AGPL-3.0-only). See LICENSE.
+
+Independently usable source subtrees retain the license declared by their own
+Cargo manifest and license files. In particular:
+
+- lege-codecs/djvulibrust: AGPL-3.0-only
+- lege-codecs/jbig2enc-rust: MIT OR Apache-2.0
+- lege-codecs/jp2lam: MIT OR Apache-2.0
+- lege-process/GUI/rfd: MIT
+- freya-main and its crates: the licenses declared in that vendored workspace
+- lege-pdf/read and other explicitly licensed PDF components: the licenses
+  declared in their own manifests and source notices
+
+Third-party dependencies, models, and derived compatibility portions retain
+their own copyrights, licenses, and attribution requirements. The release
+notice presented to users is maintained in lege-misc/docs/licenses.html.

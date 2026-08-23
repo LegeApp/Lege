@@ -6,8 +6,8 @@
 # automatically starts that container when the Darwin compiler is not installed.
 # The whole Lege ecosystem workspace root (the directory that holds the virtual
 # Cargo.toml, lege-process/, lege-misc/, lege-codecs/, …) is mounted at
-# /workspace so cargo can see every workspace member and the sibling DjVu
-# encoder. The equivalent manual container invocation is:
+# /workspace so cargo can see every workspace member. The equivalent manual
+# container invocation is:
 #
 #   sudo docker run --platform=linux/amd64 \
 #     -v /mnt/Samsung980_1TB/Rust-projects/Lege-ecosystem:/workspace \
@@ -24,10 +24,6 @@
 #   OUT_DIR       output directory          (default: <workspace>/target/macos)
 #   CODESIGN_ID   codesign identity — macOS only (default: "-" = ad-hoc)
 #   SKIP_BUILD    set to 1 to repackage already-built target artifacts
-#   DJVU_ENCODER_MANIFEST path to the standalone AGPL encoder's Cargo.toml
-#                 (default: <workspace>/lege-codecs/djvulibrust/Cargo.toml)
-#   DJVU_ENCODER_LICENSE path to its AGPLv3 license text
-#                 (default: LICENSE next to that Cargo.toml)
 #   AUTO_CONTAINER set to 0 to disable automatic Docker/Podman use on Linux
 #   CONTAINER_RUNTIME Docker/Podman executable (auto-detected by default)
 #   MACOS_CROSS_IMAGE cross-compiler image override
@@ -42,9 +38,8 @@
 #     --music-sheet preset now supports every --binarization mode and
 #     "heavy" loads the Sauvola model at runtime. yolo-layout.onnx is NOT
 #     bundled — the preset always runs with layout detection off.
-#   * DjVu encoding remains a separate AGPL executable. It is built from the
-#     sibling djvulibrust project and bundled under Contents/Helpers; Lege does
-#     not link it as a library.
+#   * DjVu encoding is linked directly into the AGPL application; no helper
+#     executable is built or bundled.
 #   * Gatekeeper: an ad-hoc signature seals the bundle but does not establish a
 #     trusted developer identity. On current macOS, first try to launch the app,
 #     then approve it in System Settings → Privacy & Security → Open Anyway.
@@ -68,10 +63,6 @@ SAUVOLA_ONNX="${SAUVOLA_ONNX:-$PROCESS_DIR/packaging/macos/sauvola.onnx}"
 CODESIGN_ID="${CODESIGN_ID:--}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_CLI_BUILD="${SKIP_CLI_BUILD:-0}"
-DJVU_ENCODER_MANIFEST="${DJVU_ENCODER_MANIFEST:-$ROOT/lege-codecs/djvulibrust/Cargo.toml}"
-DJVU_ENCODER_DIR="$(dirname "$DJVU_ENCODER_MANIFEST")"
-DJVU_ENCODER_TARGET_DIR="${DJVU_ENCODER_TARGET_DIR:-$ROOT/target/djvu-encoder}"
-DJVU_ENCODER_LICENSE="${DJVU_ENCODER_LICENSE:-$(dirname "$DJVU_ENCODER_MANIFEST")/LICENSE}"
 AUTO_CONTAINER="${AUTO_CONTAINER:-1}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}"
 MACOS_CROSS_IMAGE="${MACOS_CROSS_IMAGE:-ghcr.io/shepherdjerred/macos-cross-compiler:latest}"
@@ -80,7 +71,6 @@ VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$PROCESS_DIR/Cargo.tom
 APP_NAME="Lege Sheet Music Edition"
 BUNDLE_ID="com.legeapp.lege-music"
 ARCH_PREFIX="${TARGET%%-*}"
-DJVU_ENCODER_BIN="$DJVU_ENCODER_TARGET_DIR/$TARGET/release/djvu-encoder"
 
 case "$TARGET" in
   x86_64-apple-darwin | aarch64-apple-darwin) ;;
@@ -109,10 +99,6 @@ if [[ "$(uname -s)" != "Darwin" \
     fi
   fi
 
-  if [[ ! -d "$DJVU_ENCODER_DIR" ]]; then
-    echo "DjVu encoder source directory not found: $DJVU_ENCODER_DIR" >&2
-    exit 1
-  fi
   mkdir -p "$ROOT/target/macos-cross-cache/cargo" \
     "$ROOT/target/macos-cross-cache/rustup"
 
@@ -140,8 +126,7 @@ if [[ "$(uname -s)" != "Darwin" \
     rcodesign sign "$HOST_APP"
     for signed_path in \
       Contents/MacOS/lege-music-gui \
-      Contents/MacOS/lege \
-      Contents/Helpers/djvu-encoder; do
+      Contents/MacOS/lege; do
       # rcodesign's `verify` currently rejects valid ad-hoc signatures because
       # their CMS slot is intentionally empty. Parsing the signature confirms
       # that each nested Mach-O was signed successfully.
@@ -171,18 +156,6 @@ if [[ -z "$SAUVOLA_ONNX" || ! -f "$SAUVOLA_ONNX" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$DJVU_ENCODER_MANIFEST" ]]; then
-  echo "Standalone DjVu encoder manifest not found: $DJVU_ENCODER_MANIFEST" >&2
-  echo "Set DJVU_ENCODER_MANIFEST to the djvulibrust Cargo.toml." >&2
-  exit 1
-fi
-
-if [[ ! -f "$DJVU_ENCODER_LICENSE" ]]; then
-  echo "Standalone DjVu encoder license not found: $DJVU_ENCODER_LICENSE" >&2
-  echo "Set DJVU_ENCODER_LICENSE to its AGPLv3 license text." >&2
-  exit 1
-fi
-
 if [[ "$SKIP_BUILD" == "1" ]]; then
   for binary in lege lege-music-gui; do
     if [[ ! -x "$ROOT/target/$TARGET/release/$binary" ]]; then
@@ -190,10 +163,6 @@ if [[ "$SKIP_BUILD" == "1" ]]; then
       exit 1
     fi
   done
-  if [[ ! -x "$DJVU_ENCODER_BIN" ]]; then
-    echo "SKIP_BUILD=1 but $DJVU_ENCODER_BIN is missing." >&2
-    exit 1
-  fi
   echo "== Repackaging existing $TARGET release binaries"
 else
   # Cross-compile toolchain env (not needed when merely repackaging).
@@ -227,22 +196,6 @@ else
       --no-default-features --features jp2-lam,paddle-ocr
   fi
 
-  echo "== Building standalone djvu-encoder for $TARGET"
-  # Build from a temporary source copy. The helper's package version can move
-  # ahead of its lockfile between releases; Cargo may refresh that root entry,
-  # but the sibling source checkout must remain untouched by this packager.
-  DJVU_BUILD_DIR="$(mktemp -d /tmp/lege-djvu-build.XXXXXX)"
-  cp "$DJVU_ENCODER_MANIFEST" "$DJVU_BUILD_DIR/Cargo.toml"
-  cp "$DJVU_ENCODER_DIR/Cargo.lock" "$DJVU_BUILD_DIR/Cargo.lock"
-  cp -R "$DJVU_ENCODER_DIR/src" "$DJVU_BUILD_DIR/src"
-  (
-    cd "$DJVU_BUILD_DIR"
-    cargo build --release --target "$TARGET" \
-      --target-dir "$DJVU_ENCODER_TARGET_DIR" \
-      --bin djvu-encoder --features cli,simd
-  )
-  rm -rf "$DJVU_BUILD_DIR"
-
   echo "== Building lege-music-gui (Sheet Music Edition) for $TARGET"
   cargo build --release --target "$TARGET" -p lege-music-gui --bin lege-music-gui \
     --no-default-features
@@ -252,17 +205,12 @@ APP="$OUT_DIR/$APP_NAME.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
-HELPERS_DIR="$APP/Contents/Helpers"
 rm -rf "$APP"
-mkdir -p "$MACOS_DIR" "$RES_DIR/docs" "$FRAMEWORKS_DIR" "$HELPERS_DIR"
+mkdir -p "$MACOS_DIR" "$RES_DIR/docs" "$FRAMEWORKS_DIR"
 
 install -m755 "$ROOT/target/$TARGET/release/lege-music-gui" "$MACOS_DIR/lege-music-gui"
 # The GUI resolves the worker CLI next to its own executable.
 install -m755 "$ROOT/target/$TARGET/release/lege" "$MACOS_DIR/lege"
-# Keep the AGPL encoder as a separately launched helper, not a linked library.
-install -m755 "$DJVU_ENCODER_BIN" "$HELPERS_DIR/djvu-encoder"
-mkdir -p "$RES_DIR/licenses"
-install -m644 "$DJVU_ENCODER_LICENSE" "$RES_DIR/licenses/djvu-encoder-AGPL-3.0.txt"
 # Store documentation as bundle resources. The relative symlink preserves the
 # same executable-adjacent `docs/` lookup used by the Linux installer without
 # placing non-executable payloads directly in Contents/MacOS.
@@ -342,7 +290,6 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   if [[ "$CODESIGN_ID" != "-" ]]; then
     CODESIGN_ARGS+=(--options runtime --timestamp)
   fi
-  codesign "${CODESIGN_ARGS[@]}" "$HELPERS_DIR/djvu-encoder"
   codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege"
   codesign "${CODESIGN_ARGS[@]}" "$MACOS_DIR/lege-music-gui"
   codesign "${CODESIGN_ARGS[@]}" "$APP"

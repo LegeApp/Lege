@@ -87,6 +87,40 @@ record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 : o
     supersedes [ @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 ]
 }
 
+record lege-ecosystem.observation.ocr-v5-v6-recipe-20260820/1 : observation {
+    title "PP-OCRv6 TensorRT improved the recipe-PDF proxy over embedded v5"
+    state verified
+    scope [ path "lege-document-ocr/**", path "lege-ocr/**" ]
+    statement """
+        On the two-page D:\to-sort\5-Minute Hummus Recipe - NYT Cooking.pdf at 300 DPI capped to 12 MP and forced OCR, embedded PP-OCRv5/WGPU scored 17.88% CER and 19.16% WER against the pipeline's native text extraction, while PP-OCRv6-tiny/TensorRT scored 12.00% CER and 14.17% WER. The native v6 worker passed detector and recognizer inference after cold engine compilation. A generic Paddle/WGPU v6 model pack passed checksum validation but failed detector construction, so it is not a viable v6 replacement yet.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    method command
+    watches [ "lege-document-ocr/**", "lege-ocr/**", "lege-gpu/**" ]
+    derived_from [ @lege-ecosystem.work.ocr-backend-scheduler/4 ]
+    verified_by [ @lege-ecosystem.evidence.ocr-v5-v6-recipe-20260820/1 ]
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 : observation {
+    title "PP-OCRv6 on wgpu was blocked by four concrete gaps, all now closed"
+    state verified
+    scope [ path "lege-gpu/**", path "lege-ocr/**", path "lege-process/scripts/**" ]
+    statement """
+        The earlier finding that a Paddle/WGPU v6 model pack "failed detector construction" had four independent causes, each now fixed. (1) Stock Paddle exports name the graph input `x`, which match_target in lege-gpu/src/vision/onnx/load.rs bound to the paddle-rotate target's fixed 224x224 contract; the v5 assets had been renamed to pp_det_image/pp_rec_image out of band and that recipe was never committed. (2) lege-gpu had no Erf kernel (v6 builds GELU from it, 13x in det, 10-13x in rec); added as UnaryKind::Erf with an Abramowitz-Stegun 7.1.26 WGSL shader and a matching CPU reference. (3) v6 det uses ConvTranspose 2x2/stride-2 and v6 rec keeps BatchNormalization behind a Squeeze; both are rewritten at prep time, ConvTranspose into Conv1x1+DepthToSpace (exact for kernel==stride, zero pad) and BN into Mul+Add. (4) MaxPool/AveragePool rejected auto_pad!=NOTSET and ignored it during shape inference, so PP-OCRv6's stride-1 SAME_UPPER 2x2 windows shrank the feature map by one pixel and surfaced as a Concat axis-2 mismatch; both now resolve auto_pad exactly as Conv already did. Whole-spatial ReduceMean(axes=[2,3]) is also rewritten to GlobalAveragePool at prep. The v6 small dictionary (18708 glyphs) is a near-superset of v5's 18383 - 35 dropped, 360 added - and repairs v5's Latin-1 coverage, which held only 70 of 192 codepoints in U+00C0..U+017F.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    method command
+    watches [
+        "lege-gpu/src/vision/onnx/**",
+        "lege-gpu/src/vision/decode/db.rs",
+        "lege-ocr/assets/**",
+        "lege-process/scripts/prepare_ppocr_models.py"
+    ]
+    supersedes [ @lege-ecosystem.observation.ocr-v5-v6-recipe-20260820/1 ]
+    verified_by [ @lege-ecosystem.evidence.ppocrv6-wgpu-embedded-20260822/1 ]
+}
+
 record lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/1 : observation {
     title "Windows OCR first-pass benchmark on a 200-page scanned book"
     state superseded

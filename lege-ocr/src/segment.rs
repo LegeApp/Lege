@@ -46,12 +46,8 @@ pub fn segment_region(
     params: &SegmentParams,
 ) -> SegmentationResult {
     let [rx1, ry1, rx2, ry2] = region_bbox;
-    let fallback = || SegmentationResult {
-        line_bboxes: Vec::new(),
-        confidence: SegmentationConfidence::Low,
-    };
     let Some(expected) = (image_width as usize).checked_mul(image_height as usize) else {
-        return fallback();
+        return low_confidence(Vec::new());
     };
     if image_width == 0
         || image_height == 0
@@ -61,7 +57,7 @@ pub fn segment_region(
         || ry1 >= image_height
         || binary.len() < expected
     {
-        return fallback();
+        return low_confidence(Vec::new());
     }
     let rx2 = rx2.min(image_width);
     let ry2 = ry2.min(image_height);
@@ -80,10 +76,7 @@ pub fn segment_region(
     let y2 = ry2.saturating_add(dh).min(image_height);
 
     if x2 <= x1 || y2 <= y1 {
-        return SegmentationResult {
-            line_bboxes: vec![[rx1, ry1, rx2, ry2]],
-            confidence: SegmentationConfidence::Low,
-        };
+        return low_confidence(vec![[rx1, ry1, rx2, ry2]]);
     }
 
     let w = (x2 - x1) as usize;
@@ -112,16 +105,22 @@ pub fn segment_region(
         .collect();
 
     if non_empty.is_empty() {
-        return SegmentationResult {
-            line_bboxes: vec![[x1, y1, x2, y2]],
-            confidence: SegmentationConfidence::Low,
-        };
+        return low_confidence(vec![[x1, y1, x2, y2]]);
     }
 
     let confidence = assess_confidence(&non_empty, params);
     SegmentationResult {
         line_bboxes: non_empty,
         confidence,
+    }
+}
+
+/// A segmentation the caller should not trust for line-level work — either no
+/// split was found or the region had to be returned whole.
+fn low_confidence(line_bboxes: Vec<[u32; 4]>) -> SegmentationResult {
+    SegmentationResult {
+        line_bboxes,
+        confidence: SegmentationConfidence::Low,
     }
 }
 
@@ -312,17 +311,20 @@ fn assess_confidence(bboxes: &[[u32; 4]], params: &SegmentParams) -> Segmentatio
         .count();
     let frac = bad as f32 / n as f32;
     if frac > 0.5 {
-        SegmentationConfidence::Low
-    } else if frac > 0.2 {
+        return SegmentationConfidence::Low;
+    }
+    if frac > 0.2 {
+        return SegmentationConfidence::Medium;
+    }
+
+    // Heights are all plausible, but wildly uneven ones still suggest the
+    // valleys landed between the wrong rows.
+    let min_height = *heights.iter().min().unwrap_or(&1);
+    let max_height = *heights.iter().max().unwrap_or(&1);
+    if min_height == 0 || max_height > min_height.saturating_mul(3) {
         SegmentationConfidence::Medium
     } else {
-        let min_height = *heights.iter().min().unwrap_or(&1);
-        let max_height = *heights.iter().max().unwrap_or(&1);
-        if min_height == 0 || max_height > min_height.saturating_mul(3) {
-            SegmentationConfidence::Medium
-        } else {
-            SegmentationConfidence::High
-        }
+        SegmentationConfidence::High
     }
 }
 

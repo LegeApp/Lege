@@ -155,8 +155,10 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
             }])
         }
 
-        // ── Pointwise activations (Relu / HardSwish / HardSigmoid / Sqrt / Pow) ─
-        PlannedOpKind::Unary(kind @ (UnaryKind::Relu | UnaryKind::HardSwish | UnaryKind::Sqrt))
+        // ── Pointwise activations (Relu / HardSwish / HardSigmoid / Sqrt / Erf / Pow) ─
+        PlannedOpKind::Unary(
+            kind @ (UnaryKind::Relu | UnaryKind::HardSwish | UnaryKind::Sqrt | UnaryKind::Erf),
+        )
         | PlannedOpKind::Unary(kind @ UnaryKind::HardSigmoid { .. })
         | PlannedOpKind::Unary(kind @ UnaryKind::Pow { .. }) => {
             let len = in_shapes[0].iter().product::<usize>();
@@ -164,6 +166,7 @@ pub(crate) fn op_steps(op: &PlannedOp, dummy_bias_name: &str) -> Result<Vec<Step
                 UnaryKind::Relu => (super::activations::RELU_WGSL, vec![len as u32]),
                 UnaryKind::HardSwish => (super::activations::HARDSWISH_WGSL, vec![len as u32]),
                 UnaryKind::Sqrt => (super::activations::SQRT_WGSL, vec![len as u32]),
+                UnaryKind::Erf => (super::activations::ERF_WGSL, vec![len as u32]),
                 UnaryKind::HardSigmoid { alpha, beta } => (
                     super::activations::HARDSIGMOID_WGSL,
                     vec![len as u32, alpha.to_bits(), beta.to_bits()],

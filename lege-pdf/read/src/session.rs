@@ -10,8 +10,8 @@ use pdf_page_ir::{
     PageFeatures, Point,
 };
 use pdf_render_api::{
-    AnnotationMode, Background, OutputFormat, OutputResidency, PageTransform, RenderColorPolicy,
-    RenderLimits, RenderQuality, RenderRequest,
+    AnnotationMode, Background, HostPage, OutputFormat, OutputResidency, PageTransform,
+    RenderColorPolicy, RenderLimits, RenderQuality, RenderRequest,
 };
 use pdf_render_cpu::{CpuBackend, CpuBackendOptions, CpuWorkerContext, DecodedBilevelSmask};
 
@@ -96,19 +96,22 @@ impl PageGeometry {
     }
 
     pub fn display_width(self) -> f64 {
-        if self.rotate % 180 == 0 {
-            self.width()
-        } else {
-            self.height()
-        }
+        display_extent(self.width(), self.height(), self.rotate).0
     }
 
     pub fn display_height(self) -> f64 {
-        if self.rotate % 180 == 0 {
-            self.height()
-        } else {
-            self.width()
-        }
+        display_extent(self.width(), self.height(), self.rotate).1
+    }
+}
+
+/// A page rotated by an odd multiple of 90 degrees is displayed with its axes
+/// swapped. Every page-to-device mapping in this crate goes through here so
+/// that rule is stated once.
+pub(crate) fn display_extent(width: f64, height: f64, rotate: u16) -> (f64, f64) {
+    if rotate % 180 == 0 {
+        (width, height)
+    } else {
+        (height, width)
     }
 }
 
@@ -406,10 +409,7 @@ impl RenderSession {
             color_policy: RenderColorPolicy::Original,
             annotations: AnnotationMode::StaticAppearances,
             quality: RenderQuality::Normal,
-            limits: RenderLimits {
-                cancellation: cancellation.map(|token| token.0.clone()),
-                ..RenderLimits::default()
-            },
+            limits: render_limits(cancellation),
             residency: OutputResidency::HostRequired,
         };
 
@@ -450,45 +450,10 @@ impl RenderSession {
                 stride: rendered.stride,
                 pixels: rendered.pixels,
             })),
-            RasterFormat::Rgb8 => {
-                let row_bytes = usize::try_from(rendered.width)
-                    .ok()
-                    .and_then(|width| width.checked_mul(4))
-                    .ok_or(ReadError::InvalidRasterProduct("RGBA row size overflow"))?;
-                let rgb_stride = usize::try_from(rendered.width)
-                    .ok()
-                    .and_then(|width| width.checked_mul(3))
-                    .ok_or(ReadError::InvalidRasterProduct("RGB row size overflow"))?;
-                let capacity = rgb_stride
-                    .checked_mul(rendered.height as usize)
-                    .ok_or(ReadError::InvalidRasterProduct("RGB surface size overflow"))?;
-                let mut rgb = Vec::with_capacity(capacity);
-                for row in 0..rendered.height as usize {
-                    let start = row.checked_mul(rendered.stride).ok_or(ReadError::Render {
-                        page: page.page_index,
-                        message: "renderer row offset overflow".to_string(),
-                    })?;
-                    let end = start.checked_add(row_bytes).ok_or(ReadError::Render {
-                        page: page.page_index,
-                        message: "renderer row end overflow".to_string(),
-                    })?;
-                    let pixels =
-                        rendered
-                            .pixels
-                            .get(start..end)
-                            .ok_or_else(|| ReadError::Render {
-                                page: page.page_index,
-                                message: "renderer returned a truncated RGBA surface".to_string(),
-                            })?;
-                    rgb.extend(pixels.chunks_exact(4).flat_map(|pixel| &pixel[..3]));
-                }
-                Ok(RasterPlane::Rgb8(RgbSurface {
-                    width: rendered.width,
-                    height: rendered.height,
-                    stride: rgb_stride,
-                    pixels: Arc::from(rgb),
-                }))
-            }
+            RasterFormat::Rgb8 => Ok(RasterPlane::Rgb8(rgb_surface_from_rgba(
+                &rendered,
+                page.page_index,
+            )?)),
         }
     }
 
@@ -536,13 +501,9 @@ impl RenderSession {
         let Some(candidate) = qualifying_jbig2_smask(&page.raster) else {
             return Ok(None);
         };
-        let limits = RenderLimits {
-            cancellation: cancellation.map(|token| token.0.clone()),
-            ..RenderLimits::default()
-        };
         let decoded = self
             .backend
-            .decode_bilevel_jbig2_smask(&candidate.smask, &limits)
+            .decode_bilevel_jbig2_smask(&candidate.smask, &render_limits(cancellation))
             .map_err(|error| ReadError::Render {
                 page: page.page_index,
                 message: format!("JBIG2 SMask decode failed: {error}"),
@@ -556,11 +517,7 @@ impl RenderSession {
                 message: "JBIG2 SMask decoder returned a truncated opacity plane".to_string(),
             })?;
         Ok(Some(PreservedJbig2Smask {
-            page_data: candidate
-                .smask
-                .codec_data
-                .clone()
-                .expect("qualified payload"),
+            page_data: candidate.page_data,
             global_data: candidate
                 .smask
                 .codec_parms
@@ -580,6 +537,55 @@ impl RenderSession {
             page_count: self.page_count(),
         }
     }
+}
+
+fn render_limits(cancellation: Option<&CancellationToken>) -> RenderLimits {
+    RenderLimits {
+        cancellation: cancellation.map(|token| token.0.clone()),
+        ..RenderLimits::default()
+    }
+}
+
+/// Drop the alpha channel from a premultiplied-sRGB RGBA surface into a tightly
+/// packed RGB one. The renderer's stride may exceed `width * 4`, so rows are
+/// copied individually rather than the buffer being reinterpreted wholesale.
+fn rgb_surface_from_rgba(rendered: &HostPage, page_index: u32) -> Result<RgbSurface, ReadError> {
+    let row_bytes = usize::try_from(rendered.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or(ReadError::InvalidRasterProduct("RGBA row size overflow"))?;
+    let rgb_stride = usize::try_from(rendered.width)
+        .ok()
+        .and_then(|width| width.checked_mul(3))
+        .ok_or(ReadError::InvalidRasterProduct("RGB row size overflow"))?;
+    let capacity = rgb_stride
+        .checked_mul(rendered.height as usize)
+        .ok_or(ReadError::InvalidRasterProduct("RGB surface size overflow"))?;
+
+    let malformed = |message: &str| ReadError::Render {
+        page: page_index,
+        message: message.to_string(),
+    };
+    let mut pixels = Vec::with_capacity(capacity);
+    for row in 0..rendered.height as usize {
+        let start = row
+            .checked_mul(rendered.stride)
+            .ok_or_else(|| malformed("renderer row offset overflow"))?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or_else(|| malformed("renderer row end overflow"))?;
+        let row = rendered
+            .pixels
+            .get(start..end)
+            .ok_or_else(|| malformed("renderer returned a truncated RGBA surface"))?;
+        pixels.extend(row.chunks_exact(4).flat_map(|pixel| &pixel[..3]));
+    }
+    Ok(RgbSurface {
+        width: rendered.width,
+        height: rendered.height,
+        stride: rgb_stride,
+        pixels: Arc::from(pixels),
+    })
 }
 
 fn resize_smask_coverage(
@@ -613,6 +619,9 @@ fn resize_smask_coverage(
 #[derive(Clone)]
 struct Jbig2SmaskCandidate {
     smask: Arc<ImageSMask>,
+    /// The non-empty JBIG2 page stream taken from `smask`. Carrying it here
+    /// makes "qualified" and "has a usable payload" one fact instead of two.
+    page_data: Arc<[u8]>,
     stencil_polarity: Jbig2StencilPolarity,
 }
 
@@ -631,6 +640,9 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
             DisplayOp::Restore => ctm = stack.pop()?,
             DisplayOp::ConcatTransform(matrix) => ctm = matrix.then(ctm),
             DisplayOp::BeginPaintOrigin(_) | DisplayOp::EndPaintOrigin => {}
+            // Render mode 3 is invisible text, the searchable layer a scanner
+            // lays over the page image. It leaves no ink, so it cannot disturb
+            // the preserved mask; every other glyph run hits the reject arm.
             DisplayOp::DrawGlyphRun { run, .. }
                 if page.glyph_runs.get(run.index())?.render_mode == 3 => {}
             DisplayOp::DrawImage {
@@ -648,22 +660,22 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
                     || !is_unflipped_full_page(placement, page, image.width, image.height)
                     || image.is_stencil
                     || image.lowering_degraded
+                    || image.mask.is_some()
+                    || image.smask_in_data != 0
                 {
                     return None;
                 }
                 if let Some(smask) = image.smask.as_ref() {
                     if candidate.is_some()
-                        || image.mask.is_some()
-                        || image.smask_in_data != 0
                         || smask.width != image.width
                         || smask.height != image.height
                         || smask.bits_per_component != 1
                         || smask.codec != Some(ImageCodecKind::Jbig2)
                         || !smask.samples.is_empty()
-                        || smask.codec_data.as_deref().is_none_or(<[u8]>::is_empty)
                     {
                         return None;
                     }
+                    let page_data = smask.codec_data.clone().filter(|data| !data.is_empty())?;
                     let stencil_polarity = match smask.decode.as_deref() {
                         None => Jbig2StencilPolarity::PaintOne,
                         Some([[lo, hi]]) if *lo == 0.0 && *hi == 1.0 => {
@@ -676,10 +688,9 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
                     };
                     candidate = Some(Jbig2SmaskCandidate {
                         smask: Arc::clone(smask),
+                        page_data,
                         stencil_polarity,
                     });
-                } else if image.mask.is_some() || image.smask_in_data != 0 {
-                    return None;
                 }
             }
             _ => return None,
@@ -723,11 +734,7 @@ fn is_unflipped_full_page(
 fn page_to_device_matrix(page: &CompiledPage, output_width: u32, output_height: u32) -> Matrix {
     let crop = page.bounds.crop;
     let rotation = page.bounds.rotate % 360;
-    let (display_width, display_height) = if rotation % 180 == 0 {
-        (crop.width(), crop.height())
-    } else {
-        (crop.height(), crop.width())
-    };
+    let (display_width, display_height) = display_extent(crop.width(), crop.height(), rotation);
     let scale_x = output_width as f64 / display_width.max(f64::EPSILON);
     let scale_y = output_height as f64 / display_height.max(f64::EPSILON);
 
@@ -859,10 +866,7 @@ mod tests {
     fn qualifies_only_native_full_page_jbig2_smask() {
         let page = eligible_page();
         let candidate = qualifying_jbig2_smask(&page).expect("eligible mask");
-        assert_eq!(
-            candidate.smask.codec_data.as_deref(),
-            Some(&b"encoded mask"[..])
-        );
+        assert_eq!(candidate.page_data.as_ref(), &b"encoded mask"[..]);
         assert_eq!(
             candidate
                 .smask

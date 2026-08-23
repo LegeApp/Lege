@@ -1,6 +1,109 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/1 : assessment {
+    title "Direct DJVULibRust restoration is API-ready but license-blocked"
+    state superseded
+    scope [ path "Cargo.toml", path "lege-codecs/djvulibrust/**", path "lege-process/**" ]
+    statement """
+        At git:3f520cc03211e48adaa77c1da9bc639c53d2d351 the current DJVULibRust 0.11.0 API exposes the pieces needed to port Lege's present behavior in process: PageBuilder, per-page encode_page_with_params for full-resolution cover overrides, out-of-order add_encoded_page, and finalize_with_navigation. Lege still stages PNG/JSON manifests and spawns djvu-encoder, while the root and application declare MIT and DJVULibRust declares AGPL-3.0-only. Phase 1 is therefore technically implementable but must remain unstarted until the plan's D1 direct-linking license choice is selected and recorded. The eventual change must port current cover, cleaned grayscale/MRC, mask, OCR, outline, ordering, cancellation-before-publication, atomic output, and progress semantics; it should remove only Lege's subprocess/helper surface and retain the standalone codec CLI.
+        """
+    confidence high
+    as_of git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    derived_from [ @lege-ecosystem.work.open-source-monorepo-relaunch/1 ]
+    supported_by [
+        @lege-ecosystem.evidence.djvu-current-focused-tests-20260822/1,
+        @lege-ecosystem.evidence.djvu-direct-api-feature-build-20260822/1,
+        @lege-ecosystem.evidence.djvu-subprocess-license-surface-audit-20260822/1
+    ]
+}
+
+record lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/2 : assessment {
+    title "Direct DJVULibRust restoration is API-ready but license-blocked"
+    state superseded
+    scope [ path "Cargo.toml", path "lege-codecs/djvulibrust/**", path "lege-process/**" ]
+    statement """
+        At git:3f520cc03211e48adaa77c1da9bc639c53d2d351 the current DJVULibRust 0.11.0 API exposes the pieces needed to port Lege's present behavior in process: PageBuilder, per-page encode_page_with_params for full-resolution cover overrides, out-of-order add_encoded_page, and finalize_with_navigation. Lege still stages PNG/JSON manifests and spawns djvu-encoder, while the root and application declare MIT and DJVULibRust declares AGPL-3.0-only. The root has no LICENSE or NOTICE, its workspace MIT declaration is inherited by many crates, and the explicitly MIT lege-android crate directly links lege-process on Android; D1 must therefore define the mixed-license boundary deliberately rather than blindly changing the workspace-wide license. Phase 1 is technically implementable but must remain unstarted until that direct-linking license choice is selected and recorded. The eventual code change must port current cover, cleaned grayscale/MRC, mask, OCR, outline, ordering, cancellation-before-publication, atomic output, and progress semantics; it should remove only Lege's subprocess/helper surface and retain the standalone codec CLI.
+        """
+    confidence high
+    as_of git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    derived_from [ @lege-ecosystem.work.open-source-monorepo-relaunch/1 ]
+    supersedes [ @lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/1 ]
+    supported_by [
+        @lege-ecosystem.evidence.djvu-current-focused-tests-20260822/1,
+        @lege-ecosystem.evidence.djvu-direct-api-feature-build-20260822/1,
+        @lege-ecosystem.evidence.djvu-license-linkage-boundary-audit-20260822/1,
+        @lege-ecosystem.evidence.djvu-subprocess-license-surface-audit-20260822/1
+    ]
+}
+
+record lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/3 : assessment {
+    title "Direct DJVULibrust integration phase is implemented and verified"
+    state superseded
+    scope [
+        path "CLAUDE.md",
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "LICENSE",
+        path "NOTICE",
+        path "README.md",
+        path "lege-android/**",
+        path "lege-codecs/djvulibrust/**",
+        path "lege-misc/docs/licenses.html",
+        path "lege-process/**"
+    ]
+    statement """
+        In the working tree atop git:3f520cc03211e48adaa77c1da9bc639c53d2d351, Lege links DJVULibrust 0.11.0 directly and composes typed PageBuilder pages in memory. Standard and reflow DjVu paths compress pages concurrently, insert EncodedPage values in deterministic order, retain full-resolution cover overrides, cleaned grayscale/MRC backgrounds, JB2 polarity and blank-page behavior, image-region placement, NFKC hidden text, navigation validation, progress, cancellation checks before publication, and same-directory atomic output. Lege's manifest/subprocess/helper discovery and macOS helper packaging surfaces are absent, while the independent codec CLI and cargo alias remain. The recorded D1 choice is implemented with AGPL-3.0-only root/application declarations, matching license texts, and an explicit mixed-license NOTICE boundary.
+        """
+    confidence high
+    as_of git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    derived_from [
+        @lege-ecosystem.decision.top-level-application-license-agpl/1,
+        @lege-ecosystem.work.open-source-monorepo-relaunch/1
+    ]
+    supersedes [ @lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/2 ]
+    supported_by [
+        @lege-ecosystem.evidence.direct-djvu-application-builds-20260822/1,
+        @lege-ecosystem.evidence.direct-djvu-integration-tests-20260822/1,
+        @lege-ecosystem.evidence.djvu-runtime-helper-removal-20260822/1,
+        @lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1
+    ]
+}
+
+record lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/4 : assessment {
+    title "Direct DJVULibrust integration phase is implemented and verified"
+    state verified
+    scope [
+        path "CLAUDE.md",
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "LICENSE",
+        path "NOTICE",
+        path "README.md",
+        path "lege-android/**",
+        path "lege-codecs/djvulibrust/**",
+        path "lege-misc/docs/licenses.html",
+        path "lege-process/**"
+    ]
+    statement """
+        In the working tree atop git:3f520cc03211e48adaa77c1da9bc639c53d2d351, Lege links DJVULibrust 0.11.0 directly and composes typed PageBuilder pages in memory. Standard and reflow DjVu paths compress pages concurrently, insert EncodedPage values in deterministic order, retain full-resolution cover overrides, cleaned grayscale/MRC backgrounds, JB2 polarity and blank-page behavior, image-region placement, NFKC hidden text, navigation validation, progress, cancellation checks before publication, and same-directory atomic output. Lege's manifest/subprocess/helper discovery and macOS helper packaging surfaces are absent, while the independent codec CLI and cargo alias remain. The recorded D1 choice is implemented with AGPL-3.0-only root/application declarations, matching license texts, and an explicit mixed-license NOTICE boundary.
+        """
+    confidence high
+    as_of git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    derived_from [
+        @lege-ecosystem.decision.top-level-application-license-agpl/1,
+        @lege-ecosystem.work.open-source-monorepo-relaunch/1
+    ]
+    supersedes [ @lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/3 ]
+    supported_by [
+        @lege-ecosystem.evidence.direct-djvu-application-builds-20260822/1,
+        @lege-ecosystem.evidence.direct-djvu-integration-tests-20260822/1,
+        @lege-ecosystem.evidence.djvu-runtime-helper-final-scan-20260822/1,
+        @lege-ecosystem.evidence.djvu-runtime-helper-removal-20260822/1,
+        @lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1
+    ]
+}
+
 record lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/1 : assessment {
     title "Windows installer readiness of lege-document-ocr on 2026-08-15"
     state verified

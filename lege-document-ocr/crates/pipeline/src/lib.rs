@@ -11,11 +11,13 @@ use lege_docir::{
     RecognitionConfidence, Region, RegionConfidence, RegionContent, RegionKind, Size, SizeF,
     SourceIdentity, TextBlock, TextEvidence, TextLine, TextWord, Transform, rect_polygon,
 };
-pub use lege_ocr::backend::OcrSchedulerConfig;
 #[cfg(target_os = "windows")]
 use lege_ocr::backend::LegacyPageAdapter;
+pub use lege_ocr::backend::OcrSchedulerConfig;
 use lege_ocr::backend::{PageBatch, PageOcrBackend, RecognitionBatch};
-pub use lege_ocr::engine_tensorrt::{TensorRtPaddleConfig, nvidia_hardware_present};
+pub use lege_ocr::engine_tensorrt::{
+    BrokeredTensorRtConfig, TensorRtPaddleConfig, nvidia_hardware_present,
+};
 use lege_pdf_read::{RasterPlane, RasterProduct, RenderSession};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -35,6 +37,9 @@ pub struct PipelineConfig {
     /// Native TensorRT PP-OCRv6 worker. `None` permits auto-discovery when the
     /// backend is `auto` or `tensorrt-paddle`.
     pub tensorrt_paddle: Option<TensorRtPaddleConfig>,
+    /// Persistent page worker that forwards raster OCR to the Evidence broker.
+    #[serde(default)]
+    pub brokered_tensorrt: Option<BrokeredTensorRtConfig>,
     pub correction_mode: correction::CorrectionMode,
     pub correction_dictionary: Option<std::path::PathBuf>,
 }
@@ -52,6 +57,7 @@ impl Default for PipelineConfig {
             scheduler: lege_ocr::backend::OcrSchedulerConfig::default(),
             paddle_model_pack: None,
             tensorrt_paddle: None,
+            brokered_tensorrt: None,
             correction_mode: correction::CorrectionMode::Conservative,
             correction_dictionary: None,
         }
@@ -78,6 +84,9 @@ impl PipelineConfig {
                 hasher.update(&std::fs::read(path)?);
             }
         }
+        if let Some(broker) = &self.brokered_tensorrt {
+            hasher.update(&std::fs::read(&broker.executable)?);
+        }
         Ok(format!("blake3:{}", hasher.finalize().to_hex()))
     }
 }
@@ -88,6 +97,8 @@ pub enum BackendChoice {
     Auto,
     #[serde(rename = "tensorrt-paddle")]
     TensorRtPaddle,
+    #[serde(rename = "brokered-tensorrt")]
+    BrokeredTensorRt,
     Paddle,
     WindowsAi,
     WinOcrLegacy,
@@ -1107,6 +1118,22 @@ fn initialize_backend(config: &PipelineConfig) -> Result<InitializedBackend, Pip
                 None,
             ))
         }
+        BackendChoice::BrokeredTensorRt => {
+            let config = config.brokered_tensorrt.as_ref().ok_or_else(|| {
+                PipelineError::BackendInitialization(
+                    "brokered TensorRT requires bridge executable, endpoint, model and revision"
+                        .to_string(),
+                )
+            })?;
+            let engine = lege_ocr::engine_tensorrt::TensorRtPaddleEngine::start_brokered(config)
+                .map_err(|error| PipelineError::BackendInitialization(format!("{error:#}")))?;
+            Ok((
+                Box::new(engine),
+                BackendChoice::BrokeredTensorRt,
+                None,
+                None,
+            ))
+        }
         BackendChoice::Paddle => Ok((
             initialize_paddle(config)?,
             BackendChoice::Paddle,
@@ -1168,7 +1195,17 @@ fn initialize_winocr(_language: &str) -> Result<Box<dyn PageOcrBackend>, Pipelin
 }
 
 fn builtin_model_identity(config: &PipelineConfig) -> Option<lege_docir::ModelIdentity> {
-    if config.backend == BackendChoice::TensorRtPaddle {
+    if config.backend == BackendChoice::BrokeredTensorRt {
+        let broker = config.brokered_tensorrt.as_ref()?;
+        Some(lege_docir::ModelIdentity {
+            provider: "Evidence TensorRT broker".into(),
+            name: broker.model.clone(),
+            version: broker.revision.clone(),
+            content_hash: Some(format!("revision:{}", broker.revision)),
+            license: None,
+            source: Some(format!("local-broker:{}", broker.endpoint)),
+        })
+    } else if config.backend == BackendChoice::TensorRtPaddle {
         let runtime = config.tensorrt_paddle.as_ref()?;
         let mut hasher = blake3::Hasher::new();
         for path in [&runtime.detector, &runtime.recognizer, &runtime.dictionary] {
@@ -1185,7 +1222,7 @@ fn builtin_model_identity(config: &PipelineConfig) -> Option<lege_docir::ModelId
     } else if config.backend == BackendChoice::Paddle {
         Some(lege_docir::ModelIdentity {
             provider: "PaddlePaddle".into(),
-            name: "PP-OCRv5 embedded compatibility".into(),
+            name: "PP-OCRv6 embedded".into(),
             version: "workspace-assets".into(),
             content_hash: None,
             license: Some("Apache-2.0".into()),
@@ -1208,6 +1245,27 @@ fn builtin_model_identity(config: &PipelineConfig) -> Option<lege_docir::ModelId
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broker_identity_is_part_of_the_resumable_configuration_hash() {
+        let temporary = tempfile::tempdir().unwrap();
+        let bridge = temporary.path().join("bridge.exe");
+        std::fs::write(&bridge, b"bridge").unwrap();
+        let mut first = PipelineConfig {
+            backend: BackendChoice::BrokeredTensorRt,
+            brokered_tensorrt: Some(BrokeredTensorRtConfig {
+                executable: bridge,
+                endpoint: "evidence-trt".to_string(),
+                model: "turbo-ocr".to_string(),
+                revision: "revision-a".to_string(),
+            }),
+            ..PipelineConfig::default()
+        };
+        let first_hash = first.hash().unwrap();
+        first.brokered_tensorrt.as_mut().unwrap().revision = "revision-b".to_string();
+        assert_ne!(first_hash, first.hash().unwrap());
+    }
+
     #[test]
     fn render_dimensions_respect_pixel_budget() {
         let (width, height) = raster_dimensions(720.0, 720.0, 300, 1_000_000).unwrap();

@@ -6,7 +6,7 @@
 //! (`pdf_artifact`). `src/djvu.rs` keeps its own independent parser.
 
 use anyhow::Result;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
 /// A word from hOCR output with its pixel bounding box.
@@ -53,6 +53,53 @@ fn parse_word_confidence(title: &str) -> Option<f32> {
     Some((value / 100.0).clamp(0.0, 1.0))
 }
 
+/// Read the `bbox x1 y1 x2 y2` prefix of an hOCR `title` attribute. Any further
+/// properties (`; x_wconf 87`, `; baseline …`) are ignored here.
+fn parse_bbox(title: &str) -> Option<(f32, f32, f32, f32)> {
+    let after_bbox = title.strip_prefix("bbox ")?;
+    let bbox_part = after_bbox.split(';').next().unwrap_or(after_bbox);
+    let mut nums = bbox_part
+        .split_whitespace()
+        .filter_map(|s| s.parse::<f32>().ok());
+    Some((nums.next()?, nums.next()?, nums.next()?, nums.next()?))
+}
+
+/// The hOCR attributes we care about on a `<span>`: which class it carries, and
+/// the geometry packed into its `title`.
+#[derive(Default)]
+struct SpanAttrs {
+    is_word: bool,
+    is_line: bool,
+    bbox: Option<(f32, f32, f32, f32)>,
+    confidence: Option<f32>,
+}
+
+fn parse_span_attrs(span: &BytesStart) -> Result<SpanAttrs> {
+    let mut attrs = SpanAttrs::default();
+    for attr in span.attributes() {
+        let attr = attr?;
+        match attr.key.as_ref() {
+            b"class" => {
+                for class in attr.value.as_ref().split(|&b| b == b' ') {
+                    match class {
+                        b"ocrx_word" => attrs.is_word = true,
+                        b"ocr_line" => attrs.is_line = true,
+                        _ => {}
+                    }
+                }
+            }
+            b"title" => {
+                if let Ok(title) = attr.normalized_value(XmlVersion::Implicit1_0) {
+                    attrs.bbox = parse_bbox(&title);
+                    attrs.confidence = parse_word_confidence(&title);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(attrs)
+}
+
 pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
     let mut reader = Reader::from_str(hocr);
 
@@ -69,78 +116,41 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Start(ref e) if e.name().as_ref() == b"span" => {
-                let mut is_word = false;
-                let mut is_line = false;
-                let mut bbox: Option<(f32, f32, f32, f32)> = None;
-                let mut confidence: Option<f32> = None;
+                let attrs = parse_span_attrs(e)?;
 
-                for attr in e.attributes() {
-                    let attr = attr?;
-                    match attr.key.as_ref() {
-                        b"class" => {
-                            if attr
-                                .value
-                                .as_ref()
-                                .split(|&b| b == b' ')
-                                .any(|c| c == b"ocrx_word")
-                            {
-                                is_word = true;
-                            }
-                            if attr
-                                .value
-                                .as_ref()
-                                .split(|&b| b == b' ')
-                                .any(|c| c == b"ocr_line")
-                            {
-                                is_line = true;
-                            }
+                // A span without a usable bbox is skipped entirely: its text
+                // must not be attributed to whatever span preceded it.
+                if attrs.is_word {
+                    match attrs.bbox {
+                        Some((x1, y1, x2, y2)) => {
+                            in_ocr_word = true;
+                            current_word_text.clear();
+                            words.push(HocrWord {
+                                text: String::new(),
+                                confidence: attrs.confidence,
+                                x: x1,
+                                y: y1,
+                                width: (x2 - x1).max(0.0),
+                                height: (y2 - y1).max(0.0),
+                            });
+                            current_index = Some(words.len() - 1);
                         }
-                        b"title" => {
-                            if let Ok(title_str) = attr.normalized_value(XmlVersion::Implicit1_0) {
-                                if let Some(after_bbox) = title_str.strip_prefix("bbox ") {
-                                    let bbox_part =
-                                        after_bbox.split(';').next().unwrap_or(after_bbox);
-                                    let mut nums = bbox_part
-                                        .split_whitespace()
-                                        .filter_map(|s| s.parse::<f32>().ok());
-                                    if let (Some(x1), Some(y1), Some(x2), Some(y2)) =
-                                        (nums.next(), nums.next(), nums.next(), nums.next())
-                                    {
-                                        bbox = Some((x1, y1, x2, y2));
-                                    }
-                                }
-                                confidence = parse_word_confidence(&title_str);
-                            }
+                        None => {
+                            in_ocr_word = false;
+                            current_index = None;
                         }
-                        _ => {}
                     }
-                }
-
-                if is_word {
-                    if let Some((x1, y1, x2, y2)) = bbox {
-                        in_ocr_word = true;
-                        current_word_text.clear();
-                        words.push(HocrWord {
-                            text: String::new(),
-                            confidence,
-                            x: x1,
-                            y: y1,
-                            width: (x2 - x1).max(0.0),
-                            height: (y2 - y1).max(0.0),
-                        });
-                        current_index = Some(words.len() - 1);
-                    } else {
-                        in_ocr_word = false;
-                        current_index = None;
-                    }
-                } else if is_line {
-                    if let Some((x1, y1, x2, y2)) = bbox {
-                        in_ocr_line = true;
-                        current_line_bbox = Some((x1, y1, x2, y2));
-                        current_line_text.clear();
-                    } else {
-                        in_ocr_line = false;
-                        current_line_bbox = None;
+                } else if attrs.is_line {
+                    match attrs.bbox {
+                        Some(bbox) => {
+                            in_ocr_line = true;
+                            current_line_bbox = Some(bbox);
+                            current_line_text.clear();
+                        }
+                        None => {
+                            in_ocr_line = false;
+                            current_line_bbox = None;
+                        }
                     }
                 }
             }
@@ -156,10 +166,8 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
             }
             Event::End(ref e) if e.name().as_ref() == b"span" => {
                 if in_ocr_word {
-                    if let Some(idx) = current_index {
-                        if let Some(word) = words.get_mut(idx) {
-                            word.text = current_word_text.trim().to_string();
-                        }
+                    if let Some(word) = current_index.and_then(|idx| words.get_mut(idx)) {
+                        word.text = current_word_text.trim().to_string();
                     }
                     in_ocr_word = false;
                     current_index = None;
@@ -185,49 +193,50 @@ pub fn parse_hocr(hocr: &str) -> Result<Vec<HocrLine>> {
 
     let mut lines = group_words_into_lines(words);
 
-    // Attach raw line text (if present) by matching bounding boxes.
-    if !raw_lines.is_empty() {
-        for line in lines.iter_mut() {
-            let lx1 = line.x;
-            let ly1 = line.y;
-            let lx2 = line.x + line.width;
-            let ly2 = line.y + line.height;
-            let l_area = (lx2 - lx1).max(0.0) * (ly2 - ly1).max(0.0);
-            let mut best_idx: Option<usize> = None;
-            let mut best_score: f32 = 0.0;
+    // Attach each grouped line's raw engine text by matching bounding boxes:
+    // the raw text is authoritative for spacing, which word boxes alone lose.
+    for line in lines.iter_mut() {
+        let lx1 = line.x;
+        let ly1 = line.y;
+        let lx2 = line.x + line.width;
+        let ly2 = line.y + line.height;
+        let l_area = (lx2 - lx1).max(0.0) * (ly2 - ly1).max(0.0);
+        let mut best_idx: Option<usize> = None;
+        let mut best_score: f32 = 0.0;
 
-            for (i, (rx1, ry1, rx2, ry2, _)) in raw_lines.iter().enumerate() {
-                let ix = (lx2.min(*rx2) - lx1.max(*rx1)).max(0.0);
-                let iy = (ly2.min(*ry2) - ly1.max(*ry1)).max(0.0);
-                let inter = ix * iy;
-                let score = if l_area > 0.0 { inter / l_area } else { 0.0 };
-                if score > best_score {
-                    best_score = score;
-                    best_idx = Some(i);
-                }
+        // Score by how much of the grouped line the raw line covers, so a raw
+        // line that merely clips the edge of this one cannot claim it.
+        for (i, (rx1, ry1, rx2, ry2, _)) in raw_lines.iter().enumerate() {
+            let ix = (lx2.min(*rx2) - lx1.max(*rx1)).max(0.0);
+            let iy = (ly2.min(*ry2) - ly1.max(*ry1)).max(0.0);
+            let inter = ix * iy;
+            let score = if l_area > 0.0 { inter / l_area } else { 0.0 };
+            if score > best_score {
+                best_score = score;
+                best_idx = Some(i);
             }
+        }
 
-            if let Some(i) = best_idx.take() {
-                if best_score > 0.2 {
-                    line.raw_text = Some(raw_lines[i].4.clone());
-                }
-            }
+        if best_score > RAW_LINE_MIN_COVERAGE
+            && let Some(i) = best_idx
+        {
+            line.raw_text = Some(raw_lines[i].4.clone());
         }
     }
 
     Ok(lines)
 }
 
+/// Minimum fraction of a grouped line that a raw engine line must cover before
+/// its text is taken as that line's authoritative spacing.
+const RAW_LINE_MIN_COVERAGE: f32 = 0.2;
+
 pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
     if words.is_empty() {
         return Vec::new();
     }
 
-    words.sort_by(|a, b| {
-        a.y.partial_cmp(&b.y)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
-    });
+    words.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
 
     struct LineGroup {
         words: Vec<HocrWord>,
@@ -240,29 +249,27 @@ pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
     let mut groups: Vec<LineGroup> = Vec::new();
 
     for word in words.into_iter() {
+        // A word joins the first group whose vertical midline it sits near;
+        // otherwise it opens a new line.
         let word_mid = word.y + word.height * 0.5;
-        let mut target = None;
-
-        for (idx, group) in groups.iter().enumerate() {
+        let target = groups.iter().position(|group| {
             let line_mid = (group.min_y + group.max_y) * 0.5;
             let line_height = (group.max_y - group.min_y).max(word.height).max(1.0);
-            if (line_mid - word_mid).abs() <= line_height * 0.45 {
-                target = Some(idx);
-                break;
-            }
-        }
+            (line_mid - word_mid).abs() <= line_height * 0.45
+        });
 
-        let idx = if let Some(idx) = target {
-            idx
-        } else {
-            groups.push(LineGroup {
-                min_x: word.x,
-                max_x: word.x + word.width,
-                min_y: word.y,
-                max_y: word.y + word.height,
-                words: Vec::new(),
-            });
-            groups.len() - 1
+        let idx = match target {
+            Some(idx) => idx,
+            None => {
+                groups.push(LineGroup {
+                    min_x: word.x,
+                    max_x: word.x + word.width,
+                    min_y: word.y,
+                    max_y: word.y + word.height,
+                    words: Vec::new(),
+                });
+                groups.len() - 1
+            }
         };
 
         let group = &mut groups[idx];
@@ -276,16 +283,9 @@ pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
     let mut lines: Vec<HocrLine> = groups
         .into_iter()
         .map(|mut group| {
-            group.words.sort_by(|a, b| {
-                a.x.partial_cmp(&b.x)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-            });
-
-            let min_x = group.min_x;
-            let max_x = group.max_x;
-            let min_y = group.min_y;
-            let max_y = group.max_y;
+            group
+                .words
+                .sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
 
             let mut char_width_sum = 0.0f32;
             let mut char_width_count = 0usize;
@@ -295,7 +295,9 @@ pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
                     char_width_count += 1;
                 }
             }
-            let line_height = (max_y - min_y).max(1.0);
+            let line_height = (group.max_y - group.min_y).max(1.0);
+            // With no single-character token to measure, half the line height is
+            // a serviceable stand-in for one character's width.
             let avg_char_width = if char_width_count > 0 {
                 char_width_sum / (char_width_count as f32)
             } else {
@@ -303,11 +305,11 @@ pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
             };
 
             HocrLine {
-                x: min_x,
-                y: min_y,
-                width: (max_x - min_x).max(0.0),
+                x: group.min_x,
+                y: group.min_y,
+                width: (group.max_x - group.min_x).max(0.0),
                 height: line_height,
-                baseline: max_y,
+                baseline: group.max_y,
                 avg_char_width,
                 words: group.words,
                 raw_text: None,
@@ -315,11 +317,7 @@ pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
         })
         .collect();
 
-    lines.sort_by(|a, b| {
-        a.y.partial_cmp(&b.y)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
-    });
+    lines.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
 
     lines
 }
@@ -328,24 +326,16 @@ pub fn group_words_into_lines(mut words: Vec<HocrWord>) -> Vec<HocrLine> {
 /// high vertical overlap, small horizontal gap). Per-line.
 pub fn dedup_adjacent_repeats(lines: &mut [HocrLine]) {
     for line in lines.iter_mut() {
-        if line.words.is_empty() {
-            continue;
-        }
-        let mut cleaned: Vec<HocrWord> = Vec::with_capacity(line.words.len());
-        for w in line.words.iter() {
-            if let Some(prev) = cleaned.last() {
-                let same_text = prev.text.trim() == w.text.trim();
-                let gap = w.x - (prev.x + prev.width);
-                let v_overlap =
-                    ((prev.y + prev.height).min(w.y + w.height) - prev.y.max(w.y)).max(0.0);
-                let v_overlap_ratio = v_overlap / prev.height.max(w.height).max(1.0);
-                if same_text && gap < line.height * 0.25 && v_overlap_ratio > 0.5 {
-                    continue;
-                }
-            }
-            cleaned.push(w.clone());
-        }
-        line.words = cleaned;
+        let line_height = line.height;
+        // `dedup_by` hands us (candidate, previously-kept word) and drops the
+        // candidate when the predicate holds — exactly the rule below.
+        line.words.dedup_by(|w, prev| {
+            let same_text = prev.text.trim() == w.text.trim();
+            let gap = w.x - (prev.x + prev.width);
+            let v_overlap = ((prev.y + prev.height).min(w.y + w.height) - prev.y.max(w.y)).max(0.0);
+            let v_overlap_ratio = v_overlap / prev.height.max(w.height).max(1.0);
+            same_text && gap < line_height * 0.25 && v_overlap_ratio > 0.5
+        });
     }
 }
 

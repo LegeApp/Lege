@@ -156,7 +156,7 @@ NVIDIA driver is present. The default per-user destination is
 `%LOCALAPPDATA%\Programs\Lege Document OCR`, so the installer does not require
 administrator privileges.
 
-The embedded Paddle assets are the compatibility PP-OCRv5 models. A v6 or
+The embedded Paddle assets are the PP-OCRv6 `small`-tier models. A newer or
 customer model can be installed with `--model-pack DIRECTORY`; assets are not
 accepted unless their BLAKE3 checksums match the pack manifest.
 

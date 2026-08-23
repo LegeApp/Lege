@@ -21,7 +21,7 @@ constructor signature).
 Build the library into the APK:
 
 ```bash
-cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --package lege-android --profile android
+cargo ndk -t arm64-v8a --platform 26 -o app/src/main/jniLibs build --package lege-android --profile android
 ```
 
 The `android` profile is required, not cosmetic: the workspace's `release`

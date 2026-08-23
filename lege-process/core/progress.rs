@@ -1832,10 +1832,8 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
         }
     }
 
-    // DJVU preflight: DjVu output is produced by the separate `djvu-encoder`
-    // program invoked as a subprocess. If it cannot be located, fail here with a
-    // clear, actionable message (surfaced on the CLI and, in --gui-worker mode,
-    // as a ProcessingStatus::Error) rather than after rendering pages.
+    // DJVU preflight: native encoding has no helper executable, but fail early
+    // if the optional debug-output directory cannot be prepared.
     if config.text_format() == "djvu" {
         let temp_dir = crate::app_dirs::djvu_base_dir();
         let djvu_cfg = crate::djvu::DjvuConfig {
@@ -1846,7 +1844,7 @@ fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
             Ok(orchestrator) => {
                 if let Err(e) = orchestrator.preflight_check(config.enable_ocr()) {
                     return Err(anyhow::anyhow!(
-                        "DjVu output was selected, but the DjVu encoder is unavailable.\n{e}"
+                        "DjVu output was selected, but native encoder setup failed.\n{e}"
                     ));
                 }
             }

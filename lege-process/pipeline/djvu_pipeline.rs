@@ -63,7 +63,8 @@ pub struct DjvuBinarizedData {
 }
 
 struct ComposedDjvuPage {
-    entry: crate::djvu::ManifestPageEntry,
+    encoded: djvu_encoder::doc::EncodedPage,
+    page_index: usize,
 }
 /// Helper function to create DJVU pipeline configuration
 pub fn create_djvu_pipeline_config(
@@ -92,10 +93,6 @@ pub fn create_djvu_pipeline_config(
         center_margins: center_active,
         crop_margins: crop_active,
         no_binarization_mode: config.text_format() == "jpeg", // Use "jpeg" text format to indicate no binarization
-        // The encoder path comes from --djvu-encoder-path (a process-wide
-        // override consulted by resolve_encoder_path), env, or PATH — not this
-        // per-job config, so leave it unset here.
-        encoder_path: None,
     };
     Ok(djvu_config)
 }
@@ -190,15 +187,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     let djvu_config = create_djvu_pipeline_config(output_path, &config)?;
     let dpi = djvu_config.dpi; // Extract DPI before config is moved
     let iw44_quality = djvu_config.iw44_quality; // Extract quality setting (0-100)
-    let djvu_work_dir = djvu_config.work_dir.clone(); // Where page layers + manifest go
-    // Resolve the standalone AGPL encoder up front so DjVu jobs fail fast.
-    let djvu_encoder_path = crate::djvu::resolve_encoder_path(djvu_config.encoder_path.as_deref())?;
     let orchestrator = Arc::new(DjvuOrchestrator::new(djvu_config)?);
-    // Stop the encoder child and remove the work directory on every exit path,
-    // cancellation included.
-    let encoder_control = Arc::new(crate::djvu::DjvuEncoderControl::new());
-    let _work_dir_guard =
-        crate::djvu::DjvuWorkDirGuard::new(orchestrator.clone(), encoder_control.clone());
     let (config, shared_inference_handle) =
         crate::pipeline::helper_functions::initialize_inference_or_fallback(
             config,
@@ -493,17 +482,15 @@ pub async fn create_and_run_djvu_source_pipeline(
     } else {
         3
     };
-    let (djvu_writer, mut writer_task) = spawn_djvu_writer_actor(
+    let (djvu_writer, djvu_document, mut writer_task) = spawn_djvu_writer_actor(
         output_path.to_path_buf(),
         total_pages,
         dpi,
         iw44_quality,
         bg_subsample,
-        djvu_work_dir.clone(),
-        djvu_encoder_path.clone(),
         progress_tracker.clone(),
         pipeline_config.channel_capacity,
-        encoder_control.clone(),
+        cancellation.clone(),
     );
 
     let epub_sidecar_output = config.epub_sidecar_output().cloned();
@@ -513,6 +500,7 @@ pub async fn create_and_run_djvu_source_pipeline(
     // Spawn encoding stage (encodes pages concurrently, then forwards to writer actor)
     let mut encode_task: JoinHandle<Result<()>> = {
         let orchestrator = orchestrator.clone();
+        let djvu_document = djvu_document.clone();
         let djvu_writer = djvu_writer.clone();
         let mut binarize_rx = binarize_rx;
         let concurrency = pipeline_config.djvu_encode_workers;
@@ -535,7 +523,9 @@ pub async fn create_and_run_djvu_source_pipeline(
                     biased;
                     Some(result) = in_flight.next(), if !in_flight.is_empty() => {
                         let composed_page = result?;
-                        djvu_writer.append_entry(composed_page.entry).await?;
+                        djvu_writer
+                            .append_encoded(composed_page.encoded, composed_page.page_index)
+                            .await?;
                     }
                     Some(binarized_data) = binarize_rx.recv(), if in_flight.len() < concurrency && !input_exhausted => {
                         if let Ok(mut pages) = document_toc.lock() {
@@ -557,6 +547,7 @@ pub async fn create_and_run_djvu_source_pipeline(
                             }
                         }
                         let orchestrator = orchestrator.clone();
+                        let djvu_document = djvu_document.clone();
                         let page_cancellation = encode_cancellation.clone();
                         in_flight.push(Box::pin(async move {
                             if page_cancellation.is_cancelled() {
@@ -575,13 +566,15 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 hocr: binarized_data.hocr_text,
                             };
 
-                            // Compose the page's layers and write them to the work
-                            // directory inside one spawn_blocking so the CPU cost
-                            // runs concurrently with other pages. The heavy IW44/JB2
-                            // encode happens later in the encoder subprocess.
-                            let entry = crate::runtime_stats::spawn_blocking_stage(
+                            // Compose and compress the typed page inside one blocking
+                            // worker so IW44/JB2 encoding remains page-parallel.
+                            let page_index = page_data.index;
+                            let encoded = crate::runtime_stats::spawn_blocking_stage(
                                 crate::runtime_stats::Stage::Encode,
-                                move || -> Result<_> { orchestrator.process_page(page_data) },
+                                move || -> Result<_> {
+                                    let prepared = orchestrator.process_page(page_data)?;
+                                    prepared.encode(&djvu_document, iw44_quality, bg_subsample)
+                                },
                             )
                             .await
                             .map_err(|e| anyhow!("DjVu compose task panicked: {}", e))??;
@@ -589,7 +582,10 @@ pub async fn create_and_run_djvu_source_pipeline(
                                 return Err(anyhow!("DjVu composition cancelled after page encode"));
                             }
 
-                            Ok(ComposedDjvuPage { entry })
+                            Ok(ComposedDjvuPage {
+                                encoded,
+                                page_index,
+                            })
                         }));
                     }
                     else => {

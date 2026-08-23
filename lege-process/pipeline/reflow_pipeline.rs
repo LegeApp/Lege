@@ -983,25 +983,16 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         crate::pipeline::djvu_pipeline::create_djvu_pipeline_config(output_path, &config)?;
     let dpi = djvu_config.dpi;
     let iw44_quality = djvu_config.iw44_quality;
-    let djvu_work_dir = djvu_config.work_dir.clone();
-    let djvu_encoder_path = crate::djvu::resolve_encoder_path(djvu_config.encoder_path.as_deref())?;
     let orchestrator = Arc::new(crate::djvu::DjvuOrchestrator::new(djvu_config)?);
-    // Stop the encoder child and remove the work directory on every exit path,
-    // cancellation included.
-    let encoder_control = Arc::new(crate::djvu::DjvuEncoderControl::new());
-    let _work_dir_guard =
-        crate::djvu::DjvuWorkDirGuard::new(orchestrator.clone(), encoder_control.clone());
-    let (djvu_writer, mut writer_task) = crate::djvu::spawn_djvu_writer_actor(
+    let (djvu_writer, djvu_document, mut writer_task) = crate::djvu::spawn_djvu_writer_actor(
         output_path.to_path_buf(),
         total_out_pages,
         dpi,
         iw44_quality,
         3, // reflow output is bilevel text over figures; c44's default subsample
-        djvu_work_dir,
-        djvu_encoder_path,
         progress_tracker.clone(),
         runtime_limits.channel_capacity,
-        encoder_control.clone(),
+        cancellation.clone(),
     );
     let mut toc_pages = Vec::new();
 
@@ -1114,8 +1105,10 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         };
 
         let orchestrator = orchestrator.clone();
+        let djvu_document = djvu_document.clone();
         let compose_cancellation = cancellation.clone();
-        let entry = await_reflow_step(
+        let page_index = page_data.index;
+        let encoded = await_reflow_step(
             async move {
                 crate::runtime_stats::spawn_blocking_stage(
                     crate::runtime_stats::Stage::Encode,
@@ -1123,11 +1116,12 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
                         if compose_cancellation.is_cancelled() {
                             return Err(anyhow!("DjVu composition cancelled before CPU work"));
                         }
-                        let entry = orchestrator.process_page(page_data)?;
+                        let prepared = orchestrator.process_page(page_data)?;
+                        let encoded = prepared.encode(&djvu_document, iw44_quality, 3)?;
                         if compose_cancellation.is_cancelled() {
                             return Err(anyhow!("DjVu composition cancelled after CPU work"));
                         }
-                        Ok(entry)
+                        Ok(encoded)
                     },
                 )
                 .await
@@ -1139,7 +1133,7 @@ pub(crate) async fn run_raster_reflow_djvu_pipeline(
         )
         .await?;
 
-        djvu_writer.append_entry(entry).await?;
+        djvu_writer.append_encoded(encoded, page_index).await?;
 
         let done = reflow_page.index + 1;
         progress_tracker.publish_reflow_progress(ReflowStage::OutputPages, done, total_out_pages);

@@ -7,17 +7,14 @@ package com.legeapp.lege
  * name with `GetFieldID`, so they must be real fields under exactly these
  * names rather than Kotlin properties behind accessors.
  *
- * This is a deliberate subset of the pipeline's ~45 settings — the rest keep
- * their defaults. Adding one means a field here and a line in `config.rs`.
+ * This exposes the Android-safe processing controls. Worker and buffer sizing
+ * intentionally stay automatic: native code derives them from the app memory
+ * class supplied to `LegeNative.nativeInit`.
  */
 class LegeParams {
     /** Output page height in pixels. 0 keeps the pipeline default. */
     @JvmField
     var targetHeight: Int = 0
-
-    /** `"jbig2"`, `"ccitt4"`, …; null keeps the default. */
-    @JvmField
-    var textFormat: String? = null
 
     /**
      * Run YOLO layout detection. Requires a working Vulkan device; if the GPU
@@ -31,15 +28,8 @@ class LegeParams {
     @JvmField
     var enableOcr: Boolean = false
 
-    /** OCR language code; null keeps the default. */
-    @JvmField
-    var ocrLanguage: String? = null
-
     @JvmField
     var highQualityOutput: Boolean = false
-
-    @JvmField
-    var enableCoverPage: Boolean = true
 
     /** Treat the source as inverted (light text on dark). */
     @JvmField
@@ -49,11 +39,33 @@ class LegeParams {
     @JvmField
     var pageRange: String? = null
 
-    /**
-     * Pages in flight. 0 lets the pipeline size the pool from the device's
-     * core count and the memory budget given to [LegeNative.nativeInit], which
-     * is almost always the better answer than a fixed value.
-     */
+    /** `"none"`, `"center"`, `"crop"`, or `"reflow"`. */
     @JvmField
-    var maxParallelPages: Int = 0
+    var marginMode: String = "none"
+
+    @JvmField
+    var slowOcr: Boolean = false
+
+    @JvmField
+    var jpegCompat: Boolean = false
+
+    /** Dither image regions instead of retaining their original raster crops. */
+    @JvmField
+    var ditherImages: Boolean = false
+
+    /** `"default"`, `"adaptive"`, `"threshold"`, or `"sauvola"`. */
+    @JvmField
+    var binarizationMode: String = "default"
+
+    /** Adaptive Sauvola sensitivity; valid range is 0.0–1.0. */
+    @JvmField
+    var sauvolaK: Float = 0.05f
+
+    /** Fixed global threshold; valid range is 0–255. */
+    @JvmField
+    var fixedThreshold: Int = 180
+
+    /** Filesystem destination for the optional EPUB companion file. */
+    @JvmField
+    var epubSidecarPath: String? = null
 }

@@ -8,8 +8,8 @@ use lege_document_batch::{JobStatus, JobStore, atomic_checkpoint, fingerprint};
 use lege_document_export::{ExportFormat, ExportRequest, SearchablePdfPolicy, export_all};
 use lege_document_pipeline::correction::CorrectionMode;
 use lege_document_pipeline::{
-    BackendChoice, DocumentProcessor, OcrSchedulerConfig, PipelineConfig, TensorRtPaddleConfig,
-    nvidia_hardware_present,
+    BackendChoice, BrokeredTensorRtConfig, DocumentProcessor, OcrSchedulerConfig, PipelineConfig,
+    TensorRtPaddleConfig, nvidia_hardware_present,
 };
 
 #[derive(Debug, Parser)]
@@ -44,6 +44,15 @@ struct DoctorArgs {
     tensorrt_dll_dir: Vec<PathBuf>,
     #[arg(long, default_value_t = 8)]
     tensorrt_rec_batch: usize,
+    /// Evidence page-OCR bridge executable for `brokered-tensorrt`.
+    #[arg(long)]
+    broker_bridge: Option<PathBuf>,
+    #[arg(long, default_value = "evidence-trt")]
+    broker_endpoint: String,
+    #[arg(long, default_value = "turbo-ocr")]
+    broker_model: String,
+    #[arg(long)]
+    broker_revision: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -108,6 +117,15 @@ struct BatchArgs {
     /// TensorRT recognizer batch size; 8 is recommended for an 8 GB GPU.
     #[arg(long, default_value_t = 8)]
     tensorrt_rec_batch: usize,
+    /// Evidence page-OCR bridge executable for `brokered-tensorrt`.
+    #[arg(long)]
+    broker_bridge: Option<PathBuf>,
+    #[arg(long, default_value = "evidence-trt")]
+    broker_endpoint: String,
+    #[arg(long, default_value = "turbo-ocr")]
+    broker_model: String,
+    #[arg(long)]
+    broker_revision: Option<String>,
     /// Preserve trustworthy native PDFs or explicitly permit raster fallback.
     #[arg(long, value_enum, default_value_t = PdfModeArg::Preserve)]
     pdf_mode: PdfModeArg,
@@ -135,6 +153,8 @@ enum BackendArg {
     Auto,
     #[value(name = "tensorrt-paddle", alias = "tensor-rt-paddle")]
     TensorRtPaddle,
+    #[value(name = "brokered-tensorrt")]
+    BrokeredTensorRt,
     Paddle,
     WindowsAi,
     WinocrLegacy,
@@ -204,10 +224,21 @@ fn run_batch(args: BatchArgs) -> Result<(), String> {
     if sources.is_empty() {
         return Err("no PDF inputs were found".to_string());
     }
-    let tensorrt_paddle = resolve_tensorrt_runtime(
-        args.tensorrt_ocr_root.as_deref(),
-        &args.tensorrt_dll_dir,
-        args.tensorrt_rec_batch,
+    let tensorrt_paddle = if matches!(args.backend, BackendArg::Auto | BackendArg::TensorRtPaddle) {
+        resolve_tensorrt_runtime(
+            args.tensorrt_ocr_root.as_deref(),
+            &args.tensorrt_dll_dir,
+            args.tensorrt_rec_batch,
+        )?
+    } else {
+        None
+    };
+    let brokered_tensorrt = resolve_brokered_runtime(
+        args.backend,
+        args.broker_bridge.as_deref(),
+        &args.broker_endpoint,
+        &args.broker_model,
+        args.broker_revision.as_deref(),
     )?;
     let config = PipelineConfig {
         profile: profile(args.profile),
@@ -227,6 +258,7 @@ fn run_batch(args: BatchArgs) -> Result<(), String> {
         correction_dictionary: args.dictionary.clone(),
         paddle_model_pack: args.model_pack.clone(),
         tensorrt_paddle,
+        brokered_tensorrt,
         scheduler: OcrSchedulerConfig {
             max_batch_lines: args.gpu_batch_lines,
             max_batch_pixels: args.gpu_batch_pixels,
@@ -390,15 +422,27 @@ fn run_doctor(args: DoctorArgs) -> Result<(), String> {
     if !(1..=32).contains(&args.tensorrt_rec_batch) {
         return Err("--tensorrt-rec-batch must be in 1..=32".to_string());
     }
-    let tensorrt_paddle = resolve_tensorrt_runtime(
-        args.tensorrt_ocr_root.as_deref(),
-        &args.tensorrt_dll_dir,
-        args.tensorrt_rec_batch,
+    let tensorrt_paddle = if matches!(args.backend, BackendArg::Auto | BackendArg::TensorRtPaddle) {
+        resolve_tensorrt_runtime(
+            args.tensorrt_ocr_root.as_deref(),
+            &args.tensorrt_dll_dir,
+            args.tensorrt_rec_batch,
+        )?
+    } else {
+        None
+    };
+    let brokered_tensorrt = resolve_brokered_runtime(
+        args.backend,
+        args.broker_bridge.as_deref(),
+        &args.broker_endpoint,
+        &args.broker_model,
+        args.broker_revision.as_deref(),
     )?;
     let config = PipelineConfig {
         backend: backend(args.backend),
         language: args.language,
         tensorrt_paddle,
+        brokered_tensorrt,
         correction_mode: CorrectionMode::Disabled,
         ..PipelineConfig::default()
     };
@@ -445,6 +489,30 @@ fn resolve_tensorrt_runtime(
         runtime.validate().map_err(|error| error.to_string())?;
     }
     Ok(runtime)
+}
+
+fn resolve_brokered_runtime(
+    backend: BackendArg,
+    executable: Option<&Path>,
+    endpoint: &str,
+    model: &str,
+    revision: Option<&str>,
+) -> Result<Option<BrokeredTensorRtConfig>, String> {
+    if !matches!(backend, BackendArg::BrokeredTensorRt) {
+        return Ok(None);
+    }
+    let config = BrokeredTensorRtConfig {
+        executable: executable
+            .ok_or_else(|| "--broker-bridge is required for brokered-tensorrt".to_string())?
+            .to_path_buf(),
+        endpoint: endpoint.to_string(),
+        model: model.to_string(),
+        revision: revision
+            .ok_or_else(|| "--broker-revision is required for brokered-tensorrt".to_string())?
+            .to_string(),
+    };
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(Some(config))
 }
 
 fn process_batch_task(
@@ -682,6 +750,7 @@ fn backend(value: BackendArg) -> BackendChoice {
     match value {
         BackendArg::Auto => BackendChoice::Auto,
         BackendArg::TensorRtPaddle => BackendChoice::TensorRtPaddle,
+        BackendArg::BrokeredTensorRt => BackendChoice::BrokeredTensorRt,
         BackendArg::Paddle => BackendChoice::Paddle,
         BackendArg::WindowsAi => BackendChoice::WindowsAi,
         BackendArg::WinocrLegacy => BackendChoice::WinOcrLegacy,
@@ -766,6 +835,10 @@ mod tests {
             tensorrt_ocr_root: None,
             tensorrt_dll_dir: Vec::new(),
             tensorrt_rec_batch: 8,
+            broker_bridge: None,
+            broker_endpoint: "evidence-trt".into(),
+            broker_model: "turbo-ocr".into(),
+            broker_revision: None,
             pdf_mode: PdfModeArg::Preserve,
             workers: 2,
             gpu_batch_lines: 64,

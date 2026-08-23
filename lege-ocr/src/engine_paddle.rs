@@ -1,9 +1,9 @@
-//! PP-OCRv5 OCR engine over the lege-gpu wgpu runtime.
+//! PP-OCRv6 OCR engine over the lege-gpu wgpu runtime.
 //!
 //! Replaces Tesseract on Linux/macOS with a pure-Rust, GPU-accelerated pipeline:
-//! DBNet text detection → per-line SVTR recognition → CTC decode. No external
-//! native library, so it cross-compiles cleanly (the reason Tesseract is being
-//! dropped) and runs on the same wgpu device the rest of Lege already uses.
+//! DBNet text detection → per-line recognition → CTC decode. No external native
+//! library, so it cross-compiles cleanly (the reason Tesseract is being dropped)
+//! and runs on the same wgpu device the rest of Lege already uses.
 //!
 //! The recognition model is multilingual (Latin + CJK via an 18k-glyph
 //! dictionary, umlauts included), so the `lang` argument is accepted but not
@@ -12,6 +12,12 @@
 //! NOTE: only English has been validated end-to-end. German (ä/ö/ü/ß) is present
 //! in the dictionary and should work, but is unverified — it was only ever a test
 //! case for the language service, not a shipping requirement.
+//!
+//! The embedded assets are the PP-OCRv6 `small` tier, prepared for lege-vision
+//! by `lege-process/scripts/prepare_ppocr_models.py`. Stock Paddle exports do
+//! not load as-is; that script is the reproducible recipe, and
+//! `tests/model_generation_probe.rs` is how a candidate generation is checked
+//! before it is embedded.
 
 use anyhow::{Context, Result};
 use image::{GrayImage, RgbImage};
@@ -27,12 +33,17 @@ use std::time::{Duration, Instant};
 
 use crate::types::{OcrLineResult, OcrResult, OcrWord};
 
-/// Embedded fp16 PP-OCRv5 mobile detection model (FLOAT16 initializers; the
+/// Generation of the embedded assets. Selects the DB detection thresholds,
+/// which are not interchangeable between PP-OCR generations.
+const EMBEDDED_GENERATION: lege_gpu::vision::PpOcrGeneration =
+    lege_gpu::vision::PpOcrGeneration::V6;
+
+/// Embedded fp16 PP-OCRv6 small detection model (FLOAT16 initializers; the
 /// wgpu runtime upcasts to f32 on load).
 static EMBEDDED_DET: &[u8] = include_bytes!("../assets/ppocr-det.onnx");
-/// Embedded fp16 PP-OCRv5 mobile recognition model.
+/// Embedded fp16 PP-OCRv6 small recognition model.
 static EMBEDDED_REC: &[u8] = include_bytes!("../assets/ppocr-rec.onnx");
-/// Embedded PP-OCRv5 character dictionary (18383 glyphs, one per line).
+/// Embedded PP-OCRv6 character dictionary (18708 glyphs, one per line).
 static EMBEDDED_DICT: &str = include_str!("../assets/ppocr-dict.txt");
 
 struct PaddleOcrInner {
@@ -355,7 +366,7 @@ fn clean_formula_tokens(tokens: &[String]) -> String {
         .collect()
 }
 
-/// PP-OCRv5 detection + recognition engine.
+/// PP-OCRv6 detection + recognition engine.
 ///
 /// Clones share the parsed models and compiled-graph caches. This is important
 /// for the page-parallel callers: rebuilding the engine for every page would
@@ -366,9 +377,9 @@ pub struct PaddleOcrEngine {
     inner: Arc<PaddleOcrInner>,
 }
 
-/// Versioned, checksum-pinned external Paddle model pack. The embedded
-/// compatibility assets remain v5; newer generations can be installed without
-/// recompiling the CLI.
+/// Versioned, checksum-pinned external Paddle model pack. Lets a different
+/// generation or script coverage be installed without recompiling the CLI; the
+/// embedded assets are the PP-OCRv6 small tier.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PaddleModelPack {
     pub schema_version: u32,
@@ -548,7 +559,8 @@ impl PaddleOcrEngine {
         scheduler: crate::backend::OcrSchedulerConfig,
         specialists: Option<PaddleSpecialists>,
     ) -> Result<Self> {
-        let detector = Detector::from_bytes(det_bytes).context("failed to build det model")?;
+        let detector = Detector::from_bytes_for_generation(det_bytes, EMBEDDED_GENERATION)
+            .context("failed to build det model")?;
         let recognizer =
             RecRecognizer::from_bytes(rec_bytes, dict_text).context("failed to build rec model")?;
         let recognizer_classes = recognizer.num_classes();
@@ -1046,14 +1058,17 @@ mod tests {
             eprintln!("skipping real-GPU PaddleOCR test; run scripts/test-paddle-ocr-gpu.sh");
             return None;
         }
-        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../page_0002-original.png"))
+        Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../lege-process/page_0002-original.png"),
+        )
     }
 
     #[test]
     fn embedded_models_parse_and_match_dictionary() {
         let engine = PaddleOcrEngine::from_embedded().expect("embedded PP-OCR models must load");
         assert_eq!(engine.name(), "paddle");
-        assert_eq!(engine.recognizer_classes(), 18_385);
+        assert_eq!(engine.recognizer_classes(), 18_710);
     }
 
     #[test]

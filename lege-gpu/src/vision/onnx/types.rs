@@ -125,6 +125,7 @@ impl PlannedOpKind {
             PlannedOpKind::Unary(UnaryKind::HardSwish) => "HardSwish",
             PlannedOpKind::Unary(UnaryKind::HardSigmoid { .. }) => "HardSigmoid",
             PlannedOpKind::Unary(UnaryKind::Sqrt) => "Sqrt",
+            PlannedOpKind::Unary(UnaryKind::Erf) => "Erf",
             PlannedOpKind::Unary(UnaryKind::Pow { .. }) => "Pow",
             PlannedOpKind::Concat { .. } => "Concat",
             PlannedOpKind::Split { .. } => "Split",
@@ -195,6 +196,9 @@ pub(crate) enum UnaryKind {
         beta: f32,
     },
     Sqrt,
+    /// Gauss error function. PP-OCRv6 builds GELU out of it as
+    /// `x * 0.5 * (1 + Erf(x / sqrt(2)))`, so it appears once per activation.
+    Erf,
     /// Power with a constant scalar exponent (sign-correct for integer exponents).
     Pow {
         exponent: f32,

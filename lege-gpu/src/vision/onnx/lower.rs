@@ -123,6 +123,7 @@ fn lower_node(
         "Sigmoid" => PlannedOpKind::Unary(UnaryKind::Sigmoid),
         "Relu" => PlannedOpKind::Unary(UnaryKind::Relu),
         "Sqrt" => PlannedOpKind::Unary(UnaryKind::Sqrt),
+        "Erf" => PlannedOpKind::Unary(UnaryKind::Erf),
         "Pow" => {
             // The exponent is a constant scalar (e.g. 2.0) materialized as input[1].
             let exponent = const_f32(tensor_consts, &node.get_input()[1])
@@ -232,23 +233,12 @@ fn lower_node(
                 .collect::<Result<Vec<_>>>()?,
         },
         "MaxPool" => {
-            if attr_string(node, "auto_pad").as_deref().unwrap_or("NOTSET") != "NOTSET" {
-                bail!("MaxPool only supports auto_pad=NOTSET");
-            }
             if attr_i64(node, "ceil_mode").unwrap_or(0) != 0 {
                 bail!("MaxPool only supports ceil_mode=0");
             }
-            PlannedOpKind::MaxPool2d(Pool2dPlan {
-                pads: attr_i64_array::<4>(node, "pads", [0, 0, 0, 0])?,
-                strides: attr_i64_array::<2>(node, "strides", [1, 1])?,
-                dilations: attr_i64_array::<2>(node, "dilations", [1, 1])?,
-                kernel_shape: attr_i64_array::<2>(node, "kernel_shape", [1, 1])?,
-            })
+            PlannedOpKind::MaxPool2d(pool_plan(node, &input_shapes[0])?)
         }
         "AveragePool" => {
-            if attr_string(node, "auto_pad").as_deref().unwrap_or("NOTSET") != "NOTSET" {
-                bail!("AveragePool only supports auto_pad=NOTSET");
-            }
             if attr_i64(node, "ceil_mode").unwrap_or(0) != 0 {
                 bail!("AveragePool only supports ceil_mode=0");
             }
@@ -257,12 +247,7 @@ fn lower_node(
             if attr_i64(node, "count_include_pad").unwrap_or(0) != 0 {
                 bail!("AveragePool only supports count_include_pad=0");
             }
-            PlannedOpKind::AvgPool2d(Pool2dPlan {
-                pads: attr_i64_array::<4>(node, "pads", [0, 0, 0, 0])?,
-                strides: attr_i64_array::<2>(node, "strides", [1, 1])?,
-                dilations: attr_i64_array::<2>(node, "dilations", [1, 1])?,
-                kernel_shape: attr_i64_array::<2>(node, "kernel_shape", [1, 1])?,
-            })
+            PlannedOpKind::AvgPool2d(pool_plan(node, &input_shapes[0])?)
         }
         "Pad" => {
             let mode = match attr_string(node, "mode").as_deref().unwrap_or("constant") {
@@ -463,13 +448,37 @@ fn lower_node(
     })
 }
 
+/// Builds the pooling plan shared by MaxPool and AveragePool, resolving
+/// `auto_pad` against the concrete input shape exactly as Conv does. Paddle
+/// exports lean on `SAME_UPPER` for the stride-1 2x2 windows in PP-OCRv6's stem,
+/// where dropping the padding would silently shrink the feature map by a pixel
+/// and only surface later as a Concat mismatch.
+fn pool_plan(node: &NodeProto, input_shape: &[i64]) -> Result<Pool2dPlan> {
+    let kernel_shape = attr_i64_array::<2>(node, "kernel_shape", [1, 1])?;
+    let strides = attr_i64_array::<2>(node, "strides", [1, 1])?;
+    let dilations = attr_i64_array::<2>(node, "dilations", [1, 1])?;
+    Ok(Pool2dPlan {
+        pads: super::shape::resolve_auto_pad(
+            attr_string(node, "auto_pad").as_deref().unwrap_or("NOTSET"),
+            input_shape,
+            kernel_shape,
+            strides,
+            dilations,
+            attr_i64_array::<4>(node, "pads", [0, 0, 0, 0])?,
+        )?,
+        strides,
+        dilations,
+        kernel_shape,
+    })
+}
+
 fn validate_lowering_arity(node: &NodeProto) -> Result<()> {
     let op = node.get_op_type();
     let required_positions: &[usize] = match op {
         "Conv" | "Add" | "Mul" | "Sub" | "Div" | "Max" | "Pow" | "PRelu" | "MatMul" | "Gemm"
         | "GridSample" | "CumSum" | "ReduceSum" | "Reshape" | "Pad" => &[0, 1],
         "Slice" => &[0, 1, 2],
-        "Identity" | "Sigmoid" | "Relu" | "Sqrt" | "HardSwish" | "HardSigmoid"
+        "Identity" | "Sigmoid" | "Relu" | "Sqrt" | "Erf" | "HardSwish" | "HardSigmoid"
         | "GlobalAveragePool" | "Unsqueeze" | "Squeeze" | "Concat" | "Split" | "Transpose"
         | "MaxPool" | "AveragePool" | "Resize" | "Softmax" | "ReduceMean" | "SpaceToDepth"
         | "DepthToSpace" => &[0],

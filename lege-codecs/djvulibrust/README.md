@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/djvu_encoder.svg)](https://crates.io/crates/djvu_encoder)
 [![Documentation](https://docs.rs/djvu_encoder/badge.svg)](https://docs.rs/djvu_encoder)
-[![Repository](https://img.shields.io/badge/github-LegeApp%2FDJVULibRust-blue)](https://github.com/LegeApp/DJVULibRust)
+[![Repository](https://img.shields.io/badge/github-LegeApp%2FLege-blue)](https://github.com/LegeApp/Lege/tree/main/lege-codecs/djvulibrust)
 
 DJVULibRust is a Rust DjVu encoder focused on building valid single-page `DJVU`
 and bundled multi-page `DJVM` documents from image data. It provides a high-level
@@ -35,11 +35,11 @@ image cleanup, OCR, and compression are naturally page-parallel.
 
 ## Quick Start
 
-Add the library from Git:
+Add the library from crates.io:
 
 ```toml
 [dependencies]
-djvu_encoder = { git = "https://github.com/LegeApp/DJVULibRust", features = ["rayon"] }
+djvu_encoder = { version = "0.11", features = ["rayon"] }
 ```
 
 Create a simple multi-page document:

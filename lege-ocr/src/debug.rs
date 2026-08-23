@@ -143,8 +143,7 @@ pub fn save_overlay_svg(
             let (ww, wh) = (abs_x2.saturating_sub(abs_x1), abs_y2.saturating_sub(abs_y1));
             writeln!(
                 svg,
-                r#"  <rect x="{}" y="{}" width="{ww}" height="{wh}" fill="none" stroke="orange" stroke-width="1" opacity="0.5"/>"#,
-                abs_x1, abs_y1
+                r#"  <rect x="{abs_x1}" y="{abs_y1}" width="{ww}" height="{wh}" fill="none" stroke="orange" stroke-width="1" opacity="0.5"/>"#
             )?;
         }
     }

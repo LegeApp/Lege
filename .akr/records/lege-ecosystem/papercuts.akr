@@ -1,6 +1,53 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.papercut.a-broad-identifier-search-returned-akr-record/1 : papercut {
+    title "A broad identifier search returned .akr record paths despite the task…"
+    state verified
+    statement """
+        A broad identifier search returned .akr record paths despite the task protocol forbidding direct ledger inspection; FFF should exclude .akr/ by default or make the exclusion obvious.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "fff"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record lege-ecosystem.papercut.a-malformed-plan-status-tool-invocation-failed/1 : papercut {
+    title "A malformed plan-status tool invocation failed before execution while…"
+    state verified
+    statement """
+        A malformed plan-status tool invocation failed before execution while recording the monorepo cutover work; tool-call syntax errors are opaque and require manual retry.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "codex"
+    author "codex"
+    created_at 2026-08-23
+}
+
+record lege-ecosystem.papercut.a-multi-file-patch-was-rejected-in-full-because/1 : papercut {
+    title "A multi-file patch was rejected in full because the EPUB test-tail…"
+    state verified
+    statement """
+        A multi-file patch was rejected in full because the EPUB test-tail context had drifted from the inspected snippet; splitting the patch into narrower hunks was required.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "apply_patch"
+    author "codex"
+    created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.a-one-line-powershell-python-mechanical-ocr/1 : papercut {
+    title "A one-line PowerShell/Python mechanical OCR scoring command was…"
+    state verified
+    statement """
+        A one-line PowerShell/Python mechanical OCR scoring command was truncated by nested shell quoting and had to be replaced with a scratch script. A reusable benchmark command would prevent this avoidable retry.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-20
+}
+
 record lege-ecosystem.papercut.a-parallel-read-only-inspection-used-promise/1 : papercut {
     title "A parallel read-only inspection used Promise.all, and one expected…"
     state verified
@@ -104,6 +151,17 @@ record lege-ecosystem.papercut.akr-propose-from-rejected-a-yaml-like-statement/1
     created_at 2026-08-13
 }
 
+record lege-ecosystem.papercut.android-emulator-verification-initially-failed/1 : papercut {
+    title "Android emulator verification initially failed because adb is installed…"
+    state verified
+    statement """
+        Android emulator verification initially failed because adb is installed under the Android SDK but is not on PATH. Use /home/dk/Android/Sdk/platform-tools/adb or document the PATH setup.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-21
+}
+
 record lege-ecosystem.papercut.both-fff-fixture-discovery-and-text-ocr/1 : papercut {
     title "Both FFF fixture discovery and text/OCR searches failed together with…"
     state verified
@@ -137,6 +195,28 @@ record lege-ecosystem.papercut.cargo-info-symspell-rs-6-8-3-took-85-seconds/1 : 
     about "cargo"
     author "codex"
     created_at 2026-08-14
+}
+
+record lege-ecosystem.papercut.cargo-test-p-lege-gpu-fails-to-compile-the/1 : papercut {
+    title "`cargo test -p lege-gpu` fails to compile the layout_compare example…"
+    state verified
+    statement """
+        `cargo test -p lege-gpu` fails to compile the layout_compare example because it imports LayoutDetector/LayoutDetection, which are behind the layout-detection feature, and the example declares no required-features in lege-gpu/Cargo.toml. Pre-existing; the test suite itself is clean under --features layout-detection. Adding an [[example]] entry with required-features would fix it.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "claude"
+    created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.cargo-test-p-lege-gpu-unexpectedly-builds/1 : papercut {
+    title "`cargo test -p lege-gpu` unexpectedly builds…"
+    state verified
+    statement """
+        `cargo test -p lege-gpu` unexpectedly builds `examples/layout_compare.rs` without its required `layout-detection` feature and fails on gated imports; `cargo test -p lege-gpu --lib` is the usable default-feature library test command.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.clap-derived-tensorrtpaddle-as-the-surprising/1 : papercut {
@@ -994,6 +1074,18 @@ record lege-ecosystem.papercut.collated-208-papercuts-from-akr-evidence-intake/1
     created_at 2026-08-16
 }
 
+record lege-ecosystem.papercut.creating-the-publication-work-record-first/1 : papercut {
+    title "Creating the publication work record first failed because work requires…"
+    state verified
+    statement """
+        Creating the publication work record first failed because work requires an intent slot and rejects topic; the schema requirements were only disclosed after the write attempt.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "codex"
+    created_at 2026-08-23
+}
+
 record lege-ecosystem.papercut.during-packaging-inventory-an-rg-filter-whose/1 : papercut {
     title "During packaging inventory, an rg filter whose pattern began with…"
     state verified
@@ -1015,6 +1107,41 @@ record lege-ecosystem.papercut.eagerly-creating-and-tearing-down-a-winrt/1 : pap
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
     author "codex"
     created_at 2026-08-15
+}
+
+record lege-ecosystem.papercut.evidence-records-routinely-cite-agent-scratch/1 : papercut {
+    title "Evidence records routinely cite `.agent/scratch` paths as their…"
+    state superseded
+    statement """
+        Evidence records routinely cite `.agent/scratch` paths as their `artifact`, but scratch is documented as prunable and nothing in the ledger protects a cited path: 38 records across 5 .akr files reference `.agent/scratch/...`. Most are already dangling — when `.agent/scratch/ocr-benchmark` was inspected on 2026-08-22 it held only score.py, b3.*, target/ and three recipe output dirs, while eight separate evidence records cite sibling paths under it (tensorrt-smoke-*, lazy-corrected-*, out-winocr-12mp-200-sharded, release-auto-winocr-*, release-tensorrt-*, turboocr-*.txt) that had already been deleted. So verified claims silently lose their backing. Either `akr build`/`validate` should warn when an artifact path is under the scratch root or has vanished, or `knowledge.evidence_add` should refuse a scratch-relative artifact and tell the author to move it somewhere durable first.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "claude"
+    created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.evidence-records-routinely-cite-agent-scratch/2 : papercut {
+    title "Evidence records routinely cite `.agent/scratch` paths as their…"
+    state verified
+    statement """
+        Evidence records routinely cite `.agent/scratch` paths as their `artifact`, but scratch is documented as prunable and nothing stops a cited path being deleted: 38 records across 5 .akr files reference `.agent/scratch/...`. Most are already dangling — when `.agent/scratch/ocr-benchmark` was inspected on 2026-08-22 it held only score.py, b3.*, target/ and three recipe output dirs, while eight separate evidence records cite sibling paths under it (tensorrt-smoke-*, lazy-corrected-*, out-winocr-12mp-200-sharded, release-auto-winocr-*, release-tensorrt-*, turboocr-*.txt) that had already been pruned. Those verified claims silently lost their backing. The fix belongs in `knowledge.evidence_add`: it should refuse an `artifact` path under the scratch root outright, at write time, and tell the author to move the artefact somewhere durable first. Refusing at the point of writing is what makes the guarantee hold — a warning emitted later by `akr build` or `validate` arrives after the record is already in the ledger, and by then the usual outcome is a dangling reference nobody re-reads. A durable-path precondition is cheap to check and turns an unenforced convention into an invariant.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    supersedes [ @lege-ecosystem.papercut.evidence-records-routinely-cite-agent-scratch/1 ]
+}
+
+record lege-ecosystem.papercut.fff-multi-grep-for-exact-djvu-identifiers-such/1 : papercut {
+    title "FFF multi_grep for exact DjVu identifiers such as resolve_encoder_path…"
+    state verified
+    statement """
+        FFF multi_grep for exact DjVu identifiers such as resolve_encoder_path and LEGE_DJVU_ENCODER returned unrelated Command::new hits but omitted the matching lege-process/core/djvu.rs lines, so the review had to fall back to rg.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "fff"
+    author "gpt-5.6-sol"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.fff-multi-grep-returned-transport-closed-during/1 : papercut {
@@ -1064,6 +1191,17 @@ record lege-ecosystem.papercut.formatting-the-edited-rust-files-with-cargo-fmt/1
     created_at 2026-08-14
 }
 
+record lege-ecosystem.papercut.generating-the-android-gradle-wrapper-initially/1 : papercut {
+    title "Generating the Android Gradle wrapper initially selected Gradle 9.6.1,…"
+    state verified
+    statement """
+        Generating the Android Gradle wrapper initially selected Gradle 9.6.1, but Android Gradle Plugin 8.13.2 uses a Gradle internal API removed in 9.6. The app wrapper needs the compatible Gradle 9.5 distribution instead.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-21
+}
+
 record lege-ecosystem.papercut.knowledge-evidence-add-many-rejected-an/1 : papercut {
     title "knowledge.evidence_add_many rejected an otherwise valid evidence batch…"
     state verified
@@ -1074,6 +1212,18 @@ record lege-ecosystem.papercut.knowledge-evidence-add-many-rejected-an/1 : paper
     about "akr"
     author "codex"
     created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.knowledge-explain-decision-listed-optional/1 : papercut {
+    title "knowledge.explain decision listed optional relations but did not state…"
+    state verified
+    statement """
+        knowledge.explain decision listed optional relations but did not state V-021's requirement that an active decision cite a requirement, policy, constraint, or evidence; the first D1 decision proposal was rejected only after submission.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "gpt-5.6-sol"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.knowledge-get-did-not-display-a-work-record-s/1 : papercut {
@@ -1098,6 +1248,18 @@ record lege-ecosystem.papercut.knowledge-papercut-failed-on-first-use-because/1 
     about "akr"
     author "codex"
     created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.knowledge-papercut-rejected-an-otherwise/1 : papercut {
+    title "knowledge.papercut rejected an otherwise complete report because the…"
+    state verified
+    statement """
+        knowledge.papercut rejected an otherwise complete report because the multi-namespace workspace requires namespace to be repeated explicitly; the first call could not infer it from the active goal.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "codex"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.knowledge-start-returned-a-2350-token-compact/1 : papercut {
@@ -1133,6 +1295,17 @@ record lege-ecosystem.papercut.pdf-verification-attempted-qpdf-check-but-qpdf/1 
     observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
     author "codex"
     created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.real-gpu-lege-ocr-test-binaries-sigsegv-during/1 : papercut {
+    title "Real-GPU lege-ocr test binaries SIGSEGV during process teardown after…"
+    state verified
+    statement """
+        Real-GPU lege-ocr test binaries SIGSEGV during process teardown after every test has already reported ok, so cargo reports the run as failed. Reproduced on the v5 assets before any of this work, so it is a pre-existing wgpu/Vulkan shutdown issue on this host, not a regression — but it makes GPU test runs look broken and hides genuine failures.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "claude"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.running-cargo-fmt-all-emitted-the-same-four/1 : papercut {
@@ -1213,6 +1386,17 @@ record lege-ecosystem.papercut.the-ad-hoc-pdf-benchmark-corpus-generator/1 : pap
     created_at 2026-08-14
 }
 
+record lege-ecosystem.papercut.the-akr-papercut-command-in-this-multi/1 : papercut {
+    title "The AKR papercut command in this multi-namespace workspace rejected a…"
+    state verified
+    statement """
+        The AKR papercut command in this multi-namespace workspace rejected a message until --namespace was supplied; the project protocol's example omits that requirement.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-22
+}
+
 record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 : papercut {
     title "The CLI help says a single page number such as `5` is a valid…"
     state superseded
@@ -1277,6 +1461,28 @@ record lege-ecosystem.papercut.the-first-full-corpus-accuracy-scorer/1 : papercu
     created_at 2026-08-14
 }
 
+record lege-ecosystem.papercut.the-focused-no-default-features-djvu-library/1 : papercut {
+    title "The focused no-default-features DjVu library test could not compile…"
+    state verified
+    statement """
+        The focused no-default-features DjVu library test could not compile because epub_pipeline_disabled.rs lacks build_epub_from_hocr_pages_with_outline_cancellable, although DjVu and PDF pipelines call it. This prevents lightweight DjVu-only test runs.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "gpt-5.6-sol"
+    created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.the-lean-turboocr-linux-build-finds-cuda/1 : papercut {
+    title "The lean TurboOCR Linux build finds CUDA libraries but cannot select…"
+    state verified
+    statement """
+        The lean TurboOCR Linux build finds CUDA libraries but cannot select nvcc when /usr/local/cuda/bin is absent from PATH; configuration needs an explicit CMAKE_CUDA_COMPILER and architecture. Its lean C++ target also omitted the AVX2 target needed by ctc_decode.cpp.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-21
+}
+
 record lege-ecosystem.papercut.the-official-symspell-english-frequency/1 : papercut {
     title "The official SymSpell English frequency dictionary begins with a UTF-8…"
     state verified
@@ -1286,6 +1492,52 @@ record lege-ecosystem.papercut.the-official-symspell-english-frequency/1 : paper
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
     author "codex"
     created_at 2026-08-14
+}
+
+record lege-ecosystem.papercut.the-opt-in-real-gpu-ocr-test-in-lege-ocr-src/1 : papercut {
+    title "The opt-in real-GPU OCR test in lege-ocr/src/engine_paddle.rs pointed…"
+    state verified
+    statement """
+        The opt-in real-GPU OCR test in lege-ocr/src/engine_paddle.rs pointed at ../page_0002-original.png, which resolves to the repo root where no such file exists; the fixture is in lege-process/. Because the test silently skips without LEGE_RUN_GPU_OCR_TESTS, the broken path went unnoticed. Fixed to ../lege-process/page_0002-original.png.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "claude"
+    created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.the-project-handoff-says-to-run-akr-validate/1 : papercut {
+    title "The project handoff says to run `akr validate`, but this installed CLI…"
+    state verified
+    statement """
+        The project handoff says to run `akr validate`, but this installed CLI has no validate subcommand; `akr build` refreshed the lock and generated views, then the MCP knowledge.validate tool is required for validation.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "codex"
+    created_at 2026-08-20
+}
+
+record lege-ecosystem.papercut.the-project-protocol-says-to-run-knowledge/1 : papercut {
+    title "The project protocol says to run knowledge.validate before handoff, but…"
+    state verified
+    statement """
+        The project protocol says to run knowledge.validate before handoff, but the AKR CLI exposes no validate command; for shell-only cross-workspace use the equivalent appears to be akr check, which is not stated in the protocol.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "codex"
+    created_at 2026-08-21
+}
+
+record lege-ecosystem.papercut.the-recipe-that-turned-stock-paddleocr-onnx/1 : papercut {
+    title "The recipe that turned stock PaddleOCR ONNX exports into the embedded…"
+    state verified
+    statement """
+        The recipe that turned stock PaddleOCR ONNX exports into the embedded lege-ocr/assets was never committed — the v5 assets had their graph input renamed and BN folded out of band, and nothing in the tree recorded it. Rediscovering it cost most of the v6 migration. Now captured as lege-process/scripts/prepare_ppocr_models.py; any future embedded model should ship its prep script in the same commit.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "claude"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.the-repository-s-enabled-git-fsmonitor-returned/1 : papercut {
@@ -1342,6 +1594,18 @@ record lege-ecosystem.papercut.the-standard-symspell-readme-s-displayed/1 : pape
     created_at 2026-08-14
 }
 
+record lege-ecosystem.papercut.the-verified-gitleaks-installer-was-rejected/1 : papercut {
+    title "The verified Gitleaks installer was rejected because its…"
+    state verified
+    statement """
+        The verified Gitleaks installer was rejected because its temporary-directory cleanup trap used rm -rf, even though the target was from mktemp; use OS-managed temporary cleanup instead.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "exec_command"
+    author "codex"
+    created_at 2026-08-23
+}
+
 record lege-ecosystem.papercut.the-windows-tensorrt-cache-canonicalized/1 : papercut {
     title "The Windows TensorRT cache canonicalized separators and relative paths…"
     state verified
@@ -1351,6 +1615,28 @@ record lege-ecosystem.papercut.the-windows-tensorrt-cache-canonicalized/1 : pape
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
     author "codex"
     created_at 2026-08-14
+}
+
+record lege-ecosystem.papercut.while-checking-the-broker-backed-ocr-changes/1 : papercut {
+    title "While checking the broker-backed OCR changes, the product…"
+    state verified
+    statement """
+        While checking the broker-backed OCR changes, the product directory/name lege-document-ocr did not match its Cargo package ID, requiring a cargo metadata lookup; documenting the CLI package name near workspace membership would avoid the failed check.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.while-checking-the-pipeline-defaults-a/1 : papercut {
+    title "While checking the pipeline defaults, a workspace-relative source path…"
+    state verified
+    statement """
+        While checking the pipeline defaults, a workspace-relative source path was run from lege-android instead of the repository root. The command did not modify files; use the workspace root for cross-project inspection.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    author "codex"
+    created_at 2026-08-21
 }
 
 record lege-ecosystem.papercut.while-cleaning-temporary-gpu-probes-a-combined/1 : papercut {
@@ -1500,6 +1786,18 @@ record lege-ecosystem.papercut.while-proposing-the-jbig2-smask-preservation/1 : 
     about "akr"
     author "codex"
     created_at 2026-08-12
+}
+
+record lege-ecosystem.papercut.while-proposing-work-from-a-new-internal-plan/1 : papercut {
+    title "While proposing work from a new internal plan, knowledge.propose…"
+    state verified
+    statement """
+        While proposing work from a new internal plan, knowledge.propose rejected path+line attribution without a registered document id; then knowledge.papercut itself required a namespace that start had already established. Both requirements were only exposed after failed calls.
+        """
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    about "akr"
+    author "codex"
+    created_at 2026-08-22
 }
 
 record lege-ecosystem.papercut.while-running-focused-rust-tests-i-passed-two/1 : papercut {

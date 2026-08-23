@@ -108,10 +108,8 @@ pub fn invert_rgb(image: &RgbImage) -> RgbImage {
 /// Otherwise runs only when the page has no image box but still contains a
 /// large uncovered high-variance region.
 pub fn should_redetect_images(detections: &[Detection], image: &RgbImage) -> bool {
-    match std::env::var("LEGE_LAYOUT_IMAGE_REDETECT") {
-        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => return false,
-        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => return true,
-        _ => {}
+    if let Some(forced) = env_override("LEGE_LAYOUT_IMAGE_REDETECT") {
+        return forced;
     }
     if detections
         .iter()
@@ -154,10 +152,22 @@ pub fn merge_image_redetects(
     }
 }
 
+/// Read a boolean override from the environment. `None` when the variable is
+/// unset or does not spell a boolean, in which case the caller decides.
+fn env_override(name: &str) -> Option<bool> {
+    let value = std::env::var(name).ok()?;
+    if value == "0" || value.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else if value == "1" || value.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 fn collect_ocr_line_hints(image: &RgbImage) -> Vec<LineHint> {
-    match std::env::var("LEGE_LAYOUT_OCR_DET") {
-        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => return Vec::new(),
-        _ => {}
+    if env_override("LEGE_LAYOUT_OCR_DET") == Some(false) {
+        return Vec::new();
     }
     collect_ocr_line_hints_inner(image)
 }
@@ -221,12 +231,7 @@ fn expand_text_horizontal(
         }
 
         for line in lines {
-            if vertical_overlap_frac(y0, y1, line.bbox[1], line.bbox[3]) < LINE_BAND_IOY {
-                continue;
-            }
-            // A line that sits entirely in a different column should not pull
-            // this box across a gutter. Require some x-proximity or overlap.
-            if horizontal_gap(x0, x1, line.bbox[0], line.bbox[2]) > (x1 - x0).max(16.0) * 0.35 {
+            if !line_belongs_to_box(&det.bbox, line) {
                 continue;
             }
             nx0 = nx0.min(line.bbox[0]);
@@ -282,38 +287,58 @@ fn fill_uncovered_text_bands(
     height: u32,
     lines: &[LineHint],
 ) {
-    let occupied = occupied_y_intervals(detections);
-    let assigned = assigned_line_mask(detections, lines);
-    let mut unused_lines: Vec<LineHint> = lines
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(i, _)| !assigned[*i])
-        .map(|(_, line)| line)
-        .collect();
+    let mut synthetic = Vec::new();
+    append_unused_line_boxes(&mut synthetic, detections, width, height, lines);
+    append_ink_gap_boxes(&mut synthetic, detections, luma, width, height, lines);
+    detections.extend(synthetic);
+}
+
+/// OCR lines that landed in no layout band become their own vertical groups —
+/// one synthetic text box per contiguous cluster of lines.
+fn append_unused_line_boxes(
+    synthetic: &mut Vec<Detection>,
+    detections: &[Detection],
+    width: u32,
+    height: u32,
+    lines: &[LineHint],
+) {
+    let mut unused_lines = unassigned_lines(detections, lines);
     unused_lines.sort_by(|a, b| a.bbox[1].total_cmp(&b.bbox[1]));
 
-    let mut synthetic = Vec::new();
-    // OCR lines that landed in no layout band become their own vertical groups.
     for group in cluster_lines(&unused_lines) {
-        if let Some(bbox) = union_bboxes(group.iter().map(|l| l.bbox)) {
-            if overlaps_any_image(&bbox, detections) {
-                continue;
-            }
-            synthetic.push(synthetic_text(bbox, width, height));
+        let Some(bbox) = union_bboxes(group.iter().map(|l| l.bbox)) else {
+            continue;
+        };
+        if overlaps_any_image(&bbox, detections) {
+            continue;
         }
+        synthetic.push(synthetic_text(bbox, width, height));
     }
+}
 
-    // Ink-only gaps: recover a missed paragraph when OCR-det was unavailable
-    // or also missed the block.
-    let content_top = first_ink_row(luma, width, height).unwrap_or(0.0);
-    let content_bottom = last_ink_row(luma, width, height).unwrap_or(height as f32);
-    let mut cursor = content_top;
-    let mut spans = occupied;
+/// Recover a missed paragraph from ink alone, for when OCR-det was unavailable
+/// or also missed the block. Walks the vertical gaps between the bands already
+/// covered by a detection and keeps the ones that still hold text-like ink.
+fn append_ink_gap_boxes(
+    synthetic: &mut Vec<Detection>,
+    detections: &[Detection],
+    luma: &[u8],
+    width: u32,
+    height: u32,
+    lines: &[LineHint],
+) {
+    // The page's ink extent bounds the walk, so leading/trailing margins are
+    // never mistaken for gaps.
+    let (content_top, content_bottom) =
+        ink_y_range(luma, width, height, 0.0, height as f32).unwrap_or((0.0, height as f32));
+
+    // A zero-height span at the bottom closes the final gap.
+    let mut spans = occupied_y_intervals(detections);
     spans.push((content_bottom, content_bottom));
     spans.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let min_gap = typical_line_height(lines, detections, height).max(10.0) * 1.15;
+    let mut cursor = content_top;
     for (y0, y1) in spans {
         let gap0 = cursor;
         let gap1 = y0;
@@ -321,26 +346,26 @@ fn fill_uncovered_text_bands(
         if gap1 - gap0 < min_gap {
             continue;
         }
-        if gap_already_covered(gap0, gap1, &synthetic) {
+        if gap_already_covered(gap0, gap1, synthetic) {
             continue;
         }
         if !band_has_text_ink(luma, width, height, gap0, gap1) {
             continue;
         }
-        let tight = ink_y_range(luma, width, height, gap0, gap1).unwrap_or((gap0, gap1));
-        let x = neighbor_x_range(detections, tight.0, tight.1)
-            .or_else(|| ink_x_range(luma, width, height, tight.0, tight.1));
-        let Some((x0, x1)) = x else {
+        let (tight0, tight1) = ink_y_range(luma, width, height, gap0, gap1).unwrap_or((gap0, gap1));
+        // Prefer the column bounds of the paragraphs above and below: they are
+        // the page's real text measure, where raw ink may catch a stray mark.
+        let Some((x0, x1)) = neighbor_x_range(detections, tight0, tight1)
+            .or_else(|| ink_x_range(luma, width, height, tight0, tight1))
+        else {
             continue;
         };
-        let bbox = [x0, tight.0, x1, tight.1];
+        let bbox = [x0, tight0, x1, tight1];
         if overlaps_any_image(&bbox, detections) {
             continue;
         }
         synthetic.push(synthetic_text(bbox, width, height));
     }
-
-    detections.extend(synthetic);
 }
 
 fn recover_missed_image_regions(
@@ -358,22 +383,19 @@ fn recover_missed_image_regions(
     let Some(bbox) = illustration_bbox(detections, luma, width, height) else {
         return;
     };
-    if image_overlaps_substantive_text(&synthetic_image(bbox, width, height), detections) {
+    let candidate = synthetic_image(bbox, width, height);
+    if image_overlaps_substantive_text(&candidate, detections) {
         return;
     }
-    detections.push(synthetic_image(bbox, width, height));
+    detections.push(candidate);
 }
 
-fn collect_occupied_text_like<'a>(
-    detections: &'a [Detection],
-) -> impl Iterator<Item = &'a Detection> {
-    detections
+/// Merged vertical bands already covered by a text or image detection, sorted
+/// top to bottom. Bands within 2px of each other are treated as one.
+fn occupied_y_intervals(detections: &[Detection]) -> Vec<(f32, f32)> {
+    let mut spans: Vec<(f32, f32)> = detections
         .iter()
         .filter(|d| LABEL_CLASSIFIER.is_text_label(d) || LABEL_CLASSIFIER.is_image_label(d))
-}
-
-fn occupied_y_intervals(detections: &[Detection]) -> Vec<(f32, f32)> {
-    let mut spans: Vec<(f32, f32)> = collect_occupied_text_like(detections)
         .map(|d| (d.bbox[1], d.bbox[3]))
         .filter(|(a, b)| b > a)
         .collect();
@@ -393,18 +415,26 @@ fn occupied_y_intervals(detections: &[Detection]) -> Vec<(f32, f32)> {
     merged
 }
 
-fn assigned_line_mask(detections: &[Detection], lines: &[LineHint]) -> Vec<bool> {
+/// True when an OCR line box belongs to `bbox`'s band: it must share enough of
+/// the box's vertical extent, and sit close enough horizontally that it is not
+/// simply a line of the neighbouring column across a gutter.
+fn line_belongs_to_box(bbox: &[f32; 4], line: &LineHint) -> bool {
+    vertical_overlap_frac(bbox[1], bbox[3], line.bbox[1], line.bbox[3]) >= LINE_BAND_IOY
+        && horizontal_gap(bbox[0], bbox[2], line.bbox[0], line.bbox[2])
+            <= (bbox[2] - bbox[0]).max(16.0) * 0.35
+}
+
+/// OCR line boxes that no text detection claims. These are the model's outright
+/// misses — whole paragraphs it emitted no box for at all.
+fn unassigned_lines(detections: &[Detection], lines: &[LineHint]) -> Vec<LineHint> {
     lines
         .iter()
-        .map(|line| {
-            detections.iter().any(|det| {
-                LABEL_CLASSIFIER.is_text_label(det)
-                    && vertical_overlap_frac(det.bbox[1], det.bbox[3], line.bbox[1], line.bbox[3])
-                        >= LINE_BAND_IOY
-                    && horizontal_gap(det.bbox[0], det.bbox[2], line.bbox[0], line.bbox[2])
-                        <= (det.bbox[2] - det.bbox[0]).max(16.0) * 0.35
+        .filter(|line| {
+            !detections.iter().any(|det| {
+                LABEL_CLASSIFIER.is_text_label(det) && line_belongs_to_box(&det.bbox, line)
             })
         })
+        .copied()
         .collect()
 }
 
@@ -478,8 +508,7 @@ fn neighbor_x_range(detections: &[Detection], y0: f32, y1: f32) -> Option<(f32, 
     }
     match (above, below) {
         (Some(a), Some(b)) => Some((a.bbox[0].min(b.bbox[0]), a.bbox[2].max(b.bbox[2]))),
-        (Some(a), None) => Some((a.bbox[0], a.bbox[2])),
-        (None, Some(b)) => Some((b.bbox[0], b.bbox[2])),
+        (Some(only), None) | (None, Some(only)) => Some((only.bbox[0], only.bbox[2])),
         (None, None) => None,
     }
 }
@@ -567,14 +596,13 @@ fn ink_y_range(luma: &[u8], width: u32, height: u32, y0: f32, y1: f32) -> Option
     Some((first?, last?))
 }
 
-fn first_ink_row(luma: &[u8], width: u32, height: u32) -> Option<f32> {
-    ink_y_range(luma, width, height, 0.0, height as f32).map(|(y0, _)| y0)
-}
+/// The four edges to try, as (index into `[x0, y0, x1, y1]`, outward step).
+/// Order is left, right, top, bottom; each edge sees the box as grown so far.
+const GROW_EDGES: [(usize, f32); 4] = [(0, -1.0), (2, 1.0), (1, -1.0), (3, 1.0)];
 
-fn last_ink_row(luma: &[u8], width: u32, height: u32) -> Option<f32> {
-    ink_y_range(luma, width, height, 0.0, height as f32).map(|(_, y1)| y1)
-}
-
+/// Expand `bbox` one pixel at a time toward adjacent ink, up to `max_grow`
+/// pixels per edge, stopping at any blocker. A pass that moves no edge ends the
+/// growth, so a box surrounded by whitespace costs a single pass.
 fn grow_rect_to_ink(
     mut bbox: [f32; 4],
     luma: &[u8],
@@ -586,57 +614,15 @@ fn grow_rect_to_ink(
     let steps = max_grow.round().max(1.0) as i32;
     for _ in 0..steps {
         let mut grew = false;
-        if strip_has_ink(
-            luma,
-            width,
-            height,
-            bbox[0] - 1.0,
-            bbox[1],
-            bbox[0],
-            bbox[3],
-        ) && !blocked(&[bbox[0] - 1.0, bbox[1], bbox[2], bbox[3]], blockers)
-        {
-            bbox[0] -= 1.0;
-            grew = true;
-        }
-        if strip_has_ink(
-            luma,
-            width,
-            height,
-            bbox[2],
-            bbox[1],
-            bbox[2] + 1.0,
-            bbox[3],
-        ) && !blocked(&[bbox[0], bbox[1], bbox[2] + 1.0, bbox[3]], blockers)
-        {
-            bbox[2] += 1.0;
-            grew = true;
-        }
-        if strip_has_ink(
-            luma,
-            width,
-            height,
-            bbox[0],
-            bbox[1] - 1.0,
-            bbox[2],
-            bbox[1],
-        ) && !blocked(&[bbox[0], bbox[1] - 1.0, bbox[2], bbox[3]], blockers)
-        {
-            bbox[1] -= 1.0;
-            grew = true;
-        }
-        if strip_has_ink(
-            luma,
-            width,
-            height,
-            bbox[0],
-            bbox[3],
-            bbox[2],
-            bbox[3] + 1.0,
-        ) && !blocked(&[bbox[0], bbox[1], bbox[2], bbox[3] + 1.0], blockers)
-        {
-            bbox[3] += 1.0;
-            grew = true;
+        for (edge, step) in GROW_EDGES {
+            let mut candidate = bbox;
+            candidate[edge] += step;
+            if strip_has_ink(luma, width, height, outside_strip(bbox, edge))
+                && !blocked(&candidate, blockers)
+            {
+                bbox = candidate;
+                grew = true;
+            }
         }
         if !grew {
             break;
@@ -645,7 +631,19 @@ fn grow_rect_to_ink(
     bbox
 }
 
-fn strip_has_ink(luma: &[u8], width: u32, height: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+/// The one-pixel strip immediately outside `edge` of `bbox`, spanning the box's
+/// full extent on the other axis. `edge` indexes `[x0, y0, x1, y1]`.
+fn outside_strip(bbox: [f32; 4], edge: usize) -> [f32; 4] {
+    match edge {
+        0 => [bbox[0] - 1.0, bbox[1], bbox[0], bbox[3]],
+        1 => [bbox[0], bbox[1] - 1.0, bbox[2], bbox[1]],
+        2 => [bbox[2], bbox[1], bbox[2] + 1.0, bbox[3]],
+        _ => [bbox[0], bbox[3], bbox[2], bbox[3] + 1.0],
+    }
+}
+
+fn strip_has_ink(luma: &[u8], width: u32, height: u32, strip: [f32; 4]) -> bool {
+    let [x0, y0, x1, y1] = strip;
     let x0 = x0.floor().clamp(0.0, width.saturating_sub(1) as f32) as u32;
     let y0 = y0.floor().clamp(0.0, height.saturating_sub(1) as f32) as u32;
     let x1 = x1.ceil().clamp(0.0, width as f32).max(x0 as f32 + 1.0) as u32;

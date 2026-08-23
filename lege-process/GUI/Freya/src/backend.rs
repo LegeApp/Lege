@@ -715,7 +715,7 @@ mod embedded_document_tests {
     #[test]
     fn about_documents_are_embedded_and_current() {
         assert!(DOCUMENTATION_HTML.contains("Margin Correction and Reflow"));
-        assert!(DOCUMENTATION_HTML.contains("PP-OCRv5"));
+        assert!(DOCUMENTATION_HTML.contains("PP-OCRv6"));
         assert!(LICENSES_HTML.contains("PaddleOCR"));
         assert!(LICENSES_HTML.contains("LICENSE.txt"));
         assert!(LEGE_LICENSE.contains("MIT License"));

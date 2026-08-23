@@ -72,17 +72,13 @@ pub async fn perform_page_rgb_ocr(
     // Grayscale/MRC pages have already paid for the tuned cleaner; reuse that
     // exact result. Other modes use the same luma transform and clean here.
     let (luma, needs_cleaning) = match cleaned_gray {
-        Some(gray) => {
-            if gray.len() != expected {
-                anyhow::bail!(
-                    "cleaned OCR buffer length {} != {}x{}",
-                    gray.len(),
-                    width,
-                    height
-                );
-            }
-            (gray.to_vec(), false)
-        }
+        Some(gray) if gray.len() == expected => (gray.to_vec(), false),
+        Some(gray) => anyhow::bail!(
+            "cleaned OCR buffer length {} != {}x{}",
+            gray.len(),
+            width,
+            height
+        ),
         None => {
             let mut luma = vec![0u8; expected];
             crate::clean_gray::rgb_to_luma(page_rgb.as_raw(), &mut luma);
@@ -107,9 +103,13 @@ pub async fn perform_page_rgb_ocr(
             };
             let gray = GrayImage::from_raw(width as u32, height as u32, cleaned)
                 .context("failed to build cleaned OCR image")?;
-            if gray.as_raw().first().map_or(true, |first| {
-                gray.as_raw().iter().all(|value| value == first)
-            }) {
+            // A perfectly flat page has no ink for the detector to find; skip
+            // the engine and return an empty text layer.
+            let pixels = gray.as_raw();
+            if pixels
+                .first()
+                .is_none_or(|first| pixels.iter().all(|value| value == first))
+            {
                 return Ok(lege_ocr::hocr::build_page_hocr(
                     &[],
                     width as u32,
@@ -128,6 +128,49 @@ pub async fn perform_page_rgb_ocr(
     .await
     .map_err(|err| anyhow::anyhow!("OCR task panicked: {err}"))??;
     Ok(result)
+}
+
+/// One in-flight OCR job: the hOCR it produced (`None` on failure) and the
+/// page-space bbox its coordinates are relative to.
+type OcrTask = tokio::task::JoinHandle<(Option<String>, [f32; 4])>;
+
+/// Await a batch of per-area OCR jobs and stitch their hOCR bodies into a
+/// single page-level body, translating each area's coordinates back to
+/// page-global by its bbox origin. `area` names the unit in warnings.
+async fn stitch_ocr_tasks(tasks: Vec<OcrTask>, area: &str) -> String {
+    let mut stitched = String::new();
+    for res in futures::future::join_all(tasks).await {
+        match res {
+            Ok((Some(hocr), bbox)) => {
+                let body = strip_to_body(&hocr);
+                if body.trim().is_empty() {
+                    continue;
+                }
+                stitched.push_str(&adjust_offsets(
+                    &body,
+                    bbox[0].round() as i32,
+                    bbox[1].round() as i32,
+                ));
+            }
+            Ok((None, bbox)) => log::warn!("{area} OCR produced no text at {bbox:?}"),
+            Err(e) => log::warn!("{area} OCR task failed: {e}"),
+        }
+    }
+    stitched
+}
+
+/// Last resort when per-area OCR found nothing: recognize the whole page in one
+/// pass and wrap the result as a page-level document.
+async fn whole_page_hocr(
+    binarized: &[u8],
+    page_width: usize,
+    page_height: usize,
+    language: &str,
+) -> Option<String> {
+    let hocr = perform_ocr_on_binarized(binarized.to_vec(), page_width, page_height, language)
+        .await
+        .ok()?;
+    Some(finalize(&strip_to_body(&hocr), page_width, page_height))
 }
 
 /// Run OCR on a binarized page image; returns the hOCR string.
@@ -189,33 +232,19 @@ pub async fn perform_region_based_ocr(
         }));
     }
 
-    let mut stitched = String::new();
-    for res in futures::future::join_all(tasks).await {
-        match res {
-            Ok((Some(hocr), bbox)) => {
-                let body = strip_to_body(&hocr);
-                let adjusted =
-                    adjust_offsets(&body, bbox[0].round() as i32, bbox[1].round() as i32);
-                stitched.push_str(&adjusted);
-            }
-            Ok((None, bbox)) => log::warn!("region OCR produced no text at {bbox:?}"),
-            Err(e) => log::warn!("region OCR task failed: {e}"),
-        }
-    }
+    let stitched = stitch_ocr_tasks(tasks, "region").await;
 
     if stitched.trim().is_empty() {
+        // Layout gave us nothing usable — retry blind, first by tiling and then
+        // over the whole page.
         if let Ok(hocr) =
             perform_tiling_based_ocr(binarized, page_width, page_height, language).await
+            && !strip_to_body(&hocr).trim().is_empty()
         {
-            if !strip_to_body(&hocr).trim().is_empty() {
-                return Ok(hocr);
-            }
+            return Ok(hocr);
         }
-        if let Ok(hocr) =
-            perform_ocr_on_binarized(binarized.to_vec(), page_width, page_height, language).await
-        {
-            let body = strip_to_body(&hocr);
-            return Ok(finalize(&body, page_width, page_height));
+        if let Some(hocr) = whole_page_hocr(binarized, page_width, page_height, language).await {
+            return Ok(hocr);
         }
     }
 
@@ -249,27 +278,12 @@ pub async fn perform_tiling_based_ocr(
         y_start = y_start + TILE_HEIGHT - OVERLAP;
     }
 
-    let mut stitched = String::new();
-    for res in futures::future::join_all(tasks).await {
-        match res {
-            Ok((Some(hocr), bbox)) => {
-                let body = strip_to_body(&hocr);
-                let adjusted =
-                    adjust_offsets(&body, bbox[0].round() as i32, bbox[1].round() as i32);
-                stitched.push_str(&adjusted);
-            }
-            Ok((None, bbox)) => log::warn!("tile OCR produced no text at {bbox:?}"),
-            Err(e) => log::warn!("tile OCR task failed: {e}"),
-        }
-    }
+    let stitched = stitch_ocr_tasks(tasks, "tile").await;
 
-    if stitched.trim().is_empty() {
-        if let Ok(hocr) =
-            perform_ocr_on_binarized(binarized.to_vec(), page_width, page_height, language).await
-        {
-            let body = strip_to_body(&hocr);
-            return Ok(finalize(&body, page_width, page_height));
-        }
+    if stitched.trim().is_empty()
+        && let Some(hocr) = whole_page_hocr(binarized, page_width, page_height, language).await
+    {
+        return Ok(hocr);
     }
 
     Ok(finalize(&stitched, page_width, page_height))
@@ -363,21 +377,7 @@ pub async fn perform_reflow_page_fast_ocr(
             }));
         }
 
-        let mut stitched = String::new();
-        for res in futures::future::join_all(tasks).await {
-            match res {
-                Ok((Some(hocr), bbox)) => {
-                    let body = strip_to_body(&hocr);
-                    if !body.trim().is_empty() {
-                        let adjusted =
-                            adjust_offsets(&body, bbox[0].round() as i32, bbox[1].round() as i32);
-                        stitched.push_str(&adjusted);
-                    }
-                }
-                Ok((None, bbox)) => log::warn!("reflow OCR produced no text at {bbox:?}"),
-                Err(e) => log::warn!("reflow OCR task failed: {e}"),
-            }
-        }
+        let stitched = stitch_ocr_tasks(tasks, "reflow").await;
 
         if stitched.trim().is_empty() {
             return Ok(None);

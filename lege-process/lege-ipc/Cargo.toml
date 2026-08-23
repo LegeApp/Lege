@@ -2,6 +2,7 @@
 name = "lege-ipc"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Shared IPC/log types between the lege CLI and its GUI front-ends"
 
 [dependencies]

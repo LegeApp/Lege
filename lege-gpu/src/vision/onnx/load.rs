@@ -60,16 +60,19 @@ pub(crate) const TARGETS: &[ModelTarget] = &[
         layout: Layout::Nhwc,
         dims: [None, None, None, Some(1)],
     },
-    // PP-OCRv5 mobile text detection (DBNet); ConvTranspose rewritten to
-    // Conv1x1+DepthToSpace + BN folded in prep. Batch + H/W stamped at prep time.
+    // PP-OCR text detection (DBNet). ConvTranspose is rewritten to
+    // Conv1x1+DepthToSpace and BN folded by
+    // `lege-process/scripts/prepare_ppocr_models.py`; stock Paddle exports call
+    // this input `x`, which would collide with the paddle-rotate target above.
+    // Batch + H/W stamped at prep time.
     ModelTarget {
         input_name: "pp_det_image",
         dtype: "FLOAT",
         layout: Layout::Nchw,
         dims: [None, Some(3), None, None],
     },
-    // PP-OCRv5 mobile text recognition (SVTR); fixed height 48, width stamped
-    // per bucket at prep time; batch stamped at prep time.
+    // PP-OCR text recognition; fixed height 48, width stamped per bucket at
+    // prep time; batch stamped at prep time.
     ModelTarget {
         input_name: "pp_rec_image",
         dtype: "FLOAT",
@@ -351,6 +354,7 @@ fn validate_op_set(
         "CumSum",
         "DepthToSpace",
         "Div",
+        "Erf",
         "Flatten",
         "Gemm",
         "GridSample",

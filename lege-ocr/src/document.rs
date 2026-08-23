@@ -68,7 +68,7 @@ impl TextBlock {
     /// with a single space.
     pub fn paragraph_text(&self) -> String {
         let mut out = String::new();
-        for (i, line) in self.lines.iter().enumerate() {
+        for line in &self.lines {
             let trimmed = line.text.trim();
             if trimmed.is_empty() {
                 continue;
@@ -80,7 +80,7 @@ impl TextBlock {
             // De-hyphenate: a trailing hyphen before another line usually splits a
             // single word. Only repair when the preceding char is alphabetic so we
             // do not eat intentional dashes (e.g. ranges, em-dash-as-hyphen).
-            if should_dehyphenate(&out, self.lines.get(i)) {
+            if should_dehyphenate(&out, line) {
                 out.pop();
                 out.push_str(trimmed);
             } else {
@@ -97,7 +97,9 @@ impl TextBlock {
     }
 }
 
-fn should_dehyphenate(current: &str, next_line: Option<&TextLine>) -> bool {
+/// True when `current` (the paragraph built so far) ends in a soft hyphen that
+/// `next_line` continues, so the two should be joined without a space.
+fn should_dehyphenate(current: &str, next_line: &TextLine) -> bool {
     if !current.ends_with('-') {
         return false;
     }
@@ -105,15 +107,11 @@ fn should_dehyphenate(current: &str, next_line: Option<&TextLine>) -> bool {
         .chars()
         .rev()
         .nth(1)
-        .map(|c| c.is_alphabetic())
-        .unwrap_or(false);
+        .is_some_and(|c| c.is_alphabetic());
     if !prev_is_alpha {
         return false;
     }
 
-    let Some(next_line) = next_line else {
-        return false;
-    };
     let first_next = next_line
         .words
         .first()

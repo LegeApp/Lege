@@ -25,5 +25,6 @@ pub use api::{
     LayoutConfig, LayoutDetection, LayoutDetector, is_layout_gpu_device_error,
     is_layout_software_adapter_error,
 };
+pub use decode::db::PpOcrGeneration;
 pub use reference::Tensor;
 pub use session::OnnxSession;

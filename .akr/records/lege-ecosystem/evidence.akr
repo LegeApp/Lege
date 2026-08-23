@@ -146,6 +146,45 @@ record lege-ecosystem.evidence.automatic-toc-workspace-regression/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.det-limit-side-sweep-20260822/1 : evidence {
+    title "Detector limit_side 1280 beats 960 and 1600 for PP-OCRv6 on wgpu"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "python3 lege-document-ocr/scripts/score_ocr_accuracy.py --reference lege-document-ocr/scripts/benchmarks/book-page-wgpu-2026-08-22/reference.txt --candidate limit-960=.../ppocrv6-wgpu-limit960.txt --candidate limit-1280=.../ppocrv6-wgpu-limit1280.txt --candidate limit-1600=.../ppocrv6-wgpu-limit1600.txt"
+    artifact "lege-document-ocr/scripts/benchmarks/book-page-wgpu-2026-08-22/"
+    summary """
+        Embedded PP-OCRv6 small on the wgpu path, reading lege-process/page_0002-original.png (961x1400) against a hand transcription: limit 960 scored CER 0.25% / WER 2.81% in 7.28s, limit 1280 scored CER 0.25% / WER 2.41% in 8.31s, limit 1600 scored CER 0.31% / WER 3.21% in 8.23s. 1280 ships. 1600 exceeds the page's own long side so no resize happens, and it scores worst, indicating the downscale suppresses scan noise. The margin is about one word on 249, and the page's 1400px long side means this cannot speak to 300 DPI input; residual errors are dominated by lost inter-word spaces at a scan shading boundary, which every cap shares.
+        """
+}
+
+record lege-ecosystem.evidence.direct-djvu-application-builds-20260822/1 : evidence {
+    title "Direct DjVu application build matrix passes"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo check -p lege --lib && cargo check -p lege --bin lege && cargo check -p lege-gui-freya -p lege-music-gui"
+    artifact "lege-process/Cargo.toml"
+    summary """
+        The Lege library, CLI, Freya frontend, and music frontend all compiled after direct DJVULibrust linking and helper-hook removal.
+        """
+}
+
+record lege-ecosystem.evidence.direct-djvu-integration-tests-20260822/1 : evidence {
+    title "Direct DJVULibrust integration regression tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo test -p lege --lib djvu -- --nocapture"
+    artifact "lege-process/core/djvu.rs"
+    summary """
+        Seven focused tests passed, including typed full-color cover, MRC background, JB2 mask, hidden text chunks, out-of-order assembly, bounded writer backpressure, atomic publication, and cancellation preserving an existing target.
+        """
+}
+
 record lege-ecosystem.evidence.discrete-auto-selection-20260813/1 : evidence {
     title "The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060."
     state verified
@@ -179,6 +218,82 @@ record lege-ecosystem.evidence.discrete-gpu-selection-policy-tests/1 : evidence 
     command "cargo test -p lege-gpu wgpu_setup::tests --lib"
     summary """
         Both deterministic device-type ordering and case-insensitive WGPU_ADAPTER_NAME override matching passed.
+        """
+}
+
+record lege-ecosystem.evidence.djvu-current-focused-tests-20260822/1 : evidence {
+    title "The current Lege DjVu-focused unit filter passed 7 tests with 0 failures (229 filtered out), covering subprocess cleanup/backpressure, macOS helper lookup, a runtime-limit policy, and crop adjustment."
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo test -p lege --lib djvu"
+    artifact "lege-process/core/djvu.rs"
+    summary """
+        The current Lege DjVu-focused unit filter passed 7 tests with 0 failures (229 filtered out), covering subprocess cleanup/backpressure, macOS helper lookup, a runtime-limit policy, and crop adjustment.
+        """
+}
+
+record lege-ecosystem.evidence.djvu-direct-api-feature-build-20260822/1 : evidence {
+    title "DJVULibRust 0.11.0 compiled with the planned simd and rayon features; its public builder API test passed (1 passed, 57 filtered out)."
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo test --manifest-path lege-codecs/djvulibrust/Cargo.toml --features simd,rayon --lib test_public_api_builder"
+    artifact "lege-codecs/djvulibrust/Cargo.toml"
+    summary """
+        DJVULibRust 0.11.0 compiled with the planned simd and rayon features; its public builder API test passed (1 passed, 57 filtered out).
+        """
+}
+
+record lege-ecosystem.evidence.djvu-license-linkage-boundary-audit-20260822/1 : evidence {
+    title "The root has no LICENSE or NOTICE; its workspace MIT license is inherited by many crates, while lege-android explicitly declares MIT and directly links lege-process, so D1 must define a mixed-license boundary rather than blindly changing one manifest."
+    state verified
+    result fail
+    method manual
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    artifact "lege-android/Cargo.toml"
+    summary """
+        The root has no LICENSE or NOTICE; its workspace MIT license is inherited by many crates, while lege-android explicitly declares MIT and directly links lege-process, so D1 must define a mixed-license boundary rather than blindly changing one manifest.
+        """
+}
+
+record lege-ecosystem.evidence.djvu-runtime-helper-final-scan-20260822/1 : evidence {
+    title "Final direct-DjVu runtime and licensing surface scan passed"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "if rg -n 'LEGE_DJVU_ENCODER|djvu_encoder_path|resolve_encoder_path|DjvuEncoderManifest|EncoderControl|djvu-encoder|Contents/Helpers' lege-process/core lege-process/pipeline --glob '*.rs'; then exit 1; fi; if rg -n 'LEGE_DJVU_ENCODER|djvu-encoder|Contents/Helpers|djvulibrust' lege-process/scripts; then exit 1; fi; bash -n lege-process/scripts/build-macos-app.sh lege-process/scripts/build-macos-app-silicon.sh; cargo metadata --no-deps --format-version 1 | jq -e '[.packages[] | select(.name == \"lege\" or .name == \"lege-android\" or .name == \"lege-gui\" or .name == \"lege-gui-freya\" or .name == \"lege-music-gui\" or .name == \"lege-ipc\") | .license] | length == 6 and all(. == \"AGPL-3.0-only\")'; cmp -s LICENSE lege-process/LICENSE; rg -q '^license = \"AGPL-3.0-only\"$' Cargo.toml lege-process/Cargo.toml lege-android/Cargo.toml; git diff --check"
+    summary """
+        Final scan found no Lege DjVu runtime helper/subprocess identifiers or macOS helper packaging; both package scripts parsed, top-level application metadata resolved uniformly to AGPL-3.0-only, license texts matched, and the diff had no whitespace errors.
+        """
+}
+
+record lege-ecosystem.evidence.djvu-runtime-helper-removal-20260822/1 : evidence {
+    title "Lege runtime helper surface is absent"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "bash -n lege-process/scripts/build-macos-app.sh lege-process/scripts/build-macos-app-silicon.sh && test -z \"$(rg -l --hidden -g '!target/**' -g '!.git/**' -g '!.akr/**' -g '!docs/generated/**' -g '!lege-codecs/djvulibrust/**' -g '!to-do-plans/**' 'djvu-encoder-path|LEGE_DJVU_ENCODER|resolve_encoder_path|DjvuEncoderControl|DjvuWorkDirGuard|ManifestPageEntry|AppendEntry|run_encoder\\\\(' .)\" && git diff --check"
+    artifact "lege-process/core/djvu.rs"
+    summary """
+        No Lege runtime override, resolver, manifest-entry, child-control, subprocess runner, or helper packaging hook remained; both macOS packaging scripts parsed and the diff had no whitespace errors. The standalone codec CLI and cargo alias were excluded deliberately and remain present.
+        """
+}
+
+record lege-ecosystem.evidence.djvu-subprocess-license-surface-audit-20260822/1 : evidence {
+    title "The application still contains manifest/subprocess resolution and helper-environment surfaces; the root and lege-process declare MIT while linked DJVULibRust would declare AGPL-3.0-only."
+    state verified
+    result fail
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "rg -n 'resolve_encoder_path|LEGE_DJVU_ENCODER|--djvu-encoder-path|ManifestPageEntry|^license = \"(MIT|AGPL-3.0-only)\"' Cargo.toml lege-process lege-codecs/djvulibrust/Cargo.toml"
+    artifact "lege-process/core/djvu.rs"
+    summary """
+        The application still contains manifest/subprocess resolution and helper-environment surfaces; the root and lege-process declare MIT while linked DJVULibRust would declare AGPL-3.0-only.
         """
 }
 
@@ -307,6 +422,31 @@ record lege-ecosystem.evidence.embedded-about-built-output/1 : evidence {
     summary """
         The built Freya executable contained both canonical About documents and the CLI emitted the embedded PP-OCRv5-aware license notice.
         """
+}
+
+record lege-ecosystem.evidence.epub-output-preflight-cli-20260822/1 : evidence {
+    title "EPUB output preflight rejects an unusable destination before pages"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "target/release/lege --output .agent/scratch/ocr-v6-perf-20260822/baseline.epub/book.epub lege-codecs/jp2lam/research/Taubman_and_Marcellin.pdf 1 epub"
+    summary """
+        The release CLI rejected a regular file used as the would-be output parent in 0.385 seconds with explicit --output and permissions guidance, before rendering or OCR began.
+        """
+}
+
+record lege-ecosystem.evidence.evidence-broker-ocr-provider-20260822/1 : evidence {
+    title "Lege OCR and CLI tests passed with the brokered-tensorrt backend, pinned model provenance/config hashing, persistent worker response mapping, and resumable native-text CLI behavior."
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo test -p lege-ocr -p lege-document-ocr-cli"
+    summary """
+        Lege OCR and CLI tests passed with the brokered-tensorrt backend, pinned model provenance/config hashing, persistent worker response mapping, and resumable native-text CLI behavior.
+        """
+    author "GitHub Uploader"
 }
 
 record lege-ecosystem.evidence.freya-embedded-about-tests/1 : evidence {
@@ -687,6 +827,36 @@ record lege-ecosystem.evidence.ocr-production-clippy-2026-08-11/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.ocr-v5-v6-recipe-20260820/1 : evidence {
+    title "PP-OCRv5 versus PP-OCRv6 recipe PDF smoke benchmark"
+    state superseded
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "py -3 .agent\\scratch\\ocr-benchmark\\score.py; lege-ocr batch 'D:\\to-sort\\5-Minute Hummus Recipe - NYT Cooking.pdf' ... --backend paddle|tensorrt-paddle --force-ocr --render-dpi 300 --max-page-pixels 12000000"
+    artifact ".agent/scratch/ocr-benchmark/score.py"
+    summary """
+        The two-page recipe PDF completed under embedded PP-OCRv5/WGPU and PP-OCRv6-tiny/TensorRT. Against the pipeline's non-forced native extraction, normalized v5 measured CER 17.88% / WER 19.16% and v6 measured CER 12.00% / WER 14.17%; v6 cached engine initialization plus end-to-end run completed successfully.
+        """
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.evidence.ocr-v5-v6-recipe-20260820/2 : evidence {
+    title "PP-OCRv5 versus PP-OCRv6 recipe PDF smoke benchmark"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command """
+        python3 lege-document-ocr/scripts/score_ocr_accuracy.py --reference lege-document-ocr/scripts/benchmarks/recipe-2026-08-20/reference.txt --candidate v5=.../ppocrv5-wgpu.txt --candidate v6=.../ppocrv6-trt.txt
+        """
+    artifact "lege-document-ocr/scripts/benchmarks/recipe-2026-08-20/"
+    summary """
+        The two-page recipe PDF completed under embedded PP-OCRv5/WGPU and PP-OCRv6-tiny/TensorRT. Against the pipeline's non-forced native extraction, normalized v5 measured CER 17.88% / WER 19.16% and v6 measured CER 12.00% / WER 14.17%; v6 cached engine initialization plus end-to-end run completed successfully. Revised 2026-08-22: the scorer and the three transcripts were moved out of .agent/scratch, which prunes, into lege-document-ocr/scripts/, and the rescued files reproduce all four figures exactly.
+        """
+    supersedes [ @lege-ecosystem.evidence.ocr-v5-v6-recipe-20260820/1 ]
+}
+
 record lege-ecosystem.evidence.packaged-tensorrt-layout-discovery-20260815/1 : evidence {
     title "Both TensorRT module tests passed, including discovery of bin, models, and runtime DLL directories in the packaged layout."
     state verified
@@ -710,6 +880,19 @@ record lege-ecosystem.evidence.portable-tensorrt-worker-images-20260815/1 : evid
     artifact "lege-document-ocr/turboocr/scripts/build_windows_trt.ps1"
     summary """
         The rebuilt packaged worker contains four sm_89 cubins and four compute_75 PTX images, providing native Ada code plus forward-JIT coverage for Turing and newer GPUs.
+        """
+}
+
+record lege-ecosystem.evidence.ppocrv6-wgpu-embedded-20260822/1 : evidence {
+    title "PP-OCRv6 small runs end-to-end on lege-gpu wgpu as the embedded engine"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "python3 lege-process/scripts/prepare_ppocr_models.py --det .../ppocrv6_hf/small/det.onnx --rec .../small/rec.onnx --dict .../small/keys.txt --out-dir lege-ocr/assets; LEGE_RUN_GPU_OCR_TESTS=1 cargo test -p lege-ocr --features paddle-ocr --lib engine_paddle"
+    artifact "lege-process/scripts/prepare_ppocr_models.py"
+    summary """
+        After preparing the stock PP-OCRv6 small export with lege-process/scripts/prepare_ppocr_models.py and adding Erf plus pooling auto_pad support to lege-gpu, the embedded engine read page_0002-original.png as 22 lines on an RTX 4060 via Vulkan. lege-gpu 65 tests pass, lege-ocr 69 + 8 real-GPU tests pass, lege-process 235 pass, lege-gui 42 pass, lege-pdf-read 19 pass. The ConvTranspose and BatchNormalization rewrites were verified numerically equivalent to the originals under onnxruntime (max abs diff 5.5e-6 det, 2.2e-6 rec).
         """
 }
 
@@ -1011,6 +1194,57 @@ record lege-ecosystem.evidence.structures-smask-policy/1 : evidence {
     command "target/debug/lege /home/dk/Desktop/Structures.pdf 49-72 1400 --output /tmp/lege-structures-dither --text-format jbig2 --cover-format jpeg --no-ocr --dither --binarization adaptive --sauvola-k 0.05; pdfimages -list output"
     summary """
         Pages 49, 66, and 72 each emitted exactly one full-page 1-bit dithered image plus the source-resolution JBIG2 stencil; all 24 pages in 49-72 logged preserved MRC mode=Stucki.
+        """
+}
+
+record lege-ecosystem.evidence.thorough-ppocrv6-focused-tests-20260822/1 : evidence {
+    title "Thorough OCR, GPU, EPUB, and direct DjVu library tests pass"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo test -p lege-ocr -p lege-gpu -p lege --lib"
+    summary """
+        The final shared tree passed 69 lege-ocr tests, 66 lege-gpu tests (one manual benchmark ignored), and 237 lege tests (one local-corpus test ignored), including the PP-OCR generation cap and two EPUB output-preflight regressions.
+        """
+}
+
+record lege-ecosystem.evidence.thorough-ppocrv6-throughput-quality-20260822/1 : evidence {
+    title "Native thorough-line batch was slower and was rejected"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "/usr/bin/time -v target/release/lege --debug-runtime-stats --output .agent/scratch/ocr-v6-perf-20260822/final.epub lege-codecs/jp2lam/research/Taubman_and_Marcellin.pdf 1-8 epub"
+    artifact ".agent/scratch/ocr-v6-perf-20260822/README.md"
+    summary """
+        The fixed release fixture measured 130.833 s baseline, 172.609 s with native region line batching (31.9% slower), and 135.078 s after reverting it; all three EPUB chapter XHTML payloads were byte-identical, and the final run attributed 99.084% of wall time to OCR. No OCR performance change was retained.
+        """
+}
+
+record lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1 : evidence {
+    title "Top-level application license metadata is consistently AGPL"
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cargo metadata --no-deps --format-version 1 | jq -e '[.packages[] | select(.name == \"lege\" or .name == \"lege-android\" or .name == \"lege-gui\" or .name == \"lege-gui-freya\" or .name == \"lege-music-gui\" or .name == \"lege-ipc\") | .license] | length == 6 and all(. == \"AGPL-3.0-only\")' && cmp -s LICENSE lege-process/LICENSE && rg -q '^license = \"AGPL-3.0-only\"$' Cargo.toml lege-process/Cargo.toml lege-android/Cargo.toml"
+    artifact "NOTICE"
+    summary """
+        Cargo metadata reports AGPL-3.0-only for all six top-level application packages checked; the root and processor AGPL texts match, explicit root/process/Android declarations match, and NOTICE preserves mixed-license subtree boundaries.
+        """
+}
+
+record lege-ecosystem.evidence.turboocr-linux-trt11-probe-20260821/1 : evidence {
+    title "The lean TurboOCR text worker compiled with CUDA 13.3 and TensorRT 11 on Linux; detector and recognizer engines serialized, loaded, and passed real CUDA inference on an RTX 4060 Laptop GPU."
+    state verified
+    result pass
+    method command
+    observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
+    command "cmake --build Evidence-intake-project/.agent/scratch/turboocr-linux-trt-sm89 --target turboocr-text -j4 && turboocr-text --det det_tiny.onnx --rec rec_tiny.onnx --dict keys_tiny.txt --probe"
+    artifact "lege-document-ocr/turboocr/src/engine/trt/onnx_to_trt.cpp"
+    summary """
+        The lean TurboOCR text worker compiled with CUDA 13.3 and TensorRT 11 on Linux; detector and recognizer engines serialized, loaded, and passed real CUDA inference on an RTX 4060 Laptop GPU.
         """
 }
 

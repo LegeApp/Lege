@@ -107,7 +107,7 @@ fn infer_node_shapes(
     }
     match node.get_op_type() {
         "Identity" | "Sigmoid" | "Softmax" | "Relu" | "HardSwish" | "HardSigmoid" | "PRelu"
-        | "Sqrt" | "Pow" | "CumSum" => {
+        | "Sqrt" | "Erf" | "Pow" | "CumSum" => {
             let shape = input_shape(node, known_shapes, 0)?;
             for output in node.get_output() {
                 outputs.insert(output.to_owned(), shape.clone());
@@ -517,6 +517,15 @@ fn normalize_axis_for_insert(axis: i64, rank: usize) -> Result<usize> {
     Ok(axis as usize)
 }
 
+/// Reads a node's `auto_pad` attribute, defaulting to `NOTSET` (use `pads`).
+fn auto_pad_attr(node: &NodeProto) -> String {
+    node.get_attribute()
+        .iter()
+        .find(|attr| attr.get_name() == "auto_pad")
+        .map(|attr| String::from_utf8_lossy(attr.get_s()).to_string())
+        .unwrap_or_else(|| "NOTSET".to_owned())
+}
+
 /// Resolves an `auto_pad` value into explicit ONNX-order pads
 /// `[h_begin, w_begin, h_end, w_end]`. For `NOTSET`, returns `explicit`.
 pub(crate) fn resolve_auto_pad(
@@ -564,7 +573,7 @@ pub(crate) fn resolve_auto_pad(
             }
             Ok(pads)
         }
-        other => bail!("Conv auto_pad `{other}` is not supported"),
+        other => bail!("auto_pad `{other}` is not supported"),
     }
 }
 
@@ -578,14 +587,8 @@ fn infer_conv(node: &NodeProto, input: &[i64], weight: &[i64]) -> Result<Vec<i64
     if explicit.len() != 4 || strides.len() != 2 || dilations.len() != 2 {
         bail!("Conv attrs have unexpected lengths");
     }
-    let auto_pad = node
-        .get_attribute()
-        .iter()
-        .find(|a| a.get_name() == "auto_pad")
-        .map(|a| String::from_utf8_lossy(a.get_s()).to_string())
-        .unwrap_or_else(|| "NOTSET".to_owned());
     let pads = resolve_auto_pad(
-        &auto_pad,
+        &auto_pad_attr(node),
         input,
         [weight[2], weight[3]],
         [strides[0], strides[1]],
@@ -630,6 +633,14 @@ fn infer_pool(node: &NodeProto, input: &[i64]) -> Result<Vec<i64>> {
     {
         bail!("Pool dimensions, kernel, strides, and dilations must be positive");
     }
+    let pads = resolve_auto_pad(
+        &auto_pad_attr(node),
+        input,
+        [kernel[0], kernel[1]],
+        [strides[0], strides[1]],
+        [dilations[0], dilations[1]],
+        [pads[0], pads[1], pads[2], pads[3]],
+    )?;
     let h = conv_out_dim(
         input[2],
         pads[0],

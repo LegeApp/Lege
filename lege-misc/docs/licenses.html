@@ -80,15 +80,15 @@
   <main>
     <h1>Lege License and Third-Party Notices</h1>
     <p class="lede">This file summarizes the current license position of Lege and the main third-party components that are distributed with, linked by, or required by the program.</p>
-    <p>Lege itself is released under the MIT License. Third-party components retain their own licenses and notices.</p>
+    <p>Lege itself is released under the GNU Affero General Public License version 3 only. Third-party components retain their own licenses and notices.</p>
 
     <h2>Lege License</h2>
-    <p>The Lege processor and Freya GUI are licensed under the MIT License. See the embedded <a href="LICENSE.txt">LICENSE.txt</a> file for the full text.</p>
+    <p>The Lege processor and application frontends are licensed under AGPL-3.0-only. See the embedded <a href="LICENSE.txt">LICENSE.txt</a> file for the full text.</p>
     <p>This means:</p>
     <ul>
-      <li>Lege is MIT-licensed.</li>
+      <li>Lege is AGPL-3.0-only.</li>
       <li>A small Leptonica-derived compatibility portion retains its BSD-2-Clause notice while it is being removed.</li>
-      <li>The separately distributed <code>djvu-encoder</code> executable is AGPL-3.0-only; it is not linked into Lege.</li>
+      <li>DJVULibrust is AGPL-3.0-only and is linked directly into Lege for in-process DjVu output.</li>
       <li>Third-party notices still matter and are preserved below.</li>
     </ul>
 
@@ -105,33 +105,33 @@
       </thead>
       <tbody>
         <tr><td>Freya</td><td>Desktop GUI framework</td><td>MIT</td><td>Frontend used by the standard <code>lege-gui</code> build.</td></tr>
-        <tr><td>PaddleOCR / PP-OCRv5</td><td>Embedded OCR detector, recognizer, and character dictionary</td><td>Apache-2.0</td><td>Derived from the PaddlePaddle/PaddleOCR project; the shipped ONNX models are embedded into <code>lege</code>.</td></tr>
+        <tr><td>PaddleOCR / PP-OCRv6</td><td>Embedded OCR detector, recognizer, and character dictionary</td><td>Apache-2.0</td><td>Derived from the PaddlePaddle/PaddleOCR project; the shipped ONNX models are embedded into <code>lege</code>.</td></tr>
         <tr><td>wgpu</td><td>Cross-platform GPU compute used for OCR, layout analysis, and image processing</td><td>MIT OR Apache-2.0</td><td>Lege uses its own native inference implementation; it does not ship PaddlePaddle or ONNX Runtime as an execution library.</td></tr>
         <tr><td>Lege native PDF engine / Hayro-derived code</td><td>PDF reading and rendering</td><td>Apache-2.0 and/or MIT OR Apache-2.0, by component</td><td>Preserves the upstream notices in the PDF source tree.</td></tr>
         <tr><td>jpeg-encoder</td><td>JPEG encoder</td><td>(MIT OR Apache-2.0) AND IJG</td><td>vstroebel&rsquo;s encoder, pinned to 0.7.1.</td></tr>
-        <tr><td>jbig2enc-rust</td><td>JBIG2 codec</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project and linked by Lege.</td></tr>
-        <tr><td>jp2lam</td><td>JPEG 2000 codec</td><td>MIT OR Apache-2.0</td><td>Maintained as an independent sibling project and linked by Lege.</td></tr>
+        <tr><td>jbig2enc-rust</td><td>JBIG2 codec</td><td>MIT OR Apache-2.0</td><td>Canonical source: the Lege monorepo under lege-codecs/jbig2enc-rust.</td></tr>
+        <tr><td>jp2lam</td><td>JPEG 2000 codec</td><td>MIT OR Apache-2.0</td><td>Canonical source: the Lege monorepo under lege-codecs/jp2lam.</td></tr>
         <tr><td>fast_image_resize</td><td>CPU image resizing</td><td>MIT OR Apache-2.0</td><td>Used by the CPU resize path.</td></tr>
         <tr><td>rfd</td><td>Native file dialogs</td><td>MIT</td><td>Vendored with its license text under the GUI source tree.</td></tr>
         <tr><td>Leptonica-derived compatibility code</td><td>Small temporary compatibility portion</td><td>BSD-2-Clause</td><td>Retains its applicable notice while the code is being removed.</td></tr>
-        <tr><td>djvu-encoder</td><td>Optional DjVu output helper executable</td><td>AGPL-3.0-only</td><td>Distributed as a separate command-line program and invoked by Lege; it is not linked into Lege.</td></tr>
+        <tr><td>DJVULibrust</td><td>In-process DjVu encoder library</td><td>AGPL-3.0-only</td><td>Linked directly by Lege. The codec subtree also retains an independently usable command-line tool.</td></tr>
       </tbody>
     </table>
 
     <h2>OCR Components and Platform Paths</h2>
     <p>The standard build uses:</p>
     <ul>
-      <li>Linux and macOS: embedded PP-OCRv5 mobile detection and multilingual recognition models plus the PaddleOCR character dictionary. Lege parses the ONNX files and executes them through its own wgpu backend.</li>
+      <li>Linux and macOS: embedded PP-OCRv6 <code>small</code>-tier detection and multilingual recognition models plus the PaddleOCR character dictionary. Lege parses the ONNX files and executes them through its own wgpu backend.</li>
       <li>Windows: the operating system&rsquo;s WinRT OCR APIs.</li>
     </ul>
-    <p>PaddleOCR is released under Apache-2.0. Lege&rsquo;s two embedded model files are fp16 ONNX conversions of the PP-OCRv5 mobile models. Their source project is <a href="https://github.com/PaddlePaddle/PaddleOCR">PaddlePaddle/PaddleOCR</a>.</p>
+    <p>PaddleOCR is released under Apache-2.0. Lege&rsquo;s two embedded model files are fp16 ONNX conversions of the PP-OCRv6 <code>small</code>-tier models. Their source project is <a href="https://github.com/PaddlePaddle/PaddleOCR">PaddlePaddle/PaddleOCR</a>.</p>
     <p>Tesseract remains an optional legacy compile-time backend on Linux and macOS. It is not enabled by the standard build, and standard release packages do not require a Tesseract runtime or trained-data files.</p>
 
     <h2>Embedded Models and Data</h2>
     <p>The standard processor embeds these assets into the executable at compile time:</p>
     <ul>
-      <li><code>ppocr-det.onnx</code> &mdash; PP-OCRv5 text detection</li>
-      <li><code>ppocr-rec.onnx</code> and <code>ppocr-dict.txt</code> &mdash; PP-OCRv5 text recognition</li>
+      <li><code>ppocr-det.onnx</code> &mdash; PP-OCRv6 text detection</li>
+      <li><code>ppocr-rec.onnx</code> and <code>ppocr-dict.txt</code> &mdash; PP-OCRv6 text recognition</li>
       <li><code>doclayout.onnx</code> &mdash; document layout analysis</li>
       <li><code>sauvola.onnx</code> &mdash; optional heavy document binarization</li>
     </ul>
@@ -156,7 +156,7 @@
     <ul>
       <li>source revision, conversion recipe, and checksum for every embedded model and dictionary</li>
       <li>the complete Cargo dependency/license report for the exact target and enabled feature set</li>
-      <li>the separate <code>djvu-encoder</code> AGPL license notice when that executable is included</li>
+      <li>the AGPL source and license offer required for the exact Lege application build</li>
       <li>platform runtime libraries copied into an installer, if any</li>
     </ul>
   </main>

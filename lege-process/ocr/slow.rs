@@ -25,13 +25,12 @@ thread_local! {
     static PIPELINES: RefCell<HashMap<String, OcrPipeline>> = RefCell::new(HashMap::new());
 }
 
-/// Convert a lege `Detection` slice to `lege_ocr::TextRegion`s in the OCR
-/// image's pixel space, keeping only text-like detections.
+/// The regions slow OCR should recognize, in the OCR image's pixel space.
 ///
-/// `detections` are expressed in *output* space (`output_w` × `output_h`); they
-/// are scaled by (`image_w`/`output_w`, `image_h`/`output_h`) so they line up
-/// with the (possibly higher-resolution) OCR raster.
-fn detections_to_regions(
+/// `detections` are expressed in *output* space (`output_w` × `output_h`); the
+/// text-like ones are scaled by (`image_w`/`output_w`, `image_h`/`output_h`) so
+/// they line up with the (possibly higher-resolution) OCR raster.
+fn ocr_regions(
     detections: &[Detection],
     page_index: usize,
     image_w: u32,
@@ -42,7 +41,7 @@ fn detections_to_regions(
     let sx = image_w as f32 / output_w.max(1) as f32;
     let sy = image_h as f32 / output_h.max(1) as f32;
     let classifier = crate::types::LabelClassifier::default();
-    detections
+    let regions: Vec<TextRegion> = detections
         .iter()
         .filter(|d| {
             classifier.should_process_with_ocr(d) && !matches!(d.category, ContentCategory::Abandon)
@@ -63,19 +62,7 @@ fn detections_to_regions(
                 confidence: d.confidence,
             })
         })
-        .collect()
-}
-
-fn ocr_regions(
-    detections: &[Detection],
-    page_index: usize,
-    image_w: u32,
-    image_h: u32,
-    output_w: u32,
-    output_h: u32,
-) -> Vec<TextRegion> {
-    let regions =
-        detections_to_regions(detections, page_index, image_w, image_h, output_w, output_h);
+        .collect();
     if !regions.is_empty() {
         return regions;
     }
@@ -90,6 +77,23 @@ fn ocr_regions(
         bbox_highres: [0, 0, image_w, image_h],
         confidence: 1.0,
     }]
+}
+
+/// Run `f` against this worker thread's cached pipeline for `language`,
+/// constructing it on first use.
+fn with_pipeline<R>(language: &str, f: impl FnOnce(&mut OcrPipeline) -> R) -> R {
+    PIPELINES.with(|cell| {
+        let mut pipelines = cell.borrow_mut();
+        let pipeline = pipelines.entry(language.to_string()).or_insert_with(|| {
+            OcrPipeline::new(SlowOcrConfig {
+                language: language.to_string(),
+                debug: false,
+                debug_out_dir: None,
+                ..Default::default()
+            })
+        });
+        f(pipeline)
+    })
 }
 
 /// Run the slow OCR pipeline on one page and return a page-level hOCR string.
@@ -154,16 +158,7 @@ pub async fn perform_slow_ocr(
             } else {
                 binarized_clone
             };
-            PIPELINES.with(|cell| {
-                let mut pipelines = cell.borrow_mut();
-                let pipeline = pipelines.entry(language.clone()).or_insert_with(|| {
-                    OcrPipeline::new(SlowOcrConfig {
-                        language: language.clone(),
-                        debug: false,
-                        debug_out_dir: None,
-                        ..Default::default()
-                    })
-                });
+            with_pipeline(&language, |pipeline| {
                 pipeline.process_page(&image_clone, &binary, &regions, &coord_map, page_index)
             })
         })
@@ -315,16 +310,7 @@ pub async fn perform_reflow_page_ocr(
     // row crops on the blocking pool. Returns (placement_index, text, conf).
     let recognized: Vec<(usize, String, Option<f32>)> =
         crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Ocr, move || {
-            PIPELINES.with(|cell| {
-                let mut pipelines = cell.borrow_mut();
-                let pipeline = pipelines.entry(language.clone()).or_insert_with(|| {
-                    OcrPipeline::new(SlowOcrConfig {
-                        language: language.clone(),
-                        debug: false,
-                        debug_out_dir: None,
-                        ..Default::default()
-                    })
-                });
+            with_pipeline(&language, |pipeline| {
                 let mut out: Vec<(usize, String, Option<f32>)> = Vec::new();
                 for job in &jobs {
                     if let Some(line) = pipeline.ocr_gray_line(&job.crop) {
@@ -373,70 +359,92 @@ fn assign_words_to_slots(
     if slots.is_empty() {
         return;
     }
-    let mut texts: Vec<String> = vec![String::new(); slots.len()];
-    let mut conf_sum: Vec<f32> = vec![0.0; slots.len()];
-    let mut conf_cnt: Vec<u32> = vec![0; slots.len()];
+    let mut accum: Vec<SlotAccum> = std::iter::repeat_with(SlotAccum::default)
+        .take(slots.len())
+        .collect();
 
     if line.words.is_empty() {
         // No word-level boxes: drop the whole line onto the leftmost slot.
-        let t = line.text.trim();
-        if !t.is_empty() {
-            texts[0].push_str(t);
-            if let Some(c) = line.confidence {
-                conf_sum[0] += c;
-                conf_cnt[0] += 1;
-            }
-        }
+        accum[0].push(line.text.trim(), line.confidence);
     } else {
         for word in &line.words {
-            let t = word.text.trim();
-            if t.is_empty() {
+            let text = word.text.trim();
+            if text.is_empty() {
                 continue;
             }
-            let wx0 = word.bbox_crop_local[0];
-            let wx1 = word.bbox_crop_local[2];
-            let mut best = 0usize;
-            let mut best_overlap = 0i64;
-            for (si, slot) in slots.iter().enumerate() {
-                let lo = wx0.max(slot.local_x0);
-                let hi = wx1.min(slot.local_x1);
-                let overlap = hi as i64 - lo as i64;
-                if overlap > best_overlap {
-                    best_overlap = overlap;
-                    best = si;
-                }
-            }
-            // No overlap with any slot: fall back to the nearest slot center.
-            if best_overlap <= 0 {
-                let center = (wx0 + wx1) / 2;
-                best = slots
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, s)| {
-                        let c = (s.local_x0 + s.local_x1) / 2;
-                        (c as i64 - center as i64).abs()
-                    })
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-            }
-            if !texts[best].is_empty() {
-                texts[best].push(' ');
-            }
-            texts[best].push_str(t);
-            if let Some(c) = word.confidence {
-                conf_sum[best] += c;
-                conf_cnt[best] += 1;
-            }
+            let target = best_slot_for(slots, word.bbox_crop_local[0], word.bbox_crop_local[2]);
+            accum[target].push(text, word.confidence);
         }
     }
 
-    for (si, slot) in slots.iter().enumerate() {
-        if texts[si].trim().is_empty() {
+    for (slot, filled) in slots.iter().zip(accum) {
+        if filled.text.trim().is_empty() {
             continue;
         }
-        let conf = (conf_cnt[si] > 0).then(|| conf_sum[si] / conf_cnt[si] as f32);
-        out.push((slot.placement_index, std::mem::take(&mut texts[si]), conf));
+        let confidence = filled.average_confidence();
+        out.push((slot.placement_index, filled.text, confidence));
     }
+}
+
+/// Text and confidence accumulated onto one word slot. Several recognized words
+/// may land in the same slot, so the text is concatenated and the confidences
+/// averaged.
+#[derive(Default)]
+struct SlotAccum {
+    text: String,
+    conf_sum: f32,
+    conf_count: u32,
+}
+
+impl SlotAccum {
+    fn push(&mut self, text: &str, confidence: Option<f32>) {
+        if text.is_empty() {
+            return;
+        }
+        if !self.text.is_empty() {
+            self.text.push(' ');
+        }
+        self.text.push_str(text);
+        if let Some(c) = confidence {
+            self.conf_sum += c;
+            self.conf_count += 1;
+        }
+    }
+
+    fn average_confidence(&self) -> Option<f32> {
+        (self.conf_count > 0).then(|| self.conf_sum / self.conf_count as f32)
+    }
+}
+
+/// The slot a recognized word belongs to: the one it overlaps most in source x,
+/// falling back to the nearest slot centre when it overlaps none of them.
+/// `slots` is never empty, so index 0 is always a valid answer.
+fn best_slot_for(slots: &[WordSlot], wx0: u32, wx1: u32) -> usize {
+    let mut best = 0usize;
+    let mut best_overlap = 0i64;
+    for (index, slot) in slots.iter().enumerate() {
+        let lo = wx0.max(slot.local_x0);
+        let hi = wx1.min(slot.local_x1);
+        let overlap = hi as i64 - lo as i64;
+        if overlap > best_overlap {
+            best_overlap = overlap;
+            best = index;
+        }
+    }
+    if best_overlap > 0 {
+        return best;
+    }
+
+    let center = (wx0 + wx1) / 2;
+    slots
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, slot)| {
+            let slot_center = (slot.local_x0 + slot.local_x1) / 2;
+            (slot_center as i64 - center as i64).abs()
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0)
 }
 
 /// Group output-positioned words (pre-sorted by `(y, x)`) into hOCR lines,

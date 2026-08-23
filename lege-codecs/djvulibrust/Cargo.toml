@@ -4,10 +4,18 @@
 name = "djvu_encoder"
 version = "0.11.0"
 edition = "2024"
-# This standalone encoder is distributed under the same fixed AGPLv3 license
-# historically used by Lege. Front-ends invoke `djvu-encoder` over the CLI and
-# do not link this crate as a library.
+description = "Native Rust DjVu document encoder with an optional command-line interface"
+# The encoder library and its optional standalone CLI are distributed under
+# AGPLv3. Lege links the library directly; the `djvu-encoder` binary remains
+# available for independent command-line use.
 license = "AGPL-3.0-only"
+readme = "README.md"
+documentation = "https://docs.rs/djvu_encoder"
+homepage = "https://github.com/LegeApp/Lege/tree/main/lege-codecs/djvulibrust"
+repository = "https://github.com/LegeApp/Lege"
+keywords = ["djvu", "encoder", "document", "image"]
+categories = ["multimedia::encoding", "multimedia::images"]
+include = ["Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "src/**", "tests/**", "examples/**"]
 autotests = true
 autoexamples = true
 

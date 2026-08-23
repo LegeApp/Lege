@@ -20,7 +20,7 @@ Lege is a fully-automatic PDF processor for E-Ink ebook readers. It renders PDF 
 | Future renderer | `lege-pdf/render/` | Reserved for the renderer's independent workspace |
 | `jbig2enc-rust` | `lege-codecs/jbig2enc-rust/` | In-tree JBIG2 encoder/decoder (patched into `lege`) |
 | `jp2lam` | `lege-codecs/jp2lam/` | In-tree JPEG2000 codec (patched into `lege`) |
-| `djvu_encoder` | `lege-codecs/djvulibrust/` | Standalone AGPL `djvu-encoder`; invoked as a subprocess, never linked |
+| `djvu_encoder` | `lege-codecs/djvulibrust/` | AGPL DjVu library linked by Lege; standalone codec CLI retained |
 | `lege-gui` | `lege-process/GUI/Freya/` | Freya/Skia GUI frontend |
 | `lege-music-gui` | `lege-process/GUI/musicsheet/` | Sheet Music Edition GUI |
 | Shared assets/tools | `lege-misc/` | Icons, packaging, scripts, docs, dev utilities, and `xtask` |
@@ -150,27 +150,18 @@ encoders. Choose an encoder with the `EncodingSettings` variants `Jpeg`,
 
 JBIG2 has two modes (`Jbig2Mode`): `Symbol` (symbol-substitution, best for clean text) and `Generic` (bitplane, required when `ContentCategory::Abandon` is present on a page).
 
-## DjVu encoding (arms-length GPL subprocess)
+## DjVu encoding
 
-The DjVu encoder (`djvu_encoder` crate in `djvulibrust/`) is GPL. Lege does **not**
-link it as a library — it is a separate program invoked over the command line so
-the proprietary build stays at arms length. `lege-process/core/djvu.rs` is a subprocess driver:
-it composes each page's layers (bilevel ink mask, IW44 background canvas, OCR word
-boxes), writes them to the work dir as ordinary files (PNG masks/backgrounds, JSON
-word boxes) plus a neutral `manifest.json`, then spawns `djvu-encoder
-encode-document --manifest … --output … --progress-json`, streaming progress back
-into the `ProgressTracker`. Both `djvu_pipeline.rs` and `reflow_pipeline.rs` use
-this via `spawn_djvu_writer_actor`.
+Lege links the AGPL `djvu_encoder` crate in `djvulibrust/` and builds typed
+`Page` values directly in `lege-process/core/djvu.rs`. Page compression runs in
+the existing parallel encode stage; the writer actor inserts encoded pages in
+order, adds navigation, and atomically publishes the final document. There are
+no manifest/page staging files and no runtime helper discovery.
 
 - Build the encoder: `cargo build --manifest-path lege-codecs/djvulibrust/Cargo.toml --features cli --bin djvu-encoder`
-  (behind the `cli` feature; the library build stays lean). It also has a simple
+  (behind the `cli` feature; the library build stays lean). This independent
+  diagnostic/user tool has a simple
   standalone mode: `djvu-encoder encode PAGE.png… -o out.djvu [--photo|--bilevel]`.
-- Resolution order (`djvu::resolve_encoder_path`): `--djvu-encoder-path` flag →
-  `LEGE_DJVU_ENCODER` env → next to the `lege` executable → `PATH`. DJVU jobs
-  fail fast at preflight if it is not found (PDF output is unaffected).
-- Manifest schema version is `MANIFEST_SCHEMA_VERSION` (1); keep the driver in
-  `lege-process/core/djvu.rs` and the reader in
-  `lege-codecs/djvulibrust/src/bin/djvu-encoder.rs` in sync.
 
 ## Runtime assets
 

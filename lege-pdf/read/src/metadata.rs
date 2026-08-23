@@ -1,10 +1,15 @@
 use std::sync::Arc;
 
 use pdf_document::ParseContext;
-use pdf_object::{ObjectId, PdfObject};
+use pdf_object::{Dictionary, PdfObject};
 
 use crate::RenderSession;
 use crate::outline::decode_pdf_text_string;
+
+/// Values so generic that they say nothing about the document. Producers emit
+/// them as defaults, so treating them as identity would be worse than nothing.
+const TITLE_PLACEHOLDERS: &[&str] = &["document", "untitled", "unknown"];
+const AUTHOR_PLACEHOLDERS: &[&str] = &["author", "unknown"];
 
 /// Credible document identity carried by the source PDF's Info dictionary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -31,78 +36,62 @@ pub fn extract_metadata(session: &RenderSession) -> DocumentMetadata {
     };
 
     DocumentMetadata {
-        title: read_string(
-            session,
-            dict.get(session.snapshot.names().intern(b"Title")),
-            &mut context,
-        )
-        .and_then(|value| credible(value, true)),
-        author: read_string(
-            session,
-            dict.get(session.snapshot.names().intern(b"Author")),
-            &mut context,
-        )
-        .and_then(|value| credible(value, false)),
+        title: info_string(session, dict, b"Title", &mut context)
+            .and_then(|value| credible(value, TITLE_PLACEHOLDERS)),
+        author: info_string(session, dict, b"Author", &mut context)
+            .and_then(|value| credible(value, AUTHOR_PLACEHOLDERS)),
     }
 }
 
-fn read_string(
+/// Read one Info-dictionary entry as text, following a single indirect
+/// reference. Anything that is not a PDF string is not identity.
+fn info_string(
     session: &RenderSession,
-    value: Option<&PdfObject>,
+    info: &Dictionary,
+    key: &[u8],
     context: &mut ParseContext,
 ) -> Option<String> {
-    let value: Arc<PdfObject> = match value? {
-        PdfObject::Reference(id) => resolve(session, *id, context)?,
+    let resolved: Arc<PdfObject> = match info.get(session.snapshot.names().intern(key))? {
+        PdfObject::Reference(id) => session
+            .snapshot
+            .objects()
+            .resolve(&session.snapshot, *id, context)
+            .ok()?,
         other => Arc::new(other.clone()),
     };
-    match &*value {
+    match &*resolved {
         PdfObject::String(text) => Some(decode_pdf_text_string(text.as_bytes())),
         _ => None,
     }
 }
 
-fn resolve(
-    session: &RenderSession,
-    id: ObjectId,
-    context: &mut ParseContext,
-) -> Option<Arc<PdfObject>> {
-    session
-        .snapshot
-        .objects()
-        .resolve(&session.snapshot, id, context)
-        .ok()
-}
-
-fn credible(value: String, title: bool) -> Option<String> {
-    let value = value
+/// Collapse whitespace and reject anything that carries no identity.
+///
+/// Control characters are removed rather than treated as separators, so an
+/// embedded newline joins its neighbours instead of splitting them.
+fn credible(value: String, placeholders: &[&str]) -> Option<String> {
+    let printable = value
         .chars()
         .filter(|ch| !ch.is_control())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect::<String>();
+    let value = printable.split_whitespace().collect::<Vec<_>>().join(" ");
     if value.is_empty() {
         return None;
     }
     let lower = value.to_lowercase();
-    let placeholder = if title {
-        matches!(lower.as_str(), "document" | "untitled" | "unknown")
-    } else {
-        matches!(lower.as_str(), "author" | "unknown")
-    };
-    (!placeholder).then_some(value)
+    (!placeholders.contains(&lower.as_str())).then_some(value)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::credible;
+    use super::{AUTHOR_PLACEHOLDERS, TITLE_PLACEHOLDERS, credible};
 
     #[test]
     fn rejects_only_empty_and_generic_identity_fields() {
-        assert_eq!(credible(" Document ".into(), true), None);
-        assert_eq!(credible("Author".into(), false), None);
+        assert_eq!(credible(" Document ".into(), TITLE_PLACEHOLDERS), None);
+        assert_eq!(credible("Author".into(), AUTHOR_PLACEHOLDERS), None);
         assert_eq!(
-            credible("  Ursula   Le Guin ".into(), false).as_deref(),
+            credible("  Ursula   Le Guin ".into(), AUTHOR_PLACEHOLDERS).as_deref(),
             Some("Ursula Le Guin")
         );
     }

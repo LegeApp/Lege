@@ -51,7 +51,7 @@ default-members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/LegeApp/Lege"
 
 [workspace.lints.rust]
@@ -128,7 +128,6 @@ dialoguer = { version = "0.12.0", features = ["fuzzy-select"] }
 console_error_panic_hook = "0.1.7"
 ttf-parser = "0.25.1"
 encoding_rs = "0.8.35"
-wait-timeout = "0.2.1"
 byteorder = "1.5.0"
 bitvec = "1.0.1"
 chrono = "0.4.45"

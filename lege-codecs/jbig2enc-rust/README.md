@@ -1,5 +1,7 @@
 # jbig2enc-rust
 
+The canonical source is the [Lege monorepo](https://github.com/LegeApp/Lege/tree/main/lege-codecs/jbig2enc-rust).
+
 A JBIG2 encoder and decoder in Rust for bilevel (black-and-white) images —
 scanned documents, PDF-embedded streams, and standalone JBIG2 files.
 
@@ -91,7 +93,7 @@ expect it in `PATH`.
 
 ```toml
 [dependencies]
-jbig2enc-rust = "0.5.3"            # encoder + decoder + symboldict (defaults)
+jbig2enc-rust = "0.5.4"            # encoder + decoder + symboldict (defaults)
 ```
 
 Decoder only:

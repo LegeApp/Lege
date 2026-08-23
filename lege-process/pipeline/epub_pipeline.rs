@@ -112,6 +112,11 @@ pub async fn create_and_run_epub_pipeline(
     mut shutdown_rx: tokio::sync::broadcast::Receiver<crate::ShutdownSignal>,
     _progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
 ) -> Result<()> {
+    // The EPUB path can spend tens of minutes in OCR before its first output
+    // write. Prove the destination is usable before initializing models or
+    // rendering a page, especially for removable/NTFS mounts with directory
+    // ACLs that make a read-write filesystem appear unwritable to this user.
+    preflight_epub_output(output_path)?;
     info_log!("[EPUB] Starting EPUB pipeline");
     crate::pipeline::reset_standard_dimensions();
 
@@ -372,6 +377,33 @@ pub async fn create_and_run_epub_pipeline(
 
     success_log!("EPUB pipeline complete: {}", output_path.display());
     Ok(())
+}
+
+fn preflight_epub_output(output_path: &Path) -> Result<()> {
+    let parent = epub_output_parent(output_path);
+    std::fs::create_dir_all(parent).map_err(|error| {
+        anyhow!(
+            "[EPUB] output destination is not writable before processing: cannot create {}: {error}. Choose a writable path with --output <file.epub> or fix the mount/directory permissions",
+            parent.display()
+        )
+    })?;
+    tempfile::Builder::new()
+        .prefix(".lege-output-check-")
+        .tempfile_in(parent)
+        .map_err(|error| {
+            anyhow!(
+                "[EPUB] output destination is not writable before processing: {}: {error}. Choose a writable path with --output <file.epub> or fix the mount/directory permissions",
+                parent.display()
+            )
+        })?;
+    Ok(())
+}
+
+fn epub_output_parent(output_path: &Path) -> &Path {
+    output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 pub fn build_epub_from_hocr_pages(
@@ -981,7 +1013,7 @@ fn build_epub_with_outline_cancellable(
     // Inline a navigation TOC at the start of the book.
     builder.inline_toc();
 
-    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = epub_output_parent(output_path);
     std::fs::create_dir_all(parent)
         .map_err(|e| anyhow!("[EPUB] cannot create {}: {e}", parent.display()))?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
@@ -1352,5 +1384,24 @@ mod tests {
         assert_eq!(&bytes[0..2], b"PK", "epub must be a zip archive");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn epub_output_preflight_rejects_unusable_parent_before_processing() {
+        let directory = tempfile::tempdir().unwrap();
+        let non_directory = directory.path().join("not-a-directory");
+        std::fs::write(&non_directory, b"blocker").unwrap();
+        let output = non_directory.join("book.epub");
+
+        let error = preflight_epub_output(&output).expect_err("parent is a regular file");
+
+        assert!(error.to_string().contains("before processing"));
+        assert!(error.to_string().contains("--output <file.epub>"));
+    }
+
+    #[test]
+    fn epub_output_preflight_accepts_a_bare_filename() {
+        preflight_epub_output(Path::new("book.epub"))
+            .expect("a bare filename should use the current directory");
     }
 }

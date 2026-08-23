@@ -3,7 +3,8 @@ use pdf_page_ir::Rect;
 use pdf_text::{TextPage, TextPageOptions};
 use std::sync::Arc;
 
-use crate::{ReadError, RenderSession};
+use crate::session::display_extent;
+use crate::{PageGeometry, ReadError, RenderSession};
 
 /// A word and its exact bounding box in source-render pixel space.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,21 +57,7 @@ pub fn page_text_evidence(
     let semantic = build_semantic_page(session, page)?;
     let text_page = TextPage::build(&semantic, &TextPageOptions::default());
     let text = text_page.all_text();
-    let words = text_page
-        .words()
-        .into_iter()
-        .filter(|word| !word.text.trim().is_empty())
-        .map(|word| NativeTextWord {
-            text: word.text,
-            bbox: rect_to_pixels(
-                word.bbox,
-                geometry.crop_box,
-                geometry.rotate,
-                source_width,
-                source_height,
-            ),
-        })
-        .collect::<Vec<_>>();
+    let words = words_in_pixel_space(&text_page, geometry, source_width, source_height);
     let character_count = text
         .chars()
         .filter(|character| !character.is_whitespace())
@@ -125,37 +112,23 @@ fn direct_scan_image(page: &pdf_content::SemanticPage) -> Option<DirectScanImage
     if page.bounds.rotate != 0 {
         return None;
     }
-    let draws = page
-        .ops
-        .iter()
-        .filter_map(|operation| match operation {
-            SemanticOp::DrawImage(image) => Some(*image),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if draws.len() != 1
-        || page.ops.iter().any(|operation| {
-            !matches!(
-                operation,
-                SemanticOp::Save
-                    | SemanticOp::Restore
-                    | SemanticOp::Concat(_)
-                    | SemanticOp::DrawImage(_)
-            )
-        })
-    {
-        return None;
+    // The page must be exactly one placed image: one `Concat`, one `DrawImage`,
+    // and nothing else that could paint over or beside it. A second occurrence
+    // of either, or any other operation, falls through to the reject arm.
+    let mut draw = None;
+    let mut placement = None;
+    for operation in page.ops.iter() {
+        match operation {
+            SemanticOp::Save | SemanticOp::Restore => {}
+            SemanticOp::Concat(matrix) if placement.is_none() => placement = Some(*matrix),
+            SemanticOp::DrawImage(image) if draw.is_none() => draw = Some(*image),
+            _ => return None,
+        }
     }
-    let matrices = page
-        .ops
-        .iter()
-        .filter_map(|operation| match operation {
-            SemanticOp::Concat(matrix) => Some(*matrix),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let matrix = *matrices.first()?;
-    if matrices.len() != 1 || matrix.b.abs() > 1e-6 || matrix.c.abs() > 1e-6 {
+    let (Some(draw), Some(matrix)) = (draw, placement) else {
+        return None;
+    };
+    if matrix.b.abs() > 1e-6 || matrix.c.abs() > 1e-6 {
         return None;
     }
     let crop = page.bounds.crop.normalized();
@@ -166,7 +139,7 @@ fn direct_scan_image(page: &pdf_content::SemanticPage) -> Option<DirectScanImage
     {
         return None;
     }
-    let image = page.images.get(draws[0].index())?;
+    let image = page.images.get(draw.index())?;
     if image.is_mask
         || image.smask.is_some()
         || image.mask.is_some()
@@ -202,7 +175,23 @@ pub fn positioned_words(
 ) -> Result<Vec<NativeTextWord>, ReadError> {
     let geometry = session.page_geometry(page)?;
     let text_page = build_text_page(session, page)?;
-    Ok(text_page
+    Ok(words_in_pixel_space(
+        &text_page,
+        geometry,
+        source_width,
+        source_height,
+    ))
+}
+
+/// Map a text page's words into source-render pixel space, dropping the
+/// whitespace-only entries the word builder can emit.
+fn words_in_pixel_space(
+    text_page: &TextPage,
+    geometry: PageGeometry,
+    source_width: u32,
+    source_height: u32,
+) -> Vec<NativeTextWord> {
+    text_page
         .words()
         .into_iter()
         .filter(|word| !word.text.trim().is_empty())
@@ -216,7 +205,7 @@ pub fn positioned_words(
                 source_height,
             ),
         })
-        .collect())
+        .collect()
 }
 
 fn build_text_page(session: &RenderSession, page: u32) -> Result<TextPage, ReadError> {
@@ -256,11 +245,7 @@ fn rect_to_pixels(
     let crop_width = (x1 - x0).abs().max(f64::EPSILON);
     let crop_height = (y1 - y0).abs().max(f64::EPSILON);
     let rotation = rotate % 360;
-    let (display_width, display_height) = if rotation % 180 == 0 {
-        (crop_width, crop_height)
-    } else {
-        (crop_height, crop_width)
-    };
+    let (display_width, display_height) = display_extent(crop_width, crop_height, rotation);
     let scale_x = output_width as f64 / display_width;
     let scale_y = output_height as f64 / display_height;
 
@@ -274,28 +259,22 @@ fn rect_to_pixels(
         (device_x * scale_x, device_y * scale_y)
     };
 
+    // Rotation can send any source corner to any device corner, so take the
+    // axis-aligned hull of all four rather than assuming which is which.
     let corners = [
         transform(rect.x0, rect.y0),
         transform(rect.x0, rect.y1),
         transform(rect.x1, rect.y0),
         transform(rect.x1, rect.y1),
     ];
-    let left = corners
-        .iter()
-        .map(|point| point.0)
-        .fold(f64::INFINITY, f64::min);
-    let top = corners
-        .iter()
-        .map(|point| point.1)
-        .fold(f64::INFINITY, f64::min);
-    let right = corners
-        .iter()
-        .map(|point| point.0)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let bottom = corners
-        .iter()
-        .map(|point| point.1)
-        .fold(f64::NEG_INFINITY, f64::max);
+    let (mut left, mut top) = (f64::INFINITY, f64::INFINITY);
+    let (mut right, mut bottom) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (x, y) in corners {
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x);
+        bottom = bottom.max(y);
+    }
     [left as f32, top as f32, right as f32, bottom as f32]
 }
 
