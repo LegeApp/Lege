@@ -57,7 +57,7 @@ git check-ignore -v .filter-tmp lege-document-ocr/turboocr lege-codecs/jp2lam/.a
   >"$report_dir/ignore-policy.txt" || true
 
 if command -v gitleaks >/dev/null; then
-  gitleaks git --redact --report-format json --report-path "$report_dir/gitleaks.json"
+  gitleaks git --log-opts="HEAD" --redact --report-format json --report-path "$report_dir/gitleaks.json"
 elif "$strict"; then
   echo "gitleaks is required for --strict" >&2
   exit 1
