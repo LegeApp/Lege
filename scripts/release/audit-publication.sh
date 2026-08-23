@@ -36,7 +36,9 @@ git ls-files -s | awk '{ print $2 "\t" $4 }' \
   | git cat-file --batch-check='%(objectsize) %(rest)' \
   | awk '$1 >= 1048576 { print }' \
   | sort -n >"$report_dir/tracked-over-1m.txt"
-git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' | awk '$1 == "blob" && $3 >= 10485760 { print }' | sort -k3n >"$report_dir/history-blobs-over-10m.txt"
+git rev-list --objects HEAD | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+  | awk '$1 == "blob" && $3 >= 10485760 && $4 !~ /^(lege-process\/models\/(doclayout|sauvola)\.onnx|lege-ocr\/assets\/ppocr-(det|rec)\.onnx)$/ { print }' \
+  | sort -k3n >"$report_dir/history-blobs-over-10m.txt"
 
 git ls-files -z | while IFS= read -r -d '' path; do
   case "$path" in
