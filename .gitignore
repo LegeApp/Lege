@@ -70,6 +70,9 @@ lege-codecs/jp2lam/visual-output/
 lege-codecs/jp2lam/lear.png
 lege-pdf/oracle-sweep-*/
 lege-pdf/render/corpus/perf/results/
+# Same sweeps after the move under sources/. Registered AKR sources
+# (catalog.json, external/) stay tracked; only the bulk sweep payload is not.
+sources/oracle-sweep-*/
 
 # Generated codec output samples
 *.jp2
