@@ -13,8 +13,9 @@
 //! **byte-identical** coverage — the reorganization preserves, for every
 //! accumulation cell, both the operands and their order (edge-index order), so
 //! the float sums are bit-for-bit the same. `fill_scanline_ref` is the original
-//! per-scanline implementation, retained as the reference/fallback and
-//! cross-checked byte-for-byte by tests.
+//! per-scanline implementation, retained (test-only) purely as the byte-identity
+//! oracle; the production oversized/sparse-window fallback is
+//! `fill_scanline_aet`.
 //!
 //! Vertical edges (A2) take a dedicated deposit that skips the x-walk. AVX2
 //! (A3) accelerates only the per-element coverage *conversion* (abs/clamp/scale/
@@ -41,14 +42,14 @@ struct Edge {
 }
 
 /// Largest bbox-local accumulation window (in f32 cells) the fast path will
-/// allocate. Beyond this, a fill defers to `fill_scanline_ref`, which needs only
+/// allocate. Beyond this, a fill defers to `fill_scanline_aet`, which needs only
 /// an O(device-width) scanline buffer. 1 Mi cells = 4 MiB; glyphs and ordinary
 /// vector fills sit far below it, so this only guards a pathologically large
 /// single path against a device-area allocation.
 const MAX_WINDOW_CELLS: usize = 1 << 20;
 
 /// A large-but-sparse local window (`> CACHE_WINDOW_CELLS` cells with fewer than
-/// `cells / 8` edges) is routed to the scanline reference: there the fast path's
+/// `cells / 8` edges) is routed to the scanline path: there the fast path's
 /// 2D accumulation buffer loses cache locality to the reference's single reused
 /// O(device-width) row, and few edges mean little rescan waste to eliminate.
 /// Both paths are byte-identical, so this only trades speed, never correctness,
@@ -397,8 +398,13 @@ impl RasterKernel {
 
     /// Original per-scanline implementation: for each row, every edge is clipped
     /// to `[y, y+1)` and accumulated into an O(width) buffer, then prefix-summed.
-    /// Retained as the reference (byte-identical to the fast path) and as the
-    /// oversized-window fallback. Edges and bounds are already built by `fill`.
+    ///
+    /// Test-only. Production routes oversized/sparse windows through
+    /// [`Self::fill_scanline_aet`]; this naive version is kept solely as the
+    /// byte-identity oracle that pins it (`aet_matches_reference_bit_exact`),
+    /// so it is compiled out of shipping builds. Edges and bounds are already
+    /// built by `fill`.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn fill_scanline_ref(
         &mut self,
@@ -664,26 +670,36 @@ fn coverage_use_avx2() -> bool {
 }
 
 #[inline]
+#[allow(
+    unsafe_code,
+    reason = "dispatches the AVX2 coverage kernel behind a runtime probe; see SAFETY comment"
+)]
 fn convert_coverage(running: &[f32], cov: &mut [u8], dst_start: usize, rule: FillRule) {
+    // Slice the destination once, here, so the AVX2 kernel's length
+    // precondition is a slice invariant rather than a caller promise: a wrong
+    // `dst_start` panics on this index in *both* paths instead of becoming an
+    // out-of-bounds write in the vector one.
+    let dst = &mut cov[dst_start..dst_start + running.len()];
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
-            // SAFETY: `dst_start + running.len() <= cov.len()` is guaranteed by
-            // the caller (the local window is device-clamped, so `bx + cmax <
-            // width`); the AVX2 body only touches that validated range.
+            // SAFETY: AVX2 is present (runtime probe above) and
+            // `dst.len() == running.len()` by construction of the slice.
             unsafe {
-                convert_coverage_avx2(running, cov, dst_start, rule);
+                convert_coverage_avx2(running, dst, rule);
             }
             return;
         }
     }
-    convert_coverage_scalar(running, cov, dst_start, rule);
+    convert_coverage_scalar(running, dst, rule);
 }
 
+/// Scalar reference for [`convert_coverage`]. `cov` is the already-offset
+/// destination, so it and the AVX2 kernel take the same shape of argument.
 #[inline]
-fn convert_coverage_scalar(running: &[f32], cov: &mut [u8], dst_start: usize, rule: FillRule) {
+fn convert_coverage_scalar(running: &[f32], cov: &mut [u8], rule: FillRule) {
     for (i, &r) in running.iter().enumerate() {
-        cov[dst_start + i] = coverage_byte(r, rule);
+        cov[i] = coverage_byte(r, rule);
     }
 }
 
@@ -707,13 +723,24 @@ fn coverage_byte(running: f32, rule: FillRule) -> u8 {
 /// f32→i32 cast (`cvtt`) matching `as u8` — so the result is bit-for-bit
 /// identical to the scalar path. Verified by
 /// `tests::avx2_convert_matches_scalar_bit_exact`.
+///
+/// # Safety
+/// * The CPU must support AVX2 (the caller's runtime probe establishes this).
+/// * `cov.len() >= running.len()` — the kernel writes `running.len()` bytes at
+///   `cov[0..]` through unchecked stores. [`convert_coverage`] guarantees this
+///   by slicing the destination to exactly `running.len()` before the call.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_code)]
-unsafe fn convert_coverage_avx2(running: &[f32], cov: &mut [u8], dst_start: usize, rule: FillRule) {
+unsafe fn convert_coverage_avx2(running: &[f32], cov: &mut [u8], rule: FillRule) {
     use core::arch::x86_64::*;
 
     let n = running.len();
+    debug_assert!(
+        cov.len() >= n,
+        "convert_coverage_avx2: destination {} shorter than {n} coverage values",
+        cov.len()
+    );
     let sign = _mm256_set1_ps(-0.0);
     let one = _mm256_set1_ps(1.0);
     let two = _mm256_set1_ps(2.0);
@@ -749,19 +776,19 @@ unsafe fn convert_coverage_avx2(running: &[f32], cov: &mut [u8], dst_start: usiz
         let p16 = _mm_packus_epi32(lo, hi); // 8×u16, in order 0..7
         let p8 = _mm_packus_epi16(p16, p16); // low 8 bytes = elems 0..7
         let bytes = _mm_cvtsi128_si64(p8) as u64;
-        // SAFETY: `dst_start + i + 8 <= cov.len()` (caller device-clamps the
-        // window so `dst_start + n <= cov.len()`, and `i + 8 <= n`).
+        // SAFETY: `i + 8 <= n <= cov.len()` (the function's safety contract),
+        // so the eight bytes written are inside `cov`.
         unsafe {
-            let dst = cov.as_mut_ptr().add(dst_start + i);
+            let dst = cov.as_mut_ptr().add(i);
             core::ptr::copy_nonoverlapping(&bytes as *const u64 as *const u8, dst, 8);
         }
         i += 8;
     }
     // Scalar tail.
     while i < n {
-        // SAFETY: `i < n`, `dst_start + n <= cov.len()`.
+        // SAFETY: `i < n <= cov.len()` (the function's safety contract).
         unsafe {
-            *cov.get_unchecked_mut(dst_start + i) = coverage_byte(*running.get_unchecked(i), rule);
+            *cov.get_unchecked_mut(i) = coverage_byte(*running.get_unchecked(i), rule);
         }
         i += 1;
     }
@@ -1202,17 +1229,17 @@ mod tests {
         for rule in [FillRule::NonZero, FillRule::EvenOdd] {
             let mut a = vec![0u8; n];
             let mut b = vec![0u8; n];
-            convert_coverage_scalar(&running, &mut a, 0, rule);
+            convert_coverage_scalar(&running, &mut a, rule);
             #[cfg(target_arch = "x86_64")]
             {
                 if is_x86_feature_detected!("avx2") {
-                    unsafe { convert_coverage_avx2(&running, &mut b, 0, rule) };
+                    unsafe { convert_coverage_avx2(&running, &mut b, rule) };
                 } else {
-                    convert_coverage_scalar(&running, &mut b, 0, rule);
+                    convert_coverage_scalar(&running, &mut b, rule);
                 }
             }
             #[cfg(not(target_arch = "x86_64"))]
-            convert_coverage_scalar(&running, &mut b, 0, rule);
+            convert_coverage_scalar(&running, &mut b, rule);
             assert_eq!(a, b, "avx2 vs scalar coverage mismatch, rule {rule:?}");
         }
     }

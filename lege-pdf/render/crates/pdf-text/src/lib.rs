@@ -172,7 +172,7 @@ impl TextPage {
             }
             if current_object == Some(info.text_object) {
                 if let Some(rect) = out.last_mut() {
-                    *rect = union(*rect, info.char_box);
+                    *rect = rect.union(info.char_box);
                 }
             } else {
                 out.push(info.char_box);
@@ -213,7 +213,7 @@ impl TextPage {
             } else {
                 text.push(info.unicode as u16);
             }
-            bbox = Some(bbox.map_or(info.char_box, |old| union(old, info.char_box)));
+            bbox = Some(bbox.map_or(info.char_box, |old| old.union(info.char_box)));
         }
         finish_word(
             &mut words,
@@ -498,7 +498,7 @@ impl<'a> Builder<'a> {
         let th = run.horizontal_scale / 100.0;
         let mut cursor = 0.0f64;
 
-        for element in &run.elements {
+        for element in run.elements.iter() {
             match element {
                 TextElement::Adjust(value) => {
                     cursor += if vertical {
@@ -578,7 +578,7 @@ impl<'a> Builder<'a> {
             let bounds = self.chars[chars_before..]
                 .iter()
                 .map(|info| info.char_box)
-                .reduce(union);
+                .reduce(Rect::union);
             let matrix = run.text_matrix.then(self.ctm);
             self.chars.truncate(chars_before);
             self.text.truncate(text_before);
@@ -911,7 +911,7 @@ fn object_bounds(object: &[CharInfo], display: Matrix) -> Rect {
     object
         .iter()
         .map(|info| transform_rect(info.char_box, display))
-        .reduce(union)
+        .reduce(Rect::union)
         .unwrap_or(Rect {
             x0: 0.0,
             y0: 0.0,
@@ -985,15 +985,6 @@ fn intersects(a: Rect, b: Rect) -> bool {
     let a = a.normalized();
     let b = b.normalized();
     a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
-}
-
-fn union(a: Rect, b: Rect) -> Rect {
-    Rect {
-        x0: a.x0.min(b.x0),
-        y0: a.y0.min(b.y0),
-        x1: a.x1.max(b.x1),
-        y1: a.y1.max(b.y1),
-    }
 }
 
 const fn _assert_send_sync<T: Send + Sync>() {}

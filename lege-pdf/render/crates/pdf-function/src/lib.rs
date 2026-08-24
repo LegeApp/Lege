@@ -246,9 +246,12 @@ fn eval_sampled_n(
         return vec![0.0; n_out];
     }
 
-    // Per-dimension base index and interpolation fraction.
-    let mut base = vec![0usize; m];
-    let mut frac = vec![0f32; m];
+    // Per-dimension base index and interpolation fraction. `m` is bounded by
+    // `MAX_SAMPLED_INPUTS` (checked above), so these live on the stack — this
+    // is a per-texel call for DeviceN images and three heap allocations per
+    // sample is the dominant cost of the cheap case.
+    let mut base = [0usize; MAX_SAMPLED_INPUTS];
+    let mut frac = [0f32; MAX_SAMPLED_INPUTS];
     for d in 0..m {
         let dom = domain.get(d).copied().unwrap_or([0.0, 1.0]);
         let sz = size[d];
@@ -264,7 +267,7 @@ fn eval_sampled_n(
     // Row-major strides with input 0 fastest: stride[0] = 1, stride[d] =
     // stride[d-1] * size[d-1]. Saturating so a corrupt `/Size` can never
     // overflow the index arithmetic (out-of-range reads fall back to 0).
-    let mut stride = vec![1usize; m];
+    let mut stride = [1usize; MAX_SAMPLED_INPUTS];
     for d in 1..m {
         stride[d] = stride[d - 1].saturating_mul(size[d - 1]);
     }

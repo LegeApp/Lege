@@ -317,8 +317,8 @@ fn text_show_produces_run_and_font() {
     assert_eq!(page.text_runs[0].text_matrix.e, 72.0);
     assert_eq!(page.text_runs[0].text_matrix.f, 720.0);
     assert_eq!(
-        page.text_runs[0].elements,
-        vec![TextElement::Show(b"Hello".to_vec())]
+        page.text_runs[0].elements.as_ref(),
+        &[TextElement::Show(b"Hello".to_vec())][..]
     );
 
     let text = dump(&snap, &page);
@@ -336,12 +336,12 @@ fn tj_array_interleaves_shows_and_adjustments() {
     let page = compile(&snap, 0);
     assert_eq!(page.text_runs.len(), 1);
     assert_eq!(
-        page.text_runs[0].elements,
-        vec![
+        page.text_runs[0].elements.as_ref(),
+        &[
             TextElement::Show(b"A".to_vec()),
             TextElement::Adjust(-120.0),
             TextElement::Show(b"B".to_vec()),
-        ]
+        ][..]
     );
 }
 

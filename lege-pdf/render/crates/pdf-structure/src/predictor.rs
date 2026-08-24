@@ -144,14 +144,28 @@ fn apply_png(data: Vec<u8>, parms: &PredictorParms) -> Result<Vec<u8>, Predictor
         }
     }
     let rows = data.len() / stride;
-    let mut out: Vec<u8> = Vec::with_capacity(rows * row_len);
-    let mut prev_row = vec![0u8; row_len];
+    // Decode straight into the output. Every filter branch writes all
+    // `row_len` bytes of its row, so `out` needs no clearing between rows,
+    // and splitting it gives the previous row as a borrow — no per-row
+    // scratch allocation and no per-row copy into the output.
+    let mut out: Vec<u8> = vec![0u8; rows * row_len];
+    // The imaginary row above row 0 is all zero (RFC 2083 §6.3). One
+    // allocation for the whole image rather than one per row.
+    let zero_row = vec![0u8; row_len];
 
     for r in 0..rows {
         let row = &data[r * stride..(r + 1) * stride];
         let filter = row[0];
         let src = &row[1..];
-        let mut cur = vec![0u8; row_len];
+        // `done` holds every row already decoded, `cur` the row being
+        // decoded — disjoint borrows into the same buffer.
+        let (done, rest) = out.split_at_mut(r * row_len);
+        let cur = &mut rest[..row_len];
+        let prev: &[u8] = if r == 0 {
+            &zero_row
+        } else {
+            &done[(r - 1) * row_len..r * row_len]
+        };
         match filter {
             0 => cur.copy_from_slice(src),
             1 => {
@@ -164,14 +178,14 @@ fn apply_png(data: Vec<u8>, parms: &PredictorParms) -> Result<Vec<u8>, Predictor
             2 => {
                 // Up: previous row.
                 for i in 0..row_len {
-                    cur[i] = src[i].wrapping_add(prev_row[i]);
+                    cur[i] = src[i].wrapping_add(prev[i]);
                 }
             }
             3 => {
                 // Average of left and up.
                 for i in 0..row_len {
                     let left = if i >= bpp { cur[i - bpp] } else { 0 };
-                    let up = prev_row[i];
+                    let up = prev[i];
                     let avg = ((u16::from(left) + u16::from(up)) / 2) as u8;
                     cur[i] = src[i].wrapping_add(avg);
                 }
@@ -180,8 +194,8 @@ fn apply_png(data: Vec<u8>, parms: &PredictorParms) -> Result<Vec<u8>, Predictor
                 // Paeth.
                 for i in 0..row_len {
                     let left = if i >= bpp { cur[i - bpp] } else { 0 };
-                    let up = prev_row[i];
-                    let up_left = if i >= bpp { prev_row[i - bpp] } else { 0 };
+                    let up = prev[i];
+                    let up_left = if i >= bpp { prev[i - bpp] } else { 0 };
                     cur[i] = src[i].wrapping_add(paeth(left, up, up_left));
                 }
             }
@@ -189,8 +203,6 @@ fn apply_png(data: Vec<u8>, parms: &PredictorParms) -> Result<Vec<u8>, Predictor
             // failing the whole stream (tolerated deviation).
             _ => cur.copy_from_slice(src),
         }
-        out.extend_from_slice(&cur);
-        prev_row = cur;
     }
     Ok(out)
 }

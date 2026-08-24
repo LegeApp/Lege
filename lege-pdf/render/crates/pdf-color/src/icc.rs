@@ -53,7 +53,7 @@ impl IccRgb {
         if tag_count > 256 {
             return None;
         }
-        let mut find = |want: &[u8; 4]| -> Option<(usize, usize)> {
+        let find = |want: &[u8; 4]| -> Option<(usize, usize)> {
             for i in 0..tag_count {
                 let o = 132 + i * 12;
                 let sig = bytes.get(o..o + 4)?;
@@ -90,12 +90,30 @@ impl IccRgb {
     }
 
     /// Convert one encoded RGB triple (each `0..=1`) to sRGB (each `0..=1`).
+    ///
+    /// Samples `self.trc` in place. Routing this through [`to_srgb_with`]
+    /// would need the flattened form, and `trc_flat` allocates — which this
+    /// call cannot afford: image conversion calls it once per pixel, so the
+    /// 3 KiB `Vec` would be allocated and dropped millions of times per scan
+    /// to hand over data already sitting in `self`.
     pub fn to_srgb(&self, rgb: [f32; 3]) -> [f32; 3] {
-        to_srgb_with(self.trc_flat().as_ref(), &self.to_xyz_d65, rgb)
+        let lin = [
+            sample_slice(&self.trc[0], rgb[0]),
+            sample_slice(&self.trc[1], rgb[1]),
+            sample_slice(&self.trc[2], rgb[2]),
+        ];
+        let m = &self.to_xyz_d65;
+        let x = m[0] * lin[0] + m[1] * lin[1] + m[2] * lin[2];
+        let y = m[3] * lin[0] + m[4] * lin[1] + m[5] * lin[2];
+        let z = m[6] * lin[0] + m[7] * lin[1] + m[8] * lin[2];
+        cie::xyz_to_srgb(x, y, z)
     }
 
     /// The three 256-point curves, concatenated — the form the page IR carries
     /// (it depends on no colour crate, exactly like `Lab`'s white point).
+    ///
+    /// This allocates, so it is for handing the curves *out* once per profile;
+    /// per-sample conversion goes through [`Self::to_srgb`] instead.
     pub fn trc_flat(&self) -> Vec<f32> {
         let mut out = Vec::with_capacity(768);
         for c in &self.trc {
@@ -130,6 +148,7 @@ pub fn to_srgb_with(trc: &[f32], matrix: &[f32; 9], rgb: [f32; 3]) -> [f32; 3] {
     cie::xyz_to_srgb(x, y, z)
 }
 
+/// Sample one 256-point TRC curve with linear interpolation.
 fn sample_slice(trc: &[f32], v: f32) -> f32 {
     let t = v.clamp(0.0, 1.0) * 255.0;
     let lo = t.floor() as usize;
@@ -572,15 +591,6 @@ fn read_trc(bytes: &[u8], (off, len): (usize, usize)) -> Option<[f32; 256]> {
         _ => return None,
     }
     Some(out)
-}
-
-/// Sample a 256-point TRC with linear interpolation.
-fn sample_trc(trc: &[f32; 256], v: f32) -> f32 {
-    let t = v.clamp(0.0, 1.0) * 255.0;
-    let lo = t.floor() as usize;
-    let hi = (lo + 1).min(255);
-    let f = t - lo as f32;
-    trc[lo] * (1.0 - f) + trc[hi] * f
 }
 
 fn mat3_mul(a: [f32; 9], b: [f32; 9]) -> [f32; 9] {

@@ -143,7 +143,12 @@ pub struct TextRun {
     /// Text-space → user-space matrix (`Tm`) at the run's start. Excludes the
     /// CTM, which is carried by the enclosing `Concat` scope.
     pub text_matrix: Matrix,
-    pub elements: Vec<TextElement>,
+    /// `Arc` rather than `Vec`: every other heavy field here is `Copy` or
+    /// already refcounted, so this was the one field making `TextRun::clone`
+    /// a deep copy — and the run is cloned once per show operator during
+    /// interpretation and again per glyph run in both lowering and text
+    /// extraction. Never mutated after construction.
+    pub elements: Arc<[TextElement]>,
     /// Whether this run participates in painting. Hidden optional content and
     /// extraction-only Type 3 runs remain available to `pdf-text`.
     pub visible: bool,

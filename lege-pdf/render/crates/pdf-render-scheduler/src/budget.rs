@@ -6,6 +6,12 @@
 //! exceeding the whole budget fail fast.
 
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
+/// How long a blocked `acquire_cancellable` waits before re-testing the
+/// caller's cancellation flag. Short enough that a cancelled pipeline drains
+/// promptly, long enough that an uncontended wait is still a plain park.
+const CANCEL_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Debug)]
 struct State {
@@ -65,26 +71,60 @@ impl MemoryBudget {
     /// Block until `bytes` can be reserved. Fails fast if `bytes` exceeds
     /// the total budget (it could never be satisfied).
     pub fn acquire(&self, bytes: u64) -> Result<MemoryPermit, BudgetExceeded> {
+        match self.acquire_cancellable(bytes, || false)? {
+            Some(permit) => Ok(permit),
+            // `cancelled` is constantly false, so the wait only ends with a
+            // permit. Report the reservation as unsatisfiable rather than
+            // panicking on an impossible branch.
+            None => Err(BudgetExceeded {
+                requested: bytes,
+                limit: self.inner.limit,
+            }),
+        }
+    }
+
+    /// Blocking `acquire` that also gives up when `cancelled` becomes true.
+    ///
+    /// A worker parked on the condvar is woken only by a `release`, so without
+    /// this a cancelled pipeline still holds every blocked worker until some
+    /// *other* job finishes — the cancellation is honoured late, and on a
+    /// pipeline whose remaining jobs are all queued behind the budget, only
+    /// once the in-flight ones drain. Re-testing the flag on a short timeout
+    /// costs nothing on the uncontended path and bounds that delay.
+    ///
+    /// Returns `Ok(None)` when the wait was abandoned because of cancellation.
+    pub fn acquire_cancellable(
+        &self,
+        bytes: u64,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<MemoryPermit>, BudgetExceeded> {
         if bytes > self.inner.limit {
             return Err(BudgetExceeded {
                 requested: bytes,
                 limit: self.inner.limit,
             });
         }
+        if cancelled() {
+            return Ok(None);
+        }
         let mut state = self.lock_state();
         while bytes > self.inner.limit - state.in_use {
             // Same poison-recovery rationale as `lock_state`.
-            state = self
+            let (next, _timeout) = self
                 .inner
                 .freed
-                .wait(state)
+                .wait_timeout(state, CANCEL_POLL)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if cancelled() {
+                return Ok(None);
+            }
         }
         state.in_use += bytes;
-        Ok(MemoryPermit {
+        Ok(Some(MemoryPermit {
             budget: self.clone(),
             bytes,
-        })
+        }))
     }
 
     /// Non-blocking variant; `None` if the reservation doesn't fit now.

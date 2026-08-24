@@ -651,21 +651,25 @@ impl<'a> Loader<'a> {
     /// Decode one xref-stream entry (ISO 32000-1 Table 18 / PDFium
     /// `ProcessCrossRefStreamEntry`).
     fn record_stream_entry(&mut self, entry: &[u8], widths: &[u64], number: u32) {
-        fn field(entry: &[u8], widths: &[u64], idx: usize) -> u64 {
-            let start: u64 = widths[..idx].iter().sum();
-            let (start, len) = (start as usize, widths[idx] as usize);
+        // Field offsets are a property of `W`, not of the entry, so walk the
+        // prefix once here instead of re-summing it inside `field` for each of
+        // the three fields of every entry in the table.
+        let mut offsets = [0usize; 3];
+        let mut at = 0usize;
+        for (i, w) in widths.iter().take(3).enumerate() {
+            offsets[i] = at;
+            at += *w as usize;
+        }
+        let field = |idx: usize| -> u64 {
+            let (start, len) = (offsets[idx], widths[idx] as usize);
             entry[start..start + len]
                 .iter()
                 .fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
-        }
-        // W[0] = 0 → default entry type 1 (ISO 32000-1 Table 17).
-        let entry_type = if widths[0] == 0 {
-            1
-        } else {
-            field(entry, widths, 0)
         };
-        let f1 = field(entry, widths, 1);
-        let f2 = field(entry, widths, 2);
+        // W[0] = 0 → default entry type 1 (ISO 32000-1 Table 17).
+        let entry_type = if widths[0] == 0 { 1 } else { field(0) };
+        let f1 = field(1);
+        let f2 = field(2);
         match entry_type {
             0 => {
                 if let Ok(generation) = u16::try_from(f2) {

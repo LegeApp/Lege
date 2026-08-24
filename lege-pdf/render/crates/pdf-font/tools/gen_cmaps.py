@@ -276,6 +276,9 @@ def main():
     # Emit the Scheme/Kind enums referenced above (kept next to the data users).
     header = [
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
+        "// `OneByte` mirrors PDFium's full set of coding schemes; none of the",
+        "// predefined CMaps transcribed here happens to use it.",
+        "#[allow(dead_code)]",
         "pub(crate) enum Scheme { OneByte, TwoBytes, MixedTwoBytes }",
         "",
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",

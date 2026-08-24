@@ -9,6 +9,8 @@
 //! worker-owned (it lives on / is derived from the worker's parse context)
 //! — never global.
 
+use std::borrow::Cow;
+
 use pdf_object::{Dictionary, NameTable, PdfObject};
 
 use crate::predictor::{PredictorError, PredictorParms, apply_predictor};
@@ -123,14 +125,19 @@ fn decode_stream_inner(
     if filters.is_empty() {
         budget.charge(raw.len())?;
     }
-    let mut data = raw.to_vec();
+    // Borrow the body rather than copying it: the first filter reads it and
+    // replaces `data` outright, so an eager `to_vec` here is a full-stream
+    // copy that is discarded on the very next line for every filtered stream
+    // in the document. The copy still happens, once, at whichever return
+    // actually needs to hand back owned bytes.
+    let mut data: Cow<'_, [u8]> = Cow::Borrowed(raw);
     for (i, (f, p)) in filters.iter().zip(parms_list).enumerate() {
         let Some(name_id) = f.as_name() else {
             return Err(DecodeError::Corrupt("/Filter entry is not a name"));
         };
         let name = names.resolve(name_id);
         let parms_dict = p.as_ref().and_then(|p| p.as_dict().cloned());
-        data = match name.as_ref() {
+        data = Cow::Owned(match name.as_ref() {
             b"FlateDecode" | b"Fl" => {
                 let inflated = flate_decode(&data, budget)?;
                 apply_parms(inflated, parms_dict.as_ref(), names)?
@@ -166,16 +173,16 @@ fn decode_stream_inner(
                 if i == 0 {
                     budget.charge(data.len())?;
                 }
-                return Ok((data, Some(canonical.to_owned())));
+                return Ok((data.into_owned(), Some(canonical.to_owned())));
             }
             other => {
                 return Err(DecodeError::UnsupportedFilter(
                     String::from_utf8_lossy(other).into_owned(),
                 ));
             }
-        };
+        });
     }
-    Ok((data, None))
+    Ok((data.into_owned(), None))
 }
 
 /// Read predictor parameters out of a `/DecodeParms` dict and apply them.

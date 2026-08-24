@@ -37,6 +37,15 @@ pub struct ContentLimits {
     pub max_ops: u64,
     /// Maximum XObject/pattern invocation nesting (recursion guard).
     pub max_invoke_depth: u32,
+    /// Maximum nesting of a `/ColorSpace` entry that names another space
+    /// (`/Indexed` over `/Separation` over `/ICCBased`, …). A malformed or
+    /// cyclic resource cannot recurse past this.
+    pub max_colorspace_depth: u32,
+    /// Maximum `/Functions` nesting inside a Type 3 (stitching) function.
+    pub max_function_depth: u32,
+    /// Maximum nesting of a page's `/Contents` when it is an array of arrays
+    /// or a reference chain.
+    pub max_content_depth: usize,
     /// Limits for the underlying content tokenizer.
     pub syntax: pdf_syntax::SyntaxLimits,
 }
@@ -46,6 +55,9 @@ impl Default for ContentLimits {
         Self {
             max_ops: 5_000_000,
             max_invoke_depth: 16,
+            max_colorspace_depth: 8,
+            max_function_depth: 32,
+            max_content_depth: 8,
             syntax: pdf_syntax::SyntaxLimits::default(),
         }
     }
@@ -197,7 +209,8 @@ impl PageCompiler {
             rotate: page_ref.rotate,
         };
 
-        let content = interpret::gather_content(snapshot, page_ref.contents.as_ref(), ctx)?;
+        let content =
+            interpret::gather_content(snapshot, page_ref.contents.as_ref(), ctx, &self.limits)?;
         if ctx.is_cancelled() {
             return Err(ContentError::Cancelled);
         }
@@ -273,7 +286,8 @@ impl PageCompiler {
         profile.add_duration("compile.page_lookup", page_start.elapsed());
 
         let content_start = std::time::Instant::now();
-        let content = interpret::gather_content(snapshot, page_ref.contents.as_ref(), ctx)?;
+        let content =
+            interpret::gather_content(snapshot, page_ref.contents.as_ref(), ctx, &self.limits)?;
         profile.add_duration("compile.content_gather", content_start.elapsed());
         profile.increment("compile.content_bytes", content.len() as u64);
 

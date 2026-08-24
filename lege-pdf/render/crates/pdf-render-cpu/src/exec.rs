@@ -792,29 +792,19 @@ fn paint_image(
             sample_taps = result.2;
         }
     } else {
+        // Mask geometry is fixed for the whole draw; resolve it once.
+        let clip_win = cmask.map(ClipMask::clip_window);
+        let soft_win = soft.map(ClipMask::soft_window);
         for y in y0..y1 {
             let row = surface.row_mut(y);
             for x in x0..x1 {
                 // Clip mask coverage.
                 let mut cov: u16 = 255;
-                if let Some(cm) = cmask {
-                    let (cx, cy) = (cm.bounds.x as usize, cm.bounds.y as usize);
-                    let (cw, ch) = (cm.bounds.width as usize, cm.bounds.height as usize);
-                    cov = if x >= cx && x < cx + cw && y >= cy && y < cy + ch {
-                        cm.data[(y - cy) * cm.stride() + (x - cx)] as u16
-                    } else {
-                        0
-                    };
+                if let Some(cw) = &clip_win {
+                    cov = cw.coverage(x, y);
                 }
-                if let Some(sm) = soft {
-                    let (sx, sy) = (sm.bounds.x as usize, sm.bounds.y as usize);
-                    let (sw, sh) = (sm.bounds.width as usize, sm.bounds.height as usize);
-                    let v = if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
-                        sm.data[(y - sy) * sm.stride() + (x - sx)] as u16
-                    } else {
-                        sm.outside as u16
-                    };
-                    cov = mul_div_255(cov, v);
+                if let Some(sw) = &soft_win {
+                    cov = mul_div_255(cov, sw.coverage(x, y));
                 }
                 if cov == 0 {
                     continue;
@@ -1018,22 +1008,14 @@ fn paint_axis_aligned_binary_box(
     let mut painted = 0u64;
     let mut attempts = 0u64;
     let mut taps = 0u64;
+    // Fixed for the whole draw; resolve it once rather than per pixel.
+    let clip_win = cmask.map(ClipMask::clip_window);
     for (local_y, row_taps) in source_rows.iter().enumerate() {
         let y = y0 + local_y;
         let row = surface.row_mut(y);
         for (local_x, col_taps) in source_columns.iter().enumerate() {
             let x = x0 + local_x;
-            let cov = if let Some(cm) = cmask {
-                let (cx, cy) = (cm.bounds.x as usize, cm.bounds.y as usize);
-                let (cw, ch) = (cm.bounds.width as usize, cm.bounds.height as usize);
-                if x >= cx && x < cx + cw && y >= cy && y < cy + ch {
-                    cm.data[(y - cy) * cm.stride() + (x - cx)] as u16
-                } else {
-                    0
-                }
-            } else {
-                255
-            };
+            let cov = clip_win.as_ref().map_or(255, |cw| cw.coverage(x, y));
             if cov == 0 {
                 continue;
             }
@@ -1245,23 +1227,15 @@ fn paint_binary_box_sat(
     // per pixel.
     let mut memo_key = (u64::MAX, u64::MAX);
     let mut memo_color = [0u8; 4];
+    // Fixed for the whole draw; resolve it once rather than per pixel.
+    let clip_win = cmask.map(ClipMask::clip_window);
 
     for (local_y, row_taps) in source_rows.iter().enumerate() {
         let y = y0 + local_y;
         let row = surface.row_mut(y);
         for (local_x, col_taps) in source_columns.iter().enumerate() {
             let x = x0 + local_x;
-            let cov = if let Some(cm) = cmask {
-                let (cx, cy) = (cm.bounds.x as usize, cm.bounds.y as usize);
-                let (cw, ch) = (cm.bounds.width as usize, cm.bounds.height as usize);
-                if x >= cx && x < cx + cw && y >= cy && y < cy + ch {
-                    cm.data[(y - cy) * cm.stride() + (x - cx)] as u16
-                } else {
-                    0
-                }
-            } else {
-                255
-            };
+            let cov = clip_win.as_ref().map_or(255, |cw| cw.coverage(x, y));
             if cov == 0 {
                 continue;
             }
@@ -1393,6 +1367,10 @@ struct BilinearAxis {
 /// enough that the parallel overhead is recovered. On x86_64, each row's
 /// interior uses SSE (`f32x4`) to bilinear-filter four consecutive pixels at
 /// a time with the same f32 op order + truncate-to-u8 as the scalar path.
+#[allow(
+    unsafe_code,
+    reason = "dispatches the SSE2 row kernel behind a target check; see SAFETY comment"
+)]
 fn paint_axis_aligned_rgb8_bilinear_opaque(
     img: &crate::image::PreparedImage,
     surface: &mut Surface,
@@ -1570,6 +1548,10 @@ fn bilinear_rgb8_pixel(
 /// ABI). Sample indices derived from `columns`/`ry` must lie in `samples`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
+#[allow(
+    unsafe_code,
+    reason = "SSE2 intrinsics and one unaligned store; see the Safety section"
+)]
 unsafe fn paint_bilinear_row_sse2(
     samples: &[u8],
     source_stride: usize,
@@ -2220,7 +2202,9 @@ fn render_tiling(
     let blend_is_normal = matches!(blend, BlendChoice::Normal);
     for ly in 0..h {
         let dy = by + ly;
-        let prow: Vec<u8> = pat.local_row(ly).to_vec();
+        // `pat` is this function's own offscreen (built above), distinct from
+        // `surface`, so the row can be borrowed rather than copied.
+        let prow = pat.local_row(ly);
         let srow = surface.row_mut(dy);
         for lx in 0..w {
             let cov = fmask[ly * w + lx];

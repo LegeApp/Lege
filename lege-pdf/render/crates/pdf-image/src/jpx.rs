@@ -523,6 +523,10 @@ impl JpxCodec {
 
 /// Allocate the renderer's final shared JPX output directly. The allocation is
 /// uniquely owned while jp2lam fills it, then handed to `DecodedImage` unchanged.
+#[allow(
+    unsafe_code,
+    reason = "Arc::new_zeroed_slice hands back MaybeUninit; see SAFETY comment"
+)]
 fn zeroed_arc(len: usize) -> Arc<[u8]> {
     let data = Arc::<[u8]>::new_zeroed_slice(len);
     // SAFETY: `new_zeroed_slice` initialized every `u8` to a valid zero value.

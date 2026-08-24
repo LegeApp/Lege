@@ -8,6 +8,10 @@
 //!   render <file.pdf> <page> <out.ppm>  render one page via the selected backend
 //!   attribute <file.pdf> <page> <prefix> diagnostic leaf/origin planes
 //!
+//! An encrypted document's open password comes from `LEGE_PDF_PASSWORD`, or
+//! from `--password <value>` when that is unset. Prefer the environment
+//! variable: argv is visible to every process on the machine.
+//!
 //! Deliberately dependency-light (no clap yet); this binary exists to
 //! exercise the full open → compile → render path and will grow a `diff`
 //! subcommand.
@@ -48,9 +52,19 @@ fn take_flag_value(args: &mut Vec<String>, name: &str) -> Option<String> {
     Some(value)
 }
 
+/// The document open password.
+///
+/// `--password` is kept for convenience, but argv is world-readable in the
+/// process table on every platform this runs on, so `LEGE_PDF_PASSWORD` takes
+/// precedence and is the form to use anywhere the machine is shared.
+fn open_password(args: &mut Vec<String>) -> Option<String> {
+    let flag = take_flag_value(args, "--password");
+    std::env::var("LEGE_PDF_PASSWORD").ok().or(flag)
+}
+
 fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let password = take_flag_value(&mut args, "--password");
+    let password = open_password(&mut args);
     let password = password.as_deref();
     let system_fonts = take_flag(&mut args, "--system-fonts");
     let text_chars = take_flag(&mut args, "--chars");

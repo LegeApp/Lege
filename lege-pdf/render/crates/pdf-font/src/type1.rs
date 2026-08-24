@@ -514,8 +514,13 @@ impl<'a> Interp<'a> {
     }
 
     fn run_glyph(&mut self, gid: u32, depth: u32) -> Option<()> {
-        let code = self.font.glyphs.get(gid as usize)?.code.clone();
-        self.exec(&code, depth)
+        // `self.font` is a shared reference to a font this interpreter does
+        // not own, so lifting it out of `self` first borrows the charstring
+        // from the font, not from `self` — `exec` can then take `&mut self`
+        // without the bytes being cloned once per glyph drawn.
+        let font = self.font;
+        let code = &font.glyphs.get(gid as usize)?.code;
+        self.exec(code, depth)
     }
 
     fn finish(mut self) -> Outline {
@@ -644,11 +649,11 @@ impl<'a> Interp<'a> {
                 10 => {
                     // callsubr
                     let n = self.stack.pop().unwrap_or(0.0) as i32;
+                    let font = self.font;
                     if n >= 0
-                        && let Some(sub) = self.font.subrs.get(n as usize)
+                        && let Some(sub) = font.subrs.get(n as usize)
                     {
-                        let sub = sub.clone();
-                        self.exec(&sub, depth + 1)?;
+                        self.exec(sub, depth + 1)?;
                     }
                 }
                 11 => return Some(()), // return
@@ -820,18 +825,19 @@ impl<'a> Interp<'a> {
         };
         let (bg, ag) = (gid_of(self, bchar), gid_of(self, achar));
 
+        let font = self.font;
         if let Some(bg) = bg {
-            let code = self.font.glyphs.get(bg as usize)?.code.clone();
+            let code = &font.glyphs.get(bg as usize)?.code;
             self.reset_pen();
-            self.exec(&code, depth + 1)?;
+            self.exec(code, depth + 1)?;
             self.close_path();
         }
         if let Some(ag) = ag {
-            let code = self.font.glyphs.get(ag as usize)?.code.clone();
+            let code = &font.glyphs.get(ag as usize)?.code;
             let shift_x = base_lsb - asb + adx;
             let before = self.outline.points.len();
             self.reset_pen();
-            self.exec(&code, depth + 1)?;
+            self.exec(code, depth + 1)?;
             self.close_path();
             for p in &mut self.outline.points[before..] {
                 p[0] += shift_x;

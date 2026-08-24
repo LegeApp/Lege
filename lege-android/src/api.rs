@@ -7,8 +7,9 @@
 //! boundary is undefined behaviour, and panics are genuinely reachable here:
 //! `lege-process` does not adopt the workspace's `panic = "deny"` lints, and
 //! the pipeline contains reachable `expect` calls (`progress.rs`'s poisoned
-//! cancel registry, for one). The guards only function because the `android`
-//! cargo profile overrides `release`'s `panic = "abort"` back to `"unwind"`.
+//! cancel registry, for one). The guards only function under `panic =
+//! "unwind"`, which both `release` and the `android` profile set — the latter
+//! restates it so this crate never silently loses it.
 
 // Rust 2024 spells exported-symbol attributes `#[unsafe(no_mangle)]`, which
 // trips the workspace's `unsafe_code` lint. Exporting these symbols under

@@ -72,7 +72,7 @@ pub fn dump_semantic(page: &SemanticPage, names: &NameTable) -> String {
                 r.render_mode,
                 matrix(&r.text_matrix),
             );
-            for el in &r.elements {
+            for el in r.elements.iter() {
                 match el {
                     TextElement::Show(s) => {
                         let _ = writeln!(out, "    show \"{}\"", escape(s));

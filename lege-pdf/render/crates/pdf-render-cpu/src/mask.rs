@@ -58,6 +58,63 @@ impl ClipMask {
     pub fn stride(&self) -> usize {
         self.bounds.width as usize
     }
+
+    /// Resolve this mask's geometry once, for per-pixel sampling in a draw
+    /// loop. `outside` is 0 — a clip has no backdrop outside its bounds.
+    #[inline]
+    pub fn clip_window(&self) -> MaskWindow<'_> {
+        MaskWindow::new(self, 0)
+    }
+
+    /// As [`Self::clip_window`], but for a soft mask, whose pixels outside
+    /// `bounds` take the mask's own backdrop value (ISO 32000-1 §11.6.5.2).
+    #[inline]
+    pub fn soft_window(&self) -> MaskWindow<'_> {
+        MaskWindow::new(self, self.outside)
+    }
+}
+
+/// A mask's geometry, resolved once so per-pixel sampling is pure arithmetic.
+///
+/// Reading `bounds.x/y/width/height` and calling `stride()` is loop-invariant
+/// across a whole draw, but the obvious spelling repeats all five per pixel.
+/// The glyph-run and tiling paths already hoist this by hand; this is the same
+/// hoist as a value, so every draw loop gets it without the copy-paste.
+#[derive(Debug, Clone, Copy)]
+pub struct MaskWindow<'a> {
+    data: &'a [u8],
+    x0: usize,
+    y0: usize,
+    width: usize,
+    height: usize,
+    outside: u16,
+}
+
+impl<'a> MaskWindow<'a> {
+    #[inline]
+    fn new(mask: &'a ClipMask, outside: u8) -> Self {
+        Self {
+            data: &mask.data,
+            x0: mask.bounds.x as usize,
+            y0: mask.bounds.y as usize,
+            width: mask.bounds.width as usize,
+            height: mask.bounds.height as usize,
+            outside: outside as u16,
+        }
+    }
+
+    /// Coverage at an absolute device pixel.
+    #[inline]
+    pub fn coverage(&self, x: usize, y: usize) -> u16 {
+        let (Some(lx), Some(ly)) = (x.checked_sub(self.x0), y.checked_sub(self.y0)) else {
+            return self.outside;
+        };
+        if lx < self.width && ly < self.height {
+            self.data[ly * self.width + lx] as u16
+        } else {
+            self.outside
+        }
+    }
 }
 
 /// Build the combined mask for clip `cid`: the product of every path clip in

@@ -958,13 +958,14 @@ impl<'a> Interpreter<'a> {
                 .unwrap_or(false)
         };
         let colorant_none = kind == b"Separation" && colorant_name(self, items, b"None");
-        // `/All` is *not* special-cased when painting: PDFium's
-        // `CPDF_SeparationCS::GetRGB` branches only on `/None`, and runs the
-        // tint transform for every other colorant name including `/All`.
-        // Short-circuiting it to neutral ink rendered custom/color_separation_3
-        // as flat grey 128 where PDFium, hayro and MuPDF all produce the
-        // transform's brown (81, 74, 71). Retained only as a page-feature note.
-        let colorant_all = kind == b"Separation" && colorant_name(self, items, b"All");
+        // `/All` is deliberately *not* special-cased, and deliberately not
+        // recorded: PDFium's `CPDF_SeparationCS::GetRGB` branches only on
+        // `/None` and runs the tint transform for every other colorant name,
+        // `/All` included. Short-circuiting `/All` to neutral ink rendered
+        // custom/color_separation_3 as flat grey 128 where PDFium, hayro and
+        // MuPDF all produce the transform's brown (81, 74, 71). If a page
+        // feature note ever wants it, recompute it here — do not reintroduce
+        // a field that nothing reads.
 
         let alt_arity = items
             .get(2)
@@ -1015,7 +1016,6 @@ impl<'a> Interpreter<'a> {
             alt_arity,
             func,
             colorant_none,
-            colorant_all,
             alt_cie,
             alt_icc_cmyk,
         }))
@@ -1610,6 +1610,9 @@ impl<'a> Interpreter<'a> {
             // Showing text with no selected font: nothing placeable.
             return;
         };
+        // One `Vec` -> `Arc` move; the run and the Type 3 path below then
+        // share the elements instead of each holding a full copy.
+        let elements: std::sync::Arc<[TextElement]> = elements.into();
         let type3 = self.fonts[font.index()].subtype == b"Type3";
         let visible = !self.oc_hidden();
         let run = TextRun {
@@ -1621,7 +1624,7 @@ impl<'a> Interpreter<'a> {
             horizontal_scale: self.gs.horizontal_scale,
             rise: self.gs.rise,
             text_matrix: self.text_matrix,
-            elements: elements.clone(),
+            elements: std::sync::Arc::clone(&elements),
             visible: visible && !type3,
             actual_text: self.active_actual_text(),
         };
@@ -1665,10 +1668,10 @@ impl<'a> Interpreter<'a> {
         // §9.4.4 "in vertical writing mode, tx = 0, ty = …").
         let vertical = metrics.is_vertical();
         let (mut tx, mut ty) = (0.0f64, 0.0f64);
-        for e in &elements {
+        for e in elements.iter() {
             match e {
                 TextElement::Show(bytes) => {
-                    for dc in metrics.decode(bytes) {
+                    for dc in metrics.decode(bytes.as_slice()) {
                         let word = if dc.word_space {
                             self.gs.word_spacing
                         } else {
@@ -3134,12 +3137,17 @@ impl<'a> Interpreter<'a> {
                 if let Some(icc) = self.icc_rgb_transform(stream) {
                     let src = samples.get(..n_px.checked_mul(3)?)?;
                     let mut out = Vec::with_capacity(n_px * 3);
+                    // `/Decode` is fixed for the whole image; resolve the three
+                    // ranges once instead of walking the array three times per
+                    // pixel.
+                    let ranges: [[f32; 2]; 3] = std::array::from_fn(|c| {
+                        decode.and_then(|d| d.get(c)).copied().unwrap_or([0.0, 1.0])
+                    });
+                    let dec = |c: usize, raw: u8| -> f32 {
+                        let [lo, hi] = ranges[c];
+                        lo + raw as f32 / 255.0 * (hi - lo)
+                    };
                     for px in src.chunks_exact(3) {
-                        let dec = |c: usize, raw: u8| -> f32 {
-                            let [lo, hi] =
-                                decode.and_then(|d| d.get(c)).copied().unwrap_or([0.0, 1.0]);
-                            lo + raw as f32 / 255.0 * (hi - lo)
-                        };
                         let rgb = icc.to_srgb([dec(0, px[0]), dec(1, px[1]), dec(2, px[2])]);
                         for c in rgb {
                             out.push((c.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -3207,11 +3215,16 @@ impl<'a> Interpreter<'a> {
                 // [0 100 amin amax bmin bmax].
                 let default_decode: [[f32; 2]; 3] =
                     [[0.0, 100.0], [range[0], range[1]], [range[2], range[3]]];
-                let dec = |c: usize, raw: u8| -> f32 {
-                    let [lo, hi] = decode
+                // Fixed for the whole image: resolve once, not three times
+                // per pixel.
+                let ranges: [[f32; 2]; 3] = std::array::from_fn(|c| {
+                    decode
                         .and_then(|d| d.get(c))
                         .copied()
-                        .unwrap_or(default_decode[c]);
+                        .unwrap_or(default_decode[c])
+                });
+                let dec = |c: usize, raw: u8| -> f32 {
+                    let [lo, hi] = ranges[c];
                     lo + raw as f32 / 255.0 * (hi - lo)
                 };
                 let src = samples.get(..n_px.checked_mul(3)?)?;
@@ -3304,7 +3317,7 @@ impl<'a> Interpreter<'a> {
         depth: u32,
     ) -> Option<pdf_page_ir::ImageColorSpace> {
         use pdf_page_ir::ImageColorSpace as Cs;
-        if depth > 8 {
+        if depth > self.limits.max_colorspace_depth {
             return None;
         }
         let resolved = self.resolve_obj(obj)?;
@@ -5045,7 +5058,7 @@ impl<'a> Interpreter<'a> {
     /// cyclic `/Functions` reference cannot recurse without limit
     /// (malformed-resource guard).
     fn build_function(&mut self, obj: &PdfObject, depth: u32) -> Option<pdf_function::Function> {
-        if depth > 32 {
+        if depth > self.limits.max_function_depth {
             return None;
         }
         let resolved = self.resolve_obj(obj)?;
@@ -5958,12 +5971,13 @@ pub(crate) fn gather_content(
     snapshot: &DocumentSnapshot,
     contents: Option<&PdfObject>,
     ctx: &mut ParseContext,
+    limits: &ContentLimits,
 ) -> Result<Vec<u8>, ContentError> {
     let Some(contents) = contents else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    append_content(snapshot, contents, ctx, &mut out, 0)?;
+    append_content(snapshot, contents, ctx, &mut out, 0, limits)?;
     Ok(out)
 }
 
@@ -5973,8 +5987,9 @@ fn append_content(
     ctx: &mut ParseContext,
     out: &mut Vec<u8>,
     depth: usize,
+    limits: &ContentLimits,
 ) -> Result<(), ContentError> {
-    if depth > 8 {
+    if depth > limits.max_content_depth {
         return Ok(());
     }
     match obj {
@@ -5982,13 +5997,13 @@ fn append_content(
             // A content object that fails to resolve is skipped, not fatal:
             // the page renders whatever other content streams it has.
             match snapshot.objects().resolve(snapshot, *id, ctx) {
-                Ok(resolved) => append_content(snapshot, &resolved, ctx, out, depth + 1)?,
+                Ok(resolved) => append_content(snapshot, &resolved, ctx, out, depth + 1, limits)?,
                 Err(e) => ctx.note_recovery(format!("page content object {id} unresolved: {e}")),
             }
         }
         PdfObject::Array(items) => {
             for item in items.iter() {
-                append_content(snapshot, item, ctx, out, depth + 1)?;
+                append_content(snapshot, item, ctx, out, depth + 1, limits)?;
             }
         }
         PdfObject::Stream(stream) => {
@@ -6049,12 +6064,10 @@ struct TintSpace {
     /// whose alternate is the document's `/DefaultCMYK` press profile — the
     /// Huser cover). Mirrors `base_cs_->GetRGB` where the base is ICCBased.
     alt_icc_cmyk: Option<Arc<pdf_color::icc::IccCmyk>>,
-    /// The `/None` colorant, which marks nothing.
+    /// The `/None` colorant, which marks nothing. `/All` is *not* tracked —
+    /// see the construction site for why it must run the tint transform like
+    /// any other colorant name.
     colorant_none: bool,
-    /// The `/All` colorant (ISO 32000-1 §8.6.6.4): paints on *every*
-    /// separation, so a composite preview renders it as neutral ink —
-    /// tint 1.0 is black — bypassing the tint transform.
-    colorant_all: bool,
 }
 
 /// A CIE-based colour space's conversion parameters (ISO 32000-1 §8.6.5),

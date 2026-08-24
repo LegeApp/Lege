@@ -9,6 +9,9 @@
 use super::cmap::RawCMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `OneByte` mirrors PDFium's full set of coding schemes; none of the
+// predefined CMaps transcribed here happens to use it.
+#[allow(dead_code)]
 pub(crate) enum Scheme {
     OneByte,
     TwoBytes,

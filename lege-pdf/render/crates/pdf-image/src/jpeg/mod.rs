@@ -1527,7 +1527,14 @@ impl<'a> Decoder<'a> {
                 }
                 for bcol in 0..c.bw {
                     let off = (brow * c.bw + bcol) * 64;
-                    idct_block(&c.coeffs[off..off + 64], &dq, &mut block);
+                    // `coeffs` is allocated as `bw * bh * 64`, so the block is
+                    // always present; take it as a fixed-size reference so the
+                    // AVX2 kernel's 64-element read is guaranteed by the type.
+                    let Some(coeff_block) = c.coeffs.get(off..).and_then(<[i16]>::first_chunk)
+                    else {
+                        continue;
+                    };
+                    idct_block(coeff_block, &dq, &mut block);
                     let base = brow * dct * pw + bcol * dct;
                     if dct == 8 {
                         for (y, row) in block.chunks_exact(8).enumerate() {
@@ -1563,7 +1570,7 @@ impl<'a> Decoder<'a> {
 // feature intrinsics; the crate otherwise warns on `unsafe_code`.
 #[allow(unsafe_code)]
 #[inline]
-fn idct_block(coeffs: &[i16], dequant: &[f32; 64], out: &mut [f32; 64]) {
+fn idct_block(coeffs: &[i16; 64], dequant: &[f32; 64], out: &mut [f32; 64]) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
@@ -1576,7 +1583,7 @@ fn idct_block(coeffs: &[i16], dequant: &[f32; 64], out: &mut [f32; 64]) {
 }
 
 /// Scalar reference IDCT (also the fallback when AVX2 is unavailable).
-fn idct_block_scalar(coeffs: &[i16], dequant: &[f32; 64], out: &mut [f32; 64]) {
+fn idct_block_scalar(coeffs: &[i16; 64], dequant: &[f32; 64], out: &mut [f32; 64]) {
     let mut ws = [0f32; 64];
 
     // Pass 1: columns. All-zero AC columns collapse to a constant.
@@ -1754,10 +1761,16 @@ unsafe fn transpose8_avx2(r: [__m256; 8]) -> [__m256; 8] {
 
 /// AVX2 IDCT: column pass (lane = column), transpose, row pass (lane = row),
 /// transpose back. Bit-identical to [`idct_block_scalar`].
+///
+/// # Safety
+/// The CPU must support AVX2 (the caller's runtime probe establishes this).
+/// The 64-coefficient block is read through raw pointers, so `coeffs` is
+/// `&[i16; 64]` rather than a slice: the length precondition is discharged by
+/// the type and cannot be violated by a caller.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_code)]
-unsafe fn idct_block_avx2(coeffs: &[i16], dequant: &[f32; 64], out: &mut [f32; 64]) {
+unsafe fn idct_block_avx2(coeffs: &[i16; 64], dequant: &[f32; 64], out: &mut [f32; 64]) {
     unsafe {
         // Load and dequantize each of the 8 rows (lane = column).
         let mut reg = [_mm256_setzero_ps(); 8];
@@ -1895,17 +1908,17 @@ unsafe fn store_band_block_avx2(fbuf: &[f32; 64], band: &mut [u8], base: usize, 
 #[allow(unsafe_code)]
 #[inline]
 unsafe fn pack_low_bytes_avx2(v: __m256i) -> u64 {
-    unsafe {
-        #[rustfmt::skip]
-        let shuf = _mm256_setr_epi8(
-            0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        );
-        let bytes = _mm256_shuffle_epi8(v, shuf);
-        let lo4 = _mm_cvtsi128_si32(_mm256_castsi256_si128(bytes)) as u32 as u64;
-        let hi4 = _mm_cvtsi128_si32(_mm256_extracti128_si256::<1>(bytes)) as u32 as u64;
-        lo4 | (hi4 << 32)
-    }
+    // No `unsafe` block: every intrinsic below is a safe `target_feature` fn
+    // callable from this equally-`target_feature`d function.
+    #[rustfmt::skip]
+    let shuf = _mm256_setr_epi8(
+        0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+    let bytes = _mm256_shuffle_epi8(v, shuf);
+    let lo4 = _mm_cvtsi128_si32(_mm256_castsi256_si128(bytes)) as u32 as u64;
+    let hi4 = _mm_cvtsi128_si32(_mm256_extracti128_si256::<1>(bytes)) as u32 as u64;
+    lo4 | (hi4 << 32)
 }
 
 /// Vectorized YCbCr→RGB for one row, for the SIMD-eligible layouts
@@ -2511,12 +2524,22 @@ fn assemble(
     let stride = w * bpp;
     let mut out = zeroed_arc(stride * h);
     let mut sampled = vec![vec![0u8; w]; n];
+    // Per-component sample geometry depends only on the component, not on the
+    // row, but sits inside the row loop if derived inline — `h * n` redundant
+    // `div_ceil` chains on a tall scan. Derive it once.
+    let geom: Vec<(usize, usize, usize)> = (0..n)
+        .map(|ci| {
+            (
+                component_sample_width(frame, ci),
+                component_sample_height(frame, ci),
+                frame.comps[ci].bw * frame.dct_size,
+            )
+        })
+        .collect();
     for y in 0..h {
         for ci in 0..n {
             let c = &frame.comps[ci];
-            let source_w = component_sample_width(frame, ci);
-            let source_h = component_sample_height(frame, ci);
-            let source_stride = c.bw * frame.dct_size;
+            let (source_w, source_h, source_stride) = geom[ci];
             let sy = (y * c.v / frame.vmax).min(source_h - 1);
             let far_sy = if modes[ci].needs_vertical_context() {
                 if y & 1 == 0 {
@@ -2587,6 +2610,10 @@ fn image(
 /// rehomed into `Arc<[u8]>` without a full allocation and copy because the Arc
 /// refcounts need adjacent storage; scan assembly writes into this uniquely
 /// owned allocation and then hands it to `DecodedImage` unchanged.
+#[allow(
+    unsafe_code,
+    reason = "Arc::new_zeroed_slice hands back MaybeUninit; see SAFETY comment"
+)]
 fn zeroed_arc(len: usize) -> Arc<[u8]> {
     let data = Arc::<[u8]>::new_zeroed_slice(len);
     // SAFETY: `new_zeroed_slice` initialized every `u8` to a valid zero value.

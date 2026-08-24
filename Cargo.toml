@@ -190,10 +190,19 @@ jp2lam = { path = "lege-codecs/jp2lam" }
 # ---------------------------------------------------------------------------
 # Build profiles (must live in the workspace root).
 # ---------------------------------------------------------------------------
+# `panic = "unwind"` is load-bearing, not a default. The PDF renderer contains
+# the panic from one poisoned page behind `catch_unwind` boundaries
+# (`pdf_render_api::submit_caught` / `render_blocking`, the scheduler's
+# `render_job`, and the wgpu backend's GPU→CPU fallback) so a malformed
+# document degrades to a typed per-page `RenderError` instead of taking down
+# the viewer, the CLI, or an embedding host. Under `panic = "abort"` every one
+# of those guards is inert and the promise their docs make is false. The
+# `chaos` mutation suite gates the same invariant, so aborting here would also
+# mean the never-panic gate only ever ran in a profile that never ships.
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 opt-level = 3
 debug = false
 strip = "symbols"
@@ -217,10 +226,10 @@ strip = false
 
 # Android cdylib profile.
 #
-# `release` sets panic = "abort", which would make the `catch_unwind` guards at
-# the JNI boundary inert — a panic anywhere in the pipeline would abort the
-# host app instead of surfacing as a Java exception. Unwinding is required for
-# those guards to do anything, so the Android artifact gets its own profile.
+# `panic = "unwind"` is restated rather than inherited: the `catch_unwind`
+# guards at the JNI boundary turn a pipeline panic into a Java exception
+# instead of aborting the host app, and that must not silently regress if the
+# release profile is ever changed.
 #
 # Thin LTO rather than fat: the cdylib carries ~23 MB of embedded ONNX and fat
 # LTO on it is punishing for the benefit.

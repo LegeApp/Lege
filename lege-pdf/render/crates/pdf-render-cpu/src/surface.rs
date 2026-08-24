@@ -45,9 +45,26 @@ impl Clone for Surface {
 }
 
 impl Surface {
+    /// The surface's pixel count, or `None` when `width * height * 4` does not
+    /// fit a `usize`.
+    ///
+    /// Release builds have `overflow-checks = false`, so an unchecked
+    /// `width * height * 4` would wrap silently and leave a small allocation
+    /// paired with large `width`/`height` fields — the buffer and the geometry
+    /// would disagree, which is the shape every `assume_init` and raw-store in
+    /// this module relies on being impossible. Callers already bound the
+    /// output against `max_page_bytes`, so this only ever fires on a caller
+    /// bug; degrade to an empty surface rather than a torn one.
+    fn checked_pixels(width: usize, height: usize) -> Option<usize> {
+        let pixels = width.checked_mul(height)?;
+        pixels.checked_mul(4).map(|_| pixels)
+    }
+
     /// Allocate the main page surface (origin `(0,0)`) and paint its background.
     pub fn new(width: usize, height: usize, background: Background) -> Self {
-        let pixels = width * height;
+        let Some(pixels) = Self::checked_pixels(width, height) else {
+            return Self::empty();
+        };
         let data = match background {
             Background::Transparent => filled_arc(pixels * 4, 0),
             Background::White => filled_arc(pixels * 4, 0xFF),
@@ -76,12 +93,30 @@ impl Surface {
     pub fn offscreen(bounds: DeviceRect) -> Self {
         let width = bounds.width as usize;
         let height = bounds.height as usize;
+        // Same reasoning as `Surface::new`: group bounds are clamped to the
+        // page in lowering, so this cannot overflow in practice — but the
+        // buffer and the geometry must never be allowed to disagree.
+        let Some(pixels) = Self::checked_pixels(width, height) else {
+            return Self::empty();
+        };
         Self {
             width,
             height,
             origin_x: bounds.x.max(0) as usize,
             origin_y: bounds.y.max(0) as usize,
-            data: filled_arc(width * height * 4, 0),
+            data: filled_arc(pixels * 4, 0),
+        }
+    }
+
+    /// A zero-sized surface. Every row/pixel loop over it is a no-op, so it is
+    /// the safe degradation for a geometry that cannot be allocated.
+    fn empty() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            origin_x: 0,
+            origin_y: 0,
+            data: filled_arc(0, 0),
         }
     }
 
@@ -94,21 +129,27 @@ impl Surface {
     pub fn offscreen_seeded(parent: &Surface, bounds: DeviceRect) -> Self {
         let mut off = Surface::offscreen(bounds);
         let stride = off.width * 4;
-        for ly in 0..off.height {
-            let abs_y = off.origin_y + ly;
-            if abs_y < parent.origin_y || abs_y >= parent.origin_y + parent.height {
-                continue;
-            }
+        // The overlap is a rectangle, so its column span is the same on every
+        // row: resolve it once and copy each row in one `copy_from_slice`
+        // rather than testing and copying pixel by pixel. This is the common
+        // wrapper case for non-isolated groups, so it runs over whole-page
+        // areas.
+        let x_start = off.origin_x.max(parent.origin_x);
+        let x_end = (off.origin_x + off.width).min(parent.origin_x + parent.width);
+        if x_end <= x_start {
+            return off;
+        }
+        let span = (x_end - x_start) * 4;
+        let dst_off = (x_start - off.origin_x) * 4;
+        let src_off = (x_start - parent.origin_x) * 4;
+
+        let y_start = off.origin_y.max(parent.origin_y);
+        let y_end = (off.origin_y + off.height).min(parent.origin_y + parent.height);
+        for abs_y in y_start..y_end {
+            let ly = abs_y - off.origin_y;
             let prow = parent.local_row(abs_y - parent.origin_y);
             let orow = &mut unique_arc_mut(&mut off.data)[ly * stride..(ly + 1) * stride];
-            for lx in 0..off.width {
-                let abs_x = off.origin_x + lx;
-                if abs_x < parent.origin_x || abs_x >= parent.origin_x + parent.width {
-                    continue;
-                }
-                let src = &prow[(abs_x - parent.origin_x) * 4..(abs_x - parent.origin_x) * 4 + 4];
-                orow[lx * 4..lx * 4 + 4].copy_from_slice(src);
-            }
+            orow[dst_off..dst_off + span].copy_from_slice(&prow[src_off..src_off + span]);
         }
         off
     }
@@ -155,21 +196,40 @@ impl Surface {
 
     /// Consume the surface into output bytes of the requested format.
     /// Returns `(stride, pixels)`.
+    #[allow(
+        unsafe_code,
+        reason = "Arc::new_uninit_slice hands back MaybeUninit; see SAFETY comment"
+    )]
     pub fn into_output(self, format: OutputFormat) -> (usize, Arc<[u8]>) {
         match format {
             OutputFormat::Rgba8PremultipliedSrgb => (self.width * 4, self.data),
             OutputFormat::Gray8 => {
-                let mut out = Arc::<[u8]>::new_uninit_slice(self.width * self.height);
+                let pixels = self.width * self.height;
+                // `zip` stops at the shorter side. The RGBA buffer is exactly
+                // four bytes per output pixel by construction, so the two
+                // lengths agree — but "the invariant holds" is not something
+                // `assume_init` may be asked to take on trust: a short buffer
+                // would leave a tail of `out` uninitialized and reading it is
+                // UB, not a panic. Count what was written and initialize any
+                // remainder explicitly, so soundness does not depend on the
+                // invariant at all.
+                debug_assert_eq!(self.data.len(), pixels * 4);
+                let mut out = Arc::<[u8]>::new_uninit_slice(pixels);
                 let out_mut = unique_arc_mut(&mut out);
+                let mut written = 0usize;
                 for (dst, px) in out_mut.iter_mut().zip(self.data.chunks_exact(4)) {
                     // Rec. 709 luma of the premultiplied (composited-over-black)
                     // color.
                     let y = 0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32;
                     dst.write(y.round().clamp(0.0, 255.0) as u8);
+                    written += 1;
                 }
-                // SAFETY: the zip lengths are equal because the RGBA surface
-                // has exactly four bytes per output pixel, so every element of
-                // `out` was initialized above.
+                for dst in &mut out_mut[written..] {
+                    dst.write(0);
+                }
+                // SAFETY: the loop initialized `out[..written]` and the fill
+                // above initialized `out[written..]`, so every element of
+                // `out` is initialized regardless of the source length.
                 (self.width, unsafe { out.assume_init() })
             }
         }
@@ -179,6 +239,10 @@ impl Surface {
 /// Allocate the render buffer directly in the `Arc<[u8]>` layout returned by
 /// `HostPage`. Going through a `Vec<u8>` forces `Arc::from(Vec<_>)` to allocate
 /// and copy the entire page because the Arc refcounts need adjacent storage.
+#[allow(
+    unsafe_code,
+    reason = "Arc::new_uninit_slice/new_zeroed_slice hand back MaybeUninit; see SAFETY comments"
+)]
 fn filled_arc(len: usize, byte: u8) -> Arc<[u8]> {
     if byte == 0 {
         let data = Arc::<[u8]>::new_zeroed_slice(len);
@@ -191,6 +255,10 @@ fn filled_arc(len: usize, byte: u8) -> Arc<[u8]> {
     unsafe { data.assume_init() }
 }
 
+#[allow(
+    unsafe_code,
+    reason = "Arc::new_uninit_slice/new_zeroed_slice hand back MaybeUninit; see SAFETY comments"
+)]
 fn repeated_rgba_arc(pixels: usize, rgba: [u8; 4]) -> Arc<[u8]> {
     let mut data = Arc::<[u8]>::new_uninit_slice(pixels * 4);
     for chunk in unique_arc_mut(&mut data).chunks_exact_mut(4) {

@@ -318,17 +318,21 @@ pub fn aes256_cbc_decrypt(key: &[u8; 32], buf: &mut Vec<u8>) {
     *buf = out;
 }
 
-/// AES-256-CBC decrypt with an explicit IV and no padding removal: returns the
-/// full plaintext for all complete 16-byte blocks of `data` (any trailing
-/// partial block is ignored). Used to unwrap the 32-byte `/UE` / `/OE` key
-/// under a zero IV (ISO 32000-2 §7.6.4.3.3, algorithm 2.A steps g/h).
-/// Encrypt one raw AES-256 block in place (ECB, no chaining). Test support
-/// for the `/Perms` round trip; content encryption never uses this.
+/// Encrypt one raw AES-256 block in place (ECB, no chaining).
+///
+/// Test support for the `/Perms` round trip only — content encryption never
+/// uses it, so it is compiled out of shipping builds. Keeping an encryption
+/// primitive out of the release artifact is deliberate: this crate decrypts.
+#[cfg(test)]
 pub(crate) fn aes256_encrypt_block(key: &[u8; 32], block: &mut [u8; 16]) {
     let round_keys = expand_key_256(key);
     encrypt_block(block, &round_keys);
 }
 
+/// AES-256-CBC decrypt with an explicit IV and no padding removal: returns the
+/// full plaintext for all complete 16-byte blocks of `data` (any trailing
+/// partial block is ignored). Used to unwrap the 32-byte `/UE` / `/OE` key
+/// under a zero IV (ISO 32000-2 §7.6.4.3.3, algorithm 2.A steps g/h).
 pub fn aes256_cbc_decrypt_raw(key: &[u8; 32], iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
     let round_keys = expand_key_256(key);
     let mut out = Vec::with_capacity(data.len());

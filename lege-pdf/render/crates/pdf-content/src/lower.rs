@@ -808,7 +808,7 @@ fn placed_glyphs(
     let vertical = metrics.is_vertical();
     let mut cursor = 0.0;
     let mut out = Vec::new();
-    for el in &run.elements {
+    for el in run.elements.iter() {
         match el {
             TextElement::Show(bytes) => {
                 // The font decodes the byte string into codes/CIDs with PDF

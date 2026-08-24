@@ -356,9 +356,18 @@ fn render_job(
     request: RenderRequest,
 ) -> Result<RenderedPage, RenderError> {
     let estimate = estimate_job_bytes(&request);
-    let _permit = budget
-        .acquire(estimate)
+    // Wait for budget *cancellably*: a job parked here is woken only by
+    // another job's release, so an uncancellable wait would ignore the
+    // pipeline token until unrelated work finished.
+    let cancellation = request.limits.cancellation.clone();
+    let permit = budget
+        .acquire_cancellable(estimate, || {
+            cancellation.as_ref().is_some_and(|t| t.is_cancelled())
+        })
         .map_err(|_| RenderError::LimitExceeded("memory budget"))?;
+    let Some(_permit) = permit else {
+        return Err(RenderError::Cancelled);
+    };
     match catch_unwind(AssertUnwindSafe(|| {
         let ticket = backend
             .submit(request)
