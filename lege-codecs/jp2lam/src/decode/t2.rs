@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap};
+use std::ops::Range;
 use std::time::Instant;
 
 use crate::decode::DecodeLimits;
@@ -21,10 +22,21 @@ const SOP_SEGMENT_LEN: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecodedTilePackets<'a> {
+    pub(crate) packet_stats: PacketStats,
+    #[cfg(test)]
     pub(crate) packets: Vec<DecodedPacket>,
     pub(crate) codeblocks: Vec<DecodedCodeBlock<'a>>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PacketStats {
+    pub(crate) count: usize,
+    pub(crate) header_bytes: usize,
+    pub(crate) body_bytes: usize,
+    pub(crate) contribution_count: usize,
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecodedPacket {
     pub(crate) layer: u16,
@@ -87,7 +99,7 @@ struct BandState {
 
 #[derive(Debug, Clone)]
 struct BandPrecinctState {
-    block_indices: Vec<usize>,
+    block_indices: Range<usize>,
     inclusion: TagTreeReader,
     zero_bitplanes: TagTreeReader,
 }
@@ -136,17 +148,94 @@ struct Contribution {
     block_index: usize,
     zero_bitplanes: u32,
     passes: u32,
-    segment_passes: Vec<u32>,
-    segment_lengths: Vec<usize>,
+    segments: InlineValues<ContributionSegment>,
 }
 
 impl Contribution {
     fn length(&self) -> Result<usize> {
-        self.segment_lengths.iter().try_fold(0usize, |total, &len| {
+        self.segments.as_slice().iter().try_fold(0usize, |total, segment| {
             total
-                .checked_add(len)
+                .checked_add(segment.length)
                 .ok_or_else(|| invalid("codeword contribution length overflow"))
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContributionSegment {
+    passes: u32,
+    length: usize,
+}
+
+/// One value inline for the overwhelmingly common case, spilling only when
+/// packet segmentation or repeated quality-layer chunks require it.
+#[derive(Debug, Clone)]
+enum InlineValues<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+impl<T> InlineValues<T> {
+    fn as_slice(&self) -> &[T] {
+        match self {
+            Self::One(value) => std::slice::from_ref(value),
+            Self::Many(values) => values,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    fn last_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::One(value) => Some(value),
+            Self::Many(values) => values.last_mut(),
+        }
+    }
+
+    fn try_push(&mut self, value: T) -> Result<()> {
+        match self {
+            Self::Many(values) => {
+                values
+                    .try_reserve(1)
+                    .map_err(|_| invalid("inline value spill allocation failed"))?;
+                values.push(value);
+            }
+            Self::One(_) => {
+                let first = match std::mem::replace(self, Self::Many(Vec::new())) {
+                    Self::One(first) => first,
+                    Self::Many(_) => unreachable!(),
+                };
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(2)
+                    .map_err(|_| invalid("inline value spill allocation failed"))?;
+                values.push(first);
+                values.push(value);
+                *self = Self::Many(values);
+            }
+        }
+        Ok(())
+    }
+
+    fn try_extend(&mut self, other: Self) -> Result<()> {
+        match other {
+            Self::One(value) => self.try_push(value)?,
+            Self::Many(values) => {
+                for value in values {
+                    self.try_push(value)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn into_vec(self) -> Vec<T> {
+        match self {
+            Self::One(value) => vec![value],
+            Self::Many(values) => values,
+        }
     }
 }
 
@@ -167,7 +256,9 @@ pub(crate) struct TilePacketDecoder<'a> {
     next_sop_sequence: u16,
     packet_positions: PacketProgression,
     next_packet_index: usize,
-    packets: Vec<DecodedPacket>,
+    packet_stats: PacketStats,
+    #[cfg(test)]
+    packet_records: Option<Vec<DecodedPacket>>,
     // Contributions accumulate per code-block across layers. `order` keeps
     // first-inclusion order so output is deterministic regardless of how the
     // layers or tile-parts are distributed.
@@ -485,7 +576,9 @@ impl<'a> TilePacketDecoder<'a> {
             next_sop_sequence: 0,
             packet_positions,
             next_packet_index: 0,
-            packets: Vec::new(),
+            packet_stats: PacketStats::default(),
+            #[cfg(test)]
+            packet_records: None,
             merged: HashMap::new(),
             order: Vec::new(),
             contribution_scratch: Vec::new(),
@@ -607,15 +700,38 @@ impl<'a> TilePacketDecoder<'a> {
             }
             self.contribution_scratch = contributions;
             pos = body_end;
-            self.packets.push(DecodedPacket {
-                layer: packet.layer,
-                resolution: packet.resolution,
-                component: packet.component,
-                precinct: packet.precinct,
-                header_len,
-                body_len,
-                contribution_count,
-            });
+            self.packet_stats.count = self
+                .packet_stats
+                .count
+                .checked_add(1)
+                .ok_or_else(|| invalid("decoded packet count overflow"))?;
+            self.packet_stats.header_bytes = self
+                .packet_stats
+                .header_bytes
+                .checked_add(header_len)
+                .ok_or_else(|| invalid("decoded packet-header byte count overflow"))?;
+            self.packet_stats.body_bytes = self
+                .packet_stats
+                .body_bytes
+                .checked_add(body_len)
+                .ok_or_else(|| invalid("decoded packet-body byte count overflow"))?;
+            self.packet_stats.contribution_count = self
+                .packet_stats
+                .contribution_count
+                .checked_add(contribution_count)
+                .ok_or_else(|| invalid("decoded contribution count overflow"))?;
+            #[cfg(test)]
+            if let Some(records) = &mut self.packet_records {
+                records.push(DecodedPacket {
+                    layer: packet.layer,
+                    resolution: packet.resolution,
+                    component: packet.component,
+                    precinct: packet.precinct,
+                    header_len,
+                    body_len,
+                    contribution_count,
+                });
+            }
             if self.sop_markers {
                 // Nsop counts every packet in the coded tile, including a
                 // packet whose optional SOP segment is omitted (Annex A.8.1).
@@ -697,11 +813,12 @@ impl<'a> TilePacketDecoder<'a> {
                     .expect("merged entry present for ordered key");
                 let segments = block
                     .segments
+                    .into_vec()
                     .into_iter()
                     .map(|segment| {
-                        let data = match segment.chunks.len() {
-                            1 => Cow::Borrowed(segment.chunks[0]),
-                            _ => Cow::Owned(segment.chunks.concat()),
+                        let data = match segment.chunks {
+                            InlineValues::One(chunk) => Cow::Borrowed(chunk),
+                            InlineValues::Many(chunks) => Cow::Owned(chunks.concat()),
                         };
                         DecodedCodewordSegment {
                             passes: segment.passes,
@@ -727,7 +844,9 @@ impl<'a> TilePacketDecoder<'a> {
             .collect();
 
         Ok(DecodedTilePackets {
-            packets: self.packets,
+            packet_stats: self.packet_stats,
+            #[cfg(test)]
+            packets: self.packet_records.unwrap_or_default(),
             codeblocks,
         })
     }
@@ -741,25 +860,33 @@ impl<'a> TilePacketDecoder<'a> {
         let mut body_pos = 0usize;
         for contribution in contributions.drain(..) {
             let retain = packet.resolution <= self.highest_resolution;
-            let mut new_segments =
-                retain.then(|| Vec::with_capacity(contribution.segment_lengths.len()));
-            for (&passes, &length) in contribution
-                .segment_passes
-                .iter()
-                .zip(&contribution.segment_lengths)
-            {
+            let mut new_segments = if retain && contribution.segments.len() > 1 {
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(contribution.segments.len())
+                    .map_err(|_| invalid("merged segment allocation failed"))?;
+                Some(InlineValues::Many(values))
+            } else {
+                None
+            };
+            for segment in contribution.segments.as_slice() {
                 let end = body_pos
-                    .checked_add(length)
+                    .checked_add(segment.length)
                     .ok_or_else(|| invalid("codeword-segment length overflow"))?;
                 let data = body
                     .get(body_pos..end)
                     .ok_or_else(|| invalid("codeword segment exceeds packet body"))?;
                 body_pos = end;
-                if let Some(new_segments) = &mut new_segments {
-                    new_segments.push(MergedSegment {
-                        passes,
-                        chunks: vec![data],
-                    });
+                if retain {
+                    let merged = MergedSegment {
+                        passes: segment.passes,
+                        chunks: InlineValues::One(data),
+                    };
+                    if let Some(new_segments) = &mut new_segments {
+                        new_segments.try_push(merged)?;
+                    } else {
+                        new_segments = Some(InlineValues::One(merged));
+                    }
                 }
             }
             if !retain {
@@ -774,16 +901,20 @@ impl<'a> TilePacketDecoder<'a> {
                     let existing = slot.get_mut();
                     existing.passes += contribution.passes;
                     if self.terminate_each_pass {
-                        existing.segments.extend(new_segments);
+                        existing.segments.try_extend(new_segments)?;
                     } else {
                         let segment = existing
                             .segments
                             .last_mut()
                             .expect("included code-block has one MQ segment");
                         segment.passes += contribution.passes;
-                        segment
-                            .chunks
-                            .extend(new_segments.into_iter().flat_map(|segment| segment.chunks));
+                        let new_segment = match new_segments {
+                            InlineValues::One(segment) => segment,
+                            InlineValues::Many(_) => {
+                                unreachable!("unterminated contribution has one segment")
+                            }
+                        };
+                        segment.chunks.try_extend(new_segment.chunks)?;
                     }
                 }
                 Entry::Vacant(slot) => {
@@ -813,12 +944,13 @@ impl<'a> TilePacketDecoder<'a> {
 
 /// Decode a single tile-part containing the complete packet sequence for one
 /// tile. Multi-tile-part decoding uses [`TilePacketDecoder`] directly.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn parse_tile_part_payload<'a>(
     header: &CodestreamHeader,
     payload: &'a [u8],
 ) -> Result<DecodedTilePackets<'a>> {
     let mut decoder = TilePacketDecoder::new(header)?;
+    decoder.packet_records = Some(Vec::new());
     decoder.push_tile_part(payload)?;
     decoder.finish()
 }
@@ -838,13 +970,13 @@ struct MergedBlock<'a> {
     y1: u32,
     zero_bitplanes: u32,
     passes: u32,
-    segments: Vec<MergedSegment<'a>>,
+    segments: InlineValues<MergedSegment<'a>>,
 }
 
 #[derive(Debug, Clone)]
 struct MergedSegment<'a> {
     passes: u32,
-    chunks: Vec<&'a [u8]>,
+    chunks: InlineValues<&'a [u8]>,
 }
 
 fn validate_packet_scope(header: &CodestreamHeader) -> Result<()> {
@@ -902,7 +1034,7 @@ fn read_band_contributions(
         .precincts
         .get_mut(precinct_index)
         .ok_or_else(|| invalid("packet references an invalid precinct"))?;
-    for (leaf_index, &block_index) in precinct.block_indices.iter().enumerate() {
+    for (leaf_index, block_index) in precinct.block_indices.clone().enumerate() {
         let was_included = band.blocks[block_index].included;
         let included = if was_included {
             bio.read_bit()? != 0
@@ -936,31 +1068,48 @@ fn read_band_contributions(
             .numlenbits
             .checked_add(increment)
             .ok_or_else(|| invalid("codeword length-bit count overflow"))?;
-        let segment_passes = if terminate_each_pass {
-            vec![
-                1;
-                usize::try_from(passes).map_err(|_| invalid("coding-pass count exceeds usize"))?
-            ]
-        } else {
-            vec![passes]
-        };
-        let mut segment_lengths = Vec::with_capacity(segment_passes.len());
-        for &passes_in_segment in &segment_passes {
+        let segments = if terminate_each_pass {
+            let segment_count = usize::try_from(passes)
+                .map_err(|_| invalid("coding-pass count exceeds usize"))?;
             let len_bits = band.blocks[block_index]
                 .numlenbits
-                .checked_add(floor_log2(passes_in_segment))
+                .checked_add(floor_log2(1))
                 .ok_or_else(|| invalid("codeword segment length-bit count overflow"))?;
-            let length = bio.read_bits_usize(len_bits)?;
-            segment_lengths.push(length);
-        }
+            if segment_count == 1 {
+                InlineValues::One(ContributionSegment {
+                    passes: 1,
+                    length: bio.read_bits_usize(len_bits)?,
+                })
+            } else {
+                let mut segments = Vec::new();
+                segments
+                    .try_reserve_exact(segment_count)
+                    .map_err(|_| invalid("codeword contribution allocation failed"))?;
+                for _ in 0..segment_count {
+                    segments.push(ContributionSegment {
+                        passes: 1,
+                        length: bio.read_bits_usize(len_bits)?,
+                    });
+                }
+                InlineValues::Many(segments)
+            }
+        } else {
+            let len_bits = band.blocks[block_index]
+                .numlenbits
+                .checked_add(floor_log2(passes))
+                .ok_or_else(|| invalid("codeword segment length-bit count overflow"))?;
+            InlineValues::One(ContributionSegment {
+                passes,
+                length: bio.read_bits_usize(len_bits)?,
+            })
+        };
         band.blocks[block_index].included = true;
         contributions.push(Contribution {
             band_index,
             block_index,
             zero_bitplanes,
             passes,
-            segment_passes,
-            segment_lengths,
+            segments,
         });
     }
     Ok(())
@@ -1364,13 +1513,8 @@ fn build_precinct_band(
                 }
             }
         }
-        let mut block_indices = Vec::new();
-        block_indices
-            .try_reserve_exact(blocks.len() - first_block)
-            .map_err(|_| invalid("precinct code-block index allocation failed"))?;
-        block_indices.extend(first_block..blocks.len());
         precincts.push(BandPrecinctState {
-            block_indices,
+            block_indices: first_block..blocks.len(),
             inclusion: TagTreeReader::try_new(columns.max(1), rows.max(1))?,
             zero_bitplanes: TagTreeReader::try_new(columns.max(1), rows.max(1))?,
         });
@@ -1878,15 +2022,62 @@ fn invalid(message: impl Into<String>) -> Jp2LamError {
 #[cfg(test)]
 mod tests {
     use super::{
-        PacketAxis, PacketBioReader, PacketPosition, PacketProgression, PacketProgressionState,
-        PrecinctGrid, TagTreeReader, band_geometries, build_band_states, build_packet_positions,
+        DecodedTilePackets, InlineValues, PacketAxis, PacketBioReader, PacketPosition,
+        PacketProgression, PacketProgressionState, PrecinctGrid, TagTreeReader,
+        TilePacketDecoder, band_geometries, build_band_states, build_packet_positions,
         build_precinct_grids, packet_axis_order, packet_position_count, parse_tile_part_payload,
         precinct_reference_position, read_commacode, read_numpasses,
     };
     use crate::decode::{
-        CodSegment, CodeBlockStyle, CodestreamHeader, ComponentSiz, PrecinctSize, ProgressionOrder,
-        QcdSegment, QuantizationStep, QuantizationStyle, SizSegment, WaveletTransform,
+        CodSegment, CodeBlockStyle, CodestreamHeader, ComponentSiz, DecodeLimits, PrecinctSize,
+        ProgressionOrder, QcdSegment, QuantizationStep, QuantizationStyle, SizSegment,
+        WaveletTransform,
     };
+
+    fn assert_packet_stats_match_records(decoded: &DecodedTilePackets<'_>) {
+        assert_eq!(decoded.packet_stats.count, decoded.packets.len());
+        assert_eq!(
+            decoded.packet_stats.header_bytes,
+            decoded.packets.iter().map(|packet| packet.header_len).sum()
+        );
+        assert_eq!(
+            decoded.packet_stats.body_bytes,
+            decoded.packets.iter().map(|packet| packet.body_len).sum()
+        );
+        assert_eq!(
+            decoded.packet_stats.contribution_count,
+            decoded
+                .packets
+                .iter()
+                .map(|packet| packet.contribution_count)
+                .sum()
+        );
+    }
+
+    #[test]
+    fn normal_decoder_packet_accounting_is_constant_size_at_default_limit() {
+        let limits = DecodeLimits::default();
+        assert_eq!(limits.max_packets, 16_000_000);
+        let decoder = TilePacketDecoder::new_with_limits(&tiny_header(), false, 0, &limits)
+            .expect("packet decoder");
+
+        assert!(decoder.packet_records.is_none());
+        assert_eq!(
+            std::mem::size_of_val(&decoder.packet_stats),
+            4 * std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
+    fn inline_values_spill_only_for_a_second_value() {
+        let mut values = InlineValues::One(11u8);
+        assert!(matches!(&values, InlineValues::One(11)));
+        values.try_push(22).expect("spill");
+        let InlineValues::Many(spilled) = values else {
+            panic!("a second value must spill inline storage");
+        };
+        assert_eq!(spilled, [11, 22]);
+    }
 
     #[test]
     fn packet_axis_order_matches_annex_b12_under_single_precinct() {
@@ -2124,6 +2315,11 @@ mod tests {
                     .sum::<usize>(),
                 band.blocks.len()
             );
+            assert_eq!(
+                std::mem::size_of_val(&band.precincts[0].block_indices),
+                2 * std::mem::size_of::<usize>(),
+                "contiguous precinct membership must remain a range"
+            );
         }
     }
 
@@ -2237,6 +2433,8 @@ mod tests {
 
         let decoded =
             parse_tile_part_payload(&header, &payload).expect("zero-byte contribution is valid");
+        assert_packet_stats_match_records(&decoded);
+        assert_eq!(decoded.packet_stats.contribution_count, 1);
         assert_eq!(decoded.codeblocks.len(), 1);
         assert_eq!(decoded.codeblocks[0].passes, 1);
         assert_eq!(decoded.codeblocks[0].segments.len(), 1);
@@ -2252,6 +2450,9 @@ mod tests {
         let payload = [0b1111_0000, 0b1010_0000, 0xaa, 0xbb, 0xcc];
 
         let decoded = parse_tile_part_payload(&header, &payload).expect("TERMALL packet");
+        assert_packet_stats_match_records(&decoded);
+        assert_eq!(decoded.packet_stats.body_bytes, 3);
+        assert_eq!(decoded.packet_stats.contribution_count, 1);
         assert_eq!(decoded.codeblocks.len(), 1);
         let block = &decoded.codeblocks[0];
         assert_eq!(block.passes, 2);
@@ -2260,6 +2461,26 @@ mod tests {
         assert_eq!(block.segments[0].data.as_ref(), &[0xaa]);
         assert_eq!(block.segments[1].passes, 1);
         assert_eq!(block.segments[1].data.as_ref(), &[0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn b107_unterminated_layers_concatenate_only_when_a_second_chunk_arrives() {
+        let mut header = tiny_header();
+        header.cod.layers = 2;
+        // Layer 0 first-includes the block with one one-byte pass. Layer 1
+        // adds one one-byte pass to the same unterminated MQ segment.
+        let payload = [0b1110_0001, 0xaa, 0b1100_0010, 0xbb];
+
+        let decoded = parse_tile_part_payload(&header, &payload).expect("two-layer packet body");
+        assert_packet_stats_match_records(&decoded);
+        assert_eq!(decoded.packet_stats.count, 2);
+        assert_eq!(decoded.packet_stats.body_bytes, 2);
+        assert_eq!(decoded.packet_stats.contribution_count, 2);
+        let block = &decoded.codeblocks[0];
+        assert_eq!(block.passes, 2);
+        assert_eq!(block.segments.len(), 1);
+        assert_eq!(block.segments[0].passes, 2);
+        assert_eq!(block.segments[0].data.as_ref(), &[0xaa, 0xbb]);
     }
 
     #[test]
@@ -2274,6 +2495,7 @@ mod tests {
         ];
 
         let decoded = parse_tile_part_payload(&header, &payload).expect("SOP/EPH packet");
+        assert_packet_stats_match_records(&decoded);
         assert_eq!(decoded.packets.len(), 1);
         assert_eq!(decoded.packets[0].header_len, payload.len());
         assert_eq!(decoded.packets[0].body_len, 0);
@@ -2292,6 +2514,7 @@ mod tests {
         ];
 
         let decoded = parse_tile_part_payload(&header, &payload).expect("mixed SOP usage");
+        assert_packet_stats_match_records(&decoded);
         assert_eq!(decoded.packets.len(), 2);
     }
 

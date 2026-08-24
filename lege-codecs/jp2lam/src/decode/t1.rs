@@ -12,6 +12,7 @@ use crate::tier1::flags::FlagGrid;
 use crate::tier1::helpers::{
     magnitude_context, sign_context, sign_prediction_bit, zero_coding_context,
 };
+use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::stats::StatsSink;
@@ -108,7 +109,7 @@ pub(crate) fn decode_tile_components_profiled(
     stats: &mut StatsSink<'_>,
 ) -> Result<Vec<DecodedTileCoefficients>> {
     let mut scratch = Tier1Scratch::new();
-    decode_tile_components_with_scratch(header, packets, stats, &mut scratch)
+    decode_tile_components_with_scratch(header, packets, stats, &mut scratch, 1)
 }
 
 pub(crate) fn decode_tile_components_with_scratch(
@@ -116,6 +117,7 @@ pub(crate) fn decode_tile_components_with_scratch(
     packets: &DecodedTilePackets<'_>,
     stats: &mut StatsSink<'_>,
     scratch: &mut Tier1Scratch,
+    worker_count: usize,
 ) -> Result<Vec<DecodedTileCoefficients>> {
     let component_count = header.siz.components.len();
     // Each component's coefficient plane is sized by ITS tile-component rectangle
@@ -151,10 +153,10 @@ pub(crate) fn decode_tile_components_with_scratch(
         })
         .collect::<Vec<_>>();
     // Serial when profiling (per-pass attribution needs one timeline) or when
-    // the active worker budget is one (`DecodeConcurrency::Serial` installs a
-    // one-thread pool). Otherwise fan the code blocks across the request's
-    // worker budget; each block writes into its own disjoint plane rectangle.
-    if stats.is_enabled() || rayon::current_num_threads() <= 1 {
+    // the active worker budget is one. Otherwise fan the code blocks across
+    // exactly the request's task budget on the shared executor; each block
+    // writes into its own disjoint plane rectangle.
+    if stats.is_enabled() || worker_count <= 1 {
         for block in &packets.codeblocks {
             let params = block_params(header, block)?;
             decode_codeblock_segments_into(
@@ -189,7 +191,7 @@ pub(crate) fn decode_tile_components_with_scratch(
             });
         }
     } else {
-        decode_codeblocks_parallel(header, packets, &mut components)?;
+        decode_codeblocks_parallel(header, packets, &mut components, worker_count)?;
     }
 
     Ok(components)
@@ -408,6 +410,7 @@ fn decode_codeblocks_parallel(
     header: &CodestreamHeader,
     packets: &DecodedTilePackets<'_>,
     components: &mut [DecodedTileCoefficients],
+    worker_count: usize,
 ) -> Result<()> {
     let planes = BlockPlanes::new(components);
     let style = header.cod.code_block_style;
@@ -434,63 +437,66 @@ fn decode_codeblocks_parallel(
     let cursor = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
 
-    // `broadcast` runs this closure exactly once per thread in the active
-    // (request-sized) pool, so each worker allocates one [`Tier1Scratch`] for
-    // the whole tile and reuses it across every block it claims — no per-job
-    // scratch reallocation.
-    let results = rayon::broadcast(|_| -> Result<()> {
-        let mut scratch = Tier1Scratch::new();
-        let mut sink = StatsSink::disabled();
-        loop {
-            if failed.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            let next = cursor.fetch_add(1, Ordering::Relaxed);
-            let Some(&index) = order.get(next) else {
-                return Ok(());
-            };
-            let block = &blocks[index];
-            let params = match block_params(header, block) {
-                Ok(params) => params,
-                Err(error) => {
+    // Contribute at most `worker_count` long-lived tasks to the shared pool.
+    // Each task allocates one [`Tier1Scratch`] for the whole tile and reuses it
+    // across every block it claims — no per-block scratch reallocation.
+    let task_count = worker_count.min(blocks.len()).max(1);
+    let results = (0..task_count)
+        .into_par_iter()
+        .map(|_| -> Result<()> {
+            let mut scratch = Tier1Scratch::new();
+            let mut sink = StatsSink::disabled();
+            loop {
+                if failed.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let next = cursor.fetch_add(1, Ordering::Relaxed);
+                let Some(&index) = order.get(next) else {
+                    return Ok(());
+                };
+                let block = &blocks[index];
+                let params = match block_params(header, block) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        failed.store(true, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = decode_codeblock_segments_into(
+                    params.block_width,
+                    params.block_height,
+                    block.band,
+                    params.max_bitplanes,
+                    block.zero_bitplanes,
+                    block.passes,
+                    style,
+                    &block.segments,
+                    &mut scratch,
+                    &mut sink,
+                ) {
                     failed.store(true, Ordering::Relaxed);
                     return Err(error);
                 }
-            };
-            if let Err(error) = decode_codeblock_segments_into(
-                params.block_width,
-                params.block_height,
-                block.band,
-                params.max_bitplanes,
-                block.zero_bitplanes,
-                block.passes,
-                style,
-                &block.segments,
-                &mut scratch,
-                &mut sink,
-            ) {
-                failed.store(true, Ordering::Relaxed);
-                return Err(error);
+                // SAFETY: code blocks tile pairwise-disjoint rectangles of each
+                // component plane, so no two parallel writes overlap.
+                let write = unsafe {
+                    planes.write_block(
+                        block.component,
+                        block.x0 as usize,
+                        block.y0 as usize,
+                        params.block_width,
+                        params.block_height,
+                        &scratch.coefficients,
+                        params.step,
+                    )
+                };
+                if let Err(error) = write {
+                    failed.store(true, Ordering::Relaxed);
+                    return Err(error);
+                }
             }
-            // SAFETY: code blocks tile pairwise-disjoint rectangles of each
-            // component plane, so no two parallel writes overlap.
-            let write = unsafe {
-                planes.write_block(
-                    block.component,
-                    block.x0 as usize,
-                    block.y0 as usize,
-                    params.block_width,
-                    params.block_height,
-                    &scratch.coefficients,
-                    params.step,
-                )
-            };
-            if let Err(error) = write {
-                failed.store(true, Ordering::Relaxed);
-                return Err(error);
-            }
-        }
-    });
+        })
+        .collect::<Vec<_>>();
 
     for result in results {
         result?;

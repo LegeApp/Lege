@@ -21,6 +21,7 @@ use pdf_page_ir::{
 
 use crate::raster::FillRule;
 use crate::stroke;
+use crate::surface::{unique_arc_mut, zeroed_arc};
 
 /// Worker-local parsed-font residency. A document shares each program's
 /// `Arc<[u8]>` across compiled pages, so pointer identity remains stable while
@@ -607,8 +608,8 @@ impl ImageCacheKey {
 /// A document/render-session-scoped cache of **decoded image payloads** —
 /// the production successor to the profiling-only [`DecodedImageCache`]
 /// experiment (which remains for the profiling tooling's warm-decode A/B).
-/// Same shape as [`SharedGlyphCache`]: sharded, per-shard `Mutex`, LRU by
-/// retained decoded bytes, shared by every render worker of one backend.
+/// Hits use sharded `Mutex`es; inserts coordinate a global byte count and LRU
+/// so shard skew cannot weaken the hard retained-byte bound.
 ///
 /// The biggest win is image XObjects reused across pages and draws (a scanned
 /// book's per-page background, a repeated logo, an MRC foreground/mask pair):
@@ -622,7 +623,10 @@ impl ImageCacheKey {
 #[derive(Debug)]
 pub(crate) struct SharedImageCache {
     shards: Box<[std::sync::Mutex<ImageCacheShard>]>,
-    per_shard_bytes: usize,
+    total_budget_bytes: usize,
+    total_bytes: std::sync::Mutex<usize>,
+    clock: std::sync::atomic::AtomicU64,
+    flights: std::sync::Mutex<HashMap<ImageCacheKey, Arc<ImageDecodeFlight>>>,
     hits: std::sync::atomic::AtomicU64,
     misses: std::sync::atomic::AtomicU64,
     inserts: std::sync::atomic::AtomicU64,
@@ -631,8 +635,6 @@ pub(crate) struct SharedImageCache {
 #[derive(Debug, Default)]
 struct ImageCacheShard {
     map: HashMap<ImageCacheKey, ImageCacheEntry>,
-    bytes: usize,
-    clock: u64,
 }
 
 #[derive(Debug)]
@@ -640,6 +642,75 @@ struct ImageCacheEntry {
     decoded: CodecSamples,
     charge: usize,
     last_used: u64,
+}
+
+#[derive(Debug)]
+struct ImageDecodeFlight {
+    state: std::sync::Mutex<ImageDecodeFlightState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Debug, Clone)]
+enum ImageDecodeFlightState {
+    Running,
+    Succeeded(CodecSamples),
+    Failed,
+}
+
+impl ImageDecodeFlight {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(ImageDecodeFlightState::Running),
+            ready: std::sync::Condvar::new(),
+        }
+    }
+
+    fn wait(&self) -> Option<CodecSamples> {
+        let mut state = lock_unpoisoned(&self.state);
+        while matches!(*state, ImageDecodeFlightState::Running) {
+            state = self
+                .ready
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        match &*state {
+            ImageDecodeFlightState::Succeeded(decoded) => Some(decoded.clone()),
+            ImageDecodeFlightState::Failed => None,
+            ImageDecodeFlightState::Running => unreachable!("wait loop exits only when resolved"),
+        }
+    }
+}
+
+enum ImageCacheProbe<'a> {
+    Hit(CodecSamples),
+    Leader(ImageDecodeFlightGuard<'a>),
+}
+
+struct ImageDecodeFlightGuard<'a> {
+    cache: &'a SharedImageCache,
+    key: ImageCacheKey,
+    flight: Arc<ImageDecodeFlight>,
+    resolved: bool,
+}
+
+impl ImageDecodeFlightGuard<'_> {
+    fn complete(mut self, decoded: &CodecSamples) {
+        self.cache.insert(self.key, decoded.clone());
+        self.cache
+            .resolve_flight(self.key, &self.flight, Some(decoded.clone()));
+        self.resolved = true;
+    }
+}
+
+impl Drop for ImageDecodeFlightGuard<'_> {
+    fn drop(&mut self) {
+        if !self.resolved {
+            // Every early return, cancellation, decode error, and unwind takes
+            // this path. Remove the failed producer before waking waiters so
+            // exactly one of them can install a fresh retry flight.
+            self.cache.resolve_flight(self.key, &self.flight, None);
+        }
+    }
 }
 
 impl SharedImageCache {
@@ -660,7 +731,10 @@ impl SharedImageCache {
             .into_boxed_slice();
         Self {
             shards,
-            per_shard_bytes: (total_bytes / Self::SHARDS).max(1),
+            total_budget_bytes: total_bytes,
+            total_bytes: std::sync::Mutex::new(0),
+            clock: std::sync::atomic::AtomicU64::new(0),
+            flights: std::sync::Mutex::new(HashMap::new()),
             hits: std::sync::atomic::AtomicU64::new(0),
             misses: std::sync::atomic::AtomicU64::new(0),
             inserts: std::sync::atomic::AtomicU64::new(0),
@@ -682,20 +756,86 @@ impl SharedImageCache {
     }
 
     fn get(&self, key: &ImageCacheKey) -> Option<CodecSamples> {
+        self.get_inner(key, true)
+    }
+
+    fn get_inner(&self, key: &ImageCacheKey, record_stats: bool) -> Option<CodecSamples> {
         use std::sync::atomic::Ordering::Relaxed;
         let mut shard = lock_unpoisoned(self.shard(key));
-        shard.clock += 1;
-        let clock = shard.clock;
+        let clock = self.clock.fetch_add(1, Relaxed);
         let Some(entry) = shard.map.get_mut(key) else {
             drop(shard);
-            self.misses.fetch_add(1, Relaxed);
+            if record_stats {
+                self.misses.fetch_add(1, Relaxed);
+            }
             return None;
         };
         entry.last_used = clock;
         let decoded = entry.decoded.clone();
         drop(shard);
-        self.hits.fetch_add(1, Relaxed);
+        if record_stats {
+            self.hits.fetch_add(1, Relaxed);
+        }
         Some(decoded)
+    }
+
+    /// Return a retained decode, wait for the current producer, or appoint the
+    /// caller as the sole producer for this key. No cache/flight lock remains
+    /// held while the codec runs through the returned leader guard.
+    fn probe(&self, key: ImageCacheKey) -> ImageCacheProbe<'_> {
+        loop {
+            if let Some(decoded) = self.get(&key) {
+                return ImageCacheProbe::Hit(decoded);
+            }
+
+            let flight = {
+                let mut flights = lock_unpoisoned(&self.flights);
+                if let Some(flight) = flights.get(&key) {
+                    Arc::clone(flight)
+                } else if let Some(decoded) = self.get_inner(&key, false) {
+                    // The previous producer may have inserted and removed its
+                    // flight between our first cache probe and this election.
+                    return ImageCacheProbe::Hit(decoded);
+                } else {
+                    let flight = Arc::new(ImageDecodeFlight::new());
+                    flights.insert(key, Arc::clone(&flight));
+                    return ImageCacheProbe::Leader(ImageDecodeFlightGuard {
+                        cache: self,
+                        key,
+                        flight,
+                        resolved: false,
+                    });
+                }
+            };
+
+            if let Some(decoded) = flight.wait() {
+                return ImageCacheProbe::Hit(decoded);
+            }
+            // A producer failed, was cancelled, or unwound. Retry election;
+            // this caller still has its own decode context and cancellation.
+        }
+    }
+
+    fn resolve_flight(
+        &self,
+        key: ImageCacheKey,
+        flight: &Arc<ImageDecodeFlight>,
+        decoded: Option<CodecSamples>,
+    ) {
+        *lock_unpoisoned(&flight.state) = match decoded {
+            Some(decoded) => ImageDecodeFlightState::Succeeded(decoded),
+            None => ImageDecodeFlightState::Failed,
+        };
+        {
+            let mut flights = lock_unpoisoned(&self.flights);
+            if flights
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, flight))
+            {
+                flights.remove(&key);
+            }
+        }
+        flight.ready.notify_all();
     }
 
     fn insert(&self, key: ImageCacheKey, decoded: CodecSamples) {
@@ -703,32 +843,53 @@ impl SharedImageCache {
         self.inserts.fetch_add(1, Relaxed);
         // Decoded bytes plus fixed per-entry overhead (key, Arc control
         // block, map slot).
-        let charge = decoded.samples.len() + std::mem::size_of::<ImageCacheEntry>() + 64;
-        let mut shard = lock_unpoisoned(self.shard(&key));
-        shard.clock += 1;
-        let clock = shard.clock;
-        if let Some(prev) = shard.map.insert(
-            key,
-            ImageCacheEntry {
-                decoded,
-                charge,
-                last_used: clock,
-            },
-        ) {
-            shard.bytes = shard.bytes.saturating_sub(prev.charge);
+        let charge = decoded
+            .samples
+            .len()
+            .saturating_add(decoded.alpha.as_ref().map_or(0, |alpha| alpha.len()))
+            .saturating_add(std::mem::size_of::<ImageCacheEntry>())
+            .saturating_add(64);
+        // An entry larger than the complete cache budget cannot be admitted.
+        // Active callers still retain their Arc; only revisit residency is lost.
+        if charge > self.total_budget_bytes {
+            return;
         }
-        shard.bytes += charge;
-        while shard.bytes > self.per_shard_bytes && shard.map.len() > 1 {
-            let Some(victim) = shard
-                .map
-                .iter()
-                .min_by_key(|(_, e)| e.last_used)
-                .map(|(k, _)| *k)
-            else {
+        // Inserts are rare compared with hits. Serialize admission/eviction so
+        // the eight hit shards retain their concurrency while physical retained
+        // bytes obey one true global bound.
+        let mut total_bytes = lock_unpoisoned(&self.total_bytes);
+        let clock = self.clock.fetch_add(1, Relaxed);
+        {
+            let mut shard = lock_unpoisoned(self.shard(&key));
+            if let Some(previous) = shard.map.insert(
+                key,
+                ImageCacheEntry {
+                    decoded,
+                    charge,
+                    last_used: clock,
+                },
+            ) {
+                *total_bytes = total_bytes.saturating_sub(previous.charge);
+            }
+            *total_bytes = total_bytes.saturating_add(charge);
+        }
+
+        while *total_bytes > self.total_budget_bytes {
+            let mut victim: Option<(usize, ImageCacheKey, u64)> = None;
+            for (index, shard) in self.shards.iter().enumerate() {
+                let shard = lock_unpoisoned(shard);
+                if let Some((key, entry)) =
+                    shard.map.iter().min_by_key(|(_, entry)| entry.last_used)
+                    && victim.is_none_or(|(_, _, oldest)| entry.last_used < oldest)
+                {
+                    victim = Some((index, *key, entry.last_used));
+                }
+            }
+            let Some((index, key, _)) = victim else {
                 break;
             };
-            if let Some(removed) = shard.map.remove(&victim) {
-                shard.bytes = shard.bytes.saturating_sub(removed.charge);
+            if let Some(removed) = lock_unpoisoned(&self.shards[index]).map.remove(&key) {
+                *total_bytes = total_bytes.saturating_sub(removed.charge);
             }
         }
     }
@@ -745,7 +906,7 @@ impl SharedImageCache {
     /// Test-only retained byte total across shards.
     #[cfg(test)]
     pub(crate) fn retained_bytes(&self) -> usize {
-        self.shards.iter().map(|s| lock_unpoisoned(s).bytes).sum()
+        *lock_unpoisoned(&self.total_bytes)
     }
 }
 
@@ -2515,8 +2676,12 @@ fn unpremultiply_in_data_alpha(
     if samples.len() != alpha.len().checked_mul(channels)? {
         return None;
     }
-    let mut straight = samples.to_vec();
-    for (pixel, &a) in straight.chunks_exact_mut(channels).zip(alpha) {
+    let mut straight = zeroed_arc(samples.len());
+    unique_arc_mut(&mut straight).copy_from_slice(samples);
+    for (pixel, &a) in unique_arc_mut(&mut straight)
+        .chunks_exact_mut(channels)
+        .zip(alpha)
+    {
         if a == 0 {
             pixel.fill(0);
             continue;
@@ -2527,7 +2692,7 @@ fn unpremultiply_in_data_alpha(
             *component = value.min(255) as u8;
         }
     }
-    Some(straight.into())
+    Some(straight)
 }
 
 /// Decode a codec-encoded image through the page's registry. The *decoded*
@@ -2629,11 +2794,13 @@ fn decode_codec_samples(
         );
         (cache, key)
     });
-    if let Some((cache, key)) = &image_cache_key
-        && let Some(cached) = cache.get(key)
-    {
-        return Some(cached);
-    }
+    let image_decode_flight = match image_cache_key {
+        Some((cache, key)) => match cache.probe(key) {
+            ImageCacheProbe::Hit(cached) => return Some(cached),
+            ImageCacheProbe::Leader(flight) => Some(flight),
+        },
+        None => None,
+    };
     let filter = match kind {
         pdf_page_ir::ImageCodecKind::Dct => StreamFilter::DctDecode,
         pdf_page_ir::ImageCodecKind::Jpx => StreamFilter::Jpx,
@@ -2794,12 +2961,13 @@ fn decode_codec_samples(
     let samples: std::sync::Arc<[u8]> = if img.stride == tight {
         img.data
     } else {
-        let mut packed = vec![0u8; tight * img.height as usize];
+        let mut packed = zeroed_arc(tight * img.height as usize);
+        let packed_data = unique_arc_mut(&mut packed);
         for y in 0..img.height as usize {
             let src = &img.data[y * img.stride..y * img.stride + tight];
-            packed[y * tight..(y + 1) * tight].copy_from_slice(src);
+            packed_data[y * tight..(y + 1) * tight].copy_from_slice(src);
         }
-        packed.into()
+        packed
     };
     #[cfg(feature = "profiling")]
     {
@@ -2826,16 +2994,16 @@ fn decode_codec_samples(
             };
             let base_n = n - 1;
             let px = img.width as usize * img.height as usize;
-            let mut base = vec![0u8; px * base_n];
-            let mut opacity = vec![0u8; px];
+            let mut base = zeroed_arc(px * base_n);
+            let mut opacity = zeroed_arc(px);
+            let base_data = unique_arc_mut(&mut base);
+            let opacity_data = unique_arc_mut(&mut opacity);
             for i in 0..px {
-                base[i * base_n..(i + 1) * base_n].copy_from_slice(&samples[i * n..i * n + base_n]);
-                opacity[i] = samples[i * n + base_n];
+                base_data[i * base_n..(i + 1) * base_n]
+                    .copy_from_slice(&samples[i * n..i * n + base_n]);
+                opacity_data[i] = samples[i * n + base_n];
             }
-            (
-                std::sync::Arc::<[u8]>::from(base),
-                Some(std::sync::Arc::<[u8]>::from(opacity)),
-            )
+            (base, Some(opacity))
         }
         _ => (samples, None),
     };
@@ -2848,8 +3016,8 @@ fn decode_codec_samples(
         color_space,
         alpha,
     };
-    if let Some((cache, key)) = image_cache_key {
-        cache.insert(key, decoded.clone());
+    if let Some(flight) = image_decode_flight {
+        flight.complete(&decoded);
     }
     #[cfg(feature = "profiling")]
     if let Some(cache) = &out.decode_cache {
@@ -6187,6 +6355,8 @@ mod image_cache_tests {
         Color, ImageColorSpace, ImageIr, InterpolationMode, PageBounds, PageComplexity,
         PageFeatures, Rect, ResourceKey,
     };
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A tiny valid grayscale JPEG payload produced by the in-house encoder.
     fn jpeg_payload(seed: u8) -> Vec<u8> {
@@ -6214,7 +6384,7 @@ mod image_cache_tests {
             decode: None,
             samples: None,
             codec: Some(pdf_page_ir::ImageCodecKind::Dct),
-            codec_data: Some(Arc::from(payload)),
+            codec_data: Some(payload.into()),
             codec_parms: None,
             smask: None,
             mask: None,
@@ -6262,6 +6432,33 @@ mod image_cache_tests {
         pdf_image::CodecRegistry::new([
             Arc::new(pdf_image::JpegCodec) as Arc<dyn pdf_image::ImageCodec>
         ])
+    }
+
+    fn cache_key_for_shard(shard: usize) -> ImageCacheKey {
+        ImageCacheKey {
+            h0: (shard as u64) << 32,
+            h1: shard as u64,
+            len: 1,
+            codec: 0,
+            width: 1,
+            height: 1,
+            bpc: 8,
+            is_mask: false,
+            target: None,
+            parms: 0,
+        }
+    }
+
+    fn cached_samples(sample_bytes: usize, alpha_bytes: usize) -> CodecSamples {
+        CodecSamples {
+            samples: Arc::from(vec![7; sample_bytes]),
+            width: sample_bytes as u32,
+            height: 1,
+            bpc: 8,
+            color_space: ImageColorSpace::Gray,
+            format: pdf_image::DecodedFormat::Gray8,
+            alpha: (alpha_bytes != 0).then(|| Arc::from(vec![11; alpha_bytes])),
+        }
     }
 
     fn lower_page(page: &CompiledPage, cache: Option<&Arc<SharedImageCache>>) -> CpuPreparedPage {
@@ -6365,9 +6562,136 @@ mod image_cache_tests {
             let _ = lower_page(&dct_page(jpeg_payload(seed)), Some(&tiny));
         }
         assert!(
-            tiny.retained_bytes() <= SharedImageCache::SHARDS * 512 + 2048,
+            tiny.retained_bytes() <= SharedImageCache::SHARDS * 512,
             "retained {} bytes exceeds budget",
             tiny.retained_bytes()
         );
+    }
+
+    #[test]
+    fn oversized_entries_and_alpha_cannot_escape_the_hard_cache_bound() {
+        let total = SharedImageCache::SHARDS * 1024;
+        let cache = SharedImageCache::new(total);
+
+        // Each ordinary entry fits its shard and the sum stays at the global
+        // budget. Distinct h0 high words place one entry in each shard.
+        for shard in 0..SharedImageCache::SHARDS {
+            cache.insert(cache_key_for_shard(shard), cached_samples(512, 0));
+        }
+        assert!(cache.retained_bytes() <= total);
+
+        // An entry larger than one eighth of the budget still belongs in the
+        // cache; only the global total is a hard limit.
+        let scan_cache = SharedImageCache::new(total);
+        scan_cache.insert(cache_key_for_shard(0), cached_samples(2048, 0));
+        assert_eq!(scan_cache.len(), 1);
+        assert!(scan_cache.retained_bytes() <= total);
+
+        // Alpha is physical retained storage and participates in admission.
+        // Without alpha accounting this entry would fit a 1 KiB cache.
+        let alpha_cache = SharedImageCache::new(1024);
+        alpha_cache.insert(cache_key_for_shard(0), cached_samples(512, 768));
+        assert_eq!(alpha_cache.len(), 0);
+        assert_eq!(alpha_cache.retained_bytes(), 0);
+
+        // One giant entry must not survive merely because it is alone.
+        let empty = SharedImageCache::new(total);
+        empty.insert(cache_key_for_shard(0), cached_samples(total * 2, 0));
+        assert_eq!(empty.len(), 0);
+        assert_eq!(empty.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn concurrent_misses_have_one_producer_and_share_its_result() {
+        let workers = 8;
+        let cache = Arc::new(SharedImageCache::default());
+        let start = Arc::new(Barrier::new(workers));
+        let producers = Arc::new(AtomicUsize::new(0));
+        let key = cache_key_for_shard(0);
+        let threads: Vec<_> = (0..workers)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let start = Arc::clone(&start);
+                let producers = Arc::clone(&producers);
+                std::thread::spawn(move || {
+                    start.wait();
+                    match cache.probe(key) {
+                        ImageCacheProbe::Hit(decoded) => decoded,
+                        ImageCacheProbe::Leader(flight) => {
+                            producers.fetch_add(1, Ordering::Relaxed);
+                            let decoded = cached_samples(4096, 1024);
+                            flight.complete(&decoded);
+                            decoded
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let decoded: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert_eq!(producers.load(Ordering::Relaxed), 1);
+        for other in &decoded[1..] {
+            assert!(Arc::ptr_eq(&decoded[0].samples, &other.samples));
+            assert!(Arc::ptr_eq(
+                decoded[0].alpha.as_ref().unwrap(),
+                other.alpha.as_ref().unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::panic,
+        reason = "the test deliberately unwinds a producer to verify RAII wakeup"
+    )]
+    fn failed_cancelled_or_panicked_producer_wakes_and_allows_retry() {
+        let cache = Arc::new(SharedImageCache::default());
+        let key = cache_key_for_shard(0);
+
+        let ImageCacheProbe::Leader(cancelled) = cache.probe(key) else {
+            panic!("cold cache must elect a producer");
+        };
+
+        let waiter_cache = Arc::clone(&cache);
+        let (waiting, waiter_is_ready) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            waiting.send(()).unwrap();
+            let ImageCacheProbe::Leader(retry) = waiter_cache.probe(key) else {
+                panic!("a failed producer has no cached result");
+            };
+            drop(retry);
+        });
+        waiter_is_ready.recv().unwrap();
+        // The map and producer own two references. A third proves the waiter
+        // cloned the same flight and entered its wait path before cancellation.
+        while Arc::strong_count(&cancelled.flight) < 3 {
+            std::thread::yield_now();
+        }
+        drop(cancelled);
+        waiter.join().unwrap();
+
+        let decode_error: Result<(), ()> = (|| {
+            let ImageCacheProbe::Leader(_guard) = cache.probe(key) else {
+                return Ok(());
+            };
+            Err(())
+        })();
+        assert_eq!(decode_error, Err(()));
+        let ImageCacheProbe::Leader(error_retry) = cache.probe(key) else {
+            panic!("a codec error must permit retry");
+        };
+        drop(error_retry);
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let ImageCacheProbe::Leader(_guard) = cache.probe(key) else {
+                panic!("cold cache must elect a producer");
+            };
+            panic!("synthetic codec panic");
+        }));
+        assert!(unwind.is_err());
+        assert!(matches!(cache.probe(key), ImageCacheProbe::Leader(_)));
     }
 }

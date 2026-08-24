@@ -16,6 +16,8 @@ use pdf_page_ir::{
 };
 use pdf_render_api::{CancellationToken, RenderError};
 
+use crate::surface::{filled_arc, unique_arc_mut, zeroed_arc};
+
 /// Document-scoped cache of source images converted to the RGB8 upload
 /// vocabulary. The decoded-image cache retains compressed-codec output; this
 /// companion cache retains only color-converted RGB and deliberately holds a
@@ -81,8 +83,9 @@ impl SharedRgbImageCache {
             return Ok(Some(rgb));
         }
 
-        let mut converted = vec![0u8; rgb_len];
+        let mut converted = zeroed_arc(rgb_len);
         let width = image.width as usize;
+        let converted_data = unique_arc_mut(&mut converted);
         for row in 0..image.height {
             if row % 32 == 0 && cancellation.is_some_and(CancellationToken::is_cancelled) {
                 return Err(RenderError::Cancelled);
@@ -92,14 +95,12 @@ impl SharedRgbImageCache {
                     .source_pixel(col, row)
                     .ok_or(RenderError::Unsupported(pdf_page_ir::PageFeatures::IMAGES))?;
                 let offset = (row as usize * width + col as usize) * 3;
-                converted[offset..offset + 3].copy_from_slice(&rgba[..3]);
+                converted_data[offset..offset + 3].copy_from_slice(&rgba[..3]);
             }
         }
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(RenderError::Cancelled);
         }
-        let converted: Arc<[u8]> = Arc::from(converted);
-
         // Another raster worker may have completed the same conversion while
         // this one was outside the mutex. Reuse its Arc so every caller also
         // converges on one GPU-upload-cache identity.
@@ -241,7 +242,8 @@ impl SharedOpacityImageCache {
         let row_bits = (width as usize * bpc as usize).div_ceil(8) * 8;
         let max_value = ((1u64 << bpc) - 1) as f32;
         let decode_pair = decode.and_then(|pairs| pairs.first()).copied();
-        let mut expanded = vec![0u8; alpha_len];
+        let mut expanded = zeroed_arc(alpha_len);
+        let expanded_data = unique_arc_mut(&mut expanded);
         for row in 0..height {
             if row % 32 == 0 && cancellation.is_some_and(CancellationToken::is_cancelled) {
                 return Err(RenderError::Cancelled);
@@ -255,13 +257,12 @@ impl SharedOpacityImageCache {
                 }
                 .clamp(0.0, 1.0);
                 let opacity = if inverted { 1.0 - decoded } else { decoded };
-                expanded[row as usize * width as usize + column as usize] = to_u8(opacity);
+                expanded_data[row as usize * width as usize + column as usize] = to_u8(opacity);
             }
         }
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(RenderError::Cancelled);
         }
-        let expanded: Arc<[u8]> = Arc::from(expanded);
         if let Some(alpha) = self.lookup(source, width, height, bpc, decode, inverted, 1, None) {
             return Ok(Some(alpha));
         }
@@ -337,7 +338,8 @@ impl SharedOpacityImageCache {
             return Ok(None);
         }
 
-        let mut expanded = vec![255u8; alpha_len];
+        let mut expanded = filled_arc(alpha_len, 255);
+        let expanded_data = unique_arc_mut(&mut expanded);
         for row in 0..height {
             if row % 32 == 0 && cancellation.is_some_and(CancellationToken::is_cancelled) {
                 return Err(RenderError::Cancelled);
@@ -351,7 +353,7 @@ impl SharedOpacityImageCache {
                     raw >= lo && raw <= hi
                 });
                 if masked {
-                    expanded[row as usize * width as usize + column as usize] = 0;
+                    expanded_data[row as usize * width as usize + column as usize] = 0;
                 }
             }
         }
@@ -359,7 +361,6 @@ impl SharedOpacityImageCache {
             return Err(RenderError::Cancelled);
         }
 
-        let expanded: Arc<[u8]> = Arc::from(expanded);
         if let Some(alpha) = self.lookup(
             source,
             width,

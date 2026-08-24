@@ -383,20 +383,96 @@ fn render_job(
     }
 }
 
-/// Peak-byte estimate for budgeting. Refined in Phase 5 using
-/// `PageComplexity`; the output surface is the floor.
+/// Peak-byte estimate for budgeting. One outer permit owns the output surface,
+/// nested transparency intermediates, and the page's largest sequential cold
+/// image decode. Decode paths do not acquire a nested scheduler permit, so an
+/// exact-fit memory limit always makes forward progress without self-deadlock.
 pub fn estimate_job_bytes(request: &RenderRequest) -> u64 {
     let surface = (request.output_size.width as u64)
         .saturating_mul(request.output_size.height as u64)
         .saturating_mul(request.output_format.bytes_per_pixel() as u64);
-    surface.saturating_add(request.page.complexity.estimated_peak_bytes)
+    surface
+        .saturating_add(request.page.complexity.estimated_peak_bytes)
+        .saturating_add(request.page.complexity.estimated_image_decode_peak_bytes)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use pdf_page_ir::{DeviceSize, Matrix, PageBounds, PageComplexity, Rect};
+    use pdf_render_api::{
+        AnnotationMode, Background, OutputFormat, OutputResidency, PageTransform,
+        RenderColorPolicy, RenderLimits, RenderQuality,
+    };
 
     const fn assert_send_sync<T: Send + Sync>() {}
     const _: () = assert_send_sync::<RenderScheduler>();
+
+    fn request_with_complexity(complexity: PageComplexity) -> RenderRequest {
+        let mut page = pdf_page_ir::CompiledPage::empty(PageBounds {
+            crop: Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 1.0,
+                y1: 1.0,
+            },
+            rotate: 0,
+        });
+        page.complexity = complexity;
+        RenderRequest {
+            page: Arc::new(page),
+            transform: PageTransform {
+                matrix: Matrix::IDENTITY,
+            },
+            crop: None,
+            output_size: DeviceSize {
+                width: 2,
+                height: 3,
+            },
+            output_format: OutputFormat::Rgba8PremultipliedSrgb,
+            background: Background::White,
+            annotations: AnnotationMode::None,
+            color_policy: RenderColorPolicy::Original,
+            quality: RenderQuality::Normal,
+            limits: RenderLimits::default(),
+            residency: OutputResidency::HostRequired,
+        }
+    }
+
+    #[test]
+    fn job_estimate_includes_output_groups_and_largest_cold_image() {
+        let request = request_with_complexity(PageComplexity {
+            estimated_peak_bytes: 7,
+            estimated_image_decode_peak_bytes: 11,
+            ..PageComplexity::default()
+        });
+        assert_eq!(estimate_job_bytes(&request), 2 * 3 * 4 + 7 + 11);
+    }
+
+    #[test]
+    fn exact_fit_outer_permit_covers_decode_without_nested_deadlock() {
+        let request = request_with_complexity(PageComplexity {
+            estimated_peak_bytes: 1,
+            estimated_image_decode_peak_bytes: 2,
+            ..PageComplexity::default()
+        });
+        let estimate = estimate_job_bytes(&request);
+        let budget = MemoryBudget::new(estimate);
+        let permit = budget.acquire(estimate).expect("exact-fit job is admitted");
+        assert_eq!(permit.bytes(), estimate);
+        assert_eq!(budget.in_use(), estimate);
+        drop(permit);
+        assert_eq!(budget.in_use(), 0);
+    }
+
+    #[test]
+    fn job_estimate_saturates_instead_of_wrapping() {
+        let request = request_with_complexity(PageComplexity {
+            estimated_peak_bytes: u64::MAX,
+            estimated_image_decode_peak_bytes: u64::MAX,
+            ..PageComplexity::default()
+        });
+        assert_eq!(estimate_job_bytes(&request), u64::MAX);
+    }
 }

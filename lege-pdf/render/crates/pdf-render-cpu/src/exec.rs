@@ -39,7 +39,7 @@ use pdf_page_ir::DeviceRect;
 use crate::prepared::{CpuPreparedPage, DrawClass, PreparedCommand, PreparedGlyphRun, PreparedOp};
 use crate::raster::RasterKernel;
 use crate::stats::RenderStats;
-use crate::surface::Surface;
+use crate::surface::{Surface, unique_arc_mut, zeroed_arc};
 use rayon::prelude::*;
 
 /// Per-worker scratch: the coverage kernel and the kernel-set table. Reusable
@@ -202,23 +202,26 @@ pub(crate) fn prepare_patterned_stencil(
 
     let (_, rgba) = surface.into_output(pdf_render_api::OutputFormat::Rgba8PremultipliedSrgb);
     let pixels = normalized.bounds.width as usize * normalized.bounds.height as usize;
-    let mut samples = Vec::with_capacity(pixels * 3);
-    let mut opacity = Vec::with_capacity(pixels);
-    for pixel in rgba.chunks_exact(4) {
+    let mut samples = zeroed_arc(pixels * 3);
+    let mut opacity = zeroed_arc(pixels);
+    let samples_data = unique_arc_mut(&mut samples);
+    let opacity_data = unique_arc_mut(&mut opacity);
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         let alpha = u16::from(pixel[3]);
-        opacity.push(pixel[3]);
+        opacity_data[index] = pixel[3];
+        let sample = &mut samples_data[index * 3..index * 3 + 3];
         if alpha == 0 {
-            samples.extend_from_slice(&[0, 0, 0]);
+            sample.fill(0);
         } else {
-            for &channel in &pixel[..3] {
-                samples.push(((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8);
+            for (dst, &channel) in sample.iter_mut().zip(&pixel[..3]) {
+                *dst = ((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8;
             }
         }
     }
     Some(crate::PreparedPatternedStencil {
         bounds: normalized.bounds,
-        samples: samples.into(),
-        opacity: opacity.into(),
+        samples,
+        opacity,
     })
 }
 
@@ -556,6 +559,8 @@ fn run_knockout_group(
     stats: &mut RenderStats,
 ) {
     let initial = off.clone();
+    let mut scratch = initial.clone();
+    let mut scratch_is_initial = true;
     let mut i = start;
     while i < end {
         // One element's op extent, and whether it paints (vs pure state).
@@ -571,7 +576,9 @@ fn run_knockout_group(
             }
         };
         if paints {
-            let mut scratch = initial.clone();
+            if !scratch_is_initial {
+                scratch.copy_pixels_from(&initial);
+            }
             run_ops(
                 page,
                 i,
@@ -583,6 +590,7 @@ fn run_knockout_group(
                 soft,
                 stats,
             );
+            scratch_is_initial = false;
             // Fold changed pixels into the accumulator.
             let (gw, gh) = (off.width, off.height);
             for ly in 0..gh {

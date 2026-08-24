@@ -223,7 +223,7 @@ pub struct SemImage {
     /// Which image codec `codec_data` requires (DCT/JPX/JBIG2/CCITT).
     pub codec: Option<pdf_page_ir::ImageCodecKind>,
     /// The codec-encoded payload, general stream filters already applied.
-    pub codec_data: Option<Arc<[u8]>>,
+    pub codec_data: Option<pdf_page_ir::SharedBytes>,
     /// `/DecodeParms` the codec needs.
     pub codec_parms: Option<pdf_page_ir::CodecParms>,
     /// Grayscale `/SMask` soft mask.

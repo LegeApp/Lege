@@ -12,6 +12,8 @@ use crate::j2k::{MARKER_EOC, MARKER_SOC, MARKER_SOD, MARKER_SOT, TilePartHeader}
 pub(crate) struct CodestreamView<'a> {
     pub(crate) main_header_segments: Vec<&'a [u8]>,
     pub(crate) tile_parts: Vec<TilePartView<'a>>,
+    /// Retained vector capacities charged while framing the codestream.
+    pub(crate) structural_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -22,8 +24,11 @@ pub(crate) struct TilePartView<'a> {
     pub(crate) payload: &'a [u8],
 }
 
-pub(crate) fn parse_codestream_view(bytes: &[u8]) -> Result<CodestreamView<'_>> {
-    let mut cursor = Cursor::new(bytes);
+pub(crate) fn parse_codestream_view(
+    bytes: &[u8],
+    max_structural_bytes: usize,
+) -> Result<CodestreamView<'_>> {
+    let mut cursor = Cursor::new(bytes, max_structural_bytes);
     let soc = cursor.read_u16()?;
     if soc != MARKER_SOC {
         return Err(invalid("codestream did not start with SOC"));
@@ -35,7 +40,8 @@ pub(crate) fn parse_codestream_view(bytes: &[u8]) -> Result<CodestreamView<'_>> 
         let marker = cursor.read_u16()?;
         if marker == MARKER_SOT {
             let mut tile_parts = Vec::new();
-            tile_parts.push(cursor.read_tile_part(marker_start, marker)?);
+            let tile_part = cursor.read_tile_part(marker_start, marker)?;
+            cursor.push_structural(&mut tile_parts, tile_part)?;
 
             while cursor.position() < bytes.len().saturating_sub(2) {
                 let next_start = cursor.position();
@@ -47,6 +53,7 @@ pub(crate) fn parse_codestream_view(bytes: &[u8]) -> Result<CodestreamView<'_>> 
                     return Ok(CodestreamView {
                         main_header_segments,
                         tile_parts,
+                        structural_bytes: cursor.structural_bytes,
                     });
                 }
                 if next_marker != MARKER_SOT {
@@ -54,7 +61,8 @@ pub(crate) fn parse_codestream_view(bytes: &[u8]) -> Result<CodestreamView<'_>> 
                         "unexpected marker 0x{next_marker:04x} after tile-part payload"
                     )));
                 }
-                tile_parts.push(cursor.read_tile_part(next_start, next_marker)?);
+                let tile_part = cursor.read_tile_part(next_start, next_marker)?;
+                cursor.push_structural(&mut tile_parts, tile_part)?;
             }
 
             if cursor.position() == bytes.len().saturating_sub(2) {
@@ -63,6 +71,7 @@ pub(crate) fn parse_codestream_view(bytes: &[u8]) -> Result<CodestreamView<'_>> 
                     return Ok(CodestreamView {
                         main_header_segments,
                         tile_parts,
+                        structural_bytes: cursor.structural_bytes,
                     });
                 }
                 return Err(invalid(format!(
@@ -73,19 +82,27 @@ pub(crate) fn parse_codestream_view(bytes: &[u8]) -> Result<CodestreamView<'_>> 
             return Err(invalid("codestream ended before EOC"));
         }
 
-        main_header_segments.push(cursor.read_segment(marker_start, marker)?);
+        let segment = cursor.read_segment(marker_start, marker)?;
+        cursor.push_structural(&mut main_header_segments, segment)?;
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
+    structural_bytes: usize,
+    max_structural_bytes: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
+    fn new(bytes: &'a [u8], max_structural_bytes: usize) -> Self {
+        Self {
+            bytes,
+            pos: 0,
+            structural_bytes: 0,
+            max_structural_bytes,
+        }
     }
 
     fn position(&self) -> usize {
@@ -96,6 +113,61 @@ impl<'a> Cursor<'a> {
         let value = read_be_u16(self.bytes, self.pos)?;
         self.pos += 2;
         Ok(value)
+    }
+
+    /// Grow a retained codestream-structure vector under the caller's existing
+    /// working-memory ceiling. Explicit geometric growth makes the charged
+    /// capacity known before asking the allocator, and `try_reserve_exact`
+    /// turns allocation failure into a decoder error rather than an abort.
+    fn push_structural<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<()> {
+        if values.len() == values.capacity() {
+            let old_capacity = values.capacity();
+            let new_capacity = if old_capacity == 0 {
+                4
+            } else {
+                old_capacity
+                    .checked_mul(2)
+                    .ok_or_else(|| invalid("codestream structural metadata capacity overflow"))?
+            };
+            let additional = new_capacity - old_capacity;
+            let additional_bytes = additional
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or_else(|| invalid("codestream structural metadata size overflow"))?;
+            let new_total = self
+                .structural_bytes
+                .checked_add(additional_bytes)
+                .ok_or_else(|| invalid("codestream structural metadata size overflow"))?;
+            if new_total > self.max_structural_bytes {
+                return Err(invalid(format!(
+                    "codestream structural metadata working set requires more than {} bytes",
+                    self.max_structural_bytes
+                )));
+            }
+            values
+                .try_reserve_exact(additional)
+                .map_err(|_| invalid("codestream structural metadata allocation failed"))?;
+            // `try_reserve_exact` may still over-allocate. Charge the capacity
+            // the allocator actually returned, and reject it before retaining
+            // or populating that storage if it crosses the configured ceiling.
+            let actual_additional_bytes = values
+                .capacity()
+                .saturating_sub(old_capacity)
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or_else(|| invalid("codestream structural metadata size overflow"))?;
+            let actual_total = self
+                .structural_bytes
+                .checked_add(actual_additional_bytes)
+                .ok_or_else(|| invalid("codestream structural metadata size overflow"))?;
+            if actual_total > self.max_structural_bytes {
+                return Err(invalid(format!(
+                    "codestream structural metadata working set requires more than {} bytes",
+                    self.max_structural_bytes
+                )));
+            }
+            self.structural_bytes = actual_total;
+        }
+        values.push(value);
+        Ok(())
     }
 
     fn read_segment(&mut self, marker_start: usize, marker: u16) -> Result<&'a [u8]> {
@@ -171,7 +243,8 @@ impl<'a> Cursor<'a> {
                     payload,
                 });
             }
-            header_segments.push(self.read_segment(marker_start, next_marker)?);
+            let segment = self.read_segment(marker_start, next_marker)?;
+            self.push_structural(&mut header_segments, segment)?;
         }
     }
 }
@@ -273,7 +346,7 @@ mod tests {
         // SOT segment (12) + SOD (2) + payload.
         let psot = (12 + 2 + payload.len()) as u32;
         let bytes = codestream(psot, &payload);
-        let view = parse_codestream_view(&bytes).expect("well-formed codestream");
+        let view = parse_codestream_view(&bytes, usize::MAX).expect("well-formed codestream");
         assert_eq!(view.tile_parts.len(), 1);
         assert_eq!(view.tile_parts[0].payload, &payload);
     }
@@ -286,7 +359,7 @@ mod tests {
     fn psot_shorter_than_the_sot_segment_falls_back_to_the_eoc() {
         let payload = [0xAA, 0xBB, 0xCC];
         let bytes = codestream(12, &payload);
-        let view = parse_codestream_view(&bytes).expect("Psot=12 must be recovered");
+        let view = parse_codestream_view(&bytes, usize::MAX).expect("Psot=12 must be recovered");
         assert_eq!(view.tile_parts[0].payload, &payload);
     }
 
@@ -295,7 +368,7 @@ mod tests {
     fn zero_psot_runs_to_the_eoc() {
         let payload = [0x01, 0x02, 0x03, 0x04, 0x05];
         let bytes = codestream(0, &payload);
-        let view = parse_codestream_view(&bytes).expect("Psot=0 is legal per A.4.2");
+        let view = parse_codestream_view(&bytes, usize::MAX).expect("Psot=0 is legal per A.4.2");
         assert_eq!(view.tile_parts[0].payload, &payload);
     }
 
@@ -305,7 +378,8 @@ mod tests {
     fn psot_past_the_buffer_falls_back_to_the_eoc() {
         let payload = [0x77; 6];
         let bytes = codestream(9_999, &payload);
-        let view = parse_codestream_view(&bytes).expect("over-long Psot must be recovered");
+        let view =
+            parse_codestream_view(&bytes, usize::MAX).expect("over-long Psot must be recovered");
         assert_eq!(view.tile_parts[0].payload, &payload);
     }
 
@@ -327,7 +401,7 @@ mod tests {
         bytes.extend_from_slice(&second);
         bytes.extend_from_slice(&MARKER_EOC.to_be_bytes());
 
-        let view = parse_codestream_view(&bytes).expect("two tile-parts");
+        let view = parse_codestream_view(&bytes, usize::MAX).expect("two tile-parts");
         assert_eq!(view.tile_parts.len(), 2);
         assert_eq!(view.tile_parts[0].payload, &first);
         assert_eq!(view.tile_parts[1].payload, &second);
@@ -340,7 +414,7 @@ mod tests {
     fn stuffed_ff_bytes_in_the_payload_do_not_end_the_tile_part() {
         let payload = [0xFF, 0x7F, 0xFF, 0x00, 0xFF, 0x8F];
         let bytes = codestream(12, &payload);
-        let view = parse_codestream_view(&bytes).expect("stuffed payload must survive");
+        let view = parse_codestream_view(&bytes, usize::MAX).expect("stuffed payload must survive");
         assert_eq!(view.tile_parts[0].payload, &payload);
     }
 
@@ -350,6 +424,31 @@ mod tests {
         assert_eq!(
             u16::from_be_bytes([bytes[SOT_START], bytes[SOT_START + 1]]),
             MARKER_SOT
+        );
+    }
+
+    #[test]
+    fn structural_limit_rejects_marker_vector_before_allocation() {
+        let bytes = codestream(0, &[]);
+        let first_growth = 4 * std::mem::size_of::<&[u8]>();
+        let error = parse_codestream_view(&bytes, first_growth - 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("codestream structural metadata working set requires more than")
+        );
+    }
+
+    #[test]
+    fn structural_limit_charges_tile_part_views() {
+        let bytes = codestream(0, &[]);
+        let marker_capacity = 4 * std::mem::size_of::<&[u8]>();
+        let tile_capacity = 4 * std::mem::size_of::<TilePartView<'_>>();
+        let error = parse_codestream_view(&bytes, marker_capacity + tile_capacity - 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("codestream structural metadata working set requires more than")
         );
     }
 }

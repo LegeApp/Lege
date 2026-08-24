@@ -2855,14 +2855,12 @@ impl<'a> Interpreter<'a> {
         // Decode through the general filters; a codec filter (DCT/JPX/
         // JBIG2/CCITT) stops decoding and yields the encoded payload for
         // the backend's codec registry.
-        let (samples, codec, codec_data) = match self
-            .snapshot
-            .decode_stream_data_to_codec(stream, self.ctx)
-        {
-            Ok((bytes, None)) => (Some(Arc::from(bytes)), None, None),
-            Ok((bytes, Some(name))) => (None, codec_kind(name.as_bytes()), Some(Arc::from(bytes))),
-            Err(_) => (None, None, None),
-        };
+        let (samples, codec, codec_data) =
+            match self.snapshot.decode_stream_data_to_codec(stream, self.ctx) {
+                Ok((bytes, None)) => (Some(Arc::from(bytes)), None, None),
+                Ok((bytes, Some(name))) => (None, codec_kind(name.as_bytes()), Some(bytes.into())),
+                Err(_) => (None, None, None),
+            };
         let smask = self.build_image_smask(dict);
         // `/SMaskInData` (§7.4.7): a JPXDecode image's own opacity channel acts
         // as a soft mask (1) or premultiplied opacity (2). Only honoured when
@@ -3594,7 +3592,7 @@ impl<'a> Interpreter<'a> {
                 Ok((bytes, Some(name))) => (
                     Arc::from(Vec::new()),
                     codec_kind(name.as_bytes()),
-                    Some(Arc::from(bytes)),
+                    Some(bytes.into()),
                 ),
                 Err(_) => return None,
             };
@@ -3678,7 +3676,7 @@ impl<'a> Interpreter<'a> {
                         Ok((bytes, Some(name))) => (
                             Arc::from(Vec::new()),
                             codec_kind(name.as_bytes()),
-                            Some(Arc::from(bytes)),
+                            Some(bytes.into()),
                         ),
                         Err(_) => return None,
                     };
@@ -4304,7 +4302,7 @@ impl<'a> Interpreter<'a> {
     ) -> (
         Option<Arc<[u8]>>,
         Option<pdf_page_ir::ImageCodecKind>,
-        Option<Arc<[u8]>>,
+        Option<pdf_page_ir::SharedBytes>,
     ) {
         if filters.is_empty() {
             return (Some(Arc::from(data)), None, None);
@@ -4326,7 +4324,7 @@ impl<'a> Interpreter<'a> {
         };
         match self.snapshot.decode_stream_data_to_codec(&stream, self.ctx) {
             Ok((bytes, None)) => (Some(Arc::from(bytes)), None, None),
-            Ok((bytes, Some(name))) => (None, codec_kind(name.as_bytes()), Some(Arc::from(bytes))),
+            Ok((bytes, Some(name))) => (None, codec_kind(name.as_bytes()), Some(bytes.into())),
             Err(_) => (None, None, None),
         }
     }

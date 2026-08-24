@@ -365,6 +365,36 @@ fn image_lowers_and_sets_feature_flags() {
             .any(|o| matches!(o, DisplayOp::DrawImage { .. }))
     );
     assert_eq!(page.complexity.image_pixels, 4);
+    // RGB codec input: 4 B/pixel retained converted raster + three 4-B
+    // coefficient planes = 16 B/pixel.
+    assert_eq!(page.complexity.estimated_image_decode_peak_bytes, 64);
+}
+
+#[test]
+fn cold_jpx_estimate_counts_in_data_alpha_plane() {
+    // `/SMaskInData 1` adds a codestream opacity component that is not part of
+    // the declared RGB color space but is live as another four-byte plane.
+    let mut b = PdfBuilder::new();
+    b.add_object(1, "<</Type/Catalog/Pages 2 0 R>>");
+    b.add_object(
+        2,
+        "<</Type/Pages/Kids[3 0 R]/Count 1/MediaBox[0 0 200 200]>>",
+    );
+    b.add_object(
+        3,
+        "<</Type/Page/Parent 2 0 R/Contents 4 0 R/Resources<</XObject<</Im0 5 0 R>>>>>>",
+    );
+    b.add_stream(4, "", b"q 10 0 0 10 0 0 cm /Im0 Do Q");
+    b.add_stream(
+        5,
+        "/Type/XObject/Subtype/Image/Width 2/Height 2/BitsPerComponent 8/ColorSpace/DeviceRGB/Filter/JPXDecode/SMaskInData 1",
+        b"deadbeef",
+    );
+    b.finish_classic_xref("/Root 1 0 R");
+    let page = compile(&open(b.into_bytes()));
+
+    // 4 B/pixel converted + four 4-B planes (RGB + alpha) = 20 B/pixel.
+    assert_eq!(page.complexity.estimated_image_decode_peak_bytes, 80);
 }
 
 #[test]

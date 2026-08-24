@@ -201,7 +201,7 @@ fn undecodable_codec_image_is_a_recorded_silent_blank() {
         decode: None,
         samples: None,
         codec: Some(pdf_page_ir::ImageCodecKind::Jpx),
-        codec_data: Some(Arc::from(vec![0u8; 16])), // not a JP2 container
+        codec_data: Some(vec![0u8; 16].into()), // not a JP2 container
         codec_parms: None,
         smask: None,
         mask: None,
@@ -621,7 +621,7 @@ fn jpx_image(cs: ImageColorSpace) -> ImageIr {
         decode: None,
         samples: None,
         codec: Some(pdf_page_ir::ImageCodecKind::Jpx),
-        codec_data: Some(Arc::from(vec![0u8; 16])),
+        codec_data: Some(vec![0u8; 16].into()),
         codec_parms: None,
         smask: None,
         mask: None,

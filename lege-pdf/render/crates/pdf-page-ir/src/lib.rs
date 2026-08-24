@@ -23,7 +23,7 @@ pub use pdf_geom::{DeviceRect, DeviceSize, Matrix, Point, Rect};
 
 /// Bumped on any breaking change to this crate's types. Serialized dumps
 /// and caches must key on it (roadmap §7 Phase 3).
-pub const IR_SCHEMA_VERSION: u32 = 3;
+pub const IR_SCHEMA_VERSION: u32 = 4;
 
 macro_rules! handle {
     ($(#[$doc:meta])* $name:ident) => {
@@ -378,6 +378,45 @@ impl ImageColorSpace {
     }
 }
 
+/// Immutable owned bytes whose original `Vec` allocation is shared without a
+/// `Vec -> Arc<[u8]>` full-buffer copy. The private field intentionally exposes
+/// only slices: codec payloads are immutable after page compilation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SharedBytes(Arc<Vec<u8>>);
+
+impl SharedBytes {
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl From<Vec<u8>> for SharedBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(Arc::new(bytes))
+    }
+}
+
+impl From<&[u8]> for SharedBytes {
+    fn from(bytes: &[u8]) -> Self {
+        Self::from(bytes.to_vec())
+    }
+}
+
+impl std::ops::Deref for SharedBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for SharedBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
 /// A grayscale soft-mask image attached to an image XObject (`/SMask`). Kept
 /// as decoded samples so the backend resamples it into image space.
 #[derive(Debug, Clone, PartialEq)]
@@ -393,7 +432,7 @@ pub struct ImageSMask {
     /// Which image codec `codec_data` requires.
     pub codec: Option<ImageCodecKind>,
     /// The codec-encoded payload (general stream filters already applied).
-    pub codec_data: Option<Arc<[u8]>>,
+    pub codec_data: Option<SharedBytes>,
     /// `/DecodeParms` the mask's codec needs (JBIG2 globals, CCITT K/…).
     pub codec_parms: Option<CodecParms>,
 }
@@ -445,7 +484,7 @@ pub struct ImageIr {
     /// Which image codec `codec_data` requires.
     pub codec: Option<ImageCodecKind>,
     /// The codec-encoded payload (general stream filters already applied).
-    pub codec_data: Option<Arc<[u8]>>,
+    pub codec_data: Option<SharedBytes>,
     /// `/DecodeParms` a codec needs: JBIG2's globals stream, CCITT's K /
     /// Columns / BlackIs1. Backend-neutral because the codec registry that
     /// consumes them is backend-injected.
@@ -718,6 +757,14 @@ pub struct PageComplexity {
     pub transparency_group_count: u32,
     /// Estimated peak intermediate bytes at 1x scale.
     pub estimated_peak_bytes: u64,
+    /// Largest cold image working set on the page at source resolution.
+    ///
+    /// Unrelated images are decoded sequentially by a render job, so this is a
+    /// maximum rather than a page-wide sum. It includes the retained converted
+    /// image and codec coefficient planes, plus an attached mask when present.
+    /// The scheduler owns one outer permit covering this estimate; codecs must
+    /// not reacquire the same page budget while that permit is held.
+    pub estimated_image_decode_peak_bytes: u64,
 }
 
 /// Page geometry needed to map user space to device space.
@@ -959,13 +1006,14 @@ impl CompiledPage {
         let c = &self.complexity;
         let _ = writeln!(
             o,
-            "complexity: ops={} segments={} glyphs={} image_pixels={} groups={} peak_bytes={}",
+            "complexity: ops={} segments={} glyphs={} image_pixels={} groups={} peak_bytes={} image_decode_peak_bytes={}",
             c.operation_count,
             c.path_segment_count,
             c.glyph_count,
             c.image_pixels,
             c.transparency_group_count,
-            c.estimated_peak_bytes
+            c.estimated_peak_bytes,
+            c.estimated_image_decode_peak_bytes
         );
 
         let _ = writeln!(o, "operations:");
@@ -1275,5 +1323,17 @@ mod tests {
         assert_eq!(page.schema_version, IR_SCHEMA_VERSION);
         assert!(page.operations.is_empty());
         assert!(page.features.is_empty());
+    }
+
+    #[test]
+    fn shared_bytes_preserves_the_vec_data_allocation() {
+        let bytes = vec![1, 2, 3, 4, 5];
+        let allocation = bytes.as_ptr();
+
+        let shared = SharedBytes::from(bytes);
+
+        assert_eq!(shared.as_ptr(), allocation);
+        assert_eq!(shared.as_slice(), &[1, 2, 3, 4, 5]);
+        assert_eq!(shared.clone().as_ptr(), allocation);
     }
 }

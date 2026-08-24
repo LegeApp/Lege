@@ -688,7 +688,7 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
                     };
                     candidate = Some(Jbig2SmaskCandidate {
                         smask: Arc::clone(smask),
-                        page_data,
+                        page_data: Arc::from(page_data.as_slice()),
                         stencil_polarity,
                     });
                 }
@@ -808,7 +808,7 @@ mod tests {
             decode: None,
             samples: Arc::from([]),
             codec: Some(ImageCodecKind::Jbig2),
-            codec_data: Some(Arc::from(&b"encoded mask"[..])),
+            codec_data: Some((&b"encoded mask"[..]).into()),
             codec_parms: Some(CodecParms {
                 jbig2_globals: Some(Arc::from(&b"encoded globals"[..])),
                 ..CodecParms::default()
@@ -881,7 +881,7 @@ mod tests {
         let maskless_image = &mut Arc::make_mut(&mut maskless.images)[0];
         maskless_image.smask = None;
         maskless_image.codec = Some(ImageCodecKind::Dct);
-        maskless_image.codec_data = Some(Arc::from(&b"jpeg"[..]));
+        maskless_image.codec_data = Some((&b"jpeg"[..]).into());
         assert!(qualifying_jbig2_smask(&maskless).is_none());
 
         let mut non_jbig2 = page.clone();

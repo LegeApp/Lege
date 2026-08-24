@@ -10,8 +10,8 @@
 //! handling). The decoded format therefore comes from the codestream.
 //!
 //! Decode uses jp2lam's optimized request API via a thread-local
-//! [`jp2lam::Jp2Decoder`] session (retained Tier-1 scratch + request-sized
-//! Rayon pool). For 8-bit components the codec writes the packed 8-bit raster
+//! [`jp2lam::Jp2Decoder`] session (retained Tier-1 scratch; all sessions share
+//! jp2lam's stable Rayon executor). For 8-bit components the codec writes the packed 8-bit raster
 //! directly (`Gray8`/`Rgb8`/`Rgba8`/`Cmyk8`), removing the renderer-side
 //! full-image interleave pass and the planar `i32` intermediates. Streams
 //! whose components are not 8-bit (1/2/4-bit bitonal and palette scans, 12/16-bit
@@ -37,9 +37,9 @@ use crate::{DecodeParameters, ImageDescriptor, ImageError, StreamFilter};
 
 thread_local! {
     /// A reusable decoder session per render worker. `jp2lam::Jp2Decoder`
-    /// retains bounded Tier-1 scratch and a cached, request-sized Rayon pool
-    /// across calls, so repeated JPX draws on a worker avoid re-allocating
-    /// scratch and rebuilding a thread pool on every decode. The `ImageCodec`
+    /// retains bounded Tier-1 scratch while jp2lam owns one shared Rayon pool,
+    /// so repeated JPX draws avoid re-allocating scratch and concurrent render
+    /// workers do not multiply decoder thread pools. The `ImageCodec`
     /// trait is stateless-by-`&self`; the mutable session lives here.
     static JPX_DECODER: RefCell<jp2lam::Jp2Decoder> = RefCell::new(jp2lam::Jp2Decoder::new());
 }
@@ -126,15 +126,16 @@ impl Drop for InFlightGuard {
 }
 
 /// Lower and upper bound on the per-decode Tier-1 thread budget.
-const JPX_BUDGET_MIN: usize = 2;
+const JPX_BUDGET_MIN: usize = 1;
 const JPX_BUDGET_MAX: usize = 8;
 
 /// Load-aware per-decode concurrency. Render workers already parallelise across
 /// draws, so a decode must not grab the whole machine when many are running —
 /// but when few are (the single-page / viewer case) it should use more of a big
-/// JPX's internal Tier-1 parallelism. Budget = clamp(cores / in_flight, 2, 8):
+/// JPX's internal Tier-1 parallelism. Budget = clamp(cores / in_flight, 1, 8):
 /// one lone decode on a 20-core host runs at 8; a saturated scheduler settles to
-/// the `Budgeted(2)` cap that protects the render pool from oversubscription.
+/// serial-equivalent `Budgeted(1)`. Concurrent budgeted requests share jp2lam's
+/// fixed global executor cap rather than each owning a private Rayon pool.
 fn load_aware_budget(in_flight: usize) -> DecodeConcurrency {
     use std::sync::OnceLock;
     static CORES: OnceLock<usize> = OnceLock::new();
@@ -466,7 +467,12 @@ impl JpxCodec {
         let pixels = (width as usize)
             .checked_mul(height as usize)
             .ok_or_else(|| ImageError::Decode("JPX: pixel count overflow".into()))?;
-        let mut out = vec![0u8; bytes];
+        let mut out = zeroed_arc(bytes);
+        let Some(out_data) = Arc::get_mut(&mut out) else {
+            return Err(ImageError::Decode(
+                "JPX: native output allocation unexpectedly became shared".into(),
+            ));
+        };
         // When the PDF declares `/Indexed`, ignoring a JP2 container palette
         // leaves the codestream's samples as literal PDF palette indices. A
         // 4-bit index 15 must remain byte value 15 in the decoded Gray8
@@ -500,7 +506,7 @@ impl JpxCodec {
                 let row = y * width as usize;
                 for x in 0..width as usize {
                     let i = row + x;
-                    out[i * ncomp + ci] = component_sample_to_u8(
+                    out_data[i * ncomp + ci] = component_sample_to_u8(
                         comp.data[i],
                         comp.precision,
                         max_sample,
@@ -516,7 +522,7 @@ impl JpxCodec {
             height,
             format,
             stride,
-            data: Arc::from(out),
+            data: out,
         })
     }
 }
@@ -571,8 +577,17 @@ fn component_sample_to_u8(
 
 #[cfg(test)]
 mod tests {
-    use super::{component_sample_to_u8, decoder_limits};
+    use super::{component_sample_to_u8, decoder_limits, load_aware_budget};
     use crate::codec::DecodeLimits;
+    use jp2lam::DecodeConcurrency;
+
+    #[test]
+    fn saturated_load_can_fall_back_to_one_decode_worker() {
+        assert_eq!(
+            load_aware_budget(usize::MAX),
+            DecodeConcurrency::Budgeted(1)
+        );
+    }
 
     #[test]
     fn sub8_pdf_palette_indices_are_not_color_widened() {

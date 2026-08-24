@@ -1,5 +1,5 @@
 use pdf_document::{PageIndex, ParseContext};
-use pdf_page_ir::Rect;
+use pdf_page_ir::{Rect, SharedBytes};
 use pdf_text::{TextPage, TextPageOptions};
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ pub struct PageTextEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectScanImage {
-    pub jpeg: Arc<[u8]>,
+    pub jpeg: SharedBytes,
     pub width: u32,
     pub height: u32,
 }
@@ -153,7 +153,7 @@ fn direct_scan_image(page: &pdf_content::SemanticPage) -> Option<DirectScanImage
         return None;
     }
     Some(DirectScanImage {
-        jpeg: Arc::clone(image.codec_data.as_ref()?),
+        jpeg: image.codec_data.clone()?,
         width: image.width,
         height: image.height,
     })

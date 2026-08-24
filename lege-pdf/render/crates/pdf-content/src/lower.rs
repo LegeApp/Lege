@@ -728,8 +728,20 @@ impl<'a> Lowerer<'a> {
         let image_pixels = self
             .images
             .iter()
-            .map(|i| i.width as u64 * i.height as u64)
-            .sum();
+            .map(|i| u64::from(i.width).saturating_mul(u64::from(i.height)))
+            .fold(0u64, u64::saturating_add);
+        // Rendering prepares images one at a time. Budget the largest cold
+        // working set, not the sum of every image on the page: a four-byte
+        // converted raster remains live while codec-backed inputs may hold one
+        // four-byte coefficient plane per source component. An attached mask
+        // can be decoded while its base image remains live, so it is nested in
+        // that image's estimate.
+        let estimated_image_decode_peak_bytes = self
+            .images
+            .iter()
+            .map(estimate_cold_image_decode_bytes)
+            .max()
+            .unwrap_or(0);
         // Transparency surface requirement: each group needs an offscreen
         // buffer sized to its bounds (4 bytes/pixel at 1× scale).
         let estimated_peak_bytes = self
@@ -738,9 +750,9 @@ impl<'a> Lowerer<'a> {
             .map(|g| {
                 let w = (g.bounds.x1 - g.bounds.x0).abs().ceil().max(0.0) as u64;
                 let h = (g.bounds.y1 - g.bounds.y0).abs().ceil().max(0.0) as u64;
-                w * h * 4
+                w.saturating_mul(h).saturating_mul(4)
             })
-            .sum();
+            .fold(0u64, u64::saturating_add);
         PageComplexity {
             operation_count: self.ops.len() as u32,
             path_segment_count,
@@ -748,8 +760,41 @@ impl<'a> Lowerer<'a> {
             image_pixels,
             transparency_group_count: self.groups.len() as u32,
             estimated_peak_bytes,
+            estimated_image_decode_peak_bytes,
         }
     }
+}
+
+fn estimate_cold_image_decode_bytes(image: &ImageIr) -> u64 {
+    let pixels = u64::from(image.width).saturating_mul(u64::from(image.height));
+    let converted = pixels.saturating_mul(4);
+    let codec_planes = if image.codec.is_some() {
+        let source_components = (image.color_space.components() as u64)
+            .saturating_add(u64::from(image.smask_in_data != 0));
+        pixels.saturating_mul(source_components).saturating_mul(4)
+    } else {
+        0
+    };
+    let soft_mask = image
+        .smask
+        .as_deref()
+        .map(estimate_cold_mask_decode_bytes)
+        .unwrap_or(0);
+    let hard_mask = match image.mask.as_ref() {
+        Some(pdf_page_ir::ImageMask::Stencil(mask)) => estimate_cold_mask_decode_bytes(mask),
+        _ => 0,
+    };
+    converted
+        .saturating_add(codec_planes)
+        .saturating_add(soft_mask)
+        .saturating_add(hard_mask)
+}
+
+fn estimate_cold_mask_decode_bytes(mask: &pdf_page_ir::ImageSMask) -> u64 {
+    let pixels = u64::from(mask.width).saturating_mul(u64::from(mask.height));
+    // One retained byte of coverage plus a four-byte coefficient/sample plane
+    // for codec-backed masks.
+    pixels.saturating_mul(if mask.codec.is_some() { 5 } else { 1 })
 }
 
 /// Set the transparency and non-separable-blend flags from one op's alpha and

@@ -86,7 +86,10 @@ impl ColorEncoding {
 
 const MAX_ICC_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 
-fn validate_restricted_icc(bytes: &[u8], model: IccComponentModel) -> crate::error::Result<()> {
+pub(crate) fn validate_restricted_icc(
+    bytes: &[u8],
+    model: IccComponentModel,
+) -> crate::error::Result<()> {
     if !(128..=MAX_ICC_PROFILE_BYTES).contains(&bytes.len()) {
         return Err(invalid_input(format!(
             "restricted ICC profile length {} is outside 128..={MAX_ICC_PROFILE_BYTES}",

@@ -486,9 +486,10 @@ impl PackedLayout {
 
 /// Destination for packed reconstruction: a rectangle inside a strided buffer.
 ///
-/// Pixel `(x, y)` of the reconstructed tile (0-based in the tile) is written at
-/// canvas pixel `(origin_x + x, origin_y + y)`, i.e. byte offset
-/// `(origin_y + y) * stride + (origin_x + x) * channels`.
+/// Pixel `(source_x + x, source_y + y)` of the reconstructed tile is written
+/// at canvas pixel `(origin_x + x, origin_y + y)`. A full-tile write uses zero
+/// source offsets; ROI decode uses a clipped source rectangle while retaining
+/// the full reconstructed planes required by the current whole-tile IDWT.
 #[derive(Debug)]
 pub(crate) struct PackedWriteTarget<'a> {
     pub data: &'a mut [u8],
@@ -496,6 +497,8 @@ pub(crate) struct PackedWriteTarget<'a> {
     pub channels: usize,
     pub origin_x: usize,
     pub origin_y: usize,
+    pub source_x: usize,
+    pub source_y: usize,
     pub width: usize,
     pub height: usize,
     pub layout: PackedLayout,
@@ -506,23 +509,22 @@ impl PackedWriteTarget<'_> {
         if self.channels == 0 || self.width == 0 || self.height == 0 {
             return Err(invalid("packed write target has zero extent"));
         }
+        let origin_bytes = self
+            .origin_x
+            .checked_mul(self.channels)
+            .ok_or_else(|| invalid("packed write origin overflow"))?;
         let row_bytes = self
             .width
             .checked_mul(self.channels)
             .ok_or_else(|| invalid("packed write row overflow"))?;
-        if self.stride < row_bytes + self.origin_x.saturating_mul(self.channels) {
-            // Need origin_x * channels + width * channels ≤ stride
-            let need = self
-                .origin_x
-                .checked_mul(self.channels)
-                .and_then(|o| o.checked_add(row_bytes))
-                .ok_or_else(|| invalid("packed write stride overflow"))?;
-            if self.stride < need {
-                return Err(invalid(format!(
-                    "packed write stride {} too small for origin_x={} width={} channels={}",
-                    self.stride, self.origin_x, self.width, self.channels
-                )));
-            }
+        let end_bytes = origin_bytes
+            .checked_add(row_bytes)
+            .ok_or_else(|| invalid("packed write stride overflow"))?;
+        if self.stride < end_bytes {
+            return Err(invalid(format!(
+                "packed write stride {} too small for origin_x={} width={} channels={}",
+                self.stride, self.origin_x, self.width, self.channels
+            )));
         }
         let last_row = self
             .origin_y
@@ -530,7 +532,7 @@ impl PackedWriteTarget<'_> {
             .ok_or_else(|| invalid("packed write height overflow"))?;
         let need_len = last_row
             .checked_mul(self.stride)
-            .and_then(|o| o.checked_add(self.origin_x * self.channels + self.width * self.channels))
+            .and_then(|offset| offset.checked_add(end_bytes))
             .ok_or_else(|| invalid("packed write buffer size overflow"))?;
         if self.data.len() < need_len {
             return Err(invalid(format!(
@@ -544,6 +546,11 @@ impl PackedWriteTarget<'_> {
     #[inline]
     fn pixel_offset(&self, x: usize, y: usize) -> usize {
         (self.origin_y + y) * self.stride + (self.origin_x + x) * self.channels
+    }
+
+    #[inline]
+    fn source_index(&self, x: usize, y: usize, source_stride: usize) -> usize {
+        (self.source_y + y) * source_stride + self.source_x + x
     }
 }
 
@@ -562,10 +569,18 @@ pub(crate) fn reconstruct_packed_u8_into(
     if target.channels != channels || target.layout != layout {
         return Err(invalid("packed write target channels/layout mismatch"));
     }
-    if target.width != header.siz.width as usize || target.height != header.siz.height as usize {
-        return Err(invalid(
-            "packed write target size does not match reduced tile SIZ",
-        ));
+    let source_width = header.siz.width as usize;
+    let source_height = header.siz.height as usize;
+    let source_x1 = target
+        .source_x
+        .checked_add(target.width)
+        .ok_or_else(|| invalid("packed write source width overflow"))?;
+    let source_y1 = target
+        .source_y
+        .checked_add(target.height)
+        .ok_or_else(|| invalid("packed write source height overflow"))?;
+    if source_x1 > source_width || source_y1 > source_height {
+        return Err(invalid("packed write source rectangle exceeds reduced tile SIZ"));
     }
     match colorspace {
         ColorSpace::Gray if channels == 1 => {
@@ -612,7 +627,7 @@ fn reconstruct_grayscale_u8_into(
             "decoded coefficient tile dimensions do not match reduced SIZ",
         ));
     }
-    if target.channels != 1 || target.width != width || target.height != height {
+    if target.channels != 1 {
         return Err(invalid("gray packed write target size/channels mismatch"));
     }
 
@@ -629,7 +644,7 @@ fn reconstruct_grayscale_u8_into(
             )?;
             let shift = 1i32 << (component.precision - 1);
             let max_sample = (1i32 << component.precision) - 1;
-            write_gray_plane_i32(&centered, shift, max_sample as u32, &mut target);
+            write_gray_plane_i32(&centered, width, shift, max_sample as u32, &mut target);
         }
         WaveletTransform::Irreversible97 => {
             let centered = reconstruct_irreversible_97_centered(
@@ -641,18 +656,21 @@ fn reconstruct_grayscale_u8_into(
             )?;
             let shift = (1u32 << (component.precision - 1)) as f32;
             let max_sample = (1u32 << component.precision) - 1;
-            write_gray_plane_f32(&centered, shift, max_sample, &mut target);
+            write_gray_plane_f32(&centered, width, shift, max_sample, &mut target);
         }
     }
     record_finalize_time(stats, start);
     stats.update(|stats| {
-        stats.output_pixels = stats.output_pixels.saturating_add((width * height) as u64);
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add((target.width * target.height) as u64);
     });
     Ok(())
 }
 
 fn write_gray_plane_i32(
     samples: &[i32],
+    source_width: usize,
     shift: i32,
     max_sample: u32,
     target: &mut PackedWriteTarget<'_>,
@@ -662,7 +680,7 @@ fn write_gray_plane_i32(
     let h = target.height;
     for y in 0..h {
         for x in 0..w {
-            let sample = samples[y * w + x];
+            let sample = samples[target.source_index(x, y, source_width)];
             let byte = scale_unsigned_to_u8(
                 sample.saturating_add(shift).clamp(0, max_sample as i32) as u32,
                 max_sample,
@@ -675,6 +693,7 @@ fn write_gray_plane_i32(
 
 fn write_gray_plane_f32(
     samples: &[f32],
+    source_width: usize,
     shift: f32,
     max_sample: u32,
     target: &mut PackedWriteTarget<'_>,
@@ -683,7 +702,7 @@ fn write_gray_plane_f32(
     let h = target.height;
     for y in 0..h {
         for x in 0..w {
-            let sample = samples[y * w + x];
+            let sample = samples[target.source_index(x, y, source_width)];
             let value = (sample + shift + 0.5).clamp(0.0, max_sample as f32) as u32;
             let byte = scale_unsigned_to_u8(value, max_sample);
             let off = target.pixel_offset(x, y);
@@ -725,7 +744,8 @@ fn reconstruct_interleaved_u8_into(
         PackedLayout::Sequential => channels.min(decoded),
     };
     tiles.truncate(keep);
-    let pixel_count = header.siz.width as usize * header.siz.height as usize;
+    let source_width = header.siz.width as usize;
+    let pixel_count = source_width * header.siz.height as usize;
     let colour_count = colour_channels.min(tiles.len());
 
     if can_fuse_packed(header, colour_count, tiles.len(), layout, channels) {
@@ -754,7 +774,7 @@ fn reconstruct_interleaved_u8_into(
     let h = target.height;
     for y in 0..h {
         for x in 0..w {
-            let index = y * w + x;
+            let index = target.source_index(x, y, source_width);
             let off = target.pixel_offset(x, y);
             match layout {
                 PackedLayout::Sequential => {
@@ -784,7 +804,9 @@ fn reconstruct_interleaved_u8_into(
     }
     record_finalize_time(stats, start);
     stats.update(|stats| {
-        stats.output_pixels = stats.output_pixels.saturating_add(pixel_count as u64);
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add((target.width * target.height) as u64);
     });
     Ok(())
 }
@@ -868,6 +890,7 @@ fn reconstruct_fused_packed_into(
                 layout,
                 channels,
                 pixel_count,
+                header.siz.width as usize,
                 target,
             )?;
             record_finalize_time(stats, start);
@@ -900,6 +923,7 @@ fn reconstruct_fused_packed_into(
                 layout,
                 channels,
                 pixel_count,
+                header.siz.width as usize,
                 target,
             )?;
             record_finalize_time(stats, start);
@@ -907,7 +931,9 @@ fn reconstruct_fused_packed_into(
     }
 
     stats.update(|stats| {
-        stats.output_pixels = stats.output_pixels.saturating_add(pixel_count as u64);
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add((target.width * target.height) as u64);
     });
     Ok(())
 }
@@ -1006,6 +1032,7 @@ fn fuse_pack_f32_into(
     layout: PackedLayout,
     channels: usize,
     pixel_count: usize,
+    plane_width: usize,
     target: &mut PackedWriteTarget<'_>,
 ) -> Result<()> {
     if y.len() != pixel_count || cb.len() != pixel_count || cr.len() != pixel_count {
@@ -1018,10 +1045,10 @@ fn fuse_pack_f32_into(
     }
     let w = target.width;
     let h = target.height;
-    if w * h != pixel_count {
-        return Err(invalid("fused pack target size mismatch"));
-    }
-    let tight = target.origin_x == 0
+    let tight = target.source_x == 0
+        && target.source_y == 0
+        && w * h == pixel_count
+        && target.origin_x == 0
         && target.origin_y == 0
         && target.stride == w * channels
         && pixel_count >= FUSED_PACK_PARALLEL_SAMPLES;
@@ -1062,7 +1089,7 @@ fn fuse_pack_f32_into(
     } else {
         for py in 0..h {
             for px in 0..w {
-                let i = py * w + px;
+                let i = target.source_index(px, py, plane_width);
                 let (r, g, b) = if apply_ict {
                     ict_rgb_f32(y[i], cb[i], cr[i])
                 } else {
@@ -1098,6 +1125,7 @@ fn fuse_pack_i32_into(
     layout: PackedLayout,
     channels: usize,
     pixel_count: usize,
+    plane_width: usize,
     target: &mut PackedWriteTarget<'_>,
 ) -> Result<()> {
     if y.len() != pixel_count || db.len() != pixel_count || dr.len() != pixel_count {
@@ -1110,10 +1138,10 @@ fn fuse_pack_i32_into(
     }
     let w = target.width;
     let h = target.height;
-    if w * h != pixel_count {
-        return Err(invalid("fused pack target size mismatch"));
-    }
-    let tight = target.origin_x == 0
+    let tight = target.source_x == 0
+        && target.source_y == 0
+        && w * h == pixel_count
+        && target.origin_x == 0
         && target.origin_y == 0
         && target.stride == w * channels
         && pixel_count >= FUSED_PACK_PARALLEL_SAMPLES;
@@ -1153,7 +1181,7 @@ fn fuse_pack_i32_into(
     } else {
         for py in 0..h {
             for px in 0..w {
-                let i = py * w + px;
+                let i = target.source_index(px, py, plane_width);
                 let (r, g, b) = if apply_rct {
                     rct_rgb_i32(y[i], db[i], dr[i])
                 } else {
@@ -1208,9 +1236,6 @@ fn reconstruct_sycc_packed_into(
     }
     let full_w = header.siz.width as usize;
     let full_h = header.siz.height as usize;
-    if target.width != full_w || target.height != full_h {
-        return Err(invalid("sYCC packed write target size mismatch"));
-    }
     let precision = header.siz.components[0].precision;
     if precision != 8 || header.siz.components.iter().any(|c| c.precision != 8) {
         return Err(invalid(
@@ -1264,11 +1289,13 @@ fn reconstruct_sycc_packed_into(
     let start = stats.start();
     let offset = 1i32 << (precision.saturating_sub(1));
     let max_sample = (1i32 << precision) - 1;
-    for y in 0..full_h {
-        let cy = (y / dy1).min(cbh.saturating_sub(1));
-        for x in 0..full_w {
-            let cx = (x / dx1).min(cbw.saturating_sub(1));
-            let yy = y_plane[y * full_w + x];
+    for y in 0..target.height {
+        let source_y = target.source_y + y;
+        let cy = (source_y / dy1).min(cbh.saturating_sub(1));
+        for x in 0..target.width {
+            let source_x = target.source_x + x;
+            let cx = (source_x / dx1).min(cbw.saturating_sub(1));
+            let yy = y_plane[source_y * full_w + source_x];
             let cb = cb_plane[cy * cbw + cx] - offset;
             let cr = cr_plane[cy * crw + cx] - offset;
             // OpenJPEG sycc_to_rgb bit-exact (truncation toward zero).
@@ -1290,7 +1317,9 @@ fn reconstruct_sycc_packed_into(
     }
     record_finalize_time(stats, start);
     stats.update(|stats| {
-        stats.output_pixels = stats.output_pixels.saturating_add((full_w * full_h) as u64);
+        stats.output_pixels = stats
+            .output_pixels
+            .saturating_add((target.width * target.height) as u64);
     });
     Ok(())
 }
@@ -1721,12 +1750,15 @@ mod tests {
             PackedLayout::Sequential,
             3,
             n,
+            w,
             &mut PackedWriteTarget {
                 data: &mut fused,
                 stride: w * 3,
                 channels: 3,
                 origin_x: 0,
                 origin_y: 0,
+                source_x: 0,
+                source_y: 0,
                 width: w,
                 height: 1,
                 layout: PackedLayout::Sequential,
@@ -1764,12 +1796,15 @@ mod tests {
             PackedLayout::Sequential,
             3,
             n,
+            n,
             &mut PackedWriteTarget {
                 data: &mut fused,
                 stride: n * 3,
                 channels: 3,
                 origin_x: 0,
                 origin_y: 0,
+                source_x: 0,
+                source_y: 0,
                 width: n,
                 height: 1,
                 layout: PackedLayout::Sequential,

@@ -6,6 +6,7 @@
 
 use crate::error::{Jp2LamError, Result};
 use crate::model::{ColorEncoding, ColorSpace, IccComponentModel};
+use std::sync::Arc;
 
 const BOX_SIGNATURE: [u8; 4] = *b"jP  ";
 const BOX_FILE_TYPE: [u8; 4] = *b"ftyp";
@@ -64,23 +65,44 @@ pub(crate) struct AlphaChannel {
 pub(crate) struct Palette {
     /// Output channels in container order.
     pub(crate) output_columns: Vec<PaletteColumn>,
+    channel_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaletteColumn {
     /// `values[index]` is this channel's sample for a decoded palette index.
-    pub(crate) values: Vec<i32>,
+    pub(crate) values: Arc<Vec<i32>>,
     pub(crate) precision: u8,
     pub(crate) signed: bool,
 }
 
 impl Palette {
     pub(crate) fn channel_count(&self) -> usize {
-        self.output_columns.len()
+        self.channel_count
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_jp2(bytes: &[u8]) -> Result<ParsedJp2<'_>> {
+    parse_jp2_with_options(bytes, ParseOptions::default())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ParseOptions {
+    pub(crate) materialize_palette: bool,
+    pub(crate) retain_icc: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self {
+            materialize_palette: true,
+            retain_icc: true,
+        }
+    }
+}
+
+pub(crate) fn parse_jp2_with_options(bytes: &[u8], options: ParseOptions) -> Result<ParsedJp2<'_>> {
     let mut cursor = BoxCursor::new(bytes);
     let signature = cursor
         .next_box()?
@@ -106,7 +128,7 @@ pub(crate) fn parse_jp2(bytes: &[u8]) -> Result<ParsedJp2<'_>> {
     while let Some(box_) = cursor.next_box()? {
         match box_.box_type {
             BOX_JP2_HEADER => {
-                let (parsed, pclr, cmap) = parse_jp2_header(box_.payload)?;
+                let (parsed, pclr, cmap) = parse_jp2_header(box_.payload, options.retain_icc)?;
                 header = Some(parsed);
                 pclr_payload = pclr;
                 if cmap.is_some() {
@@ -129,7 +151,7 @@ pub(crate) fn parse_jp2(bytes: &[u8]) -> Result<ParsedJp2<'_>> {
     let mut header = header.ok_or_else(|| invalid("missing JP2 header box"))?;
     let codestream = codestream.ok_or_else(|| invalid("missing contiguous codestream box"))?;
     header.palette = match (pclr_payload, top_level_cmap) {
-        (Some(pclr), Some(cmap)) => Some(resolve_palette(pclr, cmap)?),
+        (Some(pclr), Some(cmap)) => Some(resolve_palette(pclr, cmap, options.materialize_palette)?),
         (Some(_), None) => return Err(invalid("JP2 pclr box without a cmap box")),
         _ => None,
     };
@@ -177,7 +199,10 @@ fn validate_file_type(payload: &[u8]) -> Result<()> {
 }
 
 #[allow(clippy::type_complexity)]
-fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<&[u8]>)> {
+fn parse_jp2_header(
+    payload: &[u8],
+    retain_icc: bool,
+) -> Result<(Jp2Header, Option<&[u8]>, Option<&[u8]>)> {
     let mut cursor = BoxCursor::new(payload);
     let mut image_header = None;
     let mut colr_payload = None;
@@ -229,7 +254,7 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
     }
     header.alpha = alpha;
     let colr = colr_payload.ok_or_else(|| invalid("JP2 header lacks colr box"))?;
-    let (colorspace, color_encoding) = parse_color_spec(colr, header.component_count)?;
+    let (colorspace, color_encoding) = parse_color_spec(colr, header.component_count, retain_icc)?;
     header.colorspace = colorspace;
     header.color_encoding = color_encoding;
     // pclr/cmap resolution happens in `parse_jp2`: cmap may sit inside jp2h
@@ -242,12 +267,17 @@ fn parse_jp2_header(payload: &[u8]) -> Result<(Jp2Header, Option<&[u8]>, Option<
 /// channel lookup tables. Palette-mapped channels must be sourced from
 /// component 0; entry widths from 1 through 32 bits, signed or unsigned, are
 /// retained so downstream normalization sees the authored sample domain.
-fn resolve_palette(pclr: &[u8], cmap: &[u8]) -> Result<Palette> {
+fn resolve_palette(pclr: &[u8], cmap: &[u8], materialize_values: bool) -> Result<Palette> {
     if pclr.len() < 3 {
         return Err(invalid("JP2 pclr box is too short"));
     }
     let num_entries = u16::from_be_bytes([pclr[0], pclr[1]]) as usize;
     let num_columns = pclr[2] as usize;
+    if !(1..=1024).contains(&num_entries) {
+        return Err(invalid(format!(
+            "JP2 pclr entry count {num_entries} is outside 1..=1024"
+        )));
+    }
     if num_columns == 0 {
         return Err(invalid("JP2 pclr declares zero palette columns"));
     }
@@ -259,42 +289,6 @@ fn resolve_palette(pclr: &[u8], cmap: &[u8]) -> Result<Palette> {
             "unsupported JP2 feature: palette entries wider than 32 bits",
         ));
     }
-    // Column-major lookup tables: columns[col][entry].
-    let mut columns: Vec<PaletteColumn> = bit_depths
-        .iter()
-        .map(|&depth| PaletteColumn {
-            values: Vec::with_capacity(num_entries),
-            precision: (depth & 0x7f) + 1,
-            signed: depth & 0x80 != 0,
-        })
-        .collect();
-    let mut offset = 3 + num_columns;
-    for _ in 0..num_entries {
-        for column in columns.iter_mut() {
-            let byte_count = usize::from(column.precision).div_ceil(8);
-            let bytes = pclr
-                .get(offset..offset + byte_count)
-                .ok_or_else(|| invalid("JP2 pclr entry table is truncated"))?;
-            let mut raw = 0u32;
-            for &byte in bytes {
-                raw = (raw << 8) | u32::from(byte);
-            }
-            let mask = if column.precision == 32 {
-                u32::MAX
-            } else {
-                (1u32 << column.precision) - 1
-            };
-            raw &= mask;
-            let value = if column.signed && raw & (1u32 << (column.precision - 1)) != 0 {
-                (raw | !mask) as i32
-            } else {
-                raw as i32
-            };
-            column.values.push(value);
-            offset += byte_count;
-        }
-    }
-
     // cmap: one 4-byte record per output channel: CMP(2) MTYP(1) PCOL(1). A
     // well-formed palette cmap has every channel palette-mapped (MTYP=1) from
     // the single index component (CMP=0) selecting a distinct column. Some real
@@ -302,25 +296,146 @@ fn resolve_palette(pclr: &[u8], cmap: &[u8]) -> Result<Palette> {
     // palette-mapped); OpenJPEG detects this and "corrects" it by mapping each
     // output channel to the palette column of the same index. We do the same:
     // build from the cmap when it is valid, else fall back to column order.
-    let mut output_columns = Vec::with_capacity(columns.len());
+    let mut mapped_sources = [0usize; 4];
+    let cmap_channels = cmap.len() / 4;
     let mut cmap_valid = !cmap.is_empty() && cmap.len() % 4 == 0;
     if cmap_valid {
-        for record in cmap.chunks_exact(4) {
+        for (channel, record) in cmap.chunks_exact(4).enumerate() {
             let component = u16::from_be_bytes([record[0], record[1]]);
             let mapping_type = record[2];
             let palette_column = record[3] as usize;
-            if component != 0 || mapping_type != 1 || palette_column >= columns.len() {
+            if component != 0 || mapping_type != 1 || palette_column >= num_columns {
                 cmap_valid = false;
                 break;
             }
-            output_columns.push(columns[palette_column].clone());
+            if channel < mapped_sources.len() {
+                mapped_sources[channel] = palette_column;
+            }
         }
     }
-    if !cmap_valid {
+    let channel_count = if cmap_valid {
+        cmap_channels
+    } else {
         // OpenJPEG's fallback: use the palette columns in their natural order.
-        output_columns = columns;
+        for (column, destination) in mapped_sources
+            .iter_mut()
+            .enumerate()
+            .take(num_columns.min(4))
+        {
+            *destination = column;
+        }
+        num_columns
+    };
+    if !(1..=4).contains(&channel_count) {
+        return Err(unsupported(format!(
+            "unsupported JP2 palette output channel count {channel_count}; expected 1..=4"
+        )));
     }
-    Ok(Palette { output_columns })
+
+    // Validate the complete row-major PCLR value table before allocating any
+    // lookup data. Ignored-palette and metadata-only parses stop here, retaining
+    // only the validated output-channel count.
+    let row_bytes = bit_depths.iter().try_fold(0usize, |total, &depth| {
+        total.checked_add(usize::from((depth & 0x7f) + 1).div_ceil(8))
+    });
+    let row_bytes = row_bytes.ok_or_else(|| invalid("JP2 pclr row size overflow"))?;
+    let table_bytes = row_bytes
+        .checked_mul(num_entries)
+        .ok_or_else(|| invalid("JP2 pclr entry table size overflow"))?;
+    let table_start = 3usize
+        .checked_add(num_columns)
+        .ok_or_else(|| invalid("JP2 pclr header size overflow"))?;
+    let table_end = table_start
+        .checked_add(table_bytes)
+        .ok_or_else(|| invalid("JP2 pclr entry table size overflow"))?;
+    if table_end > pclr.len() {
+        return Err(invalid("JP2 pclr entry table is truncated"));
+    }
+    if !materialize_values {
+        return Ok(Palette {
+            output_columns: Vec::new(),
+            channel_count,
+        });
+    }
+
+    struct BuildingColumn {
+        values: Vec<i32>,
+        precision: u8,
+        signed: bool,
+    }
+
+    // Materialize each selected PCLR source column once. Repeated CMAP entries
+    // later share the same allocation through Arc rather than deep-cloning it.
+    let mut source_to_unique = [usize::MAX; 256];
+    let mut unique = Vec::<BuildingColumn>::new();
+    unique
+        .try_reserve_exact(channel_count)
+        .map_err(|_| invalid("JP2 palette allocation failed"))?;
+    for &source in &mapped_sources[..channel_count] {
+        if source_to_unique[source] == usize::MAX {
+            let depth = bit_depths[source];
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(num_entries)
+                .map_err(|_| invalid("JP2 palette allocation failed"))?;
+            source_to_unique[source] = unique.len();
+            unique.push(BuildingColumn {
+                values,
+                precision: (depth & 0x7f) + 1,
+                signed: depth & 0x80 != 0,
+            });
+        }
+    }
+
+    let mut offset = table_start;
+    for _ in 0..num_entries {
+        for (source, &depth) in bit_depths.iter().enumerate() {
+            let precision = (depth & 0x7f) + 1;
+            let byte_count = usize::from(precision).div_ceil(8);
+            let bytes = &pclr[offset..offset + byte_count];
+            let unique_index = source_to_unique[source];
+            if unique_index != usize::MAX {
+                let mut raw = 0u32;
+                for &byte in bytes {
+                    raw = (raw << 8) | u32::from(byte);
+                }
+                let mask = if precision == 32 {
+                    u32::MAX
+                } else {
+                    (1u32 << precision) - 1
+                };
+                raw &= mask;
+                let signed = depth & 0x80 != 0;
+                let value = if signed && raw & (1u32 << (precision - 1)) != 0 {
+                    (raw | !mask) as i32
+                } else {
+                    raw as i32
+                };
+                unique[unique_index].values.push(value);
+            }
+            offset += byte_count;
+        }
+    }
+
+    let unique: Vec<PaletteColumn> = unique
+        .into_iter()
+        .map(|column| PaletteColumn {
+            values: Arc::new(column.values),
+            precision: column.precision,
+            signed: column.signed,
+        })
+        .collect();
+    let mut output_columns = Vec::new();
+    output_columns
+        .try_reserve_exact(channel_count)
+        .map_err(|_| invalid("JP2 palette allocation failed"))?;
+    for &source in &mapped_sources[..channel_count] {
+        output_columns.push(unique[source_to_unique[source]].clone());
+    }
+    Ok(Palette {
+        output_columns,
+        channel_count,
+    })
 }
 
 fn parse_image_header(payload: &[u8]) -> Result<Jp2Header> {
@@ -388,7 +503,11 @@ fn parse_component_depths(payload: &[u8], component_count: usize) -> Result<Vec<
 /// to the component layout). A 2-component stream is treated as Gray plus an
 /// auxiliary plane. PDF image decoding remains responsible for interpreting
 /// that auxiliary plane (typically alpha) from the image dictionary.
-fn parse_color_spec(payload: &[u8], component_count: u16) -> Result<(ColorSpace, ColorEncoding)> {
+fn parse_color_spec(
+    payload: &[u8],
+    component_count: u16,
+    retain_icc: bool,
+) -> Result<(ColorSpace, ColorEncoding)> {
     if payload.len() < 3 {
         return Err(invalid("JP2 colr box is too short"));
     }
@@ -425,8 +544,19 @@ fn parse_color_spec(payload: &[u8], component_count: u16) -> Result<(ColorSpace,
                     ));
                 }
             };
-            let encoding = ColorEncoding::restricted_icc(profile.to_vec(), component_model)
+            crate::model::validate_restricted_icc(profile, component_model)
                 .map_err(|error| invalid(error.to_string()))?;
+            let encoding = if retain_icc {
+                ColorEncoding::IccProfile {
+                    bytes: copy_icc_profile(profile)?,
+                    component_model,
+                }
+            } else {
+                match component_model {
+                    IccComponentModel::Gray => ColorEncoding::Gray,
+                    IccComponentModel::Rgb => ColorEncoding::Srgb,
+                }
+            };
             Ok((colorspace, encoding))
         }
         // METH 3 (any ICC): the payload after method/prec/approx is a full ICC
@@ -448,13 +578,21 @@ fn parse_color_spec(payload: &[u8], component_count: u16) -> Result<(ColorSpace,
                 // never reject a decodable stream over profile validation.
                 Some(b"GRAY") => Ok((
                     ColorSpace::Gray,
-                    ColorEncoding::restricted_icc(profile.to_vec(), IccComponentModel::Gray)
-                        .unwrap_or(ColorEncoding::Gray),
+                    retain_valid_icc_or_default(
+                        profile,
+                        IccComponentModel::Gray,
+                        ColorEncoding::Gray,
+                        retain_icc,
+                    )?,
                 )),
                 Some(b"RGB ") => Ok((
                     ColorSpace::Srgb,
-                    ColorEncoding::restricted_icc(profile.to_vec(), IccComponentModel::Rgb)
-                        .unwrap_or(ColorEncoding::Srgb),
+                    retain_valid_icc_or_default(
+                        profile,
+                        IccComponentModel::Rgb,
+                        ColorEncoding::Srgb,
+                        retain_icc,
+                    )?,
                 )),
                 // Profile too short to name a space, or a non-Gray/RGB model
                 // (e.g. CMYK): defer to the component count.
@@ -468,6 +606,30 @@ fn parse_color_spec(payload: &[u8], component_count: u16) -> Result<(ColorSpace,
             "unsupported JP2 colour specification method {other}"
         ))),
     }
+}
+
+fn copy_icc_profile(profile: &[u8]) -> Result<Vec<u8>> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(profile.len())
+        .map_err(|_| invalid("ICC profile allocation failed"))?;
+    owned.extend_from_slice(profile);
+    Ok(owned)
+}
+
+fn retain_valid_icc_or_default(
+    profile: &[u8],
+    component_model: IccComponentModel,
+    default: ColorEncoding,
+    retain_icc: bool,
+) -> Result<ColorEncoding> {
+    if crate::model::validate_restricted_icc(profile, component_model).is_err() || !retain_icc {
+        return Ok(default);
+    }
+    Ok(ColorEncoding::IccProfile {
+        bytes: copy_icc_profile(profile)?,
+        component_model,
+    })
 }
 
 /// Infer a colour space from the SIZ component count for colr methods that do
@@ -855,7 +1017,8 @@ mod tests {
 
     #[test]
     fn enum_cs_12_is_cmyk() {
-        let (space, encoding) = parse_color_spec(&enumerated_colr_payload(ENUM_CMYK), 4).unwrap();
+        let (space, encoding) =
+            parse_color_spec(&enumerated_colr_payload(ENUM_CMYK), 4, true).unwrap();
         assert_eq!(space, ColorSpace::Cmyk);
         assert_eq!(encoding, ColorEncoding::Cmyk);
     }
@@ -865,7 +1028,7 @@ mod tests {
         // METH 4 carries no usable profile: 1/3/4 components map to Gray/sRGB/
         // CMYK exactly like a raw codestream. Two components remain decodable
         // as Gray plus an auxiliary plane for the PDF layer to interpret.
-        let vendor = |ncomp: u16| parse_color_spec(&[4, 0, 0], ncomp);
+        let vendor = |ncomp: u16| parse_color_spec(&[4, 0, 0], ncomp, true);
         assert_eq!(vendor(1).unwrap().0, ColorSpace::Gray);
         assert_eq!(vendor(2).unwrap().0, ColorSpace::Gray);
         assert_eq!(vendor(3).unwrap().0, ColorSpace::Srgb);
@@ -881,22 +1044,41 @@ mod tests {
         gray.extend_from_slice(&[0u8; 16]);
         gray.extend_from_slice(b"GRAY");
         gray.extend_from_slice(&[0u8; 108]);
-        assert_eq!(parse_color_spec(&gray, 1).unwrap().0, ColorSpace::Gray);
+        assert_eq!(
+            parse_color_spec(&gray, 1, true).unwrap().0,
+            ColorSpace::Gray
+        );
 
         let mut rgb = vec![3u8, 0, 0];
         rgb.extend_from_slice(&[0u8; 16]);
         rgb.extend_from_slice(b"RGB ");
         rgb.extend_from_slice(&[0u8; 108]);
-        assert_eq!(parse_color_spec(&rgb, 3).unwrap().0, ColorSpace::Srgb);
+        assert_eq!(parse_color_spec(&rgb, 3, true).unwrap().0, ColorSpace::Srgb);
 
         let mut cmyk_profile = vec![3u8, 0, 0];
         cmyk_profile.extend_from_slice(&[0u8; 16]);
         cmyk_profile.extend_from_slice(b"CMYK");
         cmyk_profile.extend_from_slice(&[0u8; 108]);
         assert_eq!(
-            parse_color_spec(&cmyk_profile, 4).unwrap().0,
+            parse_color_spec(&cmyk_profile, 4, true).unwrap().0,
             ColorSpace::Cmyk
         );
+    }
+
+    #[test]
+    fn pixel_parse_validates_but_does_not_retain_restricted_icc_bytes() {
+        let mut profile = vec![0u8; 128];
+        profile[0..4].copy_from_slice(&128u32.to_be_bytes());
+        profile[16..20].copy_from_slice(b"RGB ");
+        profile[20..24].copy_from_slice(b"XYZ ");
+        profile[36..40].copy_from_slice(b"acsp");
+        let mut colr = vec![2, 0, 0];
+        colr.extend_from_slice(&profile);
+
+        let retained = parse_color_spec(&colr, 3, true).unwrap().1;
+        assert!(matches!(retained, ColorEncoding::IccProfile { .. }));
+        let discarded = parse_color_spec(&colr, 3, false).unwrap().1;
+        assert_eq!(discarded, ColorEncoding::Srgb);
     }
 
     #[test]
@@ -907,11 +1089,11 @@ mod tests {
         pclr.extend_from_slice(&[10, 11, 12]); // entry 0
         pclr.extend_from_slice(&[20, 21, 22]); // entry 1
         let cmap = [0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2]; // 3 palette-mapped channels
-        let palette = resolve_palette(&pclr, &cmap).unwrap();
+        let palette = resolve_palette(&pclr, &cmap, true).unwrap();
         assert_eq!(palette.channel_count(), 3);
-        assert_eq!(palette.output_columns[0].values, vec![10, 20]);
-        assert_eq!(palette.output_columns[1].values, vec![11, 21]);
-        assert_eq!(palette.output_columns[2].values, vec![12, 22]);
+        assert_eq!(palette.output_columns[0].values.as_slice(), [10, 20]);
+        assert_eq!(palette.output_columns[1].values.as_slice(), [11, 21]);
+        assert_eq!(palette.output_columns[2].values.as_slice(), [12, 22]);
     }
 
     #[test]
@@ -922,30 +1104,69 @@ mod tests {
         pclr.extend_from_slice(&[10, 11, 12]);
         pclr.extend_from_slice(&[20, 21, 22]);
         let cmap = [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let palette = resolve_palette(&pclr, &cmap).unwrap();
+        let palette = resolve_palette(&pclr, &cmap, true).unwrap();
         assert_eq!(palette.channel_count(), 3);
-        assert_eq!(palette.output_columns[2].values, vec![12, 22]);
+        assert_eq!(palette.output_columns[2].values.as_slice(), [12, 22]);
     }
 
     #[test]
     fn resolve_palette_preserves_precision_and_sign() {
         // Two one-column palettes: unsigned 4-bit and signed 12-bit.
-        let unsigned = resolve_palette(&[0, 2, 1, 3, 0x0f, 0x02], &[0, 0, 1, 0]).unwrap();
+        let unsigned = resolve_palette(&[0, 2, 1, 3, 0x0f, 0x02], &[0, 0, 1, 0], true).unwrap();
         assert_eq!(unsigned.output_columns[0].precision, 4);
         assert!(!unsigned.output_columns[0].signed);
-        assert_eq!(unsigned.output_columns[0].values, vec![15, 2]);
+        assert_eq!(unsigned.output_columns[0].values.as_slice(), [15, 2]);
 
-        let signed =
-            resolve_palette(&[0, 2, 1, 0x80 | 11, 0x0f, 0xff, 0x08, 0x00], &[0, 0, 1, 0]).unwrap();
+        let signed = resolve_palette(
+            &[0, 2, 1, 0x80 | 11, 0x0f, 0xff, 0x08, 0x00],
+            &[0, 0, 1, 0],
+            true,
+        )
+        .unwrap();
         assert_eq!(signed.output_columns[0].precision, 12);
         assert!(signed.output_columns[0].signed);
-        assert_eq!(signed.output_columns[0].values, vec![-1, -2048]);
+        assert_eq!(signed.output_columns[0].values.as_slice(), [-1, -2048]);
     }
 
     #[test]
     fn resolve_palette_rejects_entries_wider_than_32_bits() {
-        let err = resolve_palette(&[0, 1, 1, 32], &[0, 0, 1, 0]).unwrap_err();
+        let err = resolve_palette(&[0, 1, 1, 32], &[0, 0, 1, 0], true).unwrap_err();
         assert!(err.to_string().contains("wider than 32 bits"));
+    }
+
+    #[test]
+    fn repeated_cmap_channels_share_one_column_allocation() {
+        let pclr = [0, 2, 1, 7, 10, 20];
+        let cmap = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+        let palette = resolve_palette(&pclr, &cmap, true).unwrap();
+        assert_eq!(palette.channel_count(), 4);
+        for column in &palette.output_columns[1..] {
+            assert!(Arc::ptr_eq(
+                &palette.output_columns[0].values,
+                &column.values
+            ));
+        }
+    }
+
+    #[test]
+    fn repeated_cmap_over_supported_channel_count_is_rejected_before_values() {
+        let pclr = [0, 2, 1, 7, 10, 20];
+        let mut cmap = Vec::new();
+        for _ in 0..64 {
+            cmap.extend_from_slice(&[0, 0, 1, 0]);
+        }
+        let error = resolve_palette(&pclr, &cmap, true).unwrap_err();
+        assert!(error.to_string().contains("output channel count 64"));
+    }
+
+    #[test]
+    fn metadata_only_palette_validates_table_without_retaining_values() {
+        let palette = resolve_palette(&[0, 2, 1, 7, 10, 20], &[0, 0, 1, 0], false).unwrap();
+        assert_eq!(palette.channel_count(), 1);
+        assert!(palette.output_columns.is_empty());
+
+        let error = resolve_palette(&[0, 2, 1, 7, 10], &[0, 0, 1, 0], false).unwrap_err();
+        assert!(error.to_string().contains("entry table is truncated"));
     }
 
     #[test]

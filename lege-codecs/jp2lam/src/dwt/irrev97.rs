@@ -356,7 +356,7 @@ fn forward_97_vertical_in_place(
         return;
     }
 
-    let mut band_scratch = vec![0.0f32; VERTICAL_BAND_COLS * active_height];
+    let mut band_scratch = vec![0.0f32; vertical_scratch_len(active_width, active_height)];
     for band_x in (0..active_width).step_by(VERTICAL_BAND_COLS) {
         let band_width = VERTICAL_BAND_COLS.min(active_width - band_x);
         let scratch = &mut band_scratch[..band_width * active_height];
@@ -982,7 +982,7 @@ fn inverse_97_vertical_in_place(
 
     let sn = active_height.div_ceil(2);
     let dn = active_height - sn;
-    let mut band_scratch = vec![0.0f32; VERTICAL_BAND_COLS * active_height];
+    let mut band_scratch = vec![0.0f32; vertical_scratch_len(active_width, active_height)];
     for band_x in (0..active_width).step_by(VERTICAL_BAND_COLS) {
         let band_width = VERTICAL_BAND_COLS.min(active_width - band_x);
         let scratch = &mut band_scratch[..band_width * active_height];
@@ -1051,6 +1051,11 @@ fn inverse_97_vertical_in_place(
             data[dst..dst + band_width].copy_from_slice(&scratch[src..src + band_width]);
         }
     }
+}
+
+#[inline]
+fn vertical_scratch_len(width: usize, height: usize) -> usize {
+    width.min(VERTICAL_BAND_COLS).saturating_mul(height)
 }
 
 #[cfg(test)]
@@ -1248,6 +1253,17 @@ mod tests {
                 "{actual} vs {expected} at multi-band {width}x{height}"
             );
         }
+    }
+
+    #[test]
+    fn vertical_scratch_tracks_narrow_active_width() {
+        let height = 73usize;
+        assert_eq!(super::vertical_scratch_len(1, height), height);
+        assert_eq!(super::vertical_scratch_len(17, height), 17 * height);
+        assert_eq!(
+            super::vertical_scratch_len(super::VERTICAL_BAND_COLS + 1, height),
+            super::VERTICAL_BAND_COLS * height
+        );
     }
 
     #[test]

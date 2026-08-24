@@ -14,6 +14,7 @@ pub(crate) mod t2;
 use crate::error::Result;
 use crate::model::{ColorEncoding, ColorSpace, Image};
 use std::io::{Read, Write};
+use std::sync::OnceLock;
 
 pub use stats::Jp2DecodeStats;
 use stats::StatsSink;
@@ -166,7 +167,11 @@ impl DecodeOutputFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeConcurrency {
+    /// Decode on the caller's thread.
     Serial,
+    /// Contribute at most this many Tier-1 tasks to jp2lam's process-wide
+    /// executor. Concurrent budgeted requests share the executor's physical
+    /// thread cap; this value never creates or owns a private thread pool.
     Budgeted(usize),
 }
 
@@ -298,19 +303,23 @@ pub enum DecodeResult {
 
 struct DecodeScratch {
     tier1: t1::Tier1Scratch,
+    /// Maximum Tier-1 workers for the active request. This is explicit rather
+    /// than inferred from Rayon's pool size because all budgeted requests share
+    /// one process-wide executor.
+    tier1_workers: usize,
 }
 
 impl DecodeScratch {
     fn new() -> Self {
         Self {
             tier1: t1::Tier1Scratch::new(),
+            tier1_workers: 1,
         }
     }
 }
 
 pub struct Jp2Decoder {
     scratch: DecodeScratch,
-    pool: Option<(usize, rayon::ThreadPool)>,
 }
 
 impl std::fmt::Debug for Jp2Decoder {
@@ -330,7 +339,6 @@ impl Jp2Decoder {
     pub fn new() -> Self {
         Self {
             scratch: DecodeScratch::new(),
-            pool: None,
         }
     }
 
@@ -339,16 +347,10 @@ impl Jp2Decoder {
         validate_decode_request(request)?;
         validate_input_bytes(bytes.len(), &request.limits)?;
         let thread_count = decode_thread_count(request.concurrency)?;
-        if self
-            .pool
-            .as_ref()
-            .is_none_or(|(cached_count, _)| *cached_count != thread_count)
-        {
-            self.pool = Some((thread_count, build_decode_pool(thread_count)?));
-        }
-        let Self { scratch, pool } = self;
-        let pool = &pool.as_ref().expect("decode pool was initialized").1;
-        pool.install(|| decode_jp2_request_with_scratch(bytes, request, scratch))
+        run_with_decode_workers(thread_count, |worker_count| {
+            self.scratch.tier1_workers = worker_count;
+            decode_jp2_request_with_scratch(bytes, request, &mut self.scratch)
+        })
     }
 
     /// Decode into a caller-owned packed buffer.
@@ -403,16 +405,10 @@ impl Jp2Decoder {
         validate_input_bytes(bytes.len(), &into_request.limits)?;
 
         let thread_count = decode_thread_count(into_request.concurrency)?;
-        if self
-            .pool
-            .as_ref()
-            .is_none_or(|(cached_count, _)| *cached_count != thread_count)
-        {
-            self.pool = Some((thread_count, build_decode_pool(thread_count)?));
-        }
-        let Self { scratch, pool } = self;
-        let pool = &pool.as_ref().expect("decode pool was initialized").1;
-        pool.install(|| decode_jp2_into_with_scratch(bytes, &into_request, target, scratch))
+        run_with_decode_workers(thread_count, |worker_count| {
+            self.scratch.tier1_workers = worker_count;
+            decode_jp2_into_with_scratch(bytes, &into_request, target, &mut self.scratch)
+        })
     }
 }
 
@@ -422,52 +418,15 @@ fn decode_jp2_into_with_scratch(
     target: DecodeTarget<'_>,
     scratch: &mut DecodeScratch,
 ) -> Result<DecodeIntoInfo> {
-    // Full-image packed decoding reconstructs directly into the caller's
-    // destination, including reduced and multi-tile streams. Region output
-    // still needs the crop path below because its write geometry is not a full
-    // tile rectangle.
-    if request.region.is_none() {
-        if let Some(info) = decode_packed_direct_into(bytes, request, target, scratch)? {
-            return Ok(info);
-        }
-        return Err(crate::Jp2LamError::DecodeFailed(
-            "decode_into requires the packed 8-bit direct path; palette expansion or this colorspace/format combination needs planar output".into(),
-        ));
+    // Full-image and ROI packed decoding reconstruct directly into the caller's
+    // destination. ROI geometry clips each full-IDWT tile while packing, so no
+    // intermediate full packed canvas or crop buffer is materialized.
+    if let Some(info) = decode_packed_direct_into(bytes, request, target, scratch)? {
+        return Ok(info);
     }
-
-    // Preserve region-decode behavior until reconstruction can write a clipped
-    // tile rectangle directly into a region-sized destination.
-    let result = decode_jp2_request_with_scratch(bytes, request, scratch)?;
-    let DecodeResult::Raster(raster) = result else {
-        return Err(crate::Jp2LamError::DecodeFailed(
-            "decode_into requires packed 8-bit direct path; stream fell back to planar".into(),
-        ));
-    };
-    if raster.width != target.width || raster.height != target.height {
-        return Err(crate::Jp2LamError::InvalidInput(format!(
-            "decode_into target {}x{} does not match decoded {}x{}",
-            target.width, target.height, raster.width, raster.height
-        )));
-    }
-    if raster.format != target.format {
-        return Err(crate::Jp2LamError::DecodeFailed(format!(
-            "decode_into format mismatch: target {:?}, decoded {:?}",
-            target.format, raster.format
-        )));
-    }
-    let bpp = target.format.bytes_per_pixel();
-    let row_bytes = (target.width as usize) * bpp;
-    for y in 0..target.height as usize {
-        let src = y * raster.stride;
-        let dst = y * target.stride;
-        target.data[dst..dst + row_bytes].copy_from_slice(&raster.data[src..src + row_bytes]);
-    }
-    Ok(DecodeIntoInfo {
-        width: target.width,
-        height: target.height,
-        format: target.format,
-        stride: target.stride,
-    })
+    Err(crate::Jp2LamError::DecodeFailed(
+        "decode_into requires the packed 8-bit direct path; palette expansion or this colorspace/format combination needs planar output".into(),
+    ))
 }
 
 /// Parse the JP2 wrapper and JPEG 2000 Part 1 main header.
@@ -491,7 +450,7 @@ pub fn inspect_jp2_with_limits(bytes: &[u8], limits: &DecodeLimits) -> Result<De
         width: core.header.width,
         height: core.header.height,
         colorspace: core.header.colorspace,
-        color_encoding: core.header.color_encoding.clone(),
+        color_encoding: core.header.color_encoding,
         has_ipr_metadata: core.header.has_ipr_metadata,
         first_tile_payload_len: first_payload.len(),
         tile_part_count: core.parts.tile_parts.len(),
@@ -563,9 +522,11 @@ pub fn decode_jp2_request(bytes: &[u8], request: &DecodeRequest) -> Result<Decod
     validate_decode_request(request)?;
     validate_input_bytes(bytes.len(), &request.limits)?;
     let thread_count = decode_thread_count(request.concurrency)?;
-    let pool = build_decode_pool(thread_count)?;
     let mut scratch = DecodeScratch::new();
-    pool.install(|| decode_jp2_request_with_scratch(bytes, request, &mut scratch))
+    run_with_decode_workers(thread_count, |worker_count| {
+        scratch.tier1_workers = worker_count;
+        decode_jp2_request_with_scratch(bytes, request, &mut scratch)
+    })
 }
 
 fn validate_decode_request(request: &DecodeRequest) -> Result<()> {
@@ -645,16 +606,37 @@ fn decode_thread_count(concurrency: DecodeConcurrency) -> Result<usize> {
     }
 }
 
-fn build_decode_pool(thread_count: usize) -> Result<rayon::ThreadPool> {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(thread_count)
-        .thread_name(|index| format!("jp2lam-decode-{index}"))
-        .build()
-        .map_err(|error| {
-            crate::Jp2LamError::DecodeFailed(format!(
-                "could not create {thread_count}-thread decode pool: {error}"
-            ))
-        })
+/// Stable process-wide executor for budgeted decode work. Multiple concurrent
+/// `Budgeted(N)` requests share this physical thread cap; `N` controls how many
+/// long-lived Tier-1 tasks that request contributes, not a private pool size.
+fn shared_decode_pool() -> Result<&'static rayon::ThreadPool> {
+    static POOL: OnceLock<core::result::Result<rayon::ThreadPool, String>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| {
+        let thread_count = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .thread_name(|index| format!("jp2lam-shared-{index}"))
+            .build()
+            .map_err(|error| {
+                format!("could not create {thread_count}-thread shared decode pool: {error}")
+            })
+    });
+    pool.as_ref()
+        .map_err(|message| crate::Jp2LamError::DecodeFailed(message.clone()))
+}
+
+fn run_with_decode_workers<T: Send>(
+    requested_workers: usize,
+    decode: impl FnOnce(usize) -> Result<T> + Send,
+) -> Result<T> {
+    if requested_workers == 1 {
+        return decode(1);
+    }
+    let pool = shared_decode_pool()?;
+    let worker_count = requested_workers.min(pool.current_num_threads()).max(1);
+    pool.install(|| decode(worker_count))
 }
 
 fn decode_jp2_request_with_scratch(
@@ -708,8 +690,11 @@ fn decode_packed_direct(
     let Some(parameters) = packed_direct_parameters(&core, resolution, format)? else {
         return Ok(None);
     };
-    let (canvas_x0, canvas_y0, out_width, out_height) =
-        packed_canvas_geometry(&core.codestream, parameters.reduce_levels)?;
+    let (canvas_x0, canvas_y0, out_width, out_height) = packed_output_geometry(
+        &core.codestream,
+        parameters.reduce_levels,
+        region,
+    )?;
     let stride = out_width
         .checked_mul(parameters.channels)
         .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output stride overflow".into()))?;
@@ -757,8 +742,16 @@ fn decode_packed_direct_into(
     else {
         return Ok(None);
     };
-    let (canvas_x0, canvas_y0, out_width, out_height) =
-        packed_canvas_geometry(&core.codestream, parameters.reduce_levels)?;
+    let region = request
+        .region
+        .map(|region| project_region(&core.codestream.siz, region, parameters.reduce_levels))
+        .transpose()?
+        .map(|(spatial, _)| spatial);
+    let (canvas_x0, canvas_y0, out_width, out_height) = packed_output_geometry(
+        &core.codestream,
+        parameters.reduce_levels,
+        region,
+    )?;
     if target.width as usize != out_width || target.height as usize != out_height {
         return Err(crate::Jp2LamError::InvalidInput(format!(
             "decode_into target {}x{} does not match decoded {}x{}",
@@ -767,7 +760,7 @@ fn decode_packed_direct_into(
     }
     decode_packed_direct_to_target(
         &core,
-        None,
+        region,
         scratch,
         &request.limits,
         &parameters,
@@ -853,6 +846,26 @@ fn packed_canvas_geometry(
     Ok((canvas_x0, canvas_y0, out_width, out_height))
 }
 
+fn packed_output_geometry(
+    header: &CodestreamHeader,
+    reduce_levels: u8,
+    region: Option<RegionSpatial>,
+) -> Result<(u32, u32, usize, usize)> {
+    let Some(region) = region else {
+        return packed_canvas_geometry(header, reduce_levels);
+    };
+    let width = usize::try_from(region.x1.saturating_sub(region.x0))
+        .map_err(|_| crate::Jp2LamError::DecodeFailed("packed ROI width overflow".into()))?;
+    let height = usize::try_from(region.y1.saturating_sub(region.y0))
+        .map_err(|_| crate::Jp2LamError::DecodeFailed("packed ROI height overflow".into()))?;
+    if width == 0 || height == 0 {
+        return Err(crate::Jp2LamError::DecodeFailed(
+            "packed ROI has zero extent".into(),
+        ));
+    }
+    Ok((region.x0, region.y0, width, height))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decode_packed_direct_to_target(
     core: &ParsedJp2Core<'_>,
@@ -896,10 +909,16 @@ fn decode_packed_direct_to_target(
             scratch,
             limits,
         )?;
-        let tile_width = header.siz.width as usize;
-        let tile_height = header.siz.height as usize;
-        let origin_x = (reduced_x0 - canvas_x0) as usize;
-        let origin_y = (reduced_y0 - canvas_y0) as usize;
+        let clip_x0 = region.map_or(reduced_x0, |region| reduced_x0.max(region.x0));
+        let clip_y0 = region.map_or(reduced_y0, |region| reduced_y0.max(region.y0));
+        let clip_x1 = region.map_or(reduced_x1, |region| reduced_x1.min(region.x1));
+        let clip_y1 = region.map_or(reduced_y1, |region| reduced_y1.min(region.y1));
+        let origin_x = (clip_x0 - canvas_x0) as usize;
+        let origin_y = (clip_y0 - canvas_y0) as usize;
+        let source_x = (clip_x0 - reduced_x0) as usize;
+        let source_y = (clip_y0 - reduced_y0) as usize;
+        let write_width = (clip_x1 - clip_x0) as usize;
+        let write_height = (clip_y1 - clip_y0) as usize;
         let stitch_start = stats.start();
         reconstruct::reconstruct_packed_u8_into(
             &header,
@@ -914,8 +933,10 @@ fn decode_packed_direct_to_target(
                 channels: parameters.channels,
                 origin_x,
                 origin_y,
-                width: tile_width,
-                height: tile_height,
+                source_x,
+                source_y,
+                width: write_width,
+                height: write_height,
                 layout: parameters.layout,
             },
             stats,
@@ -1025,10 +1046,10 @@ fn decode_region_request(
         &request.limits,
     )?;
     let reduce_levels = select_reduce_levels(&core.codestream, request.resolution)?;
-    let (region_spatial, crop) = project_region(&core.codestream.siz, region, reduce_levels)?;
+    let (region_spatial, _) = project_region(&core.codestream.siz, region, reduce_levels)?;
     drop(core);
 
-    // Packed direct output stitches the reduced raster; crop it in place.
+    // Packed direct output allocates and fills only the projected ROI canvas.
     if request.output != DecodeOutputFormat::NativePlanarI32 {
         if let Some(raster) = decode_packed_direct(
             bytes,
@@ -1039,11 +1060,12 @@ fn decode_region_request(
             request.ignore_container_palette,
             &request.limits,
         )? {
-            return Ok(DecodeResult::Raster(crop_raster(&raster, crop)?));
+            return Ok(DecodeResult::Raster(raster));
         }
     }
 
-    // Native (or packed-ineligible) path: reduced image, cropped, then packed.
+    // Native (or packed-ineligible) path returns an ROI-sized image. The IDWT
+    // remains whole-tile; only the multi-tile canvas and final ownership shrink.
     let image = decode_jp2_impl(
         bytes,
         request.resolution,
@@ -1053,10 +1075,9 @@ fn decode_region_request(
         request.ignore_container_palette,
         &request.limits,
     )?;
-    let cropped = crop_image(&image, crop)?;
     match request.output {
-        DecodeOutputFormat::NativePlanarI32 => Ok(DecodeResult::Native(cropped)),
-        format => Ok(DecodeResult::Raster(pack_image_8bit(&cropped, format)?)),
+        DecodeOutputFormat::NativePlanarI32 => Ok(DecodeResult::Native(image)),
+        format => Ok(DecodeResult::Raster(pack_image_8bit(&image, format)?)),
     }
 }
 
@@ -1170,8 +1191,22 @@ fn decode_jp2_impl(
             scratch,
             limits,
         )?;
+        if let Some(region) = region {
+            let (x0, y0, width, height) = tile_rect(&core.codestream, 0)?;
+            let (reduced_x0, reduced_x1) = reduced_axis_bounds(x0, x0 + width, reduce_levels);
+            let (reduced_y0, reduced_y1) = reduced_axis_bounds(y0, y0 + height, reduce_levels);
+            image = crop_image(
+                &image,
+                CropRect {
+                    x0: region.x0.saturating_sub(reduced_x0),
+                    y0: region.y0.saturating_sub(reduced_y0),
+                    x1: region.x1.min(reduced_x1).saturating_sub(reduced_x0),
+                    y1: region.y1.min(reduced_y1).saturating_sub(reduced_y0),
+                },
+            )?;
+        }
         if let Some(palette) = &core.header.palette {
-            image = expand_palette(&image, palette, core.header.colorspace)?;
+            image = expand_palette(image, palette, core.header.colorspace)?;
         }
         return Ok(image);
     }
@@ -1183,11 +1218,16 @@ fn decode_jp2_impl(
     // so the reduced tiles still partition the reduced canvas with no gap or
     // overlap.
     let siz = &core.codestream.siz;
-    let (canvas_x0, _) = reduced_axis_bounds(siz.x_origin, siz.x_origin + siz.width, reduce_levels);
-    let (canvas_y0, _) =
+    let (full_canvas_x0, _) =
+        reduced_axis_bounds(siz.x_origin, siz.x_origin + siz.width, reduce_levels);
+    let (full_canvas_y0, _) =
         reduced_axis_bounds(siz.y_origin, siz.y_origin + siz.height, reduce_levels);
-    let mut image =
-        empty_decoded_image_reduced(&core.codestream, reconstruct_space, reduce_levels)?;
+    let canvas_x0 = region.map_or(full_canvas_x0, |region| region.x0);
+    let canvas_y0 = region.map_or(full_canvas_y0, |region| region.y0);
+    let mut image = match region {
+        Some(region) => empty_decoded_image_region(&core.codestream, reconstruct_space, region)?,
+        None => empty_decoded_image_reduced(&core.codestream, reconstruct_space, reduce_levels)?,
+    };
     for (tile_index, part_indices) in tile_parts.iter().enumerate() {
         let tile_index = u16::try_from(tile_index).map_err(|_| {
             crate::Jp2LamError::DecodeFailed("tile index exceeds Isot range".into())
@@ -1213,17 +1253,25 @@ fn decode_jp2_impl(
             tile_index,
             part_indices,
             reduce_levels,
-            None,
+            region,
             stats,
             scratch,
             limits,
         )?;
         let stitch_start = stats.start();
-        stitch_tile(
+        let clip_x0 = region.map_or(reduced_x0, |region| reduced_x0.max(region.x0));
+        let clip_y0 = region.map_or(reduced_y0, |region| reduced_y0.max(region.y0));
+        let clip_x1 = region.map_or(reduced_x1, |region| reduced_x1.min(region.x1));
+        let clip_y1 = region.map_or(reduced_y1, |region| reduced_y1.min(region.y1));
+        stitch_tile_clipped(
             &mut image,
             &tile_image,
-            reduced_x0 - canvas_x0,
-            reduced_y0 - canvas_y0,
+            clip_x0 - canvas_x0,
+            clip_y0 - canvas_y0,
+            clip_x0 - reduced_x0,
+            clip_y0 - reduced_y0,
+            clip_x1 - clip_x0,
+            clip_y1 - clip_y0,
         )?;
         stats.finish(stitch_start, |stats, elapsed| {
             stats.tile_stitch_ns = stats.tile_stitch_ns.saturating_add(elapsed);
@@ -1231,7 +1279,7 @@ fn decode_jp2_impl(
     }
 
     if let Some(palette) = &core.header.palette {
-        image = expand_palette(&image, palette, core.header.colorspace)?;
+        image = expand_palette(image, palette, core.header.colorspace)?;
     }
 
     Ok(image)
@@ -1356,22 +1404,14 @@ fn decode_tile_components(
             .retain(|block| code_block_intersects_region(&windows, block));
     }
     stats.update(|stats| {
-        stats.packets = stats
-            .packets
-            .saturating_add(u64::try_from(packets.packets.len()).unwrap_or(u64::MAX));
+        stats.packets = stats.packets.saturating_add(
+            u64::try_from(packets.packet_stats.count).unwrap_or(u64::MAX),
+        );
         stats.packet_header_bytes = stats.packet_header_bytes.saturating_add(
-            packets
-                .packets
-                .iter()
-                .map(|packet| packet.header_len as u64)
-                .sum(),
+            u64::try_from(packets.packet_stats.header_bytes).unwrap_or(u64::MAX),
         );
         stats.codeword_bytes = stats.codeword_bytes.saturating_add(
-            packets
-                .packets
-                .iter()
-                .map(|packet| packet.body_len as u64)
-                .sum(),
+            u64::try_from(packets.packet_stats.body_bytes).unwrap_or(u64::MAX),
         );
         stats.codeblocks = stats
             .codeblocks
@@ -1400,6 +1440,7 @@ fn decode_tile_components(
         &packets,
         stats,
         &mut scratch.tier1,
+        scratch.tier1_workers,
     )?;
     stats.finish(tier1_start, |stats, elapsed| {
         stats.tier1_total_ns = stats.tier1_total_ns.saturating_add(elapsed);
@@ -1433,7 +1474,18 @@ fn parse_jp2_core<'a>(
         (None, bytes)
     } else {
         let start = stats.start();
-        let parsed = jp2_parse::parse_jp2(bytes)?;
+        let parsed = jp2_parse::parse_jp2_with_options(
+            bytes,
+            jp2_parse::ParseOptions {
+                // Inspection and ignored-palette decoding only need the
+                // validated output-channel count. Actual palette expansion is
+                // the sole consumer of PCLR values.
+                materialize_palette: validate && !ignore_container_palette,
+                // Pixel decoding never consumes ICC bytes. Inspection retains
+                // them because ColorEncoding is part of its public metadata.
+                retain_icc: !validate,
+            },
+        )?;
         stats.finish(start, |stats, elapsed| {
             stats.container_parse_ns = stats.container_parse_ns.saturating_add(elapsed);
         });
@@ -1453,7 +1505,7 @@ fn parse_jp2_core<'a>(
     });
 
     let codestream_start = stats.start();
-    let parts = codestream::parse_codestream_view(codestream_bytes)?;
+    let parts = codestream::parse_codestream_view(codestream_bytes, limits.max_working_bytes)?;
     let first_tile = parts
         .tile_parts
         .first()
@@ -1485,7 +1537,12 @@ fn parse_jp2_core<'a>(
         Some(header) => header,
         None => synthesize_header_from_codestream(&codestream)?,
     };
-    validate_codestream_resource_limits(&codestream, limits)?;
+    validate_codestream_resource_limits(
+        &codestream,
+        parts.structural_bytes,
+        parts.tile_parts.len(),
+        limits,
+    )?;
     // Inspection only describes the file (palette, dimensions, colour space);
     // the decode-scope preconditions — including the palette channel-count
     // check — belong to an actual decode. A container whose `pclr` produces a
@@ -1514,6 +1571,8 @@ fn parse_jp2_core<'a>(
 
 fn validate_codestream_resource_limits(
     codestream: &CodestreamHeader,
+    structural_bytes: usize,
+    tile_part_count: usize,
     limits: &DecodeLimits,
 ) -> Result<()> {
     let siz = &codestream.siz;
@@ -1550,13 +1609,34 @@ fn validate_codestream_resource_limits(
     })?;
     // The native pipeline can concurrently hold the destination plane, Tier-1
     // coefficient plane, inverse-DWT scratch/fallback, and packed/canvas output.
-    let estimated_working = component_samples
+    let pixel_working = component_samples
         .checked_mul(20)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("working-set estimate overflow".into()))?;
+    let tiles_x = siz.width.div_ceil(siz.tile_width);
+    let tiles_y = siz.height.div_ceil(siz.tile_height);
+    let tile_count = u64::from(tiles_x)
+        .checked_mul(u64::from(tiles_y))
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("SIZ tile count overflow".into()))?;
+    let tile_plan_bytes = tile_count
+        .checked_mul((std::mem::size_of::<Vec<usize>>() + std::mem::size_of::<u16>()) as u64)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                u64::try_from(tile_part_count)
+                    .ok()?
+                    .checked_mul(std::mem::size_of::<usize>() as u64)?,
+            )
+        })
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("tile-plan size overflow".into()))?;
+    let structural_bytes_u64 = u64::try_from(structural_bytes)
+        .map_err(|_| crate::Jp2LamError::DecodeFailed("working-set estimate overflow".into()))?;
+    let estimated_working = pixel_working
+        .checked_add(structural_bytes_u64)
+        .and_then(|bytes| bytes.checked_add(tile_plan_bytes))
         .ok_or_else(|| crate::Jp2LamError::DecodeFailed("working-set estimate overflow".into()))?;
     if estimated_working > limits.max_working_bytes as u64 {
         return Err(crate::Jp2LamError::DecodeFailed(format!(
-            "estimated decode working set {estimated_working} bytes exceeds limit {}",
-            limits.max_working_bytes
+            "estimated decode working set {estimated_working} bytes (including {structural_bytes} bytes of codestream structure and {tile_plan_bytes} bytes of tile planning) exceeds limit {}",
+            limits.max_working_bytes,
         )));
     }
     Ok(())
@@ -1625,8 +1705,36 @@ fn tile_part_indices_by_tile(
         ));
     }
 
-    let mut tile_parts = vec![Vec::new(); tile_count];
-    let mut next_part_index = vec![0u16; tile_count];
+    let mut tile_parts = Vec::new();
+    tile_parts
+        .try_reserve_exact(tile_count)
+        .map_err(|_| crate::Jp2LamError::DecodeFailed("tile-plan allocation failed".into()))?;
+    tile_parts.resize_with(tile_count, Vec::new);
+    let mut next_part_index = Vec::new();
+    next_part_index
+        .try_reserve_exact(tile_count)
+        .map_err(|_| crate::Jp2LamError::DecodeFailed("tile-plan allocation failed".into()))?;
+    next_part_index.resize(tile_count, 0u16);
+
+    // Count first so each per-tile index list is reserved once rather than
+    // repeatedly growing tiny vectors for interleaved tile-parts.
+    for tile_part in &parts.tile_parts {
+        let tile_index = usize::from(tile_part.header.tile_index);
+        let count = next_part_index.get_mut(tile_index).ok_or_else(|| {
+            crate::Jp2LamError::DecodeFailed(format!(
+                "tile-part refers to tile {tile_index}, but SIZ defines {tile_count} tiles"
+            ))
+        })?;
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| crate::Jp2LamError::DecodeFailed("tile-part count overflow".into()))?;
+    }
+    for (indices, &count) in tile_parts.iter_mut().zip(&next_part_index) {
+        indices
+            .try_reserve_exact(usize::from(count))
+            .map_err(|_| crate::Jp2LamError::DecodeFailed("tile-plan allocation failed".into()))?;
+    }
+    next_part_index.fill(0);
 
     for (stream_index, tile_part) in parts.tile_parts.iter().enumerate() {
         let tile_index = usize::from(tile_part.header.tile_index);
@@ -1910,42 +2018,98 @@ fn empty_decoded_image_reduced(
     })
 }
 
+/// Allocate only the reduced ROI canvas for multi-tile stitching. Whole-tile
+/// coefficient planes and IDWT remain unchanged; this removes the avoidable
+/// full-image destination planes that previously surrounded them.
+fn empty_decoded_image_region(
+    header: &CodestreamHeader,
+    colorspace: ColorSpace,
+    region: RegionSpatial,
+) -> Result<Image> {
+    let width = region.x1.saturating_sub(region.x0);
+    let height = region.y1.saturating_sub(region.y0);
+    let sample_count = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .filter(|count| *count != 0)
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("decoded ROI size overflow".into()))?;
+    Ok(Image {
+        width,
+        height,
+        colorspace,
+        components: header
+            .siz
+            .components
+            .iter()
+            .map(|component| crate::model::Component {
+                data: vec![0; sample_count],
+                width,
+                height,
+                precision: u32::from(component.precision),
+                signed: component.signed,
+                dx: u32::from(component.dx),
+                dy: u32::from(component.dy),
+            })
+            .collect(),
+    })
+}
+
 /// Expand a decoded single-component index image into the container's output
 /// channels via a resolved `pclr`+`cmap` palette (ISO/IEC 15444-1 §I.5.3.4).
 fn expand_palette(
-    index_image: &Image,
+    index_image: Image,
     palette: &jp2_parse::Palette,
     colorspace: ColorSpace,
 ) -> Result<Image> {
-    let index = index_image
-        .components
-        .first()
-        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("palette input has no component".into()))?;
     let (width, height) = (index_image.width, index_image.height);
-    let components = palette
+    let mut index =
+        index_image.components.into_iter().next().ok_or_else(|| {
+            crate::Jp2LamError::DecodeFailed("palette input has no component".into())
+        })?;
+    let (last, preceding) = palette
         .output_columns
-        .iter()
-        .map(|column| {
-            let data = index
-                .data
-                .iter()
-                .map(|&sample| {
-                    let idx =
-                        sample.clamp(0, column.values.len().saturating_sub(1) as i32) as usize;
-                    column.values.get(idx).copied().unwrap_or(0)
-                })
-                .collect();
-            crate::model::Component {
-                data,
-                width,
-                height,
-                precision: u32::from(column.precision),
-                signed: column.signed,
-                dx: 1,
-                dy: 1,
-            }
-        })
-        .collect();
+        .split_last()
+        .ok_or_else(|| crate::Jp2LamError::DecodeFailed("palette has no output columns".into()))?;
+    let mut components = Vec::new();
+    components
+        .try_reserve_exact(palette.output_columns.len())
+        .map_err(|_| crate::Jp2LamError::DecodeFailed("palette output allocation failed".into()))?;
+    for column in preceding {
+        let mut data = Vec::new();
+        data.try_reserve_exact(index.data.len()).map_err(|_| {
+            crate::Jp2LamError::DecodeFailed("palette output allocation failed".into())
+        })?;
+        data.extend(index.data.iter().map(|&sample| {
+            let idx = sample.clamp(0, column.values.len().saturating_sub(1) as i32) as usize;
+            column.values.get(idx).copied().unwrap_or(0)
+        }));
+        components.push(crate::model::Component {
+            data,
+            width,
+            height,
+            precision: u32::from(column.precision),
+            signed: column.signed,
+            dx: 1,
+            dy: 1,
+        });
+    }
+    // The final lookup can overwrite the no-longer-needed index samples, so
+    // the final image owns C planes rather than briefly owning C+1 planes.
+    for sample in &mut index.data {
+        let idx = (*sample).clamp(0, last.values.len().saturating_sub(1) as i32) as usize;
+        *sample = last.values.get(idx).copied().unwrap_or(0);
+    }
+    index.width = width;
+    index.height = height;
+    index.precision = u32::from(last.precision);
+    index.signed = last.signed;
+    index.dx = 1;
+    index.dy = 1;
+    components.push(index);
     Ok(Image {
         width,
         height,
@@ -1954,7 +2118,17 @@ fn expand_palette(
     })
 }
 
-fn stitch_tile(image: &mut Image, tile: &Image, x0: u32, y0: u32) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn stitch_tile_clipped(
+    image: &mut Image,
+    tile: &Image,
+    destination_x: u32,
+    destination_y: u32,
+    source_x: u32,
+    source_y: u32,
+    width: u32,
+    height: u32,
+) -> Result<()> {
     if image.components.len() != tile.components.len() {
         return Err(crate::Jp2LamError::DecodeFailed(
             "decoded tile component count mismatch".into(),
@@ -1962,12 +2136,37 @@ fn stitch_tile(image: &mut Image, tile: &Image, x0: u32, y0: u32) -> Result<()> 
     }
     let image_width = image.width as usize;
     let tile_width = tile.width as usize;
+    let destination_x = destination_x as usize;
+    let destination_y = destination_y as usize;
+    let source_x = source_x as usize;
+    let source_y = source_y as usize;
+    let width = width as usize;
+    let height = height as usize;
+    if width == 0
+        || height == 0
+        || destination_x
+            .checked_add(width)
+            .is_none_or(|end| end > image.width as usize)
+        || destination_y
+            .checked_add(height)
+            .is_none_or(|end| end > image.height as usize)
+        || source_x
+            .checked_add(width)
+            .is_none_or(|end| end > tile.width as usize)
+        || source_y
+            .checked_add(height)
+            .is_none_or(|end| end > tile.height as usize)
+    {
+        return Err(crate::Jp2LamError::DecodeFailed(
+            "clipped tile stitch rectangle is out of bounds".into(),
+        ));
+    }
     for (destination, source) in image.components.iter_mut().zip(&tile.components) {
-        for row in 0..tile.height as usize {
-            let src_start = row * tile_width;
-            let dst_start = (y0 as usize + row) * image_width + x0 as usize;
-            destination.data[dst_start..dst_start + tile_width]
-                .copy_from_slice(&source.data[src_start..src_start + tile_width]);
+        for row in 0..height {
+            let src_start = (source_y + row) * tile_width + source_x;
+            let dst_start = (destination_y + row) * image_width + destination_x;
+            destination.data[dst_start..dst_start + width]
+                .copy_from_slice(&source.data[src_start..src_start + width]);
         }
     }
     Ok(())
@@ -2481,7 +2680,8 @@ mod tests {
             return;
         };
         let parsed = jp2_parse::parse_jp2(&bytes).expect("parse jp2");
-        let parts = codestream::parse_codestream_view(parsed.codestream).expect("parse j2k");
+        let parts =
+            codestream::parse_codestream_view(parsed.codestream, usize::MAX).expect("parse j2k");
         let codestream = CodestreamHeader::from_marker_segments_with_tile_headers(
             parts.main_header_segments.iter().copied(),
             parts.tile_parts[0].header_segments.iter().copied(),
@@ -2515,7 +2715,8 @@ mod tests {
             return;
         };
         let parsed = jp2_parse::parse_jp2(&bytes).expect("parse jp2");
-        let parts = codestream::parse_codestream_view(parsed.codestream).expect("parse j2k");
+        let parts =
+            codestream::parse_codestream_view(parsed.codestream, usize::MAX).expect("parse j2k");
         let codestream = CodestreamHeader::from_marker_segments_with_tile_headers(
             parts.main_header_segments.iter().copied(),
             parts.tile_parts[0].header_segments.iter().copied(),
@@ -2652,6 +2853,29 @@ mod tests {
                 .collect();
             assert_eq!(component.data, expected, "channel {channel}");
         }
+    }
+
+    #[test]
+    fn palette_packed_rgb_matches_expanded_native_planes() {
+        let (jp2, samples) = gray_ramp_jp2(32, 32);
+        let palettized = splice_palette(&jp2, 3, |index, column| (index + column * 17) as u8);
+        let result = decode_jp2_request(
+            &palettized,
+            &DecodeRequest {
+                output: DecodeOutputFormat::Rgb8,
+                ..Default::default()
+            },
+        )
+        .expect("packed palette decode");
+        let DecodeResult::Raster(raster) = result else {
+            panic!("expected packed palette raster");
+        };
+        let expected: Vec<u8> = samples
+            .iter()
+            .flat_map(|&index| [index, index.wrapping_add(17), index.wrapping_add(34)])
+            .collect();
+        assert_eq!(raster.stride, 32 * 3);
+        assert_eq!(raster.data, expected);
     }
 
     #[test]
@@ -3201,7 +3425,19 @@ mod tests {
                 },
             )
             .expect("budgeted decode");
-            let (DecodeResult::Native(serial), DecodeResult::Native(budgeted)) = (serial, budgeted)
+            let budget_one = decode_jp2_request(
+                &encoded,
+                &DecodeRequest {
+                    concurrency: DecodeConcurrency::Budgeted(1),
+                    ..Default::default()
+                },
+            )
+            .expect("single-worker budgeted decode");
+            let (
+                DecodeResult::Native(serial),
+                DecodeResult::Native(budgeted),
+                DecodeResult::Native(budget_one),
+            ) = (serial, budgeted, budget_one)
             else {
                 panic!("expected native images");
             };
@@ -3209,13 +3445,85 @@ mod tests {
                 serial.components[0].data, budgeted.components[0].data,
                 "quality {quality}: serial and Budgeted(4) Tier-1 output diverged"
             );
-            // The compatibility path decodes on the global pool; confirm it too
-            // matches the strictly serial output bit-for-bit.
+            assert_eq!(
+                serial.components[0].data, budget_one.components[0].data,
+                "quality {quality}: serial and Budgeted(1) Tier-1 output diverged"
+            );
+            // The compatibility path remains serial; confirm it too matches
+            // the explicitly budgeted output bit-for-bit.
             let compat = decode_jp2(&encoded).expect("compat decode");
             assert_eq!(
                 serial.components[0].data, compat.components[0].data,
                 "quality {quality}: decode_jp2 diverged from serial Tier-1"
             );
+        }
+    }
+
+    #[test]
+    fn concurrent_budgeted_decoders_share_one_stable_executor() {
+        let first = shared_decode_pool().expect("shared decode pool");
+        let second = shared_decode_pool().expect("shared decode pool reused");
+        assert!(std::ptr::eq(first, second));
+
+        let width = 160;
+        let height = 120;
+        let image = Image::from_gray_bytes(width, height, &gray_fixture(width, height))
+            .expect("source image");
+        let encoded = std::sync::Arc::new(
+            crate::encode(
+                &image,
+                &crate::EncodeOptions {
+                    quality: 75,
+                    format: crate::OutputFormat::Jp2,
+                    tile_policy: crate::TilePolicy::Single,
+                    ..Default::default()
+                },
+            )
+            .expect("encode jp2"),
+        );
+        let expected = match decode_jp2_request(
+            &encoded,
+            &DecodeRequest {
+                concurrency: DecodeConcurrency::Serial,
+                ..Default::default()
+            },
+        )
+        .expect("serial decode")
+        {
+            DecodeResult::Native(image) => image.components[0].data.clone(),
+            DecodeResult::Raster(_) => panic!("expected native image"),
+        };
+
+        let decoders = (0..4)
+            .map(|_| {
+                let encoded = encoded.clone();
+                std::thread::spawn(move || {
+                    let mut decoder = Jp2Decoder::new();
+                    match decoder
+                        .decode(
+                            &encoded,
+                            &DecodeRequest {
+                                concurrency: DecodeConcurrency::Budgeted(4),
+                                ..Default::default()
+                            },
+                        )
+                        .expect("concurrent budgeted decode")
+                    {
+                        DecodeResult::Native(image) => {
+                            image
+                                .components
+                                .into_iter()
+                                .next()
+                                .expect("decoded component")
+                                .data
+                        }
+                        DecodeResult::Raster(_) => panic!("expected native image"),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for decoder in decoders {
+            assert_eq!(decoder.join().expect("decode worker"), expected);
         }
     }
 
@@ -3388,6 +3696,7 @@ mod tests {
                 tile_part_view(0, 1, 2),
                 tile_part_view(1, 1, 2),
             ],
+            structural_bytes: 0,
         };
 
         assert_eq!(
@@ -3425,6 +3734,7 @@ mod tests {
                 tile_part_view(0, 4, 5),
                 tile_part_view(0, 5, 5), // one past the declared TNsot=5
             ],
+            structural_bytes: 0,
         };
 
         assert_eq!(
@@ -3607,6 +3917,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn working_set_limit_combines_pixels_and_retained_codestream_structure() {
+        let (bytes, _) = gray_ramp_jp2(32, 32);
+        let pixel_working_bytes = 32 * 32 * 20;
+        let error = inspect_jp2_with_limits(
+            &bytes,
+            &DecodeLimits {
+                // Pixel storage alone exactly fits; the borrowed marker/tile
+                // view capacities must still be included in the same budget.
+                max_working_bytes: pixel_working_bytes,
+                ..DecodeLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("including"));
+        assert!(error.to_string().contains("codestream structure"));
+    }
+
     fn maybe_read_archive_org_sample() -> Option<Vec<u8>> {
         read_optional_fixture(&archive_org_gray_path(), "Archive.org grayscale JP2")
     }
@@ -3779,7 +4107,8 @@ mod tests {
     fn split_native_jp2_tile_at_packet_boundary(bytes: &[u8], total_parts: u8) -> Vec<u8> {
         let (codestream_start, codestream_end) = top_level_box_range(bytes, b"jp2c");
         let codestream = &bytes[codestream_start..codestream_end];
-        let parts = codestream::parse_codestream_view(codestream).expect("parse native codestream");
+        let parts = codestream::parse_codestream_view(codestream, usize::MAX)
+            .expect("parse native codestream");
         assert_eq!(
             parts.tile_parts.len(),
             1,
@@ -3887,7 +4216,8 @@ mod tests {
     fn rebuild_with_tile_header_segments(bytes: &[u8], header_segments: &[Vec<u8>]) -> Vec<u8> {
         let (codestream_start, codestream_end) = top_level_box_range(bytes, b"jp2c");
         let codestream = &bytes[codestream_start..codestream_end];
-        let parts = codestream::parse_codestream_view(codestream).expect("parse native codestream");
+        let parts = codestream::parse_codestream_view(codestream, usize::MAX)
+            .expect("parse native codestream");
         assert_eq!(
             parts.tile_parts.len(),
             1,

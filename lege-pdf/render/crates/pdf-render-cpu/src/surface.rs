@@ -194,6 +194,17 @@ impl Surface {
         &self.data[local_y * stride..(local_y + 1) * stride]
     }
 
+    /// Restore pixels from an equal-geometry snapshot without replacing this
+    /// surface's allocation. Knockout groups use this between elements so the
+    /// scratch surface keeps one allocation for the whole group.
+    pub(crate) fn copy_pixels_from(&mut self, source: &Self) {
+        debug_assert_eq!(self.width, source.width);
+        debug_assert_eq!(self.height, source.height);
+        debug_assert_eq!(self.origin_x, source.origin_x);
+        debug_assert_eq!(self.origin_y, source.origin_y);
+        unique_arc_mut(&mut self.data).copy_from_slice(&source.data);
+    }
+
     /// Consume the surface into output bytes of the requested format.
     /// Returns `(stride, pixels)`.
     #[allow(
@@ -243,7 +254,7 @@ impl Surface {
     unsafe_code,
     reason = "Arc::new_uninit_slice/new_zeroed_slice hand back MaybeUninit; see SAFETY comments"
 )]
-fn filled_arc(len: usize, byte: u8) -> Arc<[u8]> {
+pub(crate) fn filled_arc(len: usize, byte: u8) -> Arc<[u8]> {
     if byte == 0 {
         let data = Arc::<[u8]>::new_zeroed_slice(len);
         // SAFETY: `new_zeroed_slice` initialized every `u8` to a valid zero.
@@ -253,6 +264,12 @@ fn filled_arc(len: usize, byte: u8) -> Arc<[u8]> {
     unique_arc_mut(&mut data).fill(MaybeUninit::new(byte));
     // SAFETY: `fill` initialized every element of the allocation.
     unsafe { data.assume_init() }
+}
+
+/// Allocate zeroed bytes directly in their final shared layout. Callers may
+/// mutate the allocation through [`unique_arc_mut`] until publishing a clone.
+pub(crate) fn zeroed_arc(len: usize) -> Arc<[u8]> {
+    filled_arc(len, 0)
 }
 
 #[allow(
@@ -276,9 +293,9 @@ fn to_u8(v: f32) -> u8 {
 }
 
 #[inline]
-fn unique_arc_mut<T>(data: &mut Arc<[T]>) -> &mut [T] {
+pub(crate) fn unique_arc_mut<T>(data: &mut Arc<[T]>) -> &mut [T] {
     let Some(data) = Arc::get_mut(data) else {
-        unreachable!("a render surface is never shared while it is mutable")
+        unreachable!("a final buffer is never shared while it is mutable")
     };
     data
 }
@@ -316,6 +333,18 @@ mod tests {
 
         assert_ne!(original.local_row(0), clone.local_row(0));
         assert_eq!(original.local_row(0), &[64, 128, 191, 255]);
+    }
+
+    #[test]
+    fn copying_a_snapshot_reuses_the_destination_allocation() {
+        let source = Surface::new(4, 3, Background::White);
+        let mut scratch = Surface::new(4, 3, Background::Transparent);
+        let allocation = Arc::as_ptr(&scratch.data);
+
+        scratch.copy_pixels_from(&source);
+
+        assert_eq!(Arc::as_ptr(&scratch.data), allocation);
+        assert_eq!(scratch.data, source.data);
     }
 
     #[test]

@@ -128,7 +128,7 @@ impl ImageCodec for CcittCodec {
             height,
             format: DecodedFormat::Mono1,
             stride,
-            data: Arc::from(out),
+            data: out,
         })
     }
 }
@@ -577,9 +577,14 @@ fn decode_ccitt(
     mut byte_align: bool,
     black_is_1: bool,
     limits: &DecodeLimits,
-) -> Result<Vec<u8>, ImageError> {
+) -> Result<Arc<[u8]>, ImageError> {
     let bitsize = data.len() * 8;
-    let mut out = vec![0u8; stride * rows];
+    let mut out = zeroed_arc(stride * rows);
+    let Some(out_data) = Arc::get_mut(&mut out) else {
+        return Err(ImageError::Decode(
+            "CCITT: output allocation unexpectedly became shared".into(),
+        ));
+    };
     let mut cur = vec![0xffu8; stride];
     // The reference line above row 0 is imaginary all-white (all ones).
     let mut ref_line = vec![0xffu8; stride];
@@ -639,7 +644,7 @@ fn decode_ccitt(
             }
         }
 
-        let dst = &mut out[row * stride..row * stride + stride];
+        let dst = &mut out_data[row * stride..row * stride + stride];
         dst.copy_from_slice(&cur);
         if black_is_1 {
             for b in dst.iter_mut() {
@@ -655,6 +660,16 @@ fn decode_ccitt(
         ));
     }
     Ok(out)
+}
+
+#[allow(
+    unsafe_code,
+    reason = "Arc::new_zeroed_slice hands back MaybeUninit; see SAFETY comment"
+)]
+fn zeroed_arc(len: usize) -> Arc<[u8]> {
+    let data = Arc::<[u8]>::new_zeroed_slice(len);
+    // SAFETY: `new_zeroed_slice` initialized every `u8` to a valid zero value.
+    unsafe { data.assume_init() }
 }
 
 // ===========================================================================
@@ -993,6 +1008,7 @@ mod tests {
             &DecodeLimits::default(),
         )
         .expect("native decode")
+        .to_vec()
     }
 
     /// Drive `hayro-ccitt` over the same stream (the differential oracle).

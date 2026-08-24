@@ -1221,7 +1221,8 @@ impl CpuBackend {
         if len as u64 > decode_limits.max_output_bytes {
             return Ok(None);
         }
-        let mut opacity = Vec::with_capacity(len);
+        let mut opacity = surface::zeroed_arc(len);
+        let opacity_data = surface::unique_arc_mut(&mut opacity);
         for y in 0..height {
             if y & 0xff == 0 && decode_limits.is_cancelled() {
                 return Err(RenderError::Cancelled);
@@ -1230,14 +1231,14 @@ impl CpuBackend {
             for x in 0..width {
                 let sample_is_one = row[x / 8] & (0x80 >> (x & 7)) != 0;
                 let opaque = sample_is_one ^ decode_inverted;
-                opacity.push(if opaque { 255 } else { 0 });
+                opacity_data[y * width + x] = if opaque { 255 } else { 0 };
             }
         }
         Ok(Some(DecodedBilevelSmask {
             width: decoded.width,
             height: decoded.height,
             stride: width,
-            opacity: Arc::from(opacity),
+            opacity,
         }))
     }
 
@@ -2267,7 +2268,7 @@ mod tests {
             decode: decode.map(|pairs| Arc::from(pairs.as_slice())),
             samples: Arc::from([]),
             codec: Some(pdf_page_ir::ImageCodecKind::Jbig2),
-            codec_data: Some(Arc::from(JBIG2_L_12X5)),
+            codec_data: Some(JBIG2_L_12X5.into()),
             codec_parms: None,
         }
     }
@@ -2298,7 +2299,7 @@ mod tests {
     #[test]
     fn standalone_jbig2_smask_decode_declines_malformed_data() {
         let mut smask = jbig2_smask(None);
-        smask.codec_data = Some(Arc::from(&b"not jbig2"[..]));
+        smask.codec_data = Some((&b"not jbig2"[..]).into());
         assert!(
             CpuBackend::default()
                 .decode_bilevel_jbig2_smask(&smask, &RenderLimits::default())
