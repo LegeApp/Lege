@@ -2644,6 +2644,57 @@ record lege-ecosystem.work.remove-redundant-state-and-traversals/1 : work {
     }
 }
 
+record lege-ecosystem.work.renderer-efficiency-deferrals/1 : work {
+    title "Disposition the deferred renderer efficiency findings"
+    state proposed
+    intent """
+        Decide each renderer efficiency finding that the 2026-08-24 review identified but deliberately did not apply, so the reasoning is not lost and each can be picked up or declined on its own evidence.
+
+        Provenance: a three-reviewer efficiency pass over lege-pdf/render at 7277babb. Eleven findings were applied and landed; these six were held back because each needs measurement, a dependency decision, or a workload fact that static reading could not supply. None of them is known to be wrong — they are unfunded, not rejected.
+
+        Note the shared precondition: the in-tree synthetic rasterizer bench (crates/pdf-render-cpu/benches/raster.rs) draws only vector rects and shows roughly 8-10 percent run-to-run spread, so it can neither confirm nor refute any of these. Anything here that claims a speedup needs the real-PDF corpus (corpus/perf/pages.tsv) or tools/pdfium-diff timing, not that bench.
+        """
+    acceptance {
+        check calrgb-adaptation-matrix-cache {
+            statement """
+                lege-pdf/render/crates/pdf-color/src/cie.rs xyz_to_srgb_white_point rebuilds the full white-point adaptation matrix (two 3x3 inversions) on every call, though only the final transform depends on the sample. Dispositioned when the build is split from the application and cached per CalRGB colour space, or when the per-operator (not per-pixel) call rate is shown to make it not worth the API change.
+                """
+            method manual
+        }
+        check ccitt-bulk-skip {
+            statement """
+                lege-pdf/render/crates/pdf-image/src/ccitt.rs find_bit: PDFium's 8-byte all-same bulk skip is omitted, and the file's own comment records that as a conscious simplification with identical output. Dispositioned when either the skip is restored with a measured decode-time win on real Group 3/4 scans, or the omission is confirmed deliberate and the comment says so explicitly.
+                """
+            method manual
+        }
+        check cmyk-source-conversion-cache {
+            statement """
+                lege-pdf/render/crates/pdf-render-cpu/src/image.rs cmyk_source_as_rgb8 recomputes the whole source conversion per draw with no cache. Dispositioned when the workload question is answered with evidence: does a single page ever paint the same CMYK image more than once (tiling-pattern cell or repeated XObject Do)? Cache keyed on the samples Arc pointer only if it does.
+                """
+            method manual
+        }
+        check lexer-name-bulk-scan {
+            statement """
+                lege-pdf/render/crates/pdf-syntax/src/lexer.rs read_name builds every /Name byte-by-byte via push, where next_token's regular-run branch already scans then slices once. Names are the hottest token kind in a PDF. Dispositioned when the bulk-scan-then-slice form lands with a lexer benchmark showing the win, or the micro-optimisation is declined as not worth the escape-path branch.
+                """
+            method manual
+        }
+        check postprocess-row-parallelism {
+            statement """
+                lege-pdf/render/crates/pdf-postprocess/src/cpu.rs resize and sauvola_map are row-independent but single-threaded, and the crate has no rayon dependency. Dispositioned when either rayon is adopted for those passes with a measured win, or the decision is recorded that CpuPostprocess stays single-threaded and why. FloydSteinberg dither is out of scope: its error diffusion is a genuine row-to-row dependency.
+                """
+            method manual
+        }
+        check transform-rect-shared-helper {
+            statement """
+                The transformed-rect bounding box is implemented twice: lege-pdf/render/crates/pdf-text/src/lib.rs transform_rect and lege-pdf/render/crates/pdf-content/src/lower.rs include_transformed_rect, in two crates that both already depend on pdf-geom. Dispositioned when a single Matrix::transform_rect lands in pdf-geom and both call it, or the duplication is accepted with a reason.
+                """
+            method manual
+        }
+    }
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.work.replace-per-code-block-result-allocation/1 : work {
     title "10. Replace per-code-block result allocation"
     state proposed

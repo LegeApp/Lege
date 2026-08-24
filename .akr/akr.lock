@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:934e820ae1352102d0801b0647a95d5b82ea10d4d59734e1cb948c1a0cf2e876"
+    source_graph "sha256:faa6988fd8ddb47a2028fa4fd83d320b7f4ceecf217ba34a07ac7b7fa4aa855f"
 }
 
 source ".akr/project.akr" {
@@ -94,8 +94,8 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:7e346e5b25b34b31d25d6f01ba1c9259d3ca629f7261c06b33a1c8a4b94c32eb"
-    records 106
+    hash "sha256:5841f4af6946c614c367097f61ac7358fda392d2053dc047b90737bf3b6edec3"
+    records 107
 }
 
 resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
