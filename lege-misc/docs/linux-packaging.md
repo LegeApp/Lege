@@ -11,7 +11,7 @@ The `.deb` package metadata lives in `Cargo.toml` under
 `[package.metadata.deb]`.
 
 ```bash
-cargo build --release --bin lege --bin lege-gui
+cargo build --release --package lege --package lege-gui-freya
 cargo deb
 ```
 

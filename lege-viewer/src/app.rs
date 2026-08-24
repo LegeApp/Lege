@@ -4890,7 +4890,7 @@ fn open_pdf_engine(_path: &std::path::Path) -> Result<Arc<dyn DocumentEngine>, S
 /// on screen as well as written to stderr.
 fn report_document_error(path: &std::path::Path, message: &str) {
     let text = format!("Could not open {}\n\n{message}", path.display());
-    eprintln!("lege-gui: {text}");
+    eprintln!("lege-viewer: {text}");
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title("Lege")

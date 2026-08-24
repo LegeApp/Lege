@@ -18,7 +18,7 @@ members = [
     "lege-process",             # `lege` CLI + core processing library
     "lege-process/lege-ipc",    # shared IPC/log types
     "lege-process/GUI/musicsheet", # `lege-music-gui`
-    "lege-process/GUI/Freya",     # `lege-gui` legacy Skia/Freya desktop GUI
+    "lege-process/GUI/Freya",   # `lege-gui`: Skia/Freya processor GUI (default frontend)
     "lege-process/GUI/rfd",     # vendored file-dialog crate used by both GUIs
     "lege-gpu",                 # `lege_gpu`
     "lege-ocr",                 # `lege_ocr`
@@ -29,7 +29,7 @@ members = [
     "lege-pdf/agent",           # agent-facing `lege-pdf` CLI (structured PDF tool)
     "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
-    "lege-viewer",              # `lege-gui`: native viewer + processing workspace
+    "lege-viewer",              # `lege-viewer`: native viewer + processing workspace
     "lege-misc/xtask",          # packaging tasks (`cargo appimage`)
     "lege-android",             # JNI cdylib for the Android APK
 ]
@@ -42,9 +42,12 @@ exclude = [
     "lege-codecs",
     "lege-pdf/pdf-integrity",
 ]
+# `cargo build` produces the `lege` CLI plus the default GUI frontend, the
+# Freya processor GUI (bin `lege-gui`). The native viewer is an opt-in
+# frontend: build it with `cargo viewer` (bin `lege-viewer`).
 default-members = [
     "lege-process",
-    "lege-viewer",
+    "lege-process/GUI/Freya",
 ]
 
 [workspace.package]
@@ -58,7 +61,7 @@ repository = "https://github.com/LegeApp/Lege"
 unsafe_code = "warn"
 missing_debug_implementations = "warn"
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "freya", "german", "layout-detection", "music-sheet", "ocr", "paddle-ocr", "tesseract-ocr", "trace_arith", "viewer"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows_slim_errors)', 'cfg(trace_arith)', 'cfg(feature, values("cotinga-theme", "debug-logging", "german", "layout-detection", "music-sheet", "ocr", "paddle-ocr", "tesseract-ocr", "trace_arith"))'] }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

@@ -1,6 +1,6 @@
 //! Exercise the production viewer raster worker with a repeated visible-tile set.
 //!
-//! `LEGE_PDF_IMAGE_RENDERER=cpu|gpu|auto cargo run --release -p lege-gui \
+//! `LEGE_PDF_IMAGE_RENDERER=cpu|gpu|auto cargo run --release -p lege-viewer \
 //!   --example pdf_tile_profile -- file.pdf 0 0 7 12`
 
 use std::path::PathBuf;

@@ -1,6 +1,6 @@
 //! Measure the production viewer's parallel PDF raster path.
 //!
-//! `LEGE_PDF_IMAGE_RENDERER=cpu|auto cargo run --release -p lege-gui \
+//! `LEGE_PDF_IMAGE_RENDERER=cpu|auto cargo run --release -p lege-viewer \
 //!   --example pdf_parallel_profile -- file.pdf 0 8 0 4 8 5`
 //!
 //! Arguments are: file, zero-based first page, page count, zoom bucket,

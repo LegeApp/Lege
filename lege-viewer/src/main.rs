@@ -64,7 +64,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Startup failures still have to reach someone who launched the viewer from
 /// the desktop rather than a shell.
 fn report_startup_error(message: &str) {
-    eprintln!("lege-gui: {message}");
+    eprintln!("lege-viewer: {message}");
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title("Lege")

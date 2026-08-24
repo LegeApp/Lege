@@ -435,7 +435,7 @@ pub fn start(
     };
     let worker_control = control.clone();
     std::thread::Builder::new()
-        .name("lege-gui-processing".to_owned())
+        .name("lege-viewer-processing".to_owned())
         .spawn(move || run_worker(cli, args, output, proxy, worker_control))
         .map_err(|error| format!("failed to start processing worker: {error}"))?;
     Ok(control)

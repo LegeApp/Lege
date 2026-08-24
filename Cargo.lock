@@ -3487,7 +3487,6 @@ dependencies = [
  "anyhow",
  "ash",
  "async-trait",
- "atty",
  "bytemuck",
  "bytes",
  "cfg-if",
@@ -3495,7 +3494,6 @@ dependencies = [
  "colored",
  "config",
  "console",
- "copypasta",
  "dialoguer",
  "dirs",
  "djvu_encoder",
@@ -3508,7 +3506,6 @@ dependencies = [
  "flate2",
  "flume",
  "fontdue",
- "freya",
  "futures",
  "html-escape",
  "image",
@@ -3518,7 +3515,6 @@ dependencies = [
  "jpeg-encoder",
  "lazy_static",
  "lege-gpu",
- "lege-gui",
  "lege-ipc",
  "lege-ocr",
  "lege-pdf-read",
@@ -3529,16 +3525,13 @@ dependencies = [
  "ndarray",
  "num_cpus",
  "once_cell",
- "open",
  "parking_lot",
  "pdf-test-support",
  "png 0.18.1",
  "pollster 1.0.1",
  "quick-xml 0.41.0",
- "raw-window-handle",
  "rayon",
  "regex",
- "rfd 0.17.2",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -3552,13 +3545,11 @@ dependencies = [
  "toml 1.1.3+spec-1.1.0",
  "ttf-parser 0.25.1",
  "unicode-normalization",
- "uuid",
  "wgpu",
  "winapi",
  "windows",
  "windows-core",
  "windows-future",
- "winit",
  "winres",
  "zip 8.6.0",
 ]
@@ -3671,36 +3662,6 @@ dependencies = [
  "rayon",
  "thiserror 2.0.19",
  "wgpu",
- "winit",
-]
-
-[[package]]
-name = "lege-gui"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "copypasta",
- "cosmic-text",
- "crossbeam-channel",
- "lege-gpu",
- "libc",
- "open",
- "pdf-content",
- "pdf-document",
- "pdf-font",
- "pdf-page-ir",
- "pdf-render-api",
- "pdf-render-cpu",
- "pdf-render-wgpu",
- "pdf-source",
- "pdf-test-support",
- "pdf-text",
- "rfd 0.17.2",
- "serde",
- "serde_json",
- "softbuffer",
- "tempfile",
- "thiserror 2.0.19",
  "winit",
 ]
 
@@ -3839,6 +3800,36 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "lege-viewer"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "copypasta",
+ "cosmic-text",
+ "crossbeam-channel",
+ "lege-gpu",
+ "libc",
+ "open",
+ "pdf-content",
+ "pdf-document",
+ "pdf-font",
+ "pdf-page-ir",
+ "pdf-render-api",
+ "pdf-render-cpu",
+ "pdf-render-wgpu",
+ "pdf-source",
+ "pdf-test-support",
+ "pdf-text",
+ "rfd 0.17.2",
+ "serde",
+ "serde_json",
+ "softbuffer",
+ "tempfile",
+ "thiserror 2.0.19",
+ "winit",
 ]
 
 [[package]]

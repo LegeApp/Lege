@@ -21,7 +21,8 @@ Lege is a fully-automatic PDF processor for E-Ink ebook readers. It renders PDF 
 | `jbig2enc-rust` | `lege-codecs/jbig2enc-rust/` | In-tree JBIG2 encoder/decoder (patched into `lege`) |
 | `jp2lam` | `lege-codecs/jp2lam/` | In-tree JPEG2000 codec (patched into `lege`) |
 | `djvu_encoder` | `lege-codecs/djvulibrust/` | AGPL DjVu library linked by Lege; standalone codec CLI retained |
-| `lege-gui` | `lege-process/GUI/Freya/` | Freya/Skia GUI frontend |
+| `lege-gui-freya` | `lege-process/GUI/Freya/` | Freya/Skia GUI frontend; produces bin `lege-gui` (the default frontend) |
+| `lege-viewer` | `lege-viewer/` | Native document viewer; produces bin `lege-viewer` (opt-in frontend) |
 | `lege-music-gui` | `lege-process/GUI/musicsheet/` | Sheet Music Edition GUI |
 | Shared assets/tools | `lege-misc/` | Icons, packaging, scripts, docs, dev utilities, and `xtask` |
 
@@ -30,10 +31,27 @@ The workspace default members are `lege-process` and
 The vendored Freya workspace and standalone codec projects retain their own
 build graphs; root patches make the processor use the in-tree linked codecs.
 
+Every binary in the workspace has a unique name, so any combination of
+packages can be selected in one Cargo invocation. In particular the `lege`
+package builds the CLI *only* — it has no GUI feature and no GUI
+dependencies. Each frontend is a package that owns its own binary:
+
+| Binary | Package | Path |
+|---|---|---|
+| `lege` | `lege` | `lege-process/` |
+| `lege-gui` | `lege-gui-freya` | `lege-process/GUI/Freya/` |
+| `lege-viewer` | `lege-viewer` | `lege-viewer/` |
+| `lege-music-gui` | `lege-music-gui` | `lege-process/GUI/musicsheet/` |
+
 ## Build commands
 
 ```sh
-# Standard release build (CLI + GUI)
+# The three supported frontend configurations (aliases in .cargo/config.toml):
+cargo cli                 # CLI only          -> lege
+cargo gui                 # CLI + Freya GUI   -> lege, lege-gui   (the default)
+cargo viewer              # CLI + native viewer -> lege, lege-viewer
+
+# Standard release build (CLI + Freya GUI, via workspace default-members)
 cargo build --release
 
 # Development build (incremental, 256 codegen units)

@@ -22,10 +22,10 @@ Lege/
 │   ├── resize/                processor-facing resize helpers
 │   ├── lege-ipc/              CLI/GUI IPC types
 │   └── GUI/
-│       ├── Freya/             legacy desktop frontend
+│       ├── Freya/             `lege-gui`: default desktop frontend
 │       ├── musicsheet/        `lege-music-gui`
 │       └── rfd/               vendored file dialog crate
-├── lege-viewer/               native `lege-gui`: reader + processing workspace
+├── lege-viewer/               native `lege-viewer`: reader + processing workspace
 ├── lege-document-ocr/         business-grade OCR product
 │   ├── crates/                document IR, pipeline, batch, and export libraries
 │   ├── cli/                   `lege-ocr` batch CLI

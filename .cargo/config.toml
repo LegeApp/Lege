@@ -3,28 +3,49 @@ appimage = "run --package xtask -- appimage"
 fmt-all = "fmt --all"
 fmt-all-check = "fmt --all -- --check"
 
-# Main sub-programs
+# Main sub-programs.
+#
+# Each frontend is its own package and owns a uniquely named binary, so any
+# combination can be selected in one invocation without Cargo colliding the
+# outputs in target/<profile>/:
+#
+#   lege          package `lege`            — the CLI
+#   lege-gui      package `lege-gui-freya`  — Freya processor GUI (default)
+#   lege-viewer   package `lege-viewer`     — native document viewer
+#
+# The three supported build configurations:
+#
+#   cargo cli      CLI only
+#   cargo gui      CLI + Freya GUI  (same as a bare `cargo build`)
+#   cargo viewer   CLI + native viewer
+
+# CLI only.
+cli = "build --package lege --bin lege"
+cli-check = "check --package lege --bin lege"
+cli-run = "run --package lege --bin lege --"
+# Retained names for existing developer scripts.
 process = "build --package lege --bin lege"
 process-check = "check --package lege --bin lege"
 process-run = "run --package lege --bin lege --"
-# Freya GUI is the `lege-gui` bin of package `lege` (`--features freya`).
-# Do not also select package `lege-gui` / `lege-gui-freya` in the same
-# invocation: both expose a `lege-gui` bin and Cargo collides the outputs.
-gui = "build --package lege --bin lege --bin lege-gui --features freya"
-gui-check = "check --package lege --bin lege --bin lege-gui --features freya"
+
+# CLI + Freya processor GUI. This is what the workspace default-members build.
+gui = "build --package lege --package lege-gui-freya"
+gui-check = "check --package lege --package lege-gui-freya"
+gui-run = "run --package lege-gui-freya --bin lege-gui --"
+gui-freya = "build --package lege --package lege-gui-freya"
+gui-freya-check = "check --package lege --package lege-gui-freya"
+gui-freya-run = "run --package lege-gui-freya --bin lege-gui --"
+
+# CLI + native document viewer.
+viewer = "build --package lege --package lege-viewer"
+viewer-check = "check --package lege --package lege-viewer"
+viewer-run = "run --package lege-viewer --bin lege-viewer --"
+viewer-gui = "build --package lege --package lege-viewer"
+viewer-gui-check = "check --package lege --package lege-viewer"
+viewer-gui-run = "run --package lege-viewer --bin lege-viewer --"
+
 music-gui = "build --package lege-music-gui"
 music-gui-check = "check --package lege-music-gui"
-# The native document viewer is a separate application from the Freya processor GUI.
-viewer-gui = "build --package lege-gui --bin lege-gui"
-viewer-gui-check = "check --package lege-gui --bin lege-gui"
-viewer-gui-run = "run --package lege-gui --bin lege-gui --"
-# Compatibility shortcuts retained for existing developer scripts.
-viewer = "build --package lege-gui --bin lege-gui"
-viewer-check = "check --package lege-gui --bin lege-gui"
-viewer-run = "run --package lege-gui --bin lege-gui --"
-gui-freya = "build --package lege --bin lege --bin lege-gui --features freya"
-gui-freya-check = "check --package lege --bin lege --bin lege-gui --features freya"
-gui-freya-run = "run --package lege --bin lege-gui --features freya --"
 
 # Shared libraries / development utilities
 gpu = "build --package lege-gpu"

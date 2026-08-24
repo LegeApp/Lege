@@ -1,7 +1,9 @@
 [package]
-# `lege-gui` is the single native desktop application.  Keep the library name
-# below while the viewer internals are migrated in place.
-name = "lege-gui"
+# The native viewer frontend. It is an alternative to the default Freya
+# processor GUI (package `lege-gui-freya`, bin `lege-gui`), so both the
+# package and its binary are named `lege-viewer` — the two used to collide on
+# a shared `lege-gui` bin name and silently overwrite each other's output.
+name = "lege-viewer"
 description = "Native Lege document viewer and processing workspace"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +12,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "lege-gui"
+name = "lege-viewer"
 path = "src/main.rs"
 
 [lib]

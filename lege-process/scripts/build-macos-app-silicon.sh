@@ -321,7 +321,7 @@ else
 
   if [[ "$CLI_ONLY" != "1" ]]; then
     echo "== Building lege-gui (main GUI) for $TARGET"
-    cargo build --release --target "$TARGET" -p lege-gui --bin lege-gui \
+    cargo build --release --target "$TARGET" -p lege-gui-freya --bin lege-gui \
       --no-default-features
   else
     echo "== CLI-only build: skipping the lege-gui GUI binary"
