@@ -1364,6 +1364,17 @@ record lege-ecosystem.papercut.running-cargo-fmt-workspace-file-paths-invoked/1 
     created_at 2026-08-15
 }
 
+record lege-ecosystem.papercut.running-cargo-test-p-jp2lam-from-the-workspace/1 : papercut {
+    title "Running cargo test -p jp2lam from the workspace root reports that…"
+    state verified
+    statement """
+        Running cargo test -p jp2lam from the workspace root reports that jp2lam is not a workspace member only because dev-dependencies are requested; the working invocation is cargo test --manifest-path lege-codecs/jp2lam/Cargo.toml. The nested-crate test command is easy to miss.
+        """
+    observed_at git:f6fba3f72044c1d8c590dbb5bce74e3b939b693a
+    author "crosscut-perf-audit"
+    created_at 2026-08-24
+}
+
 record lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 : papercut {
     title "Strict `cargo clippy -p lege-gpu --lib --no-deps --features…"
     state verified
@@ -1617,6 +1628,18 @@ record lege-ecosystem.papercut.the-windows-tensorrt-cache-canonicalized/1 : pape
     created_at 2026-08-14
 }
 
+record lege-ecosystem.papercut.while-checking-prior-jp2lam-optimization-notes/1 : papercut {
+    title "While checking prior jp2lam optimization notes, `rg ... directory/*.md`…"
+    state verified
+    statement """
+        While checking prior jp2lam optimization notes, `rg ... directory/*.md` failed because PowerShell did not expand the wildcard and ripgrep treated it as a literal invalid Windows path. Searching the directory with `-g '*.md'` is the reliable cross-platform form.
+        """
+    observed_at git:f6fba3f72044c1d8c590dbb5bce74e3b939b693a
+    about "rg on Windows PowerShell"
+    author "codex"
+    created_at 2026-08-24
+}
+
 record lege-ecosystem.papercut.while-checking-the-broker-backed-ocr-changes/1 : papercut {
     title "While checking the broker-backed OCR changes, the product…"
     state verified
@@ -1694,6 +1717,17 @@ record lege-ecosystem.papercut.while-discovering-a-windows-opencv-sdk-for-the/1 
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
     author "codex"
     created_at 2026-08-14
+}
+
+record lege-ecosystem.papercut.while-following-lege-codecs-jp2lam-agents-md/1 : papercut {
+    title "While following lege-codecs/jp2lam/AGENTS.md for an algorithm change,…"
+    state verified
+    statement """
+        While following lege-codecs/jp2lam/AGENTS.md for an algorithm change, two mandated references (`rust-features-since-180.md` and `most-recent-agent-trace.md`) were absent repo-wide. The protocol should either ship them or mark them optional/replace their paths.
+        """
+    observed_at git:f6fba3f72044c1d8c590dbb5bce74e3b939b693a
+    author "codex"
+    created_at 2026-08-24
 }
 
 record lege-ecosystem.papercut.while-inspecting-pdf-metadata-wiring-i-guessed/1 : papercut {
@@ -1798,6 +1832,18 @@ record lege-ecosystem.papercut.while-proposing-work-from-a-new-internal-plan/1 :
     about "akr"
     author "codex"
     created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.while-recording-a-review-assessment-knowledge/1 : papercut {
+    title "While recording a review assessment, knowledge.propose rejected the…"
+    state verified
+    statement """
+        While recording a review assessment, knowledge.propose rejected the write because the tool schema did not surface the assessment kind's required `statement` slot. The validation diagnostic explained the missing slot, but kind-specific required slots in the tool description would prevent the failed round trip.
+        """
+    observed_at git:f6fba3f72044c1d8c590dbb5bce74e3b939b693a
+    about "akr"
+    author "codex"
+    created_at 2026-08-24
 }
 
 record lege-ecosystem.papercut.while-running-focused-rust-tests-i-passed-two/1 : papercut {

@@ -26,3 +26,53 @@ record lege-ecosystem-perf.assessment.fused-pack-simd-neutral/1 : assessment {
         """
     confidence high
 }
+
+record lege-ecosystem-perf.assessment.renderer-jp2-memory-audit-2026-08-25/1 : assessment {
+    title "Renderer and jp2lam memory-efficiency audit, 2026-08-25"
+    state verified
+    scope [ path "lege-codecs/jp2lam/**", path "lege-pdf/render/**" ]
+    statement """
+        A static audit found hard-bound and concurrency defects in renderer image caching, unbudgeted decode memory, redundant full-buffer ownership conversions, and three JP2 structural allocation paths capable of materially exceeding current working-memory expectations.
+        """
+    claim codec-stream-payload-copies {
+        text """
+            Codec-first PDF stream compilation materializes the payload as Vec<u8> and then converts it to Arc<[u8]>, causing a second full-payload allocation and copy before decoding.
+            """
+    }
+    claim codestream-structural-metadata {
+        text """
+            JP2 codestream parsing retains uncapped marker and tile-part framing vectors before semantic resource validation, allowing compact hostile input to amplify structural metadata allocations.
+            """
+    }
+    claim decoded-image-cache-bound {
+        text """
+            The renderer decoded-image cache is not a hard 96 MiB bound: eviction retains one oversized entry per shard, alpha storage is omitted from the charge, and concurrent misses for one key are not coalesced.
+            """
+    }
+    claim narrow-irreversible-scratch {
+        text """
+            The 9/7 vertical band scratch allocates 128 columns even when the active component is narrower, allowing a one-column image to allocate 128 times the necessary band scratch and exceed the coarse working-memory estimate.
+            """
+    }
+    claim nested-codec-pools {
+        text """
+            Per-render-thread JP2 sessions retain separate dynamically resized Rayon pools; under concurrent rendering this can oversubscribe threads and multiply thread stacks and worker scratch.
+            """
+    }
+    claim palette-allocation-amplification {
+        text """
+            JP2 palette parsing allocates all PCLR columns and deep-clones each CMAP-selected column before output-channel validation, allowing repeated mappings to amplify memory and causing ordinary packed palette decode to retain avoidable full i32 planes.
+            """
+    }
+    claim renderer-vec-to-arc-conversions {
+        text """
+            Several large renderer conversion paths, including JPX alpha splitting and native-planar fallback, fill Vec<u8> and then convert to Arc<[u8]>, causing avoidable full-output copies and higher transient peaks.
+            """
+    }
+    claim scheduler-decode-accounting {
+        text """
+            Renderer scheduler admission accounts for the page surface and transparency-group estimate but not decoded image payloads or JP2 working planes, so concurrent cold image pages can multiply unbudgeted memory.
+            """
+    }
+    author "GitHub Uploader"
+}

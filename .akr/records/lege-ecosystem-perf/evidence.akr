@@ -89,6 +89,19 @@ record lege-ecosystem-perf.evidence.jp2-direct-output-workspace-check-2026-08-09
         """
 }
 
+record lege-ecosystem-perf.evidence.jp2lam-suite-post-wave2-20260825/1 : evidence {
+    title "Full jp2lam suite green after both fix waves: 381 tests passed, 0 failed, 5 ignored (356 lib + 19 + 4 malformed-decode-safety + visual sweep), exit code 0."
+    state verified
+    result pass
+    method command
+    observed_at git:f6fba3f72044c1d8c590dbb5bce74e3b939b693a
+    command "cargo test (in lege-codecs/jp2lam)"
+    summary """
+        Full jp2lam suite green after both fix waves: 381 tests passed, 0 failed, 5 ignored (356 lib + 19 + 4 malformed-decode-safety + visual sweep), exit code 0.
+        """
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem-perf.evidence.jpeg-direct-arc-decode-profile/1 : evidence {
     title "JPEG direct-Arc decoder assembly profile"
     state superseded
@@ -204,6 +217,19 @@ record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-revalidated-202
     summary """
         The documented renderer clippy gate completed successfully at the current cleanup-record commit; warnings remain but no expect-used error is present.
         """
+}
+
+record lege-ecosystem-perf.evidence.renderer-suites-post-wave2-20260825/1 : evidence {
+    title "Renderer-side suites green after the memory fixes and completed lege-pdf-read SharedBytes migration: 470 tests passed, 0 failed across all six touched crates; full workspace cargo check --all-targets also clean."
+    state verified
+    result pass
+    method command
+    observed_at git:f6fba3f72044c1d8c590dbb5bce74e3b939b693a
+    command "cargo test -p pdf-render-cpu -p pdf-content -p pdf-render-scheduler -p pdf-image -p pdf-page-ir -p lege-pdf-read"
+    summary """
+        Renderer-side suites green after the memory fixes and completed lege-pdf-read SharedBytes migration: 470 tests passed, 0 failed across all six touched crates; full workspace cargo check --all-targets also clean.
+        """
+    author "GitHub Uploader"
 }
 
 record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/1 : evidence {

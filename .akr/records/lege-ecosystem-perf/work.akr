@@ -1591,6 +1591,20 @@ record lege-ecosystem-perf.work.remove-the-final-sign-pass/1 : work {
     }
 }
 
+record lege-ecosystem-perf.work.renderer-jp2-memory-fixes-2026-08-25/1 : work {
+    title "Implement the renderer/jp2lam memory-defect fixes from the 2026-08-25 audit"
+    state completed
+    scope [ path "lege-codecs/jp2lam/**", path "lege-pdf/read/**", path "lege-pdf/render/**" ]
+    intent """
+        Fix the memory defects found by the renderer/jp2lam memory audit in two waves. Wave 1: alpha-aware decoded-image cache charging with hard shard caps and oversized-entry admission skip, per-key single-flight decode coordination, scheduler decode-memory admission folded into the page permit, SharedBytes (Arc<Vec<u8>>) codec payload ownership removing a full copy, direct final-Arc raster conversions, a shared process-wide codec Rayon pool with budgeted worker participation, jp2lam narrow-9/7 scratch sized min(active_width,128), structural marker/tile-part/CMAP budgets under max_working_bytes with try_reserve, and palette direct index-to-packed output. Wave 2: Tier-2 per-packet records replaced by streaming PacketStats (full records only under cfg(test)), per-contribution inline segment storage (InlineValues) and precinct block ranges as Range<usize>, and ROI decode writing a clipped source rectangle directly into a region-sized destination instead of a full packed canvas (whole-tile IDWT retained; windowed IDWT stays deferred).
+        """
+    note """
+        Resumed after a usage-limit interruption; the final session completed the lege-pdf-read SharedBytes migration (DirectScanImage.jpeg, JBIG2 smask candidate boundary, test constructors) and verified both waves.
+        """
+    derived_from [ @lege-ecosystem-perf.assessment.renderer-jp2-memory-audit-2026-08-25 ]
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem-perf.work.reproduce/1 : work {
     title "Reproduce"
     state proposed
