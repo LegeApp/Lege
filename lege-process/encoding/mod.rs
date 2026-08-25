@@ -3,9 +3,6 @@
 //! This crate provides a single interface for encoding images in multiple formats,
 //! with all operations performed in memory for integration into larger applications.
 
-#![allow(missing_docs)]
-#![allow(dead_code)] // TODO: Remove once fully implemented
-
 use std::error::Error;
 use std::fmt;
 pub mod prelude;

@@ -13,8 +13,6 @@
 //! Coordinates in a block are relative to the block's own top-left, with `x`
 //! already inside the content area (margins are applied later by pagination).
 
-#![allow(dead_code)]
-
 use super::config::RasterReflowConfig;
 use super::types::{FlowItem, PlacedItem, PlacedKind, PxRect, RegionKind, SourceRef};
 

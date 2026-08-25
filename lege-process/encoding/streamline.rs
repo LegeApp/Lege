@@ -15,9 +15,6 @@ use std::time::SystemTime;
 use crate::encoding::encoders;
 
 #[cfg(feature = "debug-logging")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(feature = "debug-logging")]
 static DEBUG_LOG_BUFFER: std::sync::OnceLock<Arc<Mutex<VecDeque<String>>>> =
     std::sync::OnceLock::new();
 

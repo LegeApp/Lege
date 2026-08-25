@@ -11,8 +11,6 @@
 //! the MVP, reading order targets single-column then simple multi-column
 //! (left-to-right column, top-to-bottom within a column) layouts.
 
-#![allow(dead_code)]
-
 use super::analyze::{self, blank_threshold};
 use super::config::RasterReflowConfig;
 use super::types::{InkMask, PxRect, ReflowRegion, RegionKind, SourcePageImage};

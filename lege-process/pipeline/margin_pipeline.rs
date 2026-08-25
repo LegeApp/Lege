@@ -350,7 +350,12 @@ pub(crate) struct AdjustedMarginPage {
     pub detections: Vec<crate::engine::Detection>,
     pub correction: MarginCorrection,
     pub free_aspect_crop: bool,
-    #[allow(dead_code)]
+    /// True iff a CropAndResize page fell back to StandardizeAndCenter because
+    /// its safety bounds exceeded the document crop window. No production
+    /// caller consumes this today; it exists to let tests assert precisely
+    /// *why* a page centered instead of cropped, so it is gated to the test
+    /// build that reads it.
+    #[cfg(test)]
     pub centered_exception: bool,
 }
 
@@ -479,6 +484,7 @@ pub(crate) fn adjust_page_with_margin_analysis(
     };
 
     let mut effective_setting = analysis.effective_margin_setting;
+    #[cfg(test)]
     let mut centered_exception = false;
     let bounds = if effective_setting == crate::margin::MarginSettings::CropAndResize {
         if non_crop_content {
@@ -497,7 +503,10 @@ pub(crate) fn adjust_page_with_margin_analysis(
                 safety.width() > scaled_crop.width() || safety.height() > scaled_crop.height();
             if exceptional {
                 effective_setting = crate::margin::MarginSettings::StandardizeAndCenter;
-                centered_exception = true;
+                #[cfg(test)]
+                {
+                    centered_exception = true;
+                }
                 safety
             } else if config.crop_free_aspect() {
                 let min_height = ((scaled_crop.height() as f32) * 0.35).round().max(1.0) as u32;
@@ -606,6 +615,7 @@ pub(crate) fn adjust_page_with_margin_analysis(
                 detections: transformed,
                 correction,
                 free_aspect_crop,
+                #[cfg(test)]
                 centered_exception,
             })
         }
@@ -620,6 +630,7 @@ pub(crate) fn adjust_page_with_margin_analysis(
                 detections,
                 correction: identity_correction(),
                 free_aspect_crop: false,
+                #[cfg(test)]
                 centered_exception: false,
             })
         }

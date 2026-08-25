@@ -108,7 +108,6 @@ pub async fn create_and_run_djvu_source_pipeline(
 ) -> Result<()> {
     use tokio::sync::mpsc;
     let config = config;
-    #[cfg(feature = "debug-logging")]
     {
         info_log!("[DJVU-Parallel] Entering parallel tokio pipeline");
         info_log!(
@@ -172,7 +171,6 @@ pub async fn create_and_run_djvu_source_pipeline(
     // back once we have enough pages to amortize device init.
     const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
     crate::resize::set_gpu_resize_enabled(total_pages >= MIN_PAGES_FOR_GPU_RESIZE);
-    #[cfg(feature = "debug-logging")]
     info_log!(
         "[DJVU-Parallel] Total pages to process: {} (GPU resize: {})",
         total_pages,
@@ -239,7 +237,6 @@ pub async fn create_and_run_djvu_source_pipeline(
     // encode_region_image/encode_page_data, which the DjVu path never calls — its heavy
     // IW44/JB2 encode runs inside the in_flight-bounded encode stage (capped at
     // djvu_encode_workers), so the semaphore would be redundant.
-    #[cfg(feature = "debug-logging")]
     info_log!(
         "[DJVU-Parallel] Pipeline configured with: render_buffer={}, inference_buffer={}, page_workers={}, process_workers={}, djvu_encode_workers={}",
         pipeline_config.render_buffer,
@@ -299,7 +296,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         let total_pages = total_pages;
         let concurrency = pipeline_config.page_workers;
         tokio::spawn(async move {
-            #[cfg(feature = "debug-logging")]
             info_log!(
                 "[DJVU-Parallel-Infer] Starting inference stage with concurrency={}",
                 concurrency
@@ -357,7 +353,6 @@ pub async fn create_and_run_djvu_source_pipeline(
                 }
             }
             drop(infer_tx); // Close channel
-            #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Infer] Inference stage complete");
             Ok(())
         })
@@ -379,7 +374,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         let margin_analysis = margin_analysis.clone();
         let binarize_cancellation = cancellation.clone();
         tokio::spawn(async move {
-            #[cfg(feature = "debug-logging")]
             info_log!(
                 "[DJVU-Parallel-Process] Starting binarization & text extraction stage with concurrency={}",
                 concurrency
@@ -452,7 +446,6 @@ pub async fn create_and_run_djvu_source_pipeline(
                 }
             }
             drop(binarize_tx); // Close channel
-            #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Process] Binarization & text extraction stage complete");
             Ok(())
         })
@@ -508,7 +501,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         let document_toc = document_toc.clone();
         let encode_cancellation = cancellation.clone();
         tokio::spawn(async move {
-            #[cfg(feature = "debug-logging")]
             info_log!(
                 "[DJVU-Parallel-Compose] Starting compose stage with concurrency={}",
                 concurrency
@@ -601,13 +593,11 @@ pub async fn create_and_run_djvu_source_pipeline(
                 }
             }
 
-            #[cfg(feature = "debug-logging")]
             info_log!("[DJVU-Parallel-Encode] Encoding stage complete");
             Ok(())
         })
     };
     // Wait for all stages to complete with cancellation support
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Waiting for pipeline stages to complete...");
 
     use crate::pipeline::helper_functions::await_stage_or_cancel_with_token;
@@ -623,7 +613,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         Some(&cancellation),
     )
     .await?;
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Render stage complete");
 
     await_stage_or_cancel_with_token(
@@ -634,7 +623,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         Some(&cancellation),
     )
     .await?;
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Inference stage complete");
 
     await_stage_or_cancel_with_token(
@@ -645,7 +633,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         Some(&cancellation),
     )
     .await?;
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Binarization stage complete");
 
     await_stage_or_cancel_with_token(
@@ -656,7 +643,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         Some(&cancellation),
     )
     .await?;
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Encoding stage complete");
 
     let toc_pages = document_toc
@@ -729,7 +715,6 @@ pub async fn create_and_run_djvu_source_pipeline(
         }
     }
 
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Waiting for writer actor to complete document assembly...");
     await_stage_or_cancel_with_token(
         &mut writer_task,
@@ -739,13 +724,11 @@ pub async fn create_and_run_djvu_source_pipeline(
         Some(&cancellation),
     )
     .await?;
-    #[cfg(feature = "debug-logging")]
     info_log!(
         "[DJVU-Parallel] Document assembly complete: {}",
         output_path.display()
     );
 
-    #[cfg(feature = "debug-logging")]
     info_log!("[DJVU-Parallel] Pipeline complete");
     Ok(())
 }
@@ -1217,16 +1200,15 @@ fn process_djvu_cpu_intensive_work(
                 continue;
             }
 
-            let (region_data, region_w, region_h) =
-                crate::color::color_processing::process_image_region(
-                    adjusted_image.as_raw(),
-                    width as u32,
-                    height as u32,
-                    det.bbox,
-                    config.image_region_dither_mode(),
-                    "djvu",
-                    false,
-                )?;
+            let (region_data, _, _) = crate::color::color_processing::process_image_region(
+                adjusted_image.as_raw(),
+                width as u32,
+                height as u32,
+                det.bbox,
+                config.image_region_dither_mode(),
+                "djvu",
+                false,
+            )?;
 
             let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
             crate::color::color_processing::merge_dithered_region(
@@ -1314,7 +1296,6 @@ async fn extract_djvu_text_layer(
                 config.enable_layout_detection(),
                 detections,
             );
-            #[cfg(feature = "debug-logging")]
             info_log!(
                 "[extract_djvu_text_layer] Page {}: OCR enabled, use_regions={}, detections={}",
                 page_index,
@@ -1342,7 +1323,6 @@ async fn extract_djvu_text_layer(
         };
         match result {
             Ok(text) => {
-                #[cfg(feature = "debug-logging")]
                 info_log!(
                     "[extract_djvu_text_layer] Page {}: OCR returned {} chars",
                     page_index,
@@ -1367,7 +1347,6 @@ async fn extract_djvu_text_layer(
         match native_text {
             Ok(raw_text) if !raw_text.trim().is_empty() => {
                 let hocr = build_hocr_from_pdf_text(&raw_text, width as u32, height as u32);
-                #[cfg(feature = "debug-logging")]
                 info_log!(
                     "[extract_djvu_text_layer] Page {}: renderer text extracted, HOCR {} chars",
                     page_index,
@@ -1414,7 +1393,6 @@ pub(crate) fn binarize_djvu_image(
     config: &PipelineConfig,
     force_blank_threshold: bool,
 ) -> Vec<u8> {
-    #[cfg(feature = "debug-logging")]
     if force_blank_threshold {
         crate::debug_log!(
             "Blank page detected via filtered detections, forcing fixed threshold {}",

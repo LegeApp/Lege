@@ -388,12 +388,7 @@ fn imageops_filter_from_method(method: ResizeMethod) -> image::imageops::FilterT
 ///
 /// `width`/`height` are clamped to at least 1, so the result always has exactly
 /// the requested dimensions.
-pub fn resize_rgb_cpu(
-    src: &RgbImage,
-    width: u32,
-    height: u32,
-    method: ResizeMethod,
-) -> RgbImage {
+pub fn resize_rgb_cpu(src: &RgbImage, width: u32, height: u32, method: ResizeMethod) -> RgbImage {
     let (width, height) = (width.max(1), height.max(1));
     if (src.width(), src.height()) == (width, height) {
         return src.clone();
@@ -530,7 +525,6 @@ pub fn resize_bytes(
                 "WGPU resize failed ({}x{} -> {}x{}): {}; falling back to CPU",
                 src_width, src_height, params.target_width, params.target_height, err
             );
-            #[cfg(feature = "debug-logging")]
             crate::info_log!(
                 "[resize] WGPU fallback to CPU ({}x{} -> {}x{}): {}",
                 src_width,

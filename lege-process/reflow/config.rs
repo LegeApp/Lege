@@ -5,8 +5,6 @@
 //! page geometry (line spacing, text height) wherever possible so they scale
 //! with render DPI.
 
-#![allow(dead_code)]
-
 /// Target output device / content-area description plus all reflow thresholds.
 #[derive(Debug, Clone)]
 pub struct RasterReflowConfig {

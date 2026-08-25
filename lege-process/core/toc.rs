@@ -670,7 +670,7 @@ fn monotonic_positions(candidates: &[TocCandidate], numbers: &[Option<u32>]) -> 
 
     let mut monotonic = vec![false; candidates.len()];
     let mut run: Vec<usize> = Vec::new();
-    let mut flush = |run: &mut Vec<usize>, monotonic: &mut Vec<bool>| {
+    let flush = |run: &mut Vec<usize>, monotonic: &mut Vec<bool>| {
         if run.len() >= MIN_NUMBER_RUN {
             for index in run.iter() {
                 monotonic[*index] = true;

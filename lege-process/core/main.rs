@@ -985,7 +985,7 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
 /// stdout JSON stays clean.
 fn apply_music_sheet_preset(opts: &mut CliOptions) {
     let mut dropped: Vec<&str> = Vec::new();
-    let mut drop = |flag: &'static str, on: &mut bool, list: &mut Vec<&str>| {
+    let drop = |flag: &'static str, on: &mut bool, list: &mut Vec<&str>| {
         if *on {
             *on = false;
             list.push(flag);
@@ -2099,14 +2099,14 @@ fn handle_simple_processing(
 
     // ----- Apply all CLI options to pipeline config -----
 
-    // Language
+    // Language. Only the Linux arm reads the value, so only it binds it.
+    #[cfg(target_os = "linux")]
     if let Some(ref language) = cli_opts.language {
-        #[cfg(not(target_os = "linux"))]
-        {
-            bail!("--language is supported on Linux builds only");
-        }
-        #[cfg(target_os = "linux")]
         pipeline_config.set_ocr_language(language)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    if cli_opts.language.is_some() {
+        bail!("--language is supported on Linux builds only");
     }
 
     // Text format (ccitt4 | jbig2 | djvu | epub)

@@ -6,8 +6,6 @@
 //! text height and inter-row gaps, and exposes line-spacing statistics plus the
 //! "logical chunk" boundaries (large gaps → region breaks) used downstream.
 
-#![allow(dead_code)]
-
 use super::analyze::{self, blank_threshold};
 use super::config::RasterReflowConfig;
 use super::types::{PxRect, ReflowRegion, SourcePageImage, TextRow};

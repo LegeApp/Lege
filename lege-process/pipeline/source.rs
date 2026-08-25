@@ -332,7 +332,6 @@ pub async fn source_stage(
             in_flight.push(tokio::spawn(crate::runtime_stats::track_future(
                 crate::runtime_stats::Stage::Render,
                 async move {
-                    #[cfg(feature = "debug-logging")]
                     crate::info_log!("[SourceStage] Loading page {}", page_index);
                     if cancellation.is_cancelled() {
                         return Err(anyhow!("Source stage cancelled before page {page_index}"));

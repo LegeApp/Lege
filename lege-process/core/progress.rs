@@ -1799,6 +1799,11 @@ mod tests {
 
 // Perform unified dependency checks (OCR if requested, DJVU runtime readiness if needed)
 fn unified_dependency_preflight(config: &crate::PipelineConfig) -> Result<()> {
+    // Only the non-Linux/macOS branch below ever pushes onto this list (Linux/macOS
+    // OCR preflight either returns early or is a no-op), so `mut` is gated to match.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let missing: Vec<String> = Vec::new();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let mut missing: Vec<String> = Vec::new();
 
     // OCR preflight if enabled. PaddleOCR's assets are embedded, but model

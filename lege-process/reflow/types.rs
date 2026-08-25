@@ -13,8 +13,6 @@
 //!
 //! See `RASTER_REFLOW_PLAN.md` for the full design rationale.
 
-#![allow(dead_code)] // Scaffolding: not yet wired into the live pipeline.
-
 use crate::types::ContentCategory;
 
 /// An axis-aligned rectangle in integer pixel coordinates.

@@ -118,23 +118,6 @@ pub fn available_ram_gb() -> usize {
     (half_gb as usize).max(1)
 }
 
-/// System font candidates for [`crate::unicode_font`].
-///
-/// Android ships its fonts in `/system/fonts` with no fontconfig and none of
-/// the Debian layout the shared Unix arm assumes. Roboto is guaranteed
-/// present; the Noto and Droid faces cover the CJK and fallback ranges.
-pub fn font_candidate_paths() -> Vec<PathBuf> {
-    [
-        "/system/fonts/Roboto-Regular.ttf",
-        "/system/fonts/NotoSerif-Regular.ttf",
-        "/system/fonts/DroidSans.ttf",
-        "/system/fonts/DroidSansFallback.ttf",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

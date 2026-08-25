@@ -309,7 +309,6 @@ pub fn set_standard_dimensions_once(width: u32, height: u32) {
         {
             STANDARD_WIDTH.store(width, Ordering::Relaxed);
             STANDARD_HEIGHT.store(height, Ordering::Relaxed);
-            #[cfg(feature = "debug-logging")]
             crate::info_log!("Standard dimensions set: {}x{}", width, height);
         }
     }

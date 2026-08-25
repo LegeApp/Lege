@@ -5,8 +5,6 @@
 //! and horizontal / vertical [`ProjectionProfile`]s. It contains no semantic
 //! understanding — only pixels, thresholds, and whitespace.
 
-#![allow(dead_code)]
-
 use super::config::RasterReflowConfig;
 use super::types::{InkMask, ProjectionAxis, ProjectionProfile, PxRect};
 use image::GrayImage;

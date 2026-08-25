@@ -11,9 +11,9 @@ use crate::pipeline::config::PipelineConfig;
 use anyhow::{Context, Result, anyhow};
 use image::RgbImage;
 use log::info;
-use std::sync::{Mutex, MutexGuard};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard};
 use tokio::sync::{Semaphore, oneshot};
 
 const DEFAULT_GPU_SESSIONS: usize = 2;

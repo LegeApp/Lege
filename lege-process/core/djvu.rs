@@ -173,7 +173,6 @@ impl DjvuOrchestrator {
     pub fn process_page(&self, page_data: PageData) -> Result<PreparedDjvuPage> {
         let page_index = page_data.index;
 
-        #[cfg(feature = "debug-logging")]
         crate::info_log!("[DJVU] process_page START: page {}", page_index);
 
         let result = self.compose_page(page_data);
@@ -492,8 +491,8 @@ impl DjvuOrchestrator {
         page_width: u32,
         page_height: u32,
     ) -> Result<Vec<(String, u16, u16, u16, u16)>> {
-        use std::sync::LazyLock;
         use regex::Regex;
+        use std::sync::LazyLock;
 
         static WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(

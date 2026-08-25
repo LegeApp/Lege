@@ -6,8 +6,6 @@
 //! applied here, and every placed item is recorded into the [`SourceMap`] for
 //! later text-layer re-projection.
 
-#![allow(dead_code)]
-
 use super::compose::StripBlock;
 use super::config::RasterReflowConfig;
 use super::types::{ReflowPage, SourceMap};

@@ -5,8 +5,6 @@
 //! eyeballed during development. Colours are deliberately distinct; nothing here
 //! affects the production output.
 
-#![allow(dead_code)]
-
 use super::compose::StripBlock;
 use super::types::{PxRect, ReflowPage, ReflowRegion, RegionKind, TextRow, WordSpan};
 use image::buffer::ConvertBuffer;

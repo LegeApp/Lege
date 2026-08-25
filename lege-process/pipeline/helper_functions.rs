@@ -1,10 +1,8 @@
 // helper_functions.rs - Shared helper functions for the pipeline
 use anyhow::{Result, anyhow};
-use image::RgbImage;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use crate::bbox_trace;
 use crate::encoding::Jbig2Mode;
 use crate::engine::Detection;
 #[cfg(all(
@@ -478,7 +476,6 @@ pub async fn encode_region_image(
     }
     if image_data.len() > expected_len {
         // Allow larger buffers if caller provided padded region; slice to expected
-        #[cfg(feature = "debug-logging")]
         crate::debug_log!(
             "encode_region_image: trimming padded buffer ({} -> {})",
             image_data.len(),
@@ -616,7 +613,6 @@ pub fn build_hocr_from_pdf_text(text: &str, width: u32, height: u32) -> String {
 
         let y1 = (i as f32 * line_height) as u32;
         let y2 = ((i as f32 + 1.0) * line_height) as u32;
-        let escaped = escape_minimal(line_text);
 
         // Split line into words for better text layer quality
         let words: Vec<&str> = line_text.split_whitespace().collect();
@@ -884,16 +880,7 @@ pub async fn encode_page_data(
     page_index: usize,
     config: &PipelineConfig,
 ) -> Result<crate::accumulator::ContentType> {
-    #[cfg(feature = "debug-logging")]
     let encoding_start = std::time::Instant::now();
-
-    // Use channels=1 for binary formats so the encoding adapter normalizes them.
-    let buffer = LegeImageBuffer {
-        data: binarized,
-        width: width as u32,
-        height: height as u32,
-        channels: 1u8, // Grayscale/binary data (0/255 per byte)
-    };
 
     // Determine encoding settings
     let (encoding_settings, base_format) = match config.text_format() {
@@ -967,7 +954,6 @@ pub async fn encode_page_data(
                 ));
             }
 
-            #[cfg(feature = "debug-logging")]
             crate::perf_log!(
                 encoding_start,
                 "[PROFILING] Page {} {} encoding completed",
@@ -1005,7 +991,6 @@ pub async fn encode_page_data(
                 ));
             }
 
-            #[cfg(feature = "debug-logging")]
             crate::perf_log!(
                 encoding_start,
                 "[PROFILING] Page {} JBIG2 encoding completed",
@@ -1203,7 +1188,7 @@ pub fn spawn_pdf_writer_actor(
         let mut pending_synthetic: Option<Vec<lege_pdf_write::outline::OutlineItem>> = None;
         let mut do_finalize = false;
 
-        crate::info_log!("[PdfWriterActor] Started (lege-pdf-write), waiting for pages...");
+        info_log!("[PdfWriterActor] Started (lege-pdf-write), waiting for pages...");
 
         while let Some(msg) = rx.recv().await {
             // The writer FREES memory by flushing pages to disk on arrival, so
@@ -1283,7 +1268,7 @@ pub fn spawn_pdf_writer_actor(
                     });
                 }
                 WriterMessage::Finalize => {
-                    crate::info_log!(
+                    info_log!(
                         "[PdfWriterActor] Finalize requested, written {} of {} pages",
                         pages_written,
                         total_pages
@@ -1338,7 +1323,7 @@ pub fn spawn_pdf_writer_actor(
             crate::success_log!("[PdfWriterActor] PDF written to: {}", output_path.display());
         }
 
-        crate::info_log!("[PdfWriterActor] Shutting down");
+        info_log!("[PdfWriterActor] Shutting down");
         Ok(())
     });
 

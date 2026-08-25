@@ -61,7 +61,7 @@ pub fn run_pdf_to_png_mode(
     println!("Rendering {} pages...", pages_to_render.len());
 
     // Render each page
-    for (i, page_num) in pages_to_render.iter().enumerate() {
+    for page_num in pages_to_render.iter() {
         crate::progress::cancellation_checkpoint("before PDF-to-PNG page")?;
         let page_start = std::time::Instant::now();
 

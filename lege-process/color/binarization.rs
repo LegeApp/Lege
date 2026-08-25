@@ -16,24 +16,6 @@ thread_local! {
     static HEAVY_SAUVOLA_RGB_ARENA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Format bytes into human-readable memory sizes
-fn format_memory_size(bytes: usize) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{} {}", bytes, UNITS[unit_index])
-    } else {
-        format!("{:.1} {}", size, UNITS[unit_index])
-    }
-}
-
 /// Executes the sauvola model on the CPU through lege-vision. The model uses
 /// global instance normalization, so it must see the whole region at once —
 /// tiling would normalize each tile independently and break consistency across
@@ -1046,6 +1028,10 @@ pub(crate) fn apply_threshold(gray: &[u8], thr: u8, bin: &mut [u8], width: usize
 }
 
 /// Invert binary image (parallel using par_chunks_mut)
+///
+/// Only exercised by `invert_binary_flips_all_pixels_by_row` below — no
+/// production caller — so it is gated to the test build that uses it.
+#[cfg(test)]
 pub(crate) fn invert_binary(bin: &mut [u8], _height: usize, width: usize) {
     bin.par_chunks_mut(width).for_each(|row| {
         for pixel in row.iter_mut() {
@@ -1082,7 +1068,11 @@ pub mod pbm {
     }
 
     /// Pack raw 1-bit data (no header) - parallel over rows
-    #[allow(dead_code)]
+    ///
+    /// Only exercised by `pbm_pack_handles_odd_width_msb_first` below — no
+    /// production caller (production PBM output goes through `make_pbm_p4`)
+    /// — so it is gated to the test build that uses it.
+    #[cfg(test)]
     pub(crate) fn pack_1bit_data(bin: &[u8], width: usize, height: usize) -> Vec<u8> {
         let row_bytes = (width + 7) >> 3;
         let mut out = vec![0u8; row_bytes * height];
@@ -1106,9 +1096,11 @@ pub mod pbm {
 mod tests {
     use super::{
         apply_threshold, binarize_gray, binarize_image, binarize_image_raw,
-        binarize_image_raw_with, dilate_square_reflect, improved_binarize, invert_binary,
-        rgb_to_gray_for_binarization, try_gpu_binarize_gray_raw,
+        binarize_image_raw_with, improved_binarize, invert_binary, rgb_to_gray_for_binarization,
     };
+    // Only used by the GPU-parity tests below, which are gated to the same targets.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::{dilate_square_reflect, try_gpu_binarize_gray_raw};
     use crate::color::BinarizationOptions;
 
     #[test]
@@ -1386,6 +1378,7 @@ mod tests {
     // --- GPU algorithm parity tests ---
     // Gated by LEGE_RUN_GPU_TESTS=1 to avoid blocking CI on headless machines.
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn make_test_image(w: usize, h: usize) -> Vec<u8> {
         (0..w * h)
             .map(|i| {

@@ -23,8 +23,6 @@
 //! intentionally isolated here so reflow behavior can evolve without disturbing
 //! the normal streaming page pipeline.
 
-#![allow(dead_code)]
-
 pub mod analyze;
 pub mod compose;
 pub mod config;

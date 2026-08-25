@@ -374,7 +374,6 @@ pub fn process_page_margins(
         target_height_for_resize,
     );
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "MARGIN PROCESSING: Input image {}x{}, Settings {:?}, Standard dims {}x{} (aspect {:.3}), Target resize {}x{}",
         original_image.width(),
@@ -407,7 +406,6 @@ pub fn process_page_margins(
         }
         MarginSettings::None => {
             // Should not be called if settings are None, but we can gracefully return original.
-            #[cfg(feature = "debug-logging")]
             crate::debug_println!(
                 "MARGIN PROCESSING: No margin processing, returning original image"
             );
@@ -1347,7 +1345,6 @@ fn crop_and_resize_with_standard_aspect_ratio(
     target_width: Option<u32>,
     target_height: u32,
 ) -> Result<RgbImage> {
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "RESIZE CROP_AND_RESIZE: Original image: {}x{}, Content bounds: ({},{}) to ({},{}), Standard aspect ratio: {:.3}",
         original_image.width(),
@@ -1366,7 +1363,6 @@ fn crop_and_resize_with_standard_aspect_ratio(
     );
     let final_bounds = adjusted_bounds;
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "RESIZE CROP_AND_RESIZE: Adjusted bounds: ({},{}) to ({},{}), Size: {}x{}",
         final_bounds.min_x,
@@ -1392,7 +1388,6 @@ fn crop_and_resize_with_standard_aspect_ratio(
         return Err(anyhow!("Invalid target dimensions for resizing"));
     }
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "RESIZE CROP_AND_RESIZE: Target dimensions: {}x{}, Crop dimensions: {}x{}",
         target_width,
@@ -1417,7 +1412,6 @@ fn crop_and_resize_with_standard_aspect_ratio(
     let dst_data = crate::resize::resize_bytes(&src_data, crop_width, crop_height, &params, 3)
         .map_err(|e| anyhow!("Margin crop resize failed: {}", e))?;
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "RESIZE CROP_AND_RESIZE: Resize completed from {}x{} to {}x{}",
         crop_width,
@@ -1637,7 +1631,6 @@ fn standardize_and_center_page(
     let target_width = resolve_target_width(target_width, target_height, standard_aspect_ratio);
     let target_height = target_height;
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "MARGIN STANDARDIZE_AND_CENTER: Original image {}x{}, Content bounds ({},{}) to ({},{}), Target canvas {}x{}, Aspect ratio {:.3}",
         original_image.width(),
@@ -1672,7 +1665,6 @@ fn standardize_and_center_page(
     let resized_w = (cw as f32 * scale).round() as u32;
     let resized_h = (ch as f32 * scale).round() as u32;
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "MARGIN SCALING: Content crop {}x{}, Scale factors X={:.3} Y={:.3}, Using scale={:.3}, Resized to {}x{}",
         cw,
@@ -1706,7 +1698,6 @@ fn standardize_and_center_page(
     let target_x = ((target_width as i64 - resized_w as i64) / 2).max(0);
     let target_y = ((target_height as i64 - resized_h as i64) / 2).max(0);
 
-    #[cfg(feature = "debug-logging")]
     crate::debug_println!(
         "MARGIN CENTERING: Placing resized content at position ({},{}) on {}x{} canvas",
         target_x,

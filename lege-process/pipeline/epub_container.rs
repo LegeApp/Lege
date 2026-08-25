@@ -269,7 +269,9 @@ pub fn write_epub<W: Write + Seek>(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<()> {
     if chapters.is_empty() {
-        return Err(anyhow!("[EPUB] refusing to package a book with no chapters"));
+        return Err(anyhow!(
+            "[EPUB] refusing to package a book with no chapters"
+        ));
     }
 
     let identifier = document_identifier(&metadata.title, chapters);
@@ -287,7 +289,7 @@ pub fn write_epub<W: Write + Seek>(
         .write_all(b"application/epub+zip")
         .map_err(|e| anyhow!("[EPUB] cannot write mimetype: {e}"))?;
 
-    let mut write_entry = |archive: &mut zip::ZipWriter<W>, path: &str, body: &str| -> Result<()> {
+    let write_entry = |archive: &mut zip::ZipWriter<W>, path: &str, body: &str| -> Result<()> {
         archive
             .start_file(path, deflated)
             .map_err(|e| anyhow!("[EPUB] cannot start {path}: {e}"))?;
@@ -353,9 +355,13 @@ mod tests {
 
     fn pack(chapters: &[EpubChapter]) -> Vec<u8> {
         let mut buffer = Cursor::new(Vec::new());
-        write_epub(&mut buffer, &metadata(), chapters, "2024-01-01T00:00:00Z", &|| {
-            false
-        })
+        write_epub(
+            &mut buffer,
+            &metadata(),
+            chapters,
+            "2024-01-01T00:00:00Z",
+            &|| false,
+        )
         .expect("packaging should succeed");
         buffer.into_inner()
     }
@@ -452,7 +458,10 @@ mod tests {
         assert!(nav.contains("chapter_0001.xhtml"), "{nav}");
         assert!(nav.contains("A &amp; B"));
         let ncx = read_entry(&bytes, "OEBPS/toc.ncx");
-        assert!(ncx.contains("<navPoint id=\"navpoint1\" playOrder=\"1\">"), "{ncx}");
+        assert!(
+            ncx.contains("<navPoint id=\"navpoint1\" playOrder=\"1\">"),
+            "{ncx}"
+        );
     }
 
     #[test]

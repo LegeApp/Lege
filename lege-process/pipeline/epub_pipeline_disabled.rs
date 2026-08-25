@@ -34,11 +34,11 @@ pub async fn create_and_run_epub_pipeline(
 }
 
 pub fn build_epub_from_hocr_pages(
-    _hocr_pages: &[HocrPage],
-    _title: &str,
-    _output_path: &Path,
+    hocr_pages: &[HocrPage],
+    title: &str,
+    output_path: &Path,
 ) -> Result<()> {
-    unavailable()
+    build_epub_from_hocr_pages_cancellable(hocr_pages, title, output_path, None)
 }
 
 pub(crate) fn build_epub_from_hocr_pages_cancellable(

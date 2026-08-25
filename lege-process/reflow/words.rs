@@ -6,8 +6,6 @@
 //! scales with the rendered glyph size. No recognized text is required; each
 //! span is a bitmap slice carrying only its source rectangle.
 
-#![allow(dead_code)]
-
 use super::analyze::{self, blank_threshold};
 use super::config::RasterReflowConfig;
 use super::types::{PxRect, SourcePageImage, TextRow, WordSpan};

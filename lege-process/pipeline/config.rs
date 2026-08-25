@@ -89,8 +89,6 @@ pub struct PageSelection {
 
 pub struct ProcessingPipeline {
     pdf_bytes: Arc<[u8]>,
-    #[allow(dead_code)]
-    input_path: std::path::PathBuf,
     config: PipelineConfig,
     page_count: usize,
 }
@@ -103,7 +101,6 @@ impl ProcessingPipeline {
         let page_count = document.page_count() as usize;
         Ok(Self {
             pdf_bytes,
-            input_path: std::path::PathBuf::from("unknown.pdf"),
             config,
             page_count,
         })
@@ -214,7 +211,6 @@ impl ProcessingPipeline {
         }
 
         crate::success_log!("Processing completed successfully");
-        #[cfg(feature = "debug-logging")]
         crate::perf_log!(pipeline_start, "Overall processing completed");
         Ok(())
     }

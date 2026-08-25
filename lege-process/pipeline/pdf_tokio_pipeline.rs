@@ -14,8 +14,8 @@ use crate::pipeline::margin_pipeline::{
     perform_document_margin_analysis,
 };
 use crate::pipeline::page_analysis::{
-    BLANK_PAGE_FALLBACK_THRESHOLD, compute_pixel_bounds_for_margin, is_visually_blank_page,
-    maybe_apply_full_page_detection, should_force_blank_page_threshold,
+    compute_pixel_bounds_for_margin, is_visually_blank_page, maybe_apply_full_page_detection,
+    should_force_blank_page_threshold,
 };
 use crate::pipeline::policies::{
     LayoutRegions, MarginCorrection, MarginStandardizeAndCenter, NoLayoutFullPage, RegionPolicy,
@@ -469,15 +469,12 @@ struct PageProcessingInput {
 }
 
 struct RegionProcessingResult {
-    detection: crate::engine::Detection,
-    region_data: Vec<u8>,
     /// Integer top-left used for extraction, masking, and PDF placement (must stay in sync).
     region_x: u32,
     region_y: u32,
     region_w: u32,
     region_h: u32,
     should_dither: bool,
-    processed_for_masking: bool,
     encoded_data: Option<(Vec<u8>, String)>,
     /// JBIG2 globals (pattern dictionary for halftone, symbol dict for Symbol mode).
     /// When present, the overlay must use `Jbig2ImageWithGlobals` in the PDF.
@@ -1132,7 +1129,6 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             width as u32,
             [mx1 as f32, my1 as f32, mx2 as f32, my2 as f32],
         );
-        let processed_for_masking = true;
 
         if should_dither && !is_cover_page {
             let grayscale_data: Vec<u8> = region_data.chunks(3).map(|rgb| rgb[0]).collect();
@@ -1299,14 +1295,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         }
 
         region_processing_results.push(RegionProcessingResult {
-            detection: det.clone(),
-            region_data,
             region_x: bbox_x1,
             region_y: bbox_y1,
             region_w,
             region_h,
             should_dither,
-            processed_for_masking,
             encoded_data,
             encoded_global_data,
         });
@@ -1361,245 +1354,6 @@ fn apply_margin_analysis_to_page(
             source_width: page.high_res_image.width(),
             source_height: page.high_res_image.height(),
             correction: adjusted.correction,
-        },
-    ))
-}
-
-#[allow(dead_code)]
-fn apply_margin_analysis_to_page_legacy(
-    page: &RenderedPageData,
-    detections: Vec<crate::engine::Detection>,
-    detections_are_page_space: bool,
-    cfg: &PipelineConfig,
-    analysis: &DocumentMarginAnalysis,
-    page_index: usize,
-) -> Result<(RgbImage, Vec<crate::engine::Detection>, NativeTextTransform)> {
-    use crate::pipeline::policies::remap_detections_to_page;
-
-    // Remap detections from inference space to page space unless the analysis
-    // cache already scaled them into this rendered page's coordinate system.
-    let mut dets = detections;
-    let page_w = page.high_res_image.width();
-    let page_h = page.high_res_image.height();
-    if !detections_are_page_space {
-        remap_detections_to_page(&mut dets, page_w, page_h, cfg);
-    }
-
-    // CRITICAL FIX: Scale baseline bounds from analysis resolution to processing resolution
-    // Analysis runs at 640px width, but processing happens at high resolution.
-    // Without this scaling, coordinates are misaligned causing ~20% offset errors.
-    let scaled_baseline = analysis.baseline_bounds.scale_to_resolution(
-        analysis.analysis_width,
-        analysis.analysis_height,
-        page_w,
-        page_h,
-    );
-    let scaled_crop = analysis.crop_bounds.scale_to_resolution(
-        analysis.analysis_width,
-        analysis.analysis_height,
-        page_w,
-        page_h,
-    );
-
-    // Get page-specific margin data from analysis
-    let page_data = analysis.pages.get(&page_index);
-
-    let page_is_non_crop_content = page_data
-        .map(|pd| pd.is_blank || pd.is_full_page_image)
-        .unwrap_or(false);
-    let full_page_bounds = crate::margin::ContentBounds {
-        min_x: 0,
-        min_y: 0,
-        max_x: page_w,
-        max_y: page_h,
-    };
-
-    let bounds =
-        if analysis.effective_margin_setting == crate::margin::MarginSettings::CropAndResize {
-            Some(if page_is_non_crop_content {
-                full_page_bounds
-            } else if cfg.crop_free_aspect() {
-                // Window bounds must cover ALL content — text AND figures. Text-only
-                // bounds cropped chapter woodcuts (and any illustration above or
-                // below the text block) out of the page.
-                let page_text_bounds =
-                    crate::margin::calculate_content_bounds(&dets, page_w, page_h, true)
-                        .or_else(|| {
-                            page_data.and_then(|pd| {
-                                pd.content_bounds.map(|cb| {
-                                    cb.scale_to_resolution(
-                                        analysis.analysis_width,
-                                        analysis.analysis_height,
-                                        page_w,
-                                        page_h,
-                                    )
-                                })
-                            })
-                        })
-                        // Layout-off crop: no detections anywhere — measure the page's
-                        // ink directly so per-page heights work there too.
-                        .or_else(|| compute_pixel_bounds_for_margin(&page.high_res_image, cfg))
-                        .unwrap_or(scaled_crop);
-                // Free-aspect: uniform document WIDTH (stable text scale and
-                // zoom-to-width across pages) but per-page HEIGHT hugging this
-                // page's own content — sparse pages (chapter ends, part titles)
-                // no longer carry the tallest page's blank space. Floor keeps
-                // near-empty pages from collapsing into slivers.
-                let pad_y = ((scaled_crop.height() as f32) * 0.015).round().max(4.0) as u32;
-                let min_h = ((scaled_crop.height() as f32) * 0.35).round().max(1.0) as u32;
-                let page_window_h = page_text_bounds
-                    .height()
-                    .saturating_add(pad_y * 2)
-                    .clamp(min_h, scaled_crop.height().max(1));
-                crate::margin::fit_crop_window_to_content(
-                    &page_text_bounds,
-                    scaled_crop.width().max(1),
-                    page_window_h,
-                    page_w,
-                    page_h,
-                )
-            } else {
-                scaled_crop
-            })
-        } else {
-            // For StandardizeAndCenter and None, use the original per-page logic
-            if !dets.is_empty() {
-                crate::margin::calculate_content_bounds(&dets, page_w, page_h, true)
-            } else if let Some(pd) = page_data {
-                // CRITICAL: Also scale per-page cached bounds if using them
-                pd.content_bounds.map(|cb| {
-                    cb.scale_to_resolution(
-                        analysis.analysis_width,
-                        analysis.analysis_height,
-                        page_w,
-                        page_h,
-                    )
-                })
-            } else {
-                compute_pixel_bounds_for_margin(&page.high_res_image, cfg)
-            }
-        };
-
-    if let Some(bounds) = bounds {
-        // Apply effective margin setting (may have been overridden due to footnotes)
-        let effective_setting = if analysis.effective_margin_setting
-            == crate::margin::MarginSettings::CropAndResize
-            && page_is_non_crop_content
-        {
-            crate::margin::MarginSettings::StandardizeAndCenter
-        } else {
-            analysis.effective_margin_setting
-        };
-
-        // Free-aspect crop pages resize to a PER-PAGE height (uniform width,
-        // uniform scale): the window already hugs this page's content, so the
-        // output height is the document target scaled by this window's share
-        // of the uniform window height.
-        let free_aspect_crop = analysis.effective_margin_setting
-            == crate::margin::MarginSettings::CropAndResize
-            && cfg.crop_free_aspect()
-            && !page_is_non_crop_content;
-
-        let standard_dims = if free_aspect_crop {
-            crate::margin::StandardPageDimensions {
-                width: bounds.width().max(1),
-                height: bounds.height().max(1),
-            }
-        } else if analysis.effective_margin_setting == crate::margin::MarginSettings::CropAndResize
-        {
-            crate::margin::StandardPageDimensions {
-                width: scaled_crop.width().max(1),
-                height: scaled_crop.height().max(1),
-            }
-        } else {
-            // CRITICAL: Use SCALED baseline for standard dimensions (processing resolution, not analysis resolution)
-            crate::margin::StandardPageDimensions {
-                width: scaled_baseline.width().max(1),
-                height: scaled_baseline.height().max(1),
-            }
-        };
-
-        let (resize_target_width, resize_target_height) = if free_aspect_crop {
-            let th = ((cfg.target_height().max(1) as f32) * (bounds.height().max(1) as f32)
-                / (scaled_crop.height().max(1) as f32))
-                .round()
-                .max(1.0) as u32;
-            (None, th)
-        } else {
-            (cfg.target_width(), cfg.target_height())
-        };
-
-        // Crop mode uses a uniform document crop; center/no-margin modes keep
-        // their page-specific content bounds.
-        let effective_bounds = bounds;
-
-        // Process page with document-wide baseline
-        match crate::margin::process_page_margins(
-            &page.high_res_image,
-            &effective_bounds,
-            effective_setting,
-            &standard_dims,
-            resize_target_width,
-            resize_target_height,
-        ) {
-            Ok(img) => {
-                let mut new_dets = crate::margin::transform_detections(
-                    &dets,
-                    &effective_bounds,
-                    effective_setting,
-                    &standard_dims,
-                    resize_target_width,
-                    resize_target_height,
-                    Some((page_w, page_h)),
-                );
-
-                // Clamp to new image bounds and drop degenerate boxes.
-                let iw = img.width() as f32;
-                let ih = img.height() as f32;
-                new_dets.retain_mut(|det| {
-                    det.bbox[0] = det.bbox[0].clamp(0.0, iw);
-                    det.bbox[1] = det.bbox[1].clamp(0.0, ih);
-                    det.bbox[2] = det.bbox[2].clamp(0.0, iw);
-                    det.bbox[3] = det.bbox[3].clamp(0.0, ih);
-                    det.bbox[0] < det.bbox[2] && det.bbox[1] < det.bbox[3]
-                });
-
-                let correction = crate::margin::compute_margin_correction(
-                    &effective_bounds,
-                    effective_setting,
-                    &standard_dims,
-                    resize_target_width,
-                    resize_target_height,
-                    Some((page_w, page_h)),
-                );
-                return Ok((
-                    img,
-                    new_dets,
-                    NativeTextTransform {
-                        source_width: page_w,
-                        source_height: page_h,
-                        correction,
-                    },
-                ));
-            }
-            Err(e) => {
-                warn_log!(
-                    "Page {}: Failed to apply margin analysis: {}. Falling back to original.",
-                    page_index,
-                    e
-                );
-            }
-        }
-    }
-
-    // Fallback: return original image
-    Ok((
-        (*page.high_res_image).clone(),
-        dets,
-        NativeTextTransform {
-            source_width: page.high_res_image.width(),
-            source_height: page.high_res_image.height(),
-            correction: identity_margin_correction(),
         },
     ))
 }
@@ -2221,7 +1975,6 @@ async fn encode_base_layer(
         Jbig2Settings, JpegSettings,
     };
 
-    #[cfg(feature = "debug-logging")]
     let encoding_start = std::time::Instant::now();
 
     // Determine encoding settings
@@ -2295,7 +2048,6 @@ async fn encode_base_layer(
                 ));
             }
 
-            #[cfg(feature = "debug-logging")]
             crate::perf_log!(
                 encoding_start,
                 "[PROFILING] Page {} {} encoding completed",
@@ -2334,7 +2086,6 @@ async fn encode_base_layer(
                 ));
             }
 
-            #[cfg(feature = "debug-logging")]
             crate::perf_log!(
                 encoding_start,
                 "[PROFILING] Page {} JBIG2 encoding completed",
@@ -2371,7 +2122,6 @@ async fn encode_base_layer_fused(
         Jbig2Settings,
     };
 
-    #[cfg(feature = "debug-logging")]
     let encoding_start = std::time::Instant::now();
 
     let jbig2_mode = if force_jbig2_generic {
@@ -2452,7 +2202,6 @@ async fn encode_base_layer_fused(
                 ));
             }
 
-            #[cfg(feature = "debug-logging")]
             crate::perf_log!(
                 encoding_start,
                 "[PROFILING] Page {} {} fused binarize+encode completed",
@@ -2505,7 +2254,6 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
         JpegSettings,
     };
 
-    #[cfg(feature = "debug-logging")]
     let encoding_start = std::time::Instant::now();
 
     let width = image.width();
@@ -2566,7 +2314,6 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
         ));
     }
 
-    #[cfg(feature = "debug-logging")]
     crate::perf_log!(
         encoding_start,
         "[PROFILING] Page {} full-page encoding completed",

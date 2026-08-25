@@ -956,10 +956,17 @@ fn render_xhtml(chapter: &Chapter) -> String {
 }
 
 /// Package chapters into an EPUB file at `output_path`.
+///
+/// The live pipeline (`create_and_run_epub_pipeline`) calls
+/// `build_epub_with_outline_cancellable` directly with a real outline; these
+/// no-outline wrappers now exist only for the tests below, so they are gated
+/// to the test build that uses them.
+#[cfg(test)]
 fn build_epub(pages: &[PageText], title: &str, output_path: &Path) -> Result<()> {
     build_epub_cancellable(pages, title, output_path, None)
 }
 
+#[cfg(test)]
 fn build_epub_cancellable(
     pages: &[PageText],
     title: &str,
