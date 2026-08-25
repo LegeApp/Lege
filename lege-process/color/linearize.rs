@@ -1,51 +1,48 @@
 // linearize.rs
-use image::open;
-use ndarray::Array3;
 use rayon::prelude::*;
-// use std::cmp::{max, min}; // Unused imports
-use std::error::Error;
+use std::sync::LazyLock;
 
-// Use lazy_static to initialize the LUT at runtime
-lazy_static::lazy_static! {
-    static ref SRGB_TO_LINEAR: [f32; 256] = {
-        let mut table = [0f32; 256];
-        for (i, val) in table.iter_mut().enumerate() {
-            let x = i as f32 / 255.0;
-            *val = if x <= 0.04045 {
-                x / 12.92
-            } else {
-                ((x + 0.055) / 1.055).powf(2.4)
-            };
-        }
-        table
-    };
-    static ref LINEAR_TO_SRGB: [u8; 1025] = {
-        let mut table = [0u8; 1025];
-        for i in 0..1025 {
-            let x = (i as f32) / 1024.0;
-            let y = if x <= 0.0031308 {
-                x * 12.92
-            } else {
-                1.055 * x.powf(1.0 / 2.4) - 0.055
-            };
-            table[i] = (y * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-        }
-        table
-    };
+// Runtime-initialized LUTs. `powf` is not const, so these stay lazy statics —
+// `std::sync::LazyLock`, no external crate required.
+static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    let mut table = [0f32; 256];
+    for (i, val) in table.iter_mut().enumerate() {
+        let x = i as f32 / 255.0;
+        *val = if x <= 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        };
+    }
+    table
+});
 
-    /// sRGB-encoded gray (0..255) → linear-reflectance-coded gray (0..255).
-    /// On a bilevel output, perceived tone is dot *coverage*, which is linear
-    /// reflectance — so dithering must diffuse/threshold linear values, else an
-    /// sRGB 128 (~21% luminance) renders as ~50% coverage and midtones come out
-    /// far too light. Mapping the input through this LUT first fixes that.
-    pub static ref SRGB_GRAY_TO_LINEAR_U8: [u8; 256] = {
-        let mut table = [0u8; 256];
-        for (i, slot) in table.iter_mut().enumerate() {
-            *slot = (SRGB_TO_LINEAR[i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-        }
-        table
-    };
-}
+static LINEAR_TO_SRGB: LazyLock<[u8; 1025]> = LazyLock::new(|| {
+    let mut table = [0u8; 1025];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let x = (i as f32) / 1024.0;
+        let y = if x <= 0.0031308 {
+            x * 12.92
+        } else {
+            1.055 * x.powf(1.0 / 2.4) - 0.055
+        };
+        *slot = (y * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+    }
+    table
+});
+
+/// sRGB-encoded gray (0..255) → linear-reflectance-coded gray (0..255).
+/// On a bilevel output, perceived tone is dot *coverage*, which is linear
+/// reflectance — so dithering must diffuse/threshold linear values, else an
+/// sRGB 128 (~21% luminance) renders as ~50% coverage and midtones come out
+/// far too light. Mapping the input through this LUT first fixes that.
+pub static SRGB_GRAY_TO_LINEAR_U8: LazyLock<[u8; 256]> = LazyLock::new(|| {
+    let mut table = [0u8; 256];
+    for (i, slot) in table.iter_mut().enumerate() {
+        *slot = (SRGB_TO_LINEAR[i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+    }
+    table
+});
 
 // Convert sRGB value to linear RGB (LUT version)
 #[inline(always)]
@@ -91,55 +88,10 @@ fn linear_to_srgb_wide(linear: &[f32], srgb: &mut [u8]) {
         });
 }
 
-/// Shared CPU function: Load an image and linearize sRGB to linear RGB
-pub fn load_and_linearize<'a>(
-    input: impl Into<LinearizeInput<'a>>,
-    width: usize,
-    height: usize,
-) -> Result<Array3<f32>, Box<dyn Error>> {
-    let input = input.into();
-
-    // Load or prepare RGB data
-    let (rgb_bytes, actual_width, actual_height) = match input {
-        LinearizeInput::Path(path) => {
-            let img = open(path)?.to_rgb8();
-            let (w, h) = img.dimensions();
-            (img.into_raw(), w as usize, h as usize)
-        }
-        LinearizeInput::Bytes(bytes) => {
-            if width == 0 || height == 0 || bytes.len() != width * height * 3 {
-                return Err("Invalid dimensions or byte length".into());
-            }
-            (bytes.to_vec(), width, height)
-        }
-    };
-
-    // Convert to linear RGB using optimized parallel processing
-    let mut linear_rgb = vec![0.0f32; rgb_bytes.len()];
-    srgb_to_linear_wide(&rgb_bytes, &mut linear_rgb);
-
-    // Shape into Array3<f32>
-    let array = Array3::from_shape_vec((actual_height, actual_width, 3), linear_rgb)?;
-    Ok(array)
-}
-
-/// Helper enum to accept either a file path or raw bytes.
-pub enum LinearizeInput<'a> {
-    Path(&'a str),
-    Bytes(&'a [u8]),
-}
-
-impl<'a> From<&'a str> for LinearizeInput<'a> {
-    fn from(path: &'a str) -> Self {
-        LinearizeInput::Path(path)
-    }
-}
-
-impl<'a> From<&'a [u8]> for LinearizeInput<'a> {
-    fn from(bytes: &'a [u8]) -> Self {
-        LinearizeInput::Bytes(bytes)
-    }
-}
+// `load_and_linearize` and its `LinearizeInput` enum were removed: nothing in
+// the workspace called them, and they were the crate's only use of `ndarray`
+// (and of `image::open`). The live entry points are
+// `linearize_rgb_bytes_to_f32` / `linearized_rgb_to_grayscale` below.
 
 /// Convert linearized RGB (0.0-1.0 range) to grayscale (8-bit) using parallel processing.
 ///

@@ -5,17 +5,20 @@
 
 use crate::utils::error::{DjvuError, Result};
 use bytemuck::{Pod, Zeroable, cast_slice};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Write};
 
 /// A trait for reading and writing structured data in DjVu format.
 pub trait ByteStream: Read + Write {
     fn read_u8(&mut self) -> Result<u8> {
-        Ok(ReadBytesExt::read_u8(self)?)
+        let mut byte = [0u8; 1];
+        self.read_exact(&mut byte)?;
+        Ok(byte[0])
     }
 
     fn read_u16(&mut self) -> Result<u16> {
-        Ok(ReadBytesExt::read_u16::<BigEndian>(self)?)
+        let mut bytes = [0u8; 2];
+        self.read_exact(&mut bytes)?;
+        Ok(u16::from_be_bytes(bytes))
     }
 
     fn read_u24(&mut self) -> Result<u32> {
@@ -25,15 +28,19 @@ pub trait ByteStream: Read + Write {
     }
 
     fn read_u32(&mut self) -> Result<u32> {
-        Ok(ReadBytesExt::read_u32::<BigEndian>(self)?)
+        let mut bytes = [0u8; 4];
+        self.read_exact(&mut bytes)?;
+        Ok(u32::from_be_bytes(bytes))
     }
 
     fn write_u8(&mut self, value: u8) -> Result<()> {
-        Ok(WriteBytesExt::write_u8(self, value)?)
+        self.write_all(&[value])?;
+        Ok(())
     }
 
     fn write_u16(&mut self, value: u16) -> Result<()> {
-        Ok(WriteBytesExt::write_u16::<BigEndian>(self, value)?)
+        self.write_all(&value.to_be_bytes())?;
+        Ok(())
     }
 
     fn write_u24(&mut self, value: u32) -> Result<()> {
@@ -54,7 +61,8 @@ pub trait ByteStream: Read + Write {
     }
 
     fn write_u32(&mut self, value: u32) -> Result<()> {
-        Ok(WriteBytesExt::write_u32::<BigEndian>(self, value)?)
+        self.write_all(&value.to_be_bytes())?;
+        Ok(())
     }
 
     fn write_string(&mut self, s: &str) -> Result<()> {

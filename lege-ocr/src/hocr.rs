@@ -1,5 +1,5 @@
-use once_cell::sync::Lazy;
-use regex::Regex;
+use std::borrow::Cow;
+use std::fmt::Write as _;
 
 use crate::types::OcrLineResult;
 
@@ -34,38 +34,88 @@ pub fn strip_to_body(hocr: &str) -> String {
 
 /// Shift all `title="bbox x1 y1 x2 y2"` coordinates by (dx, dy).
 /// Used to translate per-region hOCR back into page-global coordinates.
+///
+/// Both quote styles are handled in a single traversal. A `title=` attribute
+/// whose body is not a well-formed `bbox` with four integers is copied through
+/// verbatim, as is any `title=` that is not followed by a quote or is left
+/// unterminated — this only ever rewrites what it fully understands.
 pub fn adjust_offsets(hocr_body: &str, dx: i32, dy: i32) -> String {
-    static BBOX_DQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"title="bbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)([^"]*)""#)
-            .expect("bbox double-quote regex")
-    });
-    static BBOX_SQ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"title='bbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)([^']*)'"#)
-            .expect("bbox single-quote regex")
-    });
+    const KEY: &str = "title=";
 
-    fn shift(input: &str, re: &Regex, q: char, dx: i32, dy: i32) -> String {
-        re.replace_all(input, |c: &regex::Captures| {
-            let p = |i: usize| c.get(i).and_then(|m| m.as_str().parse::<i32>().ok());
-            let tail = c.get(5).map_or("", |m| m.as_str());
-            match (p(1), p(2), p(3), p(4)) {
-                (Some(x1), Some(y1), Some(x2), Some(y2)) => format!(
-                    "title={q}bbox {} {} {} {}{tail}{q}",
+    let mut out = String::with_capacity(hocr_body.len());
+    let mut rest = hocr_body;
+
+    while let Some(at) = rest.find(KEY) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+
+        // The byte after `title=` must be a quote for this to be an attribute
+        // we can rewrite; otherwise step over the key and keep scanning.
+        let quote = match rest.as_bytes().get(KEY.len()) {
+            Some(&q @ (b'"' | b'\'')) => q,
+            _ => {
+                out.push_str(&rest[..KEY.len()]);
+                rest = &rest[KEY.len()..];
+                continue;
+            }
+        };
+
+        let body_start = KEY.len() + 1;
+        let Some(end) = rest[body_start..]
+            .find(quote as char)
+            .map(|i| body_start + i)
+        else {
+            // Unterminated attribute: emit the remainder unchanged.
+            out.push_str(rest);
+            return out;
+        };
+
+        match parse_bbox(&rest[body_start..end]) {
+            Some(([x1, y1, x2, y2], tail)) => {
+                out.push_str(KEY);
+                out.push(quote as char);
+                let _ = write!(
+                    out,
+                    "bbox {} {} {} {}",
                     x1.saturating_add(dx),
                     y1.saturating_add(dy),
                     x2.saturating_add(dx),
                     y2.saturating_add(dy)
-                ),
-                _ => c
-                    .get(0)
-                    .map_or_else(String::new, |m| m.as_str().to_string()),
+                );
+                out.push_str(tail);
+                out.push(quote as char);
             }
-        })
-        .into_owned()
+            // Not a bbox title (e.g. `title="ocr foo"`): verbatim, quotes included.
+            None => out.push_str(&rest[..=end]),
+        }
+        rest = &rest[end + 1..];
     }
 
-    let step1 = shift(hocr_body, &BBOX_DQ, '"', dx, dy);
-    shift(&step1, &BBOX_SQ, '\'', dx, dy)
+    out.push_str(rest);
+    out
+}
+
+/// Parse a `title` attribute body of the form `bbox <i32> <i32> <i32> <i32>`,
+/// returning the four coordinates and whatever trails them (commonly
+/// `"; x_wconf 95"`). `None` if the body is not a bbox with four integers.
+fn parse_bbox(body: &str) -> Option<([i32; 4], &str)> {
+    let after_keyword = body.strip_prefix("bbox")?;
+    if !after_keyword.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+
+    let mut coords = [0i32; 4];
+    let mut rest = after_keyword;
+    for slot in &mut coords {
+        let token_start = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let token_end = token_start
+            .find(|c: char| c != '-' && !c.is_ascii_digit())
+            .unwrap_or(token_start.len());
+        *slot = token_start[..token_end].parse::<i32>().ok()?;
+        rest = &token_start[token_end..];
+    }
+
+    Some((coords, rest))
 }
 
 /// Wrap body content in a complete page-level hOCR document.
@@ -127,12 +177,76 @@ pub fn build_line_hocr(line: &OcrLineResult) -> String {
     s
 }
 
-fn html_escape(s: &str) -> String {
+/// Escape the five XML metacharacters for embedding text in hOCR markup.
+///
+/// This is the single escaper for the crate; the WinRT OCR path in
+/// `engine.rs` used to carry a byte-identical copy.
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
+}
+
+/// Inverse of [`html_escape`], for reading text back out of hOCR spans.
+///
+/// Handles the five XML entities plus numeric `&#NN;` / `&#xNN;` references —
+/// the entire set any hOCR producer in this pipeline emits (Tesseract, WinRT,
+/// and `html_escape` above). An unrecognised or malformed `&…;` is preserved
+/// verbatim rather than dropped, so unknown input degrades to a no-op instead
+/// of losing characters.
+pub(crate) fn html_unescape(s: &str) -> Cow<'_, str> {
+    if !s.contains('&') {
+        return Cow::Borrowed(s);
+    }
+
+    // Longest form accepted is `&#x10FFFF;` (10 bytes); cap the scan so a bare
+    // `&` in running text cannot drag the search across the whole string.
+    const MAX_ENTITY_LEN: usize = 10;
+
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+
+        let window = &rest[..rest.len().min(MAX_ENTITY_LEN + 1)];
+        let Some(semi) = window.find(';') else {
+            out.push('&');
+            rest = &rest[1..];
+            continue;
+        };
+
+        match decode_entity(&rest[1..semi]) {
+            Some(c) => out.push(c),
+            None => out.push_str(&rest[..=semi]),
+        }
+        rest = &rest[semi + 1..];
+    }
+
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+/// Decode one entity body (the text between `&` and `;`).
+fn decode_entity(body: &str) -> Option<char> {
+    match body {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => {
+            let digits = body.strip_prefix('#')?;
+            let code = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => digits.parse::<u32>().ok()?,
+            };
+            char::from_u32(code)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -191,6 +305,74 @@ mod tests {
     fn html_escape_special_chars() {
         let escaped = html_escape("<b>AT&T</b>");
         assert_eq!(escaped, "&lt;b&gt;AT&amp;T&lt;/b&gt;");
+    }
+
+    #[test]
+    fn adjust_offsets_single_quote_style() {
+        assert_eq!(
+            adjust_offsets("<span title='bbox 10 20 30 40'>x</span>", 5, 7),
+            "<span title='bbox 15 27 35 47'>x</span>"
+        );
+    }
+
+    #[test]
+    fn adjust_offsets_handles_both_quote_styles_in_one_pass() {
+        let input = r#"<a title="bbox 1 2 3 4"><b title='bbox 5 6 7 8'>t</b></a>"#;
+        assert_eq!(
+            adjust_offsets(input, 10, 100),
+            r#"<a title="bbox 11 102 13 104"><b title='bbox 15 106 17 108'>t</b></a>"#
+        );
+    }
+
+    #[test]
+    fn adjust_offsets_preserves_bbox_tail() {
+        assert_eq!(
+            adjust_offsets(r#"title="bbox 1 2 3 4; x_wconf 95""#, 1, 1),
+            r#"title="bbox 2 3 4 5; x_wconf 95""#
+        );
+    }
+
+    #[test]
+    fn adjust_offsets_leaves_non_bbox_titles_alone() {
+        for input in [
+            r#"<span title="ocr line 3">t</span>"#,
+            r#"<span title="bbox 1 2 3">short</span>"#,
+            r#"<span title="bboxen 1 2 3 4">prefix</span>"#,
+            "<span title=unquoted>t</span>",
+            r#"<span title="unterminated"#,
+        ] {
+            assert_eq!(adjust_offsets(input, 9, 9), input, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn adjust_offsets_accepts_negative_and_multi_space_coordinates() {
+        assert_eq!(
+            adjust_offsets(r#"title="bbox  -5   -6  7  8""#, 5, 6),
+            r#"title="bbox 0 0 12 14""#
+        );
+    }
+
+    #[test]
+    fn html_unescape_round_trips_the_escaper() {
+        let raw = "<b>AT&T \"q\" 'a'</b>";
+        assert_eq!(html_unescape(&html_escape(raw)), raw);
+    }
+
+    #[test]
+    fn html_unescape_numeric_and_unknown_entities() {
+        assert_eq!(html_unescape("&#65;&#x42;&#X43;"), "ABC");
+        assert_eq!(html_unescape("&apos;&quot;"), "'\"");
+        // Unknown or malformed references survive verbatim.
+        assert_eq!(html_unescape("&hellip;"), "&hellip;");
+        assert_eq!(html_unescape("AT&T"), "AT&T");
+        assert_eq!(html_unescape("&#zz;"), "&#zz;");
+        assert_eq!(html_unescape("100% & rising"), "100% & rising");
+    }
+
+    #[test]
+    fn html_unescape_borrows_when_there_is_nothing_to_do() {
+        assert!(matches!(html_unescape("plain text"), Cow::Borrowed(_)));
     }
 
     #[test]

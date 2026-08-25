@@ -338,9 +338,11 @@ mod tests {
             "glyphless font unexpectedly large: {}",
             font.len()
         );
-        // ttf-parser must accept it (same crate that reads system fonts).
-        let face = ttf_parser::Face::parse(&font, 0).expect("glyphless font should parse");
-        assert_eq!(face.number_of_glyphs(), 2);
-        assert_eq!(face.units_per_em(), UNITS_PER_EM);
+        // The renderer's font parser must accept it -- the same path that reads
+        // any other face, and the one a PDF consumer will use on this output.
+        let face = lege_pdf_read::read_face_metrics(&font, 0)
+            .expect("glyphless font should parse as a real face");
+        assert_eq!(face.num_glyphs, 2);
+        assert_eq!(face.units_per_em, UNITS_PER_EM);
     }
 }

@@ -3,14 +3,11 @@
 // generated glyphless font instead (see `build_glyphless_font`).
 #[allow(unused_imports)]
 use anyhow::{Context, Result, anyhow};
-use once_cell::sync::Lazy;
 #[allow(unused_imports)]
 use std::fs;
 #[allow(unused_imports)]
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-#[allow(unused_imports)]
-use ttf_parser::{Face, name_id};
+use std::sync::{Arc, LazyLock};
 
 #[derive(Clone)]
 pub struct UnicodeFontData {
@@ -38,7 +35,7 @@ pub struct FontBBox {
     pub y_max: i16,
 }
 
-static CACHED_FONT: Lazy<Option<UnicodeFontData>> = Lazy::new(build_glyphless_font);
+static CACHED_FONT: LazyLock<Option<UnicodeFontData>> = LazyLock::new(build_glyphless_font);
 
 /// The invisible OCR/searchable text layer never renders glyphs and carries its
 /// Unicode via a ToUnicode CMap, so we embed a ~1 KB glyphless font instead of
@@ -92,54 +89,32 @@ fn load_font_from_path(path: &Path) -> Result<Option<UnicodeFontData>> {
 
     let data =
         fs::read(path).with_context(|| format!("Failed to read font at {}", path.display()))?;
-    let face = match Face::parse(&data, 0) {
-        Ok(face) => face,
-        Err(err) => {
-            log::warn!("Skipping font {} (ttf-parser error: {err})", path.display());
-            return Ok(None);
-        }
+    // Descriptor metadata comes from the renderer's font stack (skrifa) via
+    // `lege-pdf-read`, which every build already links. A face that will not
+    // parse is skipped, not fatal: the caller moves on to the next candidate.
+    let Some(face) = lege_pdf_read::read_face_metrics(&data, 0) else {
+        log::warn!("Skipping font {} (unparseable face)", path.display());
+        return Ok(None);
     };
 
-    let mut post_script_name: Option<String> = None;
-    let mut family_name: Option<String> = None;
-
-    for name in face.names() {
-        if post_script_name.is_none() && name.name_id == name_id::POST_SCRIPT_NAME {
-            post_script_name = name.to_string();
-        }
-
-        if family_name.is_none() && name.name_id == name_id::FAMILY {
-            family_name = name.to_string();
-        }
-
-        if post_script_name.is_some() && family_name.is_some() {
-            break;
-        }
-    }
-
-    let post_script_name = post_script_name
+    let family_name = face.family_name;
+    let post_script_name = face
+        .post_script_name
         .or_else(|| family_name.clone().map(|s| s.replace(' ', "")))
         .unwrap_or_else(|| "EmbeddedUnicode".to_string());
     let family_name = family_name.unwrap_or_else(|| post_script_name.clone());
 
-    let os2_table = face.tables().os2;
-    let cap_height = os2_table
-        .and_then(|os2| os2.capital_height())
-        .unwrap_or(face.ascender());
-    let italic_angle = face.italic_angle();
-    let bbox = face.global_bounding_box();
-
     let metrics = FontMetrics {
-        units_per_em: face.units_per_em(),
-        ascent: face.ascender(),
-        descent: face.descender(),
-        cap_height,
-        italic_angle,
+        units_per_em: face.units_per_em,
+        ascent: face.ascent,
+        descent: face.descent,
+        cap_height: face.cap_height,
+        italic_angle: face.italic_angle,
         bbox: FontBBox {
-            x_min: bbox.x_min,
-            y_min: bbox.y_min,
-            x_max: bbox.x_max,
-            y_max: bbox.y_max,
+            x_min: face.bbox.x_min,
+            y_min: face.bbox.y_min,
+            x_max: face.bbox.x_max,
+            y_max: face.bbox.y_max,
         },
     };
 

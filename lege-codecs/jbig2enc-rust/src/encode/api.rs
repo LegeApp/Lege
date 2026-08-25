@@ -122,8 +122,6 @@ pub use crate::jbig2enc::{PdfSplitOutput, encode_document};
 pub use crate::jbig2structs::Jbig2Config;
 
 use crate::jbig2enc::Jbig2Encoder;
-use log::info;
-use std::env;
 
 const JBIG2_THRESHOLD_DEF: f32 = 0.92;
 const JBIG2_WEIGHT_DEF: f32 = 0.5;
@@ -305,22 +303,11 @@ fn encode_single_bitimage(
     }
 }
 
-pub fn init_logging() {
-    let default_level = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "info"
-    };
-
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
-        .format_timestamp_millis()
-        .init();
-
-    info!(
-        "JBIG2 library logging initialized. RUST_LOG={}",
-        env::var("RUST_LOG").unwrap_or_else(|_| default_level.to_string())
-    );
-}
+// `init_logging()` used to live here: a `pub fn` that called
+// `env_logger::Builder::…::init()`, i.e. a library seizing the process-wide
+// logger from its host. It had no callers anywhere in the workspace (the
+// `tester` binary defines its own), and it was the sole reason `env_logger` was
+// a non-optional dependency. Removed; `env_logger` is now `cli`-gated.
 
 #[cfg(test)]
 mod tests {

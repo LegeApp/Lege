@@ -28,7 +28,7 @@ use crate::{info_log, success_log, warn_log};
 use crate::color::BinarizationOptions;
 use crate::encoding::Jbig2Mode;
 use anyhow::{Result, anyhow};
-use futures::future::BoxFuture;
+use futures_util::future::BoxFuture;
 use image::RgbImage;
 use std::path::Path;
 use std::sync::Arc;

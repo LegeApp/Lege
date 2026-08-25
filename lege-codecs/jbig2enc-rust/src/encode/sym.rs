@@ -2,11 +2,7 @@
 //! and provides utilities for their manipulation, such as sorting for optimal
 //! dictionary encoding.
 
-use bitvec::order::Msb0;
-use bitvec::prelude::*;
-use bitvec::slice::BitSlice;
 use ndarray::Array2;
-use once_cell::sync::OnceCell;
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -18,38 +14,67 @@ use crate::jbig2shared::{u32_to_usize, usize_to_u32};
 // Bit manipulation utilities
 // ==============================================
 
-/// View a byte buffer as a bit-slice (read-only).
-pub fn bytes_as_bits(bytes: &[u8]) -> &BitSlice<u8, Msb0> {
-    BitSlice::from_slice(bytes)
-}
-
-/// Convert a `BitVec` into an owned `Vec<u8>` without copying.
-pub fn bitvec_into_bytes(bits: BitVec<u8, Msb0>) -> Vec<u8> {
-    bits.into_vec()
-}
-
-/// Convert a byte slice to a `BitVec` with MSB-first bit order.
-pub fn bytes_to_bitvec(bytes: &[u8], bit_count: usize) -> BitVec<u8, Msb0> {
-    let mut bv = BitVec::from_slice(bytes);
-    bv.truncate(bit_count);
-    bv
-}
-
-/// Convert a `BitVec` to a byte vector. `BitVec<u8, Msb0>::into_vec()` already
-/// returns the underlying byte-aligned storage with trailing bits zero-padded,
-/// so no further padding is required.
-pub fn bitvec_to_bytes(bits: &BitSlice<u8, Msb0>) -> Vec<u8> {
-    let mut bytes = bits.to_bitvec().into_vec();
-    // Defensively mask any stale bits in the final byte to ensure the trailing
-    // pad bits are zero (matches the contract callers expect for JBIG2 bitmaps).
-    let trailing = bits.len() % 8;
-    if trailing != 0 {
-        if let Some(last) = bytes.last_mut() {
-            let mask = 0xFFu8 << (8 - trailing);
-            *last &= mask;
-        }
+/// Read bit `idx` of a contiguous MSB-first bit buffer, `false` past the end.
+///
+/// "Contiguous" here means the packing used by [`BitImage::to_bytes`] and
+/// [`BitImage::from_bytes`]: `width * height` bits laid end to end with no
+/// per-row padding. It is *not* the crate's internal row-strided layout.
+#[inline]
+fn contiguous_bit(bytes: &[u8], idx: usize) -> bool {
+    match bytes.get(idx >> 3) {
+        Some(byte) => (byte >> (7 - (idx & 7))) & 1 != 0,
+        None => false,
     }
-    bytes
+}
+
+/// Index of the first set bit at or after `from_bit` in a row of packed words,
+/// or `None` if the row has none before `width`.
+///
+/// Scans a word at a time (`leading_zeros` on the masked remainder), which is
+/// what the connected-component run extractor in `cc.rs` needs to skip runs of
+/// white without touching individual pixels.
+#[inline]
+pub(crate) fn row_first_one(row: &[u32], from_bit: usize, width: usize) -> Option<usize> {
+    if from_bit >= width {
+        return None;
+    }
+    let mut word_index = from_bit >> 5;
+    // Mask off the bits before `from_bit` in the first word.
+    let mut word = *row.get(word_index)? & (u32::MAX >> (from_bit & 31));
+    loop {
+        if word != 0 {
+            let bit = (word_index << 5) + word.leading_zeros() as usize;
+            return (bit < width).then_some(bit);
+        }
+        word_index += 1;
+        if (word_index << 5) >= width {
+            return None;
+        }
+        word = *row.get(word_index)?;
+    }
+}
+
+/// Index of the first clear bit at or after `from_bit`, or `None` if every bit
+/// through `width - 1` is set. Padding bits past `width` are always zero, so
+/// the width check is what stops this from reporting a padding bit.
+#[inline]
+pub(crate) fn row_first_zero(row: &[u32], from_bit: usize, width: usize) -> Option<usize> {
+    if from_bit >= width {
+        return None;
+    }
+    let mut word_index = from_bit >> 5;
+    let mut word = !*row.get(word_index)? & (u32::MAX >> (from_bit & 31));
+    loop {
+        if word != 0 {
+            let bit = (word_index << 5) + word.leading_zeros() as usize;
+            return (bit < width).then_some(bit);
+        }
+        word_index += 1;
+        if (word_index << 5) >= width {
+            return None;
+        }
+        word = !*row.get(word_index)?;
+    }
 }
 
 // ==============================================
@@ -57,15 +82,33 @@ pub fn bitvec_to_bytes(bits: &BitSlice<u8, Msb0>) -> Vec<u8> {
 // ==============================================
 
 /// A bitmap image using MSB-first bit ordering for JBIG2 compatibility.
+///
+/// Storage is row-strided packed words: each row occupies
+/// `stride_words = ceil(width / 32)` `u32`s, bit `x` of a row living at
+/// `1 << (31 - (x % 32))` of word `x / 32`. This is byte-for-byte the layout
+/// JBIG2 generic-region coding and the symbol comparator want, so
+/// [`BitImage::packed_words`] hands out the storage directly and
+/// [`BitImage::to_jbig2_format`] is a per-row copy rather than a per-pixel
+/// loop. It is also the same layout as the decoder's `shared::bitmap::
+/// MonoBitmap`, which is what lets the two halves of the crate convert in
+/// bulk.
+///
+/// # Invariant
+///
+/// Padding bits — those past `width` in the last word of each row — are always
+/// zero. Every mutator preserves this, which is what makes `PartialEq`,
+/// `count_ones`, and the `any`/`all` row scans correct without masking at each
+/// use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BitImage {
     /// Width of the bitmap in pixels
     pub width: usize,
     /// Height of the bitmap in pixels
     pub height: usize,
-    /// Bitmap data, stored in MSB-first order
-    bits: BitVec<u8, Msb0>,
-    packed_cache: OnceCell<Vec<u32>>,
+    /// `u32`s per row, `ceil(width / 32)`.
+    stride_words: usize,
+    /// Row-major packed words, MSB-first within each word.
+    words: Vec<u32>,
 }
 
 fn checked_dimensions(width: usize, height: usize) -> Result<usize, String> {
@@ -87,22 +130,98 @@ impl BitImage {
     pub const MAX_DIMENSION: usize = 1 << 24; // 16M pixels
     pub const MIN_DIMENSION: usize = 1;
 
-    /// Convert the BitImage to JBIG2-compatible format.
+    /// `u32`s needed for one row of `width` pixels.
+    #[inline]
+    const fn stride_words_for(width: usize) -> usize {
+        width.div_ceil(32)
+    }
+
+    /// Allocate an all-clear bitmap after validating the dimensions.
+    fn alloc(width: usize, height: usize) -> Result<Self, String> {
+        checked_dimensions(width, height)?;
+        let stride_words = Self::stride_words_for(width);
+        let total_words = stride_words
+            .checked_mul(height)
+            .ok_or_else(|| "bitmap storage overflow".to_string())?;
+        Ok(Self {
+            width,
+            height,
+            stride_words,
+            words: vec![0u32; total_words],
+        })
+    }
+
+    /// The packed words of row `y`.
+    #[inline]
+    pub(crate) fn row_words(&self, y: usize) -> &[u32] {
+        let start = y * self.stride_words;
+        &self.words[start..start + self.stride_words]
+    }
+
+    /// Restore the zero-padding invariant after a whole-word mutation.
+    fn mask_row_padding(&mut self) {
+        let used = self.width % 32;
+        if used == 0 || self.stride_words == 0 {
+            return;
+        }
+        let mask = u32::MAX << (32 - used);
+        let last = self.stride_words - 1;
+        for y in 0..self.height {
+            self.words[y * self.stride_words + last] &= mask;
+        }
+    }
+
+    #[inline(always)]
+    fn get_xy(&self, x: usize, y: usize) -> bool {
+        let word = self.words[y * self.stride_words + (x >> 5)];
+        (word >> (31 - (x & 31))) & 1 != 0
+    }
+
+    #[inline(always)]
+    fn set_xy(&mut self, x: usize, y: usize, value: bool) {
+        let bit = 1u32 << (31 - (x & 31));
+        let word = &mut self.words[y * self.stride_words + (x >> 5)];
+        if value {
+            *word |= bit;
+        } else {
+            *word &= !bit;
+        }
+    }
+
+    /// Build from a contiguous (unpadded) MSB-first bit source.
+    fn from_contiguous(
+        width: usize,
+        height: usize,
+        mut bit: impl FnMut(usize) -> bool,
+    ) -> Result<Self, String> {
+        let mut image = Self::alloc(width, height)?;
+        let mut idx = 0usize;
+        for y in 0..height {
+            for x in 0..width {
+                if bit(idx) {
+                    image.set_xy(x, y, true);
+                }
+                idx += 1;
+            }
+        }
+        Ok(image)
+    }
+
+    /// Convert the BitImage to JBIG2-compatible format: row-major, MSB-first,
+    /// each row padded out to a whole number of bytes.
+    ///
+    /// Because rows are already word-aligned in storage this is a big-endian
+    /// copy per row plus a truncation of the row's padding bytes — where it
+    /// used to be a triple-nested per-bit loop over the whole bitmap.
     pub fn to_jbig2_format(&self) -> Vec<u8> {
-        let bytes_per_row = (self.width + 7) / 8;
+        let bytes_per_row = self.width.div_ceil(8);
         let mut result = Vec::with_capacity(bytes_per_row * self.height);
         for y in 0..self.height {
-            let row_offset = y * self.width;
-            for byte_x in 0..bytes_per_row {
-                let mut byte = 0u8;
-                for bit in 0..8 {
-                    let x = byte_x * 8 + bit;
-                    if x < self.width && self.get_at(row_offset + x) {
-                        byte |= 0x80 >> bit;
-                    }
-                }
-                result.push(byte);
+            let row_start = result.len();
+            for word in self.row_words(y) {
+                result.extend_from_slice(&word.to_be_bytes());
             }
+            result.truncate(row_start + bytes_per_row);
         }
         result
     }
@@ -121,24 +240,10 @@ impl BitImage {
                 Self::MAX_DIMENSION
             ));
         }
-
-        let width = u32_to_usize(width);
-        let height = u32_to_usize(height);
-        let total_bits = width
-            .checked_mul(height)
-            .ok_or_else(|| "bitmap dimensions overflow".to_string())?;
-        let mut bits = BitVec::with_capacity(total_bits);
-        bits.resize(total_bits, false);
-
-        Ok(Self {
-            width,
-            height,
-            bits,
-            packed_cache: OnceCell::new(),
-        })
+        Self::alloc(u32_to_usize(width), u32_to_usize(height))
     }
 
-    /// Creates a bitmap from raw bytes.
+    /// Creates a bitmap from raw bytes in the contiguous (unpadded) packing.
     pub fn from_bytes(width: usize, height: usize, bytes: &[u8]) -> Result<Self, String> {
         let bit_count = checked_dimensions(width, height)?;
         let expected_bytes = bit_count.div_ceil(8);
@@ -148,110 +253,83 @@ impl BitImage {
                 bytes.len()
             ));
         }
-        let bits = bytes_to_bitvec(bytes, bit_count);
-        Ok(Self {
-            width,
-            height,
-            bits,
-            packed_cache: OnceCell::new(),
-        })
+        Self::from_contiguous(width, height, |idx| contiguous_bit(bytes, idx))
     }
 
     pub fn try_from_bytes(width: usize, height: usize, bytes: &[u8]) -> Result<Self, String> {
         Self::from_bytes(width, height, bytes)
     }
 
-    pub fn from_bits(
-        width: usize,
-        height: usize,
-        bits: &BitSlice<u8, Msb0>,
-    ) -> Result<Self, String> {
-        let bit_count = checked_dimensions(width, height)?;
-        if bits.len() != bit_count {
-            return Err(format!(
-                "expected {bit_count} bits for {width}x{height} bitmap, got {}",
-                bits.len()
-            ));
-        }
-        Ok(Self {
-            width,
-            height,
-            bits: bits.to_bitvec(),
-            packed_cache: OnceCell::new(),
-        })
+    /// Creates a bitmap from a contiguous MSB-first bit buffer. Identical to
+    /// [`Self::from_bytes`]; retained for callers that think in bits.
+    pub fn from_bits(width: usize, height: usize, bits: &[u8]) -> Result<Self, String> {
+        Self::from_bytes(width, height, bits)
     }
 
-    pub fn try_from_bits(
-        width: usize,
-        height: usize,
-        bits: &BitSlice<u8, Msb0>,
-    ) -> Result<Self, String> {
-        Self::from_bits(width, height, bits)
+    pub fn try_from_bits(width: usize, height: usize, bits: &[u8]) -> Result<Self, String> {
+        Self::from_bytes(width, height, bits)
     }
 
-    /// Converts the bitmap to a byte vector.
+    /// Converts the bitmap to a byte vector in the contiguous (unpadded)
+    /// packing — the inverse of [`Self::from_bytes`].
+    ///
+    /// For the row-padded form JBIG2 segments actually carry, use
+    /// [`Self::to_jbig2_format`].
     pub fn to_bytes(&self) -> Vec<u8> {
-        bitvec_to_bytes(&self.bits)
+        let total_bits = self.width * self.height;
+        let mut out = vec![0u8; total_bits.div_ceil(8)];
+        let mut idx = 0usize;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.get_xy(x, y) {
+                    out[idx >> 3] |= 0x80 >> (idx & 7);
+                }
+                idx += 1;
+            }
+        }
+        out
     }
 
-    /// Converts to a `BitVec`.
-    pub fn to_bitvec(&self) -> BitVec<u8, Msb0> {
-        self.bits.clone()
-    }
-
-    /// Returns a view of the bitmap as a bit slice.
-    pub fn as_bits(&self) -> &BitSlice<u8, Msb0> {
-        &self.bits
-    }
-
-    /// Returns a mutable view of the bitmap.
-    pub fn as_mut_bits(&mut self) -> &mut BitSlice<u8, Msb0> {
-        let _ = self.packed_cache.take();
-        &mut self.bits
-    }
-
-    /// Gets a single bit by index.
+    /// Gets a single bit by contiguous (unpadded) index.
     #[inline]
     pub fn get_at(&self, idx: usize) -> bool {
-        self.bits.get(idx).map_or(false, |b| *b)
+        if self.width == 0 || idx >= self.width * self.height {
+            return false;
+        }
+        self.get_xy(idx % self.width, idx / self.width)
     }
 
     /// Returns packed 32-bit words for efficient comparison and generic-region
-    /// encoding. Results are cached to avoid repeated repacking work.
+    /// encoding.
+    ///
+    /// This is the storage itself — no repacking, and no cache to invalidate.
+    #[inline]
     pub fn packed_words(&self) -> &[u32] {
-        self.packed_cache.get_or_init(|| {
-            let words_per_row = (self.width + 31) / 32;
-            let mut out = Vec::with_capacity(words_per_row * self.height);
-
-            for y in 0..self.height {
-                let row_offset = y * self.width;
-                let row_bits = &self.bits[row_offset..row_offset + self.width];
-                let mut row_bytes = row_bits.chunks(8).map(|chunk| {
-                    let mut byte = chunk.load_be::<u8>();
-                    if chunk.len() < 8 {
-                        byte <<= 8 - chunk.len();
-                    }
-                    byte
-                });
-
-                for _ in 0..words_per_row {
-                    let mut word = 0u32;
-                    for byte_idx in 0..4 {
-                        if let Some(byte) = row_bytes.next() {
-                            word |= (byte as u32) << (24 - byte_idx * 8);
-                        }
-                    }
-                    out.push(word);
-                }
-            }
-
-            out
-        })
+        &self.words
     }
 
     /// Converts to packed 32-bit words for callers that need owned storage.
     pub fn to_packed_words(&self) -> Vec<u32> {
-        self.packed_words().to_vec()
+        self.words.clone()
+    }
+
+    /// Overwrite the storage from an identically-shaped packed-word buffer.
+    ///
+    /// Used by the decoder's `MonoBitmap` bridge, which shares this layout.
+    /// Errors if the lengths disagree; `words` must already satisfy the
+    /// zero-padding invariant, which every `MonoBitmap` does.
+    pub(crate) fn copy_words_from(&mut self, words: &[u32]) -> Result<(), String> {
+        if words.len() != self.words.len() {
+            return Err(format!(
+                "expected {} packed words for {}x{} bitmap, got {}",
+                self.words.len(),
+                self.width,
+                self.height,
+                words.len()
+            ));
+        }
+        self.words.copy_from_slice(words);
+        Ok(())
     }
 
     /// Gets a pixel value at (x, y).
@@ -260,8 +338,7 @@ impl BitImage {
         if x >= usize_to_u32(self.width) || y >= usize_to_u32(self.height) {
             return false;
         }
-        let idx = u32_to_usize(y) * self.width + u32_to_usize(x);
-        self.get_at(idx)
+        self.get_xy(u32_to_usize(x), u32_to_usize(y))
     }
 
     /// Gets a pixel value with usize coordinates.
@@ -277,7 +354,7 @@ impl BitImage {
     /// The caller must ensure that `x` and `y` are within the bitmap's bounds.
     #[inline(always)]
     pub fn get_pixel_unchecked(&self, x: usize, y: usize) -> bool {
-        self.bits[y * self.width + x]
+        self.get_xy(x, y)
     }
 
     /// Creates a sub-image from a specified rectangle.
@@ -301,8 +378,7 @@ impl BitImage {
                 let src_x = rect.x + usize_to_u32(x);
                 let src_y = rect.y + usize_to_u32(y);
                 if source.get(src_x, src_y) {
-                    let idx = y * width + x;
-                    result.bits.set(idx, true);
+                    result.set_xy(x, y, true);
                 }
             }
         }
@@ -313,9 +389,7 @@ impl BitImage {
     #[inline]
     pub fn set(&mut self, x: u32, y: u32, value: bool) {
         if x < usize_to_u32(self.width) && y < usize_to_u32(self.height) {
-            let idx = u32_to_usize(y) * self.width + u32_to_usize(x);
-            let _ = self.packed_cache.take();
-            self.bits.set(idx, value);
+            self.set_xy(u32_to_usize(x), u32_to_usize(y), value);
         }
     }
 
@@ -323,9 +397,7 @@ impl BitImage {
     #[inline]
     pub fn set_usize(&mut self, x: usize, y: usize, value: bool) {
         if x < self.width && y < self.height {
-            let idx = y * self.width + x;
-            let _ = self.packed_cache.take();
-            self.bits.set(idx, value);
+            self.set_xy(x, y, value);
         }
     }
 
@@ -344,12 +416,10 @@ impl BitImage {
         }
         let mut cropped =
             Self::new(rect.width, rect.height).map_err(|e| format!("invalid crop: {e}"))?;
-        for dy in 0..rect.height {
-            for dx in 0..rect.width {
-                let src_idx = u32_to_usize(rect.y + dy) * self.width + u32_to_usize(rect.x + dx);
-                let dst_idx = u32_to_usize(dy) * u32_to_usize(rect.width) + u32_to_usize(dx);
-                if let Some(bit) = self.bits.get(src_idx) {
-                    cropped.bits.set(dst_idx, *bit);
+        for dy in 0..u32_to_usize(rect.height) {
+            for dx in 0..u32_to_usize(rect.width) {
+                if self.get_xy(u32_to_usize(rect.x) + dx, u32_to_usize(rect.y) + dy) {
+                    cropped.set_xy(dx, dy, true);
                 }
             }
         }
@@ -360,9 +430,16 @@ impl BitImage {
         self.crop(rect)
     }
 
+    /// Whether row `y` has any set pixel. Padding bits are zero, so a plain
+    /// word scan is exact.
+    #[inline]
+    fn row_any(&self, y: usize) -> bool {
+        self.row_words(y).iter().any(|word| *word != 0)
+    }
+
     /// Trims whitespace from edges, returning the bounding rectangle and cropped image.
     pub fn trim(&self) -> (Rect, BitImage) {
-        if self.bits.is_empty() || self.bits.not_any() {
+        if self.words.iter().all(|word| *word == 0) {
             return (
                 Rect {
                     x: 0,
@@ -381,25 +458,21 @@ impl BitImage {
 
         // First pass: find min_y and max_y using word-level row scanning
         for y in 0..self.height {
-            let row_start = y * self.width;
-            let row_bits = &self.bits[row_start..row_start + self.width];
-            if row_bits.any() {
+            if self.row_any(y) {
                 min_y = y;
                 break;
             }
         }
 
         for y in (0..self.height).rev() {
-            let row_start = y * self.width;
-            let row_bits = &self.bits[row_start..row_start + self.width];
-            if row_bits.any() {
+            if self.row_any(y) {
                 max_y = y;
                 break;
             }
         }
 
         if min_y > max_y {
-            // Should be unreachable if not_any() is false
+            // Should be unreachable if the all-zero check above did not fire
             return (
                 Rect {
                     x: 0,
@@ -414,7 +487,7 @@ impl BitImage {
         // Second pass: find min_x and max_x within the vertical bounds
         for y in min_y..=max_y {
             for x in 0..self.width {
-                if self.get_usize(x, y) {
+                if self.get_xy(x, y) {
                     min_x = min_x.min(x);
                     max_x = max_x.max(x);
                 }
@@ -449,42 +522,40 @@ impl BitImage {
 
     /// Inverts all bits in the bitmap.
     pub fn invert(&mut self) {
-        self.bits.iter_mut().for_each(|mut bit| *bit = !*bit);
+        for word in &mut self.words {
+            *word = !*word;
+        }
+        // Inversion is the one operation that dirties row padding.
+        self.mask_row_padding();
     }
 
     /// Performs a logical AND with another bitmap.
     pub fn and(&self, other: &Self) -> Self {
-        assert_eq!(self.width, other.width, "Bitmaps must have the same width");
-        assert_eq!(
-            self.height, other.height,
-            "Bitmaps must have the same height"
-        );
-        let mut result = self.clone();
-        result.bits &= &other.bits;
-        result
+        self.zip_with(other, |a, b| a & b)
     }
 
     /// Performs a logical OR with another bitmap.
     pub fn or(&self, other: &Self) -> Self {
-        assert_eq!(self.width, other.width, "Bitmaps must have the same width");
-        assert_eq!(
-            self.height, other.height,
-            "Bitmaps must have the same height"
-        );
-        let mut result = self.clone();
-        result.bits |= &other.bits;
-        result
+        self.zip_with(other, |a, b| a | b)
     }
 
     /// Performs a logical XOR with another bitmap.
     pub fn xor(&self, other: &Self) -> Self {
+        self.zip_with(other, |a, b| a ^ b)
+    }
+
+    /// Elementwise word combination. AND/OR/XOR of two zero-padded operands is
+    /// itself zero-padded, so no re-masking is needed.
+    fn zip_with(&self, other: &Self, op: impl Fn(u32, u32) -> u32) -> Self {
         assert_eq!(self.width, other.width, "Bitmaps must have the same width");
         assert_eq!(
             self.height, other.height,
             "Bitmaps must have the same height"
         );
         let mut result = self.clone();
-        result.bits ^= &other.bits;
+        for (word, rhs) in result.words.iter_mut().zip(other.words.iter()) {
+            *word = op(*word, *rhs);
+        }
         result
     }
 
@@ -495,7 +566,7 @@ impl BitImage {
 
     /// Counts unset bits (0s) in the bitmap.
     pub fn count_zeros(&self) -> usize {
-        self.bits.len() - self.count_ones()
+        self.width * self.height - self.count_ones()
     }
 
     /// Gets a pixel value safely, returning 0 for out-of-bounds.
@@ -505,16 +576,10 @@ impl BitImage {
     #[inline]
     pub fn get_pixel_safely(&self, x: i32, y: i32) -> u8 {
         if (x as u32) < (self.width as u32) && (y as u32) < (self.height as u32) {
-            let idx = (y as usize) * self.width + (x as usize);
-            self.bits[idx] as u8
+            self.get_xy(x as usize, y as usize) as u8
         } else {
             0
         }
-    }
-
-    /// Returns pixel data as a byte slice for hashing.
-    pub fn as_bytes(&self) -> &[u8] {
-        self.bits.as_raw_slice()
     }
 }
 
@@ -583,27 +648,27 @@ pub fn sort_symbols_for_dictionary<'a>(symbols: &[&'a BitImage]) -> Vec<Vec<&'a 
 /// Computes a hash for a `BitImage` using SipHash from std library.
 pub fn compute_glyph_hash(image: &BitImage) -> u64 {
     let mut hasher = DefaultHasher::new();
-    image.as_bytes().hash(&mut hasher);
+    image.width.hash(&mut hasher);
+    image.height.hash(&mut hasher);
+    image.packed_words().hash(&mut hasher);
     hasher.finish()
 }
 
 /// Converts an `ndarray::Array2<u8>` to a `BitImage`.
 pub fn array_to_bitimage(array: &Array2<u8>) -> Result<BitImage, String> {
     let (height, width) = array.dim();
-    let total = checked_dimensions(width, height)?;
-    let mut bits = bitvec::bitvec![u8, Msb0; 0; total];
+    checked_dimensions(width, height)?;
+    let mut image = BitImage::alloc(width, height)?;
 
-    let mut idx = 0usize;
-    for row in array.rows() {
-        for &pixel in row.iter() {
+    for (y, row) in array.rows().into_iter().enumerate() {
+        for (x, &pixel) in row.iter().enumerate() {
             if pixel > 0 {
-                bits.set(idx, true);
+                image.set_xy(x, y, true);
             }
-            idx += 1;
         }
     }
 
-    BitImage::from_bits(width, height, &bits)
+    Ok(image)
 }
 
 /// Converts unpacked binary pixels (one byte per pixel, non-zero = set) to a `BitImage`.
@@ -637,12 +702,18 @@ pub fn binary_pixels_to_bitimage(
         ));
     }
 
-    let bits = pixels[..expected_len]
-        .iter()
-        .map(|&pixel| pixel > 0)
-        .collect::<BitVec<u8, Msb0>>();
+    let mut image = BitImage::alloc(width, height)?;
+    let mut idx = 0usize;
+    for y in 0..height {
+        for x in 0..width {
+            if pixels[idx] > 0 {
+                image.set_xy(x, y, true);
+            }
+            idx += 1;
+        }
+    }
 
-    BitImage::from_bits(width, height, bits.as_bitslice())
+    Ok(image)
 }
 
 /// Loads a PBM file into a BitImage
@@ -779,8 +850,7 @@ mod tests {
     #[test]
     fn fallible_bitmap_apis_reject_bad_geometry_without_panicking() {
         assert!(BitImage::from_bytes(usize::MAX, 2, &[]).is_err());
-        let empty_bits = bitvec::vec::BitVec::<u8, bitvec::order::Msb0>::new();
-        assert!(BitImage::from_bits(2, 2, empty_bits.as_bitslice()).is_err());
+        assert!(BitImage::from_bits(2, 2, &[]).is_err());
         let image = BitImage::new(2, 2).unwrap();
         assert!(
             image

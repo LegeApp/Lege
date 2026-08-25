@@ -109,7 +109,6 @@ mod tests {
 
     #[test]
     fn test_djvm_dirm_offsets_match_page_positions() -> Result<()> {
-        use byteorder::{BigEndian, ReadBytesExt};
         use std::io::Cursor;
         use std::io::Read;
 
@@ -136,7 +135,11 @@ mod tests {
         let mut id = [0u8; 4];
         cursor.read_exact(&mut id)?;
         assert_eq!(&id, b"DIRM");
-        let dirm_size = cursor.read_u32::<BigEndian>()? as usize;
+        let dirm_size = {
+            let mut bytes = [0u8; 4];
+            cursor.read_exact(&mut bytes)?;
+            u32::from_be_bytes(bytes) as usize
+        };
         let dirm_data_start = cursor.position() as usize;
         let dirm_data_end = dirm_data_start + dirm_size;
         let dirm_pad = dirm_size % 2;

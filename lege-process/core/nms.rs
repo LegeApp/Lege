@@ -1,4 +1,3 @@
-use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
@@ -34,9 +33,16 @@ pub fn two_pass_nms(
             .unwrap_or(Ordering::Equal)
     });
 
-    let mut class_groups: FxHashMap<i32, Vec<Detection>> = FxHashMap::default();
+    // Group by class id. A layout page yields on the order of ten distinct
+    // classes, so a linear scan over an association list beats hashing — and,
+    // unlike a hash map, it groups in first-seen order, which makes the output
+    // deterministic all the way down to confidence ties.
+    let mut class_groups: Vec<(i32, Vec<Detection>)> = Vec::new();
     for det in detections.drain(..) {
-        class_groups.entry(det.class_id).or_default().push(det);
+        match class_groups.iter_mut().find(|(id, _)| *id == det.class_id) {
+            Some((_, group)) => group.push(det),
+            None => class_groups.push((det.class_id, vec![det])),
+        }
     }
 
     let mut results = Vec::new();
@@ -110,4 +116,75 @@ fn calculate_iou(a: &Detection, b: &Detection) -> f32 {
     let union = area_a + area_b - inter;
 
     if union > 0.0 { inter / union } else { 0.0 }
+}
+
+#[cfg(test)]
+mod class_grouping_tests {
+    use super::*;
+
+    fn det(class_id: i32, confidence: f32, bbox: [f32; 4]) -> Detection {
+        Detection {
+            class_id,
+            class_name: None,
+            confidence,
+            bbox,
+            context: None,
+        }
+    }
+
+    /// Grouping moved from `FxHashMap` to an association list. Detections of
+    /// different classes must still be grouped separately, so a class-aware
+    /// pass never suppresses across classes.
+    #[test]
+    fn detections_are_grouped_per_class() {
+        // Two heavily overlapping boxes in each of two classes.
+        let detections = vec![
+            det(0, 0.90, [0.0, 0.0, 10.0, 10.0]),
+            det(0, 0.80, [0.5, 0.5, 10.5, 10.5]),
+            det(8, 0.70, [0.0, 0.0, 10.0, 10.0]),
+            det(8, 0.60, [0.5, 0.5, 10.5, 10.5]),
+        ];
+
+        // Class-aware NMS collapses each pair; agnostic pass is disabled (1.0).
+        let kept = two_pass_nms(detections, 0.5, 1.0);
+
+        assert_eq!(kept.len(), 2, "one survivor per class expected");
+        let mut classes: Vec<i32> = kept.iter().map(|d| d.class_id).collect();
+        classes.sort_unstable();
+        assert_eq!(classes, vec![0, 8]);
+        // The higher-confidence member of each pair is the survivor.
+        for d in &kept {
+            assert!(d.confidence >= 0.70, "kept the weaker detection: {d:?}");
+        }
+    }
+
+    /// Non-overlapping detections of the same class must all survive.
+    #[test]
+    fn disjoint_same_class_detections_all_survive() {
+        let detections = vec![
+            det(2, 0.9, [0.0, 0.0, 10.0, 10.0]),
+            det(2, 0.8, [100.0, 100.0, 110.0, 110.0]),
+            det(2, 0.7, [200.0, 200.0, 210.0, 210.0]),
+        ];
+        let kept = two_pass_nms(detections, 0.5, 1.0);
+        assert_eq!(kept.len(), 3);
+    }
+
+    /// Output order is confidence-descending regardless of grouping order.
+    #[test]
+    fn results_are_sorted_by_confidence() {
+        let detections = vec![
+            det(1, 0.30, [0.0, 0.0, 10.0, 10.0]),
+            det(2, 0.95, [100.0, 0.0, 110.0, 10.0]),
+            det(3, 0.60, [200.0, 0.0, 210.0, 10.0]),
+        ];
+        let kept = two_pass_nms(detections, 0.5, 1.0);
+        let confidences: Vec<f32> = kept.iter().map(|d| d.confidence).collect();
+        assert_eq!(confidences, vec![0.95, 0.60, 0.30]);
+    }
+
+    #[test]
+    fn empty_input_is_empty_output() {
+        assert!(two_pass_nms(Vec::new(), 0.5, 0.5).is_empty());
+    }
 }

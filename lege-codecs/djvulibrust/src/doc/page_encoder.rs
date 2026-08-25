@@ -9,7 +9,6 @@ use crate::encode::{
 use crate::iff::{bs_byte_stream::bzz_compress, iff::IffWriter};
 use crate::image::image_formats::{Bitmap, GrayPixel, Pixel, Pixmap};
 use crate::{DjvuError, Result};
-use byteorder::{BigEndian, WriteBytesExt};
 use log::debug;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -749,18 +748,18 @@ impl PageComponents {
                     writer.put_chunk("FGbz")?;
 
                     // Version 0 with correspondence bit (0x80)
-                    writer.write_u8(0x80)?;
+                    writer.write_all(&[0x80])?;
 
                     // Palette size: 1 (black)
-                    writer.write_u16::<BigEndian>(1)?;
+                    writer.write_all(&1u16.to_be_bytes())?;
                     writer.write_all(&[0x00, 0x00, 0x00])?; // Black BGR
 
                     // Correspondence Data (per DjVuPalette.cpp)
                     // nDataSize: INT24 = number of blits (NOT compressed size)
                     let n = num_blits as u32;
-                    writer.write_u8(((n >> 16) & 0xFF) as u8)?;
-                    writer.write_u8(((n >> 8) & 0xFF) as u8)?;
-                    writer.write_u8((n & 0xFF) as u8)?;
+                    writer.write_all(&[((n >> 16) & 0xFF) as u8])?;
+                    writer.write_all(&[((n >> 8) & 0xFF) as u8])?;
+                    writer.write_all(&[(n & 0xFF) as u8])?;
 
                     // Indices: BZZ encoded stream of INT16 indices (big-endian)
                     // Since we have only 1 color (index 0), all blits get index 0.
@@ -869,30 +868,29 @@ impl PageComponents {
         rotation: u8,       // 1=0°, 6=90°CCW, 2=180°, 5=90°CW
         gamma: Option<f32>, // If None, use 2.2
     ) -> Result<()> {
-        use byteorder::LittleEndian;
 
         writer.put_chunk("INFO")?;
 
         // Width and height (2 bytes each, big-endian)
-        writer.write_u16::<BigEndian>(self.width as u16)?;
-        writer.write_u16::<BigEndian>(self.height as u16)?;
+        writer.write_all(&(self.width as u16).to_be_bytes())?;
+        writer.write_all(&(self.height as u16).to_be_bytes())?;
 
         // Minor version (1 byte, currently 24 per C44 reference)
-        writer.write_u8(24)?;
+        writer.write_all(&[24])?;
 
         // Major version (1 byte, currently 0 per spec)
-        writer.write_u8(0)?;
+        writer.write_all(&[0])?;
 
         // DPI (2 bytes, little-endian per spec)
-        writer.write_u16::<LittleEndian>(dpi)?;
+        writer.write_all(&dpi.to_le_bytes())?; // little-endian, unlike every other field
 
         // Gamma (1 byte, gamma * 10)
         let gamma_val = gamma.map_or(22, |g| (g * 10.0 + 0.5) as u8); // Default gamma = 2.2
-        writer.write_u8(gamma_val)?;
+        writer.write_all(&[gamma_val])?;
 
         // Flags (1 byte: bits 0-2 = rotation, bits 3-7 = reserved)
         let flags = rotation & 0x07; // Ensure only bottom 3 bits are used
-        writer.write_u8(flags)?;
+        writer.write_all(&[flags])?;
 
         writer.close_chunk()?;
         Ok(())

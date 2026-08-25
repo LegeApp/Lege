@@ -25,7 +25,7 @@ use lege_gpu::vision::{
     Detector, LayoutConfig, LayoutDetector, RecLine, RecRecognizer, TextBox, TokenRecognizer,
     TokenRecognizerConfig,
 };
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -440,8 +440,8 @@ pub struct ModelPackFile {
     pub blake3: String,
 }
 
-static SHARED_EMBEDDED_ENGINE: Lazy<std::result::Result<PaddleOcrEngine, String>> =
-    Lazy::new(|| PaddleOcrEngine::from_embedded().map_err(|err| format!("{err:#}")));
+static SHARED_EMBEDDED_ENGINE: LazyLock<std::result::Result<PaddleOcrEngine, String>> =
+    LazyLock::new(|| PaddleOcrEngine::from_embedded().map_err(|err| format!("{err:#}")));
 
 impl PaddleOcrEngine {
     /// Build from the models embedded in the binary. This is the production

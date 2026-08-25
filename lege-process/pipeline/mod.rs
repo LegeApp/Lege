@@ -4,6 +4,8 @@
 pub mod config;
 pub mod djvu_pipeline;
 #[cfg(feature = "ocr")]
+pub mod epub_container;
+#[cfg(feature = "ocr")]
 pub mod epub_pipeline;
 #[cfg(not(feature = "ocr"))]
 #[path = "epub_pipeline_disabled.rs"]

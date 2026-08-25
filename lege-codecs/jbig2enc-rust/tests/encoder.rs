@@ -113,13 +113,14 @@ fn hex_dump(data: &[u8], len: usize) -> String {
 fn debug_print_image(img: &BitImage, name: &str) {
     println!("=== {} ({}x{}) ===", name, img.width, img.height);
     let bytes_per_row = (img.width as usize + 7) / 8;
+    let img_rows = img.to_jbig2_format();
     for y in 0..img.height.min(8) as usize {
         // Only print first 8 rows
         for x in 0..img.width.min(16) as usize {
             // Only print first 16 columns
             let byte_idx = y * bytes_per_row + (x / 8);
             let bit = 7 - (x % 8);
-            let byte = img.as_bytes()[byte_idx];
+            let byte = img_rows[byte_idx];
             let pixel = (byte >> bit) & 1;
             print!("{} ", if pixel != 0 { "#" } else { "." });
         }
@@ -136,10 +137,11 @@ fn encode_and_decode(img: &BitImage, temp_dir: &TempDir) -> Result<(), Box<dyn E
         // Compute first black pixel in input BitImage
         let mut first_input_pixel = None;
         let bytes_per_row = (img.width as usize + 7) / 8;
+        let img_rows = img.to_jbig2_format();
         for y in 0..img.height as usize {
             for x in 0..img.width as usize {
                 let byte_idx = y * bytes_per_row + (x / 8);
-                let bit = (img.as_bytes()[byte_idx] >> (7 - (x % 8))) & 1;
+                let bit = (img_rows[byte_idx] >> (7 - (x % 8))) & 1;
                 if bit == 1 {
                     first_input_pixel = Some((x, y));
                     break;
@@ -165,11 +167,12 @@ fn encode_and_decode(img: &BitImage, temp_dir: &TempDir) -> Result<(), Box<dyn E
     let mut array = Array2::<u8>::zeros((height, width));
 
     let bytes_per_row = (width + 7) / 8;
+    let img_rows = img.to_jbig2_format();
     for y in 0..height {
         for x in 0..width {
             let byte_idx = y * bytes_per_row + (x / 8);
             let bit = 7 - (x % 8);
-            let byte = img.as_bytes()[byte_idx];
+            let byte = img_rows[byte_idx];
             let pixel = (byte >> bit) & 1;
             array[[y, x]] = if pixel != 0 { 255 } else { 0 };
         }
@@ -234,10 +237,11 @@ fn encode_and_decode(img: &BitImage, temp_dir: &TempDir) -> Result<(), Box<dyn E
         // Compute first black pixel in decoded image
         let mut first_decoded_pixel = None;
         let bytes_per_row_dec = (decoded.width as usize + 7) / 8;
+        let decoded_rows = decoded.to_jbig2_format();
         for y in 0..decoded.height as usize {
             for x in 0..decoded.width as usize {
                 let byte_idx = y * bytes_per_row_dec + (x / 8);
-                let bit = (decoded.as_bytes()[byte_idx] >> (7 - (x % 8))) & 1;
+                let bit = (decoded_rows[byte_idx] >> (7 - (x % 8))) & 1;
                 if bit == 1 {
                     first_decoded_pixel = Some((x, y));
                     break;
@@ -261,15 +265,17 @@ fn encode_and_decode(img: &BitImage, temp_dir: &TempDir) -> Result<(), Box<dyn E
         ))));
     }
 
+    let img_rows = img.to_jbig2_format();
+    let decoded_rows = decoded.to_jbig2_format();
     for y in 0..(img.height as usize) {
         for x in 0..(img.width as usize) {
             let byte_idx = y * bytes_per_row + (x / 8);
             let bit = 7 - (x % 8);
-            let byte = img.as_bytes()[byte_idx];
+            let byte = img_rows[byte_idx];
             let expected = ((byte >> bit) & 1) != 0;
-            let byte = decoded.as_bytes()[byte_idx];
-            // `decoded` is a BitImage, whose as_bytes() is MSB-first just like
-            // the source image, so extract the same bit position.
+            let byte = decoded_rows[byte_idx];
+            // Both sides are row-padded MSB-first, so the same bit position
+            // applies to each.
             let actual = ((byte >> bit) & 1) != 0;
             if expected != actual {
                 return Err(Box::new(TestError::MismatchError(

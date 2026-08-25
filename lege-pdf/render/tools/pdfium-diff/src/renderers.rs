@@ -361,7 +361,9 @@ fn wait_child(child: &mut Child, timeout: Duration) -> Result<ExitStatus, String
 }
 
 pub fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
-    let decoder = png::Decoder::new(bytes);
+    // `png` 0.18's `Decoder<R>` requires `R: Read + Seek`; a bare `&[u8]` only
+    // implements `Read`, so the slice is wrapped rather than passed directly.
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let reader = decoder
         .read_info()
         .map_err(|e| format!("decode PNG header: {e}"))?;

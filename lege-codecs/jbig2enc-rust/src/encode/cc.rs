@@ -193,23 +193,22 @@ impl CCImage {
     /// of millions of pixel tuples.
     pub fn add_bitmap_runs(&mut self, bm: &BitImage) {
         for y in 0..bm.height {
-            let row_start = y * bm.width;
-            let row_bits = &bm.as_bits()[row_start..row_start + bm.width];
+            let row = bm.row_words(y);
             let mut x = 0usize;
 
             while x < bm.width {
-                // Skip to the next black pixel using word-level scan (64 bits/cycle)
-                if let Some(black_offset) = row_bits[x..].first_one() {
-                    let x1 = x + black_offset;
-                    // Find the end of this black run
-                    let run_length = row_bits[x1..].first_zero().unwrap_or(bm.width - x1);
-                    let x2 = x1 + run_length - 1;
-
-                    self.add_single_run(y as i32, x1 as i32, x2 as i32);
-                    x = x2 + 1;
-                } else {
+                // Skip to the next black pixel using a word-level scan.
+                let Some(x1) = crate::encode::sym::row_first_one(row, x, bm.width) else {
                     break; // No more black pixels in this row
-                }
+                };
+                // Find the end of this black run.
+                let x2 = match crate::encode::sym::row_first_zero(row, x1, bm.width) {
+                    Some(first_white) => first_white - 1,
+                    None => bm.width - 1,
+                };
+
+                self.add_single_run(y as i32, x1 as i32, x2 as i32);
+                x = x2 + 1;
             }
         }
     }

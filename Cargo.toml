@@ -77,14 +77,41 @@ quote = { version = "1.0", default-features = false }
 syn = { version = "2.0", default-features = false }
 num_cpus = "1.17"
 serde = { version = "1.0.228", features = ["derive"] }
-config = { version = "0.15.25", features = ["toml"] }
+# `default-features = false`: the default set also enables the ini/json/json5/
+# ron/yaml backends, and the yaml one drags `yaml-rust2` + `encoding_rs` into
+# every binary. Lege only ever reads TOML (`core/types.rs` builds its
+# `config::File` with `FileFormat::Toml`).
+config = { version = "0.15.25", default-features = false, features = ["toml"] }
 thiserror = "2.0.18"
 serde_json = "1.0.150"
 log = "0.4.33"
 once_cell = "1.21.4"
 rayon = "1.11.0"
-image = { version = "0.25.10", features = ["png", "jpeg", "tiff"] }
+# `default-features = false` is load-bearing. `image`'s default set is
+# `default-formats`, which pulls a complete AV1 *encoder* (`ravif` → `rav1e` →
+# `av-scenechange`, `av1-grain`, `v_frame`, `bitstream-io`, …), OpenEXR
+# (`exr` → `pulp`, `half`, `raw-cpuid`, `zune-inflate`), `gif` and `qoi` —
+# roughly fifty crates for formats Lege never reads or writes. The enabled set
+# is exactly what the pipeline accepts: `SUPPORTED_IMAGE_EXTENSIONS` in
+# `lege-process/pipeline/source.rs` (png/jpeg/pnm/tiff/bmp; `jp2` goes to the
+# in-tree `jp2lam`) plus `webp`, which `is_raster_image_path` in
+# `lege-process/core/main.rs` accepts as a CLI input. `rayon` was part of the
+# default set and is kept so `imageops` stays parallel.
+image = { version = "0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "tiff",
+    "bmp",
+    "pnm",
+    "webp",
+    "rayon",
+] }
 jpeg-encoder = { version = "=0.7.1", features = ["simd"] }
+# Single PNG version for the whole workspace: `lege-process/colorquant` needs
+# the palette/`ColorType::Indexed` encoder that `image` does not expose, and the
+# agent/`pdf-cli` tools write PNGs directly. Pinning it here stops 0.17 and 0.18
+# both being compiled in one workspace build.
+png = "0.18"
 flume = "0.11"
 # Native renderer crates. Their single canonical source tree is in
 # `lege-pdf/render`; the viewer consumes these APIs directly.
@@ -129,7 +156,6 @@ itertools = "0.15.0"
 console = "0.16.4"
 dialoguer = { version = "0.12.0", features = ["fuzzy-select"] }
 console_error_panic_hook = "0.1.7"
-ttf-parser = "0.25.1"
 encoding_rs = "0.8.35"
 byteorder = "1.5.0"
 bitvec = "1.0.1"

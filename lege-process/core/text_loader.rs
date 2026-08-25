@@ -1,5 +1,5 @@
 use anyhow::Result;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 
 // Import dbglog macro for debug logging
@@ -257,7 +257,7 @@ pub struct IndicatorText {
 }
 
 // Global static instance for easy access
-pub static CLI_TEXT: Lazy<CliText> = Lazy::new(|| {
+pub static CLI_TEXT: LazyLock<CliText> = LazyLock::new(|| {
     load_cli_text().unwrap_or_else(|_e| {
         dbglog!(
             "Warning: Failed to load CLI text from JSON: {}. Using fallback text.",

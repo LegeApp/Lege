@@ -368,17 +368,25 @@ pub(crate) fn input_shape(
 // ── Model loading ─────────────────────────────────────────────────────────────
 
 pub(crate) fn load_model(path: &Path) -> Result<ModelProto> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("failed to read ONNX model {}", path.display()))?;
-    load_model_from_bytes(&bytes)
+    // Read once into a shared buffer. Every `raw_data` in the parsed model is a
+    // window onto this allocation, so a 38 MB model costs 38 MB — not the ~76
+    // MB peak the generated bindings reached by copying each weight blob out.
+    let bytes: std::sync::Arc<[u8]> = std::fs::read(path)
+        .with_context(|| format!("failed to read ONNX model {}", path.display()))?
+        .into();
+    ModelProto::parse_from_arc(&bytes)
         .with_context(|| format!("failed to parse ONNX protobuf {}", path.display()))
 }
 
 /// Parse an ONNX model from an in-memory protobuf buffer (e.g. an embedded
 /// payload). Same result as [`load_model`] without touching the filesystem.
+///
+/// The bytes are copied into a shared buffer once, because the parsed model
+/// outlives the caller's slice; `load_model` avoids even that by owning the
+/// read directly.
 pub(crate) fn load_model_from_bytes(bytes: &[u8]) -> Result<ModelProto> {
-    use protobuf::Message;
-    ModelProto::parse_from_bytes(bytes).context("failed to parse ONNX protobuf from memory")
+    let buffer: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes);
+    ModelProto::parse_from_arc(&buffer).context("failed to parse ONNX protobuf from memory")
 }
 
 #[cfg(test)]

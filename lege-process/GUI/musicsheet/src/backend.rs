@@ -687,7 +687,7 @@ mod tests {
     fn pdf_directory_scan_is_filtered_and_sorted() {
         let directory = std::env::temp_dir().join(format!(
             "lege-music-pdf-queue-test-{}",
-            uuid::Uuid::new_v4()
+            crate::models::unique_id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         for name in ["score-10.pdf", "score-02.PDF", "notes.txt"] {
@@ -708,7 +708,7 @@ mod tests {
     fn dropped_pdf_folder_expands_to_separate_queue_items() {
         let directory = std::env::temp_dir().join(format!(
             "lege-music-dropped-pdf-test-{}",
-            uuid::Uuid::new_v4()
+            crate::models::unique_id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         for name in ["02.pdf", "01.pdf", "page.jp2"] {

@@ -245,10 +245,9 @@ macro_rules! bbox_trace {
 // brings debug_log!, info_println!, error_println!
 // resize params now centralized in pipeline::policies for inference path; keep legacy resize module for other callers
 pub use crate::types::{AppConfig, CliConfigBuilder, CoverFormat};
-#[allow(unused_imports)]
-use fast_image_resize::PixelType;
-#[allow(unused_imports)]
-use fast_image_resize::images::Image as FirImage;
+// The `fast_image_resize` re-imports that used to sit here were unused and only
+// compiled because of `#[allow(unused_imports)]`. The resize backend owns those
+// types; see `crate::resize`.
 // Action types are re-exported from the top-level pub use pipeline::...
 
 // ShutdownReason and ShutdownSignal are now in pipeline::helper_functions

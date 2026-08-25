@@ -11,7 +11,7 @@ use crate::pipeline::config::PipelineConfig;
 use anyhow::{Context, Result, anyhow};
 use image::RgbImage;
 use log::info;
-use parking_lot::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use tokio::sync::{Semaphore, oneshot};
@@ -96,12 +96,25 @@ impl SessionPool {
         SESSION_TRANSIENT_MB.saturating_add(input_bytes.div_ceil(1024 * 1024))
     }
 
+    /// Lock the session pool, recovering rather than propagating a poisoned
+    /// lock. The guarded value is a plain free list: a panic elsewhere cannot
+    /// leave it logically torn, so refusing to hand out an engine would turn a
+    /// survivable page failure into a dead pipeline.
+    fn lock_sessions(&self) -> MutexGuard<'_, Vec<LayoutEngine>> {
+        match self.sessions.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     fn run(&self, image: &RgbImage) -> Result<Vec<Detection>> {
-        let mut engine = self
-            .sessions
-            .lock()
-            .pop()
-            .expect("session semaphore granted a permit without an engine");
+        // The semaphore admits at most `sessions.len()` callers, so the pool is
+        // never empty here; treat a violation as an error rather than a panic.
+        let Some(mut engine) = self.lock_sessions().pop() else {
+            return Err(anyhow!(
+                "layout session pool was empty despite a granted permit"
+            ));
+        };
         let result = catch_unwind(AssertUnwindSafe(|| engine.detect_single_blocking(image)))
             .unwrap_or_else(|payload| {
                 Err(anyhow!(
@@ -109,7 +122,7 @@ impl SessionPool {
                     panic_payload_message(payload)
                 ))
             });
-        self.sessions.lock().push(engine);
+        self.lock_sessions().push(engine);
         result
     }
 }

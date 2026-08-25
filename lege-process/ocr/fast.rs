@@ -5,7 +5,7 @@
 /// and the async wrapper/fan-out logic.
 use anyhow::{Context, Result};
 use image::{GrayImage, RgbImage};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tokio::sync::Semaphore;
 
 use lege_ocr::engine::default_engine;
@@ -19,7 +19,7 @@ use crate::reflow::{PlacedKind, PxRect};
 /// Limit concurrent OCR operations. Paddle shares one GPU engine, so two jobs
 /// allow CPU cleaning to overlap inference without queueing many full-page
 /// tensors in memory. Legacy Linux Tesseract can still scale with CPU cores.
-pub static OCR_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| {
+pub static OCR_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| {
     #[cfg(all(target_os = "linux", not(feature = "paddle-ocr")))]
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -139,7 +139,7 @@ type OcrTask = tokio::task::JoinHandle<(Option<String>, [f32; 4])>;
 /// page-global by its bbox origin. `area` names the unit in warnings.
 async fn stitch_ocr_tasks(tasks: Vec<OcrTask>, area: &str) -> String {
     let mut stitched = String::new();
-    for res in futures::future::join_all(tasks).await {
+    for res in futures_util::future::join_all(tasks).await {
         match res {
             Ok((Some(hocr), bbox)) => {
                 let body = strip_to_body(&hocr);

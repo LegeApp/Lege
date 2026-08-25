@@ -251,7 +251,7 @@ impl DocumentItem {
         let input_kind = InputKind::detect(&file_path);
 
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: unique_id(),
             file_path,
             file_name,
             input_kind,
@@ -334,4 +334,21 @@ mod tests {
         options.image_processing_type = ImageProcessingType::Dithered;
         assert_eq!(options.effective_text_format(), "jbig2");
     }
+}
+/// Process-unique identifier for a queue entry.
+///
+/// Replaces `uuid::Uuid::new_v4()`. These ids are local queue keys — never
+/// parsed back, never persisted, never sent anywhere that requires RFC-4122
+/// shape — so a nanosecond timestamp plus a monotonic counter is sufficient:
+/// unique within a run by the counter, and across runs by the clock.
+pub fn unique_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{:016x}{:08x}", nanos, SEQ.fetch_add(1, Ordering::Relaxed))
 }

@@ -11,6 +11,11 @@ thiserror = { workspace = true }
 image = { workspace = true }
 pdf-content = { workspace = true }
 pdf-document = { workspace = true }
+# `src/font_metrics.rs` only. `pdf-font` already links skrifa at this exact
+# version, so this compiles no new crate -- it just makes the parser this crate
+# is already pulling in reachable by name. Keep the version in step with
+# `lege-pdf/render/crates/pdf-font/Cargo.toml`.
+skrifa = "0.44.0"
 pdf-object = { workspace = true }
 pdf-page-ir = { workspace = true }
 pdf-read = { workspace = true }

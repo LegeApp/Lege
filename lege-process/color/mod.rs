@@ -4,7 +4,6 @@
 //! Focused on CPU-based 1-bit document processing.
 
 // Private modules - not exposed in public API
-mod error;
 pub mod linearize;
 mod types;
 
@@ -14,7 +13,6 @@ pub mod color_processing;
 
 // Re-export necessary types and traits
 // Re-export key types from top-level types module
-pub use error::{ColorOpsError, Result};
 pub use types::{BinarizationConfig, BinarizationOptions, DEFAULT_K_FACTOR};
 
 // Export essential binarization utilities

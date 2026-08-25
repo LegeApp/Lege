@@ -776,26 +776,20 @@ pub fn get_available_ram_gb() -> usize {
 
     #[cfg(target_os = "windows")]
     {
-        use std::mem;
-        use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
         let mut mem_status = MEMORYSTATUSEX {
-            dwLength: mem::size_of::<MEMORYSTATUSEX>() as u32,
-            dwMemoryLoad: 0,
-            ullTotalPhys: 0,
-            ullAvailPhys: 0,
-            ullTotalPageFile: 0,
-            ullAvailPageFile: 0,
-            ullTotalVirtual: 0,
-            ullAvailVirtual: 0,
-            ullAvailExtendedVirtual: 0,
+            dwLength: core::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
         };
 
-        unsafe {
-            if GlobalMemoryStatusEx(&mut mem_status) != 0 {
-                let total_ram_gb = mem_status.ullTotalPhys / (1024 * 1024 * 1024);
-                return total_ram_gb as usize;
-            }
+        // SAFETY: `GlobalMemoryStatusEx` requires a writable `MEMORYSTATUSEX`
+        // whose `dwLength` is set to the struct's own size, which is exactly
+        // what is constructed above. The pointer is to a live local that
+        // outlives the call, and the API writes only within that struct.
+        if unsafe { GlobalMemoryStatusEx(&mut mem_status) }.is_ok() {
+            let total_ram_gb = mem_status.ullTotalPhys / (1024 * 1024 * 1024);
+            return total_ram_gb as usize;
         }
     }
 
@@ -804,7 +798,13 @@ pub fn get_available_ram_gb() -> usize {
         // sysinfo 0.39 accounts for parent cgroup limits. That prevents the
         // adaptive image/JP2 workers from sizing themselves for host RAM when
         // Lege is running inside a memory-limited container.
-        let system = sysinfo::System::new_all();
+        //
+        // Refresh RAM only: `System::new_all()` walks every process in /proc to
+        // answer a question about two numbers.
+        let system = sysinfo::System::new_with_specifics(
+            sysinfo::RefreshKind::nothing()
+                .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+        );
         let host_bytes = system.total_memory();
         let effective_bytes = system
             .cgroup_limits()

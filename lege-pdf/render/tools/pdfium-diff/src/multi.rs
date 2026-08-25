@@ -882,12 +882,18 @@ fn write_attribution_rows(
 }
 
 fn decode_rgba(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut decoder = png::Decoder::new(png_bytes);
+    // `png` 0.18's `Decoder<R>` requires `R: Read + Seek`; a bare `&[u8]` only
+    // implements `Read`, so the slice is wrapped rather than passed directly.
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
         .read_info()
         .map_err(|e| format!("decode PNG: {e}"))?;
-    let mut buffer = vec![0; reader.output_buffer_size()];
+    // 0.18 returns `None` when the frame's buffer size overflows `usize`.
+    let buffer_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| "decode PNG: frame too large to buffer".to_string())?;
+    let mut buffer = vec![0; buffer_size];
     let info = reader
         .next_frame(&mut buffer)
         .map_err(|e| format!("decode PNG pixels: {e}"))?;

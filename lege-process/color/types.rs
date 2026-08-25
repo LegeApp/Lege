@@ -1,55 +1,5 @@
 //! Shared types for color processing and binarization
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug)]
-pub enum AppError {
-    ConfigError(config::ConfigError),
-    IoError(std::io::Error),
-    InvalidConfig(String),
-    InvalidPageRange(String),
-    InvalidFormatOption(String),
-    InvalidBinarizationMethod(String),
-}
-
-impl std::fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AppError::ConfigError(e) => write!(f, "Configuration error: {}", e),
-            AppError::IoError(e) => write!(f, "IO error: {}", e),
-            AppError::InvalidConfig(s) => write!(f, "Invalid configuration: {}", s),
-            AppError::InvalidPageRange(s) => write!(f, "Invalid page range: {}", s),
-            AppError::InvalidFormatOption(s) => write!(f, "Invalid format option: {}", s),
-            AppError::InvalidBinarizationMethod(s) => {
-                write!(f, "Invalid binarization method: {}", s)
-            }
-        }
-    }
-}
-
-impl std::error::Error for AppError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            AppError::ConfigError(e) => Some(e),
-            AppError::IoError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<config::ConfigError> for AppError {
-    fn from(e: config::ConfigError) -> Self {
-        AppError::ConfigError(e)
-    }
-}
-
-impl From<std::io::Error> for AppError {
-    fn from(e: std::io::Error) -> Self {
-        AppError::IoError(e)
-    }
-}
-
-pub type AppResult<T> = Result<T, AppError>;
 
 /// Default Sauvola k-factor. Lower values produce more ink (darker output)
 /// in flat/low-variance regions. 0.05 balances stroke preservation vs background

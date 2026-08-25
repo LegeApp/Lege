@@ -1,7 +1,7 @@
 [package]
 build = "build.rs"
 name = "lege"
-version = "1.4.76"
+version = "1.5.0"
 edition = "2024"
 description = "Document binarization and re-encoding especially for E-Ink ebook readers"
 authors = ["Lege Apps"]
@@ -21,35 +21,28 @@ path = "core/main.rs"
 
 [build-dependencies]
 winres = "0.1.12"  # Updated
-chrono = "0.4"
 
 [dependencies]
 # NOTE: `app_dirs2` and `directories` were removed here as unreferenced; the
 # directory resolution in core/app_dirs.rs goes through `dirs` (below).
 fax = { version = "0.3.0", default-features = false }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
+# `log` records now actually go somewhere: core/main.rs installs a small
+# stderr sink at startup. Previously no logger was ever set on desktop.
 log = { workspace = true }
-fontdue = "0.9.3"
 png = "0.18.1"
 image = { workspace = true }
 jpeg-encoder = { workspace = true }
-# Enhanced CLI dependencies
-dialoguer = { workspace = true }
-config = { workspace = true }
 dirs = "6.0.0"
+# `toml` both loads and saves AppConfig now; the `config` crate it replaced
+# layered the same three TOML files behind five unused format backends.
 toml = "1.1.2"
 rayon = { workspace = true }
-once_cell = { workspace = true }
 tempfile = { workspace = true }
-colored = "3.1.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-flate2 = { workspace = true }
 fast_image_resize = { version = "6.0.0" }
 bytemuck = { workspace = true }
-lazy_static = { workspace = true }
-ndarray = { workspace = true }
 lege-gpu = { path = "../lege-gpu" }
 lege-ocr = { path = "../lege-ocr", optional = true }
 lege-ipc = { path = "lege-ipc" }
@@ -58,86 +51,60 @@ lege-pdf-read = { path = "../lege-pdf/read" }
 djvu_encoder = { path = "../lege-codecs/djvulibrust", features = ["simd", "rayon"] }
 jbig2enc-rust = { path = "../lege-codecs/jbig2enc-rust", default-features = false, features = ["symboldict", "parallel"] }
 jp2lam = { path = "../lege-codecs/jp2lam", optional = true }
-epub-builder = { version = "0.8", optional = true }
 quick-xml = "0.41.0"
 # mimalloc = "0.1"  # Comment out mimalloc to avoid cross-compilation issues
 sysinfo = "0.39.6"
-shlex = "2.0.1"
-cfg-if = { workspace = true }
-html-escape = { workspace = true }
-chrono = { version = "0.4.45", features = ["serde"] }
-memmap2 = "0.9.9"
-winres = "0.1.12"
+# Only `Local::now().format(..)` is used; no serde-derived chrono field exists
+# in this crate, so the default feature set and `serde` are both unnecessary.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 # `libloading` removed: unreferenced, and its dlopen surface is a liability in
 # an APK where the only loadable objects are the ones in jniLibs.
-num_cpus = { workspace = true }
-ttf-parser = { workspace = true }
-encoding_rs = { workspace = true }
-bytes = { workspace = true }
-console = { workspace = true }
-rustc-hash = { workspace = true }
-env_logger = "0.11.11"
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
-futures = "0.3.32"
+# `rt-multi-thread` and `fs` are deliberately absent: every runtime built here
+# is `Builder::new_current_thread()` and nothing touches `tokio::fs`.
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+# Only `BoxFuture`, `FuturesUnordered`/`StreamExt` and `join_all` are used, all
+# of which live in `futures-util`; the `futures` facade added four more crates.
+futures-util = { workspace = true }
 async-trait = "0.1"
 regex = "1.12.2"
 unicode-normalization = "0.1"
-indicatif = { version = "0.18.6", features = ["tokio"] }
-sha2 = { version = "0.11.0", default-features = false }
-parking_lot = "0.12"
 flume = { workspace = true }
 zip = { workspace = true, features = ["deflate"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 tesseract = { version = "0.15.2", optional = true }
 wgpu = "30.0.0"
-pollster = "1.0.1"
 libc = "0.2"
 
 # macOS-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
 tesseract = { version = "0.15.2", optional = true }
 wgpu = "30.0.0"
-pollster = "1.0.1"
 libc = "0.2"
 
-# Android-specific dependencies. Mirrors the Linux/macOS sections; `wgpu` and
-# `pollster` are needed for the same reasons there. Inert on desktop — a target
-# section that does not match is never resolved.
+# Android-specific dependencies. Mirrors the Linux/macOS sections; `wgpu` is
+# needed for the same reason there. Inert on desktop — a target section that
+# does not match is never resolved.
 [target.'cfg(target_os = "android")'.dependencies]
 wgpu = "30.0.0"
-pollster = "1.0.1"
 libc = "0.2"
 android_logger = { version = "0.15.1", optional = true }
 
 # Windows-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3.9", features = ["fileapi", "winbase", "sysinfoapi", "psapi", "wincon", "winuser"] }
+# The WinRT OCR backend (ocr/winocr.rs) no longer exists, and the Direct3D/DXGI
+# bindings belong to `wgpu`, which requests its own. The `windows` surface this
+# crate uses is Win32 console control (core/main.rs, core/progress.rs) plus
+# GlobalMemoryStatusEx (pipeline/helper_functions.rs) — the latter is why
+# `winapi` was here, duplicating the same Win32 API through a second binding
+# crate.
 windows = { workspace = true, features = [
-    "Foundation",
-    "Globalization",
-    "Graphics_Imaging",
-    "Media_Ocr",
-    "Storage_Streams",
     "Win32_Foundation",
-    "Win32_Graphics",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D12",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-    "Win32_Graphics_Direct3D_Fxc",
-    "Win32_System_Com",
-    "Win32_System_Threading",
-    "Win32_System_WinRT",
-    "Win32_Security",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Memory",
     "Win32_System_Console",
+    "Win32_System_SystemInformation",
 ] }
+# `windows_core::BOOL` is the return type of the console control handler.
 windows-core = { workspace = true }
-windows-future = { workspace = true }
-
-ndarray = "0.17.2"
 
 [features]
 # This crate builds the `lege` CLI only. The desktop GUIs are their own
@@ -162,7 +129,7 @@ layout-detection = ["lege-gpu/layout-detection"]
 music-sheet = ["jp2-lam"]
 # OCR and reflowable EPUB support share lege-ocr's document model. Keep both
 # out of no-OCR editions unless an OCR backend explicitly enables them.
-ocr = ["dep:lege-ocr", "dep:epub-builder"]
+ocr = ["dep:lege-ocr"]
 # PP-OCR (GPU, pure-Rust) OCR backend for Linux/macOS — the default. Replaces
 # the native Tesseract dependency that blocked the macOS cross-compile.
 paddle-ocr = ["ocr", "lege-ocr/paddle-ocr"]

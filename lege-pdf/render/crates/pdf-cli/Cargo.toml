@@ -29,7 +29,7 @@ pdf-render-wgpu = { workspace = true }
 pdf-render-scheduler = { workspace = true }
 pdf-read = { workspace = true }
 pdf-text = { workspace = true }
-png = "0.17"
+png = { workspace = true }
 # `demo` binary only.
 chrono = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }

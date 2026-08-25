@@ -49,3 +49,19 @@ pub(crate) fn build_epub_from_hocr_pages_cancellable(
 ) -> Result<()> {
     unavailable()
 }
+
+/// Mirrors the OCR build's outline-aware entry point.
+///
+/// `djvu_pipeline` and `pdf_tokio_pipeline` both call this unconditionally, so
+/// its absence here made every `--no-default-features` build without `ocr`
+/// fail to compile rather than degrade to the "EPUB needs OCR" error the rest
+/// of this shim returns.
+pub(crate) fn build_epub_from_hocr_pages_with_outline_cancellable(
+    _hocr_pages: &[HocrPage],
+    _title: &str,
+    _output_path: &Path,
+    _outline: &[lege_pdf_write::outline::OutlineItem],
+    _cancellation: Option<&lege_pdf_read::CancellationToken>,
+) -> Result<()> {
+    unavailable()
+}

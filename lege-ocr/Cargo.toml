@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "lege-ocr-debug"
 path = "src/bin/lege_ocr_debug.rs"
+required-features = ["debug-bin"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -21,11 +22,12 @@ image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rayon = { workspace = true }
-once_cell = { workspace = true }
-html-escape = { workspace = true }
-regex = "1.12.2"
 lege-gpu = { path = "../lege-gpu", features = ["layout-detection"] }
-env_logger = "0.11.11"
+# Serves the `lege-ocr-debug` binary only — nothing under `src/` outside
+# `src/bin/` touches it. Optional because `[[bin]] required-features` does not
+# gate dependency resolution: left unconditional it entered the dependency
+# graph of every `lege-ocr` consumer, `lege-process` included.
+env_logger = { version = "0.11.11", optional = true }
 
 # blake3's build script compiles a NEON C kernel on aarch64, which drags an
 # NDK C toolchain into what is otherwise a pure-Rust build — including for
@@ -52,6 +54,8 @@ windows-core = { workspace = true }
 
 [features]
 default = []
+# The standalone `lege-ocr-debug` binary and its logging dependency.
+debug-bin = ["dep:env_logger"]
 # Android platform support: routes `default_engine()` to the embedded PP-OCR
 # backend, which is pure Rust on lege-gpu and needs no system OCR service.
 android = []

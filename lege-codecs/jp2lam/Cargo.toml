@@ -41,6 +41,9 @@ image = { version = "0.25.9", optional = true, default-features = false, feature
 memmap2 = "0.9"
 rayon = { version = "1.10" }
 tempfile = "3"
+# `=0.7.33` is the workspace-unified `wide` pin, shared with `jbig2enc-rust`
+# and `djvulibrust`. Bumping it must move all three crates together, or the
+# tree compiles and links two copies of `wide`.
 wide = { version = "=0.7.33", optional = true }
 zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
 

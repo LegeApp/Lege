@@ -2,7 +2,7 @@
 use crate::color::BinarizationConfig;
 use crate::text_loader::CLI_TEXT;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 // Needed for error macros used below
 use crate::engine::Detection;
 use anyhow::anyhow;
@@ -255,9 +255,6 @@ pub struct Region {
     pub data: Vec<u8>,
 }
 
-// Config file loading types
-use config::{Config, File, FileFormat};
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CoverFormat {
     Jpeg,
@@ -276,7 +273,7 @@ impl CoverFormat {
 // NOTE: Local BinarizationOptions removed. Use `crate::color::BinarizationOptions` everywhere to avoid duplication.
 
 /// User configuration loaded from TOML files
-#[derive(Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct AppConfig {
     /// Default output directory
     pub default_output: Option<PathBuf>,
@@ -313,38 +310,65 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Load configuration from file(s)
-    pub fn load(config_path: Option<PathBuf>) -> Result<Self, anyhow::Error> {
-        let mut builder = Config::builder();
+    /// Overlay `self` (the higher-priority layer) onto `base`.
+    ///
+    /// Every field is an `Option`, so "a later file wins" is just `or` per
+    /// field: a key the higher layer omits keeps whatever the lower layer set.
+    fn merge_over(self, base: Self) -> Self {
+        Self {
+            default_output: self.default_output.or(base.default_output),
+            default_text_format: self.default_text_format.or(base.default_text_format),
+            default_cover_format: self.default_cover_format.or(base.default_cover_format),
+            default_height: self.default_height.or(base.default_height),
+            enable_ocr: self.enable_ocr.or(base.enable_ocr),
+            slow_ocr: self.slow_ocr.or(base.slow_ocr),
+            binarization: self.binarization.or(base.binarization),
+            keep_color_images: self.keep_color_images.or(base.keep_color_images),
+            disable_layout: self.disable_layout.or(base.disable_layout),
+            confidence_threshold: self.confidence_threshold.or(base.confidence_threshold),
+            nms_threshold: self.nms_threshold.or(base.nms_threshold),
+        }
+    }
 
-        // Load default config from known locations
+    /// Read and parse one TOML layer, naming the file in any error.
+    fn read_layer(path: &Path) -> Result<Self, anyhow::Error> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+        toml::from_str(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+    }
+
+    /// Load configuration from file(s), lowest priority first.
+    ///
+    /// Layers, in increasing precedence: the per-user config directory, a
+    /// `lege.toml` in the working directory, and finally an explicit path.
+    /// A malformed layer is a hard error — quietly falling back to defaults
+    /// would hide a typo in the user's config.
+    pub fn load(config_path: Option<PathBuf>) -> Result<Self, anyhow::Error> {
+        let mut config = Self::default();
+
         if let Some(config_dir) = dirs::config_dir() {
             let default_path = config_dir.join("lege").join("config.toml");
             if default_path.exists() {
-                builder = builder.add_source(File::from(default_path).format(FileFormat::Toml));
+                config = Self::read_layer(&default_path)?.merge_over(config);
             }
         }
 
-        // Also check for config in current directory
         let local_config = PathBuf::from("lege.toml");
         if local_config.exists() {
-            builder = builder.add_source(File::from(local_config).format(FileFormat::Toml));
+            config = Self::read_layer(&local_config)?.merge_over(config);
         }
 
-        // Load user-specified config (highest priority)
         if let Some(path) = config_path {
-            if path.exists() {
-                builder = builder.add_source(File::from(path).format(FileFormat::Toml));
-            } else {
+            if !path.exists() {
                 return Err(anyhow::anyhow!(
                     "Configuration file not found: {}",
                     path.display()
                 ));
             }
+            config = Self::read_layer(&path)?.merge_over(config);
         }
 
-        let config = builder.build()?;
-        Ok(config.try_deserialize().unwrap_or_default())
+        Ok(config)
     }
 
     /// Save configuration to file
@@ -930,8 +954,85 @@ impl CliConfigBuilder {
     }
 }
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 /// Global instance for efficient label classification
 /// This ensures we don't repeatedly create LabelClassifier instances
-pub static LABEL_CLASSIFIER: Lazy<LabelClassifier> = Lazy::new(|| LabelClassifier::new());
+pub static LABEL_CLASSIFIER: LazyLock<LabelClassifier> = LazyLock::new(|| LabelClassifier::new());
+
+#[cfg(test)]
+mod app_config_layering_tests {
+    use super::AppConfig;
+    use std::path::PathBuf;
+
+    /// The `config` crate used to do this layering. Higher-priority layers win
+    /// per field, and a field the higher layer omits keeps the lower value.
+    #[test]
+    fn higher_layer_wins_per_field_and_omissions_fall_through() {
+        let base = AppConfig {
+            default_height: Some(1200),
+            enable_ocr: Some(true),
+            binarization: Some("adaptive".to_string()),
+            ..AppConfig::default()
+        };
+        let top = AppConfig {
+            default_height: Some(1600),
+            // `enable_ocr` and `binarization` deliberately omitted.
+            nms_threshold: Some(0.4),
+            ..AppConfig::default()
+        };
+
+        let merged = top.merge_over(base);
+
+        assert_eq!(merged.default_height, Some(1600), "higher layer wins");
+        assert_eq!(merged.enable_ocr, Some(true), "omitted field falls through");
+        assert_eq!(merged.binarization.as_deref(), Some("adaptive"));
+        assert_eq!(merged.nms_threshold, Some(0.4), "new field is introduced");
+    }
+
+    #[test]
+    fn merging_over_defaults_keeps_the_layer() {
+        let layer = AppConfig {
+            default_output: Some(PathBuf::from("/tmp/out")),
+            ..AppConfig::default()
+        };
+        let merged = layer.merge_over(AppConfig::default());
+        assert_eq!(merged.default_output, Some(PathBuf::from("/tmp/out")));
+    }
+
+    #[test]
+    fn read_layer_accepts_a_partial_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_height = 900\nenable_ocr = false\n").expect("write");
+
+        let layer = AppConfig::read_layer(&path).expect("partial config should parse");
+        assert_eq!(layer.default_height, Some(900));
+        assert_eq!(layer.enable_ocr, Some(false));
+        // Unmentioned keys stay None so they can fall through when merged.
+        assert!(layer.binarization.is_none());
+    }
+
+    #[test]
+    fn read_layer_reports_the_offending_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broken.toml");
+        std::fs::write(&path, "default_height = \"not a number\"\n").expect("write");
+
+        let error = AppConfig::read_layer(&path).expect_err("malformed config must error");
+        let message = format!("{error}");
+        assert!(
+            message.contains("broken.toml"),
+            "error should name the file, got: {message}"
+        );
+    }
+
+    /// An explicit `--config` path that does not exist is a hard error rather
+    /// than a silent fall back to defaults.
+    #[test]
+    fn missing_explicit_config_path_is_an_error() {
+        let missing = PathBuf::from("/nonexistent/lege-does-not-exist.toml");
+        let error = AppConfig::load(Some(missing)).expect_err("missing file must error");
+        assert!(format!("{error}").contains("Configuration file not found"));
+    }
+}

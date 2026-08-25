@@ -8,7 +8,6 @@ use crate::doc::djvu_dir::{DjVmDir, DjVmNav, File as DjVuFile, FileType};
 use crate::encode::jb2::{encoder::JB2Encoder, symbol_dict::SharedDict};
 use crate::iff::bs_byte_stream::bzz_compress;
 use crate::iff::iff::IffWriter;
-use byteorder::{BigEndian, WriteBytesExt};
 use std::io::Write;
 
 /// Internal document encoder
@@ -256,23 +255,23 @@ impl DocumentEncoder {
 
         // Write DJVM header
         writer.write_all(b"AT&TFORM")?;
-        writer.write_u32::<BigEndian>((4 + total_djvm_payload) as u32)?;
+        writer.write_all(&((4 + total_djvm_payload) as u32).to_be_bytes())?;
         writer.write_all(b"DJVM")?;
 
         // Write DIRM chunk
         writer.write_all(b"DIRM")?;
-        writer.write_u32::<BigEndian>(final_dirm_data.len() as u32)?;
+        writer.write_all(&(final_dirm_data.len() as u32).to_be_bytes())?;
         writer.write_all(&final_dirm_data)?;
         if final_dirm_data.len() % 2 != 0 {
-            writer.write_u8(0)?; // padding
+            writer.write_all(&[0])?; // padding
         }
 
         if !nav_data.is_empty() {
             writer.write_all(b"NAVM")?;
-            writer.write_u32::<BigEndian>(nav_data.len() as u32)?;
+            writer.write_all(&(nav_data.len() as u32).to_be_bytes())?;
             writer.write_all(&nav_data)?;
             if nav_data.len() % 2 != 0 {
-                writer.write_u8(0)?;
+                writer.write_all(&[0])?;
             }
         }
 
@@ -280,7 +279,7 @@ impl DocumentEncoder {
         let mut written_pos = base_offset as usize + total_dirm_chunk_size + nav_chunk_size;
         for page_data in &component_chunks {
             if written_pos % 2 != 0 {
-                writer.write_u8(0)?;
+                writer.write_all(&[0])?;
                 written_pos += 1;
             }
 

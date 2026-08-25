@@ -47,7 +47,10 @@ windows-sys = { version = "0.61", features = [
 [dependencies]
 dhat = { version = "0.3.3", optional = true }
 libloading = "0.8"
-png = "0.17"
+# Not a workspace member (this tool is deliberately outside the workspace —
+# see the header), so the version is spelled out rather than inherited. Keep it
+# in step with `png` in the root `[workspace.dependencies]`.
+png = "0.18"
 font8x8 = "0.3"
 # Timing benches measure hot-path speed: leave `profiling` off so Instant/
 # counter instrumentation is not compiled into content/cpu/scheduler.

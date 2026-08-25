@@ -1,19 +1,17 @@
-pub mod cpu;
-
 use bytemuck::Pod;
 use fast_image_resize::{
     Filter, FilterType as FirFilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
     images::Image as FirImage,
 };
+use image::{GrayImage, RgbImage};
 use lege_gpu::resize::wgpu::{
     FilterType as WgpuFilterType, ResizeParameters as WgpuResizeParameters, WgpuResizer,
 };
 use log::warn;
-use once_cell::sync::OnceCell;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 use std::sync::atomic::{AtomicUsize, Ordering};
-static WGPU_RESIZER_POOL: OnceCell<WgpuResizerPool> = OnceCell::new();
+use std::sync::{Mutex, OnceLock};
+static WGPU_RESIZER_POOL: OnceLock<WgpuResizerPool> = OnceLock::new();
 static WGPU_RESIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RESIZE_BACKEND_PREFERENCE: AtomicU8 = AtomicU8::new(0); // 0=auto, 1=fast_cpu
 
@@ -211,20 +209,43 @@ fn bell_filter_type() -> FirFilterType {
     FirFilterType::Custom(Filter::new("Bell", bell_filter, 1.5).expect("valid Bell filter"))
 }
 
+/// Fallible one-time init of the GPU resizer pool.
+///
+/// `OnceLock` has no stable `get_or_try_init`, so this is the double-checked
+/// equivalent: an uncontended hit is a single atomic load, and the init lock
+/// guarantees at most one pool is ever built. A failed build leaves the cell
+/// empty so a later call can retry — the same semantics the previous
+/// `get_or_try_init` had.
 fn wgpu_resizer_pool() -> Result<&'static WgpuResizerPool, ResizeError> {
-    WGPU_RESIZER_POOL.get_or_try_init(|| {
-        let default_size = std::thread::available_parallelism()
-            .map(|threads| threads.get().clamp(2, 4))
-            .unwrap_or(2);
-        let pool_size = std::env::var("LEGE_GPU_RESIZE_SESSIONS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(default_size)
-            .clamp(1, 8);
-        #[cfg(feature = "debug-logging")]
-        println!("WGPU resize pool configured for up to {pool_size} idle session(s)");
-        WgpuResizerPool::new(pool_size)
-    })
+    if let Some(pool) = WGPU_RESIZER_POOL.get() {
+        return Ok(pool);
+    }
+
+    static INIT_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = match INIT_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    // Another thread may have finished initialising while we waited.
+    if let Some(pool) = WGPU_RESIZER_POOL.get() {
+        return Ok(pool);
+    }
+
+    let default_size = std::thread::available_parallelism()
+        .map(|threads| threads.get().clamp(2, 4))
+        .unwrap_or(2);
+    let pool_size = std::env::var("LEGE_GPU_RESIZE_SESSIONS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default_size)
+        .clamp(1, 8);
+    #[cfg(feature = "debug-logging")]
+    println!("WGPU resize pool configured for up to {pool_size} idle session(s)");
+
+    let pool = WgpuResizerPool::new(pool_size)?;
+    // We hold the init lock and just observed the cell empty, so this sets it.
+    Ok(WGPU_RESIZER_POOL.get_or_init(|| pool))
 }
 
 fn wgpu_filter_from_method(method: ResizeMethod) -> WgpuFilterType {
@@ -322,6 +343,111 @@ fn image_buffer_len(width: u32, height: u32, channel_count: u32) -> Result<usize
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(channel_count as usize))
         .ok_or(ResizeError::InvalidDimensions)
+}
+
+// ---------------------------------------------------------------------------
+// Typed CPU entry points
+// ---------------------------------------------------------------------------
+//
+// These deliberately bypass `resize_bytes`' GPU dispatch and go straight to the
+// `fast_image_resize` SIMD backend. Their callers resize small intermediate
+// buffers — background-estimation downscales, per-item reflow crops (hundreds
+// per page), debug rasters — where a GPU round-trip plus resizer-pool
+// contention costs far more than the resample itself. The GPU path stays the
+// right choice for whole-page output rasters, which still call `resize_bytes`.
+//
+// Both are infallible so call sites remain expression-shaped: if the SIMD
+// backend rejects a request they fall back to `image`'s own resampler, which is
+// what every one of these call sites used before. That keeps the fallback in
+// one place instead of scattered across the pipeline.
+
+/// `ResizeParams` for a plain scale-to-size, no letterboxing or channel swap.
+fn plain_params(target_width: u32, target_height: u32, method: ResizeMethod) -> ResizeParams {
+    ResizeParams {
+        target_width,
+        target_height,
+        method,
+        letterbox: false,
+        border_value: 0.0,
+        swap_rb: false,
+    }
+}
+
+/// `image` resampler matching a [`ResizeMethod`], for the fallback path.
+fn imageops_filter_from_method(method: ResizeMethod) -> image::imageops::FilterType {
+    match method {
+        ResizeMethod::Nearest => image::imageops::FilterType::Nearest,
+        // `Bell` has no `image` equivalent; Triangle is the closest soft filter.
+        ResizeMethod::Bilinear | ResizeMethod::Bell => image::imageops::FilterType::Triangle,
+        ResizeMethod::Bicubic => image::imageops::FilterType::CatmullRom,
+        ResizeMethod::Lanczos3 => image::imageops::FilterType::Lanczos3,
+    }
+}
+
+/// Resize an RGB8 image on the SIMD CPU backend.
+///
+/// `width`/`height` are clamped to at least 1, so the result always has exactly
+/// the requested dimensions.
+pub fn resize_rgb_cpu(
+    src: &RgbImage,
+    width: u32,
+    height: u32,
+    method: ResizeMethod,
+) -> RgbImage {
+    let (width, height) = (width.max(1), height.max(1));
+    if (src.width(), src.height()) == (width, height) {
+        return src.clone();
+    }
+
+    let params = plain_params(width, height, method);
+    let resized = cpu_resize_bytes(src.as_raw(), src.width(), src.height(), &params, 3)
+        .ok()
+        .and_then(|bytes| RgbImage::from_raw(width, height, bytes));
+
+    match resized {
+        Some(image) => image,
+        None => {
+            warn!(
+                "SIMD RGB resize {}x{} -> {width}x{height} failed; falling back to image crate",
+                src.width(),
+                src.height()
+            );
+            image::imageops::resize(src, width, height, imageops_filter_from_method(method))
+        }
+    }
+}
+
+/// Resize an 8-bit grayscale image on the SIMD CPU backend.
+///
+/// `width`/`height` are clamped to at least 1, so the result always has exactly
+/// the requested dimensions.
+pub fn resize_gray_cpu(
+    src: &GrayImage,
+    width: u32,
+    height: u32,
+    method: ResizeMethod,
+) -> GrayImage {
+    let (width, height) = (width.max(1), height.max(1));
+    if (src.width(), src.height()) == (width, height) {
+        return src.clone();
+    }
+
+    let params = plain_params(width, height, method);
+    let resized = cpu_resize_bytes(src.as_raw(), src.width(), src.height(), &params, 1)
+        .ok()
+        .and_then(|bytes| GrayImage::from_raw(width, height, bytes));
+
+    match resized {
+        Some(image) => image,
+        None => {
+            warn!(
+                "SIMD gray resize {}x{} -> {width}x{height} failed; falling back to image crate",
+                src.width(),
+                src.height()
+            );
+            image::imageops::resize(src, width, height, imageops_filter_from_method(method))
+        }
+    }
 }
 
 /// Resize image bytes using WGPU acceleration when available, with CPU fallback.
@@ -524,5 +650,82 @@ mod tests {
             resize_bytes(&[], 0, 1, &params, 3),
             Err(ResizeError::InvalidDimensions)
         ));
+    }
+}
+
+#[cfg(test)]
+mod typed_cpu_resize_tests {
+    use super::*;
+
+    fn rgb(width: u32, height: u32, fill: [u8; 3]) -> RgbImage {
+        RgbImage::from_pixel(width, height, image::Rgb(fill))
+    }
+
+    fn gray(width: u32, height: u32, fill: u8) -> GrayImage {
+        GrayImage::from_pixel(width, height, image::Luma([fill]))
+    }
+
+    /// These wrappers replaced `image::imageops::resize` at call sites that
+    /// depend on getting back exactly the dimensions they asked for.
+    #[test]
+    fn rgb_downscale_and_upscale_hit_the_requested_size() {
+        let src = rgb(64, 40, [10, 20, 30]);
+
+        let down = resize_rgb_cpu(&src, 16, 10, ResizeMethod::Bilinear);
+        assert_eq!((down.width(), down.height()), (16, 10));
+
+        let up = resize_rgb_cpu(&src, 128, 80, ResizeMethod::Lanczos3);
+        assert_eq!((up.width(), up.height()), (128, 80));
+    }
+
+    #[test]
+    fn gray_downscale_and_upscale_hit_the_requested_size() {
+        let src = gray(64, 40, 128);
+
+        let down = resize_gray_cpu(&src, 8, 5, ResizeMethod::Bilinear);
+        assert_eq!((down.width(), down.height()), (8, 5));
+        assert_eq!(down.as_raw().len(), 8 * 5);
+
+        let up = resize_gray_cpu(&src, 100, 100, ResizeMethod::Bilinear);
+        assert_eq!((up.width(), up.height()), (100, 100));
+        assert_eq!(up.as_raw().len(), 100 * 100);
+    }
+
+    /// The call sites in `reflow_pipeline` used to guard this case with an
+    /// explicit dimension check; that guard is now folded into the wrapper.
+    #[test]
+    fn matching_dimensions_short_circuit_to_a_copy() {
+        let src = rgb(9, 7, [1, 2, 3]);
+        let out = resize_rgb_cpu(&src, 9, 7, ResizeMethod::Bilinear);
+        assert_eq!(out.as_raw(), src.as_raw(), "expected an unmodified copy");
+
+        let src_gray = gray(9, 7, 200);
+        let out_gray = resize_gray_cpu(&src_gray, 9, 7, ResizeMethod::Bilinear);
+        assert_eq!(out_gray.as_raw(), src_gray.as_raw());
+    }
+
+    /// Zero is clamped to 1 rather than producing an empty buffer, so callers
+    /// passing a degenerate rect still get a usable image back.
+    #[test]
+    fn zero_dimensions_are_clamped_to_one() {
+        let src = gray(16, 16, 77);
+        let out = resize_gray_cpu(&src, 0, 0, ResizeMethod::Bilinear);
+        assert_eq!((out.width(), out.height()), (1, 1));
+
+        let src_rgb = rgb(16, 16, [4, 5, 6]);
+        let out_rgb = resize_rgb_cpu(&src_rgb, 0, 4, ResizeMethod::Bilinear);
+        assert_eq!((out_rgb.width(), out_rgb.height()), (1, 4));
+    }
+
+    /// A flat image must stay flat through the resampler — this is what the
+    /// background-estimation path in `clean_gray` relies on.
+    #[test]
+    fn flat_input_stays_flat() {
+        let src = gray(50, 50, 210);
+        let out = resize_gray_cpu(&src, 12, 12, ResizeMethod::Bilinear);
+        assert!(
+            out.as_raw().iter().all(|&v| v == 210),
+            "flat 210 input produced varying output"
+        );
     }
 }

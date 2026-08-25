@@ -1,6 +1,27 @@
 /// Pruned Rust equivalents of JBIG2 structs and segment headers
-use byteorder::{BigEndian, WriteBytesExt};
 use std::io::{self, Write};
+
+// ── Big-endian field writers ────────────────────────────────────────────────
+//
+// Every integer in a JBIG2 segment is big-endian, and every one of these sinks
+// is a `Vec<u8>`, so the `byteorder` extension traits bought nothing over
+// `to_be_bytes` except an `io::Result` that could not fail and was `unwrap`ed
+// at each site.
+
+#[inline]
+fn put_u16(buf: &mut Vec<u8>, value: u16) {
+    buf.extend_from_slice(&value.to_be_bytes());
+}
+
+#[inline]
+fn put_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_be_bytes());
+}
+
+#[inline]
+fn put_i32(buf: &mut Vec<u8>, value: i32) {
+    buf.extend_from_slice(&value.to_be_bytes());
+}
 
 #[cfg(feature = "trace_encoder")]
 use log::debug;
@@ -281,7 +302,7 @@ impl FileHeader {
         buf.push(flags);
 
         if !self.unknown_n_pages {
-            buf.write_u32::<BigEndian>(self.n_pages).unwrap();
+            put_u32(&mut buf, self.n_pages);
         }
         buf
     }
@@ -311,10 +332,10 @@ pub struct PageInfo {
 impl PageInfo {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(4 * 4 + 1 + 2);
-        buf.write_u32::<BigEndian>(self.width).unwrap();
-        buf.write_u32::<BigEndian>(self.height).unwrap();
-        buf.write_u32::<BigEndian>(self.xres).unwrap();
-        buf.write_u32::<BigEndian>(self.yres).unwrap();
+        put_u32(&mut buf, self.width);
+        put_u32(&mut buf, self.height);
+        put_u32(&mut buf, self.xres);
+        put_u32(&mut buf, self.yres);
 
         let mut b = 0u8;
         if self.is_lossless {
@@ -335,7 +356,7 @@ impl PageInfo {
         }
         // Bit 7 (reserved) remains 0
         buf.push(b);
-        buf.write_u16::<BigEndian>(self.segment_flags).unwrap();
+        put_u16(&mut buf, self.segment_flags);
         buf
     }
 }
@@ -396,7 +417,6 @@ impl GenericRegionParams {
         Ok(())
     }
     pub fn to_bytes(&self) -> Vec<u8> {
-        use byteorder::{BigEndian, WriteBytesExt};
         // 18 bytes (width, height, x, y, comb_op, flags) + AT bytes
         let at_count = match self.template {
             0 => 4, // Template 0 writes 4 AT pixels to match C behavior
@@ -405,10 +425,10 @@ impl GenericRegionParams {
         };
         let mut buf = Vec::with_capacity(18 + at_count * 2);
 
-        buf.write_u32::<BigEndian>(self.width).unwrap();
-        buf.write_u32::<BigEndian>(self.height).unwrap();
-        buf.write_u32::<BigEndian>(self.x).unwrap();
-        buf.write_u32::<BigEndian>(self.y).unwrap();
+        put_u32(&mut buf, self.width);
+        put_u32(&mut buf, self.height);
+        put_u32(&mut buf, self.x);
+        put_u32(&mut buf, self.y);
         buf.push(self.comb_operator);
 
         let mut flags = 0u8;
@@ -588,7 +608,7 @@ impl SymbolDictParams {
             flags |= 1 << 12; // SDRTEMPLATE
         }
 
-        buf.write_u16::<BigEndian>(flags).unwrap();
+        put_u16(&mut buf, flags);
         for &(x, y) in &self.at {
             buf.push(x as u8);
             buf.push(y as u8);
@@ -599,8 +619,8 @@ impl SymbolDictParams {
                 buf.push(y as u8);
             }
         }
-        buf.write_u32::<BigEndian>(self.exsyms).unwrap();
-        buf.write_u32::<BigEndian>(self.newsyms).unwrap();
+        put_u32(&mut buf, self.exsyms);
+        put_u32(&mut buf, self.newsyms);
         buf
     }
 }
@@ -628,12 +648,12 @@ pub struct TextRegionParams {
 impl TextRegionParams {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(16 + 1 + 2 + if self.refine { 4 } else { 0 });
-        buf.write_u32::<BigEndian>(self.width).unwrap();
-        buf.write_u32::<BigEndian>(self.height).unwrap();
-        buf.write_u32::<BigEndian>(self.x).unwrap();
-        buf.write_u32::<BigEndian>(self.y).unwrap();
+        put_u32(&mut buf, self.width);
+        put_u32(&mut buf, self.height);
+        put_u32(&mut buf, self.x);
+        put_u32(&mut buf, self.y);
         // Region segment combination operator.
-        buf.write_u8(self.comb_op & 0x07).unwrap();
+        buf.push(self.comb_op & 0x07);
 
         // Layout mirrors jbig2enc's packed jbig2_text_region bitfields.
         let mut flags0 = 0u8;
@@ -642,7 +662,7 @@ impl TextRegionParams {
         if self.refine && self.refine_template == 1 {
             flags0 |= 1 << 7; // SBRTEMPLATE
         }
-        buf.write_u8(flags0).unwrap();
+        buf.push(flags0);
 
         let mut flags1 = 0u8;
         if self.refine {
@@ -654,7 +674,7 @@ impl TextRegionParams {
             flags1 |= 1 << 6; // TRANSPOSED
         }
         flags1 |= (self.comb_op & 0x01) << 7; // SBCOMBOP bit 0 (sbcombop1)
-        buf.write_u8(flags1).unwrap();
+        buf.push(flags1);
 
         // Refinement AT flags: only written for SBRTEMPLATE=0 (which uses 2 AT pixels = 4 bytes).
         // SBRTEMPLATE=1 has no AT pixels.
@@ -691,11 +711,11 @@ pub struct HalftoneParams {
 impl HalftoneParams {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(31);
-        buf.write_u32::<BigEndian>(self.width).unwrap();
-        buf.write_u32::<BigEndian>(self.height).unwrap();
-        buf.write_u32::<BigEndian>(self.x).unwrap();
-        buf.write_u32::<BigEndian>(self.y).unwrap();
-        buf.write_u8(self.region_comb_operator & 0x07).unwrap();
+        put_u32(&mut buf, self.width);
+        put_u32(&mut buf, self.height);
+        put_u32(&mut buf, self.x);
+        put_u32(&mut buf, self.y);
+        buf.push(self.region_comb_operator & 0x07);
 
         let mut flags = 0u8;
         if self.mmr {
@@ -710,14 +730,14 @@ impl HalftoneParams {
             flags |= 0x80;
         }
 
-        buf.write_u8(flags).unwrap();
+        buf.push(flags);
 
-        buf.write_u32::<BigEndian>(self.grid_width).unwrap();
-        buf.write_u32::<BigEndian>(self.grid_height).unwrap();
-        buf.write_i32::<BigEndian>(self.grid_x).unwrap();
-        buf.write_i32::<BigEndian>(self.grid_y).unwrap();
-        buf.write_u16::<BigEndian>(self.grid_vector_x).unwrap();
-        buf.write_u16::<BigEndian>(self.grid_vector_y).unwrap();
+        put_u32(&mut buf, self.grid_width);
+        put_u32(&mut buf, self.grid_height);
+        put_i32(&mut buf, self.grid_x);
+        put_i32(&mut buf, self.grid_y);
+        put_u16(&mut buf, self.grid_vector_x);
+        put_u16(&mut buf, self.grid_vector_y);
 
         buf
     }
@@ -743,7 +763,7 @@ impl PatternDictionaryParams {
         buf.push(flags);
         buf.push(self.pattern_width);
         buf.push(self.pattern_height);
-        buf.write_u32::<BigEndian>(self.gray_max).unwrap();
+        put_u32(&mut buf, self.gray_max);
         buf
     }
 }
@@ -775,7 +795,7 @@ fn encode_varint(mut v: u32, buf: &mut Vec<u8>) {
 
 impl Segment {
     pub fn write_into<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_u32::<BigEndian>(self.number)?;
+        w.write_all(&(self.number).to_be_bytes())?;
 
         // Flags1: segment type, page association size, deferred non-retain.
         let page_num_val = self.page.unwrap_or(0);
@@ -783,7 +803,7 @@ impl Segment {
         let flags1 = (self.seg_type as u8 & 0x3F)
             | ((page_size_is_4_bytes as u8) << 6)
             | ((self.deferred_non_retain as u8) << 7);
-        w.write_u8(flags1)?;
+        w.write_all(&[flags1])?;
 
         // Flags2: retain bits + referred-to segment count (compact form).
         // T.88 §7.2.4: counts 0–4 fit in bits 5–7 of flags2; counts ≥ 5 require the
@@ -797,7 +817,7 @@ impl Segment {
             ));
         }
         let flags2 = (self.retain_flags & 0x1F) | ((referred_to_count as u8) << 5);
-        w.write_u8(flags2)?;
+        w.write_all(&[flags2])?;
 
         // T.88 §7.2.5: the referred-to segment number width is determined by the
         // current segment's number using inclusive boundaries — one byte if the
@@ -817,18 +837,18 @@ impl Segment {
 
         for &r_num in &self.referred_to {
             match ref_size {
-                1 => w.write_u8(r_num as u8)?,
-                2 => w.write_u16::<BigEndian>(r_num as u16)?,
-                4 => w.write_u32::<BigEndian>(r_num)?,
+                1 => w.write_all(&[r_num as u8])?,
+                2 => w.write_all(&(r_num as u16).to_be_bytes())?,
+                4 => w.write_all(&(r_num).to_be_bytes())?,
                 _ => unreachable!(),
             }
         }
 
         // Page association field is always present (0 means global segment stream).
         if page_size_is_4_bytes {
-            w.write_u32::<BigEndian>(page_num_val)?;
+            w.write_all(&(page_num_val).to_be_bytes())?;
         } else {
-            w.write_u8(page_num_val as u8)?;
+            w.write_all(&[page_num_val as u8])?;
         }
 
         let payload_len = u32::try_from(self.payload.len()).map_err(|_| {
@@ -838,7 +858,7 @@ impl Segment {
             )
         })?;
         debug!("Segment {} payload length: {}", self.number, payload_len);
-        w.write_u32::<BigEndian>(payload_len)?;
+        w.write_all(&(payload_len).to_be_bytes())?;
         w.write_all(&self.payload)?;
 
         debug!(

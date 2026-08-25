@@ -191,8 +191,20 @@ vars → `/usr/share/lege/models` (Linux). Models required:
 
 ## Platform notes
 
-- **Windows**: Uses WinRT OCR (`lege-process/ocr/winocr.rs`), Direct3D12 wgpu backend, Windows API for system dirs.
-- **Linux/macOS**: Uses Tesseract OCR and the Vulkan/Metal wgpu backend.
+- **OCR backend**: the embedded PP-OCR (`paddle-ocr`, GPU, pure-Rust, via
+  `lege-ocr`) is the default and needs no external binary or tessdata. The
+  build script derives `cfg(lege_paddle_ocr)` for it on Linux/macOS (and
+  Android with the `android` feature). `tesseract-ocr` remains an opt-in
+  legacy backend on Linux/macOS only.
+- **Windows**: Direct3D12 wgpu backend, Windows API for system dirs. The old
+  WinRT OCR backend (`lege-process/ocr/winocr.rs`) has been **removed**; what
+  remains is the `windows_ocr` availability stub in `lege-process/ocr/mod.rs`.
+  Consequently `lege`'s `windows` crate features are only what it actually
+  calls — `Win32_Foundation`, `Win32_System_Console` (console control in
+  `core/main.rs` / `core/progress.rs`) and `Win32_System_SystemInformation`
+  (`GlobalMemoryStatusEx` in `pipeline/helper_functions.rs`). Do not re-add
+  `Media_Ocr`/`Graphics_Imaging`/Direct3D feature flags: wgpu requests its own.
+- **Linux/macOS**: Vulkan/Metal wgpu backend.
 - `lege-process/core/windows_dirs.rs` / `app_dirs.rs` — platform-specific config/data directory resolution.
 
 ## Freya fork

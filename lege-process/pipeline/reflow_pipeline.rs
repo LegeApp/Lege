@@ -126,16 +126,14 @@ fn compose_reflow_page_raster(
                     continue;
                 }
                 let crop = image::imageops::crop_imm(src_rgb, r.x, r.y, r.w, r.h).to_image();
-                if (crop.width(), crop.height()) == (item.out_rect.w, item.out_rect.h) {
-                    crop
-                } else {
-                    image::imageops::resize(
-                        &crop,
-                        item.out_rect.w.max(1),
-                        item.out_rect.h.max(1),
-                        image::imageops::FilterType::Triangle,
-                    )
-                }
+                // `resize_rgb_cpu` already short-circuits when the dimensions
+                // already match, so the explicit equality check is redundant.
+                crate::resize::resize_rgb_cpu(
+                    &crop,
+                    item.out_rect.w,
+                    item.out_rect.h,
+                    crate::resize::ResizeMethod::Bilinear,
+                )
             }
         };
         image::imageops::overlay(
@@ -156,16 +154,10 @@ fn binarized_reflow_text_crop(
     reflow_cfg: &crate::reflow::RasterReflowConfig,
 ) -> RgbImage {
     let crop = image::imageops::crop_imm(&source.gray, rect.x, rect.y, rect.w, rect.h).to_image();
-    let resized = if (crop.width(), crop.height()) == (out_w, out_h) {
-        crop
-    } else {
-        image::imageops::resize(
-            &crop,
-            out_w.max(1),
-            out_h.max(1),
-            image::imageops::FilterType::Triangle,
-        )
-    };
+    // `resize_gray_cpu` returns the source unchanged when it is already the
+    // requested size, so the previous equality branch is folded in.
+    let resized =
+        crate::resize::resize_gray_cpu(&crop, out_w, out_h, crate::resize::ResizeMethod::Bilinear);
     let threshold = if reflow_cfg.adaptive_threshold {
         // Clamp to `ink_threshold` so faint / low-contrast crops are not flooded
         // with false ink by Otsu (see build_ink_mask).

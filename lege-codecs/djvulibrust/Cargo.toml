@@ -39,11 +39,15 @@ format-pnm = ["cli-base", "image/pnm"]
 format-bmp = ["cli-base", "image/bmp"]
 
 [dependencies]
-byteorder = "1.5"
-thiserror = "1.0"
+# Matches the workspace standard (`thiserror 2`); this crate was the last
+# first-party holdout on 1.x.
+thiserror = "2.0"
 bytemuck = { version = "1.25", features = ["derive"] }
 log = "0.4"
 rayon = { version = "1.11", optional = true }
+# `=0.7.33` is the workspace-unified `wide` pin, shared with `jp2lam` and
+# `jbig2enc-rust`. Bumping it must move all three crates together, or the tree
+# compiles and links two copies of `wide`.
 wide = { version = "=0.7.33", optional = true }
 # CLI-only dependencies (pulled in by the `cli` feature).
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"], optional = true }

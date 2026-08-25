@@ -21,7 +21,7 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-png = "0.17"
+png = { workspace = true }
 image = { workspace = true }
 lege-ocr = { path = "../../lege-ocr", features = ["tesseract-ocr"] }
 pdf-source = { workspace = true }

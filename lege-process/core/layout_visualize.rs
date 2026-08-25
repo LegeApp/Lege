@@ -20,6 +20,10 @@ const CLASS_COLORS: &[Rgba<u8>] = &[
     Rgba([105, 219, 124, 255]), // light green
 ];
 
+/// Nearest-neighbour upscale for overlay labels: 3 gives a 15x21 pixel cell
+/// per character, which stays readable over a full-resolution page render.
+const LABEL_SCALE: u32 = 3;
+
 fn draw_rect(canvas: &mut RgbaImage, x1: i32, y1: i32, x2: i32, y2: i32, color: Rgba<u8>) {
     let w = canvas.width() as i32;
     let h = canvas.height() as i32;
@@ -48,44 +52,184 @@ fn draw_rect(canvas: &mut RgbaImage, x1: i32, y1: i32, x2: i32, y2: i32, color: 
     }
 }
 
-fn draw_label(
-    canvas: &mut RgbaImage,
-    font: &fontdue::Font,
-    text: &str,
-    x: i32,
-    y: i32,
-    color: Rgba<u8>,
-) {
-    let px_size = 16.0;
-    let w = canvas.width() as i32;
-    let h = canvas.height() as i32;
+/// A 5x7 bitmap font covering printable ASCII (`0x20..=0x7F`).
+///
+/// Debug overlays previously rasterized their labels with `fontdue`, loading a
+/// TrueType face by probing nine hard-coded system paths. That made the label
+/// depend on the host having a font installed at one of those exact locations:
+/// on a container, a minimal server, or a Windows box with a non-standard
+/// Fonts directory, `load_font()` returned `None` and every label silently
+/// vanished from the visualization. Baking the glyphs in removes both the
+/// dependency and the failure mode -- the label always renders.
+///
+/// One entry per code point from `0x20` (space); each entry is seven rows of
+/// five columns, most significant of the low five bits leftmost. `0x7F` is a
+/// filled box used as the substitute glyph for anything out of range.
+const GLYPH_ROWS: usize = 7;
+const GLYPH_COLS: usize = 5;
+const FONT_5X7: [[u8; GLYPH_ROWS]; 96] = [
+    /* SP  */ [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+    /* !   */ [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+    /* "   */ [0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+    /* #   */ [0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010],
+    /* $   */ [0b00100, 0b01111, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100],
+    /* %   */ [0b11000, 0b11001, 0b00010, 0b00100, 0b01000, 0b10011, 0b00011],
+    /* &   */ [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
+    /* '   */ [0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+    /* (   */ [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+    /* )   */ [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+    /* *   */ [0b00000, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0b00000],
+    /* +   */ [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+    /* ,   */ [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00100],
+    /* -   */ [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+    /* .   */ [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
+    /* /   */ [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+    /* 0   */ [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+    /* 1   */ [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    /* 2   */ [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+    /* 3   */ [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+    /* 4   */ [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+    /* 5   */ [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+    /* 6   */ [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+    /* 7   */ [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+    /* 8   */ [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+    /* 9   */ [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+    /* :   */ [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
+    /* ;   */ [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b00100, 0b01000],
+    /* <   */ [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
+    /* =   */ [0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000],
+    /* >   */ [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
+    /* ?   */ [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100],
+    /* @   */ [0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110],
+    /* A   */ [0b00100, 0b01010, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001],
+    /* B   */ [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+    /* C   */ [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+    /* D   */ [0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100],
+    /* E   */ [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+    /* F   */ [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+    /* G   */ [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
+    /* H   */ [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+    /* I   */ [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    /* J   */ [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+    /* K   */ [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+    /* L   */ [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+    /* M   */ [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+    /* N   */ [0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001],
+    /* O   */ [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+    /* P   */ [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+    /* Q   */ [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+    /* R   */ [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+    /* S   */ [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+    /* T   */ [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+    /* U   */ [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+    /* V   */ [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+    /* W   */ [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+    /* X   */ [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+    /* Y   */ [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+    /* Z   */ [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+    /* [   */ [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
+    /* \   */ [0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001],
+    /* ]   */ [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
+    /* ^   */ [0b00100, 0b01010, 0b10001, 0b00000, 0b00000, 0b00000, 0b00000],
+    /* _   */ [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
+    /* `   */ [0b01000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+    /* a   */ [0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
+    /* b   */ [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110],
+    /* c   */ [0b00000, 0b00000, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110],
+    /* d   */ [0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b10001, 0b01111],
+    /* e   */ [0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110],
+    /* f   */ [0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b01000],
+    /* g   */ [0b00000, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+    /* h   */ [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001],
+    /* i   */ [0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110],
+    /* j   */ [0b00010, 0b00000, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100],
+    /* k   */ [0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010],
+    /* l   */ [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    /* m   */ [0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10001, 0b10001],
+    /* n   */ [0b00000, 0b00000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001],
+    /* o   */ [0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
+    /* p   */ [0b00000, 0b00000, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000],
+    /* q   */ [0b00000, 0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001],
+    /* r   */ [0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000],
+    /* s   */ [0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
+    /* t   */ [0b01000, 0b01000, 0b11110, 0b01000, 0b01000, 0b01001, 0b00110],
+    /* u   */ [0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10001, 0b01111],
+    /* v   */ [0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+    /* w   */ [0b00000, 0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010],
+    /* x   */ [0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
+    /* y   */ [0b00000, 0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+    /* z   */ [0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111],
+    /* {   */ [0b00011, 0b00100, 0b00100, 0b01000, 0b00100, 0b00100, 0b00011],
+    /* |   */ [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+    /* }   */ [0b11000, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b11000],
+    /* ~   */ [0b00000, 0b01001, 0b10101, 0b10010, 0b00000, 0b00000, 0b00000],
+    /* DEL */ [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
+];
 
-    let mut cursor_x = x as f32;
+/// Rows of a character's glyph, substituting the box glyph for anything
+/// outside printable ASCII (the overlay labels are ASCII, but detection class
+/// names come from model metadata and are not guaranteed to be).
+fn glyph_of(ch: char) -> &'static [u8; GLYPH_ROWS] {
+    let index = match u32::from(ch) {
+        code @ 0x20..=0x7E => (code - 0x20) as usize,
+        // 0x7F is the box; it is the last entry.
+        _ => 95,
+    };
+    match FONT_5X7.get(index) {
+        Some(glyph) => glyph,
+        None => &FONT_5X7[95],
+    }
+}
+
+/// Width in pixels of `text` rendered at `scale`, including inter-glyph gaps.
+fn text_width(text: &str, scale: u32) -> u32 {
+    let glyphs = text.chars().count() as u32;
+    if glyphs == 0 {
+        return 0;
+    }
+    // Each glyph is GLYPH_COLS wide with a one-column gap after all but the last.
+    (glyphs * (GLYPH_COLS as u32 + 1) - 1) * scale
+}
+
+/// Blit `text` into `canvas` with its top-left corner at (`x`, `y`).
+///
+/// Nearest-neighbour upscaling by `scale` keeps the glyphs crisp; at scale 3
+/// a label is 15x21 pixels per character, which is legible against a page
+/// render without the antialiasing the old rasterizer provided. Pixels that
+/// fall outside the canvas are skipped rather than clamped, so a label near an
+/// edge is cropped instead of smeared.
+fn draw_label(canvas: &mut RgbaImage, text: &str, x: i32, y: i32, scale: u32, color: Rgba<u8>) {
+    let scale = scale.max(1) as i32;
+    let width = canvas.width() as i32;
+    let height = canvas.height() as i32;
+
+    let mut cursor_x = x;
     for ch in text.chars() {
-        let (metrics, bitmap) = font.rasterize(ch, px_size);
-        let draw_x = (cursor_x + metrics.xmin as f32).round() as i32;
-        let draw_y = (y as f32 + metrics.ymin as f32).round() as i32;
-
-        for by in 0..metrics.height {
-            for bx in 0..metrics.width {
-                let coverage = bitmap[by * metrics.width + bx];
-                if coverage == 0 {
+        let glyph = glyph_of(ch);
+        for (row_index, row) in glyph.iter().enumerate() {
+            for column in 0..GLYPH_COLS {
+                // Leftmost column is the most significant of the low five bits.
+                if row & (1 << (GLYPH_COLS - 1 - column)) == 0 {
                     continue;
                 }
-                let px = draw_x + bx as i32;
-                let py = draw_y + by as i32;
-                if px < 0 || py < 0 || px >= w || py >= h {
-                    continue;
+                let px0 = cursor_x + column as i32 * scale;
+                let py0 = y + row_index as i32 * scale;
+                for dy in 0..scale {
+                    let py = py0 + dy;
+                    if py < 0 || py >= height {
+                        continue;
+                    }
+                    for dx in 0..scale {
+                        let px = px0 + dx;
+                        if px < 0 || px >= width {
+                            continue;
+                        }
+                        canvas.put_pixel(px as u32, py as u32, color);
+                    }
                 }
-                let t = coverage as f32 / 255.0;
-                let pixel = canvas.get_pixel_mut(px as u32, py as u32);
-                let r = (color.0[0] as f32 * t + pixel.0[0] as f32 * (1.0 - t)) as u8;
-                let g = (color.0[1] as f32 * t + pixel.0[1] as f32 * (1.0 - t)) as u8;
-                let b = (color.0[2] as f32 * t + pixel.0[2] as f32 * (1.0 - t)) as u8;
-                *pixel = Rgba([r, g, b, 255]);
             }
         }
-        cursor_x += metrics.advance_width;
+        cursor_x += (GLYPH_COLS as i32 + 1) * scale;
     }
 }
 
@@ -102,8 +246,6 @@ fn draw_annotations(img: &RgbImage, detections: &[Detection]) -> RgbaImage {
     let mut canvas = RgbaImage::from_raw(width, height, rgba_data)
         .expect("RgbImage -> RgbaImage conversion failed");
 
-    let font = load_font();
-
     for det in detections {
         let color = CLASS_COLORS[det.class_id as usize % CLASS_COLORS.len()];
         let [x1f, y1f, x2f, y2f] = det.bbox;
@@ -117,50 +259,32 @@ fn draw_annotations(img: &RgbImage, detections: &[Detection]) -> RgbaImage {
 
         draw_rect(&mut canvas, x1, y1, x2, y2, color);
 
-        if let Some(ref f) = font {
-            let class_name = crate::types::detection_label(det);
-            let mut label = format!("{} ({:.0}%)", class_name, det.confidence * 100.0);
-            if crate::types::category_for_class(det.class_id).is_image() {
-                let verdict = crate::content_class::classify_image_region(
-                    img.as_raw(),
-                    width as usize,
-                    height as usize,
-                    det.bbox,
-                );
-                if verdict.is_line_art {
-                    label.push_str(" line-art");
-                } else {
-                    label.push_str(" photo");
-                }
+        let class_name = crate::types::detection_label(det);
+        let mut label = format!("{} ({:.0}%)", class_name, det.confidence * 100.0);
+        if crate::types::category_for_class(det.class_id).is_image() {
+            let verdict = crate::content_class::classify_image_region(
+                img.as_raw(),
+                width as usize,
+                height as usize,
+                det.bbox,
+            );
+            if verdict.is_line_art {
+                label.push_str(" line-art");
+            } else {
+                label.push_str(" photo");
             }
-            let label_y = y1.saturating_sub(22).max(0);
-            draw_label(&mut canvas, f, &label, x1, label_y, color);
         }
+        // Keep the label inside the canvas: the old code clamped only `y`, so
+        // a wide label on a box near the right margin ran off the image.
+        let label_height = (GLYPH_ROWS as u32 * LABEL_SCALE) as i32;
+        let label_y = (y1 - label_height - 2).max(0);
+        let label_x = x1
+            .min(width as i32 - text_width(&label, LABEL_SCALE) as i32)
+            .max(0);
+        draw_label(&mut canvas, &label, label_x, label_y, LABEL_SCALE, color);
     }
 
     canvas
-}
-
-fn load_font() -> Option<fontdue::Font> {
-    let candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\calibri.ttf",
-    ];
-    for path in &candidates {
-        if let Ok(data) = std::fs::read(path) {
-            if let Ok(font) = fontdue::Font::from_bytes(data, fontdue::FontSettings::default()) {
-                return Some(font);
-            }
-        }
-    }
-    None
 }
 
 pub fn run_layout_visualize_mode(
@@ -495,11 +619,11 @@ fn load_and_scale_raster(path: &std::path::Path, target_height: Option<u32>) -> 
     };
     let width = ((u64::from(rgb.width()) * u64::from(target_h)) / u64::from(rgb.height()).max(1))
         .max(1) as u32;
-    Ok(image::imageops::resize(
+    Ok(crate::resize::resize_rgb_cpu(
         &rgb,
         width,
         target_h,
-        image::imageops::FilterType::Triangle,
+        crate::resize::ResizeMethod::Bilinear,
     ))
 }
 
@@ -569,4 +693,61 @@ fn parse_page_range(range_str: &str, total_pages: usize) -> Result<Vec<usize>> {
     pages.sort_unstable();
     pages.dedup();
     Ok(pages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The old rasterizer probed nine system font paths and drew nothing when
+    /// none existed. The baked-in font has no such failure mode: a label always
+    /// puts ink on the canvas, on any host.
+    #[test]
+    fn labels_render_without_any_system_font() {
+        let mut canvas = RgbaImage::from_pixel(400, 40, Rgba([255, 255, 255, 255]));
+        draw_label(&mut canvas, "Table (93%)", 4, 4, LABEL_SCALE, Rgba([255, 0, 0, 255]));
+        let inked = canvas.pixels().filter(|p| p.0[0..3] != [255, 255, 255]).count();
+        assert!(inked > 0, "label drew no pixels");
+    }
+
+    #[test]
+    fn every_printable_ascii_has_a_distinct_glyph_slot() {
+        assert_eq!(FONT_5X7.len(), 96);
+        // Space is blank; nothing else printable may be, or that character
+        // would silently disappear from a label.
+        for code in 0x21u32..=0x7E {
+            let ch = char::from_u32(code).unwrap_or(' ');
+            let glyph = glyph_of(ch);
+            assert!(glyph.iter().any(|row| *row != 0), "{ch:?} rasterizes blank");
+            // Only the low five bits are meaningful.
+            assert!(glyph.iter().all(|row| *row < 0b100000), "{ch:?} overflows");
+        }
+        assert!(glyph_of(' ').iter().all(|row| *row == 0));
+    }
+
+    #[test]
+    fn out_of_range_characters_fall_back_to_the_box_glyph() {
+        // Class names come from model metadata and are not guaranteed ASCII.
+        assert_eq!(glyph_of('\u{4e2d}'), glyph_of('\u{7f}'));
+        assert_eq!(glyph_of('\u{1}'), glyph_of('\u{7f}'));
+    }
+
+    #[test]
+    fn text_width_matches_what_draw_label_advances() {
+        assert_eq!(text_width("", 3), 0);
+        // One glyph is GLYPH_COLS wide with no trailing gap.
+        assert_eq!(text_width("A", 1), GLYPH_COLS as u32);
+        // Each further glyph adds a one-column gap plus its own width.
+        assert_eq!(text_width("AB", 1), GLYPH_COLS as u32 * 2 + 1);
+        assert_eq!(text_width("AB", 3), (GLYPH_COLS as u32 * 2 + 1) * 3);
+    }
+
+    #[test]
+    fn drawing_outside_the_canvas_is_clipped_not_wrapped() {
+        let mut canvas = RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 255]));
+        // Far off every edge: must not panic and must not touch a pixel.
+        draw_label(&mut canvas, "Wide label", -400, -400, 3, Rgba([0, 0, 0, 255]));
+        draw_label(&mut canvas, "Wide label", 400, 400, 3, Rgba([0, 0, 0, 255]));
+        assert!(canvas.pixels().all(|p| p.0 == [255, 255, 255, 255]));
+    }
 }

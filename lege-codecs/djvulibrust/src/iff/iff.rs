@@ -7,7 +7,6 @@
 //! - `IffWriter`: A struct for creating IFF files on any destination that implements `Write` and `Seek`.
 
 use crate::utils::error::{DjvuError, Result};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Represents the header of an IFF chunk.
@@ -57,7 +56,11 @@ pub trait IffReaderExt: Read + Seek {
             Err(e) => return Err(e.into()),
         }
 
-        let size = self.read_u32::<BigEndian>()?;
+        let size = {
+            let mut bytes = [0u8; 4];
+            self.read_exact(&mut bytes)?;
+            u32::from_be_bytes(bytes)
+        };
         let is_composite = matches!(&id, b"FORM" | b"LIST" | b"PROP" | b"CAT ");
 
         let secondary_id = if is_composite {
@@ -132,7 +135,7 @@ impl<'a> IffWriter<'a> {
         let (id, secondary_id) = Self::parse_full_id(full_id)?;
         self.writer.write_all(&id)?;
         let size_pos = self.writer.stream_position()?;
-        self.writer.write_u32::<BigEndian>(0)?; // Placeholder size
+        self.writer.write_all(&0u32.to_be_bytes())?; // Placeholder size
         if let Some(sid) = secondary_id {
             self.writer.write_all(&sid)?;
         }
@@ -156,7 +159,7 @@ impl<'a> IffWriter<'a> {
 
         // Seek back, write the real size, and restore position.
         self.writer.seek(SeekFrom::Start(size_pos))?;
-        self.writer.write_u32::<BigEndian>(content_size as u32)?;
+        self.writer.write_all(&(content_size as u32).to_be_bytes())?;
         self.writer.seek(SeekFrom::Start(final_pos))?;
 
         Ok(())
@@ -176,7 +179,7 @@ impl<'a> IffWriter<'a> {
         let size_pos = self.writer.stream_position()?;
 
         // Write a placeholder for the size.
-        self.writer.write_u32::<BigEndian>(0)?;
+        self.writer.write_all(&0u32.to_be_bytes())?;
 
         let payload_start_pos = if let Some(sid) = secondary_id {
             self.writer.write_all(&sid)?;
@@ -217,7 +220,7 @@ impl<'a> IffWriter<'a> {
         // Patch the size field and restore position
         self.writer.seek(SeekFrom::Start(size_pos))?;
         self.writer
-            .write_u32::<BigEndian>(chunk_size_field as u32)?;
+            .write_all(&(chunk_size_field as u32).to_be_bytes())?;
         self.writer.seek(SeekFrom::Start(end_pos))?;
         Ok(())
     }

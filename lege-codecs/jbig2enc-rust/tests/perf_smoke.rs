@@ -11,7 +11,7 @@ fn make_checker(width: u32, height: u32, phase: usize) -> BitImage {
     for y in 0..height {
         for x in 0..width {
             if ((x + y + phase) % 3) == 0 {
-                image.as_mut_bits().set(y * width + x, true);
+                image.set_usize(x, y, true);
             }
         }
     }
@@ -118,3 +118,4 @@ fn text_region_encoding_perf_smoke() {
     );
     assert!(!payload.is_empty());
 }
+

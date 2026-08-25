@@ -870,7 +870,7 @@ fn run_winocr_impl(
 
             hocr.push_str(&format!(
                 r#"<span class="ocrx_word" title="bbox {wx1} {wy1} {wx2} {wy2}">{}</span> "#,
-                win_html_escape(&text)
+                crate::hocr::html_escape(&text)
             ));
         }
         if lx1 != i32::MAX {
@@ -878,7 +878,7 @@ fn run_winocr_impl(
             if !line_text.trim().is_empty() {
                 hocr.push_str(&format!(
                     r#"<span class="ocr_line" title="bbox {lx1} {ly1} {lx2} {ly2}">{}</span>"#,
-                    win_html_escape(&line_text)
+                    crate::hocr::html_escape(&line_text)
                 ));
             }
         }
@@ -893,15 +893,6 @@ fn run_winocr_impl(
         hocr,
         plain_text: plain.trim().to_string(),
     })
-}
-
-#[cfg(target_os = "windows")]
-fn win_html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
 #[cfg(target_os = "windows")]
@@ -1166,7 +1157,7 @@ fn extract_span_text(s: &str) -> Option<String> {
     let after = &s[gt + 1..];
     let close = after.find("</span>")?;
     let raw = &after[..close];
-    Some(html_escape::decode_html_entities(raw).into_owned())
+    Some(crate::hocr::html_unescape(raw).into_owned())
 }
 
 #[cfg(test)]

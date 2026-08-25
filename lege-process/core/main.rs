@@ -117,7 +117,7 @@ use lege::processing_log::{
 mod windows_dirs;
 use std::io;
 use std::time::{Instant, SystemTime};
-use sysinfo::{Disks, System};
+use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 /// Cleanup function specifically for CLI to ensure clean process exit
 fn cleanup_cli_resources() {
@@ -1148,7 +1148,75 @@ fn emit_worker_error_json(error: impl std::fmt::Display) {
     }
 }
 
+/// Minimal `log` sink writing to stderr.
+///
+/// Until this existed no logger was ever installed on desktop, so every
+/// `log::warn!`/`log::error!` in the library was silently discarded. This is
+/// deliberately not `env_logger`: a level, one line per record, no regex
+/// filtering, no dependencies. stdout is reserved for the GUI worker's
+/// newline-delimited progress JSON, so records go to stderr.
+mod stderr_logger {
+    use std::io::Write;
+    use std::str::FromStr;
+    use std::sync::OnceLock;
+
+    struct StderrLogger {
+        level: log::LevelFilter,
+    }
+
+    impl log::Log for StderrLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= self.level
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            // One locked write per record so concurrent workers cannot interleave.
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(
+                stderr,
+                "[{:<5} {}] {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+
+        fn flush(&self) {
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    static LOGGER: OnceLock<StderrLogger> = OnceLock::new();
+
+    /// Level from `LEGE_LOG`, else `RUST_LOG`, else `warn`.
+    ///
+    /// Only a bare level is understood (`off`/`error`/`warn`/`info`/`debug`/
+    /// `trace`); per-module `RUST_LOG` directives are not, and fall back to the
+    /// default rather than erroring.
+    fn configured_level() -> log::LevelFilter {
+        std::env::var("LEGE_LOG")
+            .or_else(|_| std::env::var("RUST_LOG"))
+            .ok()
+            .and_then(|value| log::LevelFilter::from_str(value.trim()).ok())
+            .unwrap_or(log::LevelFilter::Warn)
+    }
+
+    /// Install the logger. Idempotent, and a no-op if something else (the
+    /// Android logger, a test harness) already claimed the global slot.
+    pub fn install() {
+        let level = configured_level();
+        let logger = LOGGER.get_or_init(|| StderrLogger { level });
+        if log::set_logger(logger).is_ok() {
+            log::set_max_level(level);
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    stderr_logger::install();
     lege::progress::install_sigterm_handler();
     let is_gui_worker = std::env::args().any(|arg| arg == "--gui-worker");
     if std::env::args().any(|arg| arg == "--debug-runtime-stats") {
@@ -4550,9 +4618,13 @@ fn show_system_status() -> Result<()> {
         info_println!("{}", CLI_TEXT.system_status.tesseract_missing);
     }
 
-    // System info
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    // System info. Refresh memory only — the CPU list is read for its length,
+    // which `cpus()` reports without a full per-process sweep.
+    let sys = System::new_with_specifics(
+        RefreshKind::nothing()
+            .with_memory(MemoryRefreshKind::nothing().with_ram())
+            .with_cpu(CpuRefreshKind::nothing()),
+    );
 
     info_println!(
         "{}",

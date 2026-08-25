@@ -11,8 +11,7 @@
 use crate::image::image_formats::{Pixel, Pixmap};
 use crate::utils::error::{DjvuError, Result};
 use bytemuck::{Pod, Zeroable, cast_slice};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 
 // --- Helper trait for u24 operations ---
 trait ReadWriteU24 {
@@ -219,11 +218,9 @@ impl Palette {
                 "Byte slice length must be even for u16 conversion".to_string(),
             ));
         }
-        let mut cursor = Cursor::new(bytes);
         self.color_indices.clear();
-        while cursor.position() < bytes.len() as u64 {
-            let index = cursor.read_u16::<BigEndian>()?;
-            self.color_indices.push(index);
+        for chunk in bytes.chunks_exact(2) {
+            self.color_indices.push(u16::from_be_bytes([chunk[0], chunk[1]]));
         }
         Ok(())
     }
@@ -241,7 +238,7 @@ impl Palette {
         } else {
             0x80
         };
-        writer.write_u8(version)?;
+        writer.write_all(&[version])?;
 
         let palette_size = self.len();
         if palette_size > 65535 {
@@ -249,7 +246,7 @@ impl Palette {
                 "Palette size cannot exceed 65535".to_string(),
             ));
         }
-        writer.write_u16::<BigEndian>(palette_size as u16)?;
+        writer.write_all(&(palette_size as u16).to_be_bytes())?;
 
         let bgr_colors: Vec<BgrColor> = self.colors.iter().map(|&rgb| rgb.into()).collect();
         let bgr_bytes: &[u8] = cast_slice(&bgr_colors);
@@ -266,7 +263,7 @@ impl Palette {
 
             // Write each u16 index in BigEndian
             for &index in &self.color_indices {
-                writer.write_u16::<BigEndian>(index)?;
+                writer.write_all(&index.to_be_bytes())?;
             }
         }
 
@@ -275,14 +272,22 @@ impl Palette {
 
     /// Decodes a palette from the DjVu `FGbz` chunk format. (For completeness)
     pub fn decode<R: Read>(reader: &mut R) -> Result<Self> {
-        let version = reader.read_u8()?;
+        let version = {
+            let mut byte = [0u8; 1];
+            reader.read_exact(&mut byte)?;
+            byte[0]
+        };
         if (version & 0x7F) != 0 {
             return Err(DjvuError::Stream(
                 "Unsupported DjVuPalette version.".to_string(),
             ));
         }
 
-        let palette_size = reader.read_u16::<BigEndian>()? as usize;
+        let palette_size = {
+            let mut bytes = [0u8; 2];
+            reader.read_exact(&mut bytes)?;
+            u16::from_be_bytes(bytes) as usize
+        };
 
         let mut bgr_bytes = vec![0u8; palette_size * 3];
         reader.read_exact(&mut bgr_bytes)?;
@@ -296,10 +301,8 @@ impl Palette {
             // Read the byte slice and parse as BigEndian u16
             let mut index_bytes = vec![0u8; data_size * 2];
             reader.read_exact(&mut index_bytes)?;
-            let mut cursor = Cursor::new(&index_bytes);
-            for _ in 0..data_size {
-                let index = cursor.read_u16::<BigEndian>()?;
-                color_indices.push(index);
+            for chunk in index_bytes.chunks_exact(2) {
+                color_indices.push(u16::from_be_bytes([chunk[0], chunk[1]]));
             }
         }
 

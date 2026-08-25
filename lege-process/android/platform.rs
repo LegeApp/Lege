@@ -104,7 +104,12 @@ pub fn available_ram_gb() -> usize {
         return ((mb as usize) / 1024).max(1);
     }
 
-    let system = sysinfo::System::new_all();
+    // RAM only — enumerating every process to read one number is pure waste,
+    // and doubly so on a phone.
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing()
+            .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+    );
     let total_bytes = system.total_memory();
     if total_bytes == 0 {
         return 1;

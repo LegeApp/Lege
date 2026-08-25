@@ -297,6 +297,10 @@ impl MonoBitmap {
     // ── Conversions to/from the encoder's BitImage ──────────────────────────
 
     /// Build a `MonoBitmap` from the encoder's `BitImage`.
+    ///
+    /// The two types now share a layout — `ceil(width / 32)` words per row,
+    /// MSB-first within each word, padding bits zero — so this is a bulk word
+    /// copy rather than the per-pixel `get`/`set` loop it used to be.
     #[cfg(feature = "encode")]
     pub fn from_bit_image(
         img: &crate::encode::sym::BitImage,
@@ -309,13 +313,8 @@ impl MonoBitmap {
             operation: "BitImage height to u32",
         })?;
         let mut out = MonoBitmap::new(width, height, false, limits)?;
-        for yy in 0..height {
-            for xx in 0..width {
-                if img.get(xx, yy) {
-                    out.set(xx, yy, true);
-                }
-            }
-        }
+        debug_assert_eq!(out.words.len(), img.packed_words().len());
+        out.words.copy_from_slice(img.packed_words());
         Ok(out)
     }
 
@@ -328,13 +327,10 @@ impl MonoBitmap {
                 operation: "MonoBitmap to BitImage dimensions",
             }
         })?;
-        for yy in 0..self.height {
-            for xx in 0..self.width {
-                if self.get(xx, yy) {
-                    img.set(xx, yy, true);
-                }
-            }
-        }
+        img.copy_words_from(&self.words)
+            .map_err(|_| DecodeError::Overflow {
+                operation: "MonoBitmap to BitImage storage",
+            })?;
         Ok(img)
     }
 }

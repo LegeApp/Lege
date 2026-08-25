@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use futures::future::BoxFuture;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures_util::future::BoxFuture;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
 
 use crate::margin::{

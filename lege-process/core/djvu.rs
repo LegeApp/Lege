@@ -492,21 +492,21 @@ impl DjvuOrchestrator {
         page_width: u32,
         page_height: u32,
     ) -> Result<Vec<(String, u16, u16, u16, u16)>> {
-        use once_cell::sync::Lazy;
+        use std::sync::LazyLock;
         use regex::Regex;
 
-        static WORD_RE: Lazy<Regex> = Lazy::new(|| {
+        static WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(
                 r#"(?is)<span[^>]*class=['"][^'"]*\bocrx_word\b[^'"]*['"][^>]*title=['"]([^'"]*)['"][^>]*>(.*?)</span>"#,
             )
             .expect("valid ocrx_word regex")
         });
-        static BBOX_RE: Lazy<Regex> = Lazy::new(|| {
+        static BBOX_RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r#"(?i)\bbbox\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)"#)
                 .expect("valid bbox regex")
         });
-        static TAG_RE: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r#"(?is)<[^>]+>"#).expect("valid tag regex"));
+        static TAG_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"(?is)<[^>]+>"#).expect("valid tag regex"));
         let word_re = &*WORD_RE;
         let bbox_re = &*BBOX_RE;
         let tag_re = &*TAG_RE;

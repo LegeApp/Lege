@@ -1,4 +1,4 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -167,11 +167,11 @@ pub(crate) const BASE_DAY: Palette = Palette {
     progress_track_bg: (236, 236, 236),
 };
 
-static SETTINGS: Lazy<RwLock<AppearanceSettings>> =
-    Lazy::new(|| RwLock::new(load_appearance_settings().unwrap_or_default()));
+static SETTINGS: LazyLock<RwLock<AppearanceSettings>> =
+    LazyLock::new(|| RwLock::new(load_appearance_settings().unwrap_or_default()));
 // A non-persisted override used by the theme picker to preview a choice live while
 // browsing; committing writes it to SETTINGS and clears this.
-static PREVIEW: Lazy<RwLock<Option<ThemeChoice>>> = Lazy::new(|| RwLock::new(None));
+static PREVIEW: LazyLock<RwLock<Option<ThemeChoice>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Force the persisted settings to load at startup.
 pub fn initialize_runtime_appearance() {

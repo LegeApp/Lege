@@ -4,7 +4,7 @@ use crate::pipeline::policies::build_inference_image;
 use crate::progress::ProgressTracker;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use image::RgbImage;
 use lege_pdf_read::RenderSession;
 use std::cmp::Ordering as CmpOrdering;

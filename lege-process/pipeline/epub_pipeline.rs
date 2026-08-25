@@ -15,9 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use anyhow::{Result, anyhow};
-use epub_builder::{EpubBuilder, EpubContent, ReferenceType, ZipLibrary};
-use futures::future::BoxFuture;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures_util::future::BoxFuture;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 
 use lege_ocr::{
@@ -28,6 +27,7 @@ use lege_ocr::{
     types::TextRegion,
 };
 
+use super::epub_container::{EpubChapter, EpubMetadata, write_epub, xml_escape};
 use crate::pipeline::config::PipelineConfig;
 use crate::pipeline::margin_pipeline::CachedDetections;
 use crate::pipeline::pdf_tokio_pipeline::{PdfInferenceData, build_inference_future};
@@ -542,7 +542,7 @@ async fn ocr_collect_stage(
     ocr_count: Arc<AtomicUsize>,
     total_pages: usize,
 ) -> Result<BTreeMap<usize, PageText>> {
-    use futures::stream::{FuturesUnordered, StreamExt};
+    use futures_util::stream::{FuturesUnordered, StreamExt};
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
     let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<Result<PageText>>> =
@@ -984,43 +984,35 @@ fn build_epub_with_outline_cancellable(
         ));
     }
 
-    let zip = ZipLibrary::new().map_err(|e| anyhow!("[EPUB] zip init failed: {e}"))?;
-    let mut builder =
-        EpubBuilder::new(zip).map_err(|e| anyhow!("[EPUB] builder init failed: {e}"))?;
-    builder
-        .metadata("title", title)
-        .map_err(|e| anyhow!("[EPUB] metadata title failed: {e}"))?;
-    builder
-        .metadata("author", "Lege")
-        .map_err(|e| anyhow!("[EPUB] metadata author failed: {e}"))?;
-    let _ = builder.metadata("lang", "en");
-
-    for (i, chapter) in chapters.iter().enumerate() {
-        if cancellation.is_some_and(lege_pdf_read::CancellationToken::is_cancelled) {
-            return Err(anyhow!("[EPUB] packaging cancelled"));
-        }
-        let filename = format!("chapter_{:04}.xhtml", i + 1);
-        let content = render_xhtml(chapter);
-        let mut item = EpubContent::new(filename, content.as_bytes()).reftype(ReferenceType::Text);
-        if let Some(t) = &chapter.title {
-            item = item.title(t.clone());
-        }
-        builder
-            .add_content(item)
-            .map_err(|e| anyhow!("[EPUB] add_content failed: {e}"))?;
-    }
-
-    // Inline a navigation TOC at the start of the book.
-    builder.inline_toc();
+    let metadata = EpubMetadata {
+        title: title.to_string(),
+        author: "Lege".to_string(),
+        language: "en".to_string(),
+    };
+    let documents: Vec<EpubChapter> = chapters
+        .iter()
+        .enumerate()
+        .map(|(i, chapter)| EpubChapter {
+            filename: format!("chapter_{:04}.xhtml", i + 1),
+            title: chapter.title.clone(),
+            xhtml: render_xhtml(chapter),
+        })
+        .collect();
 
     let parent = epub_output_parent(output_path);
     std::fs::create_dir_all(parent)
         .map_err(|e| anyhow!("[EPUB] cannot create {}: {e}", parent.display()))?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|e| anyhow!("[EPUB] cannot create temporary output: {e}"))?;
-    builder
-        .generate(temporary.as_file_mut())
-        .map_err(|e| anyhow!("[EPUB] generate failed: {e}"))?;
+    // EPUB 3 requires `dcterms:modified` on the package document.
+    let modified = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    write_epub(
+        temporary.as_file_mut(),
+        &metadata,
+        &documents,
+        &modified,
+        &|| cancellation.is_some_and(lege_pdf_read::CancellationToken::is_cancelled),
+    )?;
     temporary
         .as_file_mut()
         .sync_all()
@@ -1094,21 +1086,6 @@ fn outline_from_page_text(pages: &[PageText]) -> Vec<lege_pdf_write::outline::Ou
 }
 
 /// Minimal XML/XHTML text escaping.
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#x27;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

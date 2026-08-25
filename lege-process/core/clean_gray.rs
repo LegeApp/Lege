@@ -675,7 +675,12 @@ fn estimate_background(
 
     let src = GrayImage::from_raw(width as u32, height as u32, gray.to_vec())
         .ok_or_else(|| anyhow!("failed to build GrayImage"))?;
-    let small = imageops::resize(&src, small_w, small_h, imageops::FilterType::Triangle);
+    let small = crate::resize::resize_gray_cpu(
+        &src,
+        small_w,
+        small_h,
+        crate::resize::ResizeMethod::Bilinear,
+    );
 
     let dilated = match opts.bg_estimator {
         BgEstimator::Blur => small,
@@ -692,11 +697,11 @@ fn estimate_background(
     };
 
     let bg_small = imageops::blur(&dilated, blur_sigma);
-    let bg_full = imageops::resize(
+    let bg_full = crate::resize::resize_gray_cpu(
         &bg_small,
         width as u32,
         height as u32,
-        imageops::FilterType::Triangle,
+        crate::resize::ResizeMethod::Bilinear,
     );
     Ok(bg_full.into_raw())
 }

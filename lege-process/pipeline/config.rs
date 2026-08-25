@@ -110,19 +110,13 @@ impl ProcessingPipeline {
     }
 
     pub fn from_file(input_path: std::path::PathBuf, config: PipelineConfig) -> Result<Self> {
-        use memmap2::Mmap;
-        use std::fs::File;
-
-        let metadata = std::fs::metadata(&input_path)?;
-        let file_size = metadata.len();
-
-        let pdf_bytes = if file_size > 50 * 1024 * 1024 {
-            let file = File::open(&input_path)?;
-            let mmap = unsafe { Mmap::map(&file)? };
-            mmap.to_vec()
-        } else {
-            std::fs::read(&input_path)?
-        };
+        // The large-file arm used to map the file and immediately `to_vec()` the
+        // mapping, which copies the whole thing onto the heap anyway — a
+        // page-fault storm plus an `unsafe` block to reach the same Vec that one
+        // sized `read` produces, with a SIGBUS risk if the file is truncated
+        // underneath us. `Self::new` takes ownership of the bytes, so there is
+        // no borrowed-mapping variant to keep.
+        let pdf_bytes = std::fs::read(&input_path)?;
 
         Self::new(pdf_bytes, config)
     }

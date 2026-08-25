@@ -1,7 +1,7 @@
 // Freya-side GUI localization loader.
 // User-facing copy lives in language_service/<locale>/gui_text.json.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,7 +207,7 @@ pub struct GuiProgressText {
     pub completed_with_estimate: String,
 }
 
-pub static GUI_TEXT: Lazy<GuiText> = Lazy::new(|| {
+pub static GUI_TEXT: LazyLock<GuiText> = LazyLock::new(|| {
     #[cfg(feature = "german")]
     let json = include_str!("../../../language_service/de/gui_text.json");
     #[cfg(not(feature = "german"))]
