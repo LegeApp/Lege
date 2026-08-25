@@ -205,11 +205,11 @@ impl Drop for Message {
     }
 }
 
-pub struct MessageIter<'a>(ffi::DBusMessageIter, #[allow(unused)] &'a PhantomData<()>);
+pub struct MessageIter<'a>(ffi::DBusMessageIter, PhantomData<&'a ()>);
 
 impl<'a> MessageIter<'a> {
     pub fn new() -> Self {
-        Self(unsafe { std::mem::zeroed() }, &PhantomData)
+        Self(unsafe { std::mem::zeroed() }, PhantomData)
     }
 
     pub fn from_msg(msg: &'a Message) -> Self {

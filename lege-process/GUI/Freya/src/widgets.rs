@@ -28,7 +28,7 @@ pub fn lege_panel_card(
         .padding(7.)
         .width(Size::fill())
         .content(Content::Flex)
-        .spacing(4.);
+        .spacing(4.0_f32);
 
     if fill_height {
         card = card.height(Size::fill());
@@ -36,7 +36,7 @@ pub fn lege_panel_card(
 
     if !title.is_empty() {
         card = card.child(
-            rect().width(Size::fill()).height(Size::px(22.)).child(
+            rect().width(Size::fill()).height(Size::px(22.0_f32)).child(
                 label()
                     .text(title)
                     .font_size(15.)
@@ -53,7 +53,7 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
     rect()
         .vertical()
         .width(Size::fill())
-        .spacing(1.)
+        .spacing(1.0_f32)
         .child(
             label()
                 .text(label_text.into())
@@ -64,7 +64,7 @@ pub fn lege_field(label_text: impl Into<String>, control: Element) -> Element {
         .child(
             rect()
                 .width(Size::fill())
-                .min_height(Size::px(24.))
+                .min_height(Size::px(24.0_f32))
                 .child(control),
         )
         .into()
@@ -75,7 +75,7 @@ pub fn lege_grid_row(children: Vec<Element>, height: f32, spacing: f32) -> Eleme
         .into_iter()
         .map(|child| {
             rect()
-                .width(Size::flex(1.))
+                .width(Size::flex(1.0_f32))
                 .height(Size::fill())
                 .child(child)
                 .into()
@@ -141,7 +141,7 @@ impl Component for LegeCheckboxRow {
         rect()
             .direction(Direction::Horizontal)
             .padding((0., 2., 0., 2.))
-            .spacing(8.)
+            .spacing(8.0_f32)
             .cross_align(Alignment::Center)
             .on_pointer_enter(move |_| {
                 hovering.set(true);
@@ -157,8 +157,8 @@ impl Component for LegeCheckboxRow {
             })
             .child(
                 rect()
-                    .width(Size::px(14.))
-                    .height(Size::px(14.))
+                    .width(Size::px(14.0_f32))
+                    .height(Size::px(14.0_f32))
                     .border(
                         Border::new()
                             .fill(rgb(border_focus()))
@@ -205,24 +205,24 @@ pub fn lege_file_action_row(
         .height(Size::fill())
         .direction(Direction::Horizontal)
         .cross_align(Alignment::Center)
-        .spacing(6.)
+        .spacing(6.0_f32)
         .content(Content::Flex)
         .child(
             rect()
-                .width(Size::flex(1.))
-                .height(Size::px(40.))
+                .width(Size::flex(1.0_f32))
+                .height(Size::px(40.0_f32))
                 .child(add_file),
         )
         .child(
             rect()
-                .width(Size::flex(1.))
-                .height(Size::px(40.))
+                .width(Size::flex(1.0_f32))
+                .height(Size::px(40.0_f32))
                 .child(add_folder),
         )
         .child(
             rect()
-                .width(Size::flex(1.))
-                .height(Size::px(40.))
+                .width(Size::flex(1.0_f32))
+                .height(Size::px(40.0_f32))
                 .child(output_directory),
         )
         .into()
@@ -309,7 +309,7 @@ pub fn lege_main_shell(
                 .child(
                     rect()
                         .padding(8.)
-                        .spacing(8.)
+                        .spacing(8.0_f32)
                         .width(Size::fill())
                         .height(Size::fill())
                         .vertical()
@@ -317,26 +317,26 @@ pub fn lege_main_shell(
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(56.))
+                                .height(Size::px(56.0_f32))
                                 .child(file_actions),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(300.))
+                                .height(Size::px(300.0_f32))
                                 .child(settings),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(102.))
+                                .height(Size::px(102.0_f32))
                                 .child(process_row),
                         )
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::flex(1.))
-                                .min_height(Size::px(120.))
+                                .height(Size::flex(1.0_f32))
+                                .min_height(Size::px(120.0_f32))
                                 .child(status_bar),
                         ),
                 ),

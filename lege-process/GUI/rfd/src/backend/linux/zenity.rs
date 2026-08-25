@@ -2,7 +2,6 @@ use std::{error::Error, fmt::Display, path::PathBuf, process::Command};
 
 use crate::{
     FileDialog, MessageDialogResult,
-    file_dialog::Filter,
     message_dialog::{MessageButtons, MessageLevel},
 };
 

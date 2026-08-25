@@ -37,9 +37,6 @@ pub struct OpenFileOptions {
     pub multiple: Option<bool>,
     pub directory: Option<bool>,
     pub filters: Vec<FileFilter>,
-    // TODO: Serialize this if needed
-    #[allow(unused)]
-    pub current_filter: Option<FileFilter>,
     pub current_folder: Option<FilePath>,
 }
 
@@ -144,9 +141,6 @@ pub struct SaveFileOptions {
     pub current_folder: Option<FilePath>,
     pub current_file: Option<FilePath>,
     pub filters: Vec<FileFilter>,
-    // TODO: Serialize this if needed
-    #[allow(unused)]
-    pub current_filter: Option<FileFilter>,
 }
 
 impl Message {

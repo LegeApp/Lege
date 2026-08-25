@@ -209,8 +209,7 @@ fn cancel_theme_preview(mut state: State<AppState>, mut theme: State<Theme>) {
     state.write().show_theme_chooser = false;
 }
 
-#[allow(non_snake_case)]
-fn ThemeChooser(state: State<AppState>, theme: State<Theme>) -> Element {
+fn theme_chooser(state: State<AppState>, theme: State<Theme>) -> Element {
     ThemeChooserInner {
         state,
         theme,
@@ -251,7 +250,7 @@ impl Component for ThemeChooserInner {
         let cell = |text: &'static str, width: f32, active: bool| {
             rect()
                 .width(Size::px(width))
-                .height(Size::px(28.))
+                .height(Size::px(28.0_f32))
                 .background(if active { selected_bg() } else { control_bg() })
                 .border(
                     Border::new()
@@ -267,7 +266,7 @@ impl Component for ThemeChooserInner {
 
         rect()
             .width(Size::fill())
-            .spacing(8.)
+            .spacing(8.0_f32)
             .on_global_key_down(move |e: Event<KeyboardEventData>| match &e.key {
                 Key::Named(NamedKey::ArrowLeft) => step_theme(sel, theme, -1),
                 Key::Named(NamedKey::ArrowRight) => step_theme(sel, theme, 1),
@@ -288,7 +287,7 @@ impl Component for ThemeChooserInner {
             .child(
                 rect()
                     .direction(Direction::Horizontal)
-                    .spacing(6.)
+                    .spacing(6.0_f32)
                     .cross_align(Alignment::Center)
                     .child(
                         rect()
@@ -808,7 +807,7 @@ fn tooltip_note_card(text: impl Into<String>) -> Element {
         .into()
 }
 
-fn PopupRail(state: State<AppState>) -> Element {
+fn popup_rail(state: State<AppState>) -> Element {
     let entries = popup_message_entries(state);
     if entries.is_empty() {
         return rect().into();
@@ -827,9 +826,9 @@ fn PopupRail(state: State<AppState>) -> Element {
         .collect();
 
     rect()
-        .width(Size::px(220.))
+        .width(Size::px(220.0_f32))
         .vertical()
-        .spacing(6.)
+        .spacing(6.0_f32)
         .children(cards)
         .into()
 }
@@ -850,7 +849,7 @@ fn status_tooltip_panel(state: State<AppState>, side: TooltipSide) -> Element {
     }
 
     rect()
-        .width(Size::px(250.))
+        .width(Size::px(250.0_f32))
         .child(tooltip_note_card(text))
         .into()
 }
@@ -1045,16 +1044,16 @@ pub fn app() -> impl IntoElement {
                 }
             })
             .child(widgets::lege_main_shell(
-                FileActionRow(state),
-                SettingsDashboard(
+                file_action_row(state),
+                settings_dashboard(
                     state,
                     target_height_input,
                     page_range_input,
                     k_factor_input,
                     threshold_input,
                 ),
-                ProcessDashboardRow(state, target_height_input, page_range_input, theme),
-                StatusBar(state),
+                process_dashboard_row(state, target_height_input, page_range_input, theme),
+                status_bar(state),
             ))
             // Transient notifications float above ALL window content (high
             // relative layer at the root → well above normal nesting depth, but
@@ -1063,12 +1062,12 @@ pub fn app() -> impl IntoElement {
                 rect()
                     .layer(200i16)
                     .position(Position::new_absolute().right(16.).bottom(16.))
-                    .child(PopupRail(state)),
+                    .child(popup_rail(state)),
             )
-            .child(QueueViewerPopup(state))
-            .child(LogViewerPopup(state))
-            .child(AboutPopup(state, theme))
-            .child(DebugLogViewerPopup(state)),
+            .child(queue_viewer_popup(state))
+            .child(log_viewer_popup(state))
+            .child(about_popup(state, theme))
+            .child(debug_log_viewer_popup(state)),
     )
 }
 
@@ -1082,12 +1081,12 @@ fn app_root(content: Rect) -> Rect {
     content
 }
 
-fn ProcessUtilityButtons(mut state: State<AppState>) -> Element {
+fn process_utility_buttons(mut state: State<AppState>) -> Element {
     let queue_len = state.read().queue.len();
 
     rect()
         .direction(Direction::Horizontal)
-        .spacing(6.)
+        .spacing(6.0_f32)
         .cross_align(Alignment::Center)
         .child(
             Button::new()
@@ -1110,7 +1109,7 @@ fn ProcessUtilityButtons(mut state: State<AppState>) -> Element {
         .into()
 }
 
-fn FileActionRow(state: State<AppState>) -> Element {
+fn file_action_row(state: State<AppState>) -> Element {
     let output_text = state
         .read()
         .options
@@ -1159,7 +1158,7 @@ fn FileActionRow(state: State<AppState>) -> Element {
     )
 }
 
-fn SettingsDashboard(
+fn settings_dashboard(
     state: State<AppState>,
     target_height_input: State<String>,
     page_range_input: State<String>,
@@ -1170,13 +1169,13 @@ fn SettingsDashboard(
         .width(Size::fill())
         .height(Size::fill())
         .direction(Direction::Horizontal)
-        .spacing(8.)
+        .spacing(8.0_f32)
         .child(
             // Left column: page range/resolution inputs + the 8 option checkboxes
             rect()
-                .width(Size::percent(50.))
+                .width(Size::percent(50.0_f32))
                 .height(Size::fill())
-                .child(PagesDeviceCard(
+                .child(pages_device_card(
                     state,
                     target_height_input,
                     page_range_input,
@@ -1186,14 +1185,14 @@ fn SettingsDashboard(
             // Right column: output format, text rendering mode, layout/image
             // format, and (in binarized mode) the binarization sub-card
             rect()
-                .width(Size::percent(50.))
+                .width(Size::percent(50.0_f32))
                 .height(Size::fill())
-                .child(OutputSettingsCard(state, k_factor_input, threshold_input)),
+                .child(output_settings_card(state, k_factor_input, threshold_input)),
         )
         .into()
 }
 
-fn ProcessDashboardRow(
+fn process_dashboard_row(
     state: State<AppState>,
     target_height_input: State<String>,
     page_range_input: State<String>,
@@ -1239,11 +1238,11 @@ fn ProcessDashboardRow(
         // shown. A small spacer keeps the button off the very top edge / utility row.
         .main_align(Alignment::Start)
         .cross_align(Alignment::Center)
-        .child(rect().width(Size::fill()).height(Size::px(10.)))
+        .child(rect().width(Size::fill()).height(Size::px(10.0_f32)))
         .child(
             Button::new()
-                .width(Size::percent(45.))
-                .height(Size::px(36.))
+                .width(Size::percent(45.0_f32))
+                .height(Size::px(36.0_f32))
                 .on_press(move |_| {
                     start_or_cancel_processing(state, target_height_input, page_range_input, theme)
                 })
@@ -1252,7 +1251,7 @@ fn ProcessDashboardRow(
         .child(
             rect()
                 .position(Position::new_absolute().right(0.).top(8.))
-                .child(ProcessUtilityButtons(state)),
+                .child(process_utility_buttons(state)),
         )
         .maybe_child(if item_rows.is_empty() {
             None::<Element>
@@ -1260,11 +1259,11 @@ fn ProcessDashboardRow(
             Some(
                 rect()
                     .width(Size::fill())
-                    .height(Size::px(42.))
+                    .height(Size::px(42.0_f32))
                     // Keep a clear 14px gap below the 36px Process button.
                     .position(Position::new_absolute().left(0.).top(60.))
                     .vertical()
-                    .spacing(2.)
+                    .spacing(2.0_f32)
                     .children(item_rows)
                     .maybe_child(if overflow_count > 0 {
                         Some(
@@ -1287,7 +1286,7 @@ fn process_queue_row(status: &str, path: &str) -> Element {
     rect()
         .width(Size::fill())
         .direction(Direction::Horizontal)
-        .spacing(8.)
+        .spacing(8.0_f32)
         .cross_align(Alignment::Center)
         .child(
             label()
@@ -1313,7 +1312,7 @@ fn compact_option_button(
 ) -> Element {
     Button::new()
         .width(Size::fill())
-        .height(Size::px(20.))
+        .height(Size::px(20.0_f32))
         .on_press(on_press)
         .child(current_text.into())
         .into()
@@ -1425,7 +1424,7 @@ impl Component for CompactChoiceButton {
 
         rect()
             .width(Size::fill())
-            .height(Size::px(20.))
+            .height(Size::px(20.0_f32))
             .background(background)
             .border(
                 Border::new()
@@ -1461,7 +1460,7 @@ fn compact_choice_row(children: Vec<Element>) -> Element {
         .into_iter()
         .map(|child| {
             rect()
-                .width(Size::flex(1.))
+                .width(Size::flex(1.0_f32))
                 .height(Size::fill())
                 .child(child)
                 .into()
@@ -1470,10 +1469,10 @@ fn compact_choice_row(children: Vec<Element>) -> Element {
 
     rect()
         .width(Size::fill())
-        .height(Size::px(20.))
+        .height(Size::px(20.0_f32))
         .direction(Direction::Horizontal)
         .content(Content::Flex)
-        .spacing(3.)
+        .spacing(3.0_f32)
         .children(cells)
         .into()
 }
@@ -1485,7 +1484,7 @@ fn image_processing_button_label(value: ImageProcessingType) -> &'static str {
     }
 }
 
-fn OutputSettingsCard(
+fn output_settings_card(
     state: State<AppState>,
     k_factor_input: State<String>,
     threshold_input: State<String>,
@@ -1648,9 +1647,9 @@ fn OutputSettingsCard(
             vec![
                 rect()
                     .width(Size::fill())
-                    .height(Size::flex(1.))
+                    .height(Size::flex(1.0_f32))
                     .vertical()
-                    .spacing(8.)
+                    .spacing(8.0_f32)
                     .children(output_rows)
                     .into(),
             ],
@@ -1658,7 +1657,7 @@ fn OutputSettingsCard(
         .into()
 }
 
-fn PagesDeviceCard(
+fn pages_device_card(
     state: State<AppState>,
     target_height_input: State<String>,
     page_range_input: State<String>,
@@ -1902,7 +1901,7 @@ fn PagesDeviceCard(
         .width(Size::fill())
         .height(Size::fill())
         .vertical()
-        .spacing(3.)
+        .spacing(3.0_f32)
         .child(tooltip_wrap_at(
             state,
             TooltipArea::PagesDeviceCard,
@@ -1973,9 +1972,9 @@ fn PagesDeviceCard(
             vec![
                 rect()
                     .width(Size::fill())
-                    .height(Size::flex(1.))
+                    .height(Size::flex(1.0_f32))
                     .vertical()
-                    .spacing(8.)
+                    .spacing(8.0_f32)
                     .child(widgets::lege_grid_row(
                         vec![page_range_control, resolution_control],
                         50.,
@@ -1986,7 +1985,7 @@ fn PagesDeviceCard(
                     .child(
                         rect()
                             .width(Size::fill())
-                            .height(Size::px(148.))
+                            .height(Size::px(148.0_f32))
                             .padding((30., 0., 0., 0.))
                             .child(widgets::lege_grid_row(
                                 vec![
@@ -2022,7 +2021,7 @@ fn binarization_subcard(
     let section = |children: Vec<Element>| -> Element {
         rect()
             .width(Size::fill())
-            .spacing(4.)
+            .spacing(4.0_f32)
             .vertical()
             .child(
                 label()
@@ -2063,7 +2062,7 @@ fn binarization_subcard(
         .width(Size::fill())
         .direction(Direction::Horizontal)
         .cross_align(Alignment::Center)
-        .spacing(8.)
+        .spacing(8.0_f32)
         .child(checkbox_cell(tooltip_wrap(
             state,
             TooltipArea::BinarizationCard,
@@ -2148,7 +2147,7 @@ fn binarization_subcard(
         // vertically centered + a 1px nudge downward.
         .cross_align(Alignment::Start)
         .padding((4., 0., 0., 0.))
-        .spacing(8.)
+        .spacing(8.0_f32)
         .child(
             rect()
                 .width(Size::px(COL_W))
@@ -2174,7 +2173,7 @@ fn binarization_subcard(
                             // Clear on click for fresh entry, like the
                             // target-resolution field — no prepending.
                             .replace_on_focus(true)
-                            .width(Size::px(64.))
+                            .width(Size::px(64.0_f32))
                             .into(),
                     )
                 } else {
@@ -2193,7 +2192,7 @@ fn binarization_subcard(
                             // Clear on click for fresh entry, like the
                             // target-resolution field — no prepending.
                             .replace_on_focus(true)
-                            .width(Size::px(64.))
+                            .width(Size::px(64.0_f32))
                             .into(),
                     )
                 } else {
@@ -2222,7 +2221,7 @@ fn progress_stage_card(
 
     rect()
         .width(Size::fill())
-        .height(Size::px(48.))
+        .height(Size::px(48.0_f32))
         .background(card_bg())
         .border(
             Border::new()
@@ -2233,7 +2232,7 @@ fn progress_stage_card(
         .corner_radius(4.)
         .padding((6., 8., 6., 8.))
         .vertical()
-        .spacing(4.)
+        .spacing(4.0_f32)
         .child(
             rect()
                 .width(Size::fill())
@@ -2257,7 +2256,7 @@ fn progress_stage_card(
         .child(
             rect()
                 .width(Size::fill())
-                .height(Size::px(10.))
+                .height(Size::px(10.0_f32))
                 .background(rgb(progress_track_bg()))
                 .border(
                     Border::new()
@@ -2312,7 +2311,7 @@ fn progress_single_bar(
     ))
 }
 
-fn StatusBar(state: State<AppState>) -> Element {
+fn status_bar(state: State<AppState>) -> Element {
     let read = state.read();
     let is_processing = read.is_processing;
     let eta_text = read.active_eta.clone();
@@ -2338,7 +2337,7 @@ fn StatusBar(state: State<AppState>) -> Element {
         {
             rect()
                 .vertical()
-                .spacing(3.)
+                .spacing(3.0_f32)
                 .cross_align(Alignment::End)
                 .child(
                     Button::new()
@@ -2404,7 +2403,7 @@ fn StatusBar(state: State<AppState>) -> Element {
             .width(Size::fill())
             .height(Size::fill())
             .vertical()
-            .spacing(6.)
+            .spacing(6.0_f32)
             .child(label().text(status.0).font_size(12.).color(text_fg()))
             .maybe_child(secondary_text.map(|detail| -> Element {
                 label().text(detail).font_size(11.).color(muted_fg()).into()
@@ -2626,21 +2625,21 @@ fn document_popup_shell(
                 rect()
                     .width(Size::fill())
                     .padding(12.)
-                    .spacing(8.)
+                    .spacing(8.0_f32)
                     .child(content),
             )
             .into(),
     )
     .show(true)
-    .width(Size::percent(50.))
-    .height(Size::percent(50.))
-    .min_width(Size::px(520.))
-    .min_height(Size::px(360.))
+    .width(Size::percent(50.0_f32))
+    .height(Size::percent(50.0_f32))
+    .min_width(Size::px(520.0_f32))
+    .min_height(Size::px(360.0_f32))
     .on_close_request(move |_| (on_close_request.borrow_mut())())
     .into()
 }
 
-fn QueueViewerPopup(mut state: State<AppState>) -> Element {
+fn queue_viewer_popup(mut state: State<AppState>) -> Element {
     if !state.read().show_queue_viewer {
         return rect().into();
     }
@@ -2651,8 +2650,8 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
     popup_shell(
         GUI_TEXT.interactive.popups.queue_items_title.clone(),
         rect()
-            .width(Size::px(520.))
-            .spacing(8.)
+            .width(Size::px(520.0_f32))
+            .spacing(8.0_f32)
             .child(
                 Button::new()
                     .on_press(move |_| {
@@ -2676,9 +2675,9 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
             )
             .child(
                 ScrollView::new()
-                    .width(Size::px(520.))
-                    .height(Size::px(320.))
-                    .child(rect().spacing(8.).children(if queue_items.is_empty() {
+                    .width(Size::px(520.0_f32))
+                    .height(Size::px(320.0_f32))
+                    .child(rect().spacing(8.0_f32).children(if queue_items.is_empty() {
                         vec![
                             label()
                                 .text(GUI_TEXT.interactive.queue.empty_short.clone())
@@ -2695,7 +2694,7 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
                                     .background(panel_bg())
                                     .corner_radius(4.)
                                     .padding(8.)
-                                    .spacing(4.)
+                                    .spacing(4.0_f32)
                                     .child(
                                         label()
                                             .text(format!("{}. {}", idx + 1, item.file_name))
@@ -2718,7 +2717,7 @@ fn QueueViewerPopup(mut state: State<AppState>) -> Element {
     )
 }
 
-fn LogViewerPopup(mut state: State<AppState>) -> Element {
+fn log_viewer_popup(mut state: State<AppState>) -> Element {
     if !state.read().show_log_viewer {
         return rect().into();
     }
@@ -2739,7 +2738,7 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
         rect()
             .width(Size::fill())
             .height(Size::fill())
-            .spacing(8.)
+            .spacing(8.0_f32)
             .child(
                 Button::new()
                     .on_press(move |_| {
@@ -2761,7 +2760,7 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
                     .child(
                         rect()
                             .width(Size::fill())
-                            .spacing(8.)
+                            .spacing(8.0_f32)
                             .children(render_log_rows(state, &recent_entries)),
                     ),
             )
@@ -2771,7 +2770,7 @@ fn LogViewerPopup(mut state: State<AppState>) -> Element {
 }
 
 #[cfg(feature = "debug-logging")]
-fn DebugLogViewerPopup(mut state: State<AppState>) -> Element {
+fn debug_log_viewer_popup(mut state: State<AppState>) -> Element {
     if !state.read().show_debug_log {
         return rect().into();
     }
@@ -2788,10 +2787,10 @@ fn DebugLogViewerPopup(mut state: State<AppState>) -> Element {
     popup_shell(
         GUI_TEXT.interactive.popups.debug_log_title.clone(),
         ScrollView::new()
-            .width(Size::px(760.))
-            .height(Size::px(420.))
+            .width(Size::px(760.0_f32))
+            .height(Size::px(420.0_f32))
             .child(
-                rect().spacing(6.).children(
+                rect().spacing(6.0_f32).children(
                     messages
                         .iter()
                         .map(|msg| {
@@ -2811,11 +2810,11 @@ fn DebugLogViewerPopup(mut state: State<AppState>) -> Element {
 }
 
 #[cfg(not(feature = "debug-logging"))]
-fn DebugLogViewerPopup(_state: State<AppState>) -> Element {
+fn debug_log_viewer_popup(_state: State<AppState>) -> Element {
     rect().into()
 }
 
-fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
+fn about_popup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     let show_about = state.read().show_about;
 
     if !show_about {
@@ -2854,7 +2853,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
         } else {
             Size::auto()
         })
-        .spacing(6.)
+        .spacing(6.0_f32)
         .cross_align(Alignment::Center)
         .maybe(show_chooser, |row| row.main_align(Alignment::End))
         .font_size(13.)
@@ -2922,11 +2921,11 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
         // The popup frame already contributes 8px; 4 more keeps the content clear of
         // the 12px corner radius without padding the dialog out.
         .padding(4.)
-        .spacing(10.)
+        .spacing(10.0_f32)
         .child(
             rect()
                 .direction(Direction::Horizontal)
-                .spacing(8.)
+                .spacing(8.0_f32)
                 .cross_align(Alignment::Center)
                 .child(
                     label()
@@ -2943,7 +2942,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
                 ),
         );
     let content = if show_chooser {
-        content.child(ThemeChooser(state, theme))
+        content.child(theme_chooser(state, theme))
     } else {
         content
     };
@@ -2951,7 +2950,7 @@ fn AboutPopup(mut state: State<AppState>, theme: State<Theme>) -> Element {
     Popup::new()
         .show(true)
         .width(if show_chooser {
-            Size::px(480.)
+            Size::px(480.0_f32)
         } else {
             Size::auto()
         })

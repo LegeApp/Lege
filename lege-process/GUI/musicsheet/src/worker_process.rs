@@ -447,9 +447,6 @@ pub struct WorkerHandle {
     pub child: Option<std::process::Child>,
     /// PID, used as a kill fallback.
     pub pid: u32,
-    pub task_id: u64,
-    pub input_path: PathBuf,
-    pub output_path: PathBuf,
     active_pids: Option<Arc<Mutex<Vec<u32>>>>,
     cancelled: Option<Arc<AtomicBool>>,
 }
@@ -459,9 +456,6 @@ impl WorkerHandle {
         Self {
             child: None,
             pid: 0,
-            task_id: u64::MAX,
-            input_path: PathBuf::new(),
-            output_path: PathBuf::new(),
             active_pids: Some(active_pids),
             cancelled: Some(cancelled),
         }
@@ -726,9 +720,6 @@ pub fn spawn_lege_worker(
     Ok(WorkerHandle {
         child: None,
         pid,
-        task_id: gui_task_id,
-        input_path,
-        output_path,
         active_pids: None,
         cancelled: None,
     })

@@ -36,18 +36,6 @@ pub fn info_bg() -> Rgb {
     active_palette().info_bg
 }
 
-/// Readable foreground for notification cards, whose background deliberately
-/// uses a theme's lightest color even while the rest of a dark theme uses white.
-pub fn info_fg() -> Rgb {
-    let (r, g, b) = info_bg();
-    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-    if luma >= 150.0 {
-        (20, 20, 20)
-    } else {
-        (255, 255, 255)
-    }
-}
-
 pub fn control_bg() -> Rgb {
     active_palette().control_bg
 }

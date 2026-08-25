@@ -492,42 +492,6 @@ pub async fn start_async_processing(
     Ok((tracker_infos, worker_handles, events_rx))
 }
 
-/// Open folder in system file explorer
-pub fn open_folder_in_explorer(path: &PathBuf) -> Result<()> {
-    if !path.exists() {
-        return Err(anyhow::anyhow!("Path does not exist: {}", path.display()));
-    }
-
-    let folder_path = if path.is_file() {
-        path.parent().unwrap_or(path)
-    } else {
-        path
-    };
-
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(folder_path)
-            .spawn()?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(folder_path)
-            .spawn()?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(folder_path)
-            .spawn()?;
-    }
-
-    Ok(())
-}
-
 /// Open a file or URL with the system default handler.
 pub fn open_with_system(target: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
@@ -582,15 +546,9 @@ pub fn open_with_system(target: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a bundled docs file located next to the installed binary under `docs/`.
-pub fn bundled_docs_path(file_name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    Some(exe_dir.join("docs").join(file_name))
-}
-
-/// Like [`bundled_docs_path`] but returns `None` if the file does not exist.
-/// Also checks next to the exe directly (for flat release layouts).
+/// Resolve a bundled docs file located next to the installed binary under
+/// `docs/`, returning `None` if the file does not exist. Also checks next to
+/// the exe directly (for flat release layouts).
 pub fn bundled_docs_path_if_exists(file_name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;

@@ -1,4 +1,9 @@
-#![allow(non_snake_case)]
+#![allow(
+    non_snake_case,
+    reason = "Names mirror the Windows Shell COM interfaces (IUnknown, IShellItem, \
+              IFileDialog, ...) verbatim so they cross-reference directly against the \
+              Win32/COM SDK docs; renaming them to snake_case would break that mapping."
+)]
 
 use std::ffi::c_void;
 use windows_sys::core::{HRESULT, PCWSTR, PWSTR};

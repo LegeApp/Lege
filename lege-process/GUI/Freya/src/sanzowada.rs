@@ -3,17 +3,13 @@
 //! Derived from *A Dictionary of Color Combinations* (Sanzo Wada). This is the
 //! hand-picked subset kept from the full book set; each entry carries both a light
 //! and a dark palette (lightest luma -> backgrounds, mid -> buttons, darkest -> text;
-//! dark = inverse) plus `default_dark`, the mode it was curated in. The theme picker
-//! numbers them 1..N in array order and shows the name as "Sanzo Light/Dark <n>".
+//! dark = inverse). The theme picker numbers them 1..N in array order and shows the
+//! name as "Sanzo Light/Dark <n>".
 use crate::appearance::Palette;
 
 pub struct SanzoTheme {
     /// Source color names, darkest -> lightest.
     pub colors: &'static [&'static str],
-    /// The mode this combo was curated in. Retained as a record of the original pick;
-    /// the two-row picker now exposes every combo in both light and dark.
-    #[allow(dead_code)]
-    pub default_dark: bool,
     pub light: Palette,
     pub dark: Palette,
 }
@@ -38,7 +34,6 @@ pub fn theme_index_by_colors(colors: &[String]) -> Option<usize> {
 pub static SANZO_THEMES: [SanzoTheme; 28] = [
     SanzoTheme {
         colors: &["Slate Color", "Antwarp Blue", "Golden Yellow"],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 168, 63),
             panel_bg: (255, 177, 82),
@@ -82,7 +77,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Deep Indigo", "Vandyke Brown", "Raw Sienna"],
-        default_dark: true,
         light: Palette {
             app_bg: (199, 107, 29),
             panel_bg: (205, 122, 52),
@@ -126,7 +120,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Black", "Sudan Brown", "Glaucous Green"],
-        default_dark: true,
         light: Palette {
             app_bg: (199, 218, 215),
             panel_bg: (205, 222, 219),
@@ -170,7 +163,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Black", "Green", "Jasper Red"],
-        default_dark: true,
         light: Palette {
             app_bg: (242, 75, 21),
             panel_bg: (243, 93, 44),
@@ -214,7 +206,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Olive", "Laelia Pink", "Corinthian Pink", "Sulphur Yellow"],
-        default_dark: false,
         light: Palette {
             app_bg: (251, 245, 205),
             panel_bg: (251, 246, 210),
@@ -258,7 +249,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Blue", "Spectrum Red", "Aconite Violet", "Orange Yellow"],
-        default_dark: false,
         light: Palette {
             app_bg: (255, 182, 11),
             panel_bg: (255, 189, 35),
@@ -307,7 +297,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Isabella Color",
             "Pale Lemon Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (255, 244, 196),
             panel_bg: (255, 245, 202),
@@ -356,7 +345,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Light Brown Drab",
             "Nile Blue",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (188, 233, 238),
             panel_bg: (195, 235, 240),
@@ -405,7 +393,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Neutral Gray",
             "Naples Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (255, 238, 176),
             panel_bg: (255, 240, 184),
@@ -449,7 +436,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Scarlet", "English Red", "Fawn", "Cobalt Green"],
-        default_dark: false,
         light: Palette {
             app_bg: (155, 212, 189),
             panel_bg: (165, 216, 196),
@@ -498,7 +484,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Apricot Orange",
             "Golden Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (255, 168, 63),
             panel_bg: (255, 177, 82),
@@ -547,7 +532,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Pinkish Cinnamon",
             "Sulphur Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (251, 245, 205),
             panel_bg: (251, 246, 210),
@@ -596,7 +580,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Light Green Yellow",
             "Cream Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (255, 200, 106),
             panel_bg: (255, 206, 121),
@@ -645,7 +628,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Golden Yellow",
             "Sulphur Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (251, 245, 205),
             panel_bg: (251, 246, 210),
@@ -694,7 +676,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Blackish Olive",
             "Light Brownish Olive",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (130, 101, 61),
             panel_bg: (142, 116, 80),
@@ -743,7 +724,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Light Glaucous Blue",
             "Sulphur Yellow",
         ],
-        default_dark: false,
         light: Palette {
             app_bg: (251, 245, 205),
             panel_bg: (251, 246, 210),
@@ -792,7 +772,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Salvia Blue",
             "Sulphur Yellow",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (251, 245, 205),
             panel_bg: (251, 246, 210),
@@ -836,7 +815,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Black", "Madder Brown", "Citron Yellow", "Cinnamon Buff"],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 210, 133),
             panel_bg: (255, 214, 145),
@@ -885,7 +863,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Olympic Blue",
             "Neutral Gray",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (192, 204, 216),
             panel_bg: (198, 209, 220),
@@ -934,7 +911,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Yellow Ocher",
             "Naples Yellow",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 238, 176),
             panel_bg: (255, 240, 184),
@@ -983,7 +959,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Light Porcelain Green",
             "Apricot Orange",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 135, 68),
             panel_bg: (255, 147, 87),
@@ -1032,7 +1007,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Grayish Lavender",
             "Cream Yellow",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 200, 106),
             panel_bg: (255, 206, 121),
@@ -1076,7 +1050,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Black", "Violet Carmine", "Vistoris Lake", "Laelia Pink"],
-        default_dark: true,
         light: Palette {
             app_bg: (207, 157, 186),
             panel_bg: (212, 167, 193),
@@ -1125,7 +1098,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Grayish Lavender",
             "Orange Yellow",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 182, 11),
             panel_bg: (255, 189, 35),
@@ -1174,7 +1146,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Ochraceous Salmon",
             "Light Glaucous Blue",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (194, 220, 235),
             panel_bg: (200, 224, 237),
@@ -1218,7 +1189,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
     },
     SanzoTheme {
         colors: &["Black", "Peach Red", "Sea Green", "Neutral Gray"],
-        default_dark: false,
         light: Palette {
             app_bg: (192, 204, 216),
             panel_bg: (198, 209, 220),
@@ -1267,7 +1237,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Corinthian Pink",
             "Cream Yellow",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 200, 106),
             panel_bg: (255, 206, 121),
@@ -1316,7 +1285,6 @@ pub static SANZO_THEMES: [SanzoTheme; 28] = [
             "Aconite Violet",
             "Cinnamon Buff",
         ],
-        default_dark: true,
         light: Palette {
             app_bg: (255, 210, 133),
             panel_bg: (255, 214, 145),

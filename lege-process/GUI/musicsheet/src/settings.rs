@@ -58,17 +58,6 @@ pub fn load_settings() -> Result<Option<ProcessingOptions>> {
     Ok(Some(options))
 }
 
-/// Save settings to settings.json
-pub fn save_settings(options: &ProcessingOptions) -> Result<()> {
-    let settings_path = get_settings_file_path();
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let content = serde_json::to_string_pretty(options)?;
-    fs::write(&settings_path, content)?;
-    Ok(())
-}
-
 pub fn load_resolution_preset() -> Result<Option<ResolutionPreset>> {
     let preset_path = get_resolution_preset_file_path();
 
@@ -97,15 +86,6 @@ pub fn clear_resolution_preset() -> Result<()> {
     let preset_path = get_resolution_preset_file_path();
     if preset_path.exists() {
         fs::remove_file(&preset_path)?;
-    }
-    Ok(())
-}
-
-/// Clear saved settings by deleting settings.json if present
-pub fn clear_settings() -> Result<()> {
-    let settings_path = get_settings_file_path();
-    if settings_path.exists() {
-        fs::remove_file(settings_path)?;
     }
     Ok(())
 }

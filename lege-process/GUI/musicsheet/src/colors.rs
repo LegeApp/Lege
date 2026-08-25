@@ -80,6 +80,11 @@ pub fn progress_track_bg() -> Rgb {
 /// reuse). The progress bar no longer cycles through it per job; instead it
 /// derives a single color from the active theme (see [`progress_bar_color`]),
 /// but the palette is kept so edits here still drive that derivation.
+///
+/// Only consumed by [`tests::default_progress_bar_color_is_reddest_job_accent`],
+/// which checks that [`DEFAULT_PROGRESS_BAR_COLOR`] still tracks the reddest
+/// entry here.
+#[cfg(test)]
 pub const JOB_ACCENT_COLORS: [Rgb; 15] = [
     (180, 217, 232), // sky blue
     (232, 218, 166), // warm yellow

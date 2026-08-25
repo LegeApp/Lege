@@ -166,27 +166,6 @@ pub fn is_pdf_file(path: &PathBuf) -> bool {
         .unwrap_or(false)
 }
 
-/// Get all PDF files in a directory
-pub fn get_pdf_files_in_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
-    let mut pdf_files = Vec::new();
-
-    if !dir.is_dir() {
-        return Ok(pdf_files);
-    }
-
-    let entries = std::fs::read_dir(dir)?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && is_pdf_file(&path) {
-            pdf_files.push(path);
-        }
-    }
-
-    pdf_files.sort();
-    Ok(pdf_files)
-}
-
 /// Supported image extensions for image folder processing
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "ppm", "pbm", "pgm", "pnm", "tiff", "tif", "bmp", "jp2",
@@ -476,42 +455,6 @@ pub async fn start_async_processing(
     Ok((tracker_infos, worker_handles, events_rx))
 }
 
-/// Open folder in system file explorer
-pub fn open_folder_in_explorer(path: &PathBuf) -> Result<()> {
-    if !path.exists() {
-        return Err(anyhow::anyhow!("Path does not exist: {}", path.display()));
-    }
-
-    let folder_path = if path.is_file() {
-        path.parent().unwrap_or(path)
-    } else {
-        path
-    };
-
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(folder_path)
-            .spawn()?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(folder_path)
-            .spawn()?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(folder_path)
-            .spawn()?;
-    }
-
-    Ok(())
-}
-
 /// Open a file or URL with the system default handler.
 pub fn open_with_system(target: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
@@ -718,7 +661,12 @@ mod embedded_document_tests {
         assert!(DOCUMENTATION_HTML.contains("PP-OCRv6"));
         assert!(LICENSES_HTML.contains("PaddleOCR"));
         assert!(LICENSES_HTML.contains("LICENSE.txt"));
-        assert!(LEGE_LICENSE.contains("MIT License"));
+        // Lege is AGPL-3.0-*only*, so pin the version too: an accidental
+        // relicense or a swapped-in LICENSE file should fail this test, which
+        // is what it is for. The embedded file is what the About box serves as
+        // /LICENSE.txt.
+        assert!(LEGE_LICENSE.contains("GNU AFFERO GENERAL PUBLIC LICENSE"));
+        assert!(LEGE_LICENSE.contains("Version 3, 19 November 2007"));
     }
 
     #[test]

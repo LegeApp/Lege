@@ -15,6 +15,9 @@ dark-mode = []
 # The GUI drives the CLI as a subprocess, so it no longer toggles the core
 # crate's logging. Build via the workspace alias `cargo build-debug-logging`.
 debug-logging = []
+# Bundles the German GUI locale (language_service/de/gui_text.json) instead
+# of English.
+german = []
 
 [dependencies]
 # Keep this feature set aligned with the published Windows Skia binary cache.

@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use std::{
     ffi::CStr,
     os::raw::{c_char, c_int, c_uint, c_void},
@@ -12,31 +10,24 @@ pub type DBusMessage = c_void;
 
 #[repr(C)]
 #[derive(Debug, PartialEq, Copy, Clone)]
-/// System or Session bus
+/// Session bus. libdbus also defines System = 1 and Starter = 2, but this
+/// backend only ever talks to the session bus.
 pub enum DBusBusType {
     Session = 0,
-    System = 1,
-    Starter = 2,
 }
 
+// Only the D-Bus type-signature tags this backend actually serializes or
+// matches on. libdbus defines more (e.g. INT16/UINT16/INT32/INT64/UINT64,
+// DOUBLE, UNIX_FD, SIGNATURE, INVALID); add them here if a caller needs them.
 pub const DBUS_TYPE_ARRAY: c_int = 'a' as c_int;
 pub const DBUS_TYPE_VARIANT: c_int = 'v' as c_int;
 pub const DBUS_TYPE_BOOLEAN: c_int = 'b' as c_int;
-pub const DBUS_TYPE_INVALID: c_int = 0;
 pub const DBUS_TYPE_STRING: c_int = 's' as c_int;
 pub const DBUS_TYPE_DICT_ENTRY: c_int = 'e' as c_int;
 pub const DBUS_TYPE_BYTE: c_int = 'y' as c_int;
-pub const DBUS_TYPE_INT16: c_int = 'n' as c_int;
-pub const DBUS_TYPE_UINT16: c_int = 'q' as c_int;
-pub const DBUS_TYPE_INT32: c_int = 'i' as c_int;
 pub const DBUS_TYPE_UINT32: c_int = 'u' as c_int;
-pub const DBUS_TYPE_INT64: c_int = 'x' as c_int;
-pub const DBUS_TYPE_UINT64: c_int = 't' as c_int;
-pub const DBUS_TYPE_DOUBLE: c_int = 'd' as c_int;
-pub const DBUS_TYPE_UNIX_FD: c_int = 'h' as c_int;
 pub const DBUS_TYPE_STRUCT: c_int = 'r' as c_int;
 pub const DBUS_TYPE_OBJECT_PATH: c_int = 'o' as c_int;
-pub const DBUS_TYPE_SIGNATURE: c_int = 'g' as c_int;
 
 #[repr(C)]
 pub struct DBusError {

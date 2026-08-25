@@ -183,15 +183,6 @@ pub struct ResolutionPreset {
     pub width: Option<u32>,
 }
 
-impl ResolutionPreset {
-    pub fn from_options(options: &ProcessingOptions) -> Self {
-        Self {
-            height: options.target_height.unwrap_or(DEFAULT_MUSIC_TARGET_HEIGHT),
-            width: options.target_width,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum InputKind {
     Pdf,
@@ -215,15 +206,6 @@ impl InputKind {
             Some("pdf") => InputKind::Pdf,
             Some("zip") => InputKind::ZipArchive,
             _ => InputKind::Unknown,
-        }
-    }
-
-    pub fn badge(&self) -> &'static str {
-        match self {
-            InputKind::Pdf => "PDF",
-            InputKind::ImageFolder => "DIR",
-            InputKind::ZipArchive => "ZIP",
-            InputKind::Unknown => "???",
         }
     }
 }
@@ -262,36 +244,18 @@ impl DocumentItem {
             error_message: None,
         }
     }
-
-    pub fn count_label(&self) -> &'static str {
-        match self.input_kind {
-            InputKind::Pdf => "pages",
-            InputKind::ImageFolder | InputKind::ZipArchive => "images",
-            InputKind::Unknown => "pages",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum DocumentStatus {
     #[default]
     Queued,
-    Processing(f32),
-    Completed,
-    Failed(String),
-    Cancelled,
 }
 
 impl std::fmt::Display for DocumentStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DocumentStatus::Queued => write!(f, "Queued"),
-            DocumentStatus::Processing(progress) => {
-                write!(f, "Processing: {:.0}%", progress * 100.0)
-            }
-            DocumentStatus::Completed => write!(f, "Completed"),
-            DocumentStatus::Failed(err) => write!(f, "Failed: {}", err),
-            DocumentStatus::Cancelled => write!(f, "Cancelled"),
         }
     }
 }
