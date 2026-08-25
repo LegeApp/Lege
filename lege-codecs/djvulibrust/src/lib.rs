@@ -41,6 +41,24 @@
 //! - **Pixmap (RGB/grayscale)**: For IW44 background layers (photos, scans)
 //! - **Bitmap (bilevel)**: For JB2 foreground layers (text, graphics)
 
+/// Warn on stderr when the `debug-logging` feature is on.
+///
+/// Both arms consume `$($arg)*`. The disabled arm deliberately still references its
+/// arguments inside a never-taken branch, so a binding used only by a warning here does
+/// not read as unused in a default build. Renaming such a binding to `_e` to silence that
+/// is what previously broke `--features debug-logging` for this crate.
+#[macro_export]
+macro_rules! warn_log {
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "debug-logging")]
+        ::std::eprintln!($($arg)*);
+        #[cfg(not(feature = "debug-logging"))]
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
+}
+
 // Core modules
 pub mod annotations;
 pub mod doc;

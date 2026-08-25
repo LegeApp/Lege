@@ -813,18 +813,16 @@ impl PageComponents {
                                 writer.write_all(&data)?;
                                 writer.close_chunk()?;
                             }
-                            Err(_e) => {
-                                #[cfg(feature = "debug-logging")]
-                                eprintln!(
+                            Err(e) => {
+                                crate::warn_log!(
                                     "[page_encoder] Warning: BZZ compression for TXTz failed: {e}. Skipping text layer."
                                 );
                             }
                         }
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         // Log but don't fail - page will still be viewable without searchable text
-                        #[cfg(feature = "debug-logging")]
-                        eprintln!(
+                        crate::warn_log!(
                             "[page_encoder] Warning: Failed to encode hidden text: {e}. Skipping text layer."
                         );
                     }
