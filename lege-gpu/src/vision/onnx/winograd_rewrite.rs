@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::{Context, Result, bail};
 
 use crate::vision::onnx::attrs::shape_i64_to_usize;
-use crate::vision::onnx::graph::TensorIr;
 use crate::vision::onnx::types::{PlannedOp, PlannedOpKind};
 use crate::vision::ops::winograd::weight_transform_f23;
 use crate::vision::reference::Tensor;
@@ -15,7 +14,6 @@ pub(crate) fn rewrite_winograd_f23(
     ops: Vec<PlannedOp>,
     known_shapes: &mut BTreeMap<String, Vec<i64>>,
     constants: &mut HashMap<String, Tensor>,
-    initializers: &mut Vec<TensorIr>,
 ) -> Result<Vec<PlannedOp>> {
     let mut rewritten = Vec::with_capacity(ops.len());
     let mut count = 0usize;
@@ -35,7 +33,7 @@ pub(crate) fn rewrite_winograd_f23(
             continue;
         }
 
-        let replacement = rewrite_one(op, &weight_name, known_shapes, constants, initializers)
+        let replacement = rewrite_one(op, &weight_name, known_shapes, constants)
             .with_context(|| format!("Winograd rewrite failed for weight `{weight_name}`"))?;
         count += 1;
         rewritten.extend(replacement);
@@ -68,7 +66,6 @@ fn rewrite_one(
     weight_name: &str,
     known_shapes: &mut BTreeMap<String, Vec<i64>>,
     constants: &mut HashMap<String, Tensor>,
-    initializers: &mut Vec<TensorIr>,
 ) -> Result<Vec<PlannedOp>> {
     let x_shape = shape_i64_to_usize(&op.input_shapes[0])?;
     let w_shape = shape_i64_to_usize(&op.input_shapes[1])?;
@@ -115,11 +112,6 @@ fn rewrite_one(
         }
         constants.insert(u_name.clone(), Tensor::new(vec![16, cout, cin], u)?);
         known_shapes.insert(u_name.clone(), vec![16, cout as i64, cin as i64]);
-        initializers.push(TensorIr {
-            name: u_name.clone(),
-            dtype: "FLOAT".to_owned(),
-            shape: vec![16, cout as i64, cin as i64],
-        });
     }
 
     let ntw = w.div_ceil(2);
@@ -202,7 +194,8 @@ mod tests {
         }
 
         let model = load_model(&path).expect("load runtime YOLO model");
-        let graph = PreparedGraph::from_model(&model).expect("prepare runtime YOLO graph");
+        let graph = PreparedGraph::from_model_with_input_dims(&model, None)
+            .expect("prepare runtime YOLO graph");
         let input_count = graph
             .planned_ops
             .iter()

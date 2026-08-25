@@ -6,8 +6,7 @@ use anyhow::{Result, bail};
 
 use crate::vision::onnx_pb::{ModelProto, type_proto::Value as TypeValue};
 
-use super::attrs::{DimReport, dim_report, format_shape, producer, tensor_dtype_name};
-use super::graph::PreparedGraph;
+use super::attrs::{DimReport, dim_report, format_shape, tensor_dtype_name};
 
 /// Tensor layout of a model's image input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,15 +102,6 @@ pub(crate) struct ValueReport {
 
 #[derive(Debug)]
 pub(crate) struct ModelReport {
-    pub(crate) ir_version: i64,
-    pub(crate) producer: String,
-    pub(crate) opsets: Vec<String>,
-    pub(crate) inputs: Vec<ValueReport>,
-    pub(crate) outputs: Vec<ValueReport>,
-    pub(crate) node_count: usize,
-    pub(crate) initializer_count: usize,
-    pub(crate) initializer_dtypes: BTreeMap<String, usize>,
-    pub(crate) op_histogram: BTreeMap<String, usize>,
     pub(crate) rejection_reasons: Vec<String>,
 }
 
@@ -127,13 +117,6 @@ impl ModelReport {
         for node in graph.get_node() {
             *op_histogram
                 .entry(node.get_op_type().to_owned())
-                .or_insert(0) += 1;
-        }
-
-        let mut initializer_dtypes = BTreeMap::new();
-        for tensor in graph.get_initializer() {
-            *initializer_dtypes
-                .entry(tensor_dtype_name(tensor.get_data_type()).to_owned())
                 .or_insert(0) += 1;
         }
 
@@ -158,116 +141,21 @@ impl ModelReport {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let outputs = graph
-            .get_output()
-            .iter()
-            .map(|value| {
-                let tensor = match &value.get_field_type().value {
-                    Some(TypeValue::TensorType(tensor)) => tensor,
-                    _ => bail!("output {} is not a tensor", value.get_name()),
-                };
-                Ok(ValueReport {
-                    name: value.get_name().to_owned(),
-                    dtype: tensor_dtype_name(tensor.get_elem_type()).to_owned(),
-                    shape: tensor
-                        .get_shape()
-                        .get_dim()
-                        .iter()
-                        .map(dim_report)
-                        .collect(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        // Every graph output must be a tensor; nothing downstream else checks
+        // this, so the validation stays even though the per-output report
+        // (dtype/shape breakdown) is otherwise only needed for `inputs`.
+        for value in graph.get_output() {
+            match &value.get_field_type().value {
+                Some(TypeValue::TensorType(_)) => {}
+                _ => bail!("output {} is not a tensor", value.get_name()),
+            }
+        }
 
         let mut rejection_reasons = Vec::new();
         let matched_target = validate_target_input(&inputs, &mut rejection_reasons);
         validate_op_set(matched_target, &op_histogram, &mut rejection_reasons);
 
-        Ok(Self {
-            ir_version: model.get_ir_version(),
-            producer: producer(model),
-            opsets: model
-                .get_opset_import()
-                .iter()
-                .map(|opset| {
-                    let domain = if opset.get_domain().is_empty() {
-                        "ai.onnx"
-                    } else {
-                        opset.get_domain()
-                    };
-                    format!("{domain}:{}", opset.get_version())
-                })
-                .collect(),
-            inputs,
-            outputs,
-            node_count: graph.get_node().len(),
-            initializer_count: graph.get_initializer().len(),
-            initializer_dtypes,
-            op_histogram,
-            rejection_reasons,
-        })
-    }
-
-    pub(crate) fn print(&self) {
-        println!("ir_version: {}", self.ir_version);
-        println!("producer: {}", self.producer);
-        println!("opsets: {}", self.opsets.join(", "));
-        println!("nodes: {}", self.node_count);
-        println!("initializers: {}", self.initializer_count);
-
-        println!("\ninputs:");
-        for input in &self.inputs {
-            println!(
-                "  {}: {} {}",
-                input.name,
-                input.dtype,
-                format_shape(&input.shape)
-            );
-        }
-
-        println!("\noutputs:");
-        for output in &self.outputs {
-            println!(
-                "  {}: {} {}",
-                output.name,
-                output.dtype,
-                format_shape(&output.shape)
-            );
-        }
-
-        println!("\ninitializer dtypes:");
-        for (dtype, count) in &self.initializer_dtypes {
-            println!("  {dtype}: {count}");
-        }
-
-        println!("\nop histogram:");
-        let mut ops = self.op_histogram.iter().collect::<Vec<_>>();
-        ops.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-        for (op, count) in ops {
-            println!("  {op}: {count}");
-        }
-
-        if self.rejection_reasons.is_empty() {
-            println!("\ntarget: compatible with supported prepared-model checks");
-        } else {
-            println!("\ntarget: rejected");
-            for reason in &self.rejection_reasons {
-                println!("  - {reason}");
-            }
-        }
-    }
-
-    pub(crate) fn print_prepare_result(&self, model: &ModelProto) -> Result<()> {
-        self.print();
-        if self.rejection_reasons.is_empty() {
-            let graph = PreparedGraph::from_model(model)?;
-            graph.print_summary();
-            println!("\nprepare: accepted");
-            Ok(())
-        } else {
-            println!("\nprepare: rejected before graph lowering");
-            bail!("model is not compatible with a supported prepared-model target")
-        }
+        Ok(Self { rejection_reasons })
     }
 }
 

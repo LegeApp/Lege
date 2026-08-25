@@ -52,6 +52,7 @@ impl PdfProfile {
 
 /// Document information, all fields optional-with-defaults. `pdf_date` is a
 /// preformatted PDF date string (`D:YYYYMMDDHHmmSS±HH'mm'`) or None.
+#[derive(Debug)]
 pub struct DocumentMeta {
     pub profile: PdfProfile,
     pub pdf_date: Option<String>,

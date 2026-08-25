@@ -35,6 +35,10 @@ wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl"
 [target.'cfg(target_os = "android")'.dependencies]
 wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl", "vulkan"] }
 
+[[example]]
+name = "layout_compare"
+required-features = ["layout-detection"]
+
 [features]
 default = []
 # Android platform support. Gates `src/android.rs` and the Android backend

@@ -20,13 +20,14 @@ use crate::types::{ObjectId, Result, WriteError};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SharedResourceId(pub u64);
 
+#[derive(Debug)]
 struct Entry {
     bytes: Arc<[u8]>,
     written: Option<ObjectId>,
 }
 
 /// Maps shared-resource ids to their bytes and (lazily) their written object.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ResourceRegistry {
     entries: HashMap<u64, Entry>,
 }

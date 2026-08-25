@@ -63,13 +63,14 @@ impl Blob {
             None => &[],
         }
     }
-
 }
 
 impl std::fmt::Debug for Blob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never print megabytes of weights.
-        f.debug_struct("Blob").field("len", &self.range.len()).finish()
+        f.debug_struct("Blob")
+            .field("len", &self.range.len())
+            .finish()
     }
 }
 
@@ -234,7 +235,8 @@ impl ModelProto {
                 }
                 (8, WIRE_LEN) => {
                     let mut nested = reader.nested()?;
-                    out.opset_import.push(OperatorSetIdProto::parse(&mut nested)?);
+                    out.opset_import
+                        .push(OperatorSetIdProto::parse(&mut nested)?);
                 }
                 _ => reader.skip(field, wire)?,
             }
@@ -255,7 +257,8 @@ impl GraphProto {
                 (2, WIRE_LEN) => out.name = reader.string()?,
                 (5, WIRE_LEN) => {
                     let mut nested = reader.nested()?;
-                    out.initializer.push(TensorProto::parse(&mut nested, buffer)?);
+                    out.initializer
+                        .push(TensorProto::parse(&mut nested, buffer)?);
                 }
                 (11, WIRE_LEN) => {
                     let mut nested = reader.nested()?;
@@ -287,7 +290,8 @@ impl NodeProto {
                 (4, WIRE_LEN) => out.op_type = Some(reader.string()?),
                 (5, WIRE_LEN) => {
                     let mut nested = reader.nested()?;
-                    out.attribute.push(AttributeProto::parse(&mut nested, buffer)?);
+                    out.attribute
+                        .push(AttributeProto::parse(&mut nested, buffer)?);
                 }
                 (7, WIRE_LEN) => out.domain = Some(reader.string()?),
                 _ => reader.skip(field, wire)?,
@@ -404,7 +408,8 @@ impl TensorShapeProto {
             match (field, wire) {
                 (1, WIRE_LEN) => {
                     let mut nested = reader.nested()?;
-                    out.dim.push(TensorShapeProto_Dimension::parse(&mut nested)?);
+                    out.dim
+                        .push(TensorShapeProto_Dimension::parse(&mut nested)?);
                 }
                 _ => reader.skip(field, wire)?,
             }
@@ -582,15 +587,22 @@ impl ModelProto {
     pub fn get_graph(&self) -> &GraphProto {
         self.graph.as_deref().unwrap_or(&DEFAULT_GRAPH)
     }
+    // These four are only exercised by the wire-parser regression tests below
+    // (the graph loader itself only needs `has_graph`/`get_graph`), but they
+    // cover real parsing risk for a hand-rolled decoder, so they stay.
+    #[cfg(test)]
     pub fn get_ir_version(&self) -> i64 {
         self.ir_version
     }
+    #[cfg(test)]
     pub fn get_opset_import(&self) -> &[OperatorSetIdProto] {
         &self.opset_import
     }
+    #[cfg(test)]
     pub fn get_producer_name(&self) -> &str {
         &self.producer_name
     }
+    #[cfg(test)]
     pub fn get_producer_version(&self) -> &str {
         &self.producer_version
     }
@@ -615,9 +627,9 @@ impl GraphProto {
 }
 
 impl OperatorSetIdProto {
-    pub fn get_domain(&self) -> &str {
-        &self.domain
-    }
+    // Regression-tested at the wire level (opset version parsing); no
+    // production caller reads `domain` today, so only `get_version` is kept.
+    #[cfg(test)]
     pub fn get_version(&self) -> i64 {
         self.version
     }

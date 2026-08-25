@@ -28,6 +28,24 @@ pub enum StreamBody {
     Empty,
 }
 
+impl std::fmt::Debug for StreamBody {
+    // Manual: a derived impl would dump the raw stream payload (up to
+    // multi-MB image bytes); report the variant and length instead.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamBody::Shared(a) => f
+                .debug_tuple("Shared")
+                .field(&format_args!("{} byte(s)", a.len()))
+                .finish(),
+            StreamBody::Owned(v) => f
+                .debug_tuple("Owned")
+                .field(&format_args!("{} byte(s)", v.len()))
+                .finish(),
+            StreamBody::Empty => write!(f, "Empty"),
+        }
+    }
+}
+
 impl StreamBody {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
@@ -53,6 +71,17 @@ pub struct PdfSink<W: Write> {
     /// `offsets[num]` = byte offset of object `num`. Index 0 is the free head
     /// and is never a real object.
     offsets: Vec<u64>,
+}
+
+impl<W: Write> std::fmt::Debug for PdfSink<W> {
+    // Manual: `#[derive(Debug)]` would add a `where W: Debug` bound that
+    // constrains every call site; `inner` is opaque anyway, so it's skipped.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PdfSink")
+            .field("pos", &self.pos)
+            .field("offsets.len()", &self.offsets.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<W: Write> PdfSink<W> {

@@ -2341,6 +2341,10 @@ fn output_layout(
 /// layouts: luma is 1:1 and chroma is either 1:1 (4:4:4) or 2:1 horizontally
 /// (4:2:2 / 4:2:0 — each chroma sample spans two output columns). Any other
 /// sampling (e.g. 4:1:1, 3:1) falls back to the scalar per-pixel path.
+// Only `rgb_ycc_row_avx2` and its call site take this, and both are
+// `#[cfg(target_arch = "x86_64")]`; on other targets (e.g. aarch64-android)
+// there is no AVX2 path and nothing names this type.
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChromaX {
     /// `xm_chroma[x] == x` (no horizontal upsampling).

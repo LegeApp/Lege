@@ -160,7 +160,9 @@ impl UiTextRenderer {
         // program is missing, it lets the fallback chain pick a heavier face
         // instead of silently rendering bold labels at regular weight.
         let family = if paint.bold {
-            self.bold_family.as_deref().or(self.regular_family.as_deref())
+            self.bold_family
+                .as_deref()
+                .or(self.regular_family.as_deref())
         } else {
             self.regular_family.as_deref()
         };
@@ -317,7 +319,7 @@ mod tests {
     /// loaded and then never used.
     #[test]
     fn embedded_faces_register_and_are_resolvable() {
-        let mut renderer = UiTextRenderer::new();
+        let renderer = UiTextRenderer::new();
         let regular = renderer
             .regular_family
             .clone()
@@ -362,9 +364,12 @@ mod tests {
         if renderer.font_system.db().len() <= 2 {
             return;
         }
-        for (index, sample) in ["\u{7b2c}\u{4e00}\u{7ae0}", "\u{413}\u{43b}\u{430}\u{432}\u{430}"]
-            .into_iter()
-            .enumerate()
+        for (index, sample) in [
+            "\u{7b2c}\u{4e00}\u{7ae0}",
+            "\u{413}\u{43b}\u{430}\u{432}\u{430}",
+        ]
+        .into_iter()
+        .enumerate()
         {
             let surface = renderer.render(
                 [9, index as u64, 0, 0],

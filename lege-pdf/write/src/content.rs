@@ -10,7 +10,7 @@ use crate::serialize::{write_hex_string, write_real};
 use crate::types::{Affine, ResourceName};
 
 /// Accumulates a page content stream.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ContentWriter {
     bytes: Vec<u8>,
 }

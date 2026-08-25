@@ -14,6 +14,7 @@ use crate::types::{ObjectId, PdfRect, Result, WriteError};
 
 /// Records the object id of each logical page as it is written. Replaces the
 /// old `Arc<Mutex<BTreeMap>>` reorder buffer.
+#[derive(Debug)]
 pub struct WrittenPageSlots {
     slots: Vec<Option<ObjectId>>,
 }
@@ -154,7 +155,7 @@ pub fn write_pages_root<W: Write>(
 }
 
 /// Optional catalog entries beyond `/Pages`.
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct CatalogExtras {
     pub outlines: Option<ObjectId>,
     /// PDF/A OutputIntent object; adds `/OutputIntents [id]`.

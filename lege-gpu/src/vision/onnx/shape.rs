@@ -26,7 +26,6 @@ pub(crate) struct ShapeReport {
 /// constants they produced (so float ones consumed by kept ops can be promoted
 /// to GPU initializers).
 pub(crate) struct ShapeInference {
-    pub(crate) report: ShapeReport,
     pub(crate) folded: BTreeSet<usize>,
     pub(crate) folded_values: Vec<String>,
 }
@@ -83,7 +82,6 @@ pub(crate) fn infer_all_shapes(
     }
     if report.missing_shapes.is_empty() {
         Ok(ShapeInference {
-            report,
             folded,
             folded_values,
         })

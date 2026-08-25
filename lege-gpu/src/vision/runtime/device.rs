@@ -88,7 +88,12 @@ impl DeviceHealth {
 
 #[derive(Clone)]
 pub(crate) struct GpuContext {
+    // Only read by `presentation.rs`, which reuses the shared compute
+    // Instance/Adapter for window surfaces when they support presenting one
+    // (surfaces are instance-scoped on some backends).
+    #[cfg(feature = "presentation")]
     pub(crate) instance: Arc<crate::vision::wgpu::Instance>,
+    #[cfg(feature = "presentation")]
     pub(crate) adapter: Arc<crate::vision::wgpu::Adapter>,
     pub(crate) device: Arc<crate::vision::wgpu::Device>,
     pub(crate) queue: Arc<crate::vision::wgpu::Queue>,
@@ -220,7 +225,9 @@ impl GpuContext {
                     let device = Arc::new(device);
                     let poller = GpuPoller::new(Arc::clone(&device))?;
                     return Ok(Self {
+                        #[cfg(feature = "presentation")]
                         instance,
+                        #[cfg(feature = "presentation")]
                         adapter: Arc::new(adapter),
                         device,
                         queue: Arc::new(queue),
@@ -461,6 +468,10 @@ pub(crate) fn storage_bgl_entries(
         .collect()
 }
 
+// Callers: the `#[cfg(test)]` GPU-vs-CPU op verification harness in
+// `ops/{conv,winograd}.rs` (via `dispatch_compute` above), and the
+// layout-detection profiling path in `runtime/compiled.rs`.
+#[cfg(any(test, feature = "layout-detection"))]
 pub(crate) async fn map_readback(
     ctx: &GpuContext,
     buf: &crate::vision::wgpu::Buffer,

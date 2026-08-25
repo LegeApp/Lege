@@ -1217,6 +1217,10 @@ mod tests {
     /// AVX2 coverage conversion must be bit-for-bit identical to the scalar
     /// reference over a wide range of signed-area values and both rules.
     #[test]
+    #[allow(
+        unsafe_code,
+        reason = "bit-compares the AVX2 kernel against the scalar reference; see SAFETY comment"
+    )]
     fn avx2_convert_matches_scalar_bit_exact() {
         let mut rng = Lcg(0xA5A5_0F0F_1111_2222);
         let n = 8 * 200 + 5; // exercise the SIMD body and the scalar tail
@@ -1233,6 +1237,8 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             {
                 if is_x86_feature_detected!("avx2") {
+                    // SAFETY: AVX2 is present (runtime probe above) and
+                    // `b.len() == running.len()` by construction.
                     unsafe { convert_coverage_avx2(&running, &mut b, rule) };
                 } else {
                     convert_coverage_scalar(&running, &mut b, rule);

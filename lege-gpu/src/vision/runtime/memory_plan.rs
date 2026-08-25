@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(feature = "debug-logging")]
+use std::collections::BTreeMap;
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, Result, bail};
 
@@ -54,7 +56,11 @@ pub(crate) struct BufferPlanEntry {
     pub(crate) name: String,
     pub(crate) role: BufferRole,
     pub(crate) reuse_slot: Option<usize>,
+    // Only `print` (debug-logging) reads these; `bytes` is the derived value
+    // the resident allocator actually needs.
+    #[cfg(feature = "debug-logging")]
     pub(crate) shape: Vec<usize>,
+    #[cfg(feature = "debug-logging")]
     pub(crate) elements: usize,
     pub(crate) bytes: u64,
     pub(crate) first_use: Option<usize>,
@@ -64,13 +70,22 @@ pub(crate) struct BufferPlanEntry {
 #[derive(Debug)]
 pub(crate) struct ResidentMemoryPlan {
     entries: Vec<BufferPlanEntry>,
+    // Only `print` (debug-logging) reads these; keep the fields off the
+    // struct otherwise so nothing pays to carry them.
+    #[cfg(feature = "debug-logging")]
     total_bytes: u64,
+    #[cfg(feature = "debug-logging")]
     peak_live_bytes: u64,
     reuse_slot_count: usize,
+    #[cfg(feature = "debug-logging")]
     reuse_total_bytes: u64,
+    #[cfg(feature = "debug-logging")]
     input_count: usize,
+    #[cfg(feature = "debug-logging")]
     initializer_count: usize,
+    #[cfg(feature = "debug-logging")]
     intermediate_count: usize,
+    #[cfg(feature = "debug-logging")]
     output_count: usize,
 }
 
@@ -115,10 +130,15 @@ impl ResidentMemoryPlan {
         }
 
         let mut entries = Vec::with_capacity(buffer_names.len());
+        #[cfg(feature = "debug-logging")]
         let mut total_bytes = 0u64;
+        #[cfg(feature = "debug-logging")]
         let mut input_count = 0usize;
+        #[cfg(feature = "debug-logging")]
         let mut initializer_count = 0usize;
+        #[cfg(feature = "debug-logging")]
         let mut intermediate_count = 0usize;
+        #[cfg(feature = "debug-logging")]
         let mut output_count = 0usize;
 
         for name in buffer_names {
@@ -143,28 +163,45 @@ impl ResidentMemoryPlan {
             }
 
             let role = if input_names.contains(&name) {
-                input_count += 1;
+                #[cfg(feature = "debug-logging")]
+                {
+                    input_count += 1;
+                }
                 BufferRole::Input
             } else if output_names.contains(&name) {
-                output_count += 1;
+                #[cfg(feature = "debug-logging")]
+                {
+                    output_count += 1;
+                }
                 BufferRole::Output
             } else if initializer_names.contains(&name) {
-                initializer_count += 1;
+                #[cfg(feature = "debug-logging")]
+                {
+                    initializer_count += 1;
+                }
                 BufferRole::Initializer
             } else {
-                intermediate_count += 1;
+                #[cfg(feature = "debug-logging")]
+                {
+                    intermediate_count += 1;
+                }
                 BufferRole::Intermediate
             };
 
-            total_bytes = total_bytes
-                .checked_add(bytes)
-                .context("resident memory total byte size overflow")?;
+            #[cfg(feature = "debug-logging")]
+            {
+                total_bytes = total_bytes
+                    .checked_add(bytes)
+                    .context("resident memory total byte size overflow")?;
+            }
             entries.push(BufferPlanEntry {
                 id: entries.len(),
                 name,
                 role,
                 reuse_slot: None,
+                #[cfg(feature = "debug-logging")]
                 shape,
+                #[cfg(feature = "debug-logging")]
                 elements,
                 bytes,
                 first_use: None,
@@ -186,23 +223,35 @@ impl ResidentMemoryPlan {
                 };
         }
 
+        // O(steps × buffers): only worth paying for when the debug-logging
+        // report below will actually print it.
+        #[cfg(feature = "debug-logging")]
         let peak_live_bytes = peak_live_bytes(&entries, graph.planned_ops.len());
         let reuse_slots = assign_reuse_slots(&mut entries);
+        #[cfg(feature = "debug-logging")]
         let reuse_total_bytes = reuse_slots.iter().map(|slot| slot.bytes).sum::<u64>();
 
         Ok(Self {
             entries,
+            #[cfg(feature = "debug-logging")]
             total_bytes,
+            #[cfg(feature = "debug-logging")]
             peak_live_bytes,
             reuse_slot_count: reuse_slots.len(),
+            #[cfg(feature = "debug-logging")]
             reuse_total_bytes,
+            #[cfg(feature = "debug-logging")]
             input_count,
+            #[cfg(feature = "debug-logging")]
             initializer_count,
+            #[cfg(feature = "debug-logging")]
             intermediate_count,
+            #[cfg(feature = "debug-logging")]
             output_count,
         })
     }
 
+    #[cfg(feature = "debug-logging")]
     pub(crate) fn print(&self, verbose: bool) {
         println!("resident GPU memory plan (v1 one-buffer-per-tensor)");
         println!("  buffers: {}", self.entries.len());
@@ -253,6 +302,15 @@ impl ResidentMemoryPlan {
             );
         }
 
+        println!("  inputs:");
+        for entry in self.input_entries() {
+            println!("    {} shape={:?}", entry.name, entry.shape);
+        }
+        println!("  outputs:");
+        for entry in self.output_entries() {
+            println!("    {} shape={:?}", entry.name, entry.shape);
+        }
+
         if verbose {
             println!("  buffers:");
             for entry in &self.entries {
@@ -286,6 +344,8 @@ impl ResidentMemoryPlan {
         self.entries.iter()
     }
 
+    // Only `print` (debug-logging) reads these.
+    #[cfg(feature = "debug-logging")]
     pub(crate) fn input_entries(&self) -> impl Iterator<Item = &BufferPlanEntry> {
         self.entries
             .iter()
@@ -298,6 +358,7 @@ impl ResidentMemoryPlan {
             .filter(|entry| entry.role == BufferRole::Initializer)
     }
 
+    #[cfg(feature = "debug-logging")]
     pub(crate) fn output_entries(&self) -> impl Iterator<Item = &BufferPlanEntry> {
         self.entries
             .iter()
@@ -305,12 +366,14 @@ impl ResidentMemoryPlan {
     }
 }
 
+#[cfg(feature = "debug-logging")]
 fn format_optional_index(index: Option<usize>) -> String {
     index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "-".to_owned())
 }
 
+#[cfg(feature = "debug-logging")]
 fn peak_live_bytes(entries: &[BufferPlanEntry], step_count: usize) -> u64 {
     let mut peak = 0u64;
     for step in 0..step_count {
@@ -394,7 +457,9 @@ mod tests {
             name: format!("tensor_{id}"),
             role: BufferRole::Intermediate,
             reuse_slot: None,
+            #[cfg(feature = "debug-logging")]
             shape: vec![bytes as usize / std::mem::size_of::<f32>()],
+            #[cfg(feature = "debug-logging")]
             elements: bytes as usize / std::mem::size_of::<f32>(),
             bytes,
             first_use: Some(first_use),

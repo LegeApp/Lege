@@ -50,6 +50,15 @@ pub trait OcrEngine: Send + Sync {
 /// Validate a tightly packed grayscale/binary or RGB image and return its
 /// bytes-per-pixel. Keeping this check shared prevents platform backends from
 /// evaluating unchecked attacker-controlled dimension products.
+///
+/// Gated to the backends that call it: with no OCR backend selected nothing
+/// reaches this, and `test` keeps it available to the unit tests below.
+#[cfg(any(
+    target_os = "windows",
+    feature = "paddle-ocr",
+    all(any(target_os = "linux", target_os = "macos"), feature = "tesseract-ocr"),
+    test,
+))]
 pub(crate) fn raw_image_bpp(
     data: &[u8],
     width: usize,
@@ -408,6 +417,12 @@ fn set_image_with_downscale(
     }
 }
 
+/// Gated to the backends that call it; see `raw_image_bpp`.
+#[cfg(any(
+    target_os = "windows",
+    feature = "paddle-ocr",
+    all(any(target_os = "linux", target_os = "macos"), feature = "tesseract-ocr"),
+))]
 pub(crate) fn resize_cpu(
     data: &[u8],
     sw: usize,

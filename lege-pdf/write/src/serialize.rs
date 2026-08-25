@@ -184,7 +184,7 @@ fn hex_digit(nibble: u8) -> u8 {
 /// a typed writer would be overkill. Streams and indirect objects are NOT
 /// members — they are framed by the sink, not nested inside a value. Borrows so
 /// callers can build one on the stack without owning heap copies.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PdfValue<'a> {
     Null,
     Bool(bool),

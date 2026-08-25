@@ -47,6 +47,28 @@ pub struct DocumentWriter<W: Write> {
     bookmarks: Vec<OutlineItem>,
 }
 
+impl<W: Write> std::fmt::Debug for DocumentWriter<W> {
+    // Manual: `#[derive(Debug)]` would add a `where W: Debug` bound (from the
+    // `sink: PdfSink<W>` field) that constrains every call site, even though
+    // `PdfSink`'s own manual `Debug` impl doesn't actually need it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocumentWriter")
+            .field("sink", &self.sink)
+            .field("pages_root", &self.pages_root)
+            .field("slots", &self.slots)
+            .field("registry", &self.registry)
+            .field("saw_text", &self.saw_text)
+            .field("profile", &self.profile)
+            .field("meta", &self.meta)
+            .field("metadata_explicit", &self.metadata_explicit)
+            .field("embedded_font", &self.embedded_font)
+            .field("font_id", &self.font_id)
+            .field("helvetica_id", &self.helvetica_id)
+            .field("bookmarks", &self.bookmarks)
+            .finish()
+    }
+}
+
 impl<W: Write> DocumentWriter<W> {
     /// Create a writer using the default (PDF 1.7 image-only) profile.
     pub fn new(writer: W, total_pages: usize) -> Result<Self> {

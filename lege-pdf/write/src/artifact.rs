@@ -13,6 +13,7 @@ use crate::types::{Affine, PdfRect, ResourceName};
 
 /// A fully processed page, ready for the writer. Submitted in any completion
 /// order; the writer records its object id by `index`.
+#[derive(Debug)]
 pub struct PdfPageArtifact {
     /// Logical (0-based) page index; establishes order in the final page tree.
     pub index: u32,
@@ -42,6 +43,7 @@ impl PdfPageArtifact {
 }
 
 /// One image placed on the page under an affine transform.
+#[derive(Debug)]
 pub struct PdfImageElement {
     /// The `cm` matrix mapping the unit image square to page space.
     pub transform: Affine,
@@ -57,6 +59,7 @@ pub enum ColorModel {
 
 /// The closed set of encoded image payloads Lege emits. Bytes are always
 /// already-encoded and never re-encoded by the writer.
+#[derive(Debug)]
 pub enum PdfImageResource {
     /// Baseline JPEG (DCTDecode).
     Jpeg {
@@ -151,12 +154,14 @@ impl PdfImageResource {
 
 /// A prepared, PDF-space invisible text layer. hOCR parsing, line grouping, and
 /// the Y flip all happen in Lege before this point; the writer only emits.
+#[derive(Debug)]
 pub struct PreparedTextLayer {
     pub runs: Box<[TextRun]>,
     pub font: TextFont,
 }
 
 /// One positioned text run (already in PDF user space, bottom-left origin).
+#[derive(Debug)]
 pub struct TextRun {
     pub text: String,
     pub x: f64,

@@ -18,7 +18,7 @@ use crate::types::{ObjectId, Result};
 /// The font program plus the descriptor metrics needed to embed it. Supplied by
 /// Lege (from `unicode_font::UnicodeFontData`); the writer does no font
 /// parsing.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct EmbeddedFont {
     pub data: Arc<[u8]>,
     pub post_script_name: String,

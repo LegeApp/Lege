@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 

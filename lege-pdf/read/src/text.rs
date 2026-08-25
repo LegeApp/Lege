@@ -1,7 +1,6 @@
 use pdf_document::{PageIndex, ParseContext};
 use pdf_page_ir::{Rect, SharedBytes};
 use pdf_text::{TextPage, TextPageOptions};
-use std::sync::Arc;
 
 use crate::session::display_extent;
 use crate::{PageGeometry, ReadError, RenderSession};

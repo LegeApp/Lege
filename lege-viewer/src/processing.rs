@@ -408,8 +408,15 @@ impl ProcessingControl {
             return;
         }
         #[cfg(unix)]
-        // The worker is intentionally isolated, so termination cannot take the
-        // interactive renderer down with it.
+        #[allow(
+            unsafe_code,
+            reason = "libc::kill on a raw pid: this thread never holds &mut Child, so Child::kill() is unreachable and there is no safe alternative"
+        )]
+        // SAFETY: `pid` is a plain process id, not a pointer or handle, so
+        // `kill(2)` has no aliasing/memory invariants to uphold here. The
+        // worker is intentionally isolated, so termination cannot take the
+        // interactive renderer down with it, and a pid that has already
+        // exited just yields `ESRCH`, which is ignored.
         unsafe {
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
         }

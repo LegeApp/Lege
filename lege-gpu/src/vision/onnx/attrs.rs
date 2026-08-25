@@ -250,15 +250,6 @@ pub(crate) fn static_value_shape(value: &ValueInfoProto) -> Option<Vec<i64>> {
     Some(shape)
 }
 
-pub(crate) fn producer(model: &ModelProto) -> String {
-    match (model.get_producer_name(), model.get_producer_version()) {
-        ("", "") => "<unknown>".to_owned(),
-        (name, "") => name.to_owned(),
-        ("", version) => version.to_owned(),
-        (name, version) => format!("{name} {version}"),
-    }
-}
-
 pub(crate) fn dim_report(dim: &TensorShapeProto_Dimension) -> DimReport {
     match &dim.value {
         Some(DimensionValue::DimValue(value)) => DimReport::Static(*value),
@@ -284,16 +275,6 @@ pub(crate) fn node_context(node: &NodeProto) -> String {
     }
 }
 
-pub(crate) fn intern_value(name: &str, value_ids: &mut HashMap<String, usize>) -> usize {
-    if let Some(id) = value_ids.get(name) {
-        *id
-    } else {
-        let id = value_ids.len();
-        value_ids.insert(name.to_owned(), id);
-        id
-    }
-}
-
 // ── Format utilities ──────────────────────────────────────────────────────────
 
 pub(crate) fn format_shape(shape: &[DimReport]) -> String {
@@ -308,42 +289,11 @@ pub(crate) fn format_shape(shape: &[DimReport]) -> String {
     format!("[{}]", dims.join(","))
 }
 
-pub(crate) fn format_static_shape(shape: &[i64]) -> String {
-    format!(
-        "[{}]",
-        shape
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
-pub(crate) fn format_shape_list(shapes: &[Vec<i64>]) -> String {
-    let shapes = shapes
-        .iter()
-        .map(|s| format_static_shape(s))
-        .collect::<Vec<_>>();
-    format!("[{}]", shapes.join(", "))
-}
-
 pub(crate) fn shape_i64_to_usize(shape: &[i64]) -> Result<Vec<usize>> {
     shape
         .iter()
         .map(|dim| usize::try_from(*dim).context("shape dimensions must be non-negative"))
         .collect()
-}
-
-pub(crate) fn print_top_histogram(label: &str, histogram: &BTreeMap<String, usize>, limit: usize) {
-    if histogram.is_empty() {
-        return;
-    }
-    println!("    {label}:");
-    let mut entries = histogram.iter().collect::<Vec<_>>();
-    entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    for (key, count) in entries.into_iter().take(limit) {
-        println!("      {key}: {count}");
-    }
 }
 
 pub(crate) fn input_shape(

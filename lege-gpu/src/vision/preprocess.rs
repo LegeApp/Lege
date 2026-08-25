@@ -1,6 +1,6 @@
-use std::path::Path;
-
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
+#[cfg(feature = "layout-detection")]
+use anyhow::bail;
 use image::{GrayImage, RgbImage, imageops};
 
 use crate::vision::reference;
@@ -38,6 +38,10 @@ fn normalize_gray_as_rgb_nchw(image: &GrayImage, mean: [f32; 3], std: [f32; 3]) 
     nchw
 }
 
+// This trio (and PicoDet decoding, which reads `PreprocessMeta`) only has a
+// real caller under the `layout-detection` feature (`LayoutDetector` in
+// `api.rs`); the test below is gated the same way.
+#[cfg(feature = "layout-detection")]
 #[derive(Debug, Clone)]
 pub(crate) struct PreprocessMeta {
     pub(crate) orig_w: u32,
@@ -46,6 +50,7 @@ pub(crate) struct PreprocessMeta {
     pub(crate) input_h: u32,
 }
 
+#[cfg(feature = "layout-detection")]
 pub(crate) struct PreprocessedImage {
     pub(crate) tensor: reference::Tensor,
     pub(crate) meta: PreprocessMeta,
@@ -56,6 +61,7 @@ pub(crate) struct PreprocessedImage {
 /// `(pixel/255 - mean) / std` with the standard ImageNet mean/std. `scale`/`pad`
 /// in the returned meta are set for a non-letterbox stretch: the decoder scales
 /// boxes back per-axis from `orig_w/size`, `orig_h/size`.
+#[cfg(feature = "layout-detection")]
 pub(crate) fn stretch_imagenet_rgb(original: &RgbImage, size: u32) -> Result<PreprocessedImage> {
     let orig_w = original.width();
     let orig_h = original.height();
@@ -158,16 +164,6 @@ pub(crate) fn det_input_tensor_gray(image: &GrayImage, limit: u32) -> Result<Det
     })
 }
 
-pub(crate) fn write_rgb(path: &Path, image: &RgbImage) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create image output dir {}", parent.display()))?;
-    }
-    image
-        .save(path)
-        .with_context(|| format!("failed to write image {}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "layout-detection")]
     fn layout_preprocess_rejects_empty_images_and_zero_target() {
         assert!(stretch_imagenet_rgb(&RgbImage::new(0, 1), 640).is_err());
         assert!(stretch_imagenet_rgb(&RgbImage::new(1, 1), 0).is_err());

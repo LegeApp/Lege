@@ -20,7 +20,9 @@ use crate::vision::onnx::types::{ElementwiseKind, PlannedOpKind, UnaryKind};
 use crate::vision::ops::compile::op_steps;
 use crate::vision::ops::sigmoid::{SILU_VEC4_WGSL, SILU_WGSL};
 use crate::vision::reference;
-use crate::vision::runtime::device::{GpuContext, map_readback, storage_bgl_entries};
+#[cfg(feature = "layout-detection")]
+use crate::vision::runtime::device::map_readback;
+use crate::vision::runtime::device::{GpuContext, storage_bgl_entries};
 use crate::vision::runtime::memory_plan::ResidentMemoryPlan;
 
 const DUMMY_BIAS: &str = "__dummy_zero_bias__";
@@ -147,23 +149,18 @@ fn build_pipeline_for_shader(
 }
 
 struct CompiledStep {
-    step_index: usize,
-    op_index: usize,
-    op_name: String,
+    // Only read by the layout-detection profiling path (`profile`/`profile_report`
+    // below), which classifies dispatches by op kind.
+    #[cfg(feature = "layout-detection")]
     op_kind: String,
-    output_shape: Vec<usize>,
     pipeline: Arc<crate::vision::wgpu::ComputePipeline>,
     bind_group: crate::vision::wgpu::BindGroup,
     dispatch: [u32; 3],
 }
 
+#[cfg(feature = "layout-detection")]
 pub(crate) struct StepProfile {
-    pub(crate) step_index: usize,
-    pub(crate) op_index: usize,
-    pub(crate) op_name: String,
     pub(crate) op_kind: String,
-    pub(crate) output_shape: Vec<usize>,
-    pub(crate) dispatch: [u32; 3],
     pub(crate) gpu_ms: f64,
 }
 
@@ -220,6 +217,7 @@ pub(crate) struct CompactCtcOutput {
 
 pub(crate) struct SubmittedRun<'a> {
     graph: &'a CompiledGraph,
+    #[cfg(feature = "debug-logging")]
     submit_elapsed: Duration,
     submission: crate::vision::wgpu::SubmissionIndex,
 }
@@ -258,6 +256,7 @@ impl CompiledGraph {
         Self::LAYOUT_SOFTWARE_ADAPTER_ERROR
     }
 
+    #[cfg(feature = "layout-detection")]
     pub(crate) fn build_sibling(&self, graph: &PreparedGraph) -> Result<Self> {
         self.build_related(graph)
     }
@@ -284,14 +283,14 @@ impl CompiledGraph {
         let _ = t0;
         // ── Allocate GPU buffers ──────────────────────────────────────────
         let plan = ResidentMemoryPlan::from_graph(graph)?;
+        #[cfg(feature = "debug-logging")]
+        plan.print(false);
         let slot_sizes = plan.slot_sizes();
         let constant_names_by_slot = plan
             .initializer_entries()
             .filter_map(|entry| entry.reuse_slot.map(|slot| (slot, entry.name.clone())))
             .collect::<HashMap<_, _>>();
         let mut shared_constant_names = HashSet::new();
-        #[cfg(feature = "debug-logging")]
-        let total_slot_bytes = slot_sizes.iter().sum::<u64>();
         let mut slot_buffers = Vec::with_capacity(slot_sizes.len());
         for (slot, byte_size) in slot_sizes.iter().enumerate() {
             if let (Some(name), Some(parent)) =
@@ -336,9 +335,8 @@ impl CompiledGraph {
         ctx.queue.write_buffer(&dummy_bias_buffer, 0, &[0u8; 4]);
         #[cfg(feature = "debug-logging")]
         eprintln!(
-            "  compiled.build: allocated {} resident slots, {:.1}MB at {:.0}ms",
+            "  compiled.build: {} resident slots ready at {:.0}ms",
             slot_buffers.len(),
-            total_slot_bytes as f64 / (1024.0 * 1024.0),
             t0.elapsed().as_millis()
         );
 
@@ -639,23 +637,10 @@ impl CompiledGraph {
                             entries: &bg_entries,
                         });
 
-                let step_index = steps.len();
-                let output_shape = op
-                    .outputs
-                    .iter()
-                    .position(|name| name == &spec.output_buf_name)
-                    .and_then(|index| op.output_shapes.get(index))
-                    .or_else(|| op.output_shapes.first())
-                    .map(|shape| shape.iter().map(|&dim| dim as usize).collect())
-                    .unwrap_or_default();
-
                 params_bufs.push(params_buf);
                 steps.push(CompiledStep {
-                    step_index,
-                    op_index: op_idx,
-                    op_name: op.name.clone(),
+                    #[cfg(feature = "layout-detection")]
                     op_kind,
-                    output_shape,
                     pipeline,
                     bind_group,
                     dispatch: spec.dispatch,
@@ -832,6 +817,7 @@ impl CompiledGraph {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn step_count(&self) -> usize {
         self.steps.len()
     }
@@ -840,7 +826,11 @@ impl CompiledGraph {
     /// immediately. The resident buffers and readback buffers must not be reused
     /// until `await_result` completes, so one `CompiledGraph` remains single-flight.
     pub(crate) fn submit(&self, input: &reference::Tensor) -> Result<SubmittedRun<'_>> {
+        #[cfg(feature = "debug-logging")]
         let submit_elapsed = self.submit_steps(input)?;
+        #[cfg(not(feature = "debug-logging"))]
+        self.submit_steps(input)?;
+        #[cfg(feature = "debug-logging")]
         let t0 = std::time::Instant::now();
         let mut encoder = self.ctx.device.create_command_encoder(
             &crate::vision::wgpu::CommandEncoderDescriptor {
@@ -866,6 +856,7 @@ impl CompiledGraph {
 
         Ok(SubmittedRun {
             graph: self,
+            #[cfg(feature = "debug-logging")]
             submit_elapsed: submit_elapsed + t0.elapsed(),
             submission,
         })
@@ -1075,6 +1066,7 @@ impl CompiledGraph {
         self.await_result(submitted).await
     }
 
+    #[cfg(feature = "layout-detection")]
     pub(crate) async fn profile(&self, input: &reference::Tensor) -> Result<Vec<StepProfile>> {
         if !self.ctx.supports_timestamps {
             bail!("selected WGPU adapter does not support timestamp queries");
@@ -1157,12 +1149,7 @@ impl CompiledGraph {
             let end = ticks[index * 2 + 1];
             let gpu_ms = end.saturating_sub(start) as f64 * period_ns / 1_000_000.0;
             profiles.push(StepProfile {
-                step_index: step.step_index,
-                op_index: step.op_index,
-                op_name: step.op_name.clone(),
                 op_kind: step.op_kind.clone(),
-                output_shape: step.output_shape.clone(),
-                dispatch: step.dispatch,
                 gpu_ms,
             });
         }
@@ -1178,6 +1165,7 @@ impl CompiledGraph {
     /// - busy ≈ span ≈ wall  → kernels are the cost (optimize shaders).
     /// - busy ≪ span         → GPU sits idle between dispatches (barrier/sync stalls).
     /// - span ≪ wall         → cost is CPU-side submit/poll, not the GPU timeline.
+    #[cfg(feature = "layout-detection")]
     pub(crate) async fn profile_report(&self, input: &reference::Tensor) -> Result<String> {
         if !self.ctx.supports_timestamps {
             bail!("selected WGPU adapter does not support timestamp queries");
@@ -1419,7 +1407,6 @@ mod tests {
     use std::sync::Arc;
 
     use crate::vision::onnx::graph::PreparedGraph;
-    use crate::vision::onnx::shape::ShapeReport;
     use crate::vision::onnx::types::{ElementwiseKind, PlannedOp, PlannedOpKind};
     use crate::vision::reference::Tensor;
 
@@ -1431,17 +1418,13 @@ mod tests {
 
     fn add_graph_shape(shape: Vec<i64>) -> PreparedGraph {
         PreparedGraph {
-            value_count: 3,
-            nodes: Vec::new(),
             inputs: vec!["input".to_owned()],
             outputs: vec!["output".to_owned()],
-            initializers: Vec::new(),
             known_shapes: BTreeMap::from([
                 ("input".to_owned(), shape.clone()),
                 ("bias".to_owned(), vec![1]),
                 ("output".to_owned(), shape.clone()),
             ]),
-            shape_report: ShapeReport::default(),
             planned_ops: vec![PlannedOp {
                 name: "add".to_owned(),
                 inputs: vec!["input".to_owned(), "bias".to_owned()],
