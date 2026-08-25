@@ -5,7 +5,7 @@ build {
     tool "akr 0.3.3"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:8738d7c8adf81ac2f635c3cd632616ea2b3502ec9e0b627da11113fd3c7a8d50"
+    source_graph "sha256:21950758ab88b6f0e85a38ce4e63fef39cacaf963a1be3f93a26ff3855c66360"
 }
 
 source ".akr/project.akr" {
@@ -79,8 +79,8 @@ source ".akr/records/lege-ecosystem/observations.akr" {
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
-    hash "sha256:6153fcbfdcd05675eedcd2c7265e52434977a250d872932488792072bbcd4c00"
-    records 92
+    hash "sha256:9a33e8c9a5b78e124cd45118cfb06b2c2aa68080e00c504ca7d4937c09c51d64"
+    records 94
 }
 
 source ".akr/records/lege-ecosystem/policies.akr" {
@@ -1013,6 +1013,11 @@ seal @lege-ecosystem.papercut.akr-propose-from-rejected-a-yaml-like-statement/1 
     hash "sha256:e308f9c7657ee0439e06c9e29f5084604233ae4f60dd31767544a7e38517c6b3"
 }
 
+seal @lege-ecosystem.papercut.akr-revise-from-body-on-a-completed-work-record/1 {
+    state verified
+    hash "sha256:9af3dc852f61c82fac6bd26f2c9d44ae7da61fda7abcc654186bd05546a6e39e"
+}
+
 seal @lege-ecosystem.papercut.android-emulator-verification-initially-failed/1 {
     state verified
     hash "sha256:e1fe110f09d27118c7f9b8a9247bb0f175f293066c0a22ad60614ffdb6990c09"
@@ -1106,6 +1111,11 @@ seal @lege-ecosystem.papercut.formatting-the-edited-rust-files-with-cargo-fmt/1 
 seal @lege-ecosystem.papercut.generating-the-android-gradle-wrapper-initially/1 {
     state verified
     hash "sha256:f95c53b6f8ca03e6f1c9fcd0c275840909b6602d9d0587032410e000c43fbe79"
+}
+
+seal @lege-ecosystem.papercut.healing-an-inherited-akr-t023-on-an-evidence/1 {
+    state verified
+    hash "sha256:b608127bc35a06050149e8ba39ef28330a48eafaaf2bf9930eaf7cd6400eee4e"
 }
 
 seal @lege-ecosystem.papercut.knowledge-evidence-add-many-rejected-an/1 {

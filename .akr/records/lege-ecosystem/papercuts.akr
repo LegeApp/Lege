@@ -151,6 +151,18 @@ record lege-ecosystem.papercut.akr-propose-from-rejected-a-yaml-like-statement/1
     created_at 2026-08-13
 }
 
+record lege-ecosystem.papercut.akr-revise-from-body-on-a-completed-work-record/1 : papercut {
+    title "`akr revise --from <body>` on a completed work record silently reset it…"
+    state verified
+    statement """
+        `akr revise --from <body>` on a completed work record silently reset it to `proposed` even though the supplied body said `state completed`, and the only signal was the generated commit message reading 'completed -> proposed'. Because a proposed record is exempt from V-020, the AKR-R022 errors I was repairing vanished for the wrong reason. Either honour the state in --from or refuse a body whose state contradicts the lifecycle step.
+        """
+    observed_at git:f29d57ab3f5ca3b7da2d54aa1044925852bf3b0b
+    about "akr"
+    author "claude-opus"
+    created_at 2026-08-25
+}
+
 record lege-ecosystem.papercut.android-emulator-verification-initially-failed/1 : papercut {
     title "Android emulator verification initially failed because adb is installed…"
     state verified
@@ -1200,6 +1212,18 @@ record lege-ecosystem.papercut.generating-the-android-gradle-wrapper-initially/1
     observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
     author "codex"
     created_at 2026-08-21
+}
+
+record lege-ecosystem.papercut.healing-an-inherited-akr-t023-on-an-evidence/1 : papercut {
+    title "Healing an inherited AKR-T023 on an evidence record that another record…"
+    state verified
+    statement """
+        Healing an inherited AKR-T023 on an evidence record that another record pins by revision deadlocks: revising the evidence introduces AKR-L021 on the referrer, and the referrer cannot be repointed first because the target revision does not exist yet. The escape is a three-write dance (drop the reference, revise the evidence, re-add it at the new revision); a single write that repoints referrers, or tolerating a superseded pin inside one transaction, would remove it.
+        """
+    observed_at git:f29d57ab3f5ca3b7da2d54aa1044925852bf3b0b
+    about "akr"
+    author "claude-opus"
+    created_at 2026-08-25
 }
 
 record lege-ecosystem.papercut.knowledge-evidence-add-many-rejected-an/1 : papercut {
