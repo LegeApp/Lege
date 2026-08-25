@@ -140,7 +140,6 @@ pub use pipeline::{
 #[cfg(feature = "debug-logging")]
 macro_rules! perf_log {
     ($start:expr, $($arg:tt)*) => {{
-        use std::time::Instant;
         let duration = $start.elapsed();
         println!(
             "[PERF] {} (took {:?})",
@@ -154,10 +153,14 @@ macro_rules! perf_log {
 #[macro_export]
 #[cfg(not(feature = "debug-logging"))]
 macro_rules! perf_log {
-    ($start:expr, $($arg:tt)*) => {
-        // Prevent unused variable warning for $start
-        let _ = $start;
-    };
+    ($start:expr, $($arg:tt)*) => {{
+        // Reference both the timer and the message arguments, so bindings that exist
+        // only for this log do not read as unused. `if false` keeps them unevaluated.
+        let _ = &$start;
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 // Map legacy logging macros to current helpers
@@ -170,9 +173,13 @@ macro_rules! info_log {
 #[cfg(not(feature = "debug-logging"))]
 #[macro_export]
 macro_rules! info_log {
-    ($($arg:tt)*) => {
-        ()
-    };
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 #[cfg(feature = "debug-logging")]
@@ -184,9 +191,13 @@ macro_rules! success_log {
 #[cfg(not(feature = "debug-logging"))]
 #[macro_export]
 macro_rules! success_log {
-    ($($arg:tt)*) => {
-        ()
-    };
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 #[macro_export]
 macro_rules! error_log {
@@ -209,9 +220,13 @@ macro_rules! warn_log {
 #[cfg(not(feature = "debug-logging"))]
 #[macro_export]
 macro_rules! warn_log {
-    ($($arg:tt)*) => {
-        ()
-    };
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 #[cfg(feature = "debug-logging")]
@@ -225,9 +240,13 @@ macro_rules! dprintln {
 #[cfg(not(feature = "debug-logging"))]
 #[macro_export]
 macro_rules! dprintln {
-    ($($arg:tt)*) => {
-        ()
-    };
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 /// `LEGE_BBOX_TRACE=1` → stderr lines for layout bboxes, region encodes, PDF `Do` placement.

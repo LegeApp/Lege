@@ -91,7 +91,13 @@ macro_rules! dbglog {
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
 macro_rules! dbglog {
-    ($($arg:tt)*) => {};
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 // Legacy aliases forward to dbglog!
@@ -102,7 +108,13 @@ macro_rules! debug_log { ($($arg:tt)*) => { $crate::dbglog!($($arg)*); } }
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
 macro_rules! debug_log {
-    ($($arg:tt)*) => {};
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
@@ -112,7 +124,13 @@ macro_rules! debug_println { ($($arg:tt)*) => { $crate::dbglog!($($arg)*); } }
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
 macro_rules! debug_println {
-    ($($arg:tt)*) => {};
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 #[cfg(any(feature = "debug-logging", feature = "djvu_debug"))]
@@ -122,7 +140,13 @@ macro_rules! debug_eprintln { ($($arg:tt)*) => { $crate::dbglog!($($arg)*); } }
 #[cfg(not(any(feature = "debug-logging", feature = "djvu_debug")))]
 #[macro_export]
 macro_rules! debug_eprintln {
-    ($($arg:tt)*) => {};
+    ($($arg:tt)*) => {{
+        // Still reference the arguments so a binding used only by this log does not
+        // read as unused with the feature off. `if false` keeps them unevaluated.
+        if false {
+            let _ = ::core::format_args!($($arg)*);
+        }
+    }};
 }
 
 /// Always print important messages (PDF info, ONNX provider, final results)
