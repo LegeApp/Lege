@@ -378,6 +378,10 @@ pub struct GenericRegionParams {
     pub tpgdon: bool,             // Typical prediction generic decoding on/off
     pub at: [(i8, i8); 4],        // Adaptive template coordinates (a1x, a1y, ..., a4x, a4y)
     pub at_pixels: Vec<(i8, i8)>, // Adaptive template pixels (for compatibility)
+    // Resolution in DPI. Metadata only — like `GenericRegionConfig::dpi`, AT
+    // pixel selection is DPI-independent here (fixed at the nominal template-0
+    // offsets to match the C encoder).
+    pub dpi: u32,
 }
 
 impl GenericRegionParams {
@@ -394,6 +398,7 @@ impl GenericRegionParams {
             tpgdon: true,
             at: [(3, -1), (-3, -1), (2, -2), (-2, -2)],
             at_pixels,
+            dpi,
         }
     }
 
@@ -565,6 +570,7 @@ impl From<GenericRegionConfig> for GenericRegionParams {
             tpgdon: cfg.tpgdon,
             at,
             at_pixels: cfg.at_pixels.clone(),
+            dpi: cfg.dpi,
         }
     }
 }
@@ -783,14 +789,6 @@ pub struct Segment {
     pub referred_to: Vec<u32>,     // List of referred-to segment numbers
     pub page: Option<u32>,         // Page number if applicable
     pub payload: Vec<u8>,          // Segment data
-}
-
-fn encode_varint(mut v: u32, buf: &mut Vec<u8>) {
-    while v >= 0x80 {
-        buf.push((v as u8) | 0x80);
-        v >>= 7;
-    }
-    buf.push(v as u8);
 }
 
 impl Segment {

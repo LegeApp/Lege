@@ -1125,6 +1125,12 @@ fn crop_image(image: &Image, crop: CropRect) -> Result<Image> {
 }
 
 /// Crop a packed 8-bit raster to a reduced-pixel rectangle, re-striding it.
+///
+/// Only exercised by tests: the production packed-decode path produces an
+/// ROI-sized raster directly (see `decode_packed_direct`) rather than
+/// decoding full-size and cropping afterward, so this exists to give tests a
+/// ground truth to compare the direct path against.
+#[cfg(test)]
 fn crop_raster(raster: &DecodedRaster, crop: CropRect) -> Result<DecodedRaster> {
     let width = raster.width as usize;
     let height = raster.height as usize;
@@ -3948,10 +3954,6 @@ mod tests {
             &archive_org_rgb_path("moreboysgirlsofh0000rhod_e0h1_orig_0000.jp2"),
             "Archive.org RGB JP2",
         )
-    }
-
-    fn read_archive_org_rgb_sample() -> Vec<u8> {
-        maybe_read_archive_org_rgb_sample().expect("read rgb sample jp2")
     }
 
     fn maybe_read_rgba_alpha_sample() -> Option<Vec<u8>> {

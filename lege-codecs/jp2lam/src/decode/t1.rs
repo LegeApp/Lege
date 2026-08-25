@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use super::stats::StatsSink;
 use super::t2::{DecodedCodewordSegment, DecodedTilePackets};
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecodedCodeBlockCoefficients {
     pub(crate) width: usize,
@@ -95,6 +96,7 @@ impl Tier1Scratch {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_tile_components(
     header: &CodestreamHeader,
     packets: &DecodedTilePackets<'_>,
@@ -103,6 +105,7 @@ pub(crate) fn decode_tile_components(
     decode_tile_components_profiled(header, packets, &mut stats)
 }
 
+#[cfg(test)]
 pub(crate) fn decode_tile_components_profiled(
     header: &CodestreamHeader,
     packets: &DecodedTilePackets<'_>,
@@ -504,7 +507,7 @@ fn decode_codeblocks_parallel(
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn decode_tile_coefficients(
     header: &CodestreamHeader,
     packets: &DecodedTilePackets<'_>,
@@ -540,6 +543,7 @@ fn read_segmentation_symbol(decoder: &mut MqDecoder<'_>) -> Result<()> {
 /// 15444-1 D.5): when set, each cleanup pass is followed by the four-symbol
 /// `0xA` marker coded with the UNIFORM context, which must be consumed to
 /// keep the MQ decoder aligned.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_codeblock(
     width: usize,
@@ -570,6 +574,7 @@ pub(crate) fn decode_codeblock(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn decode_codeblock_segments(
     width: usize,

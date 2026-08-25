@@ -6,17 +6,18 @@ pub(crate) struct PacketSequenceBuilder {
     packets: Vec<Packet>,
 }
 
-#[allow(dead_code)]
 impl PacketSequenceBuilder {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn push_opaque_packet(mut self, bytes: Vec<u8>) -> Self {
         self.packets.push(Packet::opaque(bytes));
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn push_header_body_packet(mut self, header: Vec<u8>, body: Vec<u8>) -> Self {
         self.packets.push(Packet::header_body(header, body));
         self
@@ -30,10 +31,6 @@ impl PacketSequenceBuilder {
         self.packets
             .push(Packet::header_body_segments(header, body_segments));
         self
-    }
-
-    pub(crate) fn packet_count(&self) -> usize {
-        self.packets.len()
     }
 
     pub(crate) fn finish(self) -> PacketSequence {

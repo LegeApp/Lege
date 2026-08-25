@@ -112,7 +112,10 @@ pub fn decode_globals(data: &[u8], options: &DecodeOptions) -> Result<DecodedGlo
 
 /// Compile-time proof that `DecodedGlobals` is `Send + Sync` (jbig2decplan.md
 /// §6, Gap E: the Phase 2 gate).
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "never called at runtime by design — its body only needs to type-check, which is where the Send + Sync proof lives"
+)]
 fn _assert_send_sync() {
     fn _assert<T: Send + Sync>() {}
     _assert::<DecodedGlobals>();

@@ -6,19 +6,6 @@
 use std::fs;
 use std::process::Command;
 
-/// Parse JB2 header bytes and decode START_OF_DATA record
-/// Returns (width, height) if successful
-fn decode_jb2_start_of_data(jb2_data: &[u8]) -> Result<(u32, u32), String> {
-    // JB2 uses ZP-coder arithmetic coding, so we need to decode it
-    // This is a simplified decoder just for the START_OF_DATA record
-
-    // For now, let's use djvudump to parse and extract info
-    // Actually, we can use djvused or djvudump
-
-    // Let's create a minimal DjVu with this JB2 and use djvuinfo
-    Ok((0, 0)) // placeholder
-}
-
 /// Extract raw Sjbz chunk from a DjVu file
 fn extract_sjbz_chunk(djvu_path: &str) -> Result<Vec<u8>, String> {
     // Use djvuextract to get the raw Sjbz data
@@ -119,14 +106,7 @@ fn test_compare_jb2_headers() {
     // Create a BitImage from the PBM data
     use djvu_encoder::encode::jb2::symbol_dict::BitImage;
 
-    // Find where binary data starts (after header)
-    let header_end = pbm_data
-        .windows(2)
-        .position(|w| w[0] == b'\n' && w.iter().any(|&b| b > 0x39 || b < 0x20))
-        .map(|p| p + 1)
-        .unwrap_or(0);
-
-    // Actually, for P4 format, data starts after the dimensions line
+    // For P4 format, pixel data starts after the dimensions line.
     let mut pos = 0;
     let mut newlines = 0;
     for (i, &b) in pbm_data.iter().enumerate() {

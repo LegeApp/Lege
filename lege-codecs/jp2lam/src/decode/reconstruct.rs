@@ -1218,7 +1218,7 @@ fn reconstruct_sycc_packed_into(
     channels: usize,
     layout: PackedLayout,
     mut tiles: Vec<DecodedTileCoefficients>,
-    mut target: PackedWriteTarget<'_>,
+    target: PackedWriteTarget<'_>,
     stats: &mut StatsSink<'_>,
 ) -> Result<()> {
     let _ = channels; // used via target.channels / store_rgb_layout

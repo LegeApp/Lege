@@ -23,6 +23,10 @@ impl PacketBytes {
 #[derive(Debug, Clone)]
 pub(crate) enum PacketEncoding {
     Opaque(PacketBytes),
+    /// Only ever constructed by [`Packet::header_body`], which is itself
+    /// `#[cfg(test)]`-gated — production always uses `HeaderBodySegments`
+    /// (`Packet::header_body_segments`).
+    #[cfg(test)]
     HeaderBody {
         header: PacketBytes,
         body: PacketBytes,
@@ -37,6 +41,7 @@ impl PacketEncoding {
     pub(crate) fn byte_len(&self) -> usize {
         match self {
             Self::Opaque(bytes) => bytes.len(),
+            #[cfg(test)]
             Self::HeaderBody { header, body } => header.len() + body.len(),
             Self::HeaderBodySegments {
                 header,
@@ -48,6 +53,7 @@ impl PacketEncoding {
     pub(crate) fn write_to(&self, out: &mut Vec<u8>) {
         match self {
             Self::Opaque(bytes) => out.extend_from_slice(bytes.as_slice()),
+            #[cfg(test)]
             Self::HeaderBody { header, body } => {
                 out.extend_from_slice(header.as_slice());
                 out.extend_from_slice(body.as_slice());
@@ -67,6 +73,7 @@ impl PacketEncoding {
     pub(crate) fn write_to_writer<W: Write>(&self, writer: &mut W) -> Result<()> {
         match self {
             Self::Opaque(bytes) => write_all(writer, bytes.as_slice()),
+            #[cfg(test)]
             Self::HeaderBody { header, body } => {
                 write_all(writer, header.as_slice())?;
                 write_all(writer, body.as_slice())
@@ -97,7 +104,7 @@ impl Packet {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn header_body(header: Vec<u8>, body: Vec<u8>) -> Self {
         Self {
             encoding: PacketEncoding::HeaderBody {
@@ -147,6 +154,7 @@ impl PacketSequence {
         self.packets.iter().map(Packet::byte_len).sum()
     }
 
+    #[cfg(test)]
     pub(crate) fn packet_count(&self) -> usize {
         self.packets.len()
     }

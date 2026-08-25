@@ -13,7 +13,10 @@
 //! correctly under both. The jbig2dec oracle is what actually validates spec
 //! conformance; self-round-trip only checks internal consistency.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared test helper module: each of the ~27 integration-test binaries in tests/ compiles this module independently and uses only a subset of its items"
+)]
 
 use jbig2enc_rust::Jbig2ArithCoder;
 use jbig2enc_rust::decode::huffman::HuffmanTable;

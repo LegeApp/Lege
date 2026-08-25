@@ -5,18 +5,13 @@ use super::{AnalyzePrimitives, ColorPrimitives, DwtPrimitives, Primitives, Quant
 pub(crate) fn primitives() -> Primitives {
     Primitives {
         dwt: DwtPrimitives {
-            forward_97_2d,
             inverse_97_2d,
-            forward_53_2d,
             inverse_53_2d,
         },
         analyze: AnalyzePrimitives {
             i32_max_magnitude_and_nnz,
         },
-        quant: QuantPrimitives {
-            quantize_f32_rect,
-            dequantize_i32_rect,
-        },
+        quant: QuantPrimitives { quantize_f32_rect },
         color: ColorPrimitives {
             level_shift_f32,
             level_shift_i32,
@@ -24,13 +19,17 @@ pub(crate) fn primitives() -> Primitives {
             forward_rct_component,
             inverse_ict,
             inverse_rct,
-            finalize_i32,
-            finalize_f32,
         },
         backend: "scalar",
     }
 }
 
+/// Not part of the live [`super::PRIMITIVES`] dispatch table: production
+/// always calls `crate::dwt::forward_97_2d_in_place_at` directly (the
+/// tile-origin variant), never through this dispatch mechanism. Kept as the
+/// scalar reference for the `wide`-vs-scalar equivalence tests in
+/// `simd::wide`, so this is only used with the `simd` feature enabled.
+#[cfg(all(test, feature = "simd"))]
 pub(crate) fn forward_97_2d(
     data: &mut [f32],
     width: usize,
@@ -50,6 +49,9 @@ pub(crate) fn inverse_97_2d(
     Ok(())
 }
 
+/// Not part of the live dispatch table; see [`forward_97_2d`]. Only used
+/// with the `simd` feature enabled (see [`forward_97_2d`]'s doc).
+#[cfg(all(test, feature = "simd"))]
 pub(crate) fn forward_53_2d(
     data: &mut [i32],
     width: usize,
@@ -105,6 +107,11 @@ pub(crate) fn quantize_f32_to_i32(v: f32, step: f32) -> i32 {
     q.clamp(i32::MIN as f32, i32::MAX as f32) as i32
 }
 
+/// Not part of the live dispatch table: production always dequantizes
+/// per-sample via [`dequantize_i32_to_f32`] directly (see
+/// `crate::decode::t1::dequantize_block_to_tile`). Kept as the scalar
+/// reference for the `wide`-vs-scalar equivalence test below.
+#[cfg(test)]
 pub(crate) fn dequantize_i32_rect(
     input: &[i32],
     output: &mut [f32],
@@ -218,20 +225,6 @@ pub(crate) fn inverse_rct(y: &mut [i32], db: &mut [i32], dr: &mut [i32]) {
         y[i] = drv + g;
         db[i] = g;
         dr[i] = dbv + g;
-    }
-}
-
-pub(crate) fn finalize_i32(input: &[i32], out: &mut [i32]) {
-    debug_assert_eq!(input.len(), out.len());
-    for (&sample, dst) in input.iter().zip(out.iter_mut()) {
-        *dst = (sample + 128).clamp(0, 255);
-    }
-}
-
-pub(crate) fn finalize_f32(input: &[f32], out: &mut [i32]) {
-    debug_assert_eq!(input.len(), out.len());
-    for (&sample, dst) in input.iter().zip(out.iter_mut()) {
-        *dst = (sample + 128.0).round().clamp(0.0, 255.0) as i32;
     }
 }
 

@@ -1,10 +1,7 @@
 use super::super::Jbig2Encoder;
-use super::dictionary::encode_symbol_dict;
 use super::types::{PlannedDocument, SymbolInstance};
 use crate::jbig2arith::Jbig2ArithCoder;
-use crate::jbig2structs::{
-    FileHeader, GenericRegionConfig, GenericRegionParams, Segment, SegmentType,
-};
+use crate::jbig2structs::{GenericRegionConfig, GenericRegionParams, SegmentType};
 use crate::jbig2sym::BitImage;
 use anyhow::{Result, anyhow};
 #[cfg(feature = "parallel")]
@@ -133,50 +130,6 @@ impl<'a> Jbig2Encoder<'a> {
     pub(crate) fn prune_symbols_if_needed(&mut self) {
         // No pruning — JBIG2 supports large dictionaries and pruning drops
         // symbol instances, leaving holes in the rendered output.
-    }
-
-    pub(crate) fn next_segment_number(&mut self) -> u32 {
-        let num = self.next_segment_number;
-        self.next_segment_number += 1;
-        num
-    }
-
-    pub(crate) fn flush_dict(&mut self) -> Result<Vec<u8>> {
-        if self.global_symbols.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let symbol_refs: Vec<&BitImage> = self.global_symbols.iter().collect();
-        let dict_data = encode_symbol_dict(&symbol_refs, &self.config, 0)?;
-
-        let dict_segment = Segment {
-            number: self.next_segment_number,
-            seg_type: SegmentType::SymbolDictionary,
-            deferred_non_retain: false,
-            retain_flags: 0,
-            page_association_type: if self.state.pdf_mode { 2 } else { 0 },
-            referred_to: Vec::new(),
-            page: if self.state.pdf_mode { None } else { Some(1) },
-            payload: dict_data,
-        };
-        self.next_segment_number += 1;
-
-        let mut output = Vec::new();
-        if self.state.pdf_mode {
-            dict_segment.write_into(&mut output)?;
-            return Ok(output);
-        }
-
-        let header = FileHeader {
-            // Sequential organisation — payload follows each segment header.
-            organisation_type: false,
-            unknown_n_pages: false,
-            n_pages: 1,
-        };
-        output.extend(header.to_bytes());
-        dict_segment.write_into(&mut output)?;
-
-        Ok(output)
     }
 
     pub(crate) fn build_instance_residual_bitmap(

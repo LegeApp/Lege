@@ -4,11 +4,6 @@
 //! It supports both standalone JBIG2 files and PDF-embedded fragments with proper
 //! global dictionary handling.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
-
 // Re-export commonly used types
 pub use ndarray::Array2;
 
@@ -123,9 +118,6 @@ pub use crate::jbig2structs::Jbig2Config;
 
 use crate::jbig2enc::Jbig2Encoder;
 
-const JBIG2_THRESHOLD_DEF: f32 = 0.92;
-const JBIG2_WEIGHT_DEF: f32 = 0.5;
-
 #[derive(Debug, Clone)]
 pub struct Jbig2PdfSplitResult {
     pub global_segments: Option<Vec<u8>>,
@@ -135,8 +127,6 @@ pub struct Jbig2PdfSplitResult {
 #[derive(Debug, Clone)]
 pub struct Jbig2Context {
     config: Jbig2Config,
-    threshold: f32,
-    weight: f32,
     pdf_mode: bool,
 }
 
@@ -144,8 +134,6 @@ impl Default for Jbig2Context {
     fn default() -> Self {
         Self {
             config: Jbig2Config::default(),
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
             pdf_mode: false,
         }
     }
@@ -159,26 +147,17 @@ impl Jbig2Context {
     pub fn with_pdf_mode(pdf_mode: bool) -> Self {
         Self {
             config: Jbig2Config::default(),
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
             pdf_mode,
         }
     }
 
     pub fn with_config(config: Jbig2Config, pdf_mode: bool) -> Self {
-        Self {
-            config,
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
-            pdf_mode,
-        }
+        Self { config, pdf_mode }
     }
 
     pub fn with_lossless_config(pdf_mode: bool) -> Self {
         Self {
             config: Jbig2Config::lossless(),
-            threshold: JBIG2_THRESHOLD_DEF,
-            weight: JBIG2_WEIGHT_DEF,
             pdf_mode,
         }
     }

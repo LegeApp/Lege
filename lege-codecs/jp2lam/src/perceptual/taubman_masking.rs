@@ -20,15 +20,27 @@
 /// (since subband_weight already accounts for that factor). The result is
 /// a dimensionless weight in (0, 512], with 1.0 meaning "unmasked".
 
+/// Not wired into the encode pipeline: `encode::backend::native::backend`
+/// hardcodes `taubman_weights` to `None` at its one call site into
+/// `rate::curves_from_tier1_layout` (which then falls back to a neutral 1.0
+/// weight per block), so this whole subband-masking model is currently
+/// dead in production. Per the distortion-model doc comment in
+/// `dwt::pcrd`, enabling it changes only the PCRD truncation-point ordering,
+/// not the byte budget, so it should be safe to wire up when someone
+/// threads the pre-quantization DWT `f32` buffer through to pass-selection
+/// time (it is not retained past Tier-1 today). Kept here as a
+/// tested-but-unintegrated reference implementation.
+#[cfg(test)]
 const F_SQUARED: f64 = 1.0 / 512.0;
+#[cfg(test)]
 const CELL_SIZE: usize = 8;
-const CELL_AREA: f64 = (CELL_SIZE * CELL_SIZE) as f64;
 
 /// Per-block Taubman masking weight, suitable for scaling distortion estimates.
 ///
 /// Values < 1.0 indicate the block is in a textured region (masking hides errors).
 /// Values > 1.0 indicate a flat region (no masking — every error is visible).
 /// The value 1.0 represents the flat-cell floor when ν = 1/√512.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct TaubmanMaskMap {
     /// Width of the subband in cells (ceil(subband_width / 8)).
@@ -39,6 +51,7 @@ pub struct TaubmanMaskMap {
     pub cell_nu: Vec<f64>,
 }
 
+#[cfg(test)]
 impl TaubmanMaskMap {
     /// Compute a Taubman masking map from wavelet subband coefficients.
     ///
@@ -129,16 +142,6 @@ impl TaubmanMaskMap {
         let flat_inv = 1.0 / F_SQUARED;
         (mean_inv / flat_inv).clamp(0.0, 1.0)
     }
-}
-
-/// Convenience: compute the average cell ν across an entire subband.
-///
-/// Useful for diagnostics and per-subband activity metrics.
-pub fn mean_subband_nu(mask: &TaubmanMaskMap) -> f64 {
-    if mask.cell_nu.is_empty() {
-        return 0.0;
-    }
-    mask.cell_nu.iter().copied().sum::<f64>() / mask.cell_nu.len() as f64
 }
 
 #[cfg(test)]

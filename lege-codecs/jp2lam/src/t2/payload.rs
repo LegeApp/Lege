@@ -1,4 +1,6 @@
-use super::packet::{Packet, PacketSequence};
+#[cfg(test)]
+use super::packet::Packet;
+use super::packet::PacketSequence;
 use crate::encode::block_store::{PayloadRef, SharedEncodedBlockStore};
 use crate::error::Jp2LamError;
 use crate::error::Result;
@@ -41,7 +43,7 @@ impl TilePartPayload {
         Self::StoredPacketSequence { store, packets }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn from_packets(packets: Vec<Packet>) -> Self {
         Self::from_packet_sequence(PacketSequence::from_packets(packets))
     }
@@ -58,7 +60,7 @@ impl TilePartPayload {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn packet_count(&self) -> usize {
         match self {
             Self::PacketSequence(sequence) => sequence.packet_count(),
@@ -93,13 +95,6 @@ impl TilePartPayload {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.byte_len());
-        self.write_to(&mut out)
-            .expect("writing a tile payload to Vec should not fail");
-        out
-    }
 }
 
 #[cfg(test)]

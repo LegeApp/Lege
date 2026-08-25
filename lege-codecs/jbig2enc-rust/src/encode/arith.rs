@@ -11,26 +11,7 @@ use anyhow::anyhow;
 #[cfg(debug_assertions)]
 use std::collections::HashMap;
 
-#[cfg(not(feature = "trace_arith"))]
-#[macro_use]
-mod trace_stubs {
-    #[allow(unused_macros)]
-    macro_rules! debug {
-        ($($arg:tt)*) => { std::convert::identity(format_args!($($arg)*)); };
-    }
-    #[allow(unused_macros)]
-    macro_rules! trace {
-        ($($arg:tt)*) => { std::convert::identity(format_args!($($arg)*)) };
-    }
-}
-
 const JBIG2_MAX_CTX: usize = 65536;
-const TPGD_CTX: u32 = 0x9B25;
-
-const TEST_INPUT: &[u8] = &[
-    0, 2, 0, 0x51, 0, 0, 0, 0xc0, 0x03, 0x52, 0x87, 0x2a, 0xaa, 0xaa, 0xaa, 0xaa, 0x82, 0xc0, 0x20,
-    0, 0xfc, 0xd7, 0x9e, 0xf6, 0xbf, 0x7f, 0xed, 0x90, 0x4f, 0x46, 0xa3, 0xbf,
-];
 
 /// One probability-estimation state (ISO/IEC 14492 Table E.1)
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -2,8 +2,10 @@ mod derive;
 mod validate;
 
 use crate::error::{Jp2LamError, Result};
+#[cfg(test)]
+use crate::model::Image;
 use crate::model::{
-    ColorEncoding, ColorSpace, ComponentView, EncodeOptions, Image, ImageView, OutputFormat,
+    ColorEncoding, ColorSpace, ComponentView, EncodeOptions, ImageView, OutputFormat,
     RateControl, ResourceLimits, TilePolicy,
 };
 use derive::{
@@ -11,7 +13,9 @@ use derive::{
     derive_subband_quants, derive_view_component_plans, max_decompositions,
     max_target_decompositions, tcp_rate_from_quality, use_mct,
 };
-use validate::{validate_image, validate_image_view};
+#[cfg(test)]
+use validate::validate_image;
+use validate::validate_image_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgressionOrder {
@@ -118,16 +122,18 @@ impl From<&ComponentView<'_>> for ComponentPlan {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct EncodingPlan {
     pub width: u32,
     pub height: u32,
     pub component_count: u16,
-    pub colorspace: ColorSpace,
     pub color_encoding: ColorEncoding,
     pub output_format: OutputFormat,
     pub quality: u8,
+    /// Only read by tests, verifying that plan derivation reflects the
+    /// user-supplied rate-control option; live code consumes the fields
+    /// derived from it instead (`output_rate_target`, `layers`).
+    #[cfg(test)]
     pub rate_control: RateControl,
     pub output_rate_target: Option<OutputRateTarget>,
     pub lane: EncodeLane,
@@ -141,6 +147,10 @@ pub(crate) struct EncodingPlan {
     pub code_block_size: CodeBlockSize,
     pub guard_bits: u8,
     pub layers: Vec<QualityLayer>,
+    /// Only read by tests, verifying that plan derivation reflects the
+    /// user-supplied tile policy; live code consumes the derived `tile`
+    /// field instead.
+    #[cfg(test)]
     pub tile_policy: TilePolicy,
     pub resource_limits: ResourceLimits,
     pub tile: TilePlan,
@@ -149,7 +159,10 @@ pub(crate) struct EncodingPlan {
 }
 
 impl EncodingPlan {
-    #[allow(dead_code)]
+    /// Only used by tests; live callers go through
+    /// [`Self::build_view`] directly (`EncodeContext::new` converts to a
+    /// view itself before calling in).
+    #[cfg(test)]
     pub(crate) fn build(image: &Image, options: &EncodeOptions) -> Result<Self> {
         validate_image(image)?;
         let view = image.as_view()?;
@@ -258,10 +271,10 @@ impl EncodingPlan {
             width: image.width,
             height: image.height,
             component_count: image.components.len() as u16,
-            colorspace: encoding_colorspace,
             color_encoding,
             output_format: options.format,
             quality,
+            #[cfg(test)]
             rate_control,
             output_rate_target,
             lane,
@@ -275,6 +288,7 @@ impl EncodingPlan {
             code_block_size: derive_code_block_size(quality),
             guard_bits: 2,
             layers: vec![QualityLayer { target_rate }],
+            #[cfg(test)]
             tile_policy: options.tile_policy,
             resource_limits: options.resource_limits.clone(),
             tile,

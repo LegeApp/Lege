@@ -1,4 +1,4 @@
-use super::{layout, rate, t1, t2};
+use super::{rate, t1, t2};
 use crate::dwt::norms::{band_gain, reversible_exponent};
 use crate::dwt::pcrd::select_for_quality;
 use crate::encode::backend::CodestreamBackend;
@@ -22,7 +22,6 @@ use crate::tiling::{TileRect, tile_component_rect, tile_grid};
 
 pub(crate) struct NativeBackend;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeComponentCoefficients {
     pub x0: usize,
@@ -63,6 +62,7 @@ impl NativeBackend {
     /// 3. Forward 9/7 2-D transform in `f32`.
     /// 4. Per-band scalar-expounded quantization from the plan's QCD metadata.
     /// 4. Return `i32` sign-magnitude coefficients consumable by Tier-1.
+    #[cfg(test)]
     pub(crate) fn prepare_component_coefficients_97(
         &self,
         context: &EncodeContext<'_>,
@@ -172,7 +172,7 @@ impl NativeBackend {
         )
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_component_coefficients(
         &self,
         context: &EncodeContext<'_>,
@@ -201,7 +201,7 @@ impl NativeBackend {
     /// Prepare reversible or irreversible coefficients for a tile-component
     /// rectangle. This is a Phase 4 staging API for tile-by-tile encoding; the
     /// active path still calls it with the full image dimensions.
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_component_coefficients_rect(
         &self,
         context: &EncodeContext<'_>,
@@ -252,66 +252,7 @@ impl NativeBackend {
         })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn prepare_component_layout(
-        &self,
-        context: &EncodeContext<'_>,
-        component_index: usize,
-    ) -> Result<layout::NativeComponentLayout> {
-        let coefficients = self.prepare_component_coefficients(context, component_index)?;
-        layout::build_component_layout(&coefficients, context.plan.code_block_size)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn prepare_tier1_layout(
-        &self,
-        context: &EncodeContext<'_>,
-        component_index: usize,
-    ) -> Result<t1::NativeTier1Layout> {
-        let _p = crate::encode::profile_enter("prepare_tier1_layout");
-        let layout = self.prepare_component_layout(context, component_index)?;
-        let precision = context
-            .plan
-            .components
-            .get(component_index)
-            .map(|c| c.precision)
-            .unwrap_or(8);
-        let guard_bits = context.plan.guard_bits;
-        // For reversible MCT (RCT), Cb and Cr expand to ±255 (9-bit), so components 1 and 2
-        // need one extra bitplane of precision.
-        // For irreversible MCT (ICT), the channel ranges are different after ICT: Y has larger
-        // magnitude range than Cb/Cr, so we use the component's actual precision.
-        let effective_precision = if native_use_mct(&context.plan) && component_index > 0 {
-            if matches!(context.plan.transform, WaveletTransform::Reversible53) {
-                precision + 1
-            } else {
-                // ICT: after forward transform, components are Y (0), Cb (1), Cr (2).
-                // Y has wider range than Cb/Cr, but we use base precision for all.
-                precision
-            }
-        } else {
-            precision
-        };
-        let analyzed = match context.plan.quantization_style {
-            QuantizationStyle::NoQuantization => {
-                t1::analyze_component_layout_with(&layout, effective_precision, guard_bits)
-            }
-            QuantizationStyle::ScalarExpounded => {
-                t1::analyze_component_layout_with_max_bitplanes(&layout, |resolution, band| {
-                    context
-                        .plan
-                        .subband_quants
-                        .iter()
-                        .find(|quant| quant.resolution == resolution && quant.band == band)
-                        .map(|quant| guard_bits.saturating_sub(1).saturating_add(quant.exponent))
-                        .unwrap_or_else(|| reversible_exponent(precision, band))
-                })
-            }
-        };
-        Ok(analyzed)
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_tier1_encoded_layout(
         &self,
         context: &EncodeContext<'_>,
@@ -319,7 +260,7 @@ impl NativeBackend {
         self.prepare_tier1_encoded_component(context, 0)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_tier1_encoded_component(
         &self,
         context: &EncodeContext<'_>,
@@ -343,7 +284,7 @@ impl NativeBackend {
     /// tile 0 and the full image extent; future multi-tile orchestration can
     /// call it once per tile/component and drop each tile coefficient plane
     /// immediately after Tier-1 encoding.
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_tier1_encoded_component_rect(
         &self,
         context: &EncodeContext<'_>,
@@ -488,7 +429,7 @@ impl NativeBackend {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_tier1_encoded_layouts(
         &self,
         context: &EncodeContext<'_>,
@@ -537,7 +478,7 @@ impl NativeBackend {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_tier1_encoded_layouts_and_selections(
         &self,
         context: &EncodeContext<'_>,
@@ -554,16 +495,7 @@ impl NativeBackend {
         Ok((encoded_layouts, selections))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn prepare_packet_sequence(
-        &self,
-        context: &EncodeContext<'_>,
-    ) -> Result<t2::NativePacketSequence> {
-        let (encoded, selections) = self.prepare_tier1_encoded_layouts_and_selections(context)?;
-        t2::build_packet_sequence_for_components_with_selections(&encoded, Some(&selections))
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_tile_part_payload(
         &self,
         context: &EncodeContext<'_>,
@@ -580,7 +512,6 @@ impl NativeBackend {
     /// before Tier-2 packetization. It intentionally selects all passes for now;
     /// Phase 5 will add an encoded block store plus global PCRD across all
     /// tiles/components.
-    #[allow(dead_code)]
     pub(crate) fn prepare_tile_part_payload_for_tile_rect(
         &self,
         context: &EncodeContext<'_>,
@@ -691,7 +622,6 @@ impl NativeBackend {
         Ok(stored)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn prepare_codestream_parts(
         &self,
         context: &EncodeContext<'_>,
@@ -758,7 +688,6 @@ impl NativeBackend {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn prepare_codestream_bytes(&self, context: &EncodeContext<'_>) -> Result<Vec<u8>> {
         let _p = crate::encode::profile_enter("prepare_codestream_bytes");
         let parts = self.prepare_codestream_parts(context)?;
@@ -1134,6 +1063,7 @@ fn subband_quant_step(
     Ok((base * 2f32.powi(numbps - exponent)).max(1e-6))
 }
 
+#[cfg(test)]
 fn native_pcrd_enabled() -> bool {
     true
 }
@@ -1161,6 +1091,7 @@ fn all_pass_selections(
         .collect()
 }
 
+#[cfg(test)]
 fn select_layout_passes(
     layouts: &[t1::NativeEncodedTier1Layout],
     context: &EncodeContext<'_>,
@@ -1526,6 +1457,7 @@ fn stored_selection_layout_from_flat(
     Ok(t1::NativeTier1SelectionLayout { bands })
 }
 
+#[cfg(test)]
 fn selection_layout_from_flat(
     layout: &t1::NativeEncodedTier1Layout,
     flat_selected_passes: &[u16],
@@ -1697,6 +1629,13 @@ fn native_use_mct(plan: &EncodingPlan) -> bool {
     plan.use_mct && matches!(plan.transform, WaveletTransform::Irreversible97)
 }
 
+/// Not called by the live tile-rect encode path (`visit_tier1_encoded_mct_components_rect`
+/// always encodes MCT components with a plain sequential loop); only the
+/// superseded whole-image `prepare_tier1_encoded_layouts` opted into
+/// component-level parallelism via this memory-budget check. Kept under
+/// `#[cfg(test)]`, both for its own direct tests below and as part of the
+/// `native::layout`-adjacent legacy pipeline (see that module's doc comment).
+#[cfg(test)]
 fn allow_component_parallelism(context: &EncodeContext<'_>) -> bool {
     let component_count = usize::from(context.plan.component_count);
     if component_count <= 1 || context.plan.resource_limits.max_threads == Some(1) {
@@ -1720,6 +1659,7 @@ fn allow_component_parallelism(context: &EncodeContext<'_>) -> bool {
 /// any one output component currently loads R, G, and B at once. Only enable
 /// component-level Rayon jobs when the declared working-memory budget can hold
 /// every component's full-component preparation floor at the same time.
+#[cfg(test)]
 fn component_parallel_working_memory_floor(plan: &EncodingPlan) -> Option<usize> {
     let pixels = usize::try_from(plan.width)
         .ok()?
@@ -2152,7 +2092,6 @@ mod tests {
                     visibility_weight: if index % 4 < 2 { 0.25 } else { 1.0 },
                 })
                 .collect(),
-            normalizer: 1.0,
         };
         let backend = NativeBackend;
         let tile = TileRect {

@@ -60,20 +60,9 @@ impl FlagGrid {
         y * self.width + x
     }
 
-    /// Get raw flag word for index-based access
-    #[inline(always)]
-    pub(crate) fn raw(&self, idx: usize) -> T1Flag {
-        self.flags[idx]
-    }
-
     #[inline(always)]
     pub(crate) fn is_significant(&self, x: usize, y: usize) -> bool {
         (self.flags[self.idx(x, y)] & F_SIG) != 0
-    }
-
-    #[inline(always)]
-    pub(crate) fn is_significant_idx(&self, idx: usize) -> bool {
-        (self.flags[idx] & F_SIG) != 0
     }
 
     #[inline(always)]
@@ -106,18 +95,8 @@ impl FlagGrid {
     }
 
     #[inline(always)]
-    pub(crate) fn mark_visited_idx(&mut self, idx: usize) {
-        self.flags[idx] |= F_VISITED;
-    }
-
-    #[inline(always)]
     pub(crate) fn clear_visited(&mut self, x: usize, y: usize) {
         let idx = self.idx(x, y);
-        self.flags[idx] &= !F_VISITED;
-    }
-
-    #[inline(always)]
-    pub(crate) fn clear_visited_idx(&mut self, idx: usize) {
         self.flags[idx] &= !F_VISITED;
     }
 
@@ -225,7 +204,11 @@ impl FlagGrid {
         mask
     }
 
-    /// Check if sample has any significant neighbor (fast check)
+    /// Check if sample has any significant neighbor (fast check). Only
+    /// exercised by tests exhaustively checking all 8 neighbor directions;
+    /// production code queries neighbor significance via
+    /// [`Self::neighbour_mask_from_word`] as part of context derivation.
+    #[cfg(test)]
     #[inline(always)]
     pub(crate) fn has_sig_neighbor_idx(&self, idx: usize) -> bool {
         (self.flags[idx] & N_ANY) != 0

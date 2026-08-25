@@ -1,11 +1,13 @@
 //! Common utility functions for integration tests
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared test helper module: each of the ~27 integration-test binaries in tests/ compiles this module independently and uses only a subset of its items"
+)]
 
 pub mod oracle;
 pub mod pbm;
 pub mod writer;
 
-use jbig2enc_rust as jbig2;
 use jbig2enc_rust::jbig2sym::BitImage;
 use std::io::{BufRead, BufReader, Read, Seek};
 

@@ -4,7 +4,10 @@
 //! When the binary is absent the helpers return `None` so tests *skip* the
 //! oracle comparison rather than fail (CI must have it installed).
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared test helper module: each of the ~27 integration-test binaries in tests/ compiles this module independently and uses only a subset of its items"
+)]
 
 use std::io::Write;
 use std::path::PathBuf;

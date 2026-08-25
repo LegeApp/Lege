@@ -1,13 +1,13 @@
-#![allow(dead_code)]
 // Content-aware compression scaffolding.
 //
 // Defines the types for profile-aware and block-class-aware PCRD optimization.
-// These types are not yet wired into the encode pipeline.
+// `BlockClass` / `class_distortion_weight` / `classify_from_nonzero_fraction`
+// are wired into the encode pipeline (see `dwt::pcrd`, `encode::block_store`,
+// `encode::backend::native::{rate,t1}`). `ContentProfile` and
+// `BlockFeatures::classify` are not yet wired in — kept under `#[cfg(test)]`
+// as tested-but-unintegrated scaffolding.
 //
 // Insertion points when ready:
-//   - `rate::subband_weight_for`: multiply the norm-squared weight by
-//     `class_distortion_weight(class, is_ll, resolution)`
-//   - `pcrd::estimate_pass_distortion_delta`: pass the adjusted weight
 //   - `quality_to_lambda`: accept an optional `ContentProfile` to shift
 //     the base lambda for content-specific aggressiveness
 
@@ -16,23 +16,25 @@
 /// The profile is orthogonal to quality: quality sets the target size/fidelity
 /// tradeoff; the profile chooses how that tradeoff is distributed across
 /// different kinds of content in the image.
+///
+/// Only `Photo` is exercised today (`BlockFeatures::classify` ignores the
+/// profile entirely so far — see its doc comment). The other planned
+/// categories a future profile-aware classifier would need:
+/// - Web/UI content (screenshots, flat fills, logos, composited images):
+///   protect hard edges, flat-color regions, and anti-aliased text; avoid
+///   ringing or chroma bleed around contrasting areas.
+/// - Scanned documents for e-ink or screen reading: readability first,
+///   protect text edge sharpness above all else; aggressively compress
+///   paper texture and flat backgrounds.
+/// - Mixed document and photo content: context-sensitive allocation between
+///   text and image regions.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ContentProfile {
     /// General photographic or mixed content (default).
     /// Balanced allocation; allow more loss in noisy/textured regions.
     #[default]
     Photo,
-    /// Web/UI content: screenshots, flat fills, logos, composited images.
-    /// Protect hard edges, flat-color regions, and anti-aliased text.
-    /// Avoid ringing or chroma bleed around contrasting areas.
-    WebUi,
-    /// Scanned documents for e-ink or screen reading.
-    /// Readability first: protect text edge sharpness above all else.
-    /// Aggressively compress paper texture and flat backgrounds.
-    ScanReadable,
-    /// Mixed document and photo content.
-    /// Use context-sensitive allocation between text and image regions.
-    Mixed,
 }
 
 /// Block-level content class derived from local image statistics.
@@ -50,6 +52,13 @@ pub(crate) enum BlockClass {
     /// Sharp edge or text glyph.
     /// High gradient energy, strong directional edge concentration.
     /// Policy: reward early passes that preserve sharp structure.
+    ///
+    /// Only ever constructed by the not-yet-integrated
+    /// `BlockFeatures::classify` (see its doc comment), so this variant is
+    /// `#[cfg(test)]`-only for now — it and its consumers (in
+    /// `class_distortion_weight` and `dwt::pcrd`) light back up together
+    /// once that classifier is wired into the encode pipeline.
+    #[cfg(test)]
     EdgeText,
     /// Smooth monotone ramp or soft shadow.
     /// Moderate variance, smooth gradient, low edge density.
@@ -63,6 +72,10 @@ pub(crate) enum BlockClass {
     /// Background noise or paper texture.
     /// Low contrast but noisy residuals.
     /// Policy: aggressively downweight; rarely helps perception.
+    ///
+    /// See [`Self::EdgeText`]'s doc comment: `#[cfg(test)]`-only for the
+    /// same reason.
+    #[cfg(test)]
     BackgroundNoise,
 }
 
@@ -73,6 +86,7 @@ pub(crate) enum BlockClass {
 ///
 /// Not yet computed in the encode pipeline. Once integrated, these feed
 /// `BlockFeatures::classify` to produce a `BlockClass` per code-block.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BlockFeatures {
     /// Normalized pixel variance in [0, 1] (1 = max possible for bit depth).
@@ -87,6 +101,7 @@ pub(crate) struct BlockFeatures {
     pub likely_edge_text: bool,
 }
 
+#[cfg(test)]
 impl BlockFeatures {
     /// Classify this block given a content profile.
     ///
@@ -143,7 +158,9 @@ pub(crate) fn class_distortion_weight(class: BlockClass, band_is_ll: bool, _reso
         BlockClass::Flat => 2.5,
         BlockClass::Gradient => 1.5,
         BlockClass::TexturePhoto => 1.0,
+        #[cfg(test)]
         BlockClass::BackgroundNoise => 0.7,
+        #[cfg(test)]
         BlockClass::EdgeText => 1.0,
     };
     if band_is_ll { base * 1.1 } else { base }

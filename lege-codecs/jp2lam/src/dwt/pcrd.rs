@@ -1,5 +1,4 @@
 // src/pcrd.rs
-#![allow(dead_code)]
 
 use core::cmp::Ordering;
 
@@ -88,31 +87,12 @@ pub struct CodeBlockPcrdCurve {
     pub points: Vec<PcrdPoint>,
 }
 
-impl CodeBlockPcrdCurve {
-    pub fn is_empty(&self) -> bool {
-        self.points.len() <= 1
-    }
-
-    pub fn max_bytes(&self) -> u32 {
-        self.points.last().map(|p| p.bytes).unwrap_or(0)
-    }
-}
-
 /// Chosen truncation point for one code-block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockSelection {
     pub block_id: usize,
     /// Number of retained coding passes from the front of the stream.
     pub passes: u16,
-}
-
-impl BlockSelection {
-    pub fn omitted(block_id: usize) -> Self {
-        Self {
-            block_id,
-            passes: 0,
-        }
-    }
 }
 
 /// Cumulative selection across all code-blocks for one target budget.
@@ -122,22 +102,6 @@ pub struct LayerSelection {
     pub actual_bytes: u32,
     pub lambda: f64,
     pub selections: Vec<BlockSelection>,
-}
-
-/// Cumulative target for one quality layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LayerBudget {
-    pub layer_index: usize,
-    /// Cumulative byte target up to and including this layer.
-    pub target_bytes_cumulative: u32,
-}
-
-/// Optional richer statistics for debugging / tests.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SelectionStats {
-    pub total_bytes: u32,
-    pub total_distortion_reduction: f64,
-    pub chosen_points: Vec<PcrdPoint>,
 }
 
 /// Build the raw cumulative curve from per-pass data.
@@ -247,18 +211,6 @@ pub fn build_hull_curve(
 ) -> Result<CodeBlockPcrdCurve, PcrdError> {
     let raw = build_raw_curve(block_id, passes)?;
     prune_to_convex_hull(&raw)
-}
-
-/// Build hull curves for many blocks at once.
-pub fn build_hull_curves<I>(blocks: I) -> Result<Vec<CodeBlockPcrdCurve>, PcrdError>
-where
-    I: IntoIterator<Item = (usize, Vec<RawPassRecord>)>,
-{
-    let mut out = Vec::new();
-    for (block_id, passes) in blocks {
-        out.push(build_hull_curve(block_id, &passes)?);
-    }
-    Ok(out)
 }
 
 /// Select truncation points for a target total byte budget.
@@ -390,22 +342,6 @@ fn fill_remaining_budget(
     Ok(())
 }
 
-/// Build cumulative selections for multiple layers.
-///
-/// Each budget is interpreted as cumulative bytes up to that layer.
-pub fn build_layer_selections(
-    curves: &[CodeBlockPcrdCurve],
-    budgets: &[LayerBudget],
-) -> Result<Vec<LayerSelection>, PcrdError> {
-    let mut out = Vec::with_capacity(budgets.len());
-    for budget in budgets {
-        let mut sel = select_for_target_bytes(curves, budget.target_bytes_cumulative)?;
-        sel.target_bytes = budget.target_bytes_cumulative;
-        out.push(sel);
-    }
-    Ok(out)
-}
-
 /// Evaluate a fixed lambda and return both selected points and summary stats.
 ///
 /// Selection rule:
@@ -440,34 +376,6 @@ pub fn evaluate_lambda(
     })
 }
 
-/// Same as `evaluate_lambda`, but also returns chosen points and cumulative
-/// distortion reduction for testing and diagnostics.
-pub fn evaluate_lambda_with_stats(
-    curves: &[CodeBlockPcrdCurve],
-    lambda: f64,
-) -> Result<SelectionStats, PcrdError> {
-    validate_curves(curves)?;
-
-    let mut total_bytes = 0u32;
-    let mut total_distortion_reduction = 0.0f64;
-    let mut chosen_points = Vec::with_capacity(curves.len());
-
-    for curve in curves {
-        let chosen = choose_block_point(curve, lambda)?;
-        total_bytes = total_bytes
-            .checked_add(chosen.bytes)
-            .ok_or(PcrdError::TotalBytesOverflow)?;
-        total_distortion_reduction += chosen.distortion_reduction;
-        chosen_points.push(chosen);
-    }
-
-    Ok(SelectionStats {
-        total_bytes,
-        total_distortion_reduction,
-        chosen_points,
-    })
-}
-
 /// Choose the retained point for one block at a fixed lambda.
 pub fn choose_block_point(curve: &CodeBlockPcrdCurve, lambda: f64) -> Result<PcrdPoint, PcrdError> {
     validate_curve(curve)?;
@@ -495,6 +403,7 @@ pub fn choose_block_point(curve: &CodeBlockPcrdCurve, lambda: f64) -> Result<Pcr
 ///
 /// Output shape:
 ///   [layer][block] -> incremental passes contributed in that layer
+#[cfg(test)]
 pub fn cumulative_to_incremental_passes(
     cumulative: &[LayerSelection],
 ) -> Result<Vec<Vec<(usize, u16)>>, PcrdError> {
@@ -639,6 +548,7 @@ fn max_slope(curves: &[CodeBlockPcrdCurve]) -> Result<f64, PcrdError> {
 
 /// Coding pass type, used by pass-kind-aware distortion models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum PassKind {
     SignificancePropagation,
     MagnitudeRefinement,
@@ -658,6 +568,7 @@ pub enum BandKind {
 ///
 /// Constructed in `rate.rs` from Tier-1 pass metadata and subband parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 pub struct PassDistortionContext {
     pub pass_kind: PassKind,
     pub bitplane: u8,
@@ -687,6 +598,7 @@ pub struct PassDistortionContext {
 
 /// Distortion model selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg(test)]
 pub enum DistortionModel {
     /// Quant-aware energy, 0.25 MR factor, flat band bias.
     BaselineAlpha,
@@ -702,6 +614,7 @@ pub enum DistortionModel {
 }
 
 /// Dispatch to the selected distortion model.
+#[cfg(test)]
 pub fn estimate_pass_distortion_delta_with_model(
     ctx: &PassDistortionContext,
     model: DistortionModel,
@@ -716,6 +629,7 @@ pub fn estimate_pass_distortion_delta_with_model(
 /// Baseline model — identical to the original `estimate_pass_distortion_delta`.
 ///
 /// Energy = (Δ·2^b)². MR factor = 0.25 from E[(±Δ_b/2)²] = energy/4 per unknown bit.
+#[cfg(test)]
 pub fn estimate_pass_distortion_delta_baseline(ctx: &PassDistortionContext) -> f64 {
     let plane_weight = (1u64 << ctx.bitplane.min(30)) as f64 * ctx.quant_step;
     let energy = plane_weight * plane_weight;
@@ -733,6 +647,7 @@ pub fn estimate_pass_distortion_delta_baseline(ctx: &PassDistortionContext) -> f
 /// SP gets the full energy allocation; MR uses 0.25 (= energy/4, the expected
 /// squared error from one unknown refinement bit ±Δ_b/2); CL uses 0.85 because
 /// it encodes residual context bits after the significance pass.
+#[cfg(test)]
 pub fn estimate_pass_distortion_delta_pass_kind_aware(ctx: &PassDistortionContext) -> f64 {
     let plane_weight = (1u64 << ctx.bitplane.min(30)) as f64 * ctx.quant_step;
     let energy = plane_weight * plane_weight;
@@ -771,6 +686,7 @@ pub fn estimate_pass_distortion_delta_pass_kind_aware(ctx: &PassDistortionContex
 /// Formula: ΔD_vis = subband_weight · taubman_masking_weight · pass_contribution
 /// where `taubman_masking_weight` ∈ (0,1] encodes mean(1/(ν²+f²)) normalized
 /// to 1.0 at the flat-cell floor ([T2000] §VI eqs. 4–5).
+#[cfg(test)]
 pub fn estimate_pass_distortion_delta_taubman2000(ctx: &PassDistortionContext) -> f64 {
     let plane_weight = (1u64 << ctx.bitplane.min(30)) as f64 * ctx.quant_step;
     let energy = plane_weight * plane_weight;
@@ -846,6 +762,7 @@ pub fn apply_contrast_masking_to_delta(
 
     let class_strength = match block_class {
         // Do not let masking erase text/line art.
+        #[cfg(test)]
         BlockClass::EdgeText => 0.15,
 
         // Flat/gradient errors are visible as blotches/banding.
@@ -856,6 +773,7 @@ pub fn apply_contrast_masking_to_delta(
         BlockClass::TexturePhoto => 1.00,
 
         // Paper/noise can be sacrificed aggressively.
+        #[cfg(test)]
         BlockClass::BackgroundNoise => 1.20,
     };
 
@@ -869,6 +787,7 @@ pub fn apply_contrast_masking_to_delta(
 
 /// Debug breakdown of one distortion estimate.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct PassDistortionExplanation {
     pub model: DistortionModel,
     pub energy_per_sample: f64,
@@ -881,6 +800,7 @@ pub struct PassDistortionExplanation {
 /// Return a full breakdown of the distortion estimate for one pass.
 ///
 /// Useful for unit tests and offline calibration — not called in the hot path.
+#[cfg(test)]
 pub fn explain_pass_distortion(
     ctx: &PassDistortionContext,
     model: DistortionModel,
@@ -911,26 +831,6 @@ pub fn explain_pass_distortion(
         subband_weight: ctx.subband_weight,
         total,
     }
-}
-
-/// Suggested weight hook for subbands in an alpha encoder.
-///
-/// For now this is intentionally conservative.
-/// You can later replace it with synthesis-norm or perceptual weighting.
-pub fn default_subband_weight(resolution: u8, is_ll: bool, is_hh: bool) -> f64 {
-    let mut w = 1.0;
-
-    if is_ll {
-        w *= 1.15;
-    }
-    if is_hh {
-        w *= 0.90;
-    }
-    if resolution == 0 {
-        w *= 1.10;
-    }
-
-    w
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -979,11 +879,18 @@ pub enum PcrdError {
         block_id: usize,
         passes: u16,
     },
+    /// Only ever returned by the `#[cfg(test)]`-gated
+    /// `cumulative_to_incremental_passes` (production always emits a single
+    /// layer, so multi-layer cumulative-to-incremental conversion is
+    /// currently only exercised by tests).
+    #[cfg(test)]
     InconsistentSelectionBlockCounts {
         layer_index: usize,
         expected: usize,
         actual: usize,
     },
+    /// See [`Self::InconsistentSelectionBlockCounts`]'s doc comment.
+    #[cfg(test)]
     NonMonotoneLayerSelection {
         layer_index: usize,
         block_id: usize,
@@ -1067,6 +974,7 @@ impl core::fmt::Display for PcrdError {
                 f,
                 "PCRD selection for block {block_id} references absent pass count {passes}"
             ),
+            #[cfg(test)]
             Self::InconsistentSelectionBlockCounts {
                 layer_index,
                 expected,
@@ -1076,6 +984,7 @@ impl core::fmt::Display for PcrdError {
                 "layer {} has inconsistent block count: expected {}, got {}",
                 layer_index, expected, actual
             ),
+            #[cfg(test)]
             Self::NonMonotoneLayerSelection {
                 layer_index,
                 block_id,
@@ -1476,7 +1385,7 @@ mod tests {
 
     #[test]
     fn explain_pass_distortion_matches_with_model() {
-        let ctx = PassDistortionContext {
+        let cleanup_ctx = PassDistortionContext {
             pass_kind: PassKind::Cleanup,
             bitplane: 3,
             newly_significant: 5,
@@ -1489,19 +1398,32 @@ mod tests {
             contrast_visibility_weight: 1.0,
             taubman_masking_weight: 1.0,
         };
-        for model in [
-            DistortionModel::BaselineAlpha,
-            DistortionModel::PassKindAware,
-        ] {
-            let direct = estimate_pass_distortion_delta_with_model(&ctx, model);
-            let explained = explain_pass_distortion(&ctx, model);
-            assert!(
-                (explained.total - direct).abs() < 1e-10,
-                "explain total mismatch for {:?}: {} vs {}",
-                model,
-                explained.total,
-                direct
-            );
+        // Also exercise `PassKind::MagnitudeRefinement`, the third pass kind
+        // (Significance Propagation and Cleanup are covered above and by
+        // `distortion_prefers_higher_bitplanes`).
+        let refinement_ctx = PassDistortionContext {
+            pass_kind: PassKind::MagnitudeRefinement,
+            refinement_samples: 6,
+            newly_significant: 0,
+            taubman_masking_weight: 0.6,
+            ..cleanup_ctx
+        };
+        for ctx in [&cleanup_ctx, &refinement_ctx] {
+            for model in [
+                DistortionModel::BaselineAlpha,
+                DistortionModel::PassKindAware,
+                DistortionModel::Taubman2000,
+            ] {
+                let direct = estimate_pass_distortion_delta_with_model(ctx, model);
+                let explained = explain_pass_distortion(ctx, model);
+                assert!(
+                    (explained.total - direct).abs() < 1e-10,
+                    "explain total mismatch for {:?}: {} vs {}",
+                    model,
+                    explained.total,
+                    direct
+                );
+            }
         }
     }
 }

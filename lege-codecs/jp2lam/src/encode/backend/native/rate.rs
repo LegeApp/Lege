@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! PCRD adapters that turn native Tier-1 output into rate-distortion curves.
 //!
 //! This layer keeps the PCRD module itself (`crate::dwt::pcrd`) independent of
@@ -12,11 +10,12 @@ use crate::dwt::pcrd::{
     band_distortion_bias, build_hull_curve,
 };
 use crate::encode::block_store::StoredTier1Layout;
-use crate::perceptual::taubman_masking::TaubmanMaskMap;
 use crate::plan::{BandOrientation, SubbandQuant};
 use crate::profile::{BlockClass, class_distortion_weight};
 
-use super::t1::{NativeEncodedTier1CodeBlock, NativeEncodedTier1Layout, NativeEncodedTier1Pass};
+#[cfg(test)]
+use super::t1::{NativeEncodedTier1CodeBlock, NativeEncodedTier1Layout};
+use super::t1::NativeEncodedTier1Pass;
 
 /// Estimated packet-header signaling cost per included code-block (bytes).
 ///
@@ -68,6 +67,17 @@ pub(crate) fn perceptual_weighting_enabled(
 /// multiplier changes only the ordering of code-block truncation points. The
 /// caller size-matches that ordering against the unweighted curves, so enabling
 /// the model does not move the public quality setting's byte operating point.
+/// Superseded by [`curves_from_stored_layout`] (used by the live tile-rect
+/// path). Note that the live path *also* leaves Taubman masking neutral —
+/// `curves_from_stored_layout` passes a hardcoded `1.0` weight into
+/// `raw_records_for_passes` rather than a real per-block weight from
+/// `TaubmanMaskMap` (see that type's doc comment in
+/// `perceptual::taubman_masking`) — this function's now-dead
+/// `taubman_weights: Option<&[f64]>` parameter was the other half of that
+/// same never-activated feature. Kept under `#[cfg(test)]`; see
+/// `native::layout`'s module doc comment for the broader legacy-pipeline
+/// context.
+#[cfg(test)]
 pub(crate) fn curves_from_tier1_layout(
     layout: &NativeEncodedTier1Layout,
     num_resolutions: u8,
@@ -197,49 +207,7 @@ pub(crate) fn curves_from_stored_layout(
     Ok(curves)
 }
 
-/// Compute per-block Taubman §VI masking weights for all blocks in a layout.
-///
-/// Takes the pre-quantization 9/7 DWT coefficients (f32, row-major in the full
-/// image array at `dwt_width` stride) and computes the masking weight for each
-/// code block in band-major, block-major order — the same traversal used by
-/// `curves_from_tier1_layout`.
-///
-/// Each weight is the Taubman §VI block_masking_multiplier ∈ (0, 1]:
-/// 1.0 = flat (maximum perceptual cost), ~0 = highly textured (masking hides errors).
-pub(crate) fn build_taubman_weights_for_layout(
-    layout: &NativeEncodedTier1Layout,
-    dwt_f32: &[f32],
-    dwt_width: usize,
-    num_resolutions: u8,
-) -> Vec<f64> {
-    let mut weights = Vec::new();
-    for band in &layout.bands {
-        let level = match band.band {
-            BandOrientation::Ll => num_resolutions.saturating_sub(1),
-            _ => num_resolutions
-                .saturating_sub(1)
-                .saturating_sub(band.resolution),
-        };
-        let synthesis_norm = get_norm_97(u32::from(level), band.band);
-
-        for block in &band.blocks {
-            let bw = block.x1 - block.x0;
-            let bh = block.y1 - block.y0;
-            // Extract block coefficients from the full interleaved DWT array
-            let mut coeffs = Vec::with_capacity(bw * bh);
-            for row in block.y0..block.y1 {
-                let row_start = row * dwt_width + block.x0;
-                for &v in &dwt_f32[row_start..row_start + bw] {
-                    coeffs.push(v as f64);
-                }
-            }
-            let mask = TaubmanMaskMap::from_subband(&coeffs, bw, bh, synthesis_norm);
-            weights.push(mask.block_masking_multiplier(0, 0, bw, bh));
-        }
-    }
-    weights
-}
-
+#[cfg(test)]
 fn raw_records_for_block(
     block: &NativeEncodedTier1CodeBlock,
     subband_weight: f64,

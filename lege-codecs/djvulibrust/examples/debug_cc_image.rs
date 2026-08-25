@@ -1,4 +1,4 @@
-use djvu_encoder::encode::jb2::cc_image::{CCImage, analyze_page};
+use djvu_encoder::encode::jb2::cc_image::CCImage;
 use djvu_encoder::encode::jb2::symbol_dict::BitImage;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

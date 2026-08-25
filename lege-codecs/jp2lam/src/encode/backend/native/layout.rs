@@ -3,7 +3,6 @@ use crate::plan::{BandOrientation, CodeBlockSize};
 
 use super::NativeComponentCoefficients;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCodeBlock {
     pub x0: usize,
@@ -13,7 +12,6 @@ pub(crate) struct NativeCodeBlock {
     pub coefficients: Vec<i32>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeSubband {
     pub resolution: u8,
@@ -25,7 +23,6 @@ pub(crate) struct NativeSubband {
     pub codeblocks: Vec<NativeCodeBlock>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeComponentLayout {
     pub width: usize,

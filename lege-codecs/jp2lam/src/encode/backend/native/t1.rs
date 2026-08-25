@@ -22,6 +22,7 @@ pub(crate) fn band_max_bitplanes(precision: u32, guard_bits: u8, band: BandOrien
 }
 
 use super::NativeComponentCoefficients;
+#[cfg(test)]
 use super::layout::{NativeCodeBlock, NativeComponentLayout};
 use crate::plan::CodeBlockSize;
 use crate::tiling::{CodeBlockRect, TileComponentRect, codeblock_rects_for_subband, subband_rects};
@@ -30,7 +31,6 @@ use crate::tiling::{CodeBlockRect, TileComponentRect, codeblock_rects_for_subban
 // Public data types (unchanged)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeTier1CodeBlock {
     pub tile_index: u16,
@@ -52,7 +52,10 @@ pub(crate) struct NativeTier1CodeBlock {
     pub coefficients: Vec<i32>,
 }
 
-#[allow(dead_code)]
+/// Superseded, along with [`NativeTier1Layout`], by the tile-aware
+/// non-grouped encode path (`encode_component_coefficients_for_tile_with_max_bitplanes`).
+/// Kept under `#[cfg(test)]`; see `native::layout`'s module doc comment.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeTier1Band {
     pub resolution: u8,
@@ -60,13 +63,12 @@ pub(crate) struct NativeTier1Band {
     pub blocks: Vec<NativeTier1CodeBlock>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeTier1Layout {
     pub bands: Vec<NativeTier1Band>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeEncodedTier1CodeBlock {
     pub tile_index: u16,
@@ -83,7 +85,6 @@ pub(crate) struct NativeEncodedTier1CodeBlock {
     pub passes: Vec<NativeEncodedTier1Pass>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeEncodedTier1Band {
     pub resolution: u8,
@@ -91,13 +92,11 @@ pub(crate) struct NativeEncodedTier1Band {
     pub blocks: Vec<NativeEncodedTier1CodeBlock>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeEncodedTier1Layout {
     pub bands: Vec<NativeEncodedTier1Band>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeTier1SelectionBand {
     pub resolution: u8,
@@ -105,13 +104,11 @@ pub(crate) struct NativeTier1SelectionBand {
     pub selected_passes: Vec<u16>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeTier1SelectionLayout {
     pub bands: Vec<NativeTier1SelectionBand>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeTier1PassKind {
     SignificancePropagation,
@@ -119,21 +116,31 @@ pub(crate) enum NativeTier1PassKind {
     Cleanup,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeTier1PassTermination {
     TermAll,
+    /// Explicit per-pass termination (ISO/IEC 15444-1 Annex D.5's SEGSYM/ERTERM
+    /// option). The encoder's default coding policy never selects this — only
+    /// `TermAll` is constructed outside tests — so this variant and its
+    /// handling in `finalize_pass_bytes` are `#[cfg(test)]`-gated. The
+    /// decode/write machinery (`MqCoder::erterm_flush`/`restart_init`) fully
+    /// supports it; only the encoder's own policy never opts in.
+    #[cfg(test)]
     ErTerm,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeTier1PassCodingMode {
     Mq,
+    /// Bypass (raw) coding of lower bitplanes (ISO/IEC 15444-1 Annex D.6).
+    /// Never selected by the encoder's default policy — only `Mq` is
+    /// constructed outside tests — so this variant and its handling are
+    /// `#[cfg(test)]`-gated; see [`NativeTier1PassTermination::ErTerm`]'s
+    /// doc comment.
+    #[cfg(test)]
     Raw,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeTier1Pass {
     pub kind: NativeTier1PassKind,
@@ -147,7 +154,6 @@ pub(crate) struct NativeTier1Pass {
     pub significant_after: usize,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeEncodedTier1Pass {
     pub kind: NativeTier1PassKind,
@@ -177,11 +183,15 @@ pub(crate) struct NativeEncodedTier1Pass {
 // Analysis phase (entry point)
 // ---------------------------------------------------------------------------
 
+/// Default 8-bit/2-guard-bit analysis preset. Only exercised by tests; the
+/// production encode path always calls [`analyze_component_layout_with`] or
+/// [`analyze_component_layout_with_max_bitplanes`] with explicit precision.
+#[cfg(test)]
 pub(crate) fn analyze_component_layout(layout: &NativeComponentLayout) -> NativeTier1Layout {
-    // Default: 8-bit precision with 2 guard bits (the current Gray-lossless lane).
     analyze_component_layout_with(layout, 8, 2)
 }
 
+#[cfg(test)]
 pub(crate) fn analyze_component_layout_with_max_bitplanes<F>(
     layout: &NativeComponentLayout,
     mut max_bitplanes_for_subband: F,
@@ -221,6 +231,7 @@ where
     NativeTier1Layout { bands }
 }
 
+#[cfg(test)]
 pub(crate) fn analyze_component_layout_with(
     layout: &NativeComponentLayout,
     precision: u32,
@@ -231,7 +242,7 @@ pub(crate) fn analyze_component_layout_with(
     })
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn encode_component_coefficients_with_max_bitplanes<F>(
     coefficients: &NativeComponentCoefficients,
     component_index: u16,
@@ -326,7 +337,7 @@ where
     NativeEncodedTier1Layout { bands }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn encode_component_coefficients_with(
     coefficients: &NativeComponentCoefficients,
     component_index: u16,
@@ -359,6 +370,7 @@ fn pack_codeblock_coefficients_into(
     }
 }
 
+#[cfg(test)]
 fn analyze_codeblock(
     resolution: u8,
     band: BandOrientation,
@@ -434,6 +446,11 @@ fn analyze_codeblock_coefficients(
 // Encoding phase (entry point)
 // ---------------------------------------------------------------------------
 
+/// Encodes with the default coding policy. Only exercised by tests; the
+/// production encode path always goes through
+/// [`encode_component_coefficients_for_tile_with_max_bitplanes`], which
+/// selects a policy per-band.
+#[cfg(test)]
 pub(crate) fn encode_placeholder_tier1(layout: &NativeTier1Layout) -> NativeEncodedTier1Layout {
     let _p = profile_enter("t1::encode_placeholder_tier1");
 
@@ -469,6 +486,7 @@ pub(crate) fn encode_placeholder_tier1(layout: &NativeTier1Layout) -> NativeEnco
     NativeEncodedTier1Layout { bands }
 }
 
+#[cfg(test)]
 fn encode_band_with_policy(
     band: &NativeTier1Band,
     policy: &NativeTier1CodingPolicy,
@@ -951,8 +969,17 @@ fn pass_coding_style(
 }
 
 fn initialize_pass_coder(coder: &mut MqCoder, mode: NativeTier1PassCodingMode) {
-    if matches!(mode, NativeTier1PassCodingMode::Raw) {
-        coder.bypass_init();
+    match mode {
+        // No bypass-init step for MQ coding. `Mq` is the only variant that
+        // exists outside `#[cfg(test)]` (see `NativeTier1PassCodingMode::Raw`'s
+        // doc comment), so this arm still needs to reference both parameters
+        // there to avoid an unused-parameter warning.
+        NativeTier1PassCodingMode::Mq => {
+            #[cfg(not(test))]
+            let _ = (&coder, &mode);
+        }
+        #[cfg(test)]
+        NativeTier1PassCodingMode::Raw => coder.bypass_init(),
     }
 }
 
@@ -969,6 +996,7 @@ fn finalize_pass_bytes(
             }
             match termination {
                 NativeTier1PassTermination::TermAll => coder.flush_and_restart(),
+                #[cfg(test)]
                 NativeTier1PassTermination::ErTerm => {
                     let bytes = coder.erterm_flush();
                     coder.restart_init();
@@ -976,6 +1004,7 @@ fn finalize_pass_bytes(
                 }
             }
         }
+        #[cfg(test)]
         NativeTier1PassCodingMode::Raw => coder
             .raw_term_flush_and_restart(matches!(termination, NativeTier1PassTermination::ErTerm)),
     }
@@ -1421,6 +1450,7 @@ fn distortion_hint(bitplane: u8, newly_significant: usize, max_magnitude: u32) -
 fn encode_symbol(coder: &mut MqCoder, mode: NativeTier1PassCodingMode, ctx: u8, bit: u8) {
     match mode {
         NativeTier1PassCodingMode::Mq => coder.encode_with_ctx(ctx, bit),
+        #[cfg(test)]
         NativeTier1PassCodingMode::Raw => coder.bypass_encode(bit),
     }
 }

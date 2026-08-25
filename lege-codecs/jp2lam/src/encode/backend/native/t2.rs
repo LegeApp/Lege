@@ -5,6 +5,10 @@ use crate::t2::{PacketSequenceBuilder, StoredPacket, StoredPayloadRange, TilePar
 
 use super::t1::{NativeEncodedTier1Band, NativeEncodedTier1Layout, NativeTier1SelectionLayout};
 
+/// Part of the legacy pipeline superseded by `TilePartPayload`-direct
+/// building; kept under `#[cfg(test)]` — see `native::layout`'s module doc
+/// comment.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativePacket {
     pub resolution: u8,
@@ -14,6 +18,7 @@ pub(crate) struct NativePacket {
     pub body: Vec<u8>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativePacketSequence {
     pub packets: Vec<NativePacket>,
@@ -83,10 +88,6 @@ struct TgtNode {
 
 struct TagTree {
     nodes: Vec<TgtNode>,
-    #[allow(dead_code)]
-    numleafsh: usize,
-    #[allow(dead_code)]
-    numleafsv: usize,
 }
 
 impl TagTree {
@@ -115,11 +116,7 @@ impl TagTree {
         };
         let mut nodes = vec![default_node; numnodes];
         Self::link_parents(&mut nodes, numleafsh, numleafsv, numlvls, &nplh, &nplv);
-        Self {
-            nodes,
-            numleafsh,
-            numleafsv,
-        }
+        Self { nodes }
     }
 
     fn link_parents(
@@ -427,6 +424,7 @@ fn build_packet_header(
 // Packet body: concatenated pass bytes per codeblock
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn build_packet_body(
     band: &NativeEncodedTier1Band,
     selected_band: Option<&super::t1::NativeTier1SelectionBand>,
@@ -447,25 +445,13 @@ fn build_packet_body(
 // Resolution-level packet grouping
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build_packet_sequence(
-    layout: &NativeEncodedTier1Layout,
-) -> Result<NativePacketSequence> {
-    build_packet_sequence_for_components(std::slice::from_ref(layout))
-}
-
-pub(crate) fn build_packet_sequence_for_components(
-    layouts: &[NativeEncodedTier1Layout],
-) -> Result<NativePacketSequence> {
-    build_packet_sequence_for_components_with_selections(layouts, None)
-}
-
-pub(crate) fn build_packet_sequence_for_components_with_selections(
-    layouts: &[NativeEncodedTier1Layout],
-    selections: Option<&[NativeTier1SelectionLayout]>,
-) -> Result<NativePacketSequence> {
-    build_packet_sequence_for_tile_components_with_selections(0, layouts, selections)
-}
-
+/// The tile-0 convenience wrappers that used to sit here
+/// (`build_packet_sequence`, `_for_components`, `_for_components_with_selections`)
+/// had no caller anywhere, including tests, and were deleted. This function
+/// itself is `#[cfg(test)]`-gated because it's part of the legacy pipeline
+/// (see `native::layout`'s module doc comment) but does have direct test
+/// coverage below.
+#[cfg(test)]
 pub(crate) fn build_packet_sequence_for_tile_components_with_selections(
     tile_index: u16,
     layouts: &[NativeEncodedTier1Layout],
@@ -546,18 +532,28 @@ pub(crate) fn build_packet_sequence_for_tile_components_with_selections(
     Ok(NativePacketSequence { packets })
 }
 
+/// Single-component convenience wrapper for tile 0. Only exercised by
+/// tests; production always encodes multiple components together via
+/// [`build_tile_part_payload_for_tile_components_owned`].
+#[cfg(test)]
 pub(crate) fn build_tile_part_payload(
     layout: &NativeEncodedTier1Layout,
 ) -> Result<TilePartPayload> {
     build_tile_part_payload_for_components(std::slice::from_ref(layout))
 }
 
+/// Tile-0, no-selections convenience wrapper. Only exercised by tests.
+#[cfg(test)]
 pub(crate) fn build_tile_part_payload_for_components(
     layouts: &[NativeEncodedTier1Layout],
 ) -> Result<TilePartPayload> {
     build_tile_part_payload_for_components_with_selections(layouts, None)
 }
 
+/// Tile-0 convenience wrapper over the borrowed tile-components form. Only
+/// exercised by tests; production goes through the owned form via
+/// [`build_tile_part_payload_for_tile_components_owned`].
+#[cfg(test)]
 pub(crate) fn build_tile_part_payload_for_components_with_selections(
     layouts: &[NativeEncodedTier1Layout],
     selections: Option<&[NativeTier1SelectionLayout]>,
@@ -565,7 +561,10 @@ pub(crate) fn build_tile_part_payload_for_components_with_selections(
     build_tile_part_payload_for_tile_components_with_selections(0, layouts, selections)
 }
 
-#[allow(dead_code)]
+/// Borrowed-layouts form for an explicit tile index. Only exercised by
+/// tests directly; production uses the owned form (which takes ownership of
+/// the encoded layouts rather than borrowing them).
+#[cfg(test)]
 pub(crate) fn build_tile_part_payload_for_tile_components_with_selections(
     tile_index: u16,
     layouts: &[NativeEncodedTier1Layout],
@@ -581,14 +580,6 @@ pub(crate) fn build_tile_part_payload_for_tile_components_with_selections(
     }
 
     Ok(builder.finish_payload())
-}
-
-#[allow(dead_code)]
-pub(crate) fn build_tile_part_payload_for_components_owned(
-    layouts: Vec<NativeEncodedTier1Layout>,
-    selections: Option<&[NativeTier1SelectionLayout]>,
-) -> Result<TilePartPayload> {
-    build_tile_part_payload_for_tile_components_owned(0, layouts, selections)
 }
 
 pub(crate) fn build_tile_part_payload_for_tile_components_owned(
@@ -851,18 +842,6 @@ fn build_packet_body_segments(
 // ---------------------------------------------------------------------------
 // Retained for tests that use encode_placeholder_tier1
 // ---------------------------------------------------------------------------
-#[allow(dead_code)]
-pub(crate) fn build_packet_sequence_from_layout(
-    layout: &NativeEncodedTier1Layout,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let packet_sequence = build_packet_sequence(layout)?;
-    Ok(packet_sequence
-        .packets
-        .into_iter()
-        .map(|packet| (packet.header, packet.body))
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{

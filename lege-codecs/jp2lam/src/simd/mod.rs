@@ -15,15 +15,12 @@ pub(crate) mod x86;
 
 pub(crate) type AnalyzeI32Fn = fn(&[i32]) -> (u32, usize);
 pub(crate) type QuantizeRectFn = fn(&[f32], &mut [i32], usize, usize, usize, usize, usize, f32);
-pub(crate) type DequantizeRectFn = fn(&[i32], &mut [f32], usize, usize, usize, usize, usize, f32);
 pub(crate) type LevelShiftF32Fn = fn(&[i32], i32, &mut [f32]);
 pub(crate) type LevelShiftI32Fn = fn(&[i32], i32, &mut [i32]);
 pub(crate) type IctComponentFn = fn(&[i32], &[i32], &[i32], usize, i32, &mut [f32]);
 pub(crate) type RctComponentFn = fn(&[i32], &[i32], &[i32], usize, i32, &mut [i32]);
 pub(crate) type InverseIctFn = fn(&mut [f32], &mut [f32], &mut [f32]);
 pub(crate) type InverseRctFn = fn(&mut [i32], &mut [i32], &mut [i32]);
-pub(crate) type FinalizeI32Fn = fn(&[i32], &mut [i32]);
-pub(crate) type FinalizeF32Fn = fn(&[f32], &mut [i32]);
 pub(crate) type DwtF32Fn = fn(&mut [f32], usize, usize, u8) -> crate::error::Result<()>;
 pub(crate) type DwtI32Fn = fn(&mut [i32], usize, usize, u8) -> crate::error::Result<()>;
 
@@ -43,16 +40,13 @@ pub(crate) struct AnalyzePrimitives {
 
 #[derive(Clone, Copy)]
 pub(crate) struct DwtPrimitives {
-    pub forward_97_2d: DwtF32Fn,
     pub inverse_97_2d: DwtF32Fn,
-    pub forward_53_2d: DwtI32Fn,
     pub inverse_53_2d: DwtI32Fn,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct QuantPrimitives {
     pub quantize_f32_rect: QuantizeRectFn,
-    pub dequantize_i32_rect: DequantizeRectFn,
 }
 
 #[derive(Clone, Copy)]
@@ -63,18 +57,20 @@ pub(crate) struct ColorPrimitives {
     pub forward_rct_component: RctComponentFn,
     pub inverse_ict: InverseIctFn,
     pub inverse_rct: InverseRctFn,
-    pub finalize_i32: FinalizeI32Fn,
-    pub finalize_f32: FinalizeF32Fn,
 }
 
 pub(crate) static PRIMITIVES: LazyLock<Primitives> = LazyLock::new(select_primitives);
 
+#[cfg(feature = "profile")]
 pub(crate) fn active_backend() -> &'static str {
     PRIMITIVES.backend
 }
 
 fn select_primitives() -> Primitives {
+    #[cfg(feature = "simd")]
     let mut primitives = scalar::primitives();
+    #[cfg(not(feature = "simd"))]
+    let primitives = scalar::primitives();
     let mode = std::env::var("JP2LAM_PRIMITIVES")
         .unwrap_or_else(|_| "auto".to_string())
         .to_ascii_lowercase();

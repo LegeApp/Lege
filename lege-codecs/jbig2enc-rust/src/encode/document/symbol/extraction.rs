@@ -37,7 +37,10 @@ pub fn segment_symbols(image: &BitImage, dpi: i32, losslevel: i32) -> Result<Vec
     #[cfg(not(feature = "symboldict"))]
     {
         Err(anyhow::anyhow!(
-            "Symbol segmentation requires the symboldict feature"
+            "symbol segmentation requires the `symboldict` feature \
+             (refused {}x{} page at {dpi} dpi, losslevel {losslevel})",
+            image.width,
+            image.height
         ))
     }
 }

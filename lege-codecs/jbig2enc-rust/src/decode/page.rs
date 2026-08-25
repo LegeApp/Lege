@@ -771,19 +771,6 @@ fn compose_region(
     region
 }
 
-/// Whether a region segment type is *intermediate* (its bitmap is retained as an
-/// auxiliary buffer for a later refinement, not drawn on the page — T.88 §8.2).
-#[inline]
-fn is_intermediate(ty: SegmentType) -> bool {
-    matches!(
-        ty,
-        SegmentType::IntermediateTextRegion
-            | SegmentType::IntermediateHalftoneRegion
-            | SegmentType::IntermediateGenericRegion
-            | SegmentType::IntermediateGenericRefinementRegion
-    )
-}
-
 /// Either store an intermediate region's bitmap as an auxiliary buffer, or
 /// composite an immediate region onto its page.
 #[allow(clippy::too_many_arguments)]

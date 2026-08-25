@@ -1,6 +1,6 @@
 use super::dictionary::{
-    TextRegionSymbolInstance, build_dictionary_and_get_instances,
-    encode_symbol_dictionary_segments, plan_symbol_dictionary_layout,
+    build_dictionary_and_get_instances, encode_symbol_dictionary_segments,
+    plan_symbol_dictionary_layout,
 };
 use super::text_region_refine::encode_text_region_with_refinement;
 use super::types::SymbolInstance;
@@ -12,61 +12,6 @@ use crate::jbig2structs::{Jbig2Config, Segment, SegmentType, TextRegionParams};
 use crate::jbig2sym::{BitImage, Rect};
 use crate::{debug, trace};
 use anyhow::{Result, anyhow};
-
-/// Computes the bounding box that contains all symbol instances.
-///
-/// # Arguments
-/// * `instances` - Slice of symbol instances to compute bounds for
-/// * `all_known_symbols` - All available symbol bitmaps
-///
-/// # Returns
-/// A tuple of (min_x, min_y, width, height) representing the bounding box
-fn compute_region_bounds(
-    instances: &[TextRegionSymbolInstance],
-    all_known_symbols: &[&BitImage],
-) -> (u32, u32, u32, u32) {
-    if instances.is_empty() {
-        return (0, 0, 0, 0);
-    }
-    let mut min_x = u32::MAX;
-    let mut min_y = u32::MAX;
-    let mut max_x_coord = 0u32;
-    let mut max_y_coord = 0u32;
-
-    for instance in instances {
-        let sym_idx = instance.symbol_id as usize;
-        if sym_idx >= all_known_symbols.len() {
-            continue; // Skip invalid symbol indices
-        }
-
-        let pos = Rect {
-            x: instance.x as u32, // Convert i32 to u32
-            y: instance.y as u32, // Convert i32 to u32
-            width: crate::jbig2shared::usize_to_u32(all_known_symbols[sym_idx].width),
-            height: crate::jbig2shared::usize_to_u32(all_known_symbols[sym_idx].height),
-        };
-
-        min_x = min_x.min(pos.x);
-        min_y = min_y.min(pos.y);
-        max_x_coord = max_x_coord.max(pos.x + pos.width);
-        max_y_coord = max_y_coord.max(pos.y + pos.height);
-    }
-
-    // Handle potential underflow if max < min (shouldn't happen with valid coordinates)
-    let region_width = if max_x_coord > min_x {
-        max_x_coord - min_x
-    } else {
-        0
-    };
-
-    let region_height = if max_y_coord > min_y {
-        max_y_coord - min_y
-    } else {
-        0
-    };
-
-    (min_x, min_y, region_width, region_height)
-}
 
 // (The previous `encode_refine` helper was removed: it built only 4 refinement
 // contexts instead of the 8192-state GRREF template required by T.88 §6.3, so
@@ -350,16 +295,6 @@ pub fn encode_text_region_mapped(
         // Group instances by strip_base (they're already sorted)
         while sim_idx < encoded_instances.len() {
             let current_strip = encoded_instances[sim_idx].strip_base;
-            // Compute delta_t the same way the encoder did
-            let delta_t = if sim_idx == 0 && current_strip == 0 {
-                0 // first IADT is the initial STRIPT value
-            } else if sim_idx == strip_start {
-                // Changed strip: the encoder emits IADT = (current_strip - prev_strip_t) / strip_width
-                // But we need to replay the exact values. Let's just recompute.
-                current_strip - dec_stript
-            } else {
-                0 // same strip, no IADT
-            };
 
             // §6.4.5 step 2: STRIPT = STRIPT + IADT × SBSTRIPS
             if sim_idx == strip_start || sim_idx == 0 {
@@ -687,12 +622,6 @@ pub(crate) fn uf_union(parent: &mut [usize], rank: &mut [u32], a: usize, b: usiz
     }
 }
 
-pub(crate) fn compute_symbol_hash(symbol: &BitImage) -> u32 {
-    let w = symbol.width as u32;
-    let h = symbol.height as u32;
-    (10 * h + 10000 * w) % 10000000
-}
-
 pub(crate) fn log2up(v: u32) -> u32 {
     if v == 0 {
         return 0;
@@ -734,8 +663,14 @@ pub fn encode_page_with_symbol_dictionary(
             })
             .collect::<Vec<_>>()
     };
+    // Without `symboldict` there is no CC analysis to extract symbols with, so
+    // this page contributes no text region. Bind `image` so the signature stays
+    // honest in both configurations.
     #[cfg(not(feature = "symboldict"))]
-    let extracted_symbols: Vec<(Rect, BitImage)> = Vec::new();
+    let extracted_symbols: Vec<(Rect, BitImage)> = {
+        debug_assert!(image.width > 0 && image.height > 0);
+        Vec::new()
+    };
 
     if extracted_symbols.is_empty() {
         return Ok((Vec::new(), next_segment_num));

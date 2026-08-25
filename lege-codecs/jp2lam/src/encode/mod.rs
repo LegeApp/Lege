@@ -12,6 +12,7 @@ use crate::model::{EncodeOptions, Image, ImageView, OutputFormat};
 use backend::{CodestreamBackend, NativeBackend};
 use context::EncodeContext;
 use std::io::Write;
+#[cfg(feature = "profile")]
 use std::time::Instant;
 
 #[cfg(feature = "profile")]
@@ -25,7 +26,7 @@ pub fn profile_enter(name: &'static str) -> ProfileScope {
 
 #[cfg(not(feature = "profile"))]
 pub fn profile_enter(_name: &'static str) -> ProfileScope {
-    ProfileScope("", Instant::now())
+    ProfileScope
 }
 
 #[cfg(feature = "profile")]
@@ -75,21 +76,21 @@ pub mod counters {
     pub(crate) fn record_rd_metadata(_: usize) {}
     pub(crate) fn record_packet_header(_: usize) {}
     pub(crate) fn record_output_buffer(_: usize) {}
-    pub fn reset() {}
-    pub fn print() {}
 }
 
+#[cfg(feature = "profile")]
 pub struct ProfileScope(&'static str, Instant);
 
+#[cfg(not(feature = "profile"))]
+pub struct ProfileScope;
+
+#[cfg(feature = "profile")]
 impl Drop for ProfileScope {
     fn drop(&mut self) {
-        #[cfg(feature = "profile")]
-        {
-            if !self.0.is_empty() {
-                let elapsed = self.1.elapsed();
-                if let Ok(mut times) = TIMING_DATA.lock() {
-                    times.push((self.0.to_string(), elapsed));
-                }
+        if !self.0.is_empty() {
+            let elapsed = self.1.elapsed();
+            if let Ok(mut times) = TIMING_DATA.lock() {
+                times.push((self.0.to_string(), elapsed));
             }
         }
     }

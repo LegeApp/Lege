@@ -1,5 +1,5 @@
 use super::super::Jbig2Encoder;
-use super::text_region::{compute_symbol_hash, uf_find, uf_union};
+use super::text_region::{uf_find, uf_union};
 use crate::debug;
 use crate::jbig2comparator::Comparator;
 use crate::jbig2sym::BitImage;
@@ -244,96 +244,6 @@ impl<'a> Jbig2Encoder<'a> {
                 }
             }
         }
-        Ok(())
-    }
-
-    pub(crate) fn auto_threshold(&mut self) -> Result<()> {
-        let mut i = 0;
-        let mut comparator = Comparator::default();
-        while i < self.global_symbols.len() {
-            let mut j = i + 1;
-            while j < self.global_symbols.len() {
-                if comparator
-                    .distance(&self.global_symbols[i], &self.global_symbols[j], 0)
-                    .is_some()
-                {
-                    self.unite_templates(i, j)?;
-                } else {
-                    j += 1;
-                }
-            }
-            i += 1;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn auto_threshold_using_hash(&mut self) -> Result<()> {
-        // Repeatedly scan for exact-match duplicates until no more merges occur.
-        // Each call to unite_templates invalidates indices, so we rebuild the
-        // hash buckets from scratch after every merge.
-        loop {
-            let mut hashed_templates: HashMap<u32, Vec<usize>> = HashMap::new();
-            for (i, symbol) in self.global_symbols.iter().enumerate() {
-                let hash = compute_symbol_hash(symbol);
-                hashed_templates.entry(hash).or_default().push(i);
-            }
-
-            let mut comparator = Comparator::default();
-            let mut merged = false;
-
-            for (_, bucket) in &hashed_templates {
-                if bucket.len() < 2 {
-                    continue;
-                }
-                // Find first mergeable pair in this bucket
-                'outer: for bi in 0..bucket.len() {
-                    for bj in (bi + 1)..bucket.len() {
-                        if comparator
-                            .distance(
-                                &self.global_symbols[bucket[bi]],
-                                &self.global_symbols[bucket[bj]],
-                                0,
-                            )
-                            .is_some()
-                        {
-                            self.unite_templates(bucket[bi], bucket[bj])?;
-                            merged = true;
-                            break 'outer;
-                        }
-                    }
-                }
-                if merged {
-                    break; // Indices are stale, restart the scan
-                }
-            }
-
-            if !merged {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn unite_templates(&mut self, target_idx: usize, source_idx: usize) -> Result<()> {
-        if source_idx >= self.global_symbols.len() {
-            anyhow::bail!("Source index out of range");
-        }
-
-        for page in &mut self.pages {
-            for instance in &mut page.symbol_instances {
-                if instance.symbol_index == source_idx {
-                    instance.symbol_index = target_idx;
-                } else if instance.symbol_index > source_idx {
-                    instance.symbol_index -= 1;
-                }
-            }
-        }
-
-        self.global_symbols.remove(source_idx);
-        self.symbol_pixel_counts.remove(source_idx);
-        self.rebuild_symbol_metadata();
-        self.rebuild_hash_map();
-
         Ok(())
     }
 }

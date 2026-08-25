@@ -1,7 +1,11 @@
 use crate::error::{Jp2LamError, Result};
-use crate::model::{Image, ImageView};
+#[cfg(test)]
+use crate::model::Image;
+use crate::model::ImageView;
 
-#[allow(dead_code)]
+/// Only used by the `#[cfg(test)]`-gated `EncodingPlan::build`; live callers
+/// go through `validate_image_view` via `EncodingPlan::build_view` instead.
+#[cfg(test)]
 pub(super) fn validate_image(image: &Image) -> Result<()> {
     if image.width == 0 || image.height == 0 {
         return Err(Jp2LamError::InvalidInput(

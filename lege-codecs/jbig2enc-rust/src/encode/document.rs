@@ -5,13 +5,7 @@
 //! `encode/document/symbol/` — see Gap A.)
 mod symbol;
 
-#[allow(unused_imports)]
-use symbol::dictionary::{encode_symbol_dictionary_segments, plan_symbol_dictionary_layout};
-#[allow(unused_imports)]
-use symbol::text_region::{
-    compute_symbol_hash, log2up, symbol_id_from_dense_maps, uf_find, uf_union,
-};
-#[allow(unused_imports)]
+#[cfg(feature = "symboldict")]
 use symbol::types::*;
 
 // Re-exports preserving the original `crate::jbig2enc::*` public paths after
@@ -31,6 +25,7 @@ use crate::jbig2arith::Jbig2ArithCoder;
 use crate::jbig2classify::SymbolSignature;
 #[cfg(feature = "symboldict")]
 use crate::jbig2classify::{family_bucket_key_for_symbol, family_bucket_neighbors};
+#[cfg(feature = "symboldict")]
 use crate::jbig2comparator::Comparator;
 // Symbol extraction using CC analysis
 #[cfg(feature = "symboldict")]
@@ -67,10 +62,6 @@ macro_rules! trace {
     };
 }
 
-// Import the macros for use in this module
-#[allow(unused_imports)]
-use crate::{debug, trace};
-
 use ndarray::Array2;
 use rustc_hash::FxHashMap;
 #[cfg(feature = "symboldict")]
@@ -96,8 +87,11 @@ impl std::fmt::Display for HashKey {
     }
 }
 
+#[cfg(feature = "symboldict")]
 const RECENT_SYMBOL_CACHE_CAP: usize = 64;
+#[cfg(feature = "symboldict")]
 const SYM_UNIFY_EXACT_ANCHOR_BUDGET: usize = 32;
+#[cfg(feature = "symboldict")]
 const SYM_UNIFY_NEIGHBOR_ANCHOR_BUDGET: usize = 16;
 const SYM_UNIFY_STRONG_ANCHOR_MIN_USAGE: usize = 8;
 const SYM_UNIFY_STRONG_ANCHOR_MIN_PAGE_SPAN: usize = 4;
@@ -156,8 +150,6 @@ struct EncoderState {
     pdf_mode: bool,
     full_headers_remaining: bool,
     segment: bool,
-    use_refinement: bool,
-    use_delta_encoding: bool,
     lossy_symbol_mode_applied: bool,
     ingest_debug_lines: Vec<String>,
     decision_debug_lines: Vec<String>,
@@ -222,9 +214,7 @@ impl<'a> Jbig2Encoder<'a> {
             state: EncoderState {
                 pdf_mode: false, // start in raw mode
                 full_headers_remaining: config.want_full_headers,
-                segment: true,                 // Default to using segments
-                use_refinement: config.refine, // Enable refinement based on config
-                use_delta_encoding: true,      // Default to using delta encoding
+                segment: true, // Default to using segments
                 lossy_symbol_mode_applied: false,
                 ingest_debug_lines: Vec::new(),
                 decision_debug_lines: Vec::new(),
@@ -323,39 +313,60 @@ impl<'a> Jbig2Encoder<'a> {
         if self.config.refine && !self.config.symbol_mode {
             return Err(anyhow!("refinement requires symbol mode to be enabled"));
         }
+        #[cfg(feature = "symboldict")]
         let page_num = self.pages.len();
         self.page_symbol_indices.push(Vec::new());
+        #[cfg(feature = "symboldict")]
         let mut symbol_instances = Vec::new();
+        #[cfg(not(feature = "symboldict"))]
+        let symbol_instances = Vec::new();
+        #[cfg(feature = "symboldict")]
         let mut comparator = Comparator::default();
+        #[cfg(feature = "symboldict")]
         let debug_matching =
             page_num == 0 && std::env::var("JBIG2_DEBUG").map_or(false, |v| v == "1");
+        #[cfg(feature = "symboldict")]
         let no_reuse = std::env::var("JBIG2_NO_REUSE").map_or(false, |v| v == "1");
 
+        #[cfg(feature = "symboldict")]
         let mut debug_lines: Vec<String> = Vec::new();
+        #[cfg(feature = "symboldict")]
         if debug_matching {
             debug_lines.push("=== PAGE 0 MATCHING LOG ===".to_string());
             debug_lines.push(format!("Image: {}x{}", bitimage.width, bitimage.height));
         }
+        #[cfg(feature = "symboldict")]
         let mut cc_index = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_anchor_map = (self.config.lossy_symbol_mode
             == LossySymbolMode::SymbolUnify
             && !self.global_symbols.is_empty())
         .then(|| self.build_sym_unify_anchor_map(page_num));
+        #[cfg(feature = "symboldict")]
         let sym_unify_initial_anchor_count = sym_unify_anchor_map
             .as_ref()
             .map(|anchors| anchors.values().map(Vec::len).sum::<usize>())
             .unwrap_or(0);
+        #[cfg(feature = "symboldict")]
         let sym_unify_initial_anchor_bytes = sym_unify_anchor_map
             .as_ref()
             .map(|anchors| anchor_map_dictionary_bytes(&self.global_symbols, anchors))
             .unwrap_or(0);
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_recent_hits = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_anchor_hits = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_bucket_hits = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_new_symbols = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_anchor_score_rejects = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_anchor_outside_rejects = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_anchor_compare_rejects = 0usize;
+        #[cfg(feature = "symboldict")]
         let mut sym_unify_anchor_overlap_rejects = 0usize;
 
         // Extract symbols if symbol mode is enabled
@@ -817,6 +828,7 @@ impl<'a> Jbig2Encoder<'a> {
         }
 
         // Write page 0 matching debug log
+        #[cfg(feature = "symboldict")]
         if debug_matching && !debug_lines.is_empty() {
             debug_lines.push(format!(
                 "\nTotal CCs: {}, Instances: {}",
@@ -832,6 +844,7 @@ impl<'a> Jbig2Encoder<'a> {
             }
         }
 
+        #[cfg(feature = "symboldict")]
         if self.config.lossy_symbol_mode == LossySymbolMode::SymbolUnify
             && encoder_diagnostics_enabled()
         {

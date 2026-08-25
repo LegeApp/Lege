@@ -19,7 +19,6 @@ pub(crate) struct CodestreamView<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct TilePartView<'a> {
     pub(crate) header: TilePartHeader,
-    #[allow(dead_code)]
     pub(crate) header_segments: Vec<&'a [u8]>,
     pub(crate) payload: &'a [u8],
 }

@@ -1,5 +1,4 @@
 // Integration tests for Comparator in JBIG2 encoder
-use jbig2enc_rust as jbig2;
 use jbig2enc_rust::jbig2comparator::Comparator;
 use jbig2enc_rust::jbig2sym::BitImage;
 

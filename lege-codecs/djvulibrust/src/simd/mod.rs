@@ -56,15 +56,14 @@ pub(crate) struct Primitives {
     pub color: ColorPrimitives,
     pub iw44: Iw44Primitives,
     /// For diagnostics/tests only — not part of the public API.
-    #[allow(dead_code)]
+    /// Read through `crate::active_primitives_backend()`.
     pub backend: &'static str,
 }
 
 pub(crate) static PRIMITIVES: LazyLock<Primitives> = LazyLock::new(select_primitives);
 
 fn select_primitives() -> Primitives {
-    #[allow(unused_mut)]
-    let mut primitives = Primitives {
+    let primitives = Primitives {
         color: ColorPrimitives {
             rgb_to_ycbcr: scalar::rgb_to_ycbcr,
         },
@@ -83,7 +82,8 @@ fn select_primitives() -> Primitives {
     }
 
     #[cfg(feature = "simd")]
-    {
+    let primitives = {
+        let mut primitives = primitives;
         let force_all = matches!(mode.as_str(), "simd" | "wide" | "x86" | "avx2");
         if force_all {
             wide::setup_all(&mut primitives);
@@ -98,7 +98,8 @@ fn select_primitives() -> Primitives {
                 x86::setup(&mut primitives, &mode);
             }
         }
-    }
+        primitives
+    };
 
     primitives
 }

@@ -1,7 +1,6 @@
 // Integration tests for JBIG2 encoder core functionality
 
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::process::Command;
 use std::time::Instant;
 use tempfile::TempDir;
@@ -82,19 +81,6 @@ fn read_pbm(path: &std::path::Path) -> BitImage {
             let byte = row[x / 8];
             let bit = (byte >> (7 - (x % 8))) & 1;
             if bit == 1 {
-                img.set(x as u32, y as u32, true);
-            }
-        }
-    }
-    img
-}
-
-/// Build a 64×64 checkerboard — non-trivial but tiny.
-fn make_checkerboard() -> BitImage {
-    let mut img = BitImage::new(64, 64).unwrap();
-    for y in 0..64 {
-        for x in 0..64 {
-            if (x + y) % 2 == 0 {
                 img.set(x as u32, y as u32, true);
             }
         }
@@ -536,7 +522,7 @@ fn test_arithmetic_coder_annex_h2() {
     let mut coder = Jbig2ArithCoder::new();
 
     // Encode the test data using a single context
-    #[cfg_attr(not(feature = "trace_arith"), allow(unused_imports))]
+    #[cfg(any(feature = "trace_encoder", feature = "trace_arith"))]
     use tracing::debug;
     #[cfg(any(feature = "trace_encoder", feature = "trace_arith"))]
     debug_with_time!(start, "Starting encoding of test data");
@@ -581,38 +567,6 @@ fn test_arithmetic_coder_base_table() {
     let start = Instant::now();
     #[cfg(any(feature = "trace_encoder", feature = "trace_arith"))]
     init_tracing_for_test();
-
-    // Test a 4x4 bitmap, with each row in a u32:
-    // Row 0: 1100...
-    // Row 1: 0110...
-    // Row 2: 0011...
-    // Row 3: 0001...
-    let bitmap: Vec<u32> = vec![
-        0b11000000_00000000_00000000_00000000, // 0xC0000000
-        0b01100000_00000000_00000000_00000000, // 0x60000000
-        0b00110000_00000000_00000000_00000000, // 0x30000000
-        0b00010000_00000000_00000000_00000000, // 0x10000000
-    ];
-    let width = 4;
-    let height = 4;
-    let template = 0;
-    let at_pixels: Vec<(i8, i8)> = vec![]; // No adaptive pixels
-
-    // This vector corresponds to encoding the 4x4 image using the
-    // neighbour ordering matching jbig2dec.
-    let expected_region_output = [0xE8, 0x63, 0xFF, 0xFF, 0xAC];
-
-    println!("Starting generic region encoding test...");
-    println!("Starting generic region encoding test...");
-
-    let mut img = BitImage::new(width as u32, height as u32).unwrap();
-    for y in 0..height {
-        for x in 0..width {
-            let word = bitmap[y];
-            let bit = (word >> (31 - x)) & 1;
-            img.set(x as u32, y as u32, bit == 1);
-        }
-    }
 
     // Verify BASE table entries
     assert_eq!(
@@ -724,41 +678,6 @@ fn test_encode_test_image1_pbm_full_page() {
     let (bytes, _seg) = result.unwrap();
     assert!(!bytes.is_empty());
 }
-/// Create a simple 4x4 test pattern
-fn create_4x4_test_pattern() -> BitImage {
-    let mut img = BitImage::new(4, 4).expect("Failed to create 4x4 image");
-    for y in 0..4 {
-        for x in 0..4 {
-            img.set(x as u32, y as u32, (x + y) % 2 == 0);
-        }
-    }
-    img
-}
-
-/// Create a checkerboard pattern of given size
-fn create_checkerboard(width: u32, height: u32) -> BitImage {
-    let mut img = BitImage::new(width, height).expect("Failed to create image");
-    for y in 0..height {
-        for x in 0..width {
-            let value = (x + y) % 2 == 0;
-            img.set(x, y, value);
-        }
-    }
-    img
-}
-
-/// Create a half-black, half-white image
-fn create_half_hald(width: u32, height: u32) -> BitImage {
-    let mut img = BitImage::new(width, height).expect("Failed to create image");
-    for y in 0..height {
-        for x in 0..width {
-            let value = x < width / 2;
-            img.set(x, y, value);
-        }
-    }
-    img
-}
-
 #[test]
 fn test_generic_region_default_gbat_fallback() {
     use jbig2::jbig2arith::Jbig2ArithCoder;

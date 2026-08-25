@@ -42,11 +42,16 @@ impl PayloadRef {
         self.len
     }
 
+    /// Only exercised by tests, to assert that memory-pressure spilling
+    /// actually happened rather than silently staying resident.
+    #[cfg(test)]
     pub(crate) fn is_spilled(self) -> bool {
         matches!(self.location, PayloadLocation::Spill { .. })
     }
 }
 
+/// Only exercised by tests, as the return type of [`EncodedBlockStore::stats`].
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BlockStoreStats {
     pub memory_bytes: usize,
@@ -159,6 +164,8 @@ impl EncodedBlockStore {
         }
     }
 
+    /// Only exercised by tests; see [`BlockStoreStats`].
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> BlockStoreStats {
         BlockStoreStats {
             memory_bytes: self.memory_bytes,

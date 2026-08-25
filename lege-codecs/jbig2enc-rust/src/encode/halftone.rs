@@ -25,8 +25,7 @@ use fax::encoder::Encoder as FaxEncoder;
 use fax::{Color as FaxColor, VecWriter as FaxVecWriter};
 use ndarray::Array2;
 
-#[allow(unused_imports)]
-use crate::{debug, trace};
+use crate::trace;
 
 /// Main entry point for encoding a halftone region.
 ///

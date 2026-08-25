@@ -1,7 +1,6 @@
-#![allow(dead_code)]
-
 use crate::plan::BandOrientation;
 
+#[cfg(test)]
 const DWT_NORMS_53: [[f64; 10]; 4] = [
     [
         1.000, 1.500, 2.750, 5.375, 10.68, 21.34, 42.67, 85.33, 170.7, 341.3,
@@ -32,6 +31,7 @@ const DWT_NORMS_97: [[f64; 10]; 4] = [
     ],
 ];
 
+#[cfg(test)]
 pub(crate) fn get_norm_53(level: u32, band: BandOrientation) -> f64 {
     let orient = band_orientation_index(band);
     let clamped = if orient == 0 {

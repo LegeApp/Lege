@@ -1,9 +1,9 @@
 pub(crate) const MQC_NUMCTXS: usize = 19;
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) const BYPASS_CT_INIT: u32 = 0xDEAD_BEEF;
 
 pub(crate) const T1_CTXNO_ZC: u8 = 0;
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) const T1_CTXNO_SC: u8 = 9;
 pub(crate) const T1_CTXNO_MAG: u8 = 14;
 pub(crate) const T1_CTXNO_AGG: u8 = 17;
@@ -194,16 +194,6 @@ impl MqCoder {
         coder
     }
 
-    pub(crate) fn reset(&mut self) {
-        self.a = 0x8000;
-        self.c = 0;
-        self.ct = 12;
-        self.out.clear();
-        self.out.push(0);
-        self.pos = 0;
-        self.reset_state_only();
-    }
-
     fn reset_state_only(&mut self) {
         self.ctxs.fill(0);
         self.set_state(T1_CTXNO_UNI, 0, 46);
@@ -261,7 +251,6 @@ impl MqCoder {
         self.byteout();
     }
 
-    #[allow(dead_code)]
     pub(crate) fn restart_init(&mut self) {
         self.a = 0x8000;
         self.c = 0;
@@ -283,7 +272,7 @@ impl MqCoder {
         bytes
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn erterm_flush(&mut self) -> Vec<u8> {
         let mut k = (11_i32).wrapping_sub(self.ct as i32).wrapping_add(1);
         while k > 0 {
@@ -298,20 +287,19 @@ impl MqCoder {
         self.out[1..self.pos].to_vec()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn segmark_encode(&mut self) {
         for bit in [1u8, 0, 1, 0] {
             self.encode_with_ctx(T1_CTXNO_UNI, bit);
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn bypass_init(&mut self) {
         self.c = 0;
         self.ct = BYPASS_CT_INIT;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn bypass_encode(&mut self, bit: u8) {
         debug_assert!(bit <= 1);
         if self.ct == BYPASS_CT_INIT {
@@ -329,7 +317,7 @@ impl MqCoder {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn bypass_flush(&mut self, erterm: bool) {
         let prev_is_ff = self.pos > 0 && self.out[self.pos] == 0xff;
 
@@ -356,7 +344,7 @@ impl MqCoder {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn raw_term_flush_and_restart(&mut self, erterm: bool) -> Vec<u8> {
         self.bypass_flush(erterm);
         let bytes = self.take_bytes();
@@ -364,7 +352,7 @@ impl MqCoder {
         bytes
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn finish(mut self) -> Vec<u8> {
         self.flush();
         self.take_bytes()
@@ -437,7 +425,6 @@ impl MqCoder {
     /// Number of bytes committed to the output buffer so far (approximation
     /// matching OpenJPEG's `mqc_numbytes = bp - start`). Suitable for taking
     /// per-pass length snapshots mid-codeblock.
-    #[allow(dead_code)]
     pub(crate) fn numbytes(&self) -> usize {
         self.pos
     }
@@ -692,15 +679,6 @@ mod reference {
             if self.out[self.bp] != 0xff {
                 self.bp += 1;
             }
-        }
-
-        #[allow(dead_code)]
-        pub fn restart_init(&mut self) {
-            self.a = 0x8000;
-            self.c = 0;
-            self.ct = 12;
-            self.bp = 0;
-            self.out.fill(0);
         }
 
         pub fn erterm(&mut self) {

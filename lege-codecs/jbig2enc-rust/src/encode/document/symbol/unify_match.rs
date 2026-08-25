@@ -7,6 +7,7 @@ use crate::jbig2classify::{
     family_bucket_key_for_symbol, family_signatures_are_compatible,
 };
 use crate::jbig2comparator::Comparator;
+#[cfg(feature = "symboldict")]
 use crate::jbig2structs::LossySymbolMode;
 use crate::jbig2sym::BitImage;
 use rustc_hash::FxHashMap;
@@ -16,6 +17,7 @@ impl<'a> Jbig2Encoder<'a> {
         compute_symbol_signature_shared(img)
     }
 
+    #[cfg(feature = "symboldict")]
     pub(crate) fn signatures_are_compatible(
         &self,
         candidate: SymbolSignature,
@@ -36,6 +38,7 @@ impl<'a> Jbig2Encoder<'a> {
             && candidate.cy_times_256.abs_diff(stored.cy_times_256) <= centroid_tol
     }
 
+    #[cfg(feature = "symboldict")]
     pub(crate) fn should_skip_symbol_candidate(
         width: usize,
         height: usize,
@@ -61,6 +64,7 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     #[inline(always)]
+    #[cfg(feature = "symboldict")]
     pub(crate) fn should_accept_match(
         &self,
         err: u32,
@@ -176,8 +180,6 @@ impl<'a> Jbig2Encoder<'a> {
         candidate_bitmap: &BitImage,
         anchor_index: usize,
         score: u32,
-        dx: i32,
-        dy: i32,
         rescued_on_score: bool,
     ) {
         let rerank_cost = Self::sym_unify_context_rerank_cost(
@@ -187,8 +189,6 @@ impl<'a> Jbig2Encoder<'a> {
         let proposal = SymUnifyAnchorCandidate {
             anchor_index,
             score,
-            dx,
-            dy,
             rerank_cost,
             rescued_on_score,
         };
@@ -242,6 +242,7 @@ impl<'a> Jbig2Encoder<'a> {
         anchors
     }
 
+    #[cfg(feature = "symboldict")]
     pub(crate) fn maybe_add_sym_unify_anchor(
         &self,
         anchors: &mut FxHashMap<FamilyBucketKey, Vec<usize>>,
@@ -364,14 +365,14 @@ impl<'a> Jbig2Encoder<'a> {
             return SymUnifyAnchorDecision::RejectScore {
                 score,
                 limit: score_limit,
-                dx: result.dx,
-                dy: result.dy,
             };
         }
 
         SymUnifyAnchorDecision::Accept {
             score,
+            #[cfg(feature = "symboldict")]
             dx: result.dx,
+            #[cfg(feature = "symboldict")]
             dy: result.dy,
         }
     }
@@ -545,19 +546,20 @@ impl<'a> Jbig2Encoder<'a> {
             return SymUnifyAnchorDecision::RejectScore {
                 score,
                 limit: score_limit,
-                dx: result.dx,
-                dy: result.dy,
             };
         }
 
         SymUnifyAnchorDecision::Accept {
             score,
+            #[cfg(feature = "symboldict")]
             dx: result.dx,
+            #[cfg(feature = "symboldict")]
             dy: result.dy,
         }
     }
 
     #[inline(always)]
+    #[cfg(feature = "symboldict")]
     pub(crate) fn evaluate_symbol_match(
         &mut self,
         candidate: &BitImage,
@@ -612,6 +614,7 @@ impl<'a> Jbig2Encoder<'a> {
     }
 
     #[inline(always)]
+    #[cfg(feature = "symboldict")]
     pub(crate) fn evaluate_symbol_unify_anchor_match(
         &mut self,
         candidate: &BitImage,
@@ -693,14 +696,14 @@ impl<'a> Jbig2Encoder<'a> {
             return SymUnifyAnchorDecision::RejectScore {
                 score,
                 limit: score_limit,
-                dx: result.dx,
-                dy: result.dy,
             };
         }
 
         SymUnifyAnchorDecision::Accept {
             score,
+            #[cfg(feature = "symboldict")]
             dx: result.dx,
+            #[cfg(feature = "symboldict")]
             dy: result.dy,
         }
     }

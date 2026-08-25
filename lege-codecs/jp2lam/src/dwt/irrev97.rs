@@ -1,5 +1,4 @@
-#![allow(dead_code)]
-
+#[cfg(test)]
 use crate::encode::profile_enter;
 use crate::error::{Jp2LamError, Result};
 use rayon::prelude::*;
@@ -43,6 +42,7 @@ const PARALLEL_COLUMN_THRESHOLD: usize = usize::MAX / 2;
 // `@lege-ecosystem-perf.observation.decode-flamegraph-lear-2026-08-06`.
 const VERTICAL_BAND_COLS: usize = 128;
 
+#[cfg(test)]
 pub(crate) fn forward_97_2d_in_place(
     data: &mut [f32],
     width: usize,
@@ -91,7 +91,7 @@ pub(crate) fn forward_97_2d_in_place_at(
     Ok(())
 }
 
-#[cfg(feature = "simd")]
+#[cfg(all(test, feature = "simd"))]
 pub(crate) fn forward_97_2d_in_place_wide(
     data: &mut [f32],
     width: usize,
@@ -101,6 +101,7 @@ pub(crate) fn forward_97_2d_in_place_wide(
     forward_97_2d_in_place_impl(data, width, height, levels, true)
 }
 
+#[cfg(test)]
 fn forward_97_2d_in_place_impl(
     data: &mut [f32],
     width: usize,
@@ -137,11 +138,13 @@ fn forward_97_2d_in_place_impl(
 /// Forward 9/7 lifting on one row, even-origin, with whole-sample symmetric
 /// extension at boundaries. Output is deinterleaved: samples[..sn] are the low
 /// (s) coefficients, samples[sn..] are the high (d) coefficients.
+#[cfg(test)]
 fn forward_97_1d_in_place(samples: &mut [f32]) {
     let mut scratch = vec![0f32; samples.len()];
     forward_97_1d_with_scratch(samples, &mut scratch, false);
 }
 
+#[cfg(test)]
 fn forward_97_1d_with_scratch(samples: &mut [f32], tmp: &mut [f32], use_wide: bool) {
     forward_97_1d_with_scratch_phase(samples, tmp, true, use_wide);
 }
@@ -191,6 +194,7 @@ fn forward_97_1d_with_scratch_phase(
     samples.copy_from_slice(tmp);
 }
 
+#[cfg(test)]
 fn forward_97_rows_in_place(
     data: &mut [f32],
     stride: usize,
@@ -337,6 +341,7 @@ fn fetch_sym(samples: &[f32], i: isize) -> f32 {
 /// `active_width` x `active_height` rectangle, using contiguous column bands
 /// so scratch stays `VERTICAL_BAND_COLS × active_height` rather than a full
 /// active plane (and so deinterleave never allocates a W×H temporary).
+#[cfg(test)]
 fn forward_97_vertical_in_place(
     data: &mut [f32],
     stride: usize,
@@ -675,6 +680,7 @@ fn scale_slice_wide(target: &mut [f32], scale: f32) {
 /// Deinterleave even/odd rows into low/high blocks inside a contiguous band
 /// buffer where `stride == active_width`. Uses a single line of temporary
 /// storage rather than a full-plane temporary.
+#[cfg(test)]
 fn deinterleave_rows_inplace(data: &mut [f32], active_width: usize, active_height: usize) {
     if active_width == 0 || active_height < 2 {
         return;
@@ -832,6 +838,7 @@ fn inverse_97_2d_in_place_impl(
     }
 }
 
+#[cfg(test)]
 fn inverse_97_1d_in_place(samples: &mut [f32]) {
     let mut scratch = vec![0f32; samples.len()];
     inverse_97_1d_with_scratch(samples, &mut scratch, false);

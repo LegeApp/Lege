@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod irrev97;
 pub(crate) mod norms;
 pub(crate) mod pcrd;
@@ -26,29 +24,29 @@ impl InverseDwtTiming {
     }
 }
 
-#[allow(unused_imports)]
+// `forward_*_2d_in_place`/`forward_*_2d_in_place_wide` are only reached by
+// `simd::scalar`/`simd::wide`'s `#[cfg(test)]` cross-check functions
+// (production always goes through the tile-origin `_at` variants below) — see
+// `simd::scalar::forward_97_2d`'s doc comment. `inverse_*_2d_in_place[_wide]`
+// stay unconditional: they back the live `PRIMITIVES.dwt.inverse_*` dispatch
+// entries used by decode.
+#[cfg(all(test, feature = "simd"))]
 pub(crate) use irrev97::forward_97_2d_in_place;
 pub(crate) use irrev97::forward_97_2d_in_place_at;
-#[cfg(feature = "simd")]
-#[allow(unused_imports)]
+#[cfg(all(test, feature = "simd"))]
 pub(crate) use irrev97::forward_97_2d_in_place_wide;
-#[allow(unused_imports)]
 pub(crate) use irrev97::inverse_97_2d_in_place;
 pub(crate) use irrev97::inverse_97_2d_in_place_at;
 pub(crate) use irrev97::inverse_97_2d_in_place_profiled;
 #[cfg(feature = "simd")]
-#[allow(unused_imports)]
 pub(crate) use irrev97::inverse_97_2d_in_place_wide;
-#[allow(unused_imports)]
+#[cfg(all(test, feature = "simd"))]
 pub(crate) use rev53::forward_53_2d_in_place;
 pub(crate) use rev53::forward_53_2d_in_place_at;
-#[cfg(feature = "simd")]
-#[allow(unused_imports)]
+#[cfg(all(test, feature = "simd"))]
 pub(crate) use rev53::forward_53_2d_in_place_wide;
-#[allow(unused_imports)]
 pub(crate) use rev53::inverse_53_2d_in_place;
 pub(crate) use rev53::inverse_53_2d_in_place_at;
 pub(crate) use rev53::inverse_53_2d_in_place_profiled;
 #[cfg(feature = "simd")]
-#[allow(unused_imports)]
 pub(crate) use rev53::inverse_53_2d_in_place_wide;

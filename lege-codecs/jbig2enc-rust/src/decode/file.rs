@@ -318,7 +318,10 @@ pub fn parse_auto_with<'a>(
 }
 
 /// Guard: a stray `ParseError` used only internally.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "never called at runtime by design — exists only so `ParseError` has a use site outside its own definition"
+)]
 fn _assert_parse_error_is_used(_: ParseError) {}
 
 #[cfg(test)]

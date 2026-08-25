@@ -1,7 +1,10 @@
 //! PBM (P4 binary) read/write plus a first-differing-pixel report, for the
 //! decoder interoperability harness (jbig2decplan.md §21.5, Gap C).
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared test helper module: each of the ~27 integration-test binaries in tests/ compiles this module independently and uses only a subset of its items"
+)]
 
 /// A one-bit image as one byte per pixel (`1` = black), row-major.
 #[derive(Clone, PartialEq, Eq)]

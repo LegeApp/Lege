@@ -89,6 +89,129 @@ name = "decode"
 harness = false
 required-features = ["encode", "decode"]
 
+# Integration test targets under `tests/`. `required-features` is derived from
+# each file's actual imports (not blanket-applied `default`) so that
+# `cargo test --all-targets` under a reduced feature set — most importantly
+# `--no-default-features --features decode`, the PDF renderer's shipped
+# configuration — skips targets it cannot build instead of failing the build.
+# Most targets pull in `mod common`, whose `tests/common/writer.rs` helper
+# needs both `encode` (`Jbig2ArithCoder`, `jbig2sym::BitImage`) and `decode`
+# (`decode::huffman::HuffmanTable`), on top of whatever the target itself
+# imports directly.
+[[test]]
+name = "comparator"
+required-features = ["encode"]
+
+[[test]]
+name = "decode_alloc"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_chaos"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_generic_templates"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_halftone"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_halftone_skip"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_huffman"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_huffman_refagg"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_huffman_refine"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_intermediate"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_organisation"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_recovery"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_refagg"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_refine"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_refine_templates"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_retained_ctx"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_roundtrip"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "decode_striped"
+required-features = ["encode", "decode"]
+
+[[test]]
+name = "encode_byte_identical"
+required-features = ["encode"]
+
+# Uses `encode_symbol_dict` / `encode_page_with_symbol_dictionary` directly,
+# plus `mod common` (encode + decode).
+[[test]]
+name = "encoder"
+required-features = ["symboldict", "decode"]
+
+[[test]]
+name = "mode_comparison"
+required-features = ["encode", "decode"]
+
+# Doc comment on the file itself documents running with `--features symboldict`.
+[[test]]
+name = "multi_page_benchmark"
+required-features = ["symboldict"]
+
+# Calls `encode_symbol_dict` / `encode_text_region_mapped` directly.
+[[test]]
+name = "perf_smoke"
+required-features = ["symboldict"]
+
+# `Jbig2Config::text()` exercises symbol mode at runtime, but nothing here is
+# compile-time gated on `symboldict` — `Jbig2Encoder`/`Jbig2Config` only need
+# `encode`, and decoding goes through an external `jbig2dec` binary, not this
+# crate's `decode` module.
+[[test]]
+name = "refine_pdf_lossless"
+required-features = ["encode"]
+
+# Decodes via an external `jbig2dec` binary, not this crate's `decode` module.
+[[test]]
+name = "roundtrip_after_fix"
+required-features = ["encode"]
+
+# `headsup_c_vs_rust` is intentionally left without a `[[test]]` entry: it
+# already self-gates its entire content behind `#![cfg(feature =
+# "c-encoder-bench")]` as the file's first line, which compiles to an empty,
+# harmless test binary when that feature is off, regardless of `encode`.
+
 [dev-dependencies]
 tracing = { version = "0.1", features = ["std"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry", "std"] }

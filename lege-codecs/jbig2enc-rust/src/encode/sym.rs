@@ -34,6 +34,7 @@ fn contiguous_bit(bytes: &[u8], idx: usize) -> bool {
 /// what the connected-component run extractor in `cc.rs` needs to skip runs of
 /// white without touching individual pixels.
 #[inline]
+#[cfg(feature = "symboldict")]
 pub(crate) fn row_first_one(row: &[u32], from_bit: usize, width: usize) -> Option<usize> {
     if from_bit >= width {
         return None;
@@ -58,6 +59,7 @@ pub(crate) fn row_first_one(row: &[u32], from_bit: usize, width: usize) -> Optio
 /// through `width - 1` is set. Padding bits past `width` are always zero, so
 /// the width check is what stops this from reporting a padding bit.
 #[inline]
+#[cfg(feature = "symboldict")]
 pub(crate) fn row_first_zero(row: &[u32], from_bit: usize, width: usize) -> Option<usize> {
     if from_bit >= width {
         return None;

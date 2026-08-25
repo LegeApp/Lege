@@ -4,11 +4,6 @@
 //! It supports both standalone JBIG2 files and PDF-embedded fragments with proper
 //! global dictionary handling.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
-
 // Re-export commonly used types
 pub use ndarray::Array2;
 

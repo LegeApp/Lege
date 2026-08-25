@@ -3,6 +3,7 @@ use crate::jbig2cost::symbol_dictionary_entry_bytes;
 use crate::jbig2structs::{FileHeader, Segment};
 use crate::jbig2sym::{BitImage, Rect};
 use rustc_hash::{FxHashMap, FxHashSet};
+#[cfg(feature = "symboldict")]
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::time::Duration;
@@ -36,7 +37,9 @@ pub(crate) fn anchor_map_dictionary_bytes(
 pub(crate) enum SymUnifyAnchorDecision {
     Accept {
         score: u32,
+        #[cfg(feature = "symboldict")]
         dx: i32,
+        #[cfg(feature = "symboldict")]
         dy: i32,
     },
     RejectDim,
@@ -47,8 +50,6 @@ pub(crate) enum SymUnifyAnchorDecision {
     RejectScore {
         score: u32,
         limit: u32,
-        dx: i32,
-        dy: i32,
     },
     RejectOutsideInk,
 }
@@ -270,8 +271,6 @@ impl ResidualSymbolTrace {
 pub(crate) struct SymUnifyAnchorCandidate {
     pub(crate) anchor_index: usize,
     pub(crate) score: u32,
-    pub(crate) dx: i32,
-    pub(crate) dy: i32,
     pub(crate) rerank_cost: u32,
     pub(crate) rescued_on_score: bool,
 }
@@ -385,12 +384,14 @@ pub(crate) struct DetailedCompareProbeStats {
     pub(crate) samples: Vec<(usize, usize, usize, usize, u32, u32, u32, u32, i32, i32)>,
 }
 
+#[cfg(feature = "symboldict")]
 #[derive(Debug)]
 pub(crate) struct RecentSymbolCache {
     pub(crate) recent: VecDeque<usize>,
     pub(crate) cap: usize,
 }
 
+#[cfg(feature = "symboldict")]
 impl RecentSymbolCache {
     pub(crate) fn new(cap: usize) -> Self {
         Self {
@@ -411,10 +412,6 @@ impl RecentSymbolCache {
         while self.recent.len() > self.cap {
             self.recent.pop_back();
         }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        self.recent.iter().copied()
     }
 
     pub(crate) fn copy_into(&self, out: &mut [usize]) -> usize {

@@ -233,7 +233,6 @@ impl HuffmanTable {
 
     /// Test/encoder helper: the bits to emit for `value` — `(prefix_code,
     /// prefix_len, offset, range_len)`. Returns `None` if no line covers it.
-    #[allow(dead_code)]
     pub fn encode_value(&self, value: i32) -> Option<(u32, u8, u64, u8)> {
         let v = value as i64;
         // Bounded normal lines first (disjoint ascending ranges below HTHIGH).
@@ -274,7 +273,6 @@ impl HuffmanTable {
     }
 
     /// Test/encoder helper: the OOB prefix `(code, len)`, if this table has one.
-    #[allow(dead_code)]
     pub fn encode_oob(&self) -> Option<(u32, u8)> {
         for (i, l) in self.lines.iter().enumerate() {
             if l.kind == LineKind::Oob && l.pref_len > 0 {

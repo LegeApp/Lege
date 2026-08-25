@@ -1,21 +1,26 @@
 use super::super::first_black_pixel;
+#[cfg(all(test, feature = "refine"))]
 use super::text_region::{uf_find, uf_union};
 use super::types::{
-    EncodedSymbolDictionary, RefinementPlan, SymbolDictDiagnostics, SymbolDictLayout,
-    SymbolInstance,
+    EncodedSymbolDictionary, SymbolDictDiagnostics, SymbolDictLayout, SymbolInstance,
 };
+#[cfg(all(test, feature = "refine"))]
+use super::types::RefinementPlan;
 use crate::jbig2arith::{IntProc, Jbig2ArithCoder};
+#[cfg(all(test, feature = "refine"))]
 use crate::jbig2classify::{
     FamilyBucketKey, SymbolSignature, compute_symbol_signature as compute_symbol_signature_shared,
     family_bucket_key_for_symbol, family_bucket_neighbors, family_match_details,
     refine_compare_score,
 };
 use crate::jbig2comparator::{Comparator, MAX_DIMENSION_DELTA};
+#[cfg(all(test, feature = "refine"))]
 use crate::jbig2cost::symbol_dictionary_entry_bytes;
 use crate::jbig2structs::{Jbig2Config, SymbolDictParams};
 use crate::jbig2sym::{BitImage, Rect};
 use crate::{debug, trace};
 use anyhow::{Result, anyhow};
+#[cfg(all(test, feature = "refine"))]
 use std::collections::HashMap;
 
 pub fn encode_symbol_dict(
@@ -77,6 +82,14 @@ pub(crate) fn plan_symbol_dictionary_layout(
     })
 }
 
+/// Dictionary-level refinement-family collapse policy. Not used by the
+/// production pipeline: `plan_symbol_dictionary_layout` is a deliberate stub
+/// that never collapses families, because the encoder performs refinement at
+/// the text-region instance level instead, not in the dictionary (see the
+/// Phase 3 findings in jbig2dec-gaps-plan.md; commit 4977e24). Kept as a
+/// tested reference implementation behind the `refine` feature — see
+/// `tests.rs`'s `refinement_layout_collapses_to_prototypes`.
+#[cfg(all(test, feature = "refine"))]
 pub(crate) fn build_refinement_family_layout(
     symbols: &[&BitImage],
     canonical_order: &[usize],
@@ -250,6 +263,7 @@ pub(crate) fn build_refinement_family_layout(
     }
 }
 
+#[cfg(all(test, feature = "refine"))]
 fn family_refinement_gain(
     target: &BitImage,
     reference: &BitImage,
@@ -267,6 +281,7 @@ fn family_refinement_gain(
     plain_cost - refine_cost
 }
 
+#[cfg(all(test, feature = "refine"))]
 fn family_should_refine(
     target: &BitImage,
     reference: &BitImage,
@@ -282,6 +297,7 @@ fn family_should_refine(
     export_gain > 12
 }
 
+#[cfg(all(test, feature = "refine"))]
 fn choose_family_prototype(
     members: &[usize],
     symbols: &[&BitImage],

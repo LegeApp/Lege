@@ -725,22 +725,6 @@ fn test_comprehensive_comparison() {
     println!("{}", "=".repeat(80));
 }
 
-// Helper function to run individual mode tests from command line if needed
-pub fn run_single_test(test_name: &str, mode: TestMode) {
-    let img = match test_name {
-        "small_checker" => create_small_checkerboard(),
-        "large_checker" => create_large_checkerboard(),
-        "text_pattern" => create_text_pattern(),
-        "half_split" => create_half_split(),
-        _ => {
-            println!("Unknown test: {}", test_name);
-            return;
-        }
-    };
-
-    run_encoding_test(&img, test_name, mode);
-}
-
 // Helper to resolve a local jbig2dec binary when running tests
 fn jbig2dec_command() -> std::process::Command {
     #[cfg(windows)]

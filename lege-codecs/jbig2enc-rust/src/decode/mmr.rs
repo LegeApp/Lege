@@ -73,7 +73,7 @@ pub fn decode_mmr_into(
         return Ok(());
     }
 
-    let mut run = |src: &[u8], output: &mut MonoBitmap| {
+    let run = |src: &[u8], output: &mut MonoBitmap| {
         let mut row: u32 = 0;
         let result = decode_g4(src.iter().copied(), width, Some(height), |transitions| {
             // `decode_g4` never emits more than `height` lines, but guard anyway so

@@ -1,30 +1,28 @@
 //! Portable SIMD kernels built on the `wide` crate.
 
 use super::Primitives;
-use wide::{CmpEq, CmpLt, f32x8, i32x8, u32x8};
+#[cfg(test)]
+use wide::{CmpEq, CmpLt};
+use wide::{f32x8, i32x8, u32x8};
 
 pub(crate) fn setup(primitives: &mut Primitives) {
-    primitives.dwt.forward_97_2d = forward_97_2d;
     primitives.dwt.inverse_97_2d = inverse_97_2d;
     primitives.analyze.i32_max_magnitude_and_nnz = i32_max_magnitude_and_nnz;
     primitives.quant.quantize_f32_rect = quantize_f32_rect;
-    primitives.quant.dequantize_i32_rect = dequantize_i32_rect;
     primitives.color.level_shift_f32 = level_shift_f32;
     primitives.color.level_shift_i32 = level_shift_i32;
     primitives.color.forward_ict_component = forward_ict_component;
     primitives.color.forward_rct_component = forward_rct_component;
     primitives.color.inverse_ict = inverse_ict;
     primitives.color.inverse_rct = inverse_rct;
-    primitives.color.finalize_i32 = finalize_i32;
-    // finalize_f32 stays scalar: matching `f32::round()` (ties away from zero)
-    // exactly with `wide`'s round-to-nearest-even intrinsic risks a rare
-    // off-by-one at .5 boundaries, which would make reconstructed pixels
-    // depend on the active SIMD backend. Not worth it without a measured win.
-    primitives.dwt.forward_53_2d = forward_53_2d;
     primitives.dwt.inverse_53_2d = inverse_53_2d;
     primitives.backend = "wide";
 }
 
+/// Not part of the live [`super::PRIMITIVES`] dispatch table; see
+/// `scalar::forward_97_2d`. Kept as the `wide`-accelerated side of the
+/// equivalence tests below.
+#[cfg(test)]
 pub(crate) fn forward_97_2d(
     data: &mut [f32],
     width: usize,
@@ -44,6 +42,8 @@ pub(crate) fn inverse_97_2d(
     Ok(())
 }
 
+/// Not part of the live dispatch table; see `scalar::forward_53_2d`.
+#[cfg(test)]
 pub(crate) fn forward_53_2d(
     data: &mut [i32],
     width: usize,
@@ -120,11 +120,13 @@ pub(crate) fn quantize_f32_rect(
     }
 }
 
+/// Not part of the live dispatch table; see `scalar::dequantize_i32_rect`.
 /// Mirrors `scalar::dequantize_i32_to_f32`: `sign * (|q| as f32 + 0.5) * step`,
 /// with an explicit zero override. Uses `q.abs()` (signed) rather than
 /// `q.unsigned_abs()` for the magnitude conversion; this only differs from the
 /// scalar reference at `q == i32::MIN`, a magnitude far outside any quantized
 /// JPEG 2000 coefficient produced by this codec.
+#[cfg(test)]
 pub(crate) fn dequantize_i32_rect(
     input: &[i32],
     output: &mut [f32],
@@ -160,22 +162,6 @@ pub(crate) fn dequantize_i32_rect(
             x += 1;
         }
     }
-}
-
-pub(crate) fn finalize_i32(input: &[i32], out: &mut [i32]) {
-    debug_assert_eq!(input.len(), out.len());
-    let shift = i32x8::new([128; 8]);
-    let lo = i32x8::new([0; 8]);
-    let hi = i32x8::new([255; 8]);
-    let mut i = 0usize;
-    while i + 8 <= input.len() {
-        let values = (i32x8::new(input[i..i + 8].try_into().expect("8 lanes")) + shift)
-            .max(lo)
-            .min(hi);
-        out[i..i + 8].copy_from_slice(&values.to_array());
-        i += 8;
-    }
-    super::scalar::finalize_i32(&input[i..], &mut out[i..]);
 }
 
 pub(crate) fn level_shift_f32(input: &[i32], shift: i32, out: &mut [f32]) {
@@ -525,17 +511,6 @@ mod tests {
         let mut wide_out = vec![0.0; data.len()];
         scalar::dequantize_i32_rect(&data, &mut scalar_out, width, 3, 2, 22, 10, 0.125);
         dequantize_i32_rect(&data, &mut wide_out, width, 3, 2, 22, 10, 0.125);
-        assert_eq!(wide_out, scalar_out);
-    }
-
-    #[test]
-    fn finalize_i32_matches_scalar() {
-        let mut data = test_i32_data(133);
-        data.extend([-4096, 4095, -128, 127, 0]);
-        let mut scalar_out = vec![0; data.len()];
-        let mut wide_out = vec![0; data.len()];
-        scalar::finalize_i32(&data, &mut scalar_out);
-        finalize_i32(&data, &mut wide_out);
         assert_eq!(wide_out, scalar_out);
     }
 

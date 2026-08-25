@@ -1,7 +1,7 @@
 //! Annex A marker-segment decoding for the narrow decoder path.
 
 use crate::error::{Jp2LamError, Result};
-use crate::j2k::types::{CodestreamParts, TilePartHeader};
+use crate::j2k::types::TilePartHeader;
 use crate::j2k::{
     MARKER_CAP, MARKER_COC, MARKER_COM, MARKER_CRG, MARKER_PLM, MARKER_PLT, MARKER_POC, MARKER_PPM,
     MARKER_PPT, MARKER_QCC, MARKER_RGN, MARKER_TLM,
@@ -179,19 +179,6 @@ pub struct QuantizationStep {
 }
 
 impl CodestreamHeader {
-    #[allow(dead_code)]
-    pub(crate) fn from_parts(parts: &CodestreamParts) -> Result<Self> {
-        let first_tile = parts
-            .tile_parts
-            .first()
-            .ok_or_else(|| invalid("codestream has no tile-parts"))?;
-        Self::from_marker_segments(
-            parts.main_header_segments.iter().map(Vec::as_slice),
-            first_tile.header,
-            parts.tile_parts.len(),
-        )
-    }
-
     pub(crate) fn from_marker_segments<'a, I>(
         main_header_segments: I,
         first_tile_header: TilePartHeader,
@@ -1088,8 +1075,8 @@ fn unsupported(message: impl Into<String>) -> Jp2LamError {
 mod tests {
     use super::*;
     use crate::j2k::{
-        MARKER_CAP, MARKER_COC, MARKER_CRG, MARKER_PLM, MARKER_PLT, MARKER_POC, MARKER_PPM,
-        MARKER_PPT, MARKER_QCC, MARKER_RGN, MARKER_TLM,
+        MARKER_CAP, MARKER_COC, MARKER_CRG, MARKER_POC, MARKER_PPM, MARKER_PPT, MARKER_QCC,
+        MARKER_RGN,
     };
 
     /// CRG is a display-registration hint that changes no sample and no packet
@@ -1741,10 +1728,6 @@ mod tests {
 
     fn qcd_segment() -> Vec<u8> {
         qcd_segment_with_step_count(0x22, 16)
-    }
-
-    fn qcd_segment_with_style(sqcd: u8) -> Vec<u8> {
-        qcd_segment_with_step_count(sqcd, 16)
     }
 
     fn qcd_segment_with_step_count(sqcd: u8, step_count: usize) -> Vec<u8> {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Declarative JPEG 2000 geometry layer.
 //!
 //! Single authority for how the image partitions into tiles, tile-components,
@@ -134,9 +132,11 @@ pub(crate) struct SubbandRect {
 }
 
 impl SubbandRect {
+    #[cfg(test)]
     pub fn width(&self) -> u32 {
         self.x1 - self.x0
     }
+    #[cfg(test)]
     pub fn height(&self) -> u32 {
         self.y1 - self.y0
     }
@@ -167,9 +167,11 @@ pub(crate) struct CodeBlockRect {
 }
 
 impl CodeBlockRect {
+    #[cfg(test)]
     pub fn width(&self) -> u32 {
         self.x1 - self.x0
     }
+    #[cfg(test)]
     pub fn height(&self) -> u32 {
         self.y1 - self.y0
     }
@@ -211,6 +213,7 @@ pub(crate) fn regular_tile_grid(
 }
 
 /// Return the single tile rectangle for the 1×1 grid.
+#[cfg(test)]
 pub(crate) fn tile_rect(grid: &TileGrid) -> TileRect {
     grid.tile_rect_at(0)
         .expect("tile grid should contain tile 0")
@@ -401,8 +404,13 @@ pub(crate) fn codeblock_rects_for_subband(
 /// Enumerate every code-block for an encoding plan in LRCP raster order.
 ///
 /// Block IDs are assigned starting from 0 and increment across components,
-/// resolutions, bands, and spatial positions. This is the convenience entry
-/// point for PCRD and Tier-2 to get the full block map.
+/// resolutions, bands, and spatial positions. Originally meant as the
+/// convenience entry point for PCRD and Tier-2 to get the full block map, but
+/// the real Tier-1 caller (`encode::backend::native::t1`) interleaves
+/// `subband_rects`/`codeblock_rects_for_subband` per tile-component instead
+/// of pre-materializing the whole map, so this exists only as a
+/// cross-checked reference implementation for tests.
+#[cfg(test)]
 pub(crate) fn enumerate_all_codeblocks(plan: &EncodingPlan) -> Vec<CodeBlockRect> {
     let grid = tile_grid(plan);
     let mut all_blocks = Vec::new();

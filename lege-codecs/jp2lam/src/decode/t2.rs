@@ -525,6 +525,7 @@ fn packet_axis_order(order: ProgressionOrder) -> [PacketAxis; 3] {
 }
 
 impl<'a> TilePacketDecoder<'a> {
+    #[cfg(test)]
     pub(crate) fn new(header: &CodestreamHeader) -> Result<Self> {
         Self::new_with_limits(
             header,

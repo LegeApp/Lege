@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::encode::profile_enter;
 use crate::error::{Jp2LamError, Result};
 use rayon::prelude::*;
@@ -19,6 +17,7 @@ const PARALLEL_COLUMN_THRESHOLD: usize = usize::MAX / 2;
 // cache-friendly band rows. See `forward_53_vertical_even_in_place`.
 const VERTICAL_BAND_COLS: usize = 256;
 
+#[cfg(test)]
 pub(crate) fn forward_53_2d_in_place(
     data: &mut [i32],
     width: usize,
@@ -68,7 +67,7 @@ pub(crate) fn forward_53_2d_in_place_at(
     Ok(())
 }
 
-#[cfg(feature = "simd")]
+#[cfg(all(test, feature = "simd"))]
 pub(crate) fn forward_53_2d_in_place_wide(
     data: &mut [i32],
     width: usize,
@@ -78,6 +77,7 @@ pub(crate) fn forward_53_2d_in_place_wide(
     forward_53_2d_in_place_impl(data, width, height, levels, true)
 }
 
+#[cfg(test)]
 fn forward_53_2d_in_place_impl(
     data: &mut [i32],
     width: usize,
@@ -390,11 +390,6 @@ fn inverse_53_1d_i128(coefficients: &mut [i128], even: bool, out: &mut [i128]) {
     coefficients.copy_from_slice(&out[..width]);
 }
 
-fn forward_53_1d_in_place(samples: &mut [i32], even: bool) {
-    let mut scratch = vec![0i32; samples.len()];
-    forward_53_1d_with_scratch(samples, even, &mut scratch, false);
-}
-
 fn forward_53_1d_with_scratch(
     samples: &mut [i32],
     even: bool,
@@ -517,11 +512,6 @@ fn forward_update_horizontal(scratch: &mut [i32], sn: usize, dn: usize, use_wide
         scratch[i] += (left + right + 2) >> 2;
         i += 1;
     }
-}
-
-fn inverse_53_1d_even_in_place(coefficients: &mut [i32]) {
-    let mut scratch = vec![0i32; coefficients.len() * 3];
-    inverse_53_1d_with_scratch(coefficients, true, &mut scratch, false);
 }
 
 fn inverse_53_1d_with_scratch(
@@ -723,6 +713,7 @@ fn inverse_undo_predict_horizontal(
     }
 }
 
+#[cfg(test)]
 fn forward_53_vertical_even_in_place(
     data: &mut [i32],
     stride: usize,
@@ -809,6 +800,7 @@ fn forward_53_vertical_even_in_place(
 
 /// `scratch[high+x] -= (scratch[left+x] + scratch[right+x]) >> 1` over `0..width`.
 #[inline]
+#[cfg(test)]
 fn predict_row(
     scratch: &mut [i32],
     left: usize,
@@ -843,6 +835,7 @@ fn predict_row(
 
 /// `scratch[low+x] += (scratch[left+x] + scratch[right+x] + 2) >> 2` over `0..width`.
 #[inline]
+#[cfg(test)]
 fn update_row(
     scratch: &mut [i32],
     left: usize,
@@ -881,6 +874,7 @@ fn update_row(
 /// as separate slices (the halves of a `split_at_mut`) instead of one shared
 /// `scratch` buffer at absolute offsets.
 #[inline]
+#[cfg(test)]
 fn predict_row_split(low: &[i32], left: usize, right: usize, high_row: &mut [i32], use_wide: bool) {
     let width = high_row.len();
     let mut x = 0usize;
@@ -906,6 +900,7 @@ fn predict_row_split(low: &[i32], left: usize, right: usize, high_row: &mut [i32
 /// `low_row[x] += (high[left+x] + high[right+x] + 2) >> 2` over `0..low_row.len()`.
 /// Same arithmetic as `update_row`, with `high`/`low_row` as separate slices.
 #[inline]
+#[cfg(test)]
 fn update_row_split(high: &[i32], left: usize, right: usize, low_row: &mut [i32], use_wide: bool) {
     let width = low_row.len();
     let mut x = 0usize;

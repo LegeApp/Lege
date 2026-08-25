@@ -186,7 +186,12 @@ pub fn quadrant_variance_delta(block: &[f64; 64], eps: f64) -> f64 {
     (avg_quadrant_var / whole_var).clamp(0.0, 1.0)
 }
 
-/// Compute contrast mask for a single 8×8 luma block
+/// Compute contrast mask for a single 8×8 luma block, using a fixed masking
+/// divisor rather than the image-relative normalization
+/// [`build_contrast_mask_map_from_luma_u8`] uses. Only exercised by tests,
+/// as a context-free reference implementation the whole-image adaptive path
+/// is checked against.
+#[cfg(test)]
 pub fn contrast_mask_for_luma_block8x8(
     block: &[f64; 64],
     params: ContrastMaskParams,
@@ -221,7 +226,6 @@ pub struct ContrastMaskMap {
     pub blocks_x: usize,
     pub blocks_y: usize,
     pub masks: Vec<ContrastMask>,
-    pub normalizer: f64,
 }
 
 impl ContrastMaskMap {
@@ -301,7 +305,6 @@ pub fn build_contrast_mask_map_from_luma_u8(
         blocks_x,
         blocks_y,
         masks,
-        normalizer,
     }
 }
 

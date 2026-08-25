@@ -339,7 +339,6 @@ fn test_background_pbm_encoding() {
     use djvu_encoder::encode::jb2::encoder::JB2Encoder;
     use djvu_encoder::encode::jb2::symbol_dict::BitImage;
     use djvu_encoder::encode::jb2::{analyze_page, shapes_to_encoder_format};
-    use std::io::Read;
 
     let pbm_path = "background.pbm";
     if !std::path::Path::new(pbm_path).exists() {

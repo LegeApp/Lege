@@ -206,34 +206,26 @@ impl<'a> Jbig2Encoder<'a> {
                                 anchor_index,
                                 &mut planning_anchor_comparator,
                             ) {
-                                SymUnifyAnchorDecision::Accept { score, dx, dy } => {
+                                SymUnifyAnchorDecision::Accept { score, .. } => {
                                     self.maybe_update_best_sym_unify_anchor_candidate(
                                         &mut local_best_anchor,
                                         &self.global_symbols[symbol_index],
                                         anchor_index,
                                         score,
-                                        dx,
-                                        dy,
                                         false,
                                     );
                                 }
-                                SymUnifyAnchorDecision::RejectScore {
-                                    score,
-                                    limit,
-                                    dx,
-                                    dy,
-                                } if score
-                                    <= limit.saturating_add(
-                                        self.config.sym_unify_score_rescue_slack,
-                                    ) =>
+                                SymUnifyAnchorDecision::RejectScore { score, limit, .. }
+                                    if score
+                                        <= limit.saturating_add(
+                                            self.config.sym_unify_score_rescue_slack,
+                                        ) =>
                                 {
                                     self.maybe_update_best_sym_unify_anchor_candidate(
                                         &mut local_best_anchor,
                                         &self.global_symbols[symbol_index],
                                         anchor_index,
                                         score,
-                                        dx,
-                                        dy,
                                         true,
                                     );
                                 }
@@ -301,34 +293,26 @@ impl<'a> Jbig2Encoder<'a> {
                                         anchor_index,
                                         &mut planning_anchor_comparator,
                                     ) {
-                                        SymUnifyAnchorDecision::Accept { score, dx, dy } => {
+                                        SymUnifyAnchorDecision::Accept { score, .. } => {
                                             self.maybe_update_best_sym_unify_anchor_candidate(
                                                 &mut best_anchor,
                                                 &self.global_symbols[symbol_index],
                                                 anchor_index,
                                                 score,
-                                                dx,
-                                                dy,
                                                 false,
                                             );
                                         }
-                                        SymUnifyAnchorDecision::RejectScore {
-                                            score,
-                                            limit,
-                                            dx,
-                                            dy,
-                                        } if score
-                                            <= limit.saturating_add(
-                                                self.config.sym_unify_score_rescue_slack,
-                                            ) =>
+                                        SymUnifyAnchorDecision::RejectScore { score, limit, .. }
+                                            if score
+                                                <= limit.saturating_add(
+                                                    self.config.sym_unify_score_rescue_slack,
+                                                ) =>
                                         {
                                             self.maybe_update_best_sym_unify_anchor_candidate(
                                                 &mut best_anchor,
                                                 &self.global_symbols[symbol_index],
                                                 anchor_index,
                                                 score,
-                                                dx,
-                                                dy,
                                                 true,
                                             );
                                         }
