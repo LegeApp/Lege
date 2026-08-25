@@ -747,7 +747,6 @@ impl DjVmNav {
     /// Encodes the navigation data into the binary format required for a `NAVM` chunk.
     /// Format: UINT16 count, then for each bookmark: BYTE nChildren, INT24 nDesc, UTF8 sDesc, INT24 nURL, UTF8 sURL
     pub fn encode<W: std::io::Write>(&self, writer: &mut W) -> Result<()> {
-
         if self.bookmarks.is_empty() {
             return Ok(());
         }

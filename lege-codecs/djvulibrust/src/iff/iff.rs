@@ -159,7 +159,8 @@ impl<'a> IffWriter<'a> {
 
         // Seek back, write the real size, and restore position.
         self.writer.seek(SeekFrom::Start(size_pos))?;
-        self.writer.write_all(&(content_size as u32).to_be_bytes())?;
+        self.writer
+            .write_all(&(content_size as u32).to_be_bytes())?;
         self.writer.seek(SeekFrom::Start(final_pos))?;
 
         Ok(())

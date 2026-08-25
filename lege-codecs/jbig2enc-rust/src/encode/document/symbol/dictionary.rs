@@ -1,11 +1,11 @@
 use super::super::first_black_pixel;
 #[cfg(all(test, feature = "refine"))]
 use super::text_region::{uf_find, uf_union};
+#[cfg(all(test, feature = "refine"))]
+use super::types::RefinementPlan;
 use super::types::{
     EncodedSymbolDictionary, SymbolDictDiagnostics, SymbolDictLayout, SymbolInstance,
 };
-#[cfg(all(test, feature = "refine"))]
-use super::types::RefinementPlan;
 use crate::jbig2arith::{IntProc, Jbig2ArithCoder};
 #[cfg(all(test, feature = "refine"))]
 use crate::jbig2classify::{

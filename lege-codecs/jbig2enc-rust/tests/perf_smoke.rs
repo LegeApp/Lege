@@ -118,4 +118,3 @@ fn text_region_encoding_perf_smoke() {
     );
     assert!(!payload.is_empty());
 }
-

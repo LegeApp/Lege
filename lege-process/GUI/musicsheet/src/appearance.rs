@@ -1,7 +1,7 @@
-use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::sync::RwLock;
 
 pub type Rgb = (u8, u8, u8);

@@ -5,8 +5,8 @@ use crate::error::{Jp2LamError, Result};
 #[cfg(test)]
 use crate::model::Image;
 use crate::model::{
-    ColorEncoding, ColorSpace, ComponentView, EncodeOptions, ImageView, OutputFormat,
-    RateControl, ResourceLimits, TilePolicy,
+    ColorEncoding, ColorSpace, ComponentView, EncodeOptions, ImageView, OutputFormat, RateControl,
+    ResourceLimits, TilePolicy,
 };
 use derive::{
     apply_document_step_scaling, apply_quality_step_scaling, derive_code_block_size, derive_lane,

@@ -61,7 +61,9 @@ fn to_design_units(value: f32) -> i16 {
     if !value.is_finite() {
         return 0;
     }
-    value.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+    value
+        .round()
+        .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
 }
 
 /// Read metadata for face `index` of a font file.

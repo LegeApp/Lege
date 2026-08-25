@@ -25,9 +25,9 @@ use lege_gpu::vision::{
     Detector, LayoutConfig, LayoutDetector, RecLine, RecRecognizer, TextBox, TokenRecognizer,
     TokenRecognizerConfig,
 };
-use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 

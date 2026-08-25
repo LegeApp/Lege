@@ -56,7 +56,10 @@ pub trait OcrEngine: Send + Sync {
 #[cfg(any(
     target_os = "windows",
     feature = "paddle-ocr",
-    all(any(target_os = "linux", target_os = "macos"), feature = "tesseract-ocr"),
+    all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "tesseract-ocr"
+    ),
     test,
 ))]
 pub(crate) fn raw_image_bpp(
@@ -421,7 +424,10 @@ fn set_image_with_downscale(
 #[cfg(any(
     target_os = "windows",
     feature = "paddle-ocr",
-    all(any(target_os = "linux", target_os = "macos"), feature = "tesseract-ocr"),
+    all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "tesseract-ocr"
+    ),
 ))]
 pub(crate) fn resize_cpu(
     data: &[u8],

@@ -153,11 +153,14 @@ struct Contribution {
 
 impl Contribution {
     fn length(&self) -> Result<usize> {
-        self.segments.as_slice().iter().try_fold(0usize, |total, segment| {
-            total
-                .checked_add(segment.length)
-                .ok_or_else(|| invalid("codeword contribution length overflow"))
-        })
+        self.segments
+            .as_slice()
+            .iter()
+            .try_fold(0usize, |total, segment| {
+                total
+                    .checked_add(segment.length)
+                    .ok_or_else(|| invalid("codeword contribution length overflow"))
+            })
     }
 }
 
@@ -1070,8 +1073,8 @@ fn read_band_contributions(
             .checked_add(increment)
             .ok_or_else(|| invalid("codeword length-bit count overflow"))?;
         let segments = if terminate_each_pass {
-            let segment_count = usize::try_from(passes)
-                .map_err(|_| invalid("coding-pass count exceeds usize"))?;
+            let segment_count =
+                usize::try_from(passes).map_err(|_| invalid("coding-pass count exceeds usize"))?;
             let len_bits = band.blocks[block_index]
                 .numlenbits
                 .checked_add(floor_log2(1))
@@ -2024,9 +2027,9 @@ fn invalid(message: impl Into<String>) -> Jp2LamError {
 mod tests {
     use super::{
         DecodedTilePackets, InlineValues, PacketAxis, PacketBioReader, PacketPosition,
-        PacketProgression, PacketProgressionState, PrecinctGrid, TagTreeReader,
-        TilePacketDecoder, band_geometries, build_band_states, build_packet_positions,
-        build_precinct_grids, packet_axis_order, packet_position_count, parse_tile_part_payload,
+        PacketProgression, PacketProgressionState, PrecinctGrid, TagTreeReader, TilePacketDecoder,
+        band_geometries, build_band_states, build_packet_positions, build_precinct_grids,
+        packet_axis_order, packet_position_count, parse_tile_part_payload,
         precinct_reference_position, read_commacode, read_numpasses,
     };
     use crate::decode::{

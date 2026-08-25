@@ -866,7 +866,6 @@ impl PageComponents {
         rotation: u8,       // 1=0°, 6=90°CCW, 2=180°, 5=90°CW
         gamma: Option<f32>, // If None, use 2.2
     ) -> Result<()> {
-
         writer.put_chunk("INFO")?;
 
         // Width and height (2 bytes each, big-endian)

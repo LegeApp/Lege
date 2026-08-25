@@ -13,9 +13,9 @@ use crate::encode::block_store::StoredTier1Layout;
 use crate::plan::{BandOrientation, SubbandQuant};
 use crate::profile::{BlockClass, class_distortion_weight};
 
+use super::t1::NativeEncodedTier1Pass;
 #[cfg(test)]
 use super::t1::{NativeEncodedTier1CodeBlock, NativeEncodedTier1Layout};
-use super::t1::NativeEncodedTier1Pass;
 
 /// Estimated packet-header signaling cost per included code-block (bytes).
 ///

@@ -580,7 +580,9 @@ pub(crate) fn reconstruct_packed_u8_into(
         .checked_add(target.height)
         .ok_or_else(|| invalid("packed write source height overflow"))?;
     if source_x1 > source_width || source_y1 > source_height {
-        return Err(invalid("packed write source rectangle exceeds reduced tile SIZ"));
+        return Err(invalid(
+            "packed write source rectangle exceeds reduced tile SIZ",
+        ));
     }
     match colorspace {
         ColorSpace::Gray if channels == 1 => {

@@ -32,8 +32,8 @@ pub use encode::counters::{
     TOTAL_BLOCKS, TOTAL_PASS_BYTES, memory_snapshot, print, reset,
 };
 pub use encode::{
-    EncodeMetrics, clear_timing_data, encode, encode_to_writer, encode_view,
-    encode_view_to_writer, encode_with_psnr, print_timing_data,
+    EncodeMetrics, clear_timing_data, encode, encode_to_writer, encode_view, encode_view_to_writer,
+    encode_with_psnr, print_timing_data,
 };
 pub use error::{Jp2LamError, Result};
 pub use model::{

@@ -302,11 +302,14 @@ impl<'a> Jbig2Encoder<'a> {
                                                 false,
                                             );
                                         }
-                                        SymUnifyAnchorDecision::RejectScore { score, limit, .. }
-                                            if score
-                                                <= limit.saturating_add(
-                                                    self.config.sym_unify_score_rescue_slack,
-                                                ) =>
+                                        SymUnifyAnchorDecision::RejectScore {
+                                            score,
+                                            limit,
+                                            ..
+                                        } if score
+                                            <= limit.saturating_add(
+                                                self.config.sym_unify_score_rescue_slack,
+                                            ) =>
                                         {
                                             self.maybe_update_best_sym_unify_anchor_candidate(
                                                 &mut best_anchor,

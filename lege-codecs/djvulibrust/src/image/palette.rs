@@ -220,7 +220,8 @@ impl Palette {
         }
         self.color_indices.clear();
         for chunk in bytes.chunks_exact(2) {
-            self.color_indices.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+            self.color_indices
+                .push(u16::from_be_bytes([chunk[0], chunk[1]]));
         }
         Ok(())
     }

@@ -1,8 +1,8 @@
 // Freya-side GUI localization loader.
 // User-facing copy lives in language_service/<locale>/gui_text.json.
 
-use std::sync::LazyLock;
 use serde::Deserialize;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GuiText {

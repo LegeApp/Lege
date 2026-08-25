@@ -2241,7 +2241,12 @@ fn log_viewer_popup(mut state: State<AppState>) -> Element {
                 ScrollView::new()
                     .width(Size::fill())
                     .height(Size::fill())
-                    .child(rect().width(Size::fill()).spacing(8.0_f32).children(log_rows)),
+                    .child(
+                        rect()
+                            .width(Size::fill())
+                            .spacing(8.0_f32)
+                            .children(log_rows),
+                    ),
             )
             .into(),
         move || state.write().show_log_viewer = false,

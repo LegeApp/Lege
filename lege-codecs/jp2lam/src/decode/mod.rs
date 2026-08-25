@@ -690,11 +690,8 @@ fn decode_packed_direct(
     let Some(parameters) = packed_direct_parameters(&core, resolution, format)? else {
         return Ok(None);
     };
-    let (canvas_x0, canvas_y0, out_width, out_height) = packed_output_geometry(
-        &core.codestream,
-        parameters.reduce_levels,
-        region,
-    )?;
+    let (canvas_x0, canvas_y0, out_width, out_height) =
+        packed_output_geometry(&core.codestream, parameters.reduce_levels, region)?;
     let stride = out_width
         .checked_mul(parameters.channels)
         .ok_or_else(|| crate::Jp2LamError::DecodeFailed("packed output stride overflow".into()))?;
@@ -747,11 +744,8 @@ fn decode_packed_direct_into(
         .map(|region| project_region(&core.codestream.siz, region, parameters.reduce_levels))
         .transpose()?
         .map(|(spatial, _)| spatial);
-    let (canvas_x0, canvas_y0, out_width, out_height) = packed_output_geometry(
-        &core.codestream,
-        parameters.reduce_levels,
-        region,
-    )?;
+    let (canvas_x0, canvas_y0, out_width, out_height) =
+        packed_output_geometry(&core.codestream, parameters.reduce_levels, region)?;
     if target.width as usize != out_width || target.height as usize != out_height {
         return Err(crate::Jp2LamError::InvalidInput(format!(
             "decode_into target {}x{} does not match decoded {}x{}",
@@ -1410,15 +1404,15 @@ fn decode_tile_components(
             .retain(|block| code_block_intersects_region(&windows, block));
     }
     stats.update(|stats| {
-        stats.packets = stats.packets.saturating_add(
-            u64::try_from(packets.packet_stats.count).unwrap_or(u64::MAX),
-        );
-        stats.packet_header_bytes = stats.packet_header_bytes.saturating_add(
-            u64::try_from(packets.packet_stats.header_bytes).unwrap_or(u64::MAX),
-        );
-        stats.codeword_bytes = stats.codeword_bytes.saturating_add(
-            u64::try_from(packets.packet_stats.body_bytes).unwrap_or(u64::MAX),
-        );
+        stats.packets = stats
+            .packets
+            .saturating_add(u64::try_from(packets.packet_stats.count).unwrap_or(u64::MAX));
+        stats.packet_header_bytes = stats
+            .packet_header_bytes
+            .saturating_add(u64::try_from(packets.packet_stats.header_bytes).unwrap_or(u64::MAX));
+        stats.codeword_bytes = stats
+            .codeword_bytes
+            .saturating_add(u64::try_from(packets.packet_stats.body_bytes).unwrap_or(u64::MAX));
         stats.codeblocks = stats
             .codeblocks
             .saturating_add(u64::try_from(packets.codeblocks.len()).unwrap_or(u64::MAX));
