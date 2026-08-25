@@ -407,6 +407,47 @@ impl NativeBackend {
         mut visit: impl FnMut(usize, t1::NativeEncodedTier1Layout) -> Result<()>,
     ) -> Result<()> {
         let inputs = IctTileInputs::load(context, x0, y0, width, height)?;
+
+        // Component-level parallelism is opt-in: `allow_component_parallelism`
+        // only returns true when the plan declares a working-memory budget that
+        // can hold every component's coefficient plane at once (§3.3, "memory
+        // limits control parallelism"). Without that declaration this stays on
+        // the bounded-memory path below, where one plane is live at a time.
+        //
+        // `visit` is `FnMut` and its order is observable in the codestream, so
+        // only the transform-and-encode work runs concurrently; the callback is
+        // still driven sequentially in component order afterwards. Output is
+        // byte-identical either way.
+        if allow_component_parallelism(context) {
+            use rayon::prelude::*;
+            let layouts = (0..3usize)
+                .into_par_iter()
+                .map(|component_index| {
+                    let _cp = crate::encode::profile_enter("per_component_encode");
+                    let data = inputs.output_component(component_index)?;
+                    let coefficients = self.prepare_component_coefficients_97_from_input(
+                        context,
+                        component_index,
+                        x0,
+                        y0,
+                        width,
+                        height,
+                        data,
+                    )?;
+                    self.encode_tier1_coefficients(
+                        context,
+                        tile_index,
+                        component_index,
+                        &coefficients,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for (component_index, layout) in layouts.into_iter().enumerate() {
+                visit(component_index, layout)?;
+            }
+            return Ok(());
+        }
+
         for component_index in 0..3 {
             let data = inputs.output_component(component_index)?;
             let coefficients = self.prepare_component_coefficients_97_from_input(
@@ -1629,13 +1670,13 @@ fn native_use_mct(plan: &EncodingPlan) -> bool {
     plan.use_mct && matches!(plan.transform, WaveletTransform::Irreversible97)
 }
 
-/// Not called by the live tile-rect encode path (`visit_tier1_encoded_mct_components_rect`
-/// always encodes MCT components with a plain sequential loop); only the
-/// superseded whole-image `prepare_tier1_encoded_layouts` opted into
-/// component-level parallelism via this memory-budget check. Kept under
-/// `#[cfg(test)]`, both for its own direct tests below and as part of the
-/// `native::layout`-adjacent legacy pipeline (see that module's doc comment).
-#[cfg(test)]
+/// Whether component-level Rayon jobs are permitted for this encode.
+///
+/// Conservative by construction: it needs more than one component, no
+/// `max_threads == 1` pin, and an explicitly declared `max_working_memory` that
+/// can hold every component's preparation floor at once. With no declared
+/// budget it returns `false`, so the default remains the bounded-memory
+/// sequential path.
 fn allow_component_parallelism(context: &EncodeContext<'_>) -> bool {
     let component_count = usize::from(context.plan.component_count);
     if component_count <= 1 || context.plan.resource_limits.max_threads == Some(1) {
@@ -1659,7 +1700,6 @@ fn allow_component_parallelism(context: &EncodeContext<'_>) -> bool {
 /// any one output component currently loads R, G, and B at once. Only enable
 /// component-level Rayon jobs when the declared working-memory budget can hold
 /// every component's full-component preparation floor at the same time.
-#[cfg(test)]
 fn component_parallel_working_memory_floor(plan: &EncodingPlan) -> Option<usize> {
     let pixels = usize::try_from(plan.width)
         .ok()?
