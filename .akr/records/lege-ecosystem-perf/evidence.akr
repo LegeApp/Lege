@@ -15,7 +15,7 @@ record lege-ecosystem-perf.evidence.akr-m022-cleanup-2026-08-09/1 : evidence {
 
 record lege-ecosystem-perf.evidence.akr-m022-cleanup-committed-2026-08-09/1 : evidence {
     title "At the committed active cleanup revision, strict validation output contains no AKR-M022 missing legacy-source diagnostics."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
@@ -23,6 +23,19 @@ record lege-ecosystem-perf.evidence.akr-m022-cleanup-committed-2026-08-09/1 : ev
     summary """
         At the committed active cleanup revision, strict validation output contains no AKR-M022 missing legacy-source diagnostics.
         """
+}
+
+record lege-ecosystem-perf.evidence.akr-m022-cleanup-committed-2026-08-09/2 : evidence {
+    title "At the committed active cleanup revision, strict validation output contains no AKR-M022 missing legacy-source diagnostics."
+    state verified
+    result pass
+    method command
+    observed_at git:7c24fcd1878191b7a89b9f6537721dab080dfa97
+    command "! akr check 2>&1 | rg -q 'AKR-M022'"
+    summary """
+        At the committed active cleanup revision, strict validation output contains no AKR-M022 missing legacy-source diagnostics.
+        """
+    supersedes [ @lege-ecosystem-perf.evidence.akr-m022-cleanup-committed-2026-08-09/1 ]
 }
 
 record lege-ecosystem-perf.evidence.akr-m022-cleanup-revalidated-2026-08-09/1 : evidence {
@@ -197,7 +210,7 @@ record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-2026-08-09/1 : 
 
 record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-committed-2026-08-09/1 : evidence {
     title "At the committed active cleanup revision, the documented renderer clippy gate completes successfully without an expect-used error."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
@@ -205,6 +218,21 @@ record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-committed-2026-
     summary """
         At the committed active cleanup revision, the documented renderer clippy gate completes successfully without an expect-used error.
         """
+}
+
+record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-committed-2026-08-09/2 : evidence {
+    title "At the committed active cleanup revision, the documented renderer clippy gate completes successfully without an expect-used error."
+    state verified
+    result pass
+    method command
+    observed_at git:7c24fcd1878191b7a89b9f6537721dab080dfa97
+    command "cargo clippy -p pdf-render-cpu -p pdf-cli"
+    summary """
+        At the committed active cleanup revision, the documented renderer clippy gate completes successfully without an expect-used error.
+        """
+    supersedes [
+        @lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-committed-2026-08-09/1
+    ]
 }
 
 record lege-ecosystem-perf.evidence.renderer-expect-used-cleanup-revalidated-2026-08-09/1 : evidence {
@@ -234,7 +262,7 @@ record lege-ecosystem-perf.evidence.renderer-suites-post-wave2-20260825/1 : evid
 
 record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/1 : evidence {
     title "Structures.pdf direct JPX output profile"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
@@ -245,9 +273,22 @@ record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/
         """
 }
 
+record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/2 : evidence {
+    title "Structures.pdf direct JPX output profile"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 21 .agent/scratch/mrc-smask-followup-20260809/structures.direct-output.decode-only.repeat.jsonl --mode decode-only"
+    summary """
+        On Structures.pdf page 0, 21-run direct-output medians were 246.834 ms decode-only, 204.616 ms JPX, and 41.516 ms JBIG2 with unchanged hash fdc3994f80330ee0; JPX p25/p75 were 195.466/233.428 ms.
+        """
+    supersedes [ @lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/1 ]
+}
+
 record lege-ecosystem-perf.evidence.structures-direct-output-warm-profile-2026-08-09/1 : evidence {
     title "Structures.pdf warm renderer profile after direct JPX output"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
@@ -256,6 +297,21 @@ record lege-ecosystem-perf.evidence.structures-direct-output-warm-profile-2026-0
     summary """
         Structures.pdf page 0 stayed byte-identical at hash fdc3994f80330ee0; 11-run medians were 70.697 ms compiled and 70.049 ms warm-decoded, with render.output approximately 0.000201 ms.
         """
+}
+
+record lege-ecosystem-perf.evidence.structures-direct-output-warm-profile-2026-08-09/2 : evidence {
+    title "Structures.pdf warm renderer profile after direct JPX output"
+    state verified
+    result pass
+    method command
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    command "lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.direct-output.compiled.jsonl --mode compiled && lege-pdf/render/tools/pdfium-diff/target/release/pdfium-diff profile 2.0833333 /home/dk/Desktop/Structures.pdf 0 11 .agent/scratch/mrc-smask-followup-20260809/structures.direct-output.warm-decoded.jsonl --mode warm-decoded"
+    summary """
+        Structures.pdf page 0 stayed byte-identical at hash fdc3994f80330ee0; 11-run medians were 70.697 ms compiled and 70.049 ms warm-decoded, with render.output approximately 0.000201 ms.
+        """
+    supersedes [
+        @lege-ecosystem-perf.evidence.structures-direct-output-warm-profile-2026-08-09/1
+    ]
 }
 
 record lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/1 : evidence {
@@ -272,13 +328,23 @@ record lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09
 
 record lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/2 : evidence {
     title "Structures.pdf direct Arc output versus owned Vec control"
-    state verified
+    state superseded
     result pass
     method observation
     observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
     artifact ".agent/scratch/mrc-smask-followup-20260809/structures.packed-owned-control.decode-only.jsonl"
     summary "A corrected 21-run control temporarily restored the former packed owned-raster plus Vec-to-Arc path. It measured 196.892 ms median JPX (p25/p75 192.961/205.569), versus 204.616 ms (195.466/233.428) for direct Arc output in a sequential same-session comparison. Direct output was about 3.9% slower at the median, and the distributions overlap, so this run demonstrates no throughput improvement. Both output hashes were fdc3994f80330ee0. The direct path still removes one full-image allocation and copy; the temporary control branch was removed after measurement. Revision 1 used the native-planar fallback as its control and is superseded by this corrected packed-path measurement."
     supersedes [ @lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/1 ]
+}
+
+record lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/3 : evidence {
+    title "Structures.pdf direct Arc output versus owned Vec control"
+    state verified
+    result pass
+    method observation
+    observed_at git:174105ceac73d00a20e25fc7bf80d23444dd7d93
+    summary "A corrected 21-run control temporarily restored the former packed owned-raster plus Vec-to-Arc path. It measured 196.892 ms median JPX (p25/p75 192.961/205.569), versus 204.616 ms (195.466/233.428) for direct Arc output in a sequential same-session comparison. Direct output was about 3.9% slower at the median, and the distributions overlap, so this run demonstrates no throughput improvement. Both output hashes were fdc3994f80330ee0. The direct path still removes one full-image allocation and copy; the temporary control branch was removed after measurement. Revision 1 used the native-planar fallback as its control and is superseded by this corrected packed-path measurement."
+    supersedes [ @lege-ecosystem-perf.evidence.structures-direct-vs-owned-output-2026-08-09/2 ]
 }
 
 record lege-ecosystem-perf.evidence.structures-smask-followup-profile/1 : evidence {

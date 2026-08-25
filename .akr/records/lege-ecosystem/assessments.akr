@@ -106,7 +106,7 @@ record lege-ecosystem.assessment.direct-djvu-integration-readiness-20260822/4 : 
 
 record lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/1 : assessment {
     title "Windows installer readiness of lege-document-ocr on 2026-08-15"
-    state verified
+    state superseded
     scope [ path "lege-document-ocr/**", path "lege-ocr/**" ]
     statement """
         The current Windows release is viable for an internal WinOCR-based tester installer after adding a WinOCR startup/language preflight that fails visibly instead of returning blank OCR, handling the VC++ runtime dependency, assembling redistribution notices, and providing CLI onboarding. A TensorRT-inclusive package is host-proven but not yet general tester-ready: the runtime is experimental, the current worker is built for CUDA architecture 89, its observed non-system static import closure is 424.58 MiB before models and the Rust CLI, cold engine creation takes about ten minutes on the measured host, and no clean-machine packaged-runtime test or distributable manifest exists. The SinoRAG WinSafe installer is reusable as a forked UI/extraction/HKCU-registration shell, but its SinoRAG-specific initialization must be removed, installation should be staged and verified transactionally, the uninstaller should be embedded or guaranteed in the payload, and registry-derived recursive deletion should be replaced with validated native cleanup.
@@ -119,6 +119,90 @@ record lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/1 : a
         @lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/1,
         @lege-ecosystem.evidence.document-ocr-windows-dependency-audit-20260815/1,
         @lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/1
+    ]
+    source {
+        kind internal
+        role evidence
+        path "lege-document-ocr/README.md"
+        use """
+            Documents current Windows backend routing, bundled assets, outputs, and production gates.
+            """
+    }
+    source {
+        kind internal
+        role evidence
+        path "lege-document-ocr/turboocr/docs/build/windows.md"
+        use """
+            Documents experimental status, host requirements, cache behavior, and measured cold build times.
+            """
+    }
+    source {
+        kind internal
+        role evidence
+        path "lege-ocr/src/engine.rs"
+        use """
+            Shows current WinOCR engine creation and error-to-empty-result behavior.
+            """
+    }
+}
+
+record lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/2 : assessment {
+    title "Windows installer readiness of lege-document-ocr on 2026-08-15"
+    state superseded
+    scope [ path "lege-document-ocr/**", path "lege-ocr/**" ]
+    statement """
+        The current Windows release is viable for an internal WinOCR-based tester installer after adding a WinOCR startup/language preflight that fails visibly instead of returning blank OCR, handling the VC++ runtime dependency, assembling redistribution notices, and providing CLI onboarding. A TensorRT-inclusive package is host-proven but not yet general tester-ready: the runtime is experimental, the current worker is built for CUDA architecture 89, its observed non-system static import closure is 424.58 MiB before models and the Rust CLI, cold engine creation takes about ten minutes on the measured host, and no clean-machine packaged-runtime test or distributable manifest exists. The SinoRAG WinSafe installer is reusable as a forked UI/extraction/HKCU-registration shell, but its SinoRAG-specific initialization must be removed, installation should be staged and verified transactionally, the uninstaller should be embedded or guaranteed in the payload, and registry-derived recursive deletion should be replaced with validated native cleanup.
+        """
+    confidence high
+    derived_from [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/1 ]
+    supported_by [
+        @lege-ecosystem.evidence.document-ocr-component-tests-20260815/1,
+        @lege-ecosystem.evidence.document-ocr-release-build-20260815/1,
+        @lege-ecosystem.evidence.document-ocr-windows-dependency-audit-20260815/1
+    ]
+    source {
+        kind internal
+        role evidence
+        path "lege-document-ocr/README.md"
+        use """
+            Documents current Windows backend routing, bundled assets, outputs, and production gates.
+            """
+    }
+    source {
+        kind internal
+        role evidence
+        path "lege-document-ocr/turboocr/docs/build/windows.md"
+        use """
+            Documents experimental status, host requirements, cache behavior, and measured cold build times.
+            """
+    }
+    source {
+        kind internal
+        role evidence
+        path "lege-ocr/src/engine.rs"
+        use """
+            Shows current WinOCR engine creation and error-to-empty-result behavior.
+            """
+    }
+}
+
+record lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/3 : assessment {
+    title "Windows installer readiness of lege-document-ocr on 2026-08-15"
+    state verified
+    scope [ path "lege-document-ocr/**", path "lege-ocr/**" ]
+    statement """
+        The current Windows release is viable for an internal WinOCR-based tester installer after adding a WinOCR startup/language preflight that fails visibly instead of returning blank OCR, handling the VC++ runtime dependency, assembling redistribution notices, and providing CLI onboarding. A TensorRT-inclusive package is host-proven but not yet general tester-ready: the runtime is experimental, the current worker is built for CUDA architecture 89, its observed non-system static import closure is 424.58 MiB before models and the Rust CLI, cold engine creation takes about ten minutes on the measured host, and no clean-machine packaged-runtime test or distributable manifest exists. The SinoRAG WinSafe installer is reusable as a forked UI/extraction/HKCU-registration shell, but its SinoRAG-specific initialization must be removed, installation should be staged and verified transactionally, the uninstaller should be embedded or guaranteed in the payload, and registry-derived recursive deletion should be replaced with validated native cleanup.
+        """
+    confidence high
+    derived_from [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
+    supersedes [ @lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/2 ]
+    supported_by [
+        @lege-ecosystem.evidence.document-ocr-component-tests-20260815/1,
+        @lege-ecosystem.evidence.document-ocr-release-build-20260815/1,
+        @lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/2,
+        @lege-ecosystem.evidence.document-ocr-windows-dependency-audit-20260815/1,
+        @lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/2
     ]
     source {
         kind internal

@@ -509,7 +509,7 @@ record lege-ecosystem.encode-quality.improve-photographic-rate-control/1 : work 
         Partial implementation landed in the current working tree: the native lossy allocator now size-matches perceptually weighted Annex-J curves to the established MSE byte target, maps luma masking through tile/subband origins, and uses smooth strength plus actual-bpp gates. Qualified same-size improvements at q25/q50/q75; q90 remains deliberately weak and mixed; q98 stays on the byte-identical baseline. The larger butteraugli-anchored quality mapping and resolution-stability objective remains open.
         """
     supported_by [
-        @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1,
+        @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/2,
         @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-validation-2026-08-13/1
     ]
 }
@@ -591,7 +591,7 @@ record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/2 : work {
 
 record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/3 : work {
     title "Remove About email row and reduce Lege GPU initialization overhead"
-    state completed
+    state superseded
     scope [
         path "lege-gpu/src/vision/api.rs",
         path "lege-gpu/src/vision/runtime/compiled.rs",
@@ -632,6 +632,51 @@ record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/3 : work {
         }
     }
     supersedes [ @lege-ecosystem.lege-process.about-gpu-init-2026-08-09/2 ]
+}
+
+record lege-ecosystem.lege-process.about-gpu-init-2026-08-09/4 : work {
+    title "Remove About email row and reduce Lege GPU initialization overhead"
+    state completed
+    scope [
+        path "lege-gpu/src/vision/api.rs",
+        path "lege-gpu/src/vision/runtime/compiled.rs",
+        path "lege-gpu/src/vision/runtime/device.rs",
+        path "lege-process/GUI/Freya/src/**",
+        path "lege-process/GUI/musicsheet/src/**",
+        path "lege-process/language_service/**/gui_text.json"
+    ]
+    intent "Remove the email line from both shipped Lege About popups without residual layout space and evaluate GPU startup for measurable redundant initialization work, preserving adapter fallback and eager readiness semantics."
+    note "GPU changes must retain hardware-first adapter policy, real fallback behavior, and fully initialized sessions; do not disguise cost through delayed initialization or reduced capability."
+    acceptance {
+        check about-email-removed {
+            statement """
+                The About popup contains no email row or placeholder spacing, and localized GUI text still deserializes.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.lege-process-about-email-removed-committed-2026-08-09/2
+            ]
+        }
+        check focused-tests-pass {
+            statement """
+                Focused Freya, Sheet Music GUI, lege-gpu, and affected workspace checks pass.
+                """
+            method command
+            verified_by [
+                @lege-ecosystem.evidence.lege-process-about-gpu-checks-committed-2026-08-09/2
+            ]
+        }
+        check gpu-initialization-evaluated {
+            statement """
+                GPU initialization is profiled and any retained optimization removes demonstrably redundant work without changing adapter fallback or eager session readiness.
+                """
+            method observation
+            verified_by [
+                @lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/3
+            ]
+        }
+    }
+    supersedes [ @lege-ecosystem.lege-process.about-gpu-init-2026-08-09/3 ]
 }
 
 record lege-ecosystem.work.about-image-pdf-agent-tool/1 : work {
@@ -2341,7 +2386,7 @@ record lege-ecosystem.work.post-precinct-census-2026-07-19-from-pdf/1 : work {
 
 record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
     title "Prefer discrete GPU for compute and presentation"
-    state completed
+    state superseded
     scope [
         path "lege-gpu/src/presentation.rs",
         path "lege-gpu/src/vision/runtime/device.rs",
@@ -2376,6 +2421,46 @@ record lege-ecosystem.work.prefer-discrete-gpu/1 : work {
             verified_by [ @lege-ecosystem.evidence.adapter-order-tests-20260813/1 ]
         }
     }
+}
+
+record lege-ecosystem.work.prefer-discrete-gpu/2 : work {
+    title "Prefer discrete GPU for compute and presentation"
+    state completed
+    scope [
+        path "lege-gpu/src/presentation.rs",
+        path "lege-gpu/src/vision/runtime/device.rs",
+        path "lege-gpu/src/wgpu_setup.rs"
+    ]
+    intent """
+        Make automatic wgpu adapter selection deterministic by trying discrete adapters before integrated, virtual, and CPU adapters for both shared compute/layout detection and surface presentation, while retaining explicit adapter overrides and graceful fallback.
+        """
+    acceptance {
+        check compute-hardware {
+            statement """
+                On a host with an enumerated discrete GPU, the shared compute context selects a discrete adapter.
+                """
+            method command
+            command "LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
+            verified_by [ @lege-ecosystem.evidence.discrete-auto-selection-20260813/2 ]
+        }
+        check presentation-build {
+            statement """
+                The presentation feature compiles after using the same ordered fallback policy.
+                """
+            method command
+            command "cargo check -p lege-gpu --features presentation,layout-detection"
+            verified_by [ @lege-ecosystem.evidence.presentation-layout-build-20260813/2 ]
+        }
+        check selection-policy {
+            statement """
+                Unit tests prove discrete adapters rank ahead of integrated and software adapters.
+                """
+            method command
+            command "cargo test -p lege-gpu wgpu_setup::tests --lib"
+            verified_by [ @lege-ecosystem.evidence.adapter-order-tests-20260813/2 ]
+        }
+    }
+    supersedes [ @lege-ecosystem.work.prefer-discrete-gpu/1 ]
 }
 
 record lege-ecosystem.work.prepared-onnx-shared-gpu-session/1 : work {

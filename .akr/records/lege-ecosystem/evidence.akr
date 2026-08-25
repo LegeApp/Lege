@@ -3,7 +3,7 @@ project lege-ecosystem
 
 record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1 : evidence {
     title "Size-matched perceptual PCRD curve benchmark"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
@@ -12,6 +12,20 @@ record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1
     summary """
         On the working tree rooted at 70147b50, decoded-RGB Butteraugli and SSIMULACRA2 comparisons preserved mean output size within 0.0603% at q25 and 0.0016% at q50/q75/q90/q98; q25/q50/q75 improved both perceptual metrics on the seven-photo mean, q50/q75 improved both on the mixed-resolution six-photo mean, q90 improved the mixed-resolution mean, and q98 was byte-identical.
         """
+}
+
+record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/2 : evidence {
+    title "Size-matched perceptual PCRD curve benchmark"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cargo run --release --example perceptual_curve -- test-set 25,50,75,90,98 7; cargo run --release --example perceptual_curve -- .agent/scratch/encode-quality/corpus6-20260812 50,75,90,98; compare against detached 70147b50 CSV baselines"
+    artifact "lege-codecs/jp2lam/llm-docs/encode-quality-summary-2026-08-12.md"
+    summary """
+        On the working tree rooted at 70147b50, decoded-RGB Butteraugli and SSIMULACRA2 comparisons preserved mean output size within 0.0603% at q25 and 0.0016% at q50/q75/q90/q98; q25/q50/q75 improved both perceptual metrics on the seven-photo mean, q50/q75 improved both on the mixed-resolution six-photo mean, q90 improved the mixed-resolution mean, and q98 was byte-identical.
+        """
+    supersedes [ @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1 ]
 }
 
 record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-validation-2026-08-13/1 : evidence {
@@ -52,7 +66,7 @@ record lege-ecosystem.evidence.about-loopback-freya-tests/1 : evidence {
 
 record lege-ecosystem.evidence.adapter-order-tests-20260813/1 : evidence {
     title "All three adapter policy tests passed, including deterministic discrete-before-integrated ordering."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
@@ -60,6 +74,19 @@ record lege-ecosystem.evidence.adapter-order-tests-20260813/1 : evidence {
     summary """
         All three adapter policy tests passed, including deterministic discrete-before-integrated ordering.
         """
+}
+
+record lege-ecosystem.evidence.adapter-order-tests-20260813/2 : evidence {
+    title "All three adapter policy tests passed, including deterministic discrete-before-integrated ordering."
+    state verified
+    result pass
+    method command
+    observed_at git:f2fc2430d25b454bb64dc978cb38daeafc4063f9
+    command "cargo test -p lege-gpu wgpu_setup::tests --lib"
+    summary """
+        All three adapter policy tests passed, including deterministic discrete-before-integrated ordering.
+        """
+    supersedes [ @lege-ecosystem.evidence.adapter-order-tests-20260813/1 ]
 }
 
 record lege-ecosystem.evidence.auto-toc-djvu-tests/1 : evidence {
@@ -187,7 +214,7 @@ record lege-ecosystem.evidence.direct-djvu-integration-tests-20260822/1 : eviden
 
 record lege-ecosystem.evidence.discrete-auto-selection-20260813/1 : evidence {
     title "The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
@@ -195,6 +222,19 @@ record lege-ecosystem.evidence.discrete-auto-selection-20260813/1 : evidence {
     summary """
         The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060.
         """
+}
+
+record lege-ecosystem.evidence.discrete-auto-selection-20260813/2 : evidence {
+    title "The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060."
+    state verified
+    result pass
+    method command
+    observed_at git:f2fc2430d25b454bb64dc978cb38daeafc4063f9
+    command "WGPU_REQUIRE_REAL_GPU=1 LEGE_TEST_GPU_SELECTION=1 cargo test -p lege-gpu --features layout-detection shared_context_prefers_discrete_when_available --lib -- --nocapture"
+    summary """
+        The hardware policy test enumerated Intel integrated, NVIDIA RTX 4060 discrete, and llvmpipe adapters, then automatically selected the RTX 4060.
+        """
+    supersedes [ @lege-ecosystem.evidence.discrete-auto-selection-20260813/1 ]
 }
 
 record lege-ecosystem.evidence.discrete-gpu-presentation-build/1 : evidence {
@@ -311,7 +351,7 @@ record lege-ecosystem.evidence.document-ocr-component-tests-20260815/1 : evidenc
 
 record lege-ecosystem.evidence.document-ocr-installer-smoke-20260815/1 : evidence {
     title "Offline installer, backend doctor, and manifest smoke test"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
@@ -322,9 +362,22 @@ record lege-ecosystem.evidence.document-ocr-installer-smoke-20260815/1 : evidenc
         """
 }
 
+record lege-ecosystem.evidence.document-ocr-installer-smoke-20260815/2 : evidence {
+    title "Offline installer, backend doctor, and manifest smoke test"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command ".\\lege-document-ocr\\scripts\\build_windows_installer.ps1 -PayloadDirectory .\\.agent\\scratch\\ocr-package\\lege-ocr-windows-x64-primary-trt-20260815 -SkipPayloadBuild"
+    summary """
+        The single setup executable installed offline into a clean directory, passed the installed auto-backend doctor, and every payload file matched the packaged SHA-256 manifest.
+        """
+    supersedes [ @lege-ecosystem.evidence.document-ocr-installer-smoke-20260815/1 ]
+}
+
 record lege-ecosystem.evidence.document-ocr-lzma2-installer-build-20260815/1 : evidence {
     title "Solid LZMA2 Lege Document OCR installer build"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
@@ -333,6 +386,19 @@ record lege-ecosystem.evidence.document-ocr-lzma2-installer-build-20260815/1 : e
     summary """
         7-Zip verified a solid LZMA2 archive containing 32 payload files; 2,356,896,423 payload bytes compressed to 761,823,698 bytes and embedded in a 762,604,544-byte single-file setup.
         """
+}
+
+record lege-ecosystem.evidence.document-ocr-lzma2-installer-build-20260815/2 : evidence {
+    title "Solid LZMA2 Lege Document OCR installer build"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command ".\\lege-document-ocr\\scripts\\build_windows_installer.ps1 -PayloadDirectory .\\.agent\\scratch\\ocr-package\\lege-ocr-windows-x64-primary-trt-20260815 -SkipPayloadBuild"
+    summary """
+        7-Zip verified a solid LZMA2 archive containing 32 payload files; 2,356,896,423 payload bytes compressed to 761,823,698 bytes and embedded in a 762,604,544-byte single-file setup.
+        """
+    supersedes [ @lege-ecosystem.evidence.document-ocr-lzma2-installer-build-20260815/1 ]
 }
 
 record lege-ecosystem.evidence.document-ocr-release-build-20260815/1 : evidence {
@@ -362,7 +428,7 @@ record lege-ecosystem.evidence.document-ocr-safe-uninstall-smoke-20260815/1 : ev
 
 record lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/1 : evidence {
     title "TensorRT OCR preflight and integrated PDF smoke test passed"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
@@ -371,6 +437,19 @@ record lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/1 : evidence
     summary """
         The cached PP-OCRv6 TensorRT detector and recognizer passed real CUDA inference preflight on an RTX 4060 Laptop GPU, then the release CLI completed the PDF job in 0.569 seconds.
         """
+}
+
+record lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/2 : evidence {
+    title "TensorRT OCR preflight and integrated PDF smoke test passed"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "lege-document-ocr/scripts/test_windows_tensorrt.ps1 -Pdf lege-pdf/render/crates/pdf-chaos-tests/tests/fixtures/hello_world.pdf -SkipBuild"
+    summary """
+        The cached PP-OCRv6 TensorRT detector and recognizer passed real CUDA inference preflight on an RTX 4060 Laptop GPU, then the release CLI completed the PDF job in 0.569 seconds.
+        """
+    supersedes [ @lege-ecosystem.evidence.document-ocr-tensorrt-smoke-20260815/1 ]
 }
 
 record lege-ecosystem.evidence.document-ocr-windows-dependency-audit-20260815/1 : evidence {
@@ -387,7 +466,7 @@ record lege-ecosystem.evidence.document-ocr-windows-dependency-audit-20260815/1 
 
 record lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/1 : evidence {
     title "Release CLI completed a Windows Runtime OCR smoke test"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
@@ -396,6 +475,19 @@ record lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/1 : evidence {
     summary """
         The release executable selected winocr, processed a forced-OCR PDF, and wrote DocIR JSON, manifest, QA JSON, text, checkpoints, and resumable SQLite state.
         """
+}
+
+record lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/2 : evidence {
+    title "Release CLI completed a Windows Runtime OCR smoke test"
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "target/release/lege-ocr.exe batch lege-pdf/render/crates/pdf-chaos-tests/tests/fixtures/hello_world.pdf --output .agent/scratch/package-review-winocr-20260815-205905 --backend winocr-legacy --force-ocr --format json,text --workers 1 --force --no-spellcheck"
+    summary """
+        The release executable selected winocr, processed a forced-OCR PDF, and wrote DocIR JSON, manifest, QA JSON, text, checkpoints, and resumable SQLite state.
+        """
+    supersedes [ @lege-ecosystem.evidence.document-ocr-winocr-smoke-20260815/1 ]
 }
 
 record lege-ecosystem.evidence.document-ocr-winsafe-crate-tests-20260815/1 : evidence {
@@ -489,7 +581,7 @@ record lege-ecosystem.evidence.image-detection-policy-tests/1 : evidence {
 
 record lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/1 : evidence {
     title "The staging workflow produced a 2.195 GiB self-discovering Windows payload with 31 hashed payload files, app-local VC/OpenCV/TensorRT DLLs, models, licenses, the cold builder resource, and a passing packaged TensorRT doctor."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
@@ -500,9 +592,22 @@ record lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/1 : evi
         """
 }
 
+record lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/2 : evidence {
+    title "The staging workflow produced a 2.195 GiB self-discovering Windows payload with 31 hashed payload files, app-local VC/OpenCV/TensorRT DLLs, models, licenses, the cold builder resource, and a passing packaged TensorRT doctor."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "powershell -File lege-document-ocr/scripts/package_windows_tensorrt.ps1 -OutputDirectory .agent/scratch/ocr-package/lege-ocr-windows-x64-primary-trt-20260815 -SkipRustBuild -SkipWorkerBuild"
+    summary """
+        The staging workflow produced a 2.195 GiB self-discovering Windows payload with 31 hashed payload files, app-local VC/OpenCV/TensorRT DLLs, models, licenses, the cold builder resource, and a passing packaged TensorRT doctor.
+        """
+    supersedes [ @lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/1 ]
+}
+
 record lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 : evidence {
     title "Size-matched jp2lam perceptual curve qualification"
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
@@ -511,6 +616,20 @@ record lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 : evidence {
     summary """
         On the supplied 0.8/4.3/12 MP photographic corpus, output size stayed within +0.0603% mean at q25 and within ±0.0016% at q50/q75/q90/q98; q25 improved mean Butteraugli by 0.6149 and SSIMULACRA2 by 0.1996, q90 improved Butteraugli by 0.1242 and SSIMULACRA2 by 0.6638, and q98 remained byte/metric identical by policy.
         """
+}
+
+record lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/2 : evidence {
+    title "Size-matched jp2lam perceptual curve qualification"
+    state verified
+    result pass
+    method command
+    observed_at git:70147b50c31faf7aad4e0eaf056745ccd7cd8e49
+    command "cargo run --release --example perceptual_curve -- <jpegXL-rs corpus subsets> <quality sweeps>; compare CSV against detached baseline 70147b5"
+    artifact "lege-codecs/jp2lam/llm-docs/encode-quality-summary-2026-08-12.md"
+    summary """
+        On the supplied 0.8/4.3/12 MP photographic corpus, output size stayed within +0.0603% mean at q25 and within ±0.0016% at q50/q75/q90/q98; q25 improved mean Butteraugli by 0.6149 and SSIMULACRA2 by 0.1996, q90 improved Butteraugli by 0.1242 and SSIMULACRA2 by 0.6638, and q98 remained byte/metric identical by policy.
+        """
+    supersedes [ @lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 ]
 }
 
 record lege-ecosystem.evidence.jp2lam-perceptual-pcrd-check-2026-08-12/1 : evidence {
@@ -541,7 +660,7 @@ record lege-ecosystem.evidence.jp2lam-perceptual-pcrd-tests-2026-08-12/1 : evide
 
 record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 : evidence {
     title "Fresh-process release profiling on Intel Iris Xe/Vulkan showed median first-engine initialization falling from 93.831 ms to 82.591 ms (-11.98%) and median two-session pool initialization from 97.182 ms to 88.091 ms (-9.36%) when full model decoding/preparation overlaps adapter/device discovery. The constructor still joins both jobs before graph allocation and return; adapter selection, fallback ordering, feature requests, buffer allocation, and eager sibling readiness are unchanged."
-    state verified
+    state superseded
     result pass
     method observation
     observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
@@ -551,9 +670,21 @@ record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 : evide
         """
 }
 
+record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/2 : evidence {
+    title "Fresh-process release profiling on Intel Iris Xe/Vulkan showed median first-engine initialization falling from 93.831 ms to 82.591 ms (-11.98%) and median two-session pool initialization from 97.182 ms to 88.091 ms (-9.36%) when full model decoding/preparation overlaps adapter/device discovery. The constructor still joins both jobs before graph allocation and return; adapter selection, fallback ordering, feature requests, buffer allocation, and eager sibling readiness are unchanged."
+    state verified
+    result pass
+    method observation
+    observed_at git:f283e94f66351240c35d6a408ab1c5a1f6641c4b
+    summary """
+        Fresh-process release profiling on Intel Iris Xe/Vulkan showed median first-engine initialization falling from 93.831 ms to 82.591 ms (-11.98%) and median two-session pool initialization from 97.182 ms to 88.091 ms (-9.36%) when full model decoding/preparation overlaps adapter/device discovery. The constructor still joins both jobs before graph allocation and return; adapter selection, fallback ordering, feature requests, buffer allocation, and eager sibling readiness are unchanged.
+        """
+    supersedes [ @lege-ecosystem.evidence.lege-gpu-layout-init-overlap-2026-08-09/1 ]
+}
+
 record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/1 : evidence {
     title "The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return."
-    state verified
+    state superseded
     result pass
     method observation
     observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
@@ -561,6 +692,30 @@ record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09
     summary """
         The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return.
         """
+}
+
+record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/2 : evidence {
+    title "The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return."
+    state superseded
+    result pass
+    method observation
+    observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
+    summary """
+        The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return.
+        """
+    supersedes [ @lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/1 ]
+}
+
+record lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/3 : evidence {
+    title "The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return."
+    state verified
+    result pass
+    method observation
+    observed_at git:7c24fcd1878191b7a89b9f6537721dab080dfa97
+    summary """
+        The committed optimization matches the measured release implementation: median first-engine initialization decreased from 93.831 ms to 82.591 ms (-11.98%) and two-session startup from 97.182 ms to 88.091 ms (-9.36%). Model preparation and unchanged adapter/device discovery join before eager graph allocation and return.
+        """
+    supersedes [ @lege-ecosystem.evidence.lege-gpu-layout-init-overlap-committed-2026-08-09/2 ]
 }
 
 record lege-ecosystem.evidence.lege-process-about-email-removed-2026-08-09/1 : evidence {
@@ -577,7 +732,7 @@ record lege-ecosystem.evidence.lege-process-about-email-removed-2026-08-09/1 : e
 
 record lege-ecosystem.evidence.lege-process-about-email-removed-committed-2026-08-09/1 : evidence {
     title "At the committed active-work revision, the scoped search found no About email field, value, or use, and both shipped GUI locale schema tests passed."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
@@ -587,9 +742,24 @@ record lege-ecosystem.evidence.lege-process-about-email-removed-committed-2026-0
         """
 }
 
+record lege-ecosystem.evidence.lege-process-about-email-removed-committed-2026-08-09/2 : evidence {
+    title "At the committed active-work revision, the scoped search found no About email field, value, or use, and both shipped GUI locale schema tests passed."
+    state verified
+    result pass
+    method command
+    observed_at git:7c24fcd1878191b7a89b9f6537721dab080dfa97
+    command "scoped email rg; bundled GUI locale tests"
+    summary """
+        At the committed active-work revision, the scoped search found no About email field, value, or use, and both shipped GUI locale schema tests passed.
+        """
+    supersedes [
+        @lege-ecosystem.evidence.lege-process-about-email-removed-committed-2026-08-09/1
+    ]
+}
+
 record lege-ecosystem.evidence.lege-process-about-gpu-checks-committed-2026-08-09/1 : evidence {
     title "At the committed active-work revision, both GUI locale tests, hardware WGPU constant/pipeline sharing test, and affected package checks passed."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:6c72aa2f30ef87af0641865da512729b3c91ffee
@@ -597,6 +767,19 @@ record lege-ecosystem.evidence.lege-process-about-gpu-checks-committed-2026-08-0
     summary """
         At the committed active-work revision, both GUI locale tests, hardware WGPU constant/pipeline sharing test, and affected package checks passed.
         """
+}
+
+record lege-ecosystem.evidence.lege-process-about-gpu-checks-committed-2026-08-09/2 : evidence {
+    title "At the committed active-work revision, both GUI locale tests, hardware WGPU constant/pipeline sharing test, and affected package checks passed."
+    state verified
+    result pass
+    method command
+    observed_at git:7c24fcd1878191b7a89b9f6537721dab080dfa97
+    command "GUI locale tests; lege-gpu sharing test; cargo check -p lege -p lege-gpu"
+    summary """
+        At the committed active-work revision, both GUI locale tests, hardware WGPU constant/pipeline sharing test, and affected package checks passed.
+        """
+    supersedes [ @lege-ecosystem.evidence.lege-process-about-gpu-checks-committed-2026-08-09/1 ]
 }
 
 record lege-ecosystem.evidence.lege-process-about-gpu-focused-checks-2026-08-09/1 : evidence {
@@ -752,7 +935,7 @@ record lege-ecosystem.evidence.ocr-missing-space-export-tests/1 : evidence {
 
 record lege-ecosystem.evidence.ocr-missing-space-sample/1 : evidence {
     title "On the 10-page TensorRT sample, 16 unique audited missing-space repairs improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%; warm timing was 2.225 s corrected versus 2.134 s baseline."
-    state verified
+    state superseded
     result pass
     method observation
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
@@ -760,6 +943,18 @@ record lege-ecosystem.evidence.ocr-missing-space-sample/1 : evidence {
     summary """
         On the 10-page TensorRT sample, 16 unique audited missing-space repairs improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%; warm timing was 2.225 s corrected versus 2.134 s baseline.
         """
+}
+
+record lege-ecosystem.evidence.ocr-missing-space-sample/2 : evidence {
+    title "On the 10-page TensorRT sample, 16 unique audited missing-space repairs improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%; warm timing was 2.225 s corrected versus 2.134 s baseline."
+    state verified
+    result pass
+    method observation
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    summary """
+        On the 10-page TensorRT sample, 16 unique audited missing-space repairs improved normalized WER from 9.934% to 9.335% and CER from 2.024% to 1.964%; warm timing was 2.225 s corrected versus 2.134 s baseline.
+        """
+    supersedes [ @lege-ecosystem.evidence.ocr-missing-space-sample/1 ]
 }
 
 record lege-ecosystem.evidence.ocr-missing-space-tests/1 : evidence {
@@ -911,7 +1106,7 @@ record lege-ecosystem.evidence.prepared-onnx-session-build-20260813/1 : evidence
 
 record lege-ecosystem.evidence.presentation-layout-build-20260813/1 : evidence {
     title "The presentation and layout-detection feature combination compiled successfully."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
@@ -919,6 +1114,19 @@ record lege-ecosystem.evidence.presentation-layout-build-20260813/1 : evidence {
     summary """
         The presentation and layout-detection feature combination compiled successfully.
         """
+}
+
+record lege-ecosystem.evidence.presentation-layout-build-20260813/2 : evidence {
+    title "The presentation and layout-detection feature combination compiled successfully."
+    state verified
+    result pass
+    method command
+    observed_at git:f2fc2430d25b454bb64dc978cb38daeafc4063f9
+    command "cargo check -p lege-gpu --features presentation,layout-detection"
+    summary """
+        The presentation and layout-detection feature combination compiled successfully.
+        """
+    supersedes [ @lege-ecosystem.evidence.presentation-layout-build-20260813/1 ]
 }
 
 record lege-ecosystem.evidence.preserved-jbig2-mixed-page-fallback/1 : evidence {
@@ -984,7 +1192,7 @@ record lege-ecosystem.evidence.primary-tensorrt-routing-tests-20260815/1 : evide
 
 record lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 : evidence {
     title "A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
@@ -993,6 +1201,19 @@ record lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 : evidence {
     summary """
         A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback.
         """
+}
+
+record lege-ecosystem.evidence.raw-scene-rtx4060-20260813/2 : evidence {
+    title "A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback."
+    state verified
+    result pass
+    method command
+    observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
+    command "cd ../raw-autotune && WGPU_ADAPTER_NAME=4060 WGPU_REQUIRE_REAL_GPU=1 cargo run --release -- raw/raw_3rd_batch/_DSC1289.ARW --output .agent/scratch/scene-gpu-4060-20260813 --format png --sidecar --no-summary --overwrite --jobs 1 --semantic"
+    summary """
+        A real RAW run executed both prepared scene graphs on NVIDIA GeForce RTX 4060 Laptop GPU via Vulkan with no CPU fallback.
+        """
+    supersedes [ @lege-ecosystem.evidence.raw-scene-rtx4060-20260813/1 ]
 }
 
 record lege-ecosystem.evidence.release-document-copy-audit/1 : evidence {
@@ -1021,7 +1242,7 @@ record lege-ecosystem.evidence.rtx4060-vulkan-visibility/1 : evidence {
 
 record lege-ecosystem.evidence.sdk-isolated-cold-tensorrt-package-smoke-20260815/1 : evidence {
     title "The exact final staged package cold-built detector and recognizer engines without SDK paths, selected tensorrt-paddle through Auto, processed all 10 pages, and produced 10 page shards plus JSON and text exports."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
@@ -1030,6 +1251,19 @@ record lege-ecosystem.evidence.sdk-isolated-cold-tensorrt-package-smoke-20260815
     summary """
         The exact final staged package cold-built detector and recognizer engines without SDK paths, selected tensorrt-paddle through Auto, processed all 10 pages, and produced 10 page shards plus JSON and text exports.
         """
+}
+
+record lege-ecosystem.evidence.sdk-isolated-cold-tensorrt-package-smoke-20260815/2 : evidence {
+    title "The exact final staged package cold-built detector and recognizer engines without SDK paths, selected tensorrt-paddle through Auto, processed all 10 pages, and produced 10 page shards plus JSON and text exports."
+    state verified
+    result pass
+    method command
+    observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
+    command "Set PATH to Windows system directories only; set TRT_ENGINE_CACHE to an empty directory; run staged lege-ocr.exe batch <10-page PDF> --backend auto --force-ocr --format json,text"
+    summary """
+        The exact final staged package cold-built detector and recognizer engines without SDK paths, selected tensorrt-paddle through Auto, processed all 10 pages, and produced 10 page shards plus JSON and text exports.
+        """
+    supersedes [ @lege-ecosystem.evidence.sdk-isolated-cold-tensorrt-package-smoke-20260815/1 ]
 }
 
 record lege-ecosystem.evidence.smask-layout-regressions/1 : evidence {
@@ -1276,7 +1510,7 @@ record lege-ecosystem.evidence.windows-ocr-release-build-20260814/1 : evidence {
 
 record lege-ecosystem.evidence.windows-ocr-startup-routing/1 : evidence {
     title "Auto selected tensorrt-paddle when the real-inference preflight succeeded and selected winocr before processing when runtime discovery was forced to fail; the WinOCR manifest says it was selected for the complete job."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
@@ -1285,6 +1519,19 @@ record lege-ecosystem.evidence.windows-ocr-startup-routing/1 : evidence {
     summary """
         Auto selected tensorrt-paddle when the real-inference preflight succeeded and selected winocr before processing when runtime discovery was forced to fail; the WinOCR manifest says it was selected for the complete job.
         """
+}
+
+record lege-ecosystem.evidence.windows-ocr-startup-routing/2 : evidence {
+    title "Auto selected tensorrt-paddle when the real-inference preflight succeeded and selected winocr before processing when runtime discovery was forced to fail; the WinOCR manifest says it was selected for the complete job."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "Run the same release 10-page batch twice with --backend auto: once with the discovered runtime and once with LEGE_TENSORRT_OCR_ROOT=Z:\\definitely-missing-tensorrt-runtime."
+    summary """
+        Auto selected tensorrt-paddle when the real-inference preflight succeeded and selected winocr before processing when runtime discovery was forced to fail; the WinOCR manifest says it was selected for the complete job.
+        """
+    supersedes [ @lege-ecosystem.evidence.windows-ocr-startup-routing/1 ]
 }
 
 record lege-ecosystem.evidence.windows-ocr-tests-20260814/1 : evidence {
@@ -1302,7 +1549,7 @@ record lege-ecosystem.evidence.windows-ocr-tests-20260814/1 : evidence {
 
 record lege-ecosystem.evidence.windows-tensorrt-integrated-release-pdf/1 : evidence {
     title "The explicit fail-closed TensorRT backend completed all 10 pages in 5.030 seconds; its manifest records PP-OCRv6-tiny TensorRT provenance with no warnings."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
@@ -1311,6 +1558,19 @@ record lege-ecosystem.evidence.windows-tensorrt-integrated-release-pdf/1 : evide
     summary """
         The explicit fail-closed TensorRT backend completed all 10 pages in 5.030 seconds; its manifest records PP-OCRv6-tiny TensorRT provenance with no warnings.
         """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-integrated-release-pdf/2 : evidence {
+    title "The explicit fail-closed TensorRT backend completed all 10 pages in 5.030 seconds; its manifest records PP-OCRv6-tiny TensorRT provenance with no warnings."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command ".\\target\\release\\lege-ocr.exe batch .agent\\scratch\\ocr-benchmark\\social-justice-pages-0021-0030.pdf --output .agent\\scratch\\ocr-benchmark\\release-tensorrt-20260814-183852 --backend tensorrt-paddle --tensorrt-ocr-root .\\lege-document-ocr\\turboocr --tensorrt-dll-dir D:\\TensorRT\\lib --tensorrt-dll-dir D:\\TensorRT\\bin --tensorrt-dll-dir D:\\cuda\\bin --tensorrt-dll-dir D:\\tools\\vcpkg\\installed\\x64-windows\\bin --tensorrt-rec-batch 8 --force-ocr --render-dpi 300 --max-page-pixels 12000000 --format json,text --workers 1 --force --no-spellcheck"
+    summary """
+        The explicit fail-closed TensorRT backend completed all 10 pages in 5.030 seconds; its manifest records PP-OCRv6-tiny TensorRT provenance with no warnings.
+        """
+    supersedes [ @lege-ecosystem.evidence.windows-tensorrt-integrated-release-pdf/1 ]
 }
 
 record lege-ecosystem.evidence.windows-tensorrt-ocr-regression-tests/1 : evidence {
@@ -1327,7 +1587,7 @@ record lege-ecosystem.evidence.windows-tensorrt-ocr-regression-tests/1 : evidenc
 
 record lege-ecosystem.evidence.windows-tensorrt-relative-benchmark-20260814/1 : evidence {
     title "Ten 12 MP pages ran at 27.4 OCR-stage pages/s including first-page warmup; steady inference was 28.7 pages/s, batch-8 peak was 2.23 GiB private commit and 1.67 GiB GPU memory, with 2.16% CER and 9.33% WER text-layer proxies."
-    state verified
+    state superseded
     result pass
     method observation
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
@@ -1335,6 +1595,18 @@ record lege-ecosystem.evidence.windows-tensorrt-relative-benchmark-20260814/1 : 
     summary """
         Ten 12 MP pages ran at 27.4 OCR-stage pages/s including first-page warmup; steady inference was 28.7 pages/s, batch-8 peak was 2.23 GiB private commit and 1.67 GiB GPU memory, with 2.16% CER and 9.33% WER text-layer proxies.
         """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-relative-benchmark-20260814/2 : evidence {
+    title "Ten 12 MP pages ran at 27.4 OCR-stage pages/s including first-page warmup; steady inference was 28.7 pages/s, batch-8 peak was 2.23 GiB private commit and 1.67 GiB GPU memory, with 2.16% CER and 9.33% WER text-layer proxies."
+    state verified
+    result pass
+    method observation
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    summary """
+        Ten 12 MP pages ran at 27.4 OCR-stage pages/s including first-page warmup; steady inference was 28.7 pages/s, batch-8 peak was 2.23 GiB private commit and 1.67 GiB GPU memory, with 2.16% CER and 9.33% WER text-layer proxies.
+        """
+    supersedes [ @lege-ecosystem.evidence.windows-tensorrt-relative-benchmark-20260814/1 ]
 }
 
 record lege-ecosystem.evidence.windows-tensorrt-runbook-20260814/1 : evidence {
@@ -1364,7 +1636,7 @@ record lege-ecosystem.evidence.windows-tensorrt-runtime-build-20260814/1 : evide
 
 record lege-ecosystem.evidence.windows-tensorrt-smoke-script/1 : evidence {
     title "The reusable script reported a real CUDA/TensorRT detector+recognizer probe in 0.897 seconds and completed the integrated 10-page release PDF job in 2.786 seconds."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
@@ -1375,9 +1647,22 @@ record lege-ecosystem.evidence.windows-tensorrt-smoke-script/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.windows-tensorrt-smoke-script/2 : evidence {
+    title "The reusable script reported a real CUDA/TensorRT detector+recognizer probe in 0.897 seconds and completed the integrated 10-page release PDF job in 2.786 seconds."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command ".\\lege-document-ocr\\scripts\\test_windows_tensorrt.ps1 -Pdf .\\.agent\\scratch\\ocr-benchmark\\social-justice-pages-0021-0030.pdf -SkipBuild"
+    summary """
+        The reusable script reported a real CUDA/TensorRT detector+recognizer probe in 0.897 seconds and completed the integrated 10-page release PDF job in 2.786 seconds.
+        """
+    supersedes [ @lege-ecosystem.evidence.windows-tensorrt-smoke-script/1 ]
+}
+
 record lege-ecosystem.evidence.windows-tensorrt-text-smoke-20260814/1 : evidence {
     title "PP-OCRv6-tiny detection and recognition produced 39 ordered text lines from a restored 12 MP benchmark page."
-    state verified
+    state superseded
     result pass
     method command
     observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
@@ -1386,4 +1671,17 @@ record lege-ecosystem.evidence.windows-tensorrt-text-smoke-20260814/1 : evidence
     summary """
         PP-OCRv6-tiny detection and recognition produced 39 ordered text lines from a restored 12 MP benchmark page.
         """
+}
+
+record lege-ecosystem.evidence.windows-tensorrt-text-smoke-20260814/2 : evidence {
+    title "PP-OCRv6-tiny detection and recognition produced 39 ordered text lines from a restored 12 MP benchmark page."
+    state verified
+    result pass
+    method command
+    observed_at git:3679ebb163b77cd9960b5cb138af642050341c58
+    command "turboocr-text.exe --rec-batch 8 <rendered 12 MP benchmark page>"
+    summary """
+        PP-OCRv6-tiny detection and recognition produced 39 ordered text lines from a restored 12 MP benchmark page.
+        """
+    supersedes [ @lege-ecosystem.evidence.windows-tensorrt-text-smoke-20260814/1 ]
 }
