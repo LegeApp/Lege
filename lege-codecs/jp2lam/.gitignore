@@ -21,6 +21,11 @@ Cargo.lock
 # AKR migration trackers still cite these legacy reports. Keep them until the
 # corresponding import work is fully dispositioned and completed.
 !decode-fix-plan/*.md
+# Stands in for an AKR observation that could not be written while the ledger is
+# invalid (see the file's own "Why this is a file" section). It carries a real
+# open decision, so it must not be ignored along with the scratch notes. Delete
+# it, and this line, once the record is proposed.
+!llm-docs/TAUBMAN_MASKING_UNWIRED.md
 *.pdf
 *.txt
 perf.data*
