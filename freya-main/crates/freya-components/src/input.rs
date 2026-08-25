@@ -193,7 +193,7 @@ impl Input {
             on_submit: None,
             mode: InputMode::default(),
             auto_focus: false,
-            width: Size::px(150.),
+            width: Size::px(150.0_f32),
             height: None,
             enabled: true,
             key: DiffKey::default(),
@@ -657,7 +657,7 @@ impl Component for Input {
             )
             .child(
                 ScrollView::new()
-                    .width(Size::flex(1.))
+                    .width(Size::flex(1.0_f32))
                     .height(Size::Inner)
                     .direction(Direction::Horizontal)
                     .show_scrollbar(false)

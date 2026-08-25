@@ -47,15 +47,15 @@ impl Component for PopupBackground {
                 rect()
                     .on_press(on_press)
                     .position(Position::new_global().top(0.).left(0.))
-                    .height(Size::window_percent(100.))
-                    .width(Size::window_percent(100.))
+                    .height(Size::window_percent(100.0_f32))
+                    .width(Size::window_percent(100.0_f32))
                     .background(self.background),
             )
             .child(
                 rect()
                     .position(Position::new_global().top(0.).left(0.))
-                    .height(Size::window_percent(100.))
-                    .width(Size::window_percent(100.))
+                    .height(Size::window_percent(100.0_f32))
+                    .width(Size::window_percent(100.0_f32))
                     .center()
                     .child(self.children.clone()),
             )
@@ -144,7 +144,7 @@ impl Popup {
             show: true.into(),
             on_close_request: None,
             close_on_escape_key: true,
-            width: Size::px(500.),
+            width: Size::px(500.0_f32),
             key: DiffKey::None,
         }
     }
@@ -250,7 +250,7 @@ impl Component for Popup {
                         .shadow(Shadow::new().y(4.).blur(5.).color((0, 0, 0, 30)))
                         .width(self.width.clone())
                         .height(Size::auto())
-                        .spacing(4.)
+                        .spacing(4.0_f32)
                         .padding(8.)
                         .on_global_key_down(on_global_key_down)
                         .children(self.children.clone())
@@ -353,7 +353,7 @@ impl Component for PopupButtons {
             .width(Size::fill())
             .main_align(Alignment::End)
             .padding(8.)
-            .spacing(4.)
+            .spacing(4.0_f32)
             .horizontal()
             .children(self.children.clone())
     }

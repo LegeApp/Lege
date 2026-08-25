@@ -249,14 +249,14 @@ impl Component for Select {
                     .child(
                         ArrowIcon::new()
                             .margin((0., 0., 0., 8.))
-                            .rotate(0.)
+                            .rotate(0.0_f32)
                             .fill(theme.arrow_fill),
                     ),
             )
             .maybe_child((open() || opacity > 0.).then(|| {
-                rect().height(Size::px(0.)).width(Size::px(0.)).child(
+                rect().height(Size::px(0.0_f32)).width(Size::px(0.0_f32)).child(
                     rect()
-                        .width(Size::window_percent(100.))
+                        .width(Size::window_percent(100.0_f32))
                         .margin(Gaps::new(4., 0., 0., 0.))
                         .offset_y(offset_y)
                         .child(

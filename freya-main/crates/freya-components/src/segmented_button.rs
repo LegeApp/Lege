@@ -223,12 +223,12 @@ impl Component for ButtonSegment {
             .color(color.mul_if(!self.enabled, 0.9))
             .background(background.mul_if(!self.enabled, 0.9))
             .center()
-            .spacing(4.)
+            .spacing(4.0_f32)
             .maybe_child(self.selected.then(|| {
                 TickIcon::new()
                     .fill(selected_icon_fill)
-                    .width(Size::px(12.))
-                    .height(Size::px(12.))
+                    .width(Size::px(12.0_f32))
+                    .height(Size::px(12.0_f32))
             }))
             .children(self.children.clone())
     }

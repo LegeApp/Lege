@@ -5,17 +5,17 @@ fn gap_label(tooltip_text: &'static str, value: f32) -> impl IntoElement {
     TooltipContainer::new(Tooltip::new(tooltip_text)).child(
         label()
             .text_align(TextAlign::Center)
-            .width(Size::px(25.))
-            .height(Size::px(25.))
+            .width(Size::px(25.0_f32))
+            .height(Size::px(25.0_f32))
             .text(format!("{value}")),
     )
 }
 
 pub fn computed_layout(inner_area: String, padding: Gaps, margin: Gaps) -> impl IntoElement {
-    rect().width(Size::fill()).max_width(Size::px(300.)).child(
+    rect().width(Size::fill()).max_width(Size::px(300.0_f32)).child(
         rect()
             .width(Size::fill())
-            .height(Size::px(220.))
+            .height(Size::px(220.0_f32))
             .main_align(Alignment::center())
             .cross_align(Alignment::center())
             .background((40, 40, 40))
@@ -25,14 +25,14 @@ pub fn computed_layout(inner_area: String, padding: Gaps, margin: Gaps) -> impl 
             .child(
                 rect()
                     .direction(Direction::Horizontal)
-                    .height(Size::flex(1.))
+                    .height(Size::flex(1.0_f32))
                     .width(Size::fill())
                     .cross_align(Alignment::center())
                     .content(Content::Flex)
                     .child(gap_label("Left margin", margin.left()))
                     .child(
                         rect()
-                            .width(Size::flex(1.))
+                            .width(Size::flex(1.0_f32))
                             .height(Size::fill())
                             .content(Content::Flex)
                             .cross_align(Alignment::Center)
@@ -42,13 +42,13 @@ pub fn computed_layout(inner_area: String, padding: Gaps, margin: Gaps) -> impl 
                             .child(
                                 rect()
                                     .direction(Direction::Horizontal)
-                                    .height(Size::flex(1.))
+                                    .height(Size::flex(1.0_f32))
                                     .content(Content::Flex)
                                     .cross_align(Alignment::center())
                                     .child(gap_label("Left padding", padding.left()))
                                     .child(
                                         rect()
-                                            .width(Size::flex(1.))
+                                            .width(Size::flex(1.0_f32))
                                             .height(Size::fill())
                                             .main_align(Alignment::center())
                                             .cross_align(Alignment::center())

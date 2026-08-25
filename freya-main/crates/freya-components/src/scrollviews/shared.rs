@@ -59,7 +59,7 @@ pub fn get_container_sizes(size: Size) -> (Size, Size) {
     if size == Size::Inner {
         (size.clone(), size)
     } else {
-        (Size::percent(100.), Size::fill())
+        (Size::percent(100.0_f32), Size::fill())
     }
 }
 

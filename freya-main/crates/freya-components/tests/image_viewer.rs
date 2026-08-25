@@ -14,8 +14,8 @@ pub fn image_viewer_source_change() {
         rect()
             .child(
                 ImageViewer::new(sources[index()].clone())
-                    .width(Size::px(300.))
-                    .height(Size::px(300.)),
+                    .width(Size::px(300.0_f32))
+                    .height(Size::px(300.0_f32)),
             )
             .child(
                 Button::new()
@@ -90,8 +90,8 @@ pub fn image_viewer_load_and_render() {
             .into();
 
         ImageViewer::new(source)
-            .width(Size::px(300.))
-            .height(Size::px(300.))
+            .width(Size::px(300.0_f32))
+            .height(Size::px(300.0_f32))
     }
 
     let mut test = launch_test(image_viewer_app);

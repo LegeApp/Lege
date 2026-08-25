@@ -163,9 +163,9 @@ impl<T: PartialEq + 'static + Clone + std::hash::Hash + Eq + Debug> Component fo
                                     || previous_size.read().is_some()
                                     || current_size.read().is_some()
                                 {
-                                    1.
+                                    1.0_f32
                                 } else {
-                                    0.
+                                    0.0_f32
                                 },
                             )
                             .children(if self.show {

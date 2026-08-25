@@ -38,7 +38,7 @@ fn multiple_lines_single_editor() {
             .child(
                 paragraph()
                     .holder(holder.read().clone())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .width(Size::fill())
                     .cursor_index(0)
                     .cursor_index(cursor_pos)
@@ -50,7 +50,7 @@ fn multiple_lines_single_editor() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     }
@@ -159,7 +159,7 @@ fn single_line_multiple_editors() {
                     paragraph()
                         .holder(holder.read().clone())
                         .width(Size::fill())
-                        .height(Size::px(30.0))
+                        .height(Size::px(30.0_f32))
                         .max_lines(1)
                         .cursor_index(cursor_col)
                         .cursor_color((0, 0, 0))
@@ -171,7 +171,7 @@ fn single_line_multiple_editors() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     }
@@ -248,7 +248,7 @@ fn highlight_multiple_lines_single_editor() {
                             .map(|h| vec![h]),
                     )
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .on_mouse_down(on_mouse_down)
@@ -333,7 +333,7 @@ fn highlights_single_line_multiple_editors() {
                     paragraph()
                         .holder(holder.read().clone())
                         .width(Size::fill())
-                        .height(Size::px(30.0))
+                        .height(Size::px(30.0_f32))
                         .max_lines(1)
                         .cursor_index(cursor_index)
                         .cursor_color((0, 0, 0))
@@ -351,7 +351,7 @@ fn highlights_single_line_multiple_editors() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -409,7 +409,7 @@ fn special_text_editing() {
                 paragraph()
                     .holder(holder.read().clone())
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .on_global_key_down(on_global_key_down)
@@ -468,7 +468,7 @@ fn backspace_remove() {
                 paragraph()
                     .holder(holder.read().clone())
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .on_global_key_down(on_global_key_down)
@@ -543,7 +543,7 @@ fn highlight_shift_click_multiple_lines_single_editor() {
                 paragraph()
                     .holder(holder.read().clone())
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .highlights(
@@ -560,7 +560,7 @@ fn highlight_shift_click_multiple_lines_single_editor() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -650,7 +650,7 @@ fn highlights_shift_click_single_line_multiple_editors() {
                             paragraph()
                                 .holder(holder.read().clone())
                                 .width(Size::fill())
-                                .height(Size::px(30.))
+                                .height(Size::px(30.0_f32))
                                 .max_lines(1)
                                 .cursor_index(character_index)
                                 .cursor_color((0, 0, 0))
@@ -667,7 +667,7 @@ fn highlights_shift_click_single_line_multiple_editors() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -730,7 +730,7 @@ fn double_click_select_word() {
             .child(
                 paragraph()
                     .holder(holder.read().clone())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .width(Size::fill())
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
@@ -745,7 +745,7 @@ fn double_click_select_word() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -800,7 +800,7 @@ fn triple_click_select_line() {
             .child(
                 paragraph()
                     .holder(holder.read().clone())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .width(Size::fill())
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
@@ -815,7 +815,7 @@ fn triple_click_select_line() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -883,7 +883,7 @@ fn double_click_select_word_single_line_multiple_editors() {
                     paragraph()
                         .holder(holder.read().clone())
                         .width(Size::fill())
-                        .height(Size::px(30.0))
+                        .height(Size::px(30.0_f32))
                         .max_lines(1)
                         .cursor_index(cursor_index)
                         .cursor_color((0, 0, 0))
@@ -900,7 +900,7 @@ fn double_click_select_word_single_line_multiple_editors() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -970,7 +970,7 @@ fn triple_click_select_line_single_line_multiple_editors() {
                     paragraph()
                         .holder(holder.read().clone())
                         .width(Size::fill())
-                        .height(Size::px(30.0))
+                        .height(Size::px(30.0_f32))
                         .max_lines(1)
                         .cursor_index(cursor_index)
                         .cursor_color((0, 0, 0))
@@ -987,7 +987,7 @@ fn triple_click_select_line_single_line_multiple_editors() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -1058,7 +1058,7 @@ fn highlight_all_text() {
                 paragraph()
                     .holder(holder.read().clone())
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .highlights(
@@ -1075,7 +1075,7 @@ fn highlight_all_text() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -1154,7 +1154,7 @@ fn replace_text() {
                 paragraph()
                     .holder(holder.read().clone())
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .on_global_key_down(on_global_key_down)
@@ -1168,7 +1168,7 @@ fn replace_text() {
             .child(
                 label()
                     .color((0, 0, 0))
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .text(format!("{}:{}", editor.cursor_row(), editor.cursor_col())),
             )
     });
@@ -1227,7 +1227,7 @@ fn navigate_empty_lines() {
                 paragraph()
                     .holder(holder.read().clone())
                     .width(Size::fill())
-                    .height(Size::percent(50.0))
+                    .height(Size::percent(50.0_f32))
                     .cursor_index(cursor_pos)
                     .cursor_color((0, 0, 0))
                     .on_global_key_down(on_global_key_down)

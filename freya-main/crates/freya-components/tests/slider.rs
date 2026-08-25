@@ -4,14 +4,14 @@ use freya_testing::prelude::*;
 #[test]
 pub fn slider_mouse_drag_horizontal() {
     fn slider_app() -> impl IntoElement {
-        let mut value = use_state(|| 0.0);
+        let mut value = use_state(|| 0.0_f64);
 
         rect()
             .child(label().text(format!("Value: {}", value() as i32)))
             .child(
                 Slider::new(move |v| value.set(v))
                     .value(value())
-                    .size(Size::px(200.)),
+                    .size(Size::px(200.0_f32)),
             )
     }
 
@@ -77,14 +77,14 @@ pub fn slider_mouse_drag_horizontal() {
 #[test]
 pub fn slider_keyboard_horizontal() {
     fn slider_app() -> impl IntoElement {
-        let mut value = use_state(|| 50.0);
+        let mut value = use_state(|| 50.0_f64);
 
         rect()
             .child(label().text(format!("Value: {}", value() as i32)))
             .child(
                 Slider::new(move |v| value.set(v))
                     .value(value())
-                    .size(Size::px(200.)),
+                    .size(Size::px(200.0_f32)),
             )
     }
 
@@ -136,7 +136,7 @@ pub fn slider_keyboard_horizontal() {
 #[test]
 pub fn slider_vertical() {
     fn slider_app() -> impl IntoElement {
-        let mut value = use_state(|| 0.0);
+        let mut value = use_state(|| 0.0_f64);
 
         rect()
             .child(label().text(format!("Value: {}", value() as i32)))
@@ -144,7 +144,7 @@ pub fn slider_vertical() {
                 Slider::new(move |v| value.set(v))
                     .value(value())
                     .direction(Direction::Vertical)
-                    .size(Size::px(200.)),
+                    .size(Size::px(200.0_f32)),
             )
     }
 
@@ -173,7 +173,7 @@ pub fn slider_vertical() {
 #[test]
 pub fn slider_keyboard_vertical() {
     fn slider_app() -> impl IntoElement {
-        let mut value = use_state(|| 50.0);
+        let mut value = use_state(|| 50.0_f64);
 
         rect()
             .child(label().text(format!("Value: {}", value() as i32)))
@@ -181,7 +181,7 @@ pub fn slider_keyboard_vertical() {
                 Slider::new(move |v| value.set(v))
                     .value(value())
                     .direction(Direction::Vertical)
-                    .size(Size::px(200.)),
+                    .size(Size::px(200.0_f32)),
             )
     }
 
@@ -233,7 +233,7 @@ pub fn slider_keyboard_vertical() {
 #[test]
 pub fn slider_disabled() {
     fn slider_app() -> impl IntoElement {
-        let mut value = use_state(|| 50.0);
+        let mut value = use_state(|| 50.0_f64);
 
         rect()
             .child(label().text(format!("Value: {}", value() as i32)))
@@ -241,7 +241,7 @@ pub fn slider_disabled() {
                 Slider::new(move |v| value.set(v))
                     .value(value())
                     .enabled(false)
-                    .size(Size::px(200.)),
+                    .size(Size::px(200.0_f32)),
             )
     }
 

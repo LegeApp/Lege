@@ -50,8 +50,8 @@ impl Component for TableArrow {
         let TableTheme { arrow_fill, .. } =
             get_theme!(None::<TableThemePartial>, TableThemePreference, "table");
         let rotate = match self.order_direction {
-            OrderDirection::Down => 0.,
-            OrderDirection::Up => 180.,
+            OrderDirection::Down => 0.0_f32,
+            OrderDirection::Up => 180.0_f32,
         };
         ArrowIcon::new().rotate(rotate).fill(arrow_fill)
     }
@@ -191,14 +191,14 @@ impl Component for TableRow {
                             .column_widths
                             .as_ref()
                             .and_then(|widths| widths.get(index).cloned())
-                            .unwrap_or_else(|| Size::flex(1.));
+                            .unwrap_or_else(|| Size::flex(1.0_f32));
 
                         rect().width(width).child(child.clone()).into()
                     })),
             )
             .child(
                 rect()
-                    .height(Size::px(1.))
+                    .height(Size::px(1.0_f32))
                     .width(Size::fill())
                     .background(divider_fill),
             )
@@ -236,7 +236,7 @@ impl Default for TableCell {
             on_press: None,
             order_direction: None,
             padding: Gaps::new_all(5.0),
-            height: Size::px(35.0),
+            height: Size::px(35.0_f32),
             key: DiffKey::None,
         }
     }
@@ -294,8 +294,8 @@ impl Component for TableCell {
             container = container.child(
                 rect()
                     .margin(Gaps::new_all(10.0))
-                    .width(Size::px(10.0))
-                    .height(Size::px(10.0))
+                    .width(Size::px(10.0_f32))
+                    .height(Size::px(10.0_f32))
                     .child(TableArrow::new(order_direction)),
             );
         }

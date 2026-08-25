@@ -1157,8 +1157,8 @@ fn tree_mutations_root_components() {
                     .on_mouse_up(move |_| {
                         *count.write() += 1;
                     })
-                    .width(Size::px(100.))
-                    .height(Size::px(100.))
+                    .width(Size::px(100.0_f32))
+                    .height(Size::px(100.0_f32))
                     .background((255, 0, 0))
                     .child(self.0.to_string())
                     .into_element()
@@ -1168,7 +1168,7 @@ fn tree_mutations_root_components() {
 
     fn app() -> Element {
         rect()
-            .spacing(6.)
+            .spacing(6.0_f32)
             .child(CoolComp(1))
             .child(CoolComp(2))
             .into()
@@ -1293,7 +1293,7 @@ fn effect_cascade_in_new_nodes_with_parent_effects() {
         };
 
         rect()
-            .opacity(0.5)
+            .opacity(0.5_f32)
             .on_mouse_up(move |_| toggled.toggle())
             .child(child)
             .into()

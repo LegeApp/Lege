@@ -109,7 +109,7 @@ impl Component for NavBar {
                 rect()
                     .theme_background()
                     .height(Size::fill())
-                    .width(Size::px(100.))
+                    .width(Size::px(100.0_f32))
                     .padding(8.)
                     .child(ActivableRoute::new(
                         Route::TreeInspector {},
@@ -171,7 +171,7 @@ impl Route {
 fn info_label(value: impl Into<String>, suffix: &str) -> impl IntoElement {
     paragraph()
         .max_lines(1)
-        .height(Size::px(20.))
+        .height(Size::px(20.0_f32))
         .span(Span::new(value.into()))
         .span(Span::new(format!(" {suffix}")).color((200, 200, 200)))
 }
@@ -220,7 +220,7 @@ impl Component for LayoutForNodeInspector {
             .child(
                 ScrollView::new()
                     .show_scrollbar(false)
-                    .height(Size::px(280.))
+                    .height(Size::px(280.0_f32))
                     .child(
                         rect()
                             .padding(16.)
@@ -229,12 +229,12 @@ impl Component for LayoutForNodeInspector {
                             .child(
                                 rect()
                                     .width(Size::fill())
-                                    .max_width(Size::px(300.))
-                                    .spacing(6.)
+                                    .max_width(Size::px(300.0_f32))
+                                    .spacing(6.0_f32)
                                     .child(
                                         rect()
                                             .horizontal()
-                                            .spacing(6.)
+                                            .spacing(6.0_f32)
                                             .child(info_label(area, "area"))
                                             .child(info_label(
                                                 node_info.children_len.to_string(),
@@ -314,7 +314,7 @@ impl Component for LayoutForTreeInspector {
             )
             .panel(is_expanded_vertical.then(|| {
                 ResizablePanel::new(PanelSize::px(400.))
-                    .min_size(300.)
+                    .min_size(300.0_f32)
                     .child(Outlet::<Route>::new())
             }))
     }

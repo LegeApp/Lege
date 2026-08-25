@@ -359,7 +359,7 @@ impl Component for ResizableDraggable {
             .height(Size::px(height - corner))
             .position(Position::new_absolute().right(-handle).top(0.))
             .background(Color::WHITE)
-            .opacity(0.)
+            .opacity(0.0_f32)
             .on_pointer_enter(move |_: Event<PointerEventData>| {
                 Cursor::set(CursorIcon::ColResize);
             })
@@ -381,7 +381,7 @@ impl Component for ResizableDraggable {
             .height(Size::px(handle))
             .position(Position::new_absolute().left(0.).bottom(-handle))
             .background(Color::WHITE)
-            .opacity(0.)
+            .opacity(0.0_f32)
             .on_pointer_enter(move |_: Event<PointerEventData>| {
                 Cursor::set(CursorIcon::RowResize);
             })
@@ -403,7 +403,7 @@ impl Component for ResizableDraggable {
             .height(Size::px(corner))
             .position(Position::new_absolute().right(-handle).bottom(-handle))
             .background(Color::WHITE)
-            .opacity(0.)
+            .opacity(0.0_f32)
             .on_pointer_enter(move |_: Event<PointerEventData>| {
                 Cursor::set(CursorIcon::SeResize);
             })

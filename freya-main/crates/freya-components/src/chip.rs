@@ -232,12 +232,12 @@ impl Component for Chip {
             .background(background.mul_if(!self.enabled, 0.9))
             .center()
             .horizontal()
-            .spacing(4.)
+            .spacing(4.0_f32)
             .maybe_child(icon_fill.map(|icon_fill| {
                 TickIcon::new()
                     .fill(icon_fill)
-                    .width(Size::px(12.))
-                    .height(Size::px(12.))
+                    .width(Size::px(12.0_f32))
+                    .height(Size::px(12.0_f32))
             }))
             .children(self.children.clone())
     }

@@ -201,9 +201,9 @@ impl Component for Slider {
         };
 
         let (slider_width, slider_height) = if direction_is_vertical {
-            (Size::px(6.), self.size.clone())
+            (Size::px(6.0_f32), self.size.clone())
         } else {
-            (self.size.clone(), Size::px(6.))
+            (self.size.clone(), Size::px(6.0_f32))
         };
 
         let track_size = Size::func_data(
@@ -212,15 +212,15 @@ impl Component for Slider {
         );
 
         let (track_width, track_height) = if direction_is_vertical {
-            (Size::px(6.), track_size)
+            (Size::px(6.0_f32), track_size)
         } else {
-            (track_size, Size::px(6.))
+            (track_size, Size::px(6.0_f32))
         };
 
         let (thumb_offset_x, thumb_offset_y) = if direction_is_vertical {
-            (-6., 3.)
+            (-6.0_f32, 3.0_f32)
         } else {
-            (-3., -6.)
+            (-3.0_f32, -6.0_f32)
         };
 
         let thumb_main_align = if direction_is_vertical {
@@ -241,8 +241,8 @@ impl Component for Slider {
             .offset_y(thumb_offset_y)
             .child(
                 rect()
-                    .width(Size::px(18.))
-                    .height(Size::px(18.))
+                    .width(Size::px(18.0_f32))
+                    .height(Size::px(18.0_f32))
                     .corner_radius(50.)
                     .background(theme.thumb_background.mul_if(!self.enabled, 0.85))
                     .padding(4.)

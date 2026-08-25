@@ -83,7 +83,7 @@ impl Component for Tooltip {
 
         rect()
             .interactive(Interactive::No)
-            .width(Size::px(236.))
+            .width(Size::px(236.0_f32))
             .padding((5., 8.))
             .border(
                 Border::new()

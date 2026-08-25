@@ -92,7 +92,7 @@ impl Component for Tile {
         rect()
             .direction(Direction::Horizontal)
             .padding(8.)
-            .spacing(8.)
+            .spacing(8.0_f32)
             .cross_align(Alignment::center())
             .on_press(on_press)
             .on_pointer_enter(on_pointer_enter)

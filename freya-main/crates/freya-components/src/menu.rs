@@ -194,11 +194,11 @@ impl ComponentOwned for MenuContainer {
         });
 
         let (offset_x, offset_y, opacity) = match *measured.read() {
-            None => (0.0, 0.0, 0.0),
+            None => (0.0, 0.0, 0.0_f32),
             Some((area, win_w, win_h)) => (
                 overflow_offset(area.origin.x, area.size.width, win_w),
                 overflow_offset(area.origin.y, area.size.height, win_h),
-                1.0,
+                1.0_f32,
             ),
         };
 
@@ -394,7 +394,7 @@ impl ComponentOwned for MenuItem {
             .a11y_id(focus.a11y_id())
             .a11y_focusable(true)
             .a11y_member_of(group_id)
-            .min_width(Size::px(105.))
+            .min_width(Size::px(105.0_f32))
             .width(Size::fill_minimum())
             .content(Content::fit())
             .padding(self.padding)
@@ -548,11 +548,11 @@ impl ComponentOwned for SubMenu {
             .maybe_child(show_submenu.then(|| {
                 rect()
                     .position(Position::new_absolute().top(-8.).right(-10.))
-                    .width(Size::px(0.))
-                    .height(Size::px(0.))
+                    .width(Size::px(0.0_f32))
+                    .height(Size::px(0.0_f32))
                     .child(
                         rect()
-                            .width(Size::window_percent(100.))
+                            .width(Size::window_percent(100.0_f32))
                             .child(MenuContainer::new().children(self.items)),
                     )
             }))

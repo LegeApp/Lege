@@ -11,8 +11,8 @@ pub fn gif_viewer_load_and_render() {
             .into();
 
         GifViewer::new(source)
-            .width(Size::px(300.))
-            .height(Size::px(300.))
+            .width(Size::px(300.0_f32))
+            .height(Size::px(300.0_f32))
     }
 
     let mut test = launch_test(gif_viewer_app);

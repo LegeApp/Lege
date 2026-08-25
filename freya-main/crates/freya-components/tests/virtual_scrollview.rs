@@ -8,12 +8,12 @@ pub fn virtual_scroll_view_wheel() {
         VirtualScrollView::new(|i, _| {
             label()
                 .key(i)
-                .height(Size::px(50.))
+                .height(Size::px(50.0_f32))
                 .text(format!("{i} Hello, World!"))
                 .into()
         })
         .length(30usize)
-        .item_size(50.)
+        .item_size(50.0_f32)
     }
 
     let mut test = launch_test(virtual_scroll_view_wheel_app);
@@ -60,12 +60,12 @@ pub fn virtual_scroll_view_scrollbar() {
         VirtualScrollView::new(|i, _| {
             label()
                 .key(i)
-                .height(Size::px(50.))
+                .height(Size::px(50.0_f32))
                 .text(format!("{i} Hello, World!"))
                 .into()
         })
         .length(30usize)
-        .item_size(50.)
+        .item_size(50.0_f32)
     }
 
     let mut test = launch_test(virtual_scroll_view_scrollbar_app);
@@ -156,30 +156,30 @@ pub fn virtual_scroll_view_controlled() {
                     |i, _| {
                         label()
                             .key(i)
-                            .height(Size::px(50.))
+                            .height(Size::px(50.0_f32))
                             .text(format!("{i} Hello, World!"))
                             .into()
                     },
                     scroll_controller,
                 )
                 .length(30usize)
-                .item_size(50.)
-                .width(Size::flex(1.)),
+                .item_size(50.0_f32)
+                .width(Size::flex(1.0_f32)),
             )
             .child(
                 VirtualScrollView::new_controlled(
                     |i, _| {
                         label()
                             .key(i)
-                            .height(Size::px(50.))
+                            .height(Size::px(50.0_f32))
                             .text(format!("{i} Second View"))
                             .into()
                     },
                     scroll_controller,
                 )
                 .length(30usize)
-                .item_size(50.)
-                .width(Size::flex(1.)),
+                .item_size(50.0_f32)
+                .width(Size::flex(1.0_f32)),
             )
     }
 
@@ -248,12 +248,12 @@ pub fn virtual_scroll_view_keyboard_navigation() {
         VirtualScrollView::new(|i, _| {
             label()
                 .key(i)
-                .height(Size::px(50.))
+                .height(Size::px(50.0_f32))
                 .text(format!("{i} Hello, World!"))
                 .into()
         })
         .length(30usize)
-        .item_size(50.)
+        .item_size(50.0_f32)
     }
 
     let mut test = launch_test(virtual_scroll_view_keyboard_app);
@@ -351,12 +351,12 @@ pub fn virtual_scroll_view_keyboard_navigation_horizontal() {
         VirtualScrollView::new(|i, _| {
             label()
                 .key(i)
-                .width(Size::px(50.))
+                .width(Size::px(50.0_f32))
                 .text(format!("{i}"))
                 .into()
         })
         .length(30usize)
-        .item_size(50.)
+        .item_size(50.0_f32)
         .direction(Direction::Horizontal)
     }
 

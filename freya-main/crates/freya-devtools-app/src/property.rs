@@ -10,8 +10,8 @@ const VALUE_COLOR: (u8, u8, u8) = (252, 181, 172);
 
 fn color_swatch(color: Color) -> impl IntoElement {
     rect()
-        .width(Size::px(17.))
-        .height(Size::px(17.))
+        .width(Size::px(17.0_f32))
+        .height(Size::px(17.0_f32))
         .corner_radius(CornerRadius::new_all(5.))
         .background(Color::WHITE)
         .padding(2.5)
@@ -111,9 +111,9 @@ impl Component for ColorProperty {
                     .span(Span::new(self.name.clone()).color(NAME_COLOR))
                     .span(Span::new(": ").color(SEPARATOR_COLOR)),
             )
-            .child(rect().width(Size::px(5.)))
+            .child(rect().width(Size::px(5.0_f32)))
             .child(color_swatch(self.color))
-            .child(rect().width(Size::px(5.)))
+            .child(rect().width(Size::px(5.0_f32)))
             .child(
                 label()
                     .font_size(15.)
@@ -152,9 +152,9 @@ impl Component for ShadowProperty {
                     .span(Span::new(": ").color(SEPARATOR_COLOR))
                     .span(Span::new(self.shadow.to_string()).color(VALUE_COLOR))
                     .into(),
-                rect().width(Size::px(5.)).into(),
+                rect().width(Size::px(5.0_f32)).into(),
                 color_swatch(self.shadow.color).into_element(),
-                rect().width(Size::px(5.)).into(),
+                rect().width(Size::px(5.0_f32)).into(),
                 label()
                     .color(Color::from_rgb(VALUE_COLOR.0, VALUE_COLOR.1, VALUE_COLOR.2))
                     .text(format!("{:?}", self.shadow.color))
@@ -192,9 +192,9 @@ impl Component for BorderProperty {
                     .span(Span::new(": ").color(SEPARATOR_COLOR))
                     .span(Span::new(self.border.pretty()).color(VALUE_COLOR))
                     .into(),
-                rect().width(Size::px(5.)).into(),
+                rect().width(Size::px(5.0_f32)).into(),
                 color_swatch(self.border.fill).into_element(),
-                rect().width(Size::px(5.)).into(),
+                rect().width(Size::px(5.0_f32)).into(),
                 label()
                     .font_size(15.)
                     .color(Color::from_rgb(VALUE_COLOR.0, VALUE_COLOR.1, VALUE_COLOR.2))
@@ -238,9 +238,9 @@ impl Component for TextShadowProperty {
                     .span(Span::new(": ").color(SEPARATOR_COLOR))
                     .span(Span::new(value).color(VALUE_COLOR))
                     .into(),
-                rect().width(Size::px(5.)).into(),
+                rect().width(Size::px(5.0_f32)).into(),
                 color_swatch(color).into_element(),
-                rect().width(Size::px(5.)).into(),
+                rect().width(Size::px(5.0_f32)).into(),
                 label()
                     .color(Color::from_rgb(VALUE_COLOR.0, VALUE_COLOR.1, VALUE_COLOR.2))
                     .text(format!("{:?}", color))

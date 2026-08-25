@@ -72,7 +72,7 @@ impl ColorPicker {
             theme: None,
             value: Color::WHITE,
             on_change: on_change.into(),
-            width: Size::px(220.),
+            width: Size::px(220.0_f32),
             key: DiffKey::None,
         }
     }
@@ -108,8 +108,8 @@ impl Component for ColorPicker {
         let is_open = open();
 
         let preview = rect()
-            .width(Size::px(40.))
-            .height(Size::px(24.))
+            .width(Size::px(40.0_f32))
+            .height(Size::px(24.0_f32))
             .corner_radius(4.)
             .background(self.value)
             .on_press(move |_| {
@@ -118,7 +118,7 @@ impl Component for ColorPicker {
 
         let theme = get_theme!(&self.theme, ColorPickerThemePreference, "color_picker");
         let hue_bar = rect()
-            .height(Size::px(18.))
+            .height(Size::px(18.0_f32))
             .width(Size::fill())
             .corner_radius(4.)
             .on_sized(move |e: Event<SizedEventData>| hue_area.set(e.area))
@@ -135,7 +135,7 @@ impl Component for ColorPicker {
             );
 
         let sv_area = rect()
-            .height(Size::px(140.))
+            .height(Size::px(140.0_f32))
             .width(Size::fill())
             .corner_radius(4.)
             .overflow(Overflow::Clip)
@@ -267,7 +267,7 @@ impl Component for ColorPicker {
                     .alignment(BorderAlignment::Inner),
             )
             .color(theme.color)
-            .spacing(8.)
+            .spacing(8.0_f32)
             .shadow(Shadow::new().x(0.).y(2.).blur(8.).color((0, 0, 0, 0.1)))
             .child(
                 rect()
@@ -277,7 +277,7 @@ impl Component for ColorPicker {
             )
             .child(
                 rect()
-                    .height(Size::px(18.))
+                    .height(Size::px(18.0_f32))
                     .on_pointer_down(on_hue_pointer_down)
                     .child(hue_bar),
             )
@@ -293,7 +293,7 @@ impl Component for ColorPicker {
                     .horizontal()
                     .width(Size::fill())
                     .main_align(Alignment::center())
-                    .spacing(8.)
+                    .spacing(8.0_f32)
                     .child(
                         Button::new()
                             .on_press(move |e: Event<PressEventData>| {
@@ -337,13 +337,13 @@ impl Component for ColorPicker {
 
         rect()
             .horizontal()
-            .spacing(8.)
+            .spacing(8.0_f32)
             .child(preview)
             .maybe_child((opacity > 0.).then(|| {
                 rect()
                     .layer(Layer::Overlay)
-                    .width(Size::px(0.))
-                    .height(Size::px(0.))
+                    .width(Size::px(0.0_f32))
+                    .height(Size::px(0.0_f32))
                     .opacity(opacity)
                     .child(rect().scale(scale).child(popup))
             }))

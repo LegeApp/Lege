@@ -10,7 +10,7 @@ pub fn overflowed_content() {
     fn app() -> impl IntoElement {
         OverflowedContent::new()
             .duration(Duration::from_millis(50))
-            .width(Size::px(50.))
+            .width(Size::px(50.0_f32))
             .child(label().text("123456789123456789"))
     }
 
@@ -39,7 +39,7 @@ pub fn overflowed_content_left_to_right() {
     fn app() -> impl IntoElement {
         OverflowedContent::new()
             .duration(Duration::from_millis(50))
-            .width(Size::px(50.))
+            .width(Size::px(50.0_f32))
             .left_to_right()
             .child(label().text("123456789123456789"))
     }
@@ -69,7 +69,7 @@ pub fn overflowed_content_start_visible() {
     fn app() -> impl IntoElement {
         OverflowedContent::new()
             .duration(Duration::from_millis(50))
-            .width(Size::px(50.))
+            .width(Size::px(50.0_f32))
             .start_visible()
             .child(label().text("123456789123456789"))
     }

@@ -36,10 +36,10 @@ impl LegeModal {
             show: true.into(),
             on_close_request: None,
             close_on_escape_key: true,
-            width: Size::percent(50.),
-            height: Size::percent(50.),
-            min_width: Size::px(520.),
-            min_height: Size::px(360.),
+            width: Size::percent(50.0_f32),
+            height: Size::percent(50.0_f32),
+            min_width: Size::px(520.0_f32),
+            min_height: Size::px(360.0_f32),
             key: DiffKey::None,
         }
     }
@@ -155,12 +155,12 @@ impl Component for LegeModal {
                         .height(self.height.clone())
                         .min_width(self.min_width.clone())
                         .min_height(self.min_height.clone())
-                        .spacing(0.)
+                        .spacing(0.0_f32)
                         .on_global_key_down(on_global_key_down)
                         .child(
                             rect()
                                 .width(Size::fill())
-                                .height(Size::px(42.))
+                                .height(Size::px(42.0_f32))
                                 .padding((10., 14., 10., 14.))
                                 .background(background)
                                 .direction(Direction::Horizontal)

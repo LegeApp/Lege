@@ -106,12 +106,12 @@ pub fn resizable_container_min_size() {
         ResizableContainer::new()
             .panel(
                 ResizablePanel::new(PanelSize::percent(50.))
-                    .min_size(100.)
+                    .min_size(100.0_f32)
                     .child(label().expanded().text("Panel 1")),
             )
             .panel(
                 ResizablePanel::new(PanelSize::percent(50.))
-                    .min_size(50.)
+                    .min_size(50.0_f32)
                     .child(label().expanded().text("Panel 2")),
             )
     }
@@ -232,9 +232,9 @@ pub fn resizable_container_dynamic_panels() {
             .child(
                 rect()
                     .horizontal()
-                    .spacing(8.)
+                    .spacing(8.0_f32)
                     .padding(8.)
-                    .height(Size::px(50.))
+                    .height(Size::px(50.0_f32))
                     .child(
                         Button::new()
                             .on_press(move |_| {

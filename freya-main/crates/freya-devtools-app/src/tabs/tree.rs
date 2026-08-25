@@ -177,7 +177,7 @@ impl Component for NodesTree {
             },
         )
         .length(items_len)
-        .item_size(27.)
+        .item_size(27.0_f32)
         .into()
     }
 }

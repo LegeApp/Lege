@@ -7,7 +7,7 @@ pub fn input_test() {
         let value = use_state(String::new);
 
         rect()
-            .spacing(6.)
+            .spacing(6.0_f32)
             .child(Input::new(value).placeholder("Type your name"))
             .child(format!("Your name is {}", value.read()))
     }

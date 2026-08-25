@@ -122,7 +122,7 @@ impl Component for Attached {
                     .on_sized(move |e: Event<SizedEventData>| attached_area.set(Some(e.area)))
                     .position(position)
                     .layer(Layer::Overlay)
-                    .opacity(if is_measured { 1. } else { 0. })
+                    .opacity(if is_measured { 1.0_f32 } else { 0.0_f32 })
                     .children(self.children.clone())
             }))
     }

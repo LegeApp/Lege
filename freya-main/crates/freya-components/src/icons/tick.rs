@@ -25,8 +25,8 @@ impl TickIcon {
     pub fn new() -> Self {
         Self {
             layout: Node {
-                width: Size::px(10.),
-                height: Size::px(10.),
+                width: Size::px(10.0_f32),
+                height: Size::px(10.0_f32),
                 ..Default::default()
             }
             .into(),

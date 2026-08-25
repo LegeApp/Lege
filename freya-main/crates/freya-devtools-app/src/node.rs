@@ -62,7 +62,7 @@ impl Component for NodeElement {
         };
 
         let arrow_button = self.is_open.map(|is_open| {
-            let arrow_degrees = if is_open { 0. } else { 270. };
+            let arrow_degrees = if is_open { 0.0_f32 } else { 270.0_f32 };
             Button::new()
                 .corner_radius(99.)
                 .border_fill(Color::TRANSPARENT)
@@ -108,7 +108,7 @@ impl Component for NodeElement {
         let button = Button::new()
             .corner_radius(99.)
             .width(Size::fill())
-            .height(Size::px(27.))
+            .height(Size::px(27.0_f32))
             .border_fill(Color::TRANSPARENT)
             .background(if self.is_selected {
                 (40, 40, 40).into()
@@ -128,7 +128,7 @@ impl Component for NodeElement {
                     .direction(Direction::Horizontal)
                     .width(Size::fill())
                     .cross_align(Alignment::center())
-                    .child(rect().width(Size::px(25.)).maybe_child(arrow_button))
+                    .child(rect().width(Size::px(25.0_f32)).maybe_child(arrow_button))
                     .child(
                         paragraph()
                             .max_lines(1)

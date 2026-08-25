@@ -24,7 +24,7 @@ impl Component for Misc {
             .width(Size::fill())
             .height(Size::fill())
             .padding(8.)
-            .spacing(6.)
+            .spacing(6.0_f32)
             .child("Animation Speed")
             .child(
                 rect()
@@ -33,7 +33,7 @@ impl Component for Misc {
                         Slider::new(move |p| {
                             radio.write().animation_speed = p as f32;
                         })
-                        .size(Size::px(200.))
+                        .size(Size::px(200.0_f32))
                         .value(speed as f64),
                     )
                     .child(format!("{normalized_speed:.2}x")),
