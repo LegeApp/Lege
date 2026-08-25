@@ -53,9 +53,6 @@ fn main() {
     // Pass the version to the build script
     println!("cargo:rustc-env=LEGE_EXTERNAL_VERSION={}", external_version);
 
-    // Print a warning to help with debugging
-    println!("cargo:warning=Using external version: {}", external_version);
-
     // Windows: embed version metadata into the CLI .exe (no icon — icon lives in lege-gui).
     #[cfg(windows)]
     {
@@ -86,16 +83,6 @@ fn main() {
 
     // Re-run this build script if environment variables change
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=GUI/DocBrakeGUI/DocBrakeGUI.csproj");
-    println!("cargo:rerun-if-changed=GUI/iced-gui/Cargo.toml");
-
-    // Print build completion message with timestamp
-    let now = std::time::SystemTime::now();
-    let since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
-    println!(
-        "cargo:warning=Build script completed at {} seconds since epoch",
-        since_epoch.as_secs()
-    );
 }
 
 /// Read external version from the file in the project root
