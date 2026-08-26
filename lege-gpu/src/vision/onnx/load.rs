@@ -86,6 +86,16 @@ pub(crate) const TARGETS: &[ModelTarget] = &[
         layout: Layout::Nchw,
         dims: [Some(1), Some(3), None, None],
     },
+    // raw-autotune C5 illuminant estimator: a 4-plane log-chroma histogram
+    // stack (chroma histogram, edge histogram, u and v coordinate planes), not
+    // an image — the spatial axes are 64 histogram bins, so no resize or
+    // colour preprocessing applies to it.
+    ModelTarget {
+        input_name: "chroma_histograms",
+        dtype: "FLOAT",
+        layout: Layout::Nchw,
+        dims: [Some(1), Some(4), Some(64), Some(64)],
+    },
 ];
 
 /// Finds the registered target matching a model input by name.
