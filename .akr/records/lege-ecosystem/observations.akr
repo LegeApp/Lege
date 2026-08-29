@@ -87,6 +87,30 @@ record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 : o
     supersedes [ @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 ]
 }
 
+record lege-ecosystem.observation.jbig2enc-inert-config-fields/1 : observation {
+    title "Three jbig2enc-rust config fields are inert in the encoder"
+    state verified
+    scope [ path "lege-codecs/jbig2enc-rust/**" ]
+    statement """
+        Jbig2Config::{dpi, duplicate_line_removal, match_tolerance} do not change encoder output. Measured on a 480x320 glyph page via encode_single_image_with_config: default 2876 bytes, and dpi=600, duplicate_line_removal=false and match_tolerance in {4,7,10} all produced 2876 bytes byte-for-byte. match_tolerance is only read when config.text_refine is set (encode/document.rs:451), and produced identical output (1046 bytes) at every tolerance even with text_refine enabled. By contrast symbol_mode=true works as documented (2876 -> 1027 bytes) and is required for a shared /JBIG2Globals dictionary. Consequence: the jbig2enc Python binding deliberately exposes only symbol_mode, refine and the lossless preset, and rejects the three inert names as unknown options rather than accepting them silently.
+        """
+    observed_at git:dd69931cda0595bdf08caa422f3966bf484fb47c
+    method command
+    watches [ "lege-codecs/jbig2enc-rust/src/encode/**" ]
+}
+
+record lege-ecosystem.observation.jbig2enc-py-round-trip-verified/1 : observation {
+    title "jbig2enc Python binding round-trips pixel-exactly in every mode"
+    state verified
+    scope [ path "lege-misc/bindings/jbig2enc-py/**" ]
+    statement """
+        The jbig2enc pyo3 binding encodes and decodes back byte-identical pixels on a 480x320 glyph page in all exercised modes: standalone generic region (2876 B), standalone symbol mode (1027 B), PDF fragment without globals, PDF fragment with a 64-byte shared dictionary, and a three-page document sharing one dictionary. Zero differing pixels in every case, so both encoder modes are lossless at the exposed settings and the multi-page shared-dictionary symbol indices line up. Verified through the installed wheel (jbig2enc-0.5.4-cp311-abi3-manylinux_2_34_x86_64) in a clean virtualenv, 20 pytest tests green; cargo clippy --release clean.
+        """
+    observed_at git:dd69931cda0595bdf08caa422f3966bf484fb47c
+    method command
+    watches [ "lege-misc/bindings/jbig2enc-py/**", "lege-codecs/jbig2enc-rust/src/**" ]
+}
+
 record lege-ecosystem.observation.ocr-v5-v6-recipe-20260820/1 : observation {
     title "PP-OCRv6 TensorRT improved the recipe-PDF proxy over embedded v5"
     state verified

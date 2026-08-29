@@ -2,10 +2,10 @@ akr-lock 0.1
 project lege-ecosystem
 
 build {
-    tool "akr 0.3.3"
+    tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:21950758ab88b6f0e85a38ce4e63fef39cacaf963a1be3f93a26ff3855c66360"
+    source_graph "sha256:bf548b00c767807a664b5007e97a3c898222c4100a4d47c60708f45cced6ebf5"
 }
 
 source ".akr/project.akr" {
@@ -74,8 +74,8 @@ source ".akr/records/lege-ecosystem/milestones.akr" {
 }
 
 source ".akr/records/lege-ecosystem/observations.akr" {
-    hash "sha256:35166c448a56c4aa148edf3a01534ddb89012282aca658007335b66eb2eca37c"
-    records 10
+    hash "sha256:3149ce1e45044398386caf5d4391dd02d6f23fce80fa3be1702c51af1f546fce"
+    records 12
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
@@ -926,6 +926,16 @@ seal @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 {
 seal @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 {
     state verified
     hash "sha256:a4535cb463a0ac8744dfb77f8924eaf89de3b8eff7d5c81ab685d4bd4fd4e13a"
+}
+
+seal @lege-ecosystem.observation.jbig2enc-inert-config-fields/1 {
+    state verified
+    hash "sha256:8cb7e4095eaa3dce393bdf7e411cdbd7dee4c998438de421e35863e60037f3bf"
+}
+
+seal @lege-ecosystem.observation.jbig2enc-py-round-trip-verified/1 {
+    state verified
+    hash "sha256:ac57bbb056f300adb87a4bae920564f0c84fd81dbc086c75919ef4d27316f1da"
 }
 
 seal @lege-ecosystem.observation.ocr-v5-v6-recipe-20260820/1 {
