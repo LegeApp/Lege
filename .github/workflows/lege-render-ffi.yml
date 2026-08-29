@@ -1,0 +1,76 @@
+name: lege-render-ffi
+
+on:
+  pull_request:
+    paths:
+      - "lege-misc/bindings/lege-render-ffi/**"
+      - "lege-pdf/read/**"
+      - ".github/workflows/lege-render-ffi.yml"
+  push:
+    branches: [main]
+    paths:
+      - "lege-misc/bindings/lege-render-ffi/**"
+      - "lege-pdf/read/**"
+      - ".github/workflows/lege-render-ffi.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p lege-render-ffi
+      - run: cargo clippy -p lege-render-ffi --all-targets -- -D warnings
+
+  header-is-current:
+    # The header is checked in so C consumers need no Rust toolchain, which
+    # only holds if it never drifts from the ABI it describes.
+    name: header matches the ABI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lege-misc/bindings/lege-render-ffi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cbindgen --locked
+      - name: Regenerate and diff
+        run: |
+          cbindgen --config cbindgen.toml --output /tmp/lege_render.h
+          diff -u include/lege_render.h /tmp/lege_render.h || {
+            echo "::error::include/lege_render.h is stale. Regenerate it with:"
+            echo "::error::  cbindgen --config cbindgen.toml --output include/lege_render.h"
+            exit 1
+          }
+
+  c-consumer:
+    # Compiling the example from C is the only thing that actually proves the
+    # generated header is usable by the language it is generated for.
+    name: C consumer builds and renders
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p lege-render-ffi --release
+      - name: Build the C example
+        working-directory: lege-misc/bindings/lege-render-ffi
+        run: |
+          cc -Wall -Wextra -Werror -Iinclude examples/render_page.c \
+             -o render_page -L../../../target/release -llege_render \
+             -lm -lpthread -ldl
+      - name: Render a corpus page through the C ABI
+        working-directory: lege-misc/bindings/lege-render-ffi
+        run: |
+          LD_LIBRARY_PATH=../../../target/release ./render_page \
+            ../../../lege-pdf/render/corpus/shadings/mesh-type6-coons.pdf \
+            0 out.png 150
+          test -s out.png
+          head -c 8 out.png | od -An -tx1 | grep -q '89 50 4e 47'

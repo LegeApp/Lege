@@ -1,0 +1,33 @@
+# C ABI over the Lege PDF renderer.
+#
+# The single binding everything non-Rust goes through: C and C++ directly,
+# and C#, Go, Swift, Zig and Java 22+ (via jextract) all consume the
+# generated header with no further Rust. Only Python, Node and Wasm justify
+# their own Rust-side crate, because their idioms need more than a C ABI.
+#
+# LICENSING: this links `lege-pdf-read`, which links the renderer crates.
+# Those are AGPL-3.0-only, so anything distributed against this library is a
+# combined AGPL work -- including over a network (AGPL section 13). Read that
+# before shipping a binary.
+[package]
+name = "lege-render-ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "AGPL-3.0-only"
+description = "C ABI for the Lege PDF renderer"
+repository = "https://github.com/LegeApp/Lege"
+publish = false
+
+[lib]
+name = "lege_render"
+# `cdylib` for the shared library every binding loads; `staticlib` so a C or
+# C++ program can link it directly; `rlib` so the smoke-test example can use
+# the crate from Rust.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+lege-pdf-read = { path = "../../../lege-pdf/read" }
+
+[lints]
+workspace = true

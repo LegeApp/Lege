@@ -30,6 +30,7 @@ members = [
     "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
     "lege-viewer",              # `lege-viewer`: native viewer + processing workspace
+    "lege-misc/bindings/lege-render-ffi", # C ABI over the renderer facade
     "lege-misc/xtask",          # packaging tasks (`cargo appimage`)
     "lege-android",             # JNI cdylib for the Android APK
 ]
@@ -37,14 +38,16 @@ members = [
 #   freya-main               — vendored upstream fork with its own workspace
 #   lege-codecs/*            — separate build graphs / licenses (patched in below)
 #   lege-pdf/pdf-integrity   — nested forensic-triage workspace (own lockfile)
-#   lege-misc/bindings/*     — pyo3 extension modules; `extension-module`
+#   lege-misc/bindings/jbig2enc-py — pyo3 extension module; `extension-module`
 #                              leaves Python symbols unresolved until import,
 #                              which breaks any plain `cargo build` that links
 #                              an executable. Built with maturin, not cargo.
+#                              The C ABI binding next to it has no such
+#                              constraint and is a normal member below.
 exclude = [
     "freya-main",
     "lege-codecs",
-    "lege-misc/bindings",
+    "lege-misc/bindings/jbig2enc-py",
     "lege-pdf/pdf-integrity",
 ]
 # `cargo build` produces the `lege` CLI plus the default GUI frontend, the
@@ -230,6 +233,10 @@ jp2lam = { path = "lege-codecs/jp2lam" }
 # of those guards is inert and the promise their docs make is false. The
 # `chaos` mutation suite gates the same invariant, so aborting here would also
 # mean the never-panic gate only ever ran in a profile that never ships.
+# The C ABI in `lege-misc/bindings/lege-render-ffi` depends on this too, and
+# more sharply: a panic crossing an `extern "C"` frame is undefined behaviour,
+# so under `abort` every non-Rust consumer turns a malformed PDF into a killed
+# host process, with no compile error to warn anyone.
 [profile.release]
 lto = "fat"
 codegen-units = 1
