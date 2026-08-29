@@ -16,7 +16,7 @@ use std::sync::{
 use anyhow::Result;
 
 use crate::models::{
-    CoverImageType, ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions,
+    CompressionType, CoverImageType, ImageProcessingType, OcrMode, OutputFormat, ProcessingOptions,
 };
 
 // ── Protocol types ────────────────────────────────────────────────────────────
@@ -446,6 +446,16 @@ pub fn gui_options_to_cli_args(
     // Quality
     if options.jpeg_compat {
         args.push("--jpeg-compat".into());
+    }
+    // Mirrors the toggle's own visibility condition: symbol substitution only
+    // exists while JBIG2 is the text encoder, so the flag is only sent then.
+    if options.no_symbol_mode
+        && matches!(options.output_format, OutputFormat::Pdf)
+        && !options.jpeg_compat
+        && !options.grayscale_mode
+        && matches!(options.compression_type, CompressionType::Jbig2)
+    {
+        args.push("--no-symbol".into());
     }
     if options.high_quality_output {
         args.push("--high-quality".into());
@@ -893,7 +903,6 @@ pub async fn probe_file_json(path: &PathBuf) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::CompressionType;
     use std::ffi::OsStr;
 
     fn cli_arg_after(args: &[OsString], flag: &str) -> Option<String> {

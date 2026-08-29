@@ -1666,6 +1666,14 @@ fn pages_device_card(
     let show_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
         && options.layout_analysis
         && matches!(options.image_processing_type, ImageProcessingType::Dithered);
+    // Symbol substitution is a JBIG2 feature, so the opt-out is only
+    // meaningful while JBIG2 is actually the text encoder. Compatibility mode
+    // swaps it for CCITT4, and grayscale/MRC has no bilevel text plane at
+    // all, so the toggle disappears in both.
+    let show_jbig2_no_symbol = matches!(options.output_format, OutputFormat::Pdf)
+        && !options.jpeg_compat
+        && !options.grayscale_mode
+        && matches!(options.compression_type, CompressionType::Jbig2);
 
     // Row 1: page range with the target resolution directly to its right.
     let page_range_control = settings_row(
@@ -1803,6 +1811,26 @@ fn pages_device_card(
                     move |_| {
                         let mut s = state.write();
                         s.options.use_jbig2_halftone = !s.options.use_jbig2_halftone;
+                    }
+                },
+            ),
+        ));
+    }
+
+    if show_jbig2_no_symbol {
+        col1.push(tooltip_wrap_at(
+            state,
+            TooltipArea::PagesDeviceCard,
+            GUI_TEXT.interactive.tooltips.jbig2_no_symbol.clone(),
+            AttachedPosition::Left,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.jbig2_no_symbol.clone(),
+                options.no_symbol_mode,
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        s.options.no_symbol_mode = !s.options.no_symbol_mode;
                     }
                 },
             ),

@@ -114,6 +114,10 @@ pub struct ProcessingOptions {
     pub use_jbig2_halftone: bool,
     pub high_quality_output: bool,
     pub jpeg_compat: bool,
+    /// Turn JBIG2 symbol substitution off, producing a bit-exact generic
+    /// region. Only meaningful while JBIG2 is the text encoder, i.e. while
+    /// compatibility mode is off.
+    pub no_symbol_mode: bool,
     pub invert_input: bool,
 
     pub center_margins: bool,
@@ -141,6 +145,9 @@ impl ProcessingOptions {
             output_format: OutputFormat::Pdf,
             // JBIG2 default; CCITT4 is reachable via Compatibility mode.
             compression_type: CompressionType::Jbig2,
+            // Symbol substitution is the encoder default and what makes JBIG2
+            // worth choosing on text; this is the opt-out.
+            no_symbol_mode: false,
             cover_image_type: CoverImageType::Jpeg,
             image_processing_type: ImageProcessingType::Original,
             original_cover: true,
