@@ -91,23 +91,38 @@ Every encode function takes keyword options:
 
 | Option | Default | Effect |
 |---|---|---|
-| `symbol_mode` | `False` | Symbol substitution. The one that matters: roughly 3x smaller on text, and the only way to get a shared `/JBIG2Globals` dictionary. Wrong for photographs. |
+| `symbol_mode` | `True` | Symbol substitution. The reason to choose JBIG2 over CCITT G4 on text, and the only way to get a shared `/JBIG2Globals` dictionary. **Lossy** -- see below. Set `False` for a bit-exact generic region. |
 | `refine` | `False` | Refinement coding. Ignored unless `symbol_mode` is set, and currently makes output slightly *larger*. |
 | `lossless` | `False` | Preset: no symbol dictionary, no refinement. Use when a viewer mishandles shared dictionaries. |
 
 ```python
-data = jbig2enc.encode(pixels, width, height, symbol_mode=True)
+data = jbig2enc.encode(pixels, width, height, symbol_mode=False)
 ```
 
-Note that `symbol_mode` defaults to **off**, matching the Rust crate. Turn it
-on for scanned text:
+### Symbol mode is lossy
+
+This is the one thing to understand before using the defaults. Symbol
+substitution replaces near-identical glyphs with a single shared bitmap, so
+the decoded page is not guaranteed identical to what you encoded:
 
 ```python
->>> len(jbig2enc.encode(pixels, w, h))                    # generic region
-2876
->>> len(jbig2enc.encode(pixels, w, h, symbol_mode=True))  # symbol substitution
-1027
+>>> data = jbig2enc.encode(pixels, w, h)                    # symbol mode
+>>> jbig2enc.decode(data)[0] == pixels
+False                                                        # on a real scan
+>>> data = jbig2enc.encode(pixels, w, h, symbol_mode=False)  # generic region
+>>> jbig2enc.decode(data)[0] == pixels
+True
 ```
+
+On synthetic pages of exactly repeated glyphs the substitution is exact and
+the win is large (2876 -> 1027 bytes here). On a real 956x1557 scan it
+changed 175 of 185395 ink pixels and the file was *larger* than the generic
+region (13211 vs 12941 bytes). Measure on your own material rather than
+assuming symbol mode wins.
+
+Use `symbol_mode=False` when exactness matters -- archival masters, line
+art, halftones, or anything where a substituted character would be a
+correctness bug rather than a compression artefact.
 
 The encoder has many more configuration fields. Only the three above are
 exposed, because they are the only ones measured to change the output —

@@ -164,6 +164,20 @@ def test_encode_document_shares_one_dictionary_across_pages():
     assert shared <= independent, (shared, independent)
 
 
+def test_symbol_mode_is_the_default():
+    """Regression guard on the default, which flipped in 0.6.0."""
+    pixels = text_like_page()
+    assert jbig2enc.encode(pixels, WIDTH, HEIGHT) == jbig2enc.encode(
+        pixels, WIDTH, HEIGHT, symbol_mode=True
+    )
+    assert jbig2enc.encode(pixels, WIDTH, HEIGHT) != jbig2enc.encode(
+        pixels, WIDTH, HEIGHT, symbol_mode=False
+    )
+    # And the default carries a shared dictionary, which generic never does.
+    assert jbig2enc.encode_for_pdf(pixels, WIDTH, HEIGHT)[0]
+    assert jbig2enc.encode_for_pdf(pixels, WIDTH, HEIGHT, symbol_mode=False)[0] is None
+
+
 def test_symbol_mode_reaches_the_encoder_and_pays_off_on_text():
     pixels = text_like_page()
     symbol = jbig2enc.encode(pixels, WIDTH, HEIGHT, symbol_mode=True)
@@ -198,9 +212,9 @@ def test_refine_reaches_the_encoder():
 
     # Without symbol_mode the binding clears refine, so it cannot produce a
     # stream whose refinement flag can never fire.
-    assert jbig2enc.encode(pixels, WIDTH, HEIGHT, refine=True) == jbig2enc.encode(
-        pixels, WIDTH, HEIGHT
-    )
+    assert jbig2enc.encode(
+        pixels, WIDTH, HEIGHT, symbol_mode=False, refine=True
+    ) == jbig2enc.encode(pixels, WIDTH, HEIGHT, symbol_mode=False)
 
 
 def test_inert_encoder_options_are_rejected_rather_than_silently_ignored():
@@ -283,6 +297,26 @@ def test_module_metadata():
 # settings, so the comparison is exact, not approximate.
 
 
+def test_generic_mode_is_bit_exact_on_content_symbol_mode_would_alter():
+    """Symbol substitution is lossy; the generic region is not.
+
+    Glyphs that differ only slightly are the case substitution collapses. A
+    page of them round-trips exactly under symbol_mode=False and is the
+    reason that switch has to stay reachable.
+    """
+    # Two glyph sets differing by one pixel each -- close enough to tempt a
+    # substitution, distinct enough that collapsing them loses information.
+    pixels = bytearray(text_like_page())
+    for index in range(0, len(pixels), 4099):
+        pixels[index] ^= 1
+    pixels = bytes(pixels)
+
+    exact, _, _ = jbig2enc.decode(
+        jbig2enc.encode(pixels, WIDTH, HEIGHT, symbol_mode=False)
+    )
+    assert exact == pixels, "generic region must be bit-exact"
+
+
 def test_standalone_round_trip_is_pixel_exact():
     source = text_like_page()
 
@@ -297,7 +331,9 @@ def test_pdf_fragment_round_trip_is_pixel_exact():
     source = text_like_page()
 
     # Without a dictionary.
-    globals_, page_data = jbig2enc.encode_for_pdf(source, WIDTH, HEIGHT)
+    globals_, page_data = jbig2enc.encode_for_pdf(
+        source, WIDTH, HEIGHT, symbol_mode=False
+    )
     assert globals_ is None
     pixels, width, height = jbig2enc.decode_pdf_stream(page_data)
     assert (width, height) == (WIDTH, HEIGHT)

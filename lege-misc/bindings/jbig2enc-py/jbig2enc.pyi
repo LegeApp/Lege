@@ -9,7 +9,7 @@ def encode(
     width: int,
     height: int,
     *,
-    symbol_mode: bool = False,
+    symbol_mode: bool = True,
     refine: bool = False,
     lossless: bool = False,
 ) -> bytes:
@@ -23,7 +23,7 @@ def encode_for_pdf(
     width: int,
     height: int,
     *,
-    symbol_mode: bool = False,
+    symbol_mode: bool = True,
     refine: bool = False,
     lossless: bool = False,
 ) -> tuple[bytes | None, bytes]:
@@ -32,7 +32,7 @@ def encode_for_pdf(
 def encode_document(
     pages: Sequence[tuple[Buffer, int, int]],
     *,
-    symbol_mode: bool = False,
+    symbol_mode: bool = True,
     refine: bool = False,
     lossless: bool = False,
 ) -> tuple[bytes | None, list[bytes]]:

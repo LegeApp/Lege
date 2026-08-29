@@ -17,6 +17,14 @@
 //!   would serialise any caller trying to encode pages in a thread pool.
 //! * **Errors are Python exceptions**, not status codes.
 //!
+//! Symbol substitution is **on by default**, matching the encoder. It is
+//! what makes JBIG2 worth choosing over CCITT G4 on scanned text, but it is
+//! a *lossy* transform: near-identical glyphs are replaced by a shared
+//! bitmap, so a round trip is not guaranteed bit-exact. Pass
+//! `symbol_mode=False` for a generic region, which is bit-exact and is the
+//! right choice for line art, halftones, or anything where a substituted
+//! glyph would be unacceptable.
+//!
 //! `Jbig2Config` has more than fifty fields, nearly all of them
 //! symbol-unification tuning knobs that only make sense with the T.88 spec
 //! open. This module exposes only the ones that were *measured* to change
@@ -123,7 +131,18 @@ fn config_from_kwargs(kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Jbig2Confi
         let key: String = key.extract()?;
         match key.as_str() {
             "lossless" => {}
-            "symbol_mode" => config.symbol_mode = value.extract()?,
+            "symbol_mode" => {
+                // `Jbig2Config::generic()` is the explicit off switch, not
+                // merely `default()` with the flag cleared: it also clears the
+                // refinement flags that only mean anything under symbol mode.
+                if value.extract::<bool>()? {
+                    config.symbol_mode = true;
+                } else {
+                    let refine = config.refine;
+                    config = Jbig2Config::generic();
+                    config.refine = refine;
+                }
+            }
             "refine" => config.refine = value.extract()?,
             other => {
                 return Err(PyValueError::new_err(format!(
