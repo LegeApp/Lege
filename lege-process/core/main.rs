@@ -534,6 +534,13 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.jbig2_mode = Some(parse_jbig2_mode_flag(val)?);
                 i += 2;
             }
+            // Spelled as its own flag because turning symbol substitution off
+            // is a correctness choice (bit-exact output), not a mode tweak.
+            // Equivalent to `--jbig2-mode generic`.
+            "--no-symbol" | "--no-symbol-mode" => {
+                opts.jbig2_mode = Some(Jbig2Mode::Generic);
+                i += 1;
+            }
             "--binarization" => {
                 let val = args
                     .get(i + 1)
@@ -2216,13 +2223,12 @@ fn handle_simple_processing(
     }
 
     if pipeline_config.text_format() == "jbig2" {
-        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or_else(|| {
-            if pipeline_config.enable_layout_detection() {
-                Jbig2Mode::Symbol
-            } else {
-                Jbig2Mode::Generic
-            }
-        });
+        // Symbol substitution is the default: it is the reason to pick JBIG2
+        // over CCITT G4 on scanned text. It is a lossy transform -- near
+        // identical glyphs collapse to one shared bitmap -- so `--no-symbol`
+        // (or `--jbig2-mode generic`) selects the bit-exact generic region
+        // for archival masters and line art.
+        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or(Jbig2Mode::Symbol);
         pipeline_config.set_jbig2_mode(selected_mode);
     }
     apply_reflow_option(&mut pipeline_config, cli_opts.reflow)?;
@@ -3358,7 +3364,7 @@ fn parse_format_selection_with_options(
     let has_halftone_flag = parts.iter().any(|&p| p == "--halftone");
 
     // Parse main format option
-    let (format_num, c_count, has_s_flag, has_u_flag) = parse_main_format(main_part)?;
+    let (format_num, c_count, has_s_flag, has_u_flag, has_g_flag) = parse_main_format(main_part)?;
 
     if has_halftone_flag && format_num != 2 {
         return Err(anyhow!(
@@ -3450,12 +3456,16 @@ fn parse_format_selection_with_options(
     let final_enable_dithering = enable_dithering;
 
     let jbig2_mode = if format_num == 2 {
-        if has_u_flag || has_unify_flag {
-            Jbig2Mode::SymUnify
-        } else if has_s_flag || layout_detection {
-            Jbig2Mode::Symbol
-        } else {
+        if has_g_flag {
+            // 'g' is the explicit opt-out; it wins over every other modifier.
             Jbig2Mode::Generic
+        } else if has_u_flag || has_unify_flag {
+            Jbig2Mode::SymUnify
+        } else {
+            // Symbol is the default now, so 's' is retained as an explicit
+            // no-op for the option strings already in circulation.
+            let _ = (has_s_flag, layout_detection);
+            Jbig2Mode::Symbol
         }
     } else {
         Jbig2Mode::Generic
@@ -3497,10 +3507,11 @@ fn parse_format_selection_with_options(
     ))
 }
 
-fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool)> {
+fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool, bool)> {
     let c_count = input.chars().filter(|&c| c == 'c').count(); // 'c' enables dithering
-    let has_s_flag = input.contains('s'); // 's' enables symbol mode for JBIG2
+    let has_s_flag = input.contains('s'); // 's' symbol mode for JBIG2 (now the default)
     let has_u_flag = input.contains('u'); // 'u' enables sym-unify for JBIG2
+    let has_g_flag = input.contains('g'); // 'g' forces the generic region (no symbols)
 
     // Extract the numeric part
     let numeric_part: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -3516,13 +3527,18 @@ fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool)> {
     }
 
     // JBIG2-specific modifiers only work with format 2.
-    if (has_s_flag || has_u_flag) && format_num != 2 {
+    if (has_s_flag || has_u_flag || has_g_flag) && format_num != 2 {
         return Err(anyhow!(
-            "JBIG2 mode flags ('s' for symbol, 'u' for sym-unify) are only available with JBIG2 format (2)"
+            "JBIG2 mode flags ('s' for symbol, 'u' for sym-unify, 'g' for generic) are only available with JBIG2 format (2)"
+        ));
+    }
+    if has_g_flag && (has_s_flag || has_u_flag) {
+        return Err(anyhow!(
+            "'g' (generic) contradicts 's'/'u' (symbol modes); pick one"
         ));
     }
 
-    Ok((format_num, c_count, has_s_flag, has_u_flag))
+    Ok((format_num, c_count, has_s_flag, has_u_flag, has_g_flag))
 }
 
 fn parse_options(
@@ -4914,13 +4930,12 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     }
 
     if pipeline_config.text_format() == "jbig2" {
-        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or_else(|| {
-            if pipeline_config.enable_layout_detection() {
-                Jbig2Mode::Symbol
-            } else {
-                Jbig2Mode::Generic
-            }
-        });
+        // Symbol substitution is the default: it is the reason to pick JBIG2
+        // over CCITT G4 on scanned text. It is a lossy transform -- near
+        // identical glyphs collapse to one shared bitmap -- so `--no-symbol`
+        // (or `--jbig2-mode generic`) selects the bit-exact generic region
+        // for archival masters and line art.
+        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or(Jbig2Mode::Symbol);
         pipeline_config.set_jbig2_mode(selected_mode);
     }
     apply_reflow_option(&mut pipeline_config, cli_opts.reflow)?;
