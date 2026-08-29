@@ -3,6 +3,7 @@
 //! Renderer types stay private to this crate. The processing pipeline can
 //! adopt this API without coupling itself to the temporary renderer path.
 
+mod export;
 mod font_metrics;
 mod intake;
 mod metadata;
@@ -10,6 +11,10 @@ mod outline;
 mod session;
 mod text;
 
+pub use export::{
+    DEFAULT_EXPORT_DPI, DEFAULT_MAX_EXPORT_PIXELS, ExportColor, ExportOptions, ImageFormat,
+    encode_plane, pixel_size_for_dpi,
+};
 pub use font_metrics::{FaceBBox, FaceMetrics, read_face_metrics};
 pub use intake::{CompileStatus, DocumentIntake, examine_document};
 pub use metadata::{DocumentMetadata, extract_metadata};

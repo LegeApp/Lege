@@ -1,11 +1,16 @@
+// Tests assert on known-good fixtures, where a failed unwrap *is* the
+// failure report. Matches the crate's own `mod tests` blocks.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lege_pdf_read::{
-    CancellationToken, CompileStatus, PageContentKind, RasterPlane, RasterProduct, ReadError,
-    RenderSession, examine_document, extract_outline, has_text_layer, page_text,
-    page_text_evidence, positioned_words,
+    CancellationToken, CompileStatus, ExportColor, ExportOptions, ImageFormat, PageContentKind,
+    RasterPlane, RasterProduct, ReadError, RenderSession, encode_plane, examine_document,
+    extract_outline, has_text_layer, page_text, page_text_evidence, pixel_size_for_dpi,
+    positioned_words,
 };
 use pdf_test_support::builder::{self, PdfBuilder};
 
@@ -350,4 +355,165 @@ fn read_renderer_fixture(name: &str) -> Vec<u8> {
         .join("../render/crates/pdf-document/tests/fixtures")
         .join(name);
     std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+/// PNG header fields: `(width, height, color_type)`. The IHDR chunk sits at a
+/// fixed offset right after the 8-byte signature, so this needs no decoder.
+fn png_header(bytes: &[u8]) -> (u32, u32, u8) {
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+    assert_eq!(&bytes[12..16], b"IHDR", "IHDR is the first chunk");
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    (width, height, bytes[25])
+}
+
+#[test]
+fn export_pixel_size_scales_with_dpi_and_follows_page_rotation() {
+    let session = RenderSession::open(shared(builder::multipage_classic(2)), None)
+        .expect("fixture should open");
+
+    // Page 0 is an unrotated 612x792 point page: at 72 DPI one point is one
+    // pixel, and doubling the resolution doubles both axes.
+    assert_eq!(session.page_pixel_size(0, 72.0).unwrap(), (612, 792));
+    assert_eq!(session.page_pixel_size(0, 144.0).unwrap(), (1224, 1584));
+    assert_eq!(session.page_pixel_size(0, 300.0).unwrap(), (2550, 3300));
+
+    // Page 1 is a 390x490 point page with /Rotate 90, so it must export
+    // landscape -- the axes are swapped exactly once, by display_extent.
+    let geometry = session.page_geometry(1).expect("page one geometry");
+    assert_eq!((geometry.width(), geometry.height()), (390.0, 490.0));
+    assert_eq!(session.page_pixel_size(1, 72.0).unwrap(), (490, 390));
+    assert_eq!(session.page_pixel_size(1, 144.0).unwrap(), (980, 780));
+}
+
+#[test]
+fn export_page_produces_a_png_matching_the_requested_geometry() {
+    let session = RenderSession::open(shared(builder::multipage_classic(2)), None)
+        .expect("fixture should open");
+
+    let rgb = session
+        .export_page(0, &ExportOptions::png(72.0))
+        .expect("page zero exports as PNG");
+    assert_eq!(png_header(&rgb), (612, 792, 2), "8-bit truecolour");
+
+    let gray = session
+        .export_page(0, &ExportOptions::png(72.0).with_color(ExportColor::Gray8))
+        .expect("page zero exports as grayscale PNG");
+    assert_eq!(png_header(&gray), (612, 792, 0), "8-bit grayscale");
+    assert!(
+        gray.len() < rgb.len(),
+        "one channel should compress smaller than three ({} vs {})",
+        gray.len(),
+        rgb.len()
+    );
+
+    // The rotated page exports landscape through the full path too, not just
+    // in the size arithmetic.
+    let rotated = session
+        .export_page(1, &ExportOptions::png(72.0))
+        .expect("page one exports as PNG");
+    let (width, height, _) = png_header(&rotated);
+    assert_eq!((width, height), (490, 390));
+}
+
+#[test]
+fn export_page_produces_a_complete_jpeg_stream() {
+    let session = RenderSession::open(shared(builder::multipage_classic(1)), None)
+        .expect("fixture should open");
+
+    let jpeg = session
+        .export_page(0, &ExportOptions::jpeg(72.0, 85))
+        .expect("page zero exports as JPEG");
+    assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF], "SOI marker");
+    assert_eq!(
+        &jpeg[jpeg.len() - 2..],
+        &[0xFF, 0xD9],
+        "stream ends with EOI, so it is not truncated"
+    );
+
+    // Quality has to actually reach the encoder rather than being ignored.
+    let low = session
+        .export_page(0, &ExportOptions::jpeg(72.0, 10))
+        .expect("low-quality export");
+    assert!(
+        low.len() < jpeg.len(),
+        "quality 10 should be smaller than quality 85 ({} vs {})",
+        low.len(),
+        jpeg.len()
+    );
+}
+
+#[test]
+fn encode_plane_reuses_a_render_the_caller_already_paid_for() {
+    let session = RenderSession::open(shared(builder::multipage_classic(1)), None)
+        .expect("fixture should open");
+    let page = session.compile(0).expect("page compiles");
+    let plane = session
+        .render(&page, &RasterProduct::rgb8(200, 260))
+        .expect("page renders");
+
+    // One render, two containers -- the whole reason encode_plane is public.
+    let png = encode_plane(&plane, ImageFormat::Png).expect("PNG encodes");
+    let jpeg = encode_plane(&plane, ImageFormat::Jpeg { quality: 80 }).expect("JPEG encodes");
+    assert_eq!(png_header(&png), (200, 260, 2));
+    assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF]);
+
+    // A grayscale plane keeps the renderer's own stride, which is the padded
+    // case pack_rows exists to handle.
+    let gray = session
+        .render(&page, &RasterProduct::gray8(200, 260))
+        .expect("gray page renders");
+    let RasterPlane::Gray8(surface) = &gray else {
+        panic!("gray8 product should return a gray plane");
+    };
+    assert!(surface.stride >= surface.width as usize);
+    assert_eq!(
+        png_header(&encode_plane(&gray, ImageFormat::Png).expect("gray PNG encodes")),
+        (200, 260, 0)
+    );
+}
+
+#[test]
+fn export_rejects_unusable_resolutions_and_oversized_pages() {
+    let session = RenderSession::open(shared(builder::multipage_classic(1)), None)
+        .expect("fixture should open");
+    let geometry = session.page_geometry(0).expect("page zero geometry");
+
+    for dpi in [0.0, -300.0, f64::NAN, f64::INFINITY, 10_001.0] {
+        assert!(
+            matches!(
+                pixel_size_for_dpi(geometry, dpi, u64::MAX),
+                Err(ReadError::InvalidExportOptions(_))
+            ),
+            "{dpi} should be rejected"
+        );
+    }
+
+    // The budget is what stops a plausible-looking DPI from asking for a
+    // multi-gigabyte allocation, and it reports the size it refused.
+    let refused = pixel_size_for_dpi(geometry, 1200.0, 1_000_000);
+    assert!(matches!(
+        refused,
+        Err(ReadError::ExportTooLarge {
+            width: 10200,
+            height: 13200,
+            max_pixels: 1_000_000,
+        })
+    ));
+
+    assert!(matches!(
+        session.export_page(0, &ExportOptions::png(1200.0).with_max_pixels(1_000_000)),
+        Err(ReadError::ExportTooLarge { .. })
+    ));
+
+    // A degenerate page clamps to one pixel instead of failing, so a
+    // page-range export does not abort partway through.
+    let degenerate = lege_pdf_read::PageGeometry {
+        crop_box: [0.0, 0.0, 0.0, 0.0],
+        rotate: 0,
+    };
+    assert_eq!(
+        pixel_size_for_dpi(degenerate, 300.0, u64::MAX).unwrap(),
+        (1, 1)
+    );
 }

@@ -77,6 +77,16 @@ pub enum ReadError {
     InvalidRasterProduct(&'static str),
     #[error("failed to render PDF page {page}: {message}")]
     Render { page: u32, message: String },
+    #[error("invalid export options: {0}")]
+    InvalidExportOptions(&'static str),
+    #[error("exporting a {width}x{height} image exceeds the {max_pixels}-pixel budget")]
+    ExportTooLarge {
+        width: u32,
+        height: u32,
+        max_pixels: u64,
+    },
+    #[error("failed to encode image: {0}")]
+    Encode(String),
 }
 
 /// Visible page geometry in PDF user space.

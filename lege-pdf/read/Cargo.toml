@@ -9,6 +9,11 @@ description = "Lege-owned document intake seam over the external PDF renderer"
 [dependencies]
 thiserror = { workspace = true }
 image = { workspace = true }
+# `src/export.rs` only. Both are already compiled for other workspace
+# members (`pdf-cli` writes PNGs, `pdf-image` re-encodes JPEG XObjects),
+# so page export adds no crate to the build graph.
+png = { workspace = true }
+jpeg-encoder = { workspace = true }
 pdf-content = { workspace = true }
 pdf-document = { workspace = true }
 # `src/font_metrics.rs` only. `pdf-font` already links skrifa at this exact
@@ -26,7 +31,6 @@ pdf-source = { workspace = true }
 pdf-text = { workspace = true }
 
 [dev-dependencies]
-jpeg-encoder = { workspace = true }
 pdf-test-support = { workspace = true }
 
 [lints]
