@@ -23,7 +23,7 @@ members = [
     "lege-gpu",                 # `lege_gpu`
     "lege-ocr",                 # `lege_ocr`
     "lege-document-ocr/crates/*", # business-grade OCR product libraries
-    "lege-document-ocr/cli",    # `lege-ocr` batch CLI
+    "lege-document-ocr/cli",    # package `lege-document-ocr-cli`, binary `lege-ocr`
     "lege-document-ocr/installer-winsafe", # native Windows installer/uninstaller
     "lege-pdf/read",            # renderer-backed document intake/read seam
     "lege-pdf/agent",           # agent-facing `lege-pdf` CLI (structured PDF tool)
@@ -37,9 +37,14 @@ members = [
 #   freya-main               — vendored upstream fork with its own workspace
 #   lege-codecs/*            — separate build graphs / licenses (patched in below)
 #   lege-pdf/pdf-integrity   — nested forensic-triage workspace (own lockfile)
+#   lege-misc/bindings/*     — pyo3 extension modules; `extension-module`
+#                              leaves Python symbols unresolved until import,
+#                              which breaks any plain `cargo build` that links
+#                              an executable. Built with maturin, not cargo.
 exclude = [
     "freya-main",
     "lege-codecs",
+    "lege-misc/bindings",
     "lege-pdf/pdf-integrity",
 ]
 # `cargo build` produces the `lege` CLI plus the default GUI frontend, the

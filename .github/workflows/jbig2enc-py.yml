@@ -1,0 +1,145 @@
+name: jbig2enc-py
+
+on:
+  pull_request:
+    paths:
+      - "lege-misc/bindings/jbig2enc-py/**"
+      - "lege-codecs/jbig2enc-rust/**"
+      - ".github/workflows/jbig2enc-py.yml"
+  push:
+    branches: [main]
+    paths:
+      - "lege-misc/bindings/jbig2enc-py/**"
+      - "lege-codecs/jbig2enc-rust/**"
+      - ".github/workflows/jbig2enc-py.yml"
+  # Publishing is manual and deliberate: a wheel on PyPI is not retractable.
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the built wheels to PyPI"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: lege-misc/bindings/jbig2enc-py
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build and test dependencies
+        run: pip install maturin pytest numpy
+      - name: Build and install the extension
+        run: maturin develop --release
+      - name: Run the test suite
+        run: pytest tests -v
+      - name: Lint
+        run: cargo clippy --release -- -D warnings
+
+  abi3-compatibility:
+    # The wheel claims cp311-abi3, so it must import on newer interpreters
+    # than the one that built it. Building once and testing across versions
+    # is the only thing that actually checks that claim.
+    name: abi3 import (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install maturin
+      - name: Build the abi3 wheel on 3.11
+        run: maturin build --release --out dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install and exercise it on ${{ matrix.python }}
+        run: |
+          pip install pytest numpy
+          pip install --no-index --find-links dist jbig2enc
+          pytest tests -q
+
+  wheels:
+    name: wheels (${{ matrix.platform.runner }} ${{ matrix.platform.target }})
+    needs: [test, abi3-compatibility]
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { runner: ubuntu-latest, target: x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64 }
+          - { runner: macos-latest, target: aarch64 }
+          - { runner: macos-13, target: x86_64 }
+          - { runner: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+          # manylinux only applies to the Linux runners; it is ignored
+          # elsewhere.
+          manylinux: auto
+          working-directory: lege-misc/bindings/jbig2enc-py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
+          path: lege-misc/bindings/jbig2enc-py/dist
+
+  sdist:
+    name: sdist
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: lege-misc/bindings/jbig2enc-py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: lege-misc/bindings/jbig2enc-py/dist
+
+  publish:
+    name: publish to PyPI
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted publishing: no long-lived PyPI token stored in the repo.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

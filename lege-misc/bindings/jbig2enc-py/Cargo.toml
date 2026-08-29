@@ -1,0 +1,45 @@
+# Python bindings for the in-tree JBIG2 encoder.
+#
+# Deliberately NOT a member of the root Lege workspace. pyo3's
+# `extension-module` feature leaves the Python symbols to be resolved by the
+# interpreter at import time, which is correct for a wheel but breaks any
+# plain `cargo build`/`cargo test` that tries to link an executable. Keeping
+# this as its own workspace means `cargo build --workspace` at the root never
+# trips over that. The root manifest lists it under `exclude` for the same
+# reason `lege-codecs/*` is excluded.
+[package]
+name = "jbig2enc-py"
+version = "0.5.4"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+description = "Python bindings for jbig2enc-rust"
+repository = "https://github.com/LegeApp/Lege"
+publish = false
+
+[lib]
+name = "jbig2enc"
+crate-type = ["cdylib"]
+
+[dependencies]
+# `abi3-py311` builds one wheel per platform that every CPython from 3.11 up
+# can import, instead of one wheel per interpreter version. 3.11 rather than
+# 3.9 because pyo3 gates the buffer protocol (`pyo3::buffer`) behind
+# `Py_3_11` under the limited API, and accepting NumPy arrays and PIL buffers
+# directly is most of the value of this binding. 3.9 is already end-of-life
+# and 3.10 reaches it in October 2026.
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
+jbig2enc-rust = { path = "../../../lege-codecs/jbig2enc-rust", default-features = false, features = [
+    "encode",
+    "decode",
+    "symboldict",
+] }
+ndarray = "0.17.2"
+
+[workspace]
+
+[profile.release]
+# The encoder is the whole point of the wheel; LTO is worth the build time
+# here because it is paid once per release, not per iteration.
+lto = true
+codegen-units = 1

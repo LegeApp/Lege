@@ -1,0 +1,8 @@
+# maturin/cargo build output
+/target/
+/dist/
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/

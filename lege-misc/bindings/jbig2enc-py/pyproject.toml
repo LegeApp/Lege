@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "jbig2enc"
+requires-python = ">=3.11"
+description = "JBIG2 encoder for bilevel images, with PDF-embeddable output"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+keywords = ["jbig2", "compression", "pdf", "bilevel", "scan"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: System :: Archiving :: Compression",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/LegeApp/Lege"
+Source = "https://github.com/LegeApp/Lege/tree/main/lege-codecs/jbig2enc-rust"
+
+[tool.maturin]
+# One wheel per platform, importable by CPython 3.9 and up.
+features = ["pyo3/extension-module"]
+strip = true
+# `jbig2enc.pyi` and `py.typed` are picked up automatically and placed inside
+# the package; listing them under `include` as well only duplicates them at
+# the wheel root.
