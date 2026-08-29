@@ -242,8 +242,15 @@ fn pdf_fragment_roundtrip_wide_bitmap() {
         pixels[(h as usize - 1) * w as usize + x] = 1;
     }
 
-    let result =
-        encode_single_image(&pixels, w, h, /* pdf_mode = */ true).expect("encode wide bitmap");
+    // Explicitly generic: a diagonal line has no repeated glyphs to
+    // substitute, and this test asserts an exact round trip.
+    let result = encode_single_image_with_config(
+        &pixels,
+        w,
+        h,
+        Jbig2Context::with_config(Jbig2Config::generic(), /* pdf_mode = */ true),
+    )
+    .expect("encode wide bitmap");
     let decoded = decode_embedded(result.global_data.as_deref(), &result.page_data, w, h);
     assert_eq!(
         decoded, pixels,

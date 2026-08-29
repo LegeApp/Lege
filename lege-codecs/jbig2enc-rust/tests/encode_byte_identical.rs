@@ -37,7 +37,9 @@ fn modes() -> Vec<(&'static str, Jbig2Config)> {
     refine.text_refine = true;
 
     vec![
-        ("generic", Jbig2Config::default()),
+        // Explicitly generic. This row is about the generic-region path, so
+        // it names the preset rather than riding on whatever the default is.
+        ("generic", Jbig2Config::generic()),
         ("lossless", Jbig2Config::lossless()),
         ("symbol", Jbig2Config::text()),
         ("sym_unify", Jbig2Config::text_symbol_unify()),

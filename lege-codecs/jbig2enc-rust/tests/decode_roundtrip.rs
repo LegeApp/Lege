@@ -51,7 +51,10 @@ fn encode_standalone(mode: Mode, img: &Pbm) -> Vec<u8> {
     let (w, h) = (img.width, img.height);
     match mode {
         Mode::Generic => {
-            encode_single_image(&img.pixels, w, h, false)
+            // Explicitly generic: the crate default is symbol mode, and this
+            // test is about the generic-region path specifically.
+            let ctx = Jbig2Context::with_config(Jbig2Config::generic(), false);
+            encode_single_image_with_config(&img.pixels, w, h, ctx)
                 .expect("encode generic standalone")
                 .page_data
         }
@@ -67,7 +70,8 @@ fn encode_embedded(mode: Mode, img: &Pbm) -> Vec<u8> {
     let (w, h) = (img.width, img.height);
     match mode {
         Mode::Generic => {
-            encode_single_image(&img.pixels, w, h, true)
+            let ctx = Jbig2Context::with_config(Jbig2Config::generic(), true);
+            encode_single_image_with_config(&img.pixels, w, h, ctx)
                 .expect("encode generic embedded")
                 .page_data
         }
@@ -170,7 +174,8 @@ fn property_odd_widths_native_roundtrip() {
         for &h in &[1u32, 5, 16, 40] {
             let img = random_bitmap(w, h, (w as u64) * 131 + h as u64);
             // Standalone generic.
-            let stream = encode_single_image(&img.pixels, w, h, false)
+            let ctx = Jbig2Context::with_config(Jbig2Config::generic(), false);
+            let stream = encode_single_image_with_config(&img.pixels, w, h, ctx)
                 .expect("encode")
                 .page_data;
             let doc = decode_file(&stream, &opts).expect("native decode");
@@ -476,7 +481,8 @@ fn property_odd_widths_jbig2dec_agreement() {
     for &w in &[7u32, 8, 17, 33, 64, 65] {
         let h = 24u32;
         let img = random_bitmap(w, h, 777 + w as u64);
-        let stream = encode_single_image(&img.pixels, w, h, true)
+        let ctx = Jbig2Context::with_config(Jbig2Config::generic(), true);
+        let stream = encode_single_image_with_config(&img.pixels, w, h, ctx)
             .expect("encode")
             .page_data;
         let native = mono_to_pbm(&decode_embedded(None, &stream, &opts).expect("native"));

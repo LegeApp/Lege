@@ -163,8 +163,18 @@ impl Default for Jbig2Config {
             text_refine_template: 0,
             halftone: HalftoneConfig::default(),
             dpi: 300,
-            symbol_mode: false,
-            refine: false, // Refinement requires symbol_mode; both disabled until global dictionary encoding is fixed
+            // Symbol substitution is the encoder's primary mode and the whole
+            // reason to choose JBIG2 over CCITT G4 for scanned text: roughly
+            // 3x smaller on a page of repeated glyphs. It was defaulted off
+            // while global-dictionary encoding was unreliable; that is fixed,
+            // and encode/decode round trips are pixel-exact in both standalone
+            // and PDF-fragment form, including multiple pages against one
+            // shared dictionary. Callers wanting a plain generic region ask
+            // for it: `Jbig2Config::lossless()`, or clear this field.
+            symbol_mode: true,
+            // Refinement stays opt-in: it requires symbol_mode and costs
+            // per-instance overhead that measured *larger* on clean text.
+            refine: false,
             refine_template: 0,
             duplicate_line_removal: true,
             auto_thresh: true,
@@ -206,12 +216,31 @@ impl Jbig2Config {
     /// Creates a configuration optimized for text documents
     pub fn text() -> Self {
         let mut cfg = Self::default();
+        // Redundant with the default, and deliberately kept: this preset is
+        // a statement about text, not an inheritance of whatever the default
+        // happens to be.
         cfg.symbol_mode = true;
         cfg.auto_thresh = true;
         cfg.duplicate_line_removal = true;
         // Refinement remains opt-in on the preset because SBREFINE=1 adds
         // per-instance overhead. Enable it explicitly when clustering or
         // near-match preservation is expected to pay off.
+        cfg
+    }
+
+    /// Generic-region only: no symbol dictionary and no substitution, so the
+    /// round trip is bit-exact.
+    ///
+    /// The explicit counterpart to [`Jbig2Config::text`], and the right
+    /// choice for anything that is not repeated text -- line art, halftones,
+    /// or any page where a substituted glyph would be unacceptable. Unlike
+    /// [`Jbig2Config::lossless`] this keeps duplicate-line removal and does
+    /// not set `is_lossless`; it only turns the symbol path off.
+    pub fn generic() -> Self {
+        let mut cfg = Self::default();
+        cfg.symbol_mode = false;
+        cfg.refine = false;
+        cfg.text_refine = false;
         cfg
     }
 
