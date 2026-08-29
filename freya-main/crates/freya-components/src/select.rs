@@ -254,30 +254,33 @@ impl Component for Select {
                     ),
             )
             .maybe_child((open() || opacity > 0.).then(|| {
-                rect().height(Size::px(0.0_f32)).width(Size::px(0.0_f32)).child(
-                    rect()
-                        .width(Size::window_percent(100.0_f32))
-                        .margin(Gaps::new(4., 0., 0., 0.))
-                        .offset_y(offset_y)
-                        .child(
-                            rect()
-                                .layer(Layer::Overlay)
-                                .border(
-                                    Border::new()
-                                        .fill(theme.border_fill)
-                                        .width(1.)
-                                        .alignment(BorderAlignment::Inner),
-                                )
-                                .overflow(Overflow::Clip)
-                                .corner_radius(8.)
-                                .background(theme.select_background)
-                                .padding(4.)
-                                .content(Content::Fit)
-                                .opacity(opacity)
-                                .scale(scale)
-                                .children(self.children.clone()),
-                        ),
-                )
+                rect()
+                    .height(Size::px(0.0_f32))
+                    .width(Size::px(0.0_f32))
+                    .child(
+                        rect()
+                            .width(Size::window_percent(100.0_f32))
+                            .margin(Gaps::new(4., 0., 0., 0.))
+                            .offset_y(offset_y)
+                            .child(
+                                rect()
+                                    .layer(Layer::Overlay)
+                                    .border(
+                                        Border::new()
+                                            .fill(theme.border_fill)
+                                            .width(1.)
+                                            .alignment(BorderAlignment::Inner),
+                                    )
+                                    .overflow(Overflow::Clip)
+                                    .corner_radius(8.)
+                                    .background(theme.select_background)
+                                    .padding(4.)
+                                    .content(Content::Fit)
+                                    .opacity(opacity)
+                                    .scale(scale)
+                                    .children(self.children.clone()),
+                            ),
+                    )
             }))
     }
 

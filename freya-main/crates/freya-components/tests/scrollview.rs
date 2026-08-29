@@ -5,10 +5,26 @@ use freya_testing::prelude::*;
 pub fn scroll_view_wheel() {
     fn scroll_view_wheel_app() -> impl IntoElement {
         ScrollView::new()
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
     }
 
     let mut test = launch_test(scroll_view_wheel_app);
@@ -42,10 +58,26 @@ pub fn scroll_view_wheel() {
 pub fn scroll_view_scrollbar() {
     fn scroll_view_scrollbar_app() -> impl IntoElement {
         ScrollView::new()
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
     }
 
     let mut test = launch_test(scroll_view_scrollbar_app);
@@ -106,10 +138,26 @@ pub fn scroll_view_drag_scrolling() {
     fn scroll_view_drag_scrolling_app() -> impl IntoElement {
         ScrollView::new()
             .drag_scrolling(true)
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
     }
 
     let mut test = launch_test(scroll_view_drag_scrolling_app);
@@ -148,10 +196,26 @@ pub fn scroll_view_drag_scrolling_release_stops() {
     fn scroll_view_drag_release_app() -> impl IntoElement {
         ScrollView::new()
             .drag_scrolling(true)
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
     }
 
     let mut test = launch_test(scroll_view_drag_release_app);
@@ -193,10 +257,26 @@ pub fn scroll_view_drag_scrolling_release_stops() {
 pub fn scroll_view_drag_scrolling_disabled_by_default() {
     fn scroll_view_no_drag_app() -> impl IntoElement {
         ScrollView::new()
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
     }
 
     let mut test = launch_test(scroll_view_no_drag_app);
@@ -233,10 +313,26 @@ pub fn scroll_view_drag_scrolling_horizontal() {
         ScrollView::new()
             .drag_scrolling(true)
             .direction(Direction::Horizontal)
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
-            .child(rect().height(Size::px(200.0_f32)).width(Size::px(200.0_f32)))
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
+            .child(
+                rect()
+                    .height(Size::px(200.0_f32))
+                    .width(Size::px(200.0_f32)),
+            )
     }
 
     let mut test = launch_test(scroll_view_drag_horizontal_app);

@@ -14,6 +14,7 @@ Cargo.lock
 
 # Development and analysis
 *.md
+!AGENTS.md
 !README.md
 !CHANGELOG.md
 !jp2lam-photo-hdr-readiness-plan.md
