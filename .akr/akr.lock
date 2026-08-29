@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:bf548b00c767807a664b5007e97a3c898222c4100a4d47c60708f45cced6ebf5"
+    source_graph "sha256:bdc12b4cc9a3ce1f4f471f1c293d54949120dd680a19664f6924f1bfafb3e2e2"
 }
 
 source ".akr/project.akr" {
@@ -74,8 +74,8 @@ source ".akr/records/lege-ecosystem/milestones.akr" {
 }
 
 source ".akr/records/lege-ecosystem/observations.akr" {
-    hash "sha256:3149ce1e45044398386caf5d4391dd02d6f23fce80fa3be1702c51af1f546fce"
-    records 12
+    hash "sha256:66e27ebe9b212c202cb8ba8390d7c7add2c7323116a21bdf47608100a15ee3a7"
+    records 13
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
@@ -926,6 +926,11 @@ seal @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 {
 seal @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 {
     state verified
     hash "sha256:a4535cb463a0ac8744dfb77f8924eaf89de3b8eff7d5c81ab685d4bd4fd4e13a"
+}
+
+seal @lege-ecosystem.observation.jbig2-symbol-mode-is-lossy/1 {
+    state verified
+    hash "sha256:95e79e02e914064eda5c1f99921d8066fb6fc270b260e02a0a8aec0120d6b825"
 }
 
 seal @lege-ecosystem.observation.jbig2enc-inert-config-fields/1 {

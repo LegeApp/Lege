@@ -87,6 +87,18 @@ record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 : o
     supersedes [ @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 ]
 }
 
+record lege-ecosystem.observation.jbig2-symbol-mode-is-lossy/1 : observation {
+    title "JBIG2 symbol substitution is lossy, and its size win depends on content"
+    state verified
+    scope [ path "lege-codecs/jbig2enc-rust/**", path "lege-process/**" ]
+    statement """
+        Symbol substitution does not round-trip bit-exactly, and no configuration makes it do so. On tests/fixtures/test_image1.pbm (956x1557, 185395 ink px) symbol mode changed 175 pixels and produced 13211 bytes against the generic region's 12941 bytes and 0 changed pixels -- lossy AND larger. Enabling refine, text_refine, is_lossless, or disabling auto_thresh left the count at exactly 175 in every combination, so refinement does not close the gap as ISO/IEC 14492 refinement is supposed to. text_symbol_unify() is far lossier at 1215 pixels. The win is real on genuine text: a 4-page scanned paper through the full lege pipeline gave 225527 bytes with symbol mode against 234513 with --no-symbol (3.8% smaller), and a synthetic page of exactly repeated glyphs gave 1027 against 2876. Symbol mode is now the default in Jbig2Config, the lege CLI and the Python wheel; Jbig2Config::generic(), --no-symbol, the option-string 'g' modifier and the GUI's No symbol mode toggle are the bit-exact opt-out. The unclosed refinement gap is the follow-up worth taking: it is what would make symbol mode safe for archival masters.
+        """
+    observed_at git:645c74324a154bea2d512fc30a9628f47a60229e
+    method command
+    watches [ "lege-codecs/jbig2enc-rust/src/encode/**" ]
+}
+
 record lege-ecosystem.observation.jbig2enc-inert-config-fields/1 : observation {
     title "Three jbig2enc-rust config fields are inert in the encoder"
     state verified
