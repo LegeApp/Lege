@@ -17,6 +17,14 @@ class LegeParams {
     var targetHeight: Int = 0
 
     /**
+     * `"pdf"` or `"djvu"`. DjVu routes the job to the linked `djvu_encoder`
+     * rather than the PDF writer; both run entirely in-process, so neither
+     * needs a helper executable.
+     */
+    @JvmField
+    var outputFormat: String = "pdf"
+
+    /**
      * Run YOLO layout detection. Requires a working Vulkan device; if the GPU
      * is unusable the pipeline logs a warning, turns this off for the run, and
      * continues rather than failing.

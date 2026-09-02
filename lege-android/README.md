@@ -32,3 +32,15 @@ the Storage Access Framework, choose an output location, and it invokes the
 native pipeline off the UI thread while showing native progress. Inputs and
 outputs are copied through the app cache because JNI accepts filesystem paths,
 not `content://` URIs.
+
+## Output formats
+
+The OUTPUT section's `PDF` / `DJVU` control mirrors the desktop GUI's format
+choice. It sets `LegeParams.outputFormat`, which `src/config.rs` turns into the
+pipeline's `text_format`; `"djvu"` routes the job to `djvu_pipeline` and the
+linked `djvu_encoder` crate. Both formats are compiled into
+`liblege_android.so` and run in-process — DjVu needs no helper executable, so
+there is nothing here that a JNI host cannot call.
+
+Selecting DJVU hides the "Compatibility (CCITT + JPEG)" toggle, which only
+applies to PDF encoders. The optional EPUB companion works with either format.

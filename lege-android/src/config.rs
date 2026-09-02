@@ -9,6 +9,7 @@
 //!
 //! public final class LegeParams {
 //!     public int     targetHeight;            // px; 0 = leave at default
+//!     public String  outputFormat;            // "pdf" | "djvu"
 //!     public boolean enableLayoutDetection;
 //!     public boolean enableOcr;
 //!     public boolean highQualityOutput;
@@ -92,6 +93,19 @@ pub(crate) fn from_java(env: &mut JNIEnv<'_>, params: &JObject<'_>) -> Result<Pi
         config
             .set_target_height(target_height as u32)
             .context("invalid targetHeight")?;
+    }
+
+    // Chooses the pipeline: `text_format` routes to the DjVu encoder or to the
+    // PDF writer. Set before anything that reads it back — `set_dither_images`
+    // picks a different dither for CCITT4 output, for one.
+    let output_format = string_field(env, params, "outputFormat")?.unwrap_or_else(|| "pdf".into());
+    match output_format.as_str() {
+        // The PDF pipeline's own default text encoder is already in place.
+        "pdf" => {}
+        "djvu" => config
+            .set_text_format("djvu")
+            .context("failed to select DjVu output")?,
+        _ => anyhow::bail!("unsupported outputFormat `{output_format}`"),
     }
 
     config.set_enable_layout_detection(bool_field(env, params, "enableLayoutDetection")?);
