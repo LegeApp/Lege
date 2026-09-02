@@ -567,6 +567,54 @@ record lege-ecosystem.evidence.freya-viewer-build-aliases/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.glyphfont-stage2-tests/1 : evidence {
+    title "Glyph font Stage 2 unit tests"
+    state verified
+    result pass
+    method command
+    observed_at git:a6358ed95e4968b843377f77ef271bef6ec2eeb7
+    command "cargo test -p lege --lib && (cd lege-pdf/write && cargo test) && cargo test -p lege-document-export"
+    summary """
+        Glyph font Stage 2: lege lib 285 passed/1 ignored (14 glyphfont, 5 truetype_writer incl. composite record), lege-pdf-write 56 passed, lege-document-export 2 passed; working tree uncommitted on top of HEAD.
+        """
+}
+
+record lege-ecosystem.evidence.glyphfont-stage2-warncheck/1 : evidence {
+    title "Glyph font Stage 2 warning gate"
+    state verified
+    result pass
+    method command
+    observed_at git:a6358ed95e4968b843377f77ef271bef6ec2eeb7
+    command "lege-misc/dev-misc/warncheck.sh"
+    summary """
+        PASS: no first-party warnings across the matrix, exit 0, after adding glyph_layer: None to lege-document-ocr/crates/export (first run failed the two workspace configs on that missing field).
+        """
+}
+
+record lege-ecosystem.evidence.glyphfont-stage3-verification/1 : evidence {
+    title "Glyph font Stage 3 tests and warning gate"
+    state verified
+    result pass
+    method command
+    observed_at git:a6358ed95e4968b843377f77ef271bef6ec2eeb7
+    command "cargo test -p lege --lib && (cd lege-pdf/write && cargo test) && lege-misc/dev-misc/warncheck.sh"
+    summary """
+        Glyph font Stage 3: lege lib 292 passed/1 ignored (6 vectorize tests incl. ring, diagonal bar, dot, rejection of a broken fit), lege-pdf-write 56 passed, warncheck PASS with no first-party warnings across the matrix; working tree uncommitted on top of HEAD.
+        """
+}
+
+record lege-ecosystem.evidence.glyphfont-stage4-verification/1 : evidence {
+    title "glyphfont Stage 4 (ToUnicode, compounds, variants) tests, warning gate and extraction comparison pass"
+    state verified
+    result pass
+    method command
+    observed_at git:1f623ad361779522e28480d85c8c5e9f6344eb88
+    command "cargo test -p lege --lib; cargo test -p lege-pdf-write; lege-misc/dev-misc/warncheck.sh; lege ... --text-format glyphfont --ocr on Gobineau 40-42 and Hurvitz 60-62, extraction compared with lege-pdf text and pdftotext"
+    summary """
+        Stage 4 verified: lege lib 299 passed (1 ignored), lege-pdf-write 58 passed, warncheck PASS across the matrix; Gobineau glyphfont 74 KB vs JBIG2 symbol 80 KB (1200 px) and 75 KB (2400 px) with word recall 0.89/0.92/0.83 against the OCR layer and readable pdftotext output; Hurvitz 447 KB vs 84 KB where glyph reuse is poor.
+        """
+}
+
 record lege-ecosystem.evidence.image-detection-policy-tests/1 : evidence {
     title "Bilevel image retention policy tests pass"
     state verified

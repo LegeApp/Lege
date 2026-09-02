@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:bdc12b4cc9a3ce1f4f471f1c293d54949120dd680a19664f6924f1bfafb3e2e2"
+    source_graph "sha256:efc5f417b8d864d248871d0cd13b9ff53e5e8d60dfe3694ea20f2d1c18ddc8a8"
 }
 
 source ".akr/project.akr" {
@@ -64,8 +64,8 @@ source ".akr/records/lege-ecosystem/decisions.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:a851e175aac2ffd8529de7b15e93796f538a05ff05f746245599c0f2214fb082"
-    records 134
+    hash "sha256:02087626a28a586496be1bac243aa89d599d9a8a22f609df4db2ee2de7833474"
+    records 138
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -94,8 +94,8 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:a5c3b682e3a732e0c99e291b3ed1be1cc7b3400de74b5c74541e3b4fa736ed1b"
-    records 109
+    hash "sha256:88e115e7c5250183ab6fe449f31a2390e1e8b4784977af0bb1b9defbb3bdbb67"
+    records 110
 }
 
 resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
@@ -431,6 +431,26 @@ seal @lege-ecosystem.evidence.freya-embedded-about-tests/1 {
 seal @lege-ecosystem.evidence.freya-viewer-build-aliases/1 {
     state verified
     hash "sha256:46ffe33e75a48383fd0048f6829641be3df98e72e945cbe8e86b9c8412e1392b"
+}
+
+seal @lege-ecosystem.evidence.glyphfont-stage2-tests/1 {
+    state verified
+    hash "sha256:5d584768eb22556f70ce2e44dda149827fcb40d7b6b1ecff8c58ee7d354e463f"
+}
+
+seal @lege-ecosystem.evidence.glyphfont-stage2-warncheck/1 {
+    state verified
+    hash "sha256:bb53c71eb86a10c56add97551149779737e37ba8af43c05119eac1ec118149db"
+}
+
+seal @lege-ecosystem.evidence.glyphfont-stage3-verification/1 {
+    state verified
+    hash "sha256:4a777ca36f18f322288cb447f2aceda4eb5e45b76dd9b97796b44c345068d588"
+}
+
+seal @lege-ecosystem.evidence.glyphfont-stage4-verification/1 {
+    state verified
+    hash "sha256:d0712a7aca4c8c5070cebde637d6624158c3377c116c6f92712dca92e95d1f11"
 }
 
 seal @lege-ecosystem.evidence.image-detection-policy-tests/1 {
