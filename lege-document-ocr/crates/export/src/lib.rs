@@ -374,6 +374,7 @@ fn rasterized_searchable_pdf(request: &ExportRequest<'_>, path: &Path) -> Result
                     },
                 }]),
                 text_layer: page_text_layer(page, request.text_view),
+                glyph_layer: None,
             };
             writer.add_page(&artifact)?;
         }

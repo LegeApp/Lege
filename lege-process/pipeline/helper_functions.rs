@@ -1052,6 +1052,9 @@ pub enum WriterMessage {
         title: Option<String>,
         author: Option<String>,
     },
+    /// Supply the document-wide glyph font (`text_format = "glyphfont"`).
+    /// Must arrive before Finalize; pages reference it by a reserved id.
+    SetGlyphFont(lege_pdf_write::font::EmbeddedFont),
     /// Signal that all pages have been sent and PDF should be finalized
     Finalize,
 }
@@ -1112,6 +1115,19 @@ impl PdfWriterHandle {
     ) -> Result<(), anyhow::Error> {
         self.sender
             .send(WriterMessage::SetDocumentIdentity { title, author })
+            .await
+            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+        Ok(())
+    }
+
+    /// Send the document-wide glyph font. Must be called before finalize()
+    /// whenever any page carried glyph text.
+    pub async fn send_glyph_font(
+        &self,
+        font: lege_pdf_write::font::EmbeddedFont,
+    ) -> Result<(), anyhow::Error> {
+        self.sender
+            .send(WriterMessage::SetGlyphFont(font))
             .await
             .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
         Ok(())
@@ -1257,6 +1273,9 @@ pub fn spawn_pdf_writer_actor(
                 }
                 WriterMessage::SetSyntheticOutline(items) => {
                     pending_synthetic = Some(items);
+                }
+                WriterMessage::SetGlyphFont(font) => {
+                    writer.set_glyph_font(font);
                 }
                 WriterMessage::SetDocumentIdentity { title, author } => {
                     writer.set_metadata(lege_pdf_write::meta::DocumentMeta {

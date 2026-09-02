@@ -41,6 +41,7 @@ fn main() {
             runs: runs.into_boxed_slice(),
             font: TextFont::HelveticaFallback,
         }),
+        glyph_layer: None,
     };
 
     let file = BufWriter::new(File::create(&out).expect("create output"));

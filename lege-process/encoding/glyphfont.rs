@@ -1,0 +1,2309 @@
+//! Raster text → per-document glyph font (the `glyphfont` text format).
+//!
+//! A printed book sets its text in a handful of typefaces, so the connected
+//! components of its binarized pages cluster into a modest set of glyph
+//! shapes. This module keeps one document-wide [`GlyphDictionary`] of those
+//! shapes, matches every page's components against it, and records where each
+//! glyph occurs. At the end of the document the dictionary becomes an embedded
+//! TrueType program and each page's text becomes a PDF text object that draws
+//! it — instead of a JBIG2 or CCITT raster.
+//!
+//! Glyph ids are shapes. When OCR ran, each page's recognized words are
+//! aligned with its glyph placements ([`GlyphDictionary::record_text`]) and
+//! the font gets a ToUnicode CMap from the resulting votes, so the visible
+//! text is also the searchable text and no invisible OCR layer is needed.
+//!
+//! Prototypes are majority votes over every instance matched to them, so
+//! scanning noise averages out; matching tolerates edge noise but rejects
+//! structural differences (a missing crossbar, serif or dot). Outlines trace
+//! the pixel edges of the prototype (a valid TrueType "staircase" outline
+//! that renders bit-exact at source resolution); a curve-fitting vectorizer
+//! is the next stage and nothing downstream of [`GlyphOutline`] has to change
+//! for it.
+//!
+//! The clustering kernel is jbig2enc-rust's: `analyze_page` for components and
+//! the SIMD alignment [`Comparator`] for similarity, the same code that drives
+//! JBIG2 symbol mode.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use anyhow::{Result, anyhow};
+use jbig2enc_rust::jbig2cc::analyze_page;
+use jbig2enc_rust::jbig2comparator::Comparator;
+use jbig2enc_rust::jbig2sym::{BitImage, binary_pixels_to_bitimage};
+use lege_pdf_write::font::{EmbeddedFont, ToUnicode, to_unicode_cmap};
+
+use crate::encoding::vectorize::vectorize;
+use crate::truetype_writer::{
+    GlyphComponent, GlyphOutline, OutlinePoint, TrueTypeSpec, build_truetype,
+};
+
+/// Font units per source pixel. With 1000 units per em this makes one em
+/// 62.5 source pixels; a line's text matrix scale is therefore
+/// `EM_PIXELS × (points per pixel)`.
+///
+/// The em is about twice the real type size of body text on a 2400-pixel
+/// page, which keeps text extractors' font-size-relative heuristics sane:
+/// poppler treats a glyph starting within 0.1 em of the previous one as
+/// overprinted duplicate text and breaks the word there, and breaks words
+/// at gaps over 0.1 em. At 62.5 pixels per em those thresholds are 6 pixels,
+/// above any glyph advance and below any word space.
+pub const UNITS_PER_PIXEL: i32 = 16;
+pub const UNITS_PER_EM: u16 = 1000;
+/// Source pixels per em (`UNITS_PER_EM / UNITS_PER_PIXEL`).
+pub const EM_PIXELS: f64 = UNITS_PER_EM as f64 / UNITS_PER_PIXEL as f64;
+/// Largest glyph dimension (pixels) whose outline coordinates fit `i16`.
+pub const MAX_GLYPH_PIXELS: usize = (i16::MAX as usize) / (UNITS_PER_PIXEL as usize);
+/// Glyph ids are 16-bit CIDs; id 0 is `.notdef`.
+pub const MAX_GLYPHS: usize = u16::MAX as usize;
+/// Glyph id of the blank word-space glyph.
+pub const SPACE_GID: u16 = 1;
+/// Advance of the space glyph, font units (a quarter em).
+pub const SPACE_ADVANCE: u16 = 250;
+/// Glyph id of dictionary prototype 0; prototype `i` is `i + FIRST_SHAPE_GID`.
+pub const FIRST_SHAPE_GID: u32 = 2;
+
+/// PostScript name of the embedded glyph font.
+pub const FONT_NAME: &str = "LegeGlyphs";
+
+/// Width/height slack (pixels) when looking for a matching prototype; grows
+/// by one per 16 pixels of glyph size.
+const DIM_LIMIT: u32 = 2;
+/// Alignment search radius (pixels) passed to the comparator.
+const SHIFT_LIMIT: i32 = 2;
+/// An occurrence whose baseline offset differs from its prototype's by more
+/// than `RISE_SNAP_PX` becomes a *position variant*: a composite glyph of
+/// the same shape at that offset. Every occurrence then sits on its line's
+/// baseline with no text rise, which keeps each line one string and keeps
+/// text extractors from breaking lines at rise changes.
+///
+/// Variants whose offset differs from the root's by more than this many
+/// pixels (or half the frame height, whichever is larger) are a different
+/// *character position* — the tittle of an `i` rather than a full stop, an
+/// apostrophe rather than a comma — and keep their own text votes.
+const SEMANTIC_RISE_MIN_PX: i32 = 4;
+/// A position variant absorbs occurrences whose baseline offset is within
+/// this many pixels of its own (the residual is then snapped away).
+const VARIANT_JOIN_PX: i32 = RISE_SNAP_PX;
+/// Vote weight for a word whose glyph cells and characters match one to one.
+/// Loose alignments mislabel neighbours when OCR and segmentation disagree
+/// on where a word's pieces are, and a rare letter's few votes must not be
+/// outvoted by them.
+const EXACT_ALIGNMENT_WEIGHT: u32 = 4;
+/// Vote weight when characters had to be shared out by position.
+const LOOSE_ALIGNMENT_WEIGHT: u32 = 1;
+/// Gaps beyond twice the page's typical letter gap plus this are word spaces.
+const LETTER_GAP_SLACK_PX: i32 = 3;
+
+/// The baseline offset beyond which a variant is a different character
+/// position rather than the same character wobbling.
+fn semantic_rise_limit(frame_h: usize) -> i32 {
+    (frame_h as i32 / 2).max(SEMANTIC_RISE_MIN_PX)
+}
+
+/// One recognized word on a page, in the page's pixel space (y down).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextWord {
+    pub text: String,
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
+
+/// A placed glyph's pixel box on a page, for text alignment.
+#[derive(Clone, Copy, Debug)]
+struct GlyphBox {
+    glyph: u32,
+    x0: i32,
+    x1: i32,
+    top: i32,
+    bottom: i32,
+    /// Frame area: the largest glyph of a cell carries the cell's text.
+    area: u32,
+    claimed: bool,
+}
+
+impl GlyphBox {
+    fn centre(&self) -> (f32, f32) {
+        (
+            (self.x0 + self.x1) as f32 / 2.0,
+            (self.top + self.bottom) as f32 / 2.0,
+        )
+    }
+}
+
+/// A word's characters as the units glyphs are matched to: whitespace
+/// dropped, combining marks folded into the character before them.
+fn word_characters(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        let combining = matches!(
+            ch as u32,
+            0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F
+        );
+        match out.last_mut() {
+            Some(prev) if combining => prev.push(ch),
+            _ => out.push(ch.to_string()),
+        }
+    }
+    out
+}
+
+/// One glyph occurrence on a page, in page pixel coordinates (y down).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlyphInstance {
+    /// Index into the dictionary (glyph id = index + `FIRST_SHAPE_GID`).
+    pub glyph: u32,
+    /// Top-left of the placed prototype bitmap.
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A glyph placed on a text line: horizontal position plus the vertical
+/// correction against the prototype's own baseline offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacedGlyph {
+    pub glyph: u32,
+    /// Left edge, page pixels.
+    pub x: i32,
+    /// The glyph's advance, page pixels: its frame width plus the typical
+    /// gap to the next glyph.
+    pub width: u32,
+    /// Pixels to raise this occurrence relative to where the font's baseline
+    /// would put it (negative lowers it). Zero for a consistent glyph.
+    pub rise_px: i32,
+}
+
+/// One text line: its baseline (page pixel row, y down) and the glyphs on it
+/// in left-to-right order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GlyphLine {
+    pub baseline_y: i32,
+    pub glyphs: Vec<PlacedGlyph>,
+}
+
+/// A page's text as glyph placements, ready for the PDF artifact adapter.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageGlyphRuns {
+    pub lines: Vec<GlyphLine>,
+    /// Total glyph occurrences on the page.
+    pub glyph_count: usize,
+}
+
+impl PageGlyphRuns {
+    pub fn is_empty(&self) -> bool {
+        self.glyph_count == 0
+    }
+}
+
+/// A dictionary entry.
+///
+/// Every prototype has a fixed *frame*: the bitmap rectangle of its first
+/// instance. Placements on pages, the glyph's advance and its baseline
+/// offset are all expressed against that frame, so the shape inside it can
+/// keep improving while pages are already written. The shape is a vote map:
+/// every matched instance, aligned by the comparator, adds one vote to each
+/// of its ink pixels; the prototype's bitmap is the majority of those votes.
+/// The map is padded by [`FRAME_PAD`] on each side so instances that are a
+/// little larger or shifted still land in it.
+#[derive(Clone, Debug)]
+struct Prototype {
+    frame_w: usize,
+    frame_h: usize,
+    /// Ink votes over the padded frame, row-major,
+    /// `(frame_w + 2·PAD) × (frame_h + 2·PAD)`; frame origin at `(PAD, PAD)`.
+    votes: Vec<u16>,
+    /// Instances folded into `votes` (saturates with `u16` votes).
+    uses: u32,
+    /// The bitmap new instances are compared against: the current majority
+    /// shape, cropped to its ink, plus its top-left in frame coordinates.
+    matcher: BitImage,
+    matcher_offset: (i32, i32),
+    /// Ink pixels in `matcher`.
+    black: u32,
+    /// Pixels the frame's bottom edge sits below the text baseline
+    /// (positive = descender): the lower median over the glyph's instances on
+    /// the page that created it, fixed once that page is placed.
+    descent: Option<i32>,
+    /// Advance in pixels: the frame width plus the median gap to the next
+    /// glyph on the same line, fixed with `descent`. Later occurrences then
+    /// need no `TJ` adjustment.
+    advance: Option<u32>,
+    /// `uses` at which the matcher is next rebuilt from the votes.
+    next_refresh: u32,
+    /// Set when this prototype turned out to be another one's shape: the
+    /// target index and where the target's frame origin sits in this frame.
+    /// The glyph then renders as a composite of the target; its own frame,
+    /// advance and descent stay as pages already reference them.
+    alias: Option<(u32, i32, i32)>,
+    /// Non-empty for a *compound*: pieces stacked on one another within a
+    /// line (the stem and dot of an `i`, a letter and its accent) that pages
+    /// place as one glyph. Each entry is a part prototype and where its
+    /// frame origin sits in this frame. Renders as a composite of the parts.
+    parts: Vec<(u32, i32, i32)>,
+}
+
+/// Padding around a prototype frame in its vote map. Must cover the largest
+/// size difference plus alignment shift a matching instance can have.
+const FRAME_PAD: usize = 6;
+/// Snap occurrences this close to the prototype's baseline onto it. Glyph
+/// bottoms on a scan wobble by a pixel from sampling; a real superscript or
+/// subscript sits far further off.
+const RISE_SNAP_PX: i32 = 1;
+
+impl Prototype {
+    fn new(bitmap: BitImage) -> Self {
+        let frame_w = bitmap.width;
+        let frame_h = bitmap.height;
+        let pw = frame_w + 2 * FRAME_PAD;
+        let ph = frame_h + 2 * FRAME_PAD;
+        let mut votes = vec![0u16; pw * ph];
+        for y in 0..frame_h {
+            for x in 0..frame_w {
+                if bitmap.get_usize(x, y) {
+                    votes[(y + FRAME_PAD) * pw + x + FRAME_PAD] = 1;
+                }
+            }
+        }
+        let black = bitmap.count_ones() as u32;
+        Self {
+            frame_w,
+            frame_h,
+            votes,
+            uses: 1,
+            matcher: bitmap,
+            matcher_offset: (0, 0),
+            black,
+            descent: None,
+            advance: None,
+            next_refresh: 3,
+            alias: None,
+            parts: Vec::new(),
+        }
+    }
+
+    /// The same shape as `root` (prototype `root_idx`) sitting `descent`
+    /// pixels below the baseline instead of where the root sits. Renders as
+    /// a composite of the root and is never matched against.
+    fn position_variant(root: &Prototype, root_idx: u32, descent: i32) -> Self {
+        Self {
+            frame_w: root.frame_w,
+            frame_h: root.frame_h,
+            votes: Vec::new(),
+            uses: 1,
+            matcher: BitImage::new(1, 1).expect("a 1×1 BitImage"),
+            matcher_offset: (0, 0),
+            black: 0,
+            descent: Some(descent),
+            advance: root.advance,
+            next_refresh: u32::MAX,
+            alias: Some((root_idx, 0, 0)),
+            parts: Vec::new(),
+        }
+    }
+
+    /// A compound of `parts` (prototype, frame origin in the compound's
+    /// frame) with the given frame size. Never matched against.
+    fn compound(frame_w: usize, frame_h: usize, parts: Vec<(u32, i32, i32)>) -> Self {
+        Self {
+            frame_w,
+            frame_h,
+            votes: Vec::new(),
+            uses: 1,
+            matcher: BitImage::new(1, 1).expect("a 1×1 BitImage"),
+            matcher_offset: (0, 0),
+            black: 0,
+            descent: None,
+            advance: None,
+            next_refresh: u32::MAX,
+            alias: None,
+            parts,
+        }
+    }
+
+    /// Owns an outline: neither an alias nor a compound.
+    fn is_simple(&self) -> bool {
+        self.alias.is_none() && self.parts.is_empty()
+    }
+
+    fn padded_width(&self) -> usize {
+        self.frame_w + 2 * FRAME_PAD
+    }
+
+    fn padded_height(&self) -> usize {
+        self.frame_h + 2 * FRAME_PAD
+    }
+
+    /// Fold an instance in. `origin` is the instance bitmap's top-left in
+    /// frame coordinates; pixels outside the padded frame are dropped.
+    fn accumulate(&mut self, instance: &BitImage, origin: (i32, i32)) {
+        if self.uses >= u16::MAX as u32 {
+            return;
+        }
+        self.uses += 1;
+        let pw = self.padded_width() as i32;
+        let ph = self.padded_height() as i32;
+        for y in 0..instance.height {
+            let fy = y as i32 + origin.1 + FRAME_PAD as i32;
+            if fy < 0 || fy >= ph {
+                continue;
+            }
+            for x in 0..instance.width {
+                let fx = x as i32 + origin.0 + FRAME_PAD as i32;
+                if fx < 0 || fx >= pw {
+                    continue;
+                }
+                if instance.get_usize(x, y) {
+                    self.votes[(fy * pw + fx) as usize] += 1;
+                }
+            }
+        }
+    }
+
+    /// The majority shape over the padded frame: a pixel is ink when at least
+    /// half of the folded instances had ink there.
+    fn majority(&self) -> BitImage {
+        let pw = self.padded_width();
+        let ph = self.padded_height();
+        let mut out = BitImage::new(pw as u32, ph as u32).expect("padded frame fits a BitImage");
+        let need = self.uses.div_ceil(2) as u16;
+        for y in 0..ph {
+            for x in 0..pw {
+                if self.votes[y * pw + x] >= need {
+                    out.set_usize(x, y, true);
+                }
+            }
+        }
+        out
+    }
+
+    /// Rebuild the matcher from the votes. Returns `true` when its size
+    /// changed (so the bucket index must be updated).
+    fn refresh_matcher(&mut self) -> bool {
+        let shape = self.majority();
+        let (Some(bounds), pw) = (ink_bounds(&shape), self.padded_width()) else {
+            // A glyph whose votes cancel out entirely cannot happen: its own
+            // first instance is always at least half the votes until uses > 2,
+            // and refreshes only happen at odd counts ≥ 3 where a majority
+            // exists. Keep the current matcher regardless.
+            return false;
+        };
+        let _ = pw;
+        let (x0, y0, x1, y1) = bounds;
+        let w = x1 - x0 + 1;
+        let h = y1 - y0 + 1;
+        let mut cropped = BitImage::new(w as u32, h as u32).expect("crop fits a BitImage");
+        for y in 0..h {
+            for x in 0..w {
+                if shape.get_usize(x0 + x, y0 + y) {
+                    cropped.set_usize(x, y, true);
+                }
+            }
+        }
+        let resized = cropped.width != self.matcher.width || cropped.height != self.matcher.height;
+        self.black = cropped.count_ones() as u32;
+        self.matcher = cropped;
+        self.matcher_offset = (x0 as i32 - FRAME_PAD as i32, y0 as i32 - FRAME_PAD as i32);
+        resized
+    }
+}
+
+/// Sorts and returns the lower median, or `None` when empty.
+fn lower_median(values: &mut [i32]) -> Option<i32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    Some(values[(values.len() - 1) / 2])
+}
+
+/// Bounding box `(x0, y0, x1, y1)` of a bitmap's ink, inclusive.
+fn ink_bounds(bitmap: &BitImage) -> Option<(usize, usize, usize, usize)> {
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for y in 0..bitmap.height {
+        for x in 0..bitmap.width {
+            if bitmap.get_usize(x, y) {
+                bounds = Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                });
+            }
+        }
+    }
+    bounds
+}
+
+/// How two aligned bitmaps differ.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ShapeDiff {
+    /// Pixels that are ink in exactly one of the two.
+    total: u32,
+    /// 2×2 blocks of differing pixels: differences at least two pixels thick,
+    /// which scanning noise along a stroke edge does not produce but a
+    /// missing crossbar, serif or dot does.
+    thick: u32,
+}
+
+/// Compare `a` against `b` placed at `(dx, dy)` in `a`'s frame.
+fn shape_diff(a: &BitImage, b: &BitImage, dx: i32, dy: i32) -> ShapeDiff {
+    let min_x = 0.min(dx);
+    let min_y = 0.min(dy);
+    let max_x = (a.width as i32).max(dx + b.width as i32);
+    let max_y = (a.height as i32).max(dy + b.height as i32);
+    let w = (max_x - min_x) as usize;
+    let h = (max_y - min_y) as usize;
+    let on = |img: &BitImage, x: i32, y: i32| -> bool {
+        x >= 0
+            && y >= 0
+            && (x as usize) < img.width
+            && (y as usize) < img.height
+            && img.get_usize(x as usize, y as usize)
+    };
+    let mut xor = vec![false; w * h];
+    let mut total = 0u32;
+    for gy in min_y..max_y {
+        for gx in min_x..max_x {
+            if on(a, gx, gy) != on(b, gx - dx, gy - dy) {
+                xor[((gy - min_y) as usize) * w + (gx - min_x) as usize] = true;
+                total += 1;
+            }
+        }
+    }
+    let mut thick = 0u32;
+    for y in 0..h.saturating_sub(1) {
+        for x in 0..w.saturating_sub(1) {
+            if xor[y * w + x]
+                && xor[y * w + x + 1]
+                && xor[(y + 1) * w + x]
+                && xor[(y + 1) * w + x + 1]
+            {
+                thick += 1;
+            }
+        }
+    }
+    ShapeDiff { total, thick }
+}
+
+/// Matching tolerances, all relative to the ink of the larger of the two
+/// shapes (area would let thin glyphs like `l` and `.` absorb anything).
+///
+/// Total difference: scanning noise perturbs stroke edges, and small glyphs
+/// are mostly edge, so the budget is generous. Thick difference: the part of
+/// the budget that may be structural, kept near zero.
+const TOTAL_DIFF_PERCENT: u32 = 22;
+const TOTAL_DIFF_MIN: u32 = 3;
+const THICK_DIFF_DIVISOR: u32 = 40;
+const THICK_DIFF_MIN: u32 = 1;
+/// Ink-count pre-filter: shapes whose ink differs by more than this fraction
+/// are not compared (bold against regular, mostly).
+const BLACK_DIFF_PERCENT: u32 = 20;
+
+/// Document-wide glyph shapes. Not thread-safe by itself; see
+/// [`GlyphFontSession`] for the shared form.
+#[derive(Default)]
+pub struct GlyphDictionary {
+    protos: Vec<Prototype>,
+    /// Matcher (width, height) → prototype indices, for cheap candidate lookup.
+    buckets: HashMap<(u32, u32), Vec<u32>>,
+    comparator: Comparator,
+    instances: usize,
+    /// Components too large for a glyph (see `MAX_GLYPH_PIXELS`), dropped.
+    oversize_dropped: usize,
+    /// Outline glyphs whose curve fit passed its check in the last build;
+    /// the rest were emitted as staircases.
+    fitted: std::cell::Cell<usize>,
+    /// Prototype → its position variants (see `SEMANTIC_RISE_MIN_PX`).
+    variants: HashMap<u32, Vec<u32>>,
+    /// Part prototypes (in reading order) → the compounds made of them.
+    compounds: HashMap<Vec<u32>, Vec<u32>>,
+    /// Prototype → text it stood for, with vote counts, from `record_text`.
+    text_votes: HashMap<u32, HashMap<String, u32>>,
+    /// Glyph ids the last build mapped to text.
+    mapped: std::cell::Cell<usize>,
+}
+
+impl GlyphDictionary {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.protos.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.protos.is_empty()
+    }
+
+    pub fn instances(&self) -> usize {
+        self.instances
+    }
+
+    pub fn oversize_dropped(&self) -> usize {
+        self.oversize_dropped
+    }
+
+    /// Segment a binarized page (1 = ink) into components, match each against
+    /// the dictionary (growing it as needed), and return the page's glyph
+    /// placements grouped into lines.
+    pub fn process_page(&mut self, page: &BitImage, dpi: i32) -> PageGlyphRuns {
+        // losslevel 1: erase isolated specks of at most `dpi²/20000 − 1`
+        // pixels (one pixel at ~220 dpi). Everything else becomes a glyph.
+        let cc = analyze_page(page, dpi.max(72), 1);
+        let shapes = cc.extract_shapes();
+
+        let mut instances = Vec::with_capacity(shapes.len());
+        for (bitmap, bbox) in shapes {
+            if bitmap.width > MAX_GLYPH_PIXELS || bitmap.height > MAX_GLYPH_PIXELS {
+                self.oversize_dropped += 1;
+                continue;
+            }
+            let (glyph, dx, dy) = self.match_or_insert(bitmap);
+            let proto = &self.protos[glyph as usize];
+            instances.push(GlyphInstance {
+                glyph,
+                x: bbox.xmin + dx,
+                y: bbox.ymin + dy,
+                width: proto.frame_w as u32,
+                height: proto.frame_h as u32,
+            });
+        }
+        self.instances += instances.len();
+
+        let mut lines = group_lines(instances);
+        self.merge_stacked(&mut lines);
+        self.fix_new_prototype_metrics(&lines);
+        for line in &mut lines {
+            for placed in &mut line.glyphs {
+                // `group_lines` leaves each glyph's own descent (bottom −
+                // baseline) in `rise_px`; resolve it against the prototype.
+                // Far off the prototype's position it is a position variant.
+                let inst_descent = placed.rise_px;
+                let proto_descent = self.protos[placed.glyph as usize].descent.unwrap_or(0);
+                let rise = proto_descent - inst_descent;
+                let (glyph, rise) = if rise.abs() > RISE_SNAP_PX {
+                    self.position_variant(placed.glyph, inst_descent)
+                } else {
+                    (placed.glyph, rise)
+                };
+                let proto = &self.protos[glyph as usize];
+                placed.glyph = glyph;
+                placed.rise_px = if rise.abs() <= RISE_SNAP_PX { 0 } else { rise };
+                placed.width = proto.advance.unwrap_or(proto.frame_w as u32);
+            }
+        }
+        let glyph_count = lines.iter().map(|l| l.glyphs.len()).sum();
+        PageGlyphRuns { lines, glyph_count }
+    }
+
+    /// Give every prototype created on this page its descent and advance,
+    /// from the lower medians of what its instances on the page show. Lines
+    /// arrive from `group_lines` with each glyph's own descent in `rise_px`
+    /// and its frame width in `width`.
+    fn fix_new_prototype_metrics(&mut self, lines: &[GlyphLine]) {
+        let mut descents: HashMap<u32, Vec<i32>> = HashMap::new();
+        let mut gaps: HashMap<u32, Vec<i32>> = HashMap::new();
+        let mut page_gaps: Vec<i32> = Vec::new();
+        for line in lines {
+            for (i, g) in line.glyphs.iter().enumerate() {
+                let is_new = self.protos[g.glyph as usize].descent.is_none();
+                if is_new {
+                    descents.entry(g.glyph).or_default().push(g.rise_px);
+                }
+                if let Some(next) = line.glyphs.get(i + 1) {
+                    let gap = next.x - (g.x + g.width as i32);
+                    if gap >= 0 {
+                        page_gaps.push(gap);
+                        if is_new {
+                            gaps.entry(g.glyph).or_default().push(gap);
+                        }
+                    }
+                }
+            }
+        }
+        let page_gap = lower_median(&mut page_gaps).unwrap_or(0);
+        // Word spaces must not count as letter gaps, or a letter that often
+        // ends a word (`y`, `e`, `d`) would advance past the space after it.
+        let letter_gap_limit = 2 * page_gap + LETTER_GAP_SLACK_PX;
+        for (idx, mut ds) in descents {
+            let proto = &mut self.protos[idx as usize];
+            proto.descent = lower_median(&mut ds);
+            let mut gs: Vec<i32> = gaps
+                .remove(&idx)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|&g| g <= letter_gap_limit)
+                .collect();
+            let gap = lower_median(&mut gs).unwrap_or(page_gap);
+            // Sanity bound: no glyph advances by more than its own height
+            // past its frame.
+            let gap = gap.min(proto.frame_h as i32);
+            proto.advance = Some(proto.frame_w as u32 + gap as u32);
+        }
+    }
+
+    /// Replace the pieces stacked on one another within each line — glyphs
+    /// whose horizontal extents overlap by at least half the narrower one —
+    /// with one compound glyph. Pages then draw an `i` as one glyph with one
+    /// advance, text extraction sees one character, and the pen never has
+    /// to move back to draw a dot over a stem it has already passed.
+    ///
+    /// Lines arrive from `group_lines` with frame widths in `width` and each
+    /// glyph's own descent in `rise_px`; the compound's entry is in the same
+    /// convention.
+    fn merge_stacked(&mut self, lines: &mut [GlyphLine]) {
+        for line in lines {
+            let mut merged: Vec<PlacedGlyph> = Vec::with_capacity(line.glyphs.len());
+            let mut cell: Vec<PlacedGlyph> = Vec::new();
+            let (mut cx0, mut cx1) = (0, 0);
+            let flush =
+                |cell: &mut Vec<PlacedGlyph>, merged: &mut Vec<PlacedGlyph>, dict: &mut Self| {
+                    match cell.len() {
+                        0 => {}
+                        1 => merged.push(cell[0]),
+                        _ => merged.push(dict.compound_of(cell, line.baseline_y)),
+                    }
+                    cell.clear();
+                };
+            for g in &line.glyphs {
+                let x1 = g.x + g.width as i32;
+                let overlap = cx1.min(x1) - cx0.max(g.x);
+                if !cell.is_empty() && overlap * 2 >= (cx1 - cx0).min(g.width as i32) {
+                    cx0 = cx0.min(g.x);
+                    cx1 = cx1.max(x1);
+                } else {
+                    flush(&mut cell, &mut merged, self);
+                    cx0 = g.x;
+                    cx1 = x1;
+                }
+                cell.push(*g);
+            }
+            flush(&mut cell, &mut merged, self);
+            line.glyphs = merged;
+        }
+    }
+
+    /// The compound glyph for a stacked cell: an existing one whose parts
+    /// and offsets (within a pixel) match, else a new one. Returns the
+    /// cell's placement in `group_lines` convention.
+    fn compound_of(&mut self, cell: &[PlacedGlyph], baseline_y: i32) -> PlacedGlyph {
+        // Parts in reading order (top to bottom, then left to right), each
+        // with its box in page pixels.
+        let mut parts: Vec<(u32, i32, i32, i32, i32)> = cell
+            .iter()
+            .map(|g| {
+                let bottom = baseline_y + g.rise_px;
+                let top = bottom - self.protos[g.glyph as usize].frame_h as i32;
+                (g.glyph, g.x, top, g.x + g.width as i32, bottom)
+            })
+            .collect();
+        parts.sort_by_key(|p| (p.2, p.1));
+        let x0 = parts.iter().map(|p| p.1).min().unwrap_or(0);
+        let top = parts.iter().map(|p| p.2).min().unwrap_or(0);
+        let x1 = parts.iter().map(|p| p.3).max().unwrap_or(0);
+        let bottom = parts.iter().map(|p| p.4).max().unwrap_or(0);
+        let key: Vec<u32> = parts.iter().map(|p| p.0).collect();
+        let offsets: Vec<(u32, i32, i32)> =
+            parts.iter().map(|p| (p.0, p.1 - x0, p.2 - top)).collect();
+
+        let existing = self.compounds.get(&key).and_then(|list| {
+            list.iter().copied().find(|&idx| {
+                self.protos[idx as usize]
+                    .parts
+                    .iter()
+                    .zip(&offsets)
+                    .all(|(a, b)| (a.1 - b.1).abs() <= 1 && (a.2 - b.2).abs() <= 1)
+            })
+        });
+        let idx = match existing {
+            Some(idx) => {
+                self.protos[idx as usize].uses += 1;
+                idx
+            }
+            None => {
+                let idx = self.protos.len() as u32;
+                self.protos.push(Prototype::compound(
+                    (x1 - x0) as usize,
+                    (bottom - top) as usize,
+                    offsets,
+                ));
+                self.compounds.entry(key).or_default().push(idx);
+                idx
+            }
+        };
+        PlacedGlyph {
+            glyph: idx,
+            x: x0,
+            width: (x1 - x0) as u32,
+            rise_px: bottom - baseline_y,
+        }
+    }
+
+    /// The glyph id for prototype `root`'s shape sitting `descent` pixels
+    /// below the baseline, far from where the root itself sits: an existing
+    /// variant within `VARIANT_JOIN_PX`, else a new one. Returns the id and
+    /// the occurrence's residual rise against it.
+    fn position_variant(&mut self, root: u32, descent: i32) -> (u32, i32) {
+        let existing = self.variants.get(&root).and_then(|list| {
+            list.iter()
+                .map(|&idx| {
+                    let rise = self.protos[idx as usize].descent.unwrap_or(0) - descent;
+                    (idx, rise)
+                })
+                .filter(|(_, rise)| rise.abs() <= VARIANT_JOIN_PX)
+                .min_by_key(|(_, rise)| rise.abs())
+        });
+        if let Some((idx, rise)) = existing {
+            self.protos[idx as usize].uses += 1;
+            return (idx, rise);
+        }
+        let idx = self.protos.len() as u32;
+        let variant = Prototype::position_variant(&self.protos[root as usize], root, descent);
+        self.protos.push(variant);
+        self.variants.entry(root).or_default().push(idx);
+        (idx, 0)
+    }
+
+    /// Align a page's recognized words with its glyph placements and record,
+    /// per glyph, the text its occurrences stood for. Votes accumulate over
+    /// the document; [`to_unicode_entries`](Self::to_unicode_entries) turns
+    /// them into the font's ToUnicode mapping.
+    ///
+    /// Within a word, glyphs stacked on one another (the stem and dot of an
+    /// `i`, a letter and its accent) form one *cell*. Cells and characters
+    /// pair up one to one when their counts agree; otherwise characters are
+    /// shared out along the word by position, so touching letters vote for
+    /// both and a broken letter's pieces vote for it and for nothing. In a
+    /// cell the largest glyph carries the text; the rest vote for the empty
+    /// string, which keeps them out of extracted text.
+    pub fn record_text(&mut self, runs: &PageGlyphRuns, words: &[TextWord]) {
+        let mut boxes: Vec<GlyphBox> = runs
+            .lines
+            .iter()
+            .flat_map(|line| line.glyphs.iter().map(move |g| (line.baseline_y, g)))
+            .map(|(baseline, g)| {
+                let p = &self.protos[g.glyph as usize];
+                let bottom = baseline + p.descent.unwrap_or(0) - g.rise_px;
+                GlyphBox {
+                    glyph: g.glyph,
+                    x0: g.x,
+                    x1: g.x + p.frame_w as i32,
+                    top: bottom - p.frame_h as i32,
+                    bottom,
+                    area: (p.frame_w * p.frame_h) as u32,
+                    claimed: false,
+                }
+            })
+            .collect();
+
+        for word in words {
+            let chars = word_characters(&word.text);
+            if chars.is_empty() || word.x1 <= word.x0 || word.y1 <= word.y0 {
+                continue;
+            }
+            // Word boxes are tight on the ink of letters without ascenders
+            // or descenders, so the vertical reach is generous; the next
+            // line's glyphs are still a full line height away.
+            let reach_y = (word.y1 - word.y0) * 0.5;
+            let mut members: Vec<GlyphBox> = Vec::new();
+            for b in boxes.iter_mut().filter(|b| !b.claimed) {
+                let (cx, cy) = b.centre();
+                if cx >= word.x0 - 2.0
+                    && cx <= word.x1 + 2.0
+                    && cy >= word.y0 - reach_y
+                    && cy <= word.y1 + reach_y
+                {
+                    b.claimed = true;
+                    members.push(*b);
+                }
+            }
+            if members.is_empty() {
+                continue;
+            }
+            members.sort_by_key(|b| (b.x0, b.x1));
+
+            // Cells: runs of glyphs whose horizontal extents overlap by at
+            // least half the narrower one.
+            let mut cells: Vec<(i32, i32, Vec<GlyphBox>)> = Vec::new();
+            for b in members {
+                let joins = cells.last().is_some_and(|(cx0, cx1, _)| {
+                    let overlap = cx1.min(&b.x1) - cx0.max(&b.x0);
+                    overlap * 2 >= (cx1 - cx0).min(b.x1 - b.x0)
+                });
+                match cells.last_mut() {
+                    Some((cx0, cx1, cell)) if joins => {
+                        *cx0 = (*cx0).min(b.x0);
+                        *cx1 = (*cx1).max(b.x1);
+                        cell.push(b);
+                    }
+                    _ => cells.push((b.x0, b.x1, vec![b])),
+                }
+            }
+            let n = cells.len();
+            let m = chars.len();
+            if n > 2 * m + 2 {
+                continue;
+            }
+
+            let mut cell_text: Vec<String> = vec![String::new(); n];
+            let weight = if n == m {
+                for (slot, c) in cell_text.iter_mut().zip(&chars) {
+                    slot.clone_from(c);
+                }
+                EXACT_ALIGNMENT_WEIGHT
+            } else {
+                let x0 = cells[0].0 as f32;
+                let span = (cells[n - 1].1 as f32 - x0).max(1.0);
+                let nominal = |k: usize| x0 + (k as f32 + 0.5) * span / m as f32;
+                if n < m {
+                    // Each character goes to the cell under it.
+                    for (k, c) in chars.iter().enumerate() {
+                        let cx = nominal(k);
+                        let i = cells
+                            .iter()
+                            .position(|(cx0, cx1, _)| cx >= *cx0 as f32 && cx <= *cx1 as f32)
+                            .unwrap_or_else(|| {
+                                (0..n)
+                                    .min_by(|&a, &b| {
+                                        let da = (cells[a].0 as f32 + cells[a].1 as f32) / 2.0 - cx;
+                                        let db = (cells[b].0 as f32 + cells[b].1 as f32) / 2.0 - cx;
+                                        da.abs().total_cmp(&db.abs())
+                                    })
+                                    .unwrap_or(0)
+                            });
+                        cell_text[i].push_str(c);
+                    }
+                } else {
+                    // Each cell goes to the character under it; where several
+                    // cells land on one character the largest carries it.
+                    let mut owner: Vec<Option<usize>> = vec![None; m];
+                    let area = |cell: &[GlyphBox]| cell.iter().map(|b| b.area).sum::<u32>();
+                    for (i, (cx0, cx1, cell)) in cells.iter().enumerate() {
+                        let cx = (cx0 + cx1) as f32 / 2.0;
+                        let k = (((cx - x0) / span) * m as f32)
+                            .floor()
+                            .clamp(0.0, (m - 1) as f32) as usize;
+                        if owner[k].is_none_or(|j| area(cell) > area(&cells[j].2)) {
+                            owner[k] = Some(i);
+                        }
+                    }
+                    for (k, o) in owner.into_iter().enumerate() {
+                        if let Some(i) = o {
+                            cell_text[i].clone_from(&chars[k]);
+                        }
+                    }
+                }
+                LOOSE_ALIGNMENT_WEIGHT
+            };
+
+            for ((_, _, cell), text) in cells.iter().zip(cell_text) {
+                let carrier = cell
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, b)| b.area)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                for (i, b) in cell.iter().enumerate() {
+                    let vote = if i == carrier { text.as_str() } else { "" };
+                    *self
+                        .text_votes
+                        .entry(b.glyph)
+                        .or_default()
+                        .entry(vote.to_string())
+                        .or_insert(0) += weight;
+                }
+            }
+        }
+    }
+
+    /// The glyph → text mapping the recorded votes support, as `(glyph id,
+    /// text)` pairs in glyph id order, led by the space glyph when there is
+    /// anything to map. A shape alias shares its root's tally; a variant far
+    /// from the root's position keeps its own, since the same dot is a full
+    /// stop on the baseline and part of an `i` above it.
+    pub fn to_unicode_entries(&self) -> Vec<(u16, String)> {
+        let tally_key = |idx: u32| -> u32 {
+            let (root, _, _) = self.resolve_alias(idx);
+            let frame_h = self.protos[idx as usize].frame_h;
+            if root == idx || self.alias_rise(idx).abs() > semantic_rise_limit(frame_h) {
+                idx
+            } else {
+                root
+            }
+        };
+        let mut tallies: HashMap<u32, HashMap<&str, u32>> = HashMap::new();
+        for (&idx, votes) in &self.text_votes {
+            let tally = tallies.entry(tally_key(idx)).or_default();
+            for (text, &n) in votes {
+                *tally.entry(text.as_str()).or_insert(0) += n;
+            }
+        }
+        let mut out = Vec::new();
+        if !tallies.is_empty() {
+            out.push((SPACE_GID, " ".to_string()));
+        }
+        for idx in 0..self.protos.len() as u32 {
+            let Ok(gid) = u16::try_from(idx + FIRST_SHAPE_GID) else {
+                break;
+            };
+            let Some(tally) = tallies.get(&tally_key(idx)) else {
+                continue;
+            };
+            // Most votes; then the shorter text; then the smaller one.
+            let winner = tally.iter().max_by(|a, b| {
+                a.1.cmp(b.1)
+                    .then_with(|| b.0.len().cmp(&a.0.len()))
+                    .then_with(|| b.0.cmp(a.0))
+            });
+            if let Some((text, _)) = winner {
+                out.push((gid, text.to_string()));
+            }
+        }
+        out
+    }
+
+    /// How far (pixels, positive = up) the root outline is shifted inside
+    /// glyph `idx` relative to the root's own baseline position: zero for a
+    /// plain shape alias, the baseline offset for a position variant.
+    fn alias_rise(&self, idx: u32) -> i32 {
+        let (root, _, oy) = self.resolve_alias(idx);
+        if root == idx {
+            return 0;
+        }
+        let p = &self.protos[idx as usize];
+        let r = &self.protos[root as usize];
+        let root_baseline = r.frame_h as i32 - r.descent.unwrap_or(0);
+        let own_baseline = p.frame_h as i32 - p.descent.unwrap_or(0);
+        own_baseline - root_baseline - oy
+    }
+
+    /// Find the prototype this component belongs to, or add it as a new one.
+    /// Returns `(index, dx, dy)`: the prototype frame's offset relative to
+    /// the component's top-left.
+    fn match_or_insert(&mut self, bitmap: BitImage) -> (u32, i32, i32) {
+        let w = bitmap.width as u32;
+        let h = bitmap.height as u32;
+
+        if let Some((idx, dx, dy)) = self.find_match(&bitmap, 0, None) {
+            let proto = &mut self.protos[idx as usize];
+            // The matcher sits at `matcher_offset` in the frame and at
+            // `(dx, dy)` in the instance, so the instance's origin in frame
+            // coordinates is `matcher_offset − (dx, dy)`.
+            let origin = (proto.matcher_offset.0 - dx, proto.matcher_offset.1 - dy);
+            proto.accumulate(&bitmap, origin);
+            let frame_dx = dx - proto.matcher_offset.0;
+            let frame_dy = dy - proto.matcher_offset.1;
+            if proto.uses >= proto.next_refresh {
+                proto.next_refresh = proto.next_refresh * 2 - 1;
+                self.refresh(idx);
+                // With the noise voted out, a young cluster often turns out
+                // to be an established glyph whose first instance it missed.
+                self.try_alias(idx);
+            }
+            return (idx, frame_dx, frame_dy);
+        }
+
+        let idx = self.protos.len() as u32;
+        self.protos.push(Prototype::new(bitmap));
+        self.buckets.entry((w, h)).or_default().push(idx);
+        (idx, 0, 0)
+    }
+
+    /// The best prototype `bitmap` matches among those with at least
+    /// `min_uses` instances, excluding `exclude`, as `(index, dx, dy)` with
+    /// the prototype's matcher placed at `(dx, dy)` in `bitmap`'s frame.
+    fn find_match(
+        &mut self,
+        bitmap: &BitImage,
+        min_uses: u32,
+        exclude: Option<u32>,
+    ) -> Option<(u32, i32, i32)> {
+        let w = bitmap.width as u32;
+        let h = bitmap.height as u32;
+        let black = bitmap.count_ones() as u32;
+        let dim_limit = DIM_LIMIT + w.max(h) / 16;
+
+        // (thick, total, index, dx, dy)
+        let mut best: Option<(u32, u32, u32, i32, i32)> = None;
+        for bw in w.saturating_sub(dim_limit)..=w + dim_limit {
+            for bh in h.saturating_sub(dim_limit)..=h + dim_limit {
+                let Some(bucket) = self.buckets.get(&(bw, bh)) else {
+                    continue;
+                };
+                for &idx in bucket {
+                    if Some(idx) == exclude {
+                        continue;
+                    }
+                    let proto = &self.protos[idx as usize];
+                    if proto.uses < min_uses {
+                        continue;
+                    }
+                    let ink = proto.black.max(black);
+                    if proto.black.abs_diff(black) > ink * BLACK_DIFF_PERCENT / 100 + TOTAL_DIFF_MIN
+                    {
+                        continue;
+                    }
+                    let total_limit = (ink * TOTAL_DIFF_PERCENT / 100).max(TOTAL_DIFF_MIN);
+                    let thick_limit = (ink / THICK_DIFF_DIVISOR).max(THICK_DIFF_MIN);
+                    // The comparator only finds the alignment; its word-wise
+                    // error counts pixels past the narrower bitmap twice, so
+                    // it gets a loose budget and `shape_diff` decides.
+                    let Some(r) = self.comparator.compare_for_symbol_unify(
+                        bitmap,
+                        &proto.matcher,
+                        2 * total_limit + 4,
+                        SHIFT_LIMIT,
+                        SHIFT_LIMIT,
+                    ) else {
+                        continue;
+                    };
+                    let diff = shape_diff(bitmap, &proto.matcher, r.dx, r.dy);
+                    if diff.total > total_limit || diff.thick > thick_limit {
+                        continue;
+                    }
+                    if best.is_none_or(|(t, s, ..)| (diff.thick, diff.total) < (t, s)) {
+                        best = Some((diff.thick, diff.total, idx, r.dx, r.dy));
+                    }
+                }
+            }
+        }
+        best.map(|(_, _, idx, dx, dy)| (idx, dx, dy))
+    }
+
+    /// Rebuild prototype `idx`'s matcher from its votes, keeping the bucket
+    /// index in step.
+    fn refresh(&mut self, idx: u32) {
+        let proto = &mut self.protos[idx as usize];
+        let old_key = (proto.matcher.width as u32, proto.matcher.height as u32);
+        if proto.refresh_matcher() {
+            let new_key = (proto.matcher.width as u32, proto.matcher.height as u32);
+            if let Some(bucket) = self.buckets.get_mut(&old_key) {
+                bucket.retain(|&i| i != idx);
+            }
+            self.buckets.entry(new_key).or_default().push(idx);
+        }
+    }
+
+    /// If prototype `idx`'s current shape matches a heavier prototype, make
+    /// it an alias of that one and retire it from matching.
+    fn try_alias(&mut self, idx: u32) -> bool {
+        let (matcher, offset, uses) = {
+            let p = &self.protos[idx as usize];
+            (p.matcher.clone(), p.matcher_offset, p.uses)
+        };
+        let Some((target, dx, dy)) = self.find_match(&matcher, uses + 1, Some(idx)) else {
+            return false;
+        };
+        // Target matcher pixel q is at `offset + (dx, dy) + q` in this frame
+        // and at `target.matcher_offset + q` in the target's; the difference
+        // is where the target's frame origin lands here.
+        let t = &self.protos[target as usize];
+        let origin = (
+            offset.0 + dx - t.matcher_offset.0,
+            offset.1 + dy - t.matcher_offset.1,
+        );
+        let key = (matcher.width as u32, matcher.height as u32);
+        if let Some(bucket) = self.buckets.get_mut(&key) {
+            bucket.retain(|&i| i != idx);
+        }
+        self.protos[idx as usize].alias = Some((target, origin.0, origin.1));
+        true
+    }
+
+    /// Follow aliases to the prototype that owns the outline, accumulating
+    /// the frame-origin offset.
+    fn resolve_alias(&self, idx: u32) -> (u32, i32, i32) {
+        let (mut cur, mut ox, mut oy) = (idx, 0, 0);
+        while let Some((target, dx, dy)) = self.protos[cur as usize].alias {
+            ox += dx;
+            oy += dy;
+            cur = target;
+        }
+        (cur, ox, oy)
+    }
+
+    /// End-of-document pass: bring every matcher up to its final majority
+    /// shape, then fold prototypes that now match a heavier one into it.
+    /// Idempotent.
+    pub fn finalize(&mut self) {
+        let live: Vec<u32> = (0..self.protos.len() as u32)
+            .filter(|&i| self.protos[i as usize].is_simple())
+            .collect();
+        for &idx in &live {
+            if self.protos[idx as usize].uses >= 2 {
+                self.refresh(idx);
+            }
+        }
+        let mut order = live;
+        order.sort_by_key(|&i| std::cmp::Reverse(self.protos[i as usize].uses));
+        for idx in order {
+            self.try_alias(idx);
+        }
+    }
+
+    /// Outline glyphs the last [`build_embedded_font`](Self::build_embedded_font)
+    /// emitted as fitted curves rather than staircases.
+    pub fn fitted(&self) -> usize {
+        self.fitted.get()
+    }
+
+    /// Glyph ids the last [`build_embedded_font`](Self::build_embedded_font)
+    /// mapped to text.
+    pub fn mapped(&self) -> usize {
+        self.mapped.get()
+    }
+
+    /// Prototypes that own an outline (neither aliases nor compounds).
+    pub fn distinct(&self) -> usize {
+        self.protos.iter().filter(|p| p.is_simple()).count()
+    }
+
+    /// The simple prototypes glyph `idx` draws, each with its frame origin
+    /// in `idx`'s frame: itself, its alias root, or its compound parts'
+    /// roots, alias chains followed.
+    fn simple_parts(&self, idx: u32) -> Vec<(u32, i32, i32)> {
+        let (target, ox, oy) = self.resolve_alias(idx);
+        let t = &self.protos[target as usize];
+        if t.parts.is_empty() {
+            return vec![(target, ox, oy)];
+        }
+        t.parts
+            .iter()
+            .map(|&(part, px, py)| {
+                let (root, rx, ry) = self.resolve_alias(part);
+                (root, ox + px + rx, oy + py + ry)
+            })
+            .collect()
+    }
+
+    /// The final shape of prototype `idx` over its padded frame, and the
+    /// frame origin within it.
+    #[cfg(test)]
+    fn prototype_shape(&self, idx: usize) -> (BitImage, (usize, usize)) {
+        (self.protos[idx].majority(), (FRAME_PAD, FRAME_PAD))
+    }
+
+    /// Add a prototype as if `uses` identical instances of `bitmap` had been
+    /// matched to it, with the given descent, bypassing matching.
+    #[cfg(test)]
+    fn insert_prototype(&mut self, bitmap: BitImage, uses: u32, descent: i32) -> u32 {
+        let key = (bitmap.width as u32, bitmap.height as u32);
+        let mut proto = Prototype::new(bitmap);
+        for v in proto.votes.iter_mut() {
+            *v *= uses as u16;
+        }
+        proto.uses = uses;
+        proto.descent = Some(descent);
+        proto.advance = Some(proto.frame_w as u32);
+        let idx = self.protos.len() as u32;
+        self.protos.push(proto);
+        self.buckets.entry(key).or_default().push(idx);
+        idx
+    }
+
+    /// Build the embedded font: glyph 0 is `.notdef`, glyph [`SPACE_GID`] the
+    /// blank word space, glyph `i + FIRST_SHAPE_GID` prototype `i` with its
+    /// outline from the prototype's majority shape; aliases and compounds
+    /// become composites of the simple glyphs they draw. Call
+    /// [`finalize`](Self::finalize) first.
+    pub fn build_embedded_font(&self) -> Result<EmbeddedFont> {
+        if self.protos.len() + FIRST_SHAPE_GID as usize > MAX_GLYPHS {
+            return Err(anyhow!(
+                "glyph font: {} shapes exceed the {} glyph ids one font can hold",
+                self.protos.len(),
+                MAX_GLYPHS
+            ));
+        }
+        let mut glyphs = Vec::with_capacity(self.protos.len() + FIRST_SHAPE_GID as usize);
+        let mut widths = Vec::with_capacity(self.protos.len() + FIRST_SHAPE_GID as usize);
+        glyphs.push(GlyphOutline::empty(0));
+        widths.push(0u16);
+        glyphs.push(GlyphOutline::empty(SPACE_ADVANCE));
+        widths.push(SPACE_ADVANCE);
+        let mut fitted_count = 0usize;
+        for (idx, proto) in self.protos.iter().enumerate() {
+            let descent = proto.descent.unwrap_or(0);
+            let advance_px = proto.advance.unwrap_or(proto.frame_w as u32);
+            let advance = u16::try_from(advance_px as i32 * UNITS_PER_PIXEL)
+                .map_err(|_| anyhow!("glyph font: advance of {advance_px} px overflows"))?;
+            widths.push(advance);
+            if !proto.is_simple() {
+                // Draw each simple part's outline where its frame sits in
+                // ours. A part's y axis starts at its own baseline, so shift
+                // by the difference between the two frames' baseline rows.
+                let own_baseline = proto.frame_h as i32 - descent;
+                let mut components = Vec::new();
+                for (root, ox, oy) in self.simple_parts(idx as u32) {
+                    let r = &self.protos[root as usize];
+                    let root_baseline = r.frame_h as i32 - r.descent.unwrap_or(0);
+                    let dx = ox * UNITS_PER_PIXEL;
+                    let dy = (own_baseline - root_baseline - oy) * UNITS_PER_PIXEL;
+                    components.push(GlyphComponent {
+                        glyph: u16::try_from(root + FIRST_SHAPE_GID).map_err(|_| {
+                            anyhow!("glyph font: glyph id {} overflows", root + FIRST_SHAPE_GID)
+                        })?,
+                        dx: i16::try_from(dx)
+                            .map_err(|_| anyhow!("glyph font: composite offset {dx} overflows"))?,
+                        dy: i16::try_from(dy)
+                            .map_err(|_| anyhow!("glyph font: composite offset {dy} overflows"))?,
+                    });
+                }
+                glyphs.push(GlyphOutline::composite(advance, components));
+                continue;
+            }
+            let shape = proto.majority();
+            let baseline_row = (FRAME_PAD + proto.frame_h) as i32 - descent;
+            let origin_x = -(FRAME_PAD as i32);
+            let contours = match vectorize(&shape, origin_x, baseline_row) {
+                Some(fitted) => {
+                    fitted_count += 1;
+                    fitted
+                }
+                None => trace_outline_at(&shape, origin_x, baseline_row),
+            };
+            glyphs.push(GlyphOutline {
+                contours,
+                advance,
+                components: Vec::new(),
+            });
+        }
+
+        let bbox = glyphs
+            .iter()
+            .filter_map(GlyphOutline::bbox)
+            .reduce(|u, b| {
+                [
+                    u[0].min(b[0]),
+                    u[1].min(b[1]),
+                    u[2].max(b[2]),
+                    u[3].max(b[3]),
+                ]
+            })
+            .unwrap_or([0, 0, UNITS_PER_EM as i16, UNITS_PER_EM as i16]);
+        let ascent = bbox[3].max(1);
+        let descent = bbox[1].min(0);
+        let cap_height = ((ascent as i32) * 7 / 10) as i16;
+
+        let built = build_truetype(&TrueTypeSpec {
+            name: FONT_NAME,
+            units_per_em: UNITS_PER_EM,
+            ascent,
+            descent,
+            cap_height,
+            glyphs: &glyphs,
+        });
+
+        let entries = self.to_unicode_entries();
+        self.mapped.set(entries.len());
+        let to_unicode = if entries.is_empty() {
+            ToUnicode::None
+        } else {
+            ToUnicode::Custom(to_unicode_cmap(&entries).into())
+        };
+
+        self.fitted.set(fitted_count);
+        Ok(EmbeddedFont {
+            data: built.data.into(),
+            post_script_name: FONT_NAME.to_string(),
+            ascent: ascent as i32,
+            descent: descent as i32,
+            cap_height: cap_height as i32,
+            italic_angle: 0.0,
+            bbox: [
+                built.bbox[0] as i32,
+                built.bbox[1] as i32,
+                built.bbox[2] as i32,
+                built.bbox[3] as i32,
+            ],
+            symbolic: true,
+            to_unicode,
+            cid_widths: Some(widths.into()),
+            compress_program: true,
+        })
+    }
+}
+
+/// Group instances into text lines and order each line left to right.
+///
+/// Instances are swept in order of vertical centre; one joins the current
+/// line when its centre is within half a glyph height (the larger of its own
+/// and the line's running mean) of the line's running mean centre. The
+/// baseline is the lower median of member bottom edges — most glyphs sit on
+/// the baseline; descenders and raised punctuation are the minority.
+///
+/// The returned `rise_px` fields temporarily hold each glyph's own descent
+/// (bottom − baseline); `process_page` turns them into rises once prototype
+/// descents are known.
+fn group_lines(mut instances: Vec<GlyphInstance>) -> Vec<GlyphLine> {
+    if instances.is_empty() {
+        return Vec::new();
+    }
+    instances.sort_by_key(|i| (2 * i.y + i.height as i32, i.x));
+
+    struct Line {
+        members: Vec<GlyphInstance>,
+        centre_sum: i64,
+        height_sum: i64,
+    }
+    impl Line {
+        fn mean_centre(&self) -> f64 {
+            self.centre_sum as f64 / (2.0 * self.members.len() as f64)
+        }
+        fn mean_height(&self) -> f64 {
+            self.height_sum as f64 / self.members.len() as f64
+        }
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for inst in instances {
+        let centre2 = 2 * inst.y as i64 + inst.height as i64;
+        let joins = lines.last().is_some_and(|line| {
+            let tolerance = 0.5 * line.mean_height().max(inst.height as f64);
+            (centre2 as f64 / 2.0 - line.mean_centre()).abs() <= tolerance
+        });
+        if joins {
+            let line = lines.last_mut().unwrap();
+            line.members.push(inst);
+            line.centre_sum += centre2;
+            line.height_sum += inst.height as i64;
+        } else {
+            lines.push(Line {
+                members: vec![inst],
+                centre_sum: centre2,
+                height_sum: inst.height as i64,
+            });
+        }
+    }
+
+    lines
+        .into_iter()
+        .map(|mut line| {
+            line.members.sort_by_key(|i| (i.x, i.y));
+            let mut bottoms: Vec<i32> =
+                line.members.iter().map(|i| i.y + i.height as i32).collect();
+            bottoms.sort_unstable();
+            let baseline_y = bottoms[(bottoms.len() - 1) / 2];
+            let glyphs = line
+                .members
+                .iter()
+                .map(|i| PlacedGlyph {
+                    glyph: i.glyph,
+                    x: i.x,
+                    width: i.width,
+                    rise_px: (i.y + i.height as i32) - baseline_y,
+                })
+                .collect();
+            GlyphLine { baseline_y, glyphs }
+        })
+        .collect()
+}
+
+/// Trace the pixel edges of a bitmap into closed TrueType contours in font
+/// units: outer boundaries clockwise, holes counter-clockwise (y up), every
+/// point on-curve, collinear points removed. The glyph origin is the bitmap's
+/// left edge on the text baseline; `descent_px` is how far the bitmap's
+/// bottom edge sits below that baseline.
+///
+/// Each boundary edge is emitted with ink on its right, so linking edges
+/// head-to-tail yields the correct winding. Where two ink pixels touch only
+/// at a corner, the walk turns right (hugging the ink), which separates the
+/// two into distinct contours; under nonzero winding either choice renders
+/// identically.
+pub fn trace_pixel_outline(bitmap: &BitImage, descent_px: i32) -> Vec<Vec<OutlinePoint>> {
+    trace_outline_at(bitmap, 0, bitmap.height as i32 - descent_px)
+}
+
+/// [`trace_pixel_outline`] with an explicit origin: the glyph origin is
+/// `origin_x` pixels right of the bitmap's left edge (negative = the bitmap
+/// starts left of the origin), and the baseline runs along the top edge of
+/// row `baseline_row` (so a bitmap whose bottom row is the last one above the
+/// baseline has `baseline_row == height`).
+pub fn trace_outline_at(
+    bitmap: &BitImage,
+    origin_x: i32,
+    baseline_row: i32,
+) -> Vec<Vec<OutlinePoint>> {
+    let to_font = |(c, r): (i32, i32)| -> OutlinePoint {
+        OutlinePoint::on(
+            ((c + origin_x) * UNITS_PER_PIXEL) as i16,
+            ((baseline_row - r) * UNITS_PER_PIXEL) as i16,
+        )
+    };
+    trace_pixel_loops(bitmap)
+        .into_iter()
+        .map(|pts| {
+            let n = pts.len();
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                let prev = pts[(i + n - 1) % n];
+                let p = pts[i];
+                let next = pts[(i + 1) % n];
+                let d1 = (p.0 - prev.0, p.1 - prev.1);
+                let d2 = (next.0 - p.0, next.1 - p.1);
+                if d1 != d2 {
+                    out.push(to_font(p));
+                }
+            }
+            out
+        })
+        .filter(|c| c.len() >= 3)
+        .collect()
+}
+
+/// The closed pixel-corner polygons bounding a bitmap's ink, in pixel
+/// coordinates (y down), one vertex per boundary edge, in the walking order
+/// described at [`trace_pixel_outline`].
+pub(crate) fn trace_pixel_loops(bitmap: &BitImage) -> Vec<Vec<(i32, i32)>> {
+    let w = bitmap.width;
+    let h = bitmap.height;
+    let ink = |x: isize, y: isize| -> bool {
+        x >= 0
+            && y >= 0
+            && (x as usize) < w
+            && (y as usize) < h
+            && bitmap.get_usize(x as usize, y as usize)
+    };
+
+    // Directed edges between grid corners (c, r), y down.
+    let mut edges: Vec<((i32, i32), (i32, i32))> = Vec::new();
+    for y in 0..h as isize {
+        for x in 0..w as isize {
+            if !ink(x, y) {
+                continue;
+            }
+            let (c, r) = (x as i32, y as i32);
+            if !ink(x, y - 1) {
+                edges.push(((c, r), (c + 1, r))); // top: east
+            }
+            if !ink(x, y + 1) {
+                edges.push(((c + 1, r + 1), (c, r + 1))); // bottom: west
+            }
+            if !ink(x - 1, y) {
+                edges.push(((c, r + 1), (c, r))); // left: north
+            }
+            if !ink(x + 1, y) {
+                edges.push(((c + 1, r), (c + 1, r + 1))); // right: south
+            }
+        }
+    }
+    if edges.is_empty() {
+        return Vec::new();
+    }
+
+    let mut outgoing: HashMap<(i32, i32), Vec<usize>> = HashMap::with_capacity(edges.len());
+    for (i, (start, _)) in edges.iter().enumerate() {
+        outgoing.entry(*start).or_default().push(i);
+    }
+    let mut used = vec![false; edges.len()];
+
+    let mut contours = Vec::new();
+    for first in 0..edges.len() {
+        if used[first] {
+            continue;
+        }
+        let origin = edges[first].0;
+        let mut points: Vec<(i32, i32)> = vec![origin];
+        let mut cur = first;
+        loop {
+            used[cur] = true;
+            let (start, end) = edges[cur];
+            if end == origin {
+                break;
+            }
+            points.push(end);
+            let d_in = (end.0 - start.0, end.1 - start.1);
+            let candidates = outgoing.get(&end).map(Vec::as_slice).unwrap_or(&[]);
+            let mut next = None;
+            for &cand in candidates {
+                if used[cand] {
+                    continue;
+                }
+                let (cs, ce) = edges[cand];
+                let d_out = (ce.0 - cs.0, ce.1 - cs.1);
+                // Cross product in y-up space: negative = right turn.
+                let cross = d_in.0 * (-d_out.1) - (-d_in.1) * d_out.0;
+                if cross < 0 {
+                    next = Some(cand);
+                    break;
+                }
+                if next.is_none() {
+                    next = Some(cand);
+                }
+            }
+            match next {
+                Some(n) => cur = n,
+                None => break, // unreachable for a well-formed boundary graph
+            }
+        }
+        if points.len() >= 4 {
+            contours.push(points);
+        }
+    }
+
+    contours
+}
+
+/// The document-wide dictionary shared by concurrently processed pages, plus
+/// counters for the run summary.
+pub struct GlyphFontSession {
+    dict: Mutex<GlyphDictionary>,
+    pages: AtomicUsize,
+}
+
+impl Default for GlyphFontSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GlyphFontSession {
+    pub fn new() -> Self {
+        Self {
+            dict: Mutex::new(GlyphDictionary::new()),
+            pages: AtomicUsize::new(0),
+        }
+    }
+
+    /// Process one binarized page in the pipeline's image convention (one
+    /// byte per pixel, `<= 128` is ink). `dpi` only tunes component cleanup.
+    pub fn process_page_pixels(
+        &self,
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        dpi: i32,
+    ) -> Result<PageGlyphRuns> {
+        let expected = width
+            .checked_mul(height)
+            .ok_or_else(|| anyhow!("glyph font: page dimensions overflow"))?;
+        if pixels.len() < expected {
+            return Err(anyhow!(
+                "glyph font: page buffer holds {} bytes, {}x{} needs {}",
+                pixels.len(),
+                width,
+                height,
+                expected
+            ));
+        }
+        let logical: Vec<u8> = pixels[..expected]
+            .iter()
+            .map(|&v| u8::from(v <= 128))
+            .collect();
+        let page = binary_pixels_to_bitimage(&logical, width, height)
+            .map_err(|e| anyhow!("glyph font: {e}"))?;
+        drop(logical);
+
+        let runs = self
+            .dict
+            .lock()
+            .map_err(|_| anyhow!("glyph font dictionary poisoned"))?
+            .process_page(&page, dpi);
+        self.pages.fetch_add(1, Ordering::Relaxed);
+        Ok(runs)
+    }
+
+    /// Record a page's recognized words against its glyph placements; see
+    /// [`GlyphDictionary::record_text`].
+    pub fn record_text(&self, runs: &PageGlyphRuns, words: &[TextWord]) -> Result<()> {
+        self.dict
+            .lock()
+            .map_err(|_| anyhow!("glyph font dictionary poisoned"))?
+            .record_text(runs, words);
+        Ok(())
+    }
+
+    pub fn build_embedded_font(&self) -> Result<EmbeddedFont> {
+        let mut dict = self
+            .dict
+            .lock()
+            .map_err(|_| anyhow!("glyph font dictionary poisoned"))?;
+        dict.finalize();
+        dict.build_embedded_font()
+    }
+
+    /// Glyph ids the last font build mapped to text.
+    pub fn mapped_glyphs(&self) -> usize {
+        let dict = self.dict.lock().unwrap_or_else(|e| e.into_inner());
+        dict.mapped()
+    }
+
+    /// `(pages, distinct glyphs, glyph occurrences, oversize components dropped)`.
+    /// Distinct counts outline-owning shapes (not aliases or compounds);
+    /// after the font is built that excludes clusters folded into another.
+    pub fn stats(&self) -> (usize, usize, usize, usize) {
+        let dict = self.dict.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            self.pages.load(Ordering::Relaxed),
+            dict.distinct(),
+            dict.instances(),
+            dict.oversize_dropped(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bitmap(rows: &[&str]) -> BitImage {
+        let h = rows.len();
+        let w = rows[0].len();
+        let mut img = BitImage::new(w as u32, h as u32).unwrap();
+        for (y, row) in rows.iter().enumerate() {
+            for (x, ch) in row.bytes().enumerate() {
+                if ch == b'#' {
+                    img.set_usize(x, y, true);
+                }
+            }
+        }
+        img
+    }
+
+    fn xy(c: &[OutlinePoint]) -> Vec<(i16, i16)> {
+        c.iter().map(|p| (p.x, p.y)).collect()
+    }
+
+    /// Shoelace area in font units; negative = clockwise (y up).
+    fn signed_area(c: &[OutlinePoint]) -> i64 {
+        let c = xy(c);
+        let n = c.len();
+        (0..n)
+            .map(|i| {
+                let (x1, y1) = c[i];
+                let (x2, y2) = c[(i + 1) % n];
+                x1 as i64 * y2 as i64 - x2 as i64 * y1 as i64
+            })
+            .sum()
+    }
+
+    /// Nonzero-winding scan at pixel centres, the way a rasterizer fills the
+    /// outline; must reproduce the source bitmap exactly.
+    fn rasterize(contours: &[Vec<OutlinePoint>], w: usize, h: usize, descent: i32) -> Vec<bool> {
+        let contours: Vec<Vec<(i16, i16)>> = contours.iter().map(|c| xy(c)).collect();
+        let mut out = vec![false; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                let px = (c as f64 + 0.5) * UNITS_PER_PIXEL as f64;
+                let py = (h as f64 - r as f64 - 0.5 - descent as f64) * UNITS_PER_PIXEL as f64;
+                let mut winding = 0i32;
+                for contour in &contours {
+                    let n = contour.len();
+                    for i in 0..n {
+                        let (x1, y1) = (contour[i].0 as f64, contour[i].1 as f64);
+                        let (x2, y2) =
+                            (contour[(i + 1) % n].0 as f64, contour[(i + 1) % n].1 as f64);
+                        if (y1 <= py) != (y2 <= py) {
+                            let x_at = x1 + (py - y1) / (y2 - y1) * (x2 - x1);
+                            if x_at > px {
+                                winding += if y2 > y1 { 1 } else { -1 };
+                            }
+                        }
+                    }
+                }
+                out[r * w + c] = winding != 0;
+            }
+        }
+        out
+    }
+
+    fn assert_round_trip(rows: &[&str], descent: i32) {
+        let img = bitmap(rows);
+        let contours = trace_pixel_outline(&img, descent);
+        let got = rasterize(&contours, img.width, img.height, descent);
+        for y in 0..img.height {
+            for x in 0..img.width {
+                assert_eq!(
+                    got[y * img.width + x],
+                    img.get_usize(x, y),
+                    "pixel ({x},{y}) differs for {rows:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn single_pixel_is_a_clockwise_square() {
+        let contours = trace_pixel_outline(&bitmap(&["#"]), 0);
+        assert_eq!(contours.len(), 1);
+        let c = &contours[0];
+        assert_eq!(c.len(), 4);
+        assert!(signed_area(c) < 0, "outer contour must be clockwise: {c:?}");
+        let u = UNITS_PER_PIXEL as i16;
+        let c = xy(c);
+        assert!(c.contains(&(0, 0)) && c.contains(&(u, u)));
+    }
+
+    #[test]
+    fn ring_has_an_outer_and_a_counter_clockwise_hole() {
+        let contours = trace_pixel_outline(&bitmap(&["###", "#.#", "###"]), 0);
+        assert_eq!(contours.len(), 2);
+        let mut areas: Vec<i64> = contours.iter().map(|c| signed_area(c)).collect();
+        areas.sort();
+        assert!(areas[0] < 0 && areas[1] > 0, "{areas:?}");
+    }
+
+    #[test]
+    fn outlines_rasterize_back_to_the_bitmap() {
+        assert_round_trip(&["###", "#.#", "###"], 0);
+        assert_round_trip(&["#.", ".#"], 0);
+        assert_round_trip(&["#..", "#..", "###"], 1);
+        assert_round_trip(&[".##.", "#..#", "#..#", ".##.", "...#", "..#."], 2);
+        assert_round_trip(&["#.#.#", ".#.#.", "#.#.#"], 0);
+        // Pseudo-random speckle: the general case.
+        let mut seed = 0x1234_5678u32;
+        let mut rows = Vec::new();
+        for _ in 0..9 {
+            let mut row = String::new();
+            for _ in 0..12 {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                row.push(if (seed >> 16) & 1 == 1 { '#' } else { '.' });
+            }
+            rows.push(row);
+        }
+        let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+        assert_round_trip(&refs, 0);
+    }
+
+    #[test]
+    fn descent_shifts_the_outline_below_the_baseline() {
+        let c = trace_pixel_outline(&bitmap(&["#", "#"]), 1);
+        let ys: Vec<i16> = c[0].iter().map(|p| p.y).collect();
+        let u = UNITS_PER_PIXEL as i16;
+        assert_eq!(*ys.iter().min().unwrap(), -u);
+        assert_eq!(*ys.iter().max().unwrap(), u);
+    }
+
+    fn page_with(shapes: &[(&[&str], usize, usize)], w: usize, h: usize) -> BitImage {
+        let mut page = BitImage::new(w as u32, h as u32).unwrap();
+        for (rows, x0, y0) in shapes {
+            for (dy, row) in rows.iter().enumerate() {
+                for (dx, ch) in row.bytes().enumerate() {
+                    if ch == b'#' {
+                        page.set_usize(x0 + dx, y0 + dy, true);
+                    }
+                }
+            }
+        }
+        page
+    }
+
+    const GLYPH_H: &[&str] = &["#...#", "#...#", "#####", "#...#", "#...#"];
+    const GLYPH_O: &[&str] = &[".###.", "#...#", "#...#", "#...#", ".###."];
+    const GLYPH_P: &[&str] = &[
+        "####.", "#...#", "####.", "#....", "#....", "#....", "#....",
+    ];
+
+    #[test]
+    fn identical_shapes_share_a_prototype_and_lines_are_grouped() {
+        // Two lines: "H O H" then "O P" (P descends two pixels below the line).
+        let page = page_with(
+            &[
+                (GLYPH_H, 2, 2),
+                (GLYPH_O, 10, 2),
+                (GLYPH_H, 18, 2),
+                (GLYPH_O, 2, 14),
+                (GLYPH_P, 10, 14),
+            ],
+            40,
+            30,
+        );
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 3, "H, O, P");
+        assert_eq!(runs.glyph_count, 5);
+        assert_eq!(runs.lines.len(), 2);
+
+        let first = &runs.lines[0];
+        assert_eq!(first.baseline_y, 7);
+        let ids: Vec<u32> = first.glyphs.iter().map(|g| g.glyph).collect();
+        assert_eq!(ids, vec![0, 1, 0]);
+        assert!(first.glyphs.iter().all(|g| g.rise_px == 0));
+        assert_eq!(first.glyphs[1].x, 10);
+
+        let second = &runs.lines[1];
+        assert_eq!(second.baseline_y, 19, "median of bottoms 19 and 21");
+        assert_eq!(second.glyphs[0].glyph, 1, "O reused from line one");
+        assert_eq!(second.glyphs[0].rise_px, 0);
+        assert_eq!(second.glyphs[1].glyph, 2);
+        assert_eq!(second.glyphs[1].rise_px, 0, "P defines its own descent");
+
+        // A second page: the same P set two pixels higher, so its bottom sits
+        // on the baseline instead of two below it, must be raised by two.
+        let page2 = page_with(
+            &[(GLYPH_P, 2, 0), (GLYPH_H, 10, 2), (GLYPH_H, 18, 2)],
+            40,
+            30,
+        );
+        let runs2 = dict.process_page(&page2, 300);
+        assert_eq!(dict.distinct(), 3, "no new shapes");
+        assert_eq!(dict.len(), 4, "the raised P is a position variant");
+        assert_eq!(runs2.lines.len(), 1);
+        let line = &runs2.lines[0];
+        assert_eq!(line.baseline_y, 7);
+        let p = line.glyphs.iter().find(|g| g.x == 2).unwrap();
+        assert_eq!(p.rise_px, 0, "the variant absorbs the rise");
+        assert_eq!(dict.resolve_alias(p.glyph), (2, 0, 0));
+        assert_eq!(
+            dict.alias_rise(p.glyph),
+            2,
+            "prototype descent 2, this occurrence 0"
+        );
+    }
+
+    #[test]
+    fn near_identical_shapes_match_and_alignment_shifts_the_placement() {
+        let mut noisy: Vec<String> = GLYPH_O.iter().map(|s| s.to_string()).collect();
+        noisy[2].replace_range(0..1, "."); // one pixel missing
+        let noisy_refs: Vec<&str> = noisy.iter().map(String::as_str).collect();
+        let page = page_with(&[(GLYPH_O, 2, 2), (&noisy_refs, 20, 2)], 40, 12);
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 1, "one missing pixel is within tolerance");
+        let xs: Vec<i32> = runs.lines[0].glyphs.iter().map(|g| g.x).collect();
+        assert_eq!(xs, vec![2, 20]);
+    }
+
+    #[test]
+    fn a_missing_crossbar_is_a_different_glyph() {
+        // An "e"-like ring with a two-pixel crossbar against the same ring
+        // without it: the total difference is small but two pixels thick.
+        const RING: &[&str] = &[
+            "..#####..",
+            ".#.....#.",
+            "#.......#",
+            "#.......#",
+            "#.......#",
+            "#.......#",
+            "#.......#",
+            ".#.....#.",
+            "..#####..",
+        ];
+        let mut barred: Vec<String> = RING.iter().map(|s| s.to_string()).collect();
+        barred[4] = "#########".into();
+        barred[5] = "#########".into();
+        let barred_refs: Vec<&str> = barred.iter().map(String::as_str).collect();
+        let page = page_with(&[(RING, 2, 2), (&barred_refs, 20, 2)], 40, 14);
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 2, "crossbar must not be absorbed");
+        assert_eq!(runs.glyph_count, 2);
+
+        // Edge noise of the same total size, one pixel thick, is absorbed.
+        let mut ragged: Vec<String> = RING.iter().map(|s| s.to_string()).collect();
+        ragged[2] = "##......#".into();
+        ragged[3] = "#.......##".into();
+        ragged[6] = ".#......#".into();
+        let ragged_refs: Vec<&str> = ragged.iter().map(String::as_str).collect();
+        let page = page_with(&[(RING, 2, 2), (&ragged_refs, 20, 2)], 40, 14);
+        let mut dict = GlyphDictionary::new();
+        dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 1, "ragged edges are the same glyph");
+    }
+
+    #[test]
+    fn prototypes_are_the_majority_of_their_instances() {
+        // Three H's, one with a stray pixel: the prototype drops it.
+        let mut noisy: Vec<String> = GLYPH_H.iter().map(|s| s.to_string()).collect();
+        noisy[0] = "##..#".into();
+        let noisy_refs: Vec<&str> = noisy.iter().map(String::as_str).collect();
+        let page = page_with(
+            &[(GLYPH_H, 2, 2), (&noisy_refs, 10, 2), (GLYPH_H, 18, 2)],
+            30,
+            10,
+        );
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 1);
+        assert_eq!(runs.glyph_count, 3);
+        let (shape, (ox, oy)) = dict.prototype_shape(0);
+        assert!(!shape.get_usize(ox + 1, oy), "stray pixel outvoted");
+        assert!(shape.get_usize(ox, oy) && shape.get_usize(ox + 4, oy + 4));
+        assert_eq!(ink_bounds(&shape), Some((ox, oy, ox + 4, oy + 4)));
+
+        // The refreshed matcher still matches, and the font renders the H.
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 1);
+        assert_eq!(runs.glyph_count, 3);
+        let font = dict.build_embedded_font().unwrap();
+        assert_eq!(font.bbox, [0, 0, 5 * UNITS_PER_PIXEL, 5 * UNITS_PER_PIXEL]);
+    }
+
+    #[test]
+    fn instances_that_grow_the_shape_keep_the_frame_origin() {
+        // Two O's whose right column reaches one pixel further, against one
+        // plain O: the majority grows the shape by a column right of the
+        // frame, and placements still report the frame's origin.
+        let mut wide: Vec<String> = GLYPH_O.iter().map(|s| s.to_string()).collect();
+        for row in wide.iter_mut() {
+            row.push(if row.ends_with('#') { '#' } else { '.' });
+        }
+        let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
+        let page = page_with(
+            &[(GLYPH_O, 2, 2), (&wide_refs, 10, 2), (&wide_refs, 20, 2)],
+            30,
+            10,
+        );
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.len(), 1, "one column of growth is edge noise");
+        let xs: Vec<i32> = runs.lines[0].glyphs.iter().map(|g| g.x).collect();
+        assert_eq!(xs, vec![2, 10, 20]);
+        let (shape, (ox, oy)) = dict.prototype_shape(0);
+        assert_eq!(ink_bounds(&shape), Some((ox, oy, ox + 5, oy + 4)));
+        let font = dict.build_embedded_font().unwrap();
+        assert_eq!(
+            font.bbox[2],
+            6 * UNITS_PER_PIXEL,
+            "outline covers the grown column"
+        );
+    }
+
+    #[test]
+    fn one_pixel_baseline_wobble_is_snapped() {
+        let page = page_with(
+            &[
+                (GLYPH_H, 2, 2),
+                (GLYPH_H, 10, 3),
+                (GLYPH_H, 18, 2),
+                (GLYPH_H, 26, 2),
+            ],
+            40,
+            12,
+        );
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(runs.lines.len(), 1);
+        assert!(
+            runs.lines[0].glyphs.iter().all(|g| g.rise_px == 0),
+            "{:?}",
+            runs.lines[0]
+        );
+    }
+
+    #[test]
+    fn a_new_glyph_takes_the_median_descent_of_its_first_page() {
+        // Four P's: the first sits on the baseline (a scan wobble), the other
+        // three descend by two. The prototype must adopt two, so the
+        // majority renders without a rise and the odd one out is snapped.
+        let page = page_with(
+            &[
+                (GLYPH_H, 2, 2),
+                (GLYPH_P, 10, 0),
+                (GLYPH_P, 18, 2),
+                (GLYPH_P, 26, 2),
+                (GLYPH_P, 34, 2),
+                (GLYPH_H, 42, 2),
+                (GLYPH_H, 50, 2),
+                (GLYPH_H, 58, 2),
+            ],
+            70,
+            12,
+        );
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 300);
+        assert_eq!(dict.distinct(), 2);
+        assert_eq!(runs.lines.len(), 1);
+        let line = &runs.lines[0];
+        assert_eq!(line.baseline_y, 7);
+        let ps: Vec<&PlacedGlyph> = line
+            .glyphs
+            .iter()
+            .filter(|g| (10..=34).contains(&g.x))
+            .collect();
+        assert!(ps.iter().all(|g| g.rise_px == 0), "{ps:?}");
+        assert_eq!(
+            dict.alias_rise(ps[0].glyph),
+            2,
+            "the odd one out is a variant two up"
+        );
+        assert!(
+            ps[1..]
+                .iter()
+                .all(|g| g.glyph == ps[1].glyph && dict.protos[g.glyph as usize].alias.is_none()),
+            "the majority use the prototype itself"
+        );
+        let font = dict.build_embedded_font().unwrap();
+        assert_eq!(font.bbox[1], -2 * UNITS_PER_PIXEL, "P descends two pixels");
+    }
+
+    #[test]
+    fn finalize_folds_matching_clusters_into_composites() {
+        const RING: &[&str] = &[
+            "..#####..",
+            ".#.....#.",
+            "#.......#",
+            "#.......#",
+            "#.......#",
+            "#.......#",
+            "#.......#",
+            ".#.....#.",
+            "..#####..",
+        ];
+        // The same ring inside a frame one pixel larger on the left and top,
+        // as a cluster whose first instance carried a speck there.
+        let mut padded: Vec<String> = RING.iter().map(|r| format!(".{r}")).collect();
+        padded.insert(0, ".".repeat(10));
+        let padded_refs: Vec<&str> = padded.iter().map(String::as_str).collect();
+        let mut barred: Vec<String> = RING.iter().map(|s| s.to_string()).collect();
+        barred[4] = "#########".into();
+        barred[5] = "#########".into();
+        let barred_refs: Vec<&str> = barred.iter().map(String::as_str).collect();
+
+        let mut dict = GlyphDictionary::new();
+        let heavy = dict.insert_prototype(bitmap(RING), 10, 0);
+        let light = dict.insert_prototype(bitmap(&padded_refs), 3, 1);
+        let other = dict.insert_prototype(bitmap(&barred_refs), 5, 0);
+        dict.finalize();
+        assert_eq!(dict.distinct(), 2);
+        assert_eq!(
+            dict.resolve_alias(light),
+            (heavy, 1, 1),
+            "root frame origin at (1,1)"
+        );
+        assert!(
+            dict.protos[other as usize].alias.is_none(),
+            "crossbar stays distinct"
+        );
+        assert!(dict.protos[heavy as usize].alias.is_none());
+
+        let font = dict.build_embedded_font().unwrap();
+        assert_eq!(font.cid_widths.as_ref().unwrap().len(), 5);
+        let face = lege_pdf_read::read_face_metrics(&font.data, 0).expect("font parses");
+        assert_eq!(face.num_glyphs, 5);
+        // The composite must put the ring where the light frame had it:
+        // one pixel right of its origin, and with descent 1 against the
+        // root's 0 the ring's bottom is one pixel below the baseline. The
+        // font bbox is therefore the ring's own bounds (fitted curves may
+        // bulge a pixel past the ink) grown by one pixel right and down.
+        let mut alone = GlyphDictionary::new();
+        alone.insert_prototype(bitmap(RING), 10, 0);
+        let ring = alone.build_embedded_font().unwrap().bbox;
+        assert_eq!(
+            font.bbox,
+            [
+                ring[0],
+                ring[1] - UNITS_PER_PIXEL,
+                ring[2] + UNITS_PER_PIXEL,
+                ring[3]
+            ]
+        );
+    }
+
+    #[test]
+    fn embedded_font_has_one_glyph_per_prototype_plus_notdef() {
+        let page = page_with(&[(GLYPH_H, 2, 2), (GLYPH_O, 10, 2)], 20, 10);
+        let mut dict = GlyphDictionary::new();
+        dict.process_page(&page, 300);
+        let font = dict.build_embedded_font().unwrap();
+        assert!(font.symbolic);
+        assert_eq!(font.to_unicode, ToUnicode::None);
+        let widths = font.cid_widths.as_ref().unwrap();
+        assert_eq!(widths.len(), 4);
+        assert_eq!(widths[0], 0);
+        assert_eq!(widths[SPACE_GID as usize], SPACE_ADVANCE);
+        // H is 5 wide and O follows it 3 pixels on: advance 8.
+        assert_eq!(widths[2], 8 * UNITS_PER_PIXEL as u16);
+        // O ends the line; it takes the page's typical gap.
+        assert_eq!(widths[3], 8 * UNITS_PER_PIXEL as u16);
+        let face = lege_pdf_read::read_face_metrics(&font.data, 0).expect("font parses");
+        assert_eq!(face.num_glyphs, 4);
+        assert_eq!(face.units_per_em, UNITS_PER_EM);
+        assert_eq!(font.bbox[3], 5 * UNITS_PER_PIXEL);
+    }
+
+    const GLYPH_BAR: &[&str] = &["##"; 20];
+    const GLYPH_STEM: &[&str] = &["##"; 8];
+    const GLYPH_DOT: &[&str] = &["##", "##"];
+    const GLYPH_BLOCK: &[&str] = &["######"; 10];
+
+    /// "l l i ." on one baseline (row 20): two bars, a stem with a tittle
+    /// two pixels above it, and a full stop.
+    fn word_page() -> BitImage {
+        page_with(
+            &[
+                (GLYPH_BAR, 2, 0),
+                (GLYPH_BAR, 5, 0),
+                (GLYPH_STEM, 8, 12),
+                (GLYPH_DOT, 8, 8),
+                (GLYPH_DOT, 14, 18),
+            ],
+            24,
+            24,
+        )
+    }
+
+    fn word(text: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> TextWord {
+        TextWord {
+            text: text.to_string(),
+            x0,
+            y0,
+            x1,
+            y1,
+        }
+    }
+
+    /// The glyph id placed at pixel column `x` on the page.
+    fn glyph_at(runs: &PageGlyphRuns, x: i32) -> Vec<u32> {
+        let mut ids: Vec<u32> = runs
+            .lines
+            .iter()
+            .flat_map(|l| l.glyphs.iter())
+            .filter(|g| g.x == x)
+            .map(|g| g.glyph)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn stacked_pieces_become_one_compound_glyph() {
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&word_page(), 72);
+        let i = glyph_at(&runs, 8);
+        assert_eq!(i.len(), 1, "stem and tittle placed as one glyph: {i:?}");
+        let compound = &dict.protos[i[0] as usize];
+        assert_eq!(compound.parts.len(), 2);
+        assert_eq!((compound.frame_w, compound.frame_h), (2, 12));
+        assert_eq!(compound.descent, Some(0));
+        assert_eq!(dict.distinct(), 3, "bar, dot and stem own outlines");
+        assert_eq!(dict.len(), 4);
+        assert!(runs.lines[0].glyphs.iter().all(|g| g.rise_px == 0));
+        // The same page again reuses the compound.
+        dict.process_page(&word_page(), 72);
+        assert_eq!(dict.len(), 4);
+        let font = dict.build_embedded_font().unwrap();
+        let face = lege_pdf_read::read_face_metrics(&font.data, 0).unwrap();
+        assert_eq!(face.num_glyphs, 6);
+    }
+
+    #[test]
+    fn a_shape_far_off_its_baseline_position_is_a_separate_glyph() {
+        // Three bars, a dot floating ten pixels up with nothing under it,
+        // and a full stop: the two dots share a shape but not a position.
+        let page = page_with(
+            &[
+                (GLYPH_BAR, 2, 0),
+                (GLYPH_BAR, 5, 0),
+                (GLYPH_BAR, 8, 0),
+                (GLYPH_DOT, 14, 8),
+                (GLYPH_DOT, 20, 18),
+            ],
+            24,
+            24,
+        );
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 72);
+        let dots: Vec<u32> = [14, 20].iter().flat_map(|&x| glyph_at(&runs, x)).collect();
+        assert_eq!(dots.len(), 2);
+        assert_ne!(dots[0], dots[1], "the two dots get different glyph ids");
+        // One is the root, the other its position variant ten pixels away.
+        let (a, b) = (
+            &dict.protos[dots[0] as usize],
+            &dict.protos[dots[1] as usize],
+        );
+        assert!(a.alias.is_some() != b.alias.is_some());
+        assert_eq!((a.descent.unwrap() - b.descent.unwrap()).abs(), 10);
+        assert!(
+            runs.lines
+                .iter()
+                .flat_map(|l| l.glyphs.iter())
+                .all(|g| g.rise_px == 0),
+            "variants absorb the rise"
+        );
+        let variant = if a.alias.is_some() { dots[0] } else { dots[1] };
+        assert_eq!(dict.alias_rise(variant).abs(), 10);
+        assert_eq!(dict.distinct(), 2, "bar and dot own outlines");
+        let font = dict.build_embedded_font().unwrap();
+        let face = lege_pdf_read::read_face_metrics(&font.data, 0).unwrap();
+        assert_eq!(face.num_glyphs, 5);
+    }
+
+    #[test]
+    fn recognized_words_vote_text_onto_glyphs() {
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&word_page(), 72);
+        dict.record_text(
+            &runs,
+            &[
+                word("lli", 2.0, 0.0, 10.0, 20.0),
+                word(".", 14.0, 18.0, 16.0, 20.0),
+            ],
+        );
+        let entries = dict.to_unicode_entries();
+        let text_of = |x: i32, frame_h: usize| -> String {
+            let g = glyph_at(&runs, x)
+                .into_iter()
+                .find(|&g| dict.protos[g as usize].frame_h == frame_h)
+                .unwrap();
+            entries
+                .iter()
+                .find(|(gid, _)| *gid == g as u16 + FIRST_SHAPE_GID as u16)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| panic!("glyph at x = {x} unmapped: {entries:?}"))
+        };
+        assert_eq!(text_of(2, 20), "l");
+        assert_eq!(text_of(8, 12), "i", "the compound carries the i");
+        assert_eq!(text_of(14, 2), ".");
+        let font = dict.build_embedded_font().unwrap();
+        assert!(matches!(font.to_unicode, ToUnicode::Custom(_)));
+        assert_eq!(dict.mapped(), 4, "bar, compound, dot and the space");
+        assert_eq!(entries[0], (SPACE_GID, " ".to_string()));
+    }
+
+    #[test]
+    fn a_touching_pair_votes_for_both_letters() {
+        let page = page_with(&[(GLYPH_BLOCK, 2, 2)], 12, 14);
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 72);
+        dict.record_text(&runs, &[word("fi", 2.0, 2.0, 8.0, 12.0)]);
+        assert_eq!(
+            dict.to_unicode_entries(),
+            vec![(SPACE_GID, " ".to_string()), (2, "fi".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_broken_letter_votes_for_it_once() {
+        // Two pieces under one recognized character: the larger carries it.
+        let page = page_with(&[(GLYPH_BLOCK, 2, 2), (GLYPH_DOT, 10, 10)], 16, 14);
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 72);
+        dict.record_text(&runs, &[word("m", 2.0, 2.0, 12.0, 12.0)]);
+        let entries = dict.to_unicode_entries();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[1], (2, "m".to_string()));
+        assert_eq!(entries[2], (3, String::new()));
+    }
+
+    #[test]
+    fn word_characters_fold_marks_and_drop_spaces() {
+        assert_eq!(word_characters("e\u{301}a b"), vec!["e\u{301}", "a", "b"]);
+        assert!(word_characters(" ").is_empty());
+    }
+
+    #[test]
+    fn session_accepts_image_convention_pixels() {
+        let session = GlyphFontSession::new();
+        let (w, h) = (12usize, 8usize);
+        let mut pixels = vec![255u8; w * h];
+        for (dy, row) in GLYPH_H.iter().enumerate() {
+            for (dx, ch) in row.bytes().enumerate() {
+                if ch == b'#' {
+                    pixels[(dy + 1) * w + dx + 1] = 0;
+                }
+            }
+        }
+        let runs = session.process_page_pixels(&pixels, w, h, 300).unwrap();
+        assert_eq!(runs.glyph_count, 1);
+        assert_eq!(session.stats(), (1, 1, 1, 0));
+        session.build_embedded_font().unwrap();
+    }
+}

@@ -15,7 +15,7 @@ use flate2::write::ZlibEncoder;
 
 use crate::artifact::{PdfPageArtifact, TextFont};
 use crate::content::ContentWriter;
-use crate::font::{EmbeddedFont, write_embedded_font, write_helvetica};
+use crate::font::{EmbeddedFont, write_embedded_font, write_embedded_font_at, write_helvetica};
 use crate::images::write_image_xobject;
 use crate::meta::{DocumentMeta, PdfProfile, write_info, write_output_intent};
 use crate::outline::{OutlineItem, write_outline};
@@ -25,7 +25,7 @@ use crate::pages::{
 };
 use crate::resources::{ResourceRegistry, SharedResourceId};
 use crate::sink::{PdfSink, StreamBody};
-use crate::text::emit_text_layer;
+use crate::text::{emit_glyph_layer, emit_text_layer};
 use crate::types::{ObjectId, ResourceName, Result, WriteError};
 use crate::xref::write_xref_and_trailer;
 
@@ -44,6 +44,11 @@ pub struct DocumentWriter<W: Write> {
     font_id: Option<ObjectId>,
     /// Memoized Helvetica fallback id.
     helvetica_id: Option<ObjectId>,
+    /// The document-wide glyph font program, supplied before `finalize`.
+    glyph_font: Option<EmbeddedFont>,
+    /// Reserved Type0 id for the glyph font: allocated by the first page that
+    /// carries a glyph layer, written at finalization.
+    glyph_font_id: Option<ObjectId>,
     bookmarks: Vec<OutlineItem>,
 }
 
@@ -64,6 +69,8 @@ impl<W: Write> std::fmt::Debug for DocumentWriter<W> {
             .field("embedded_font", &self.embedded_font)
             .field("font_id", &self.font_id)
             .field("helvetica_id", &self.helvetica_id)
+            .field("glyph_font", &self.glyph_font)
+            .field("glyph_font_id", &self.glyph_font_id)
             .field("bookmarks", &self.bookmarks)
             .finish()
     }
@@ -95,6 +102,8 @@ impl<W: Write> DocumentWriter<W> {
             embedded_font: None,
             font_id: None,
             helvetica_id: None,
+            glyph_font: None,
+            glyph_font_id: None,
             bookmarks: Vec::new(),
         };
         // Reserve the /Pages root so pages written on arrival can carry a valid
@@ -106,6 +115,15 @@ impl<W: Write> DocumentWriter<W> {
     /// Provide the embedded OCR font (Lege's glyphless program + metrics).
     pub fn set_embedded_font(&mut self, font: EmbeddedFont) {
         self.embedded_font = Some(font);
+    }
+
+    /// Provide the document-wide glyph font (visible raster-text glyphs). It
+    /// may arrive at any time before `finalize`, typically after the last page,
+    /// because the glyph set is only complete once every page has been seen.
+    /// Pages carrying a glyph layer reference its reserved object id; the
+    /// program itself is written at finalization.
+    pub fn set_glyph_font(&mut self, font: EmbeddedFont) {
+        self.glyph_font = Some(font);
     }
 
     /// Provide document metadata (dates, title, …). The profile is taken from
@@ -168,11 +186,30 @@ impl<W: Write> DocumentWriter<W> {
             self.saw_text = true;
         }
 
-        // Content stream: compress when it carries a text layer (parity with
-        // the current writer), uncompressed for pure image pages.
+        // Visible glyph text: reserve the document font id on first use; the
+        // program is written at finalize.
+        let has_glyphs = artifact
+            .glyph_layer
+            .as_ref()
+            .is_some_and(|gl| gl.lines.iter().any(|l| !l.items.is_empty()));
+        if has_glyphs {
+            let gid = match self.glyph_font_id {
+                Some(id) => id,
+                None => {
+                    let id = self.sink.alloc_id();
+                    self.glyph_font_id = Some(id);
+                    id
+                }
+            };
+            fonts.push((crate::artifact::GLYPH_FONT_RESOURCE, gid));
+            emit_glyph_layer(&mut content, artifact.glyph_layer.as_ref().unwrap());
+        }
+
+        // Content stream: compress when it carries text (parity with the
+        // current writer), uncompressed for pure image pages.
         let content_bytes = content.into_bytes();
         let contents_id = self.sink.alloc_id();
-        if has_text {
+        if has_text || has_glyphs {
             let compressed = deflate(&content_bytes)?;
             let mut cdict = Vec::new();
             cdict.extend_from_slice(b"<</Filter /FlateDecode /Length ");
@@ -209,6 +246,15 @@ impl<W: Write> DocumentWriter<W> {
     /// Finish the document: page tree, outline, metadata, catalog, xref,
     /// trailer. Errors (listing gaps) if any logical page never arrived.
     pub fn finalize(mut self) -> Result<W> {
+        if let Some(id) = self.glyph_font_id {
+            let font = self.glyph_font.as_ref().ok_or_else(|| {
+                WriteError::InvalidArtifact(
+                    "pages carry glyph text but no glyph font was set before finalize".to_string(),
+                )
+            })?;
+            write_embedded_font_at(&mut self.sink, font, id)?;
+        }
+
         write_pages_root(&mut self.sink, self.pages_root, &self.slots)?;
 
         let outlines = if self.bookmarks.is_empty() {
@@ -280,8 +326,10 @@ fn deflate(data: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::artifact::{
-        ColorModel, PdfImageElement, PdfImageResource, PreparedTextLayer, TextRun,
+        ColorModel, GlyphItem, GlyphLine, PdfImageElement, PdfImageResource, PreparedGlyphLayer,
+        PreparedTextLayer, TextRun,
     };
+    use crate::font::ToUnicode;
     use crate::types::{Affine, PdfRect};
 
     fn jpeg_page(index: u32) -> PdfPageArtifact {
@@ -298,19 +346,75 @@ mod tests {
                 },
             }]),
             text_layer: None,
+            glyph_layer: None,
         }
     }
 
     fn sample_font() -> EmbeddedFont {
-        EmbeddedFont {
-            data: Arc::from(&[0u8; 32][..]),
-            post_script_name: "Glyphless".to_string(),
-            ascent: 1000,
-            descent: -200,
-            cap_height: 700,
-            italic_angle: 0.0,
-            bbox: [-100, -200, 1000, 900],
+        EmbeddedFont::glyphless(
+            Arc::from(&[0u8; 32][..]),
+            "Glyphless".to_string(),
+            1000,
+            -200,
+            700,
+            0.0,
+            [-100, -200, 1000, 900],
+        )
+    }
+
+    fn glyph_page(index: u32) -> PdfPageArtifact {
+        PdfPageArtifact {
+            index,
+            media_box: PdfRect::from_size(612.0, 792.0),
+            elements: Box::new([]),
+            text_layer: None,
+            glyph_layer: Some(PreparedGlyphLayer {
+                lines: Box::new([GlyphLine {
+                    matrix: Affine::scale_translate(100.0, 100.0, 72.0, 700.0),
+                    items: Box::new([GlyphItem {
+                        gid: 1,
+                        adjust: 0,
+                        rise: 0,
+                    }]),
+                }]),
+            }),
         }
+    }
+
+    #[test]
+    fn glyph_font_is_written_at_finalize_under_the_reserved_id() {
+        let mut w = DocumentWriter::new(Vec::new(), 2).unwrap();
+        w.add_page(&glyph_page(1)).unwrap();
+        w.add_page(&glyph_page(0)).unwrap();
+        let reserved = w.glyph_font_id.expect("first glyph page reserves the id");
+        let mut font = sample_font();
+        font.symbolic = true;
+        font.to_unicode = ToUnicode::None;
+        font.cid_widths = Some(Arc::from(&[0u16, 500][..]));
+        w.set_glyph_font(font);
+        let bytes = w.finalize().unwrap();
+        let t = String::from_utf8_lossy(&bytes).into_owned();
+        let needle = format!("{} 0 obj\n<</Type /Font/Subtype /Type0", reserved.num);
+        assert!(t.contains(&needle), "{t}");
+        assert_eq!(
+            t.matches("/Subtype /Type0").count(),
+            1,
+            "one font for the whole document"
+        );
+        assert!(t.contains(&format!("/F2 {} 0 R", reserved.num)), "{t}");
+        assert!(
+            t.contains("/FlateDecode"),
+            "glyph text content is compressed: {t}"
+        );
+        assert!(t.contains("/W [0 [0 500]]"), "{t}");
+    }
+
+    #[test]
+    fn glyph_pages_without_a_font_fail_finalize() {
+        let mut w = DocumentWriter::new(Vec::new(), 1).unwrap();
+        w.add_page(&glyph_page(0)).unwrap();
+        let err = w.finalize().unwrap_err();
+        assert!(matches!(err, WriteError::InvalidArtifact(_)), "{err:?}");
     }
 
     #[test]
@@ -389,6 +493,7 @@ mod tests {
                 }]),
                 font: TextFont::Embedded,
             }),
+            glyph_layer: None,
         };
         w.add_page(&art).unwrap();
         assert!(w.saw_text());

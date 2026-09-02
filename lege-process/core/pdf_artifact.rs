@@ -10,14 +10,17 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use lege_pdf_write::artifact::{
-    ColorModel, PdfImageElement, PdfImageResource, PdfPageArtifact, PreparedTextLayer, TextFont,
-    TextRun,
+    ColorModel, GlyphItem, GlyphLine, PdfImageElement, PdfImageResource, PdfPageArtifact,
+    PreparedGlyphLayer, PreparedTextLayer, TextFont, TextRun,
 };
 use lege_pdf_write::font::EmbeddedFont;
 use lege_pdf_write::resources::SharedResourceId;
 use lege_pdf_write::types::{Affine, PdfRect};
 
-use crate::accumulator::{ContentType, Page};
+use crate::accumulator::{ContentElement, ContentType, Page};
+use crate::encoding::glyphfont::{
+    EM_PIXELS, FIRST_SHAPE_GID, PageGlyphRuns, SPACE_ADVANCE, SPACE_GID, UNITS_PER_PIXEL,
+};
 use crate::hocr;
 use crate::unicode_font::UnicodeFontData;
 
@@ -32,8 +35,24 @@ pub fn page_to_artifact(
 ) -> Result<(PdfPageArtifact, Vec<SharedBlob>)> {
     let mut elements = Vec::with_capacity(page.elements.len());
     let mut globals = Vec::new();
+    let mut glyph_lines: Vec<GlyphLine> = Vec::new();
 
     for el in &page.elements {
+        if let ContentType::GlyphText {
+            runs,
+            pixel_width,
+            pixel_height,
+        } = &el.content
+        {
+            glyph_lines.extend(glyph_runs_to_lines(
+                page,
+                el,
+                runs,
+                *pixel_width,
+                *pixel_height,
+            )?);
+            continue;
+        }
         // Top-left (pixel/point) origin → PDF bottom-left origin.
         let pdf_y = (page.height - el.y - el.height) as f64;
         let transform =
@@ -42,34 +61,128 @@ pub fn page_to_artifact(
         elements.push(PdfImageElement { transform, image });
     }
 
-    let text_layer = build_text_layer(page, embedded_font_available);
+    // Glyph text carries its own ToUnicode mapping (from the same OCR words),
+    // so an invisible text layer would only duplicate it.
+    let text_layer = if glyph_lines.is_empty() {
+        build_text_layer(page, embedded_font_available)
+    } else {
+        None
+    };
+    let glyph_layer = (!glyph_lines.is_empty()).then(|| PreparedGlyphLayer {
+        lines: glyph_lines.into_boxed_slice(),
+    });
 
     let artifact = PdfPageArtifact {
         index: page.index as u32,
         media_box: PdfRect::from_size(page.width as f64, page.height as f64),
         elements: elements.into_boxed_slice(),
         text_layer,
+        glyph_layer,
     };
     Ok((artifact, globals))
+}
+
+/// Turn a page's glyph placements (pixel space, y down) into writer lines in
+/// PDF user space. The font is selected at size 1, so each line's text matrix
+/// scales one em (`EM_PIXELS` source pixels) to points and puts its origin
+/// at the line's first glyph on the baseline. Inter-glyph gaps become `TJ`
+/// adjustments, word-sized gaps get the space glyph, and any per-glyph
+/// baseline deviation left after the dictionary's position variants becomes
+/// a text rise. The matrix is never tilted: poppler-based extractors
+/// scramble the reading order of lines whose text matrix is rotated even
+/// slightly, so a skewed scan line is served by the variants instead.
+/// Glyph placements this close (source pixels) to the pen are drawn at the
+/// pen without a `TJ` adjustment.
+const GLYPH_ADJUST_SNAP_PX: i32 = 1;
+/// A gap between a glyph and the pen of at least this many source pixels is
+/// a word space: the blank space glyph is drawn in it so text extraction
+/// sees the word break. Letter gaps beyond the advance's typical gap stay
+/// within a few pixels; word spaces on a 2400-pixel page run 15 pixels and
+/// more even in small type.
+const WORD_SPACE_MIN_PX: i32 = 8;
+
+fn glyph_runs_to_lines(
+    page: &Page,
+    el: &ContentElement,
+    runs: &PageGlyphRuns,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> Result<Vec<GlyphLine>> {
+    if pixel_width == 0 || pixel_height == 0 {
+        return Err(anyhow!("glyph text element has a zero-sized raster"));
+    }
+    let sx = el.width as f64 / pixel_width as f64;
+    let sy = el.height as f64 / pixel_height as f64;
+    let mut lines = Vec::with_capacity(runs.lines.len());
+    for line in &runs.lines {
+        let Some(first) = line.glyphs.first() else {
+            continue;
+        };
+        let mut items = Vec::with_capacity(line.glyphs.len());
+        let mut pen_px: Option<i32> = None;
+        for g in &line.glyphs {
+            let gid = u16::try_from(g.glyph + FIRST_SHAPE_GID).map_err(|_| {
+                anyhow!(
+                    "glyph id {} exceeds the 16-bit CID space",
+                    g.glyph + FIRST_SHAPE_GID
+                )
+            })?;
+            // A word-sized gap gets the space glyph, adjusted so its advance
+            // plus the adjustment spans the gap exactly.
+            if let Some(pen) = pen_px {
+                let gap_units = (g.x - pen) * UNITS_PER_PIXEL;
+                if g.x - pen >= WORD_SPACE_MIN_PX {
+                    items.push(GlyphItem {
+                        gid: SPACE_GID,
+                        adjust: SPACE_ADVANCE as i32 - gap_units,
+                        rise: 0,
+                    });
+                    pen_px = Some(g.x);
+                }
+            }
+            // Where the pen is versus where the glyph goes. A gap of at most
+            // one source pixel is left to the advance: the glyph lands up to
+            // a pixel off, the pen is tracked from where it actually landed,
+            // and the run stays one string.
+            let (adjust, drawn_x) = match pen_px {
+                None => (0, g.x),
+                Some(pen) if (g.x - pen).abs() <= GLYPH_ADJUST_SNAP_PX => (0, pen),
+                Some(pen) => (-(g.x - pen) * UNITS_PER_PIXEL, g.x),
+            };
+            items.push(GlyphItem {
+                gid,
+                adjust,
+                rise: g.rise_px * UNITS_PER_PIXEL,
+            });
+            pen_px = Some(drawn_x + g.width as i32);
+        }
+        let origin_x = el.x as f64 + first.x as f64 * sx;
+        let origin_y = (page.height - el.y) as f64 - line.baseline_y as f64 * sy;
+        lines.push(GlyphLine {
+            matrix: Affine::new(EM_PIXELS * sx, 0.0, 0.0, EM_PIXELS * sy, origin_x, origin_y),
+            items: items.into_boxed_slice(),
+        });
+    }
+    Ok(lines)
 }
 
 /// Build `EmbeddedFont` from Lege's glyphless font data.
 pub fn embedded_font_from(u: &UnicodeFontData) -> EmbeddedFont {
     let m = &u.metrics;
-    EmbeddedFont {
-        data: u.data.clone(),
-        post_script_name: u.post_script_name.clone(),
-        ascent: m.ascent as i32,
-        descent: m.descent as i32,
-        cap_height: m.cap_height as i32,
-        italic_angle: m.italic_angle,
-        bbox: [
+    EmbeddedFont::glyphless(
+        u.data.clone(),
+        u.post_script_name.clone(),
+        m.ascent as i32,
+        m.descent as i32,
+        m.cap_height as i32,
+        m.italic_angle,
+        [
             m.bbox.x_min as i32,
             m.bbox.y_min as i32,
             m.bbox.x_max as i32,
             m.bbox.y_max as i32,
         ],
-    }
+    )
 }
 
 fn content_to_resource(
@@ -161,6 +274,9 @@ fn content_to_resource(
             image_mask: true,
             image_mask_paints_one: *paint_one,
         }),
+        ContentType::GlyphText { .. } => Err(anyhow!(
+            "glyph text is not an image resource (handled by page_to_artifact)"
+        )),
     }
 }
 
@@ -244,4 +360,80 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoding::glyphfont::{GlyphLine as RunLine, PlacedGlyph};
+
+    #[test]
+    fn word_gaps_get_the_space_glyph() {
+        let runs = PageGlyphRuns {
+            lines: vec![RunLine {
+                baseline_y: 100,
+                glyphs: vec![
+                    PlacedGlyph {
+                        glyph: 0,
+                        x: 10,
+                        width: 20,
+                        rise_px: 0,
+                    },
+                    // One pixel past the pen: drawn at the pen, no adjustment.
+                    PlacedGlyph {
+                        glyph: 1,
+                        x: 31,
+                        width: 20,
+                        rise_px: 0,
+                    },
+                    // Thirty pixels past the pen: a word space.
+                    PlacedGlyph {
+                        glyph: 0,
+                        x: 80,
+                        width: 20,
+                        rise_px: 0,
+                    },
+                ],
+            }],
+            glyph_count: 3,
+        };
+        let page = Page {
+            width: 1000.0,
+            height: 1000.0,
+            index: 0,
+            hocr_text: Some("<p class='ocr_line'>ignored</p>".into()),
+            binarized: None,
+            elements: vec![ContentElement {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
+                content: ContentType::GlyphText {
+                    runs: Arc::new(runs),
+                    pixel_width: 1000,
+                    pixel_height: 1000,
+                },
+            }],
+        };
+        let (art, _) = page_to_artifact(&page, false).unwrap();
+        assert!(
+            art.text_layer.is_none(),
+            "glyph text replaces the OCR layer"
+        );
+        let layer = art.glyph_layer.unwrap();
+        let line = &layer.lines[0];
+        let gids: Vec<u16> = line.items.iter().map(|i| i.gid).collect();
+        assert_eq!(gids, vec![2, 3, SPACE_GID, 2]);
+        // The pen sits at 50 after the second glyph; the gap to 80 is 30 px.
+        assert_eq!(line.items[1].adjust, 0);
+        assert_eq!(
+            line.items[2].adjust,
+            SPACE_ADVANCE as i32 - 30 * UNITS_PER_PIXEL
+        );
+        assert_eq!(line.items[3].adjust, 0);
+        assert_eq!(
+            line.matrix,
+            Affine::new(EM_PIXELS, 0.0, 0.0, EM_PIXELS, 10.0, 900.0)
+        );
+    }
 }

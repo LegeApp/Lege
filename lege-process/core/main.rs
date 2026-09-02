@@ -375,7 +375,7 @@ fn hardware_acceleration_status() -> (bool, String) {
 #[derive(Default)]
 struct CliOptions {
     // --- Output format ---
-    text_format: Option<String>, // --text-format ccitt4|jbig2|jpeg|djvu|epub
+    text_format: Option<String>, // --text-format ccitt4|jbig2|jpeg|djvu|epub|glyphfont
     cover_format: Option<String>, // --cover-format jpeg|jp2|ccitt4|jbig2|none
 
     // --- Binarization ---
@@ -503,9 +503,9 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     .ok_or_else(|| anyhow!("Missing value after --text-format"))?;
                 let normalized = val.trim().to_ascii_lowercase();
                 match normalized.as_str() {
-                    "ccitt4" | "jbig2" | "jpeg" | "djvu" | "epub" => {}
+                    "ccitt4" | "jbig2" | "jpeg" | "djvu" | "epub" | "glyphfont" => {}
                     _ => bail!(
-                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, djvu, or epub",
+                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, djvu, epub, or glyphfont",
                         val
                     ),
                 }

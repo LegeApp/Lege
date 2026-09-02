@@ -393,6 +393,11 @@ mod page_selection_tests {
     }
 }
 
+/// Smallest render height (pixels) used for `text_format = "glyphfont"`
+/// unless the caller sets one explicitly. Glyph outlines are traced from this
+/// raster, so it is chosen for shape fidelity rather than for a screen.
+pub const GLYPHFONT_MIN_TARGET_HEIGHT: u32 = 2400;
+
 /// How body-text regions are rendered. Orthogonal to the output container
 /// (PDF vs DjVu, chosen by `text_format`) and to image-region handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -613,10 +618,10 @@ impl PipelineConfig {
 
     pub fn validate(&self) -> Result<()> {
         match self.text_format.as_ref() {
-            "jbig2" | "ccitt4" | "jpeg" | "djvu" => {}
+            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "glyphfont" => {}
             _ => {
                 return Err(anyhow!(
-                    "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu",
+                    "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, glyphfont",
                     self.text_format
                 ));
             }
@@ -917,17 +922,24 @@ impl PipelineConfig {
     // Setters
     pub fn set_text_format(&mut self, format: &str) -> Result<()> {
         match format {
-            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "epub" => {
+            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "epub" | "glyphfont" => {
                 self.text_format = format.to_string();
                 // EPUB is a text-only reflowable format: it needs the slow,
                 // structured OCR path and has no image-encoding stage.
                 if format == "epub" {
                     self.set_slow_ocr(true);
                 }
+                // Glyph-font output is resolution independent on the reader,
+                // so the source raster should be fine enough for clean glyph
+                // shapes; a later explicit target height still overrides.
+                if format == "glyphfont" && self.target_height < GLYPHFONT_MIN_TARGET_HEIGHT {
+                    self.target_height = GLYPHFONT_MIN_TARGET_HEIGHT;
+                    self.target_width = None;
+                }
                 Ok(())
             }
             _ => Err(anyhow!(
-                "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, epub",
+                "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, epub, glyphfont",
                 format
             )),
         }

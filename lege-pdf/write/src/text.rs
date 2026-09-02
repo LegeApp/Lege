@@ -7,7 +7,7 @@
 //! font is selected at size 1.0, and each run's own `size` drives the text
 //! matrix scale — matching the current writer's `emit_invisible_text`.
 
-use crate::artifact::{PreparedTextLayer, TextFont};
+use crate::artifact::{GLYPH_FONT_RESOURCE, PreparedGlyphLayer, PreparedTextLayer, TextFont};
 use crate::content::ContentWriter;
 use crate::types::Affine;
 
@@ -31,6 +31,47 @@ pub fn emit_text_layer(content: &mut ContentWriter, layer: &PreparedTextLayer) {
         content.set_text_matrix(Affine::scale_translate(run.size, run.size, run.x, run.y));
         let encoded = encode(&run.text, layer.font);
         content.show_text_hex(&encoded);
+    }
+
+    content.end_text();
+}
+
+/// Emit the visible glyph layer into `content`: one text object drawn with
+/// the document-wide glyph font (`/F2`) at size 1, one `Tm` per line, and a
+/// `TJ` array per run of glyphs sharing a text rise. A no-op without lines.
+pub fn emit_glyph_layer(content: &mut ContentWriter, layer: &PreparedGlyphLayer) {
+    if layer.lines.iter().all(|l| l.items.is_empty()) {
+        return;
+    }
+
+    content.begin_text();
+    content.set_text_render_mode(0); // fill
+    content.set_char_spacing(0.0);
+    content.set_word_spacing(0.0);
+    content.set_horizontal_scale(100.0);
+    content.set_font(GLYPH_FONT_RESOURCE, 1.0);
+
+    let mut current_rise: i32 = 0;
+    let mut pending: Vec<(u16, i32)> = Vec::new();
+    for line in layer.lines.iter() {
+        if line.items.is_empty() {
+            continue;
+        }
+        content.set_text_matrix(line.matrix);
+        for item in line.items.iter() {
+            if item.rise != current_rise {
+                content.show_glyphs_adjusted(&pending);
+                pending.clear();
+                content.set_text_rise(item.rise as f64 / 1000.0);
+                current_rise = item.rise;
+            }
+            pending.push((item.gid, item.adjust));
+        }
+        content.show_glyphs_adjusted(&pending);
+        pending.clear();
+    }
+    if current_rise != 0 {
+        content.set_text_rise(0.0);
     }
 
     content.end_text();
@@ -66,7 +107,7 @@ fn encode(text: &str, font: TextFont) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artifact::TextRun;
+    use crate::artifact::{GlyphItem, GlyphLine, TextRun};
 
     fn layer(font: TextFont, runs: Vec<TextRun>) -> PreparedTextLayer {
         PreparedTextLayer {
@@ -125,6 +166,56 @@ mod tests {
         );
         let t = String::from_utf8_lossy(c.as_slice()).into_owned();
         assert!(t.contains("<D83DDE00> Tj\n"), "{t}");
+    }
+
+    #[test]
+    fn glyph_layer_groups_by_rise() {
+        let mut c = ContentWriter::new();
+        let layer = PreparedGlyphLayer {
+            lines: Box::new([
+                GlyphLine {
+                    matrix: Affine::scale_translate(100.0, 100.0, 72.0, 700.0),
+                    items: Box::new([
+                        GlyphItem {
+                            gid: 1,
+                            adjust: 0,
+                            rise: 0,
+                        },
+                        GlyphItem {
+                            gid: 2,
+                            adjust: -20,
+                            rise: 0,
+                        },
+                        GlyphItem {
+                            gid: 3,
+                            adjust: -10,
+                            rise: -30,
+                        },
+                        GlyphItem {
+                            gid: 4,
+                            adjust: 0,
+                            rise: 0,
+                        },
+                    ]),
+                },
+                GlyphLine {
+                    matrix: Affine::scale_translate(100.0, 100.0, 72.0, 600.0),
+                    items: Box::new([]),
+                },
+            ]),
+        };
+        emit_glyph_layer(&mut c, &layer);
+        let t = String::from_utf8_lossy(c.as_slice()).into_owned();
+        assert!(
+            t.starts_with("BT\n0 Tr\n0 Tc\n0 Tw\n100 Tz\n/F2 1 Tf\n100 0 0 100 72 700 Tm\n"),
+            "{t}"
+        );
+        assert!(
+            t.contains("[<0001>-20<0002>] TJ\n-0.03 Ts\n[-10<0003>] TJ\n0 Ts\n[<0004>] TJ\n"),
+            "{t}"
+        );
+        assert!(!t.contains("72 600 Tm"), "empty lines are skipped: {t}");
+        assert!(t.trim_end().ends_with("ET"));
     }
 
     #[test]

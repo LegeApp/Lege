@@ -1,4 +1,5 @@
 // pdf_tokio_pipeline.rs
+use crate::encoding::glyphfont::GlyphFontSession;
 use crate::margin::DocumentMarginAnalysis;
 use crate::pagerender::NativeTextWord;
 use crate::pipeline::config::{
@@ -154,6 +155,7 @@ async fn process_single_page(
     page_index_offset: usize,
     margin_analysis: Option<Arc<DocumentMarginAnalysis>>,
     cancellation: lege_pdf_read::CancellationToken,
+    glyph_session: Option<Arc<GlyphFontSession>>,
 ) -> Result<ProcessedPage> {
     checkpoint(&cancellation, "before page processing")?;
     let page_index = inference_data.inference_result.index;
@@ -372,6 +374,7 @@ async fn process_single_page(
             &config,
             page_index,
             mask_force_generic,
+            glyph_session,
         )
         .await
         {
@@ -423,6 +426,7 @@ async fn process_single_page(
             &config,
             page_index,
             force_jbig2_generic,
+            glyph_session,
         )
         .await?
     } else {
@@ -433,6 +437,7 @@ async fn process_single_page(
             &config,
             page_index,
             force_jbig2_generic,
+            glyph_session,
         )
         .await?
     };
@@ -1236,7 +1241,13 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                         use_jbig2_halftone_segments: false,
                     }),
                 };
-                let overlay_fmt = config.text_format().to_string();
+                // The overlay is a bilevel raster even when the base layer is
+                // not (`glyphfont`), so name the codec, not the text format.
+                let overlay_fmt = match config.text_format() {
+                    "ccitt4" => "ccitt4",
+                    _ => "jbig2",
+                }
+                .to_string();
                 match EncodingManager::encode(&buffer, &overlay_settings) {
                     Ok(EncodingResult::Standard(data)) => {
                         encoded_data = Some((data, overlay_fmt));
@@ -1676,6 +1687,7 @@ async fn encode_mrc_base_layer(
     config: &Arc<PipelineConfig>,
     page_index: usize,
     force_generic: bool,
+    glyph_session: Option<Arc<GlyphFontSession>>,
 ) -> Result<(
     crate::accumulator::ContentType,
     crate::accumulator::ContentType,
@@ -1692,39 +1704,63 @@ async fn encode_mrc_base_layer(
     // wired for the day symbol becomes usable here.
     let _ = force_generic;
     let jbig2_mode = crate::encoding::Jbig2Mode::Generic;
+    // Glyph-font output keeps the JP2 background and draws the ink layer as
+    // text instead of a JBIG2 stencil.
+    let glyph_session = if config.text_format() == "glyphfont" {
+        Some(
+            glyph_session
+                .ok_or_else(|| anyhow!("glyphfont text format selected without a glyph session"))?,
+        )
+    } else {
+        None
+    };
     crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Encode, move || {
-        let buffer = LegeImageBuffer {
-            data: &binarized,
-            width: width as u32,
-            height: height as u32,
-            channels: 1u8,
-        };
-        let settings = EncodingSettings::Jbig2(Jbig2Settings {
-            pdf_fragment_mode: true,
-            mode: jbig2_mode,
-            use_jbig2_halftone_segments: false,
-        });
-        let (page_data, global_data) = match EncodingManager::encode(&buffer, &settings)
-            .map_err(|e| anyhow!("jbig2 mask encode: {e}"))?
-        {
-            EncodingResult::Standard(data) => (data, Vec::new()),
-            EncodingResult::Jbig2WithGlobals {
-                page_data,
-                global_data,
-            } => {
-                // Inlining dictionary segments before page segments is legal
-                // embedded JBIG2 and avoids reader-specific globals handling.
-                let mut inline = global_data;
-                inline.extend_from_slice(&page_data);
-                (inline, Vec::new())
+        let mask_content = if let Some(session) = glyph_session {
+            let runs = session.process_page_pixels(
+                &binarized,
+                width,
+                height,
+                glyph_analysis_dpi(height),
+            )?;
+            crate::accumulator::ContentType::GlyphText {
+                runs: Arc::new(runs),
+                pixel_width: width as u32,
+                pixel_height: height as u32,
             }
-        };
-        let mask_content = crate::accumulator::ContentType::Jbig2Mask {
-            page_data: Arc::from(page_data),
-            global_data: Arc::from(global_data),
-            pixel_width: width as u32,
-            pixel_height: height as u32,
-            paint_one: false,
+        } else {
+            let buffer = LegeImageBuffer {
+                data: &binarized,
+                width: width as u32,
+                height: height as u32,
+                channels: 1u8,
+            };
+            let settings = EncodingSettings::Jbig2(Jbig2Settings {
+                pdf_fragment_mode: true,
+                mode: jbig2_mode,
+                use_jbig2_halftone_segments: false,
+            });
+            let (page_data, global_data) = match EncodingManager::encode(&buffer, &settings)
+                .map_err(|e| anyhow!("jbig2 mask encode: {e}"))?
+            {
+                EncodingResult::Standard(data) => (data, Vec::new()),
+                EncodingResult::Jbig2WithGlobals {
+                    page_data,
+                    global_data,
+                } => {
+                    // Inlining dictionary segments before page segments is legal
+                    // embedded JBIG2 and avoids reader-specific globals handling.
+                    let mut inline = global_data;
+                    inline.extend_from_slice(&page_data);
+                    (inline, Vec::new())
+                }
+            };
+            crate::accumulator::ContentType::Jbig2Mask {
+                page_data: Arc::from(page_data),
+                global_data: Arc::from(global_data),
+                pixel_width: width as u32,
+                pixel_height: height as u32,
+                paint_one: false,
+            }
         };
 
         // Background: cleaned gray with ink filled white, box-downsampled, then
@@ -1968,6 +2004,7 @@ async fn encode_base_layer(
     config: &PipelineConfig,
     page_index: usize,
     force_jbig2_generic: bool,
+    glyph_session: Option<Arc<GlyphFontSession>>,
 ) -> Result<crate::accumulator::ContentType> {
     use crate::accumulator::ContentType;
     use crate::encoding::{
@@ -1976,6 +2013,10 @@ async fn encode_base_layer(
     };
 
     let encoding_start = std::time::Instant::now();
+
+    if config.text_format() == "glyphfont" {
+        return encode_glyph_text(binarized, width, height, page_index, glyph_session).await;
+    }
 
     // Determine encoding settings
     let jbig2_mode = if force_jbig2_generic {
@@ -2102,6 +2143,102 @@ async fn encode_base_layer(
     }
 }
 
+/// Resolution hint for component cleanup in glyph extraction. The output
+/// raster carries no physical size, so assume a roughly ten-inch page; this
+/// only tunes the speck-removal threshold, never geometry.
+fn glyph_analysis_dpi(height_px: usize) -> i32 {
+    ((height_px as f32 / 10.0).round() as i32).clamp(72, 1200)
+}
+
+/// Glyph-font base layer: segment the binarized page into components, match
+/// them against the document-wide glyph dictionary, and hand back the page's
+/// glyph placements instead of an encoded raster.
+async fn encode_glyph_text(
+    binarized: Vec<u8>,
+    width: usize,
+    height: usize,
+    page_index: usize,
+    glyph_session: Option<Arc<GlyphFontSession>>,
+) -> Result<crate::accumulator::ContentType> {
+    let session = glyph_session
+        .ok_or_else(|| anyhow!("glyphfont text format selected without a glyph session"))?;
+    let start = std::time::Instant::now();
+    let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
+    let permit = match encode_sem {
+        Some(sem) => Some(sem.acquire_owned().await.ok()),
+        None => None,
+    };
+    let dpi = glyph_analysis_dpi(height);
+    let runs = crate::runtime_stats::spawn_blocking_stage(
+        crate::runtime_stats::Stage::Encode,
+        move || session.process_page_pixels(&binarized, width, height, dpi),
+    )
+    .await
+    .map_err(|e| anyhow!("Glyph extraction task panicked: {}", e))??;
+    drop(permit);
+    crate::perf_log!(
+        start,
+        "[PROFILING] Page {} glyph extraction completed ({} glyphs)",
+        page_index + 1,
+        runs.glyph_count
+    );
+    Ok(crate::accumulator::ContentType::GlyphText {
+        runs: Arc::new(runs),
+        pixel_width: width as u32,
+        pixel_height: height as u32,
+    })
+}
+
+/// Align a page's hOCR words with its glyph placements and record the votes
+/// in the document's glyph dictionary. hOCR and the glyph raster share the
+/// page's pixel space; the element's placement covers any scale between.
+fn record_glyph_text(
+    session: &GlyphFontSession,
+    elements: &[crate::accumulator::ContentElement],
+    hocr: &str,
+) -> Result<()> {
+    let Some((el, runs, pixel_width, pixel_height)) =
+        elements.iter().find_map(|el| match &el.content {
+            crate::accumulator::ContentType::GlyphText {
+                runs,
+                pixel_width,
+                pixel_height,
+            } => Some((el, runs, *pixel_width, *pixel_height)),
+            _ => None,
+        })
+    else {
+        return Ok(());
+    };
+    if runs.is_empty() || el.width <= 0.0 || el.height <= 0.0 {
+        return Ok(());
+    }
+    let sx = pixel_width as f32 / el.width;
+    let sy = pixel_height as f32 / el.height;
+    let lines = match crate::hocr::parse_hocr(hocr) {
+        Ok(lines) => lines,
+        Err(e) => {
+            warn_log!("Glyph font: hOCR for text alignment did not parse: {}", e);
+            return Ok(());
+        }
+    };
+    let words: Vec<crate::encoding::glyphfont::TextWord> = lines
+        .iter()
+        .flat_map(|line| line.words.iter())
+        .filter(|w| !w.text.trim().is_empty())
+        .map(|w| crate::encoding::glyphfont::TextWord {
+            text: w.text.clone(),
+            x0: (w.x - el.x) * sx,
+            y0: (w.y - el.y) * sy,
+            x1: (w.x + w.width - el.x) * sx,
+            y1: (w.y + w.height - el.y) * sy,
+        })
+        .collect();
+    if words.is_empty() {
+        return Ok(());
+    }
+    session.record_text(runs, &words)
+}
+
 /// Fused binarize + base-layer encode in a single spawn_blocking task.
 ///
 /// Used when the binarized buffer needs no post-binarization mutation (no cover, no image
@@ -2115,6 +2252,7 @@ async fn encode_base_layer_fused(
     config: &PipelineConfig,
     page_index: usize,
     force_jbig2_generic: bool,
+    glyph_session: Option<Arc<GlyphFontSession>>,
 ) -> Result<crate::accumulator::ContentType> {
     use crate::accumulator::ContentType;
     use crate::encoding::{
@@ -2123,6 +2261,43 @@ async fn encode_base_layer_fused(
     };
 
     let encoding_start = std::time::Instant::now();
+
+    if config.text_format() == "glyphfont" {
+        let session = glyph_session
+            .ok_or_else(|| anyhow!("glyphfont text format selected without a glyph session"))?;
+        let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
+        let permit = match encode_sem {
+            Some(sem) => Some(sem.acquire_owned().await.ok()),
+            None => None,
+        };
+        let dpi = glyph_analysis_dpi(height);
+        let runs = crate::runtime_stats::spawn_blocking_stage(
+            crate::runtime_stats::Stage::Encode,
+            move || {
+                crate::color::binarization::binarize_image_raw_with(
+                    rgb_image.as_raw(),
+                    width,
+                    height,
+                    &bin_options,
+                    |binarized| session.process_page_pixels(binarized, width, height, dpi),
+                )
+            },
+        )
+        .await
+        .map_err(|e| anyhow!("Fused glyph extraction task panicked: {}", e))??;
+        drop(permit);
+        crate::perf_log!(
+            encoding_start,
+            "[PROFILING] Page {} fused binarize+glyph extraction completed ({} glyphs)",
+            page_index + 1,
+            runs.glyph_count
+        );
+        return Ok(ContentType::GlyphText {
+            runs: Arc::new(runs),
+            pixel_width: width as u32,
+            pixel_height: height as u32,
+        });
+    }
 
     let jbig2_mode = if force_jbig2_generic {
         crate::encoding::Jbig2Mode::Generic
@@ -2918,6 +3093,7 @@ async fn process_planned_pdf_products(
     preserved_mask: Option<lege_pdf_read::PreservedJbig2Smask>,
     detections: Vec<crate::engine::Detection>,
     cancellation: lege_pdf_read::CancellationToken,
+    glyph_session: Option<Arc<GlyphFontSession>>,
 ) -> Result<ProcessedPage> {
     let lege_pdf_read::RasterPlane::Gray8(base_surface) = products.base else {
         return Err(anyhow!("planned gray path received a non-gray base"));
@@ -3090,6 +3266,20 @@ async fn process_planned_pdf_products(
             mask,
         )
         .await?;
+        // Glyph-font output replaces the passed-through source mask with text
+        // drawn from the same decoded ink view, over the cleaned background.
+        let foreground = if config.text_format() == "glyphfont" {
+            encode_glyph_text(
+                binarized,
+                width as usize,
+                height as usize,
+                page_index,
+                glyph_session,
+            )
+            .await?
+        } else {
+            foreground
+        };
         elements.insert(
             0,
             crate::accumulator::ContentElement {
@@ -3118,6 +3308,7 @@ async fn process_planned_pdf_products(
             &config,
             page_index,
             force_jbig2_generic,
+            glyph_session,
         )
         .await?;
         elements.insert(
@@ -3198,6 +3389,7 @@ async fn run_page_owned_job(
     memory_budget: Arc<Semaphore>,
     memory_budget_mb: usize,
     hocr_spool_dir: Option<Arc<std::path::PathBuf>>,
+    glyph_session: Option<Arc<GlyphFontSession>>,
 ) -> Result<PageOwnedJobOutput> {
     let estimated_mb = estimated_page_memory_mb(&config, memory_budget_mb);
     let _memory_permit = memory_budget
@@ -3286,6 +3478,7 @@ async fn run_page_owned_job(
         );
     }
 
+    let text_session = glyph_session.clone();
     let processed_page = if let (Some(mut planned), Some(session)) =
         (planned_pdf, document_session.clone())
     {
@@ -3347,6 +3540,7 @@ async fn run_page_owned_job(
             planned.preserved_mask,
             detections,
             cancellation.clone(),
+            glyph_session,
         )
         .await?
     } else {
@@ -3357,10 +3551,18 @@ async fn run_page_owned_job(
             page_start,
             margin_analysis,
             cancellation.clone(),
+            glyph_session,
         )
         .await?
     };
     checkpoint(&cancellation, "before writer handoff")?;
+
+    // Recognized words teach the glyph font which text its shapes stand for.
+    if let (Some(session), Some(hocr)) =
+        (text_session.as_ref(), processed_page.hocr_text.as_deref())
+    {
+        record_glyph_text(session, &processed_page.elements, hocr)?;
+    }
 
     let encoded_val = encode_count.fetch_add(1, Ordering::Relaxed) + 1;
     if layout_enabled {
@@ -3597,6 +3799,10 @@ pub async fn create_and_run_pdf_source_pipeline(
         "[PDF-Parallel] Memory admission budget: {} MiB",
         memory_budget_mb
     );
+    // One glyph dictionary for the whole document: pages match against it as
+    // they finish (any order) and the font is emitted once at finalize.
+    let glyph_session =
+        (config.text_format() == "glyphfont").then(|| Arc::new(GlyphFontSession::new()));
     let mut jobs = tokio::task::JoinSet::new();
     let mut next_page = page_start;
     let mut hocr_pages = Vec::new();
@@ -3631,6 +3837,7 @@ pub async fn create_and_run_pdf_source_pipeline(
                 memory_budget.clone(),
                 memory_budget_mb,
                 hocr_spool_dir.clone(),
+                glyph_session.clone(),
             ));
         }
 
@@ -3752,6 +3959,47 @@ pub async fn create_and_run_pdf_source_pipeline(
         pdf_writer_handle
             .send_document_identity(title, author)
             .await?;
+    }
+
+    if let Some(session) = glyph_session.as_ref() {
+        let (pages, glyphs, occurrences, oversize) = session.stats();
+        info_log!(
+            "[PDF-Parallel] Glyph font: {} pages, {} distinct glyphs, {} occurrences{}",
+            pages,
+            glyphs,
+            occurrences,
+            if oversize > 0 {
+                format!(", {} oversize components dropped", oversize)
+            } else {
+                String::new()
+            }
+        );
+        if oversize > 0 {
+            crate::warn_log!(
+                "[PDF-Parallel] Glyph font dropped {} components wider or taller than {} px",
+                oversize,
+                crate::encoding::glyphfont::MAX_GLYPH_PIXELS
+            );
+        }
+        if occurrences > 0 {
+            let builder = Arc::clone(session);
+            let font = crate::runtime_stats::spawn_blocking_stage(
+                crate::runtime_stats::Stage::Encode,
+                move || builder.build_embedded_font(),
+            )
+            .await
+            .map_err(|e| anyhow!("glyph font build task panicked: {}", e))??;
+            // Building the font folds duplicate clusters, so the distinct
+            // count is only final now.
+            let (_, distinct, _, _) = session.stats();
+            info_log!(
+                "[PDF-Parallel] Glyph font program: {} bytes, {} distinct shapes after merging, {} glyph ids mapped to text",
+                font.data.len(),
+                distinct,
+                session.mapped_glyphs()
+            );
+            pdf_writer_handle.send_glyph_font(font).await?;
+        }
     }
 
     info_log!("[PDF-Parallel] Finalizing PDF...");

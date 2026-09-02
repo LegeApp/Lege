@@ -10,6 +10,10 @@ pub mod prelude;
 // Main encoding manager
 pub mod streamline;
 
+// Raster text -> per-document glyph font (the `glyphfont` text format).
+pub mod glyphfont;
+pub mod vectorize;
+
 // Encoder modules
 pub mod encoders;
 

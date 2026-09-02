@@ -56,6 +56,7 @@ pub mod engine;
 #[path = "engine_disabled.rs"]
 pub mod engine;
 pub mod glyphless_font; // Minimal glyphless TTF for the invisible OCR text layer
+pub mod truetype_writer; // sfnt assembler shared by the glyphless and glyph fonts
 pub mod hocr; // hOCR parsing + line grouping (moved out of accumulator)
 pub mod icon;
 #[cfg(feature = "layout-detection")]

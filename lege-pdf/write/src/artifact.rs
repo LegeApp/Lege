@@ -1,10 +1,14 @@
 //! PdfPageArtifact: the page contract submitted by pipeline workers.
 //! PdfImageElement, PdfImageResource (Jpeg/Jpx/Jbig2/CcittGroup4/Indexed8),
-//! PreparedTextLayer, exact resident_bytes(). PLAN.md §4.2.
+//! PreparedTextLayer, PreparedGlyphLayer, exact resident_bytes(). PLAN.md §4.2.
 //!
 //! This is the *entire* public input vocabulary. Every variant maps to one PDF
 //! image dictionary shape (see `images.rs`). Adding a variant is a plan change,
 //! not a drop-in — invalid combinations are made unrepresentable here.
+//!
+//! `PreparedGlyphLayer` is the visible-text counterpart of the invisible OCR
+//! layer: glyph ids into the document-wide glyph font (`/F2`, see
+//! `DocumentWriter::set_glyph_font`), positioned per line in PDF user space.
 
 use std::sync::Arc;
 
@@ -23,6 +27,9 @@ pub struct PdfPageArtifact {
     pub elements: Box<[PdfImageElement]>,
     /// Invisible OCR text layer, if any (emitted from M2 onward).
     pub text_layer: Option<PreparedTextLayer>,
+    /// Visible glyph-font text (the page's printed text as text objects drawn
+    /// with the document-wide glyph font), if any.
+    pub glyph_layer: Option<PreparedGlyphLayer>,
 }
 
 impl PdfPageArtifact {
@@ -36,6 +43,11 @@ impl PdfPageArtifact {
         if let Some(tl) = &self.text_layer {
             for run in tl.runs.iter() {
                 total += run.text.len() as u64;
+            }
+        }
+        if let Some(gl) = &self.glyph_layer {
+            for line in gl.lines.iter() {
+                total += (line.items.len() * std::mem::size_of::<GlyphItem>()) as u64;
             }
         }
         total
@@ -170,6 +182,37 @@ pub struct TextRun {
     pub size: f64,
 }
 
+/// A prepared, PDF-space visible glyph layer. Line grouping, baseline
+/// estimation, and the Y flip all happen in Lege; the writer only emits.
+#[derive(Debug)]
+pub struct PreparedGlyphLayer {
+    pub lines: Box<[GlyphLine]>,
+}
+
+/// One text line: a text matrix (scale + baseline origin, already in PDF user
+/// space) followed by a `TJ` array of glyph ids with positioning adjustments.
+#[derive(Debug)]
+pub struct GlyphLine {
+    /// The `Tm` for this line. The font is selected at size 1, so the matrix
+    /// scale is the em size in points.
+    pub matrix: Affine,
+    pub items: Box<[GlyphItem]>,
+}
+
+/// One glyph occurrence inside a line. Units are thousandths of a text-space
+/// unit (the `TJ` convention), i.e. glyph-font units at 1000 units per em.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlyphItem {
+    /// Glyph id (CID under Identity-H; `CIDToGIDMap /Identity`).
+    pub gid: u16,
+    /// `TJ` adjustment applied *before* this glyph. Positive moves the pen
+    /// left, negative moves it right (PDF 32000-1 §9.4.3).
+    pub adjust: i32,
+    /// Text rise (`Ts`) for this glyph, in thousandths of a text-space unit.
+    /// Zero for glyphs that sit where the font's own baseline puts them.
+    pub rise: i32,
+}
+
 /// Which font resource a text layer draws with.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TextFont {
@@ -187,6 +230,9 @@ impl TextFont {
         }
     }
 }
+
+/// The page resource name of the document-wide glyph font (`/F2`).
+pub const GLYPH_FONT_RESOURCE: ResourceName = ResourceName::Font(2);
 
 #[cfg(test)]
 mod tests {
@@ -209,6 +255,7 @@ mod tests {
                 },
             }]),
             text_layer: None,
+            glyph_layer: None,
         };
         // Globals excluded; only the 500-byte page payload counts.
         assert_eq!(art.resident_bytes(), 500);

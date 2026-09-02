@@ -1,10 +1,11 @@
 //! Typed content-stream writer for the fixed operator set:
-//! q Q g cm Do BT ET Tr Tc Tw Tz Tf Tm Tj. No generic Operation type.
+//! q Q g cm Do BT ET Tr Tc Tw Tz Tf Tm Tj TJ Ts. No generic Operation type.
 //!
 //! Each method appends one operator (operands first, operator token last, then
 //! a newline) to an owned byte buffer. This is the whole content vocabulary
 //! Lege emits — images (`q`/`Q`/`g`/`cm`/`Do`) and the invisible OCR text layer
-//! (`BT`…`ET`). Extending it is a plan change, not a drop-in.
+//! (`BT`…`ET`) plus the visible glyph-font text (`TJ`/`Ts`). Extending it is a
+//! plan change, not a drop-in.
 
 use crate::serialize::{write_hex_string, write_real};
 use crate::types::{Affine, ResourceName};
@@ -126,6 +127,38 @@ impl ContentWriter {
         self.bytes.extend_from_slice(b" Tj\n");
     }
 
+    /// `TJ` — show glyphs with inter-glyph positioning. Each entry is a
+    /// 2-byte glyph id (Identity-H CID) preceded by its adjustment in
+    /// thousandths of a text-space unit; glyphs without an adjustment join
+    /// the preceding string.
+    pub fn show_glyphs_adjusted(&mut self, glyphs: &[(u16, i32)]) {
+        if glyphs.is_empty() {
+            return;
+        }
+        self.bytes.push(b'[');
+        let mut run: Vec<u8> = Vec::with_capacity(glyphs.len() * 2);
+        for &(gid, adjust) in glyphs {
+            if adjust != 0 {
+                if !run.is_empty() {
+                    write_hex_string(&mut self.bytes, &run);
+                    run.clear();
+                }
+                crate::serialize::write_i64(&mut self.bytes, adjust as i64);
+            }
+            run.extend_from_slice(&gid.to_be_bytes());
+        }
+        if !run.is_empty() {
+            write_hex_string(&mut self.bytes, &run);
+        }
+        self.bytes.extend_from_slice(b"] TJ\n");
+    }
+
+    /// `Ts` — text rise, in unscaled text-space units.
+    pub fn set_text_rise(&mut self, rise: f64) {
+        write_real(&mut self.bytes, rise);
+        self.bytes.extend_from_slice(b" Ts\n");
+    }
+
     fn write_affine(&mut self, m: Affine) {
         for (i, v) in [m.a, m.b, m.c, m.d, m.e, m.f].into_iter().enumerate() {
             if i > 0 {
@@ -157,6 +190,20 @@ mod tests {
         c.set_gray_fill(0.0);
         c.restore();
         assert_eq!(c.as_slice(), &b"q\n0 g\nQ\n"[..]);
+    }
+
+    #[test]
+    fn glyph_array_and_rise() {
+        let mut c = ContentWriter::new();
+        c.show_glyphs_adjusted(&[(1, 0), (7, 0), (2, -35), (300, 12), (4, 0)]);
+        c.set_text_rise(-0.05);
+        assert_eq!(
+            c.as_slice(),
+            &b"[<00010007>-35<0002>12<012C0004>] TJ\n-0.05 Ts\n"[..]
+        );
+        let mut empty = ContentWriter::new();
+        empty.show_glyphs_adjusted(&[]);
+        assert!(empty.is_empty());
     }
 
     #[test]

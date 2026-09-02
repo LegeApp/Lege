@@ -47,6 +47,15 @@ pub enum ContentType {
         /// stencil `/Decode [1 0]`; false uses `/Decode [0 1]`.
         paint_one: bool,
     },
+    /// The page's printed text as glyph placements into the document-wide
+    /// glyph font (`text_format = "glyphfont"`). Not an image: the writer
+    /// draws it as a text object. `pixel_width`/`pixel_height` give the
+    /// raster the placements were measured on, for the pixel → point scale.
+    GlyphText {
+        runs: Arc<crate::encoding::glyphfont::PageGlyphRuns>,
+        pixel_width: u32,
+        pixel_height: u32,
+    },
 }
 
 impl ContentType {
@@ -55,6 +64,7 @@ impl ContentType {
             ContentType::EncodedImage { pixel_width, .. } => *pixel_width,
             ContentType::Jbig2ImageWithGlobals { pixel_width, .. } => *pixel_width,
             ContentType::Jbig2Mask { pixel_width, .. } => *pixel_width,
+            ContentType::GlyphText { pixel_width, .. } => *pixel_width,
         }
     }
 
@@ -63,6 +73,7 @@ impl ContentType {
             ContentType::EncodedImage { pixel_height, .. } => *pixel_height,
             ContentType::Jbig2ImageWithGlobals { pixel_height, .. } => *pixel_height,
             ContentType::Jbig2Mask { pixel_height, .. } => *pixel_height,
+            ContentType::GlyphText { pixel_height, .. } => *pixel_height,
         }
     }
 
@@ -71,15 +82,18 @@ impl ContentType {
             ContentType::EncodedImage { data, .. } => data.is_empty(),
             ContentType::Jbig2ImageWithGlobals { page_data, .. } => page_data.is_empty(),
             ContentType::Jbig2Mask { page_data, .. } => page_data.is_empty(),
+            ContentType::GlyphText { runs, .. } => runs.is_empty(),
         }
     }
 
-    /// Get the image data as bytes for external use.
+    /// Get the image data as bytes for external use. Glyph text carries no
+    /// encoded bytes and yields an empty slice.
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             ContentType::EncodedImage { data, .. } => data,
             ContentType::Jbig2ImageWithGlobals { page_data, .. } => page_data,
             ContentType::Jbig2Mask { page_data, .. } => page_data,
+            ContentType::GlyphText { .. } => &[],
         }
     }
 

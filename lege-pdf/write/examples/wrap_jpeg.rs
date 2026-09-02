@@ -39,6 +39,7 @@ fn main() {
                 },
             }]),
             text_layer: None,
+            glyph_layer: None,
         };
         writer.add_page(&art).expect("add page");
     }
