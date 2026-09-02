@@ -14,6 +14,13 @@
 #
 # `--all-targets` is not optional: every jbig2enc-rust warning lives in a test target
 # and is invisible without it.
+#
+# Neither is the release pass at the end. Features are not the only axis a warning can
+# hide behind: `debug_assertions` is a cfg too, and a variable read only from inside a
+# `#[cfg(debug_assertions)]` block is unused in exactly the profile that ships. Two
+# jbig2enc-rust warnings lived there unseen because the whole matrix above runs at
+# `--profile dev`. That section re-checks the shipping profile, one config per crate
+# rather than the full cross product, which is what keeps it affordable.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
@@ -73,6 +80,9 @@ run() {
 
 ws()  { run "$1" cargo check "${@:2}" --all-targets; }
 mp()  { local m="$1"; run "$2" cargo check --manifest-path "$m" "${@:3}" --all-targets; }
+# Same two, at `--profile release`, so `debug_assertions` is off.
+rel() { run "$1" cargo check "${@:2}" --all-targets --profile release; }
+mprel() { local m="$1"; run "$2" cargo check --manifest-path "$m" "${@:3}" --all-targets --profile release; }
 
 echo "== lege (CLI + core library) =="
 ws "default"                      -p lege
@@ -129,6 +139,21 @@ mp lege-codecs/djvulibrust/Cargo.toml    "djvu cli,rayon,simd"    --features cli
 
 echo "== nested workspace =="
 mp lege-pdf/pdf-integrity/Cargo.toml     "pdf-integrity"          --workspace
+
+# One config per crate, not the full matrix above: the point is to flip
+# `debug_assertions`, and doing that once per build graph catches the whole class
+# without doubling how long the gate takes.
+echo "== release profile (debug_assertions off) =="
+rel "lege default"                -p lege
+rel "lege debug-logging"          -p lege --features debug-logging
+run "lege android (aarch64)"      cargo check -p lege --target aarch64-linux-android --features android --all-targets --profile release
+rel "lege-gpu default"            -p lege-gpu
+rel "lege-ocr default"            -p lege-ocr
+rel "workspace"                   --workspace
+mprel lege-codecs/jp2lam/Cargo.toml        "jp2lam default"
+mprel lege-codecs/jbig2enc-rust/Cargo.toml "jbig2enc default"
+mprel lege-codecs/jbig2enc-rust/Cargo.toml "jbig2enc cli"        --features cli
+mprel lege-codecs/djvulibrust/Cargo.toml   "djvu default"
 
 echo
 if [ "$BASELINE" = 1 ]; then

@@ -18,8 +18,8 @@ use jbig2enc_rust::decode::{
 use jbig2enc_rust::jbig2structs::Jbig2Config;
 use jbig2enc_rust::shared::bitmap::MonoBitmap;
 use jbig2enc_rust::{
-    Array2, Jbig2Context, encode_document_pdf_split, encode_single_image,
-    encode_single_image_lossless, encode_single_image_with_config,
+    Array2, Jbig2Context, encode_document_pdf_split, encode_single_image_lossless,
+    encode_single_image_with_config,
 };
 
 /// Convert a decoded `MonoBitmap` to a one-byte-per-pixel `Pbm`.

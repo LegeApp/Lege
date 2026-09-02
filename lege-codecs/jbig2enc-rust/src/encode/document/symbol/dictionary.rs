@@ -562,8 +562,10 @@ pub fn encode_symbol_dict_with_order(
             // I. Encode Delta Width
             let delta_w = symbol.width as i32 - last_width;
 
-            // Debug output to help diagnose the issue (disabled in release)
-            #[cfg(debug_assertions)]
+            // `debug!` is already gated on `trace_encoder`, and consumes its
+            // arguments with `format_args!` when that feature is off, so it
+            // costs nothing here. A second `#[cfg(debug_assertions)]` on top
+            // bought no speed and made `i` unused in every profile that ships.
             debug!(
                 "Height class {}, Symbol {}: width={}, last_width={}, delta_w={}",
                 h, i, symbol.width, last_width, delta_w

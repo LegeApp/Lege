@@ -696,6 +696,23 @@ impl Jbig2ArithCoder {
         template: u8,
         _at: &[(i8, i8); 4],
     ) -> Result<()> {
+        // Only template 0 is implemented: the context builders below are
+        // hard-coded to its 10-pixel layout, so any other value yields a stream
+        // whose contexts do not match the template its region header declares.
+        // This check used to live inside the `debug_assertions` block, which
+        // left the shipping profile as the one profile that could not report
+        // the mismatch -- and left `template` unused there besides.
+        // Every caller currently passes 0 (the `Jbig2Config` defaults and the
+        // symbol dictionary all hard-code it), so this stays silent in practice.
+        // The matching "using template 0" line is left in the block below rather
+        // than hoisted with the rest: it fires once per symbol, and it says
+        // nothing a release log needs to hear.
+        match template {
+            0 => {}
+            1..=3 => log::warn!("Template {} is not fully tested", template),
+            _ => log::error!("Invalid template {}", template),
+        }
+
         #[cfg(debug_assertions)]
         {
             log::debug!(
@@ -726,10 +743,8 @@ impl Jbig2ArithCoder {
                 log::debug!("packed data all zero - no black pixels");
             }
 
-            match template {
-                0 => log::debug!("Using Template 0 (Standard 10-pixel context)"),
-                1..=3 => log::warn!("Template {} is not fully tested", template),
-                _ => log::error!("Invalid template {}", template),
+            if template == 0 {
+                log::debug!("Using Template 0 (Standard 10-pixel context)");
             }
         }
 
