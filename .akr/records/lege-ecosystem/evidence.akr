@@ -579,6 +579,18 @@ record lege-ecosystem.evidence.glyphfont-pass5-straighten-dedup-verification/1 :
         """
 }
 
+record lege-ecosystem.evidence.glyphfont-pass6-angle-ocr-speed-verification/1 : evidence {
+    title "glyphfont pass 6 (any angle, OCR upright, fast matching) verification"
+    state verified
+    result pass
+    method command
+    observed_at git:dd582ffbb5b5310e7ab2e4947f4c5b37d8c2f202
+    command "cargo test --profile debug-fast -p lege --lib; lege-misc/dev-misc/warncheck.sh; lege <Hurvitz> 60-62 --ocr (JBIG2) and --text-format glyphfont --ocr; lege <Gobineau> 40-59 --text-format glyphfont --no-ocr with LEGE_GLYPH_DUMP"
+    summary """
+        lege lib 317 passed / 1 ignored; warncheck PASS across the matrix; Hurvitz sideways spread OCR 27 -> 766/865/836 words per page; Gobineau 20 pages dictionary strict 5372 -> 690-780 ms, tolerant 2475 -> 570-620 ms, finalize 446 -> 111 ms, 709-718 shapes and 341-342 KB unchanged; Gobineau 40-42 word recall 0.84-0.86 across runs; synthetic pages at 20/-35/110/200/-80/44 degrees measured within 0.05 degrees
+        """
+}
+
 record lege-ecosystem.evidence.glyphfont-stage2-tests/1 : evidence {
     title "Glyph font Stage 2 unit tests"
     state verified
