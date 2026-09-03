@@ -1,6 +1,37 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.decision.a-fold-may-not-change-a-letters-counters/1 : decision {
+    title "Truetyping never folds shapes that enclose different counters, and a stroke is far even when it is a hairline"
+    state proposed
+    scope [ path "lege-process/encoding/bitrows.rs", path "lege-process/encoding/glyphfont.rs" ]
+    decision """
+        Two gates now guard the glyph dictionary against folding one letter into another. First, topology: a shape's enclosed counters are counted (`holes`, a flood fill from the border) and no match is considered across a different count — `c` never becomes `e`, `h` never becomes `b`, `a` never becomes `u`. The count is only trusted where the strokes have an interior, because a wall one pixel thick is opened or closed by a single speck. Second, the strict gate gained the far-pixel test the tolerant gate already had: ink that has none of the other shape's within a pixel of it, capped at 1% of the ink (minimum 2) with no far group larger than 2. A change of impression puts its difference along the strokes it thickens, so it is never far; a stroke one shape has and the other lacks is far along its length, however thin it is. Strict matches are also ranked by that structural agreement first, so rejecting a candidate never hands the instance to a worse one that survived.
+        """
+    context """
+        A user's own run of the ITU T.88 specification came back with `which` as `wbicb`, `the` as `tbe`, `decoded` as `deeoded`, `are` as `ure` — whole letters replaced, in body text, in the format that had just been made the default. The fold dump showed why: the tolerant gate forgives ink within a pixel of the other shape, and at reading sizes the crossbar of an `e` is four pixels long with both ends touching the bowl, so only two pixels are left to notice. `far_blob <= 3` was meant to catch a missing stroke and cannot, because a stroke at that size is not three pixels of anything. The strict gate had no far test at all: its 2x2-block measure sees nothing in a one-pixel hairline, so it merged `a` with `e` and `u` with `n` on a heavier face.
+        """
+    consequences """
+        Dictionaries grow: 3 pages of Gobineau 150 to 160 shapes, 5 pages of T.88 372 to 414, 5 pages of the Gernet scan 443 to 465 — 3-10%, and the fonts with them. Splitting is the safe direction: two prototypes for one letter cost bytes, one prototype for two letters costs the reader the word. Counters are computed per component (a flood fill alongside the ink profile) and prune candidates, so the tolerant stage got faster rather than slower. A scan whose counter is filled in by heavy ink now keeps its own prototype instead of folding; that is a split, not a substitution. Text on a source that was already binarized at low resolution still merges touching pairs (`in` reads as `m`), which no pixel budget separates at ten pixels a letter.
+        """
+    claim a-hairline-stroke-is-far-not-thick {
+        text """
+            The 2x2-block `thick` measure cannot see a one-pixel stroke, which is why the strict gate merged `a` with `e`; the far-pixel measure sees it as a connected run along the stroke's length and is now bounded for both gates.
+            """
+    }
+    claim counters-are-identity {
+        text """
+            A letter's enclosed counters survive every change of weight, so a match across a different count is always wrong; `find_match` refuses it whenever both shapes have stroke interiors.
+            """
+    }
+    claim rejection-alone-does-not-make-matching-safer {
+        text """
+            The search keeps the best candidate it is offered, so narrowing a filter that can exclude the *right* prototype (the dimension slack, or a far bound tight enough to reject a broken edge) hands the instance to the next best wrong one instead. Filters that are semantic (a different letter) help; filters that are about quality (a damaged instance) must rank rather than reject.
+            """
+    }
+    derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
+}
+
 record lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate/1 : decision {
     title "A sideways page is turned upright with /Rotate, never on its head"
     state proposed
@@ -60,6 +91,43 @@ record lege-ecosystem.decision.top-level-application-license-agpl/1 : decision {
         @lege-ecosystem.evidence.djvu-license-linkage-boundary-audit-20260822/1,
         @lege-ecosystem.evidence.djvu-subprocess-license-surface-audit-20260822/1
     ]
+}
+
+record lege-ecosystem.decision.truetyping-banks-fonts-and-respects-a-bilevel-source/1 : decision {
+    title "A document may carry several glyph fonts, and a book already black and white is traced at its own resolution"
+    state proposed
+    scope [
+        path "lege-pdf/read/src/session.rs",
+        path "lege-pdf/write/src/**",
+        path "lege-process/encoding/glyphfont.rs",
+        path "lege-process/pipeline/config.rs",
+        path "lege-process/pipeline/pdf_tokio_pipeline.rs"
+    ]
+    decision """
+        Two changes take the ceiling off long books. A TrueType font holds 65536 glyph ids, so the session now keeps a dictionary per *bank*: a page whose components would carry the current dictionary past that limit starts the next one, every page draws from exactly one font, and the writer emits `/F2`, `/F3`, … with a reserved id per bank. And a page whose ink is already one bit — a full-page stencil, or a full-page image with a one-bit soft mask — has no more detail to give at any scale, so truetyping is rendered at that resolution rather than at its own working height. A greyscale or colour scan keeps the raised height: its soft edges resolve *better* the finer they are sampled.
+        """
+    context """
+        An 836-page book failed after about seven minutes with `PDF writer actor has stopped`. It was the 16-bit glyph id space: the page adapter rejects an id past 65535 and the writer actor died on it, while the real message was lost because the sender only sees a closed channel. The same run was slow for a second reason — the book was itself a Lege output, a greyscale JP2 under a JBIG2 stencil at 1200 px, and rendering it at 2400 invented interpolated edges that no two impressions of a letter shared: 120 pages made 24 381 glyphs in 3 minutes at 2400 px and 9 363 in 18 seconds at 1400.
+        """
+    consequences """
+        The book now finishes in 3 minutes with two fonts. The writer actor records what it died of before dropping its receiver, so a page worker reports the cause rather than the symptom. Bank assignment is decided before a page is analysed, from the component count plus headroom, so a page never straddles two fonts and no composite ever crosses one. `GlyphFontSession::with_prototype_cap` exists so the split can be tested without 65 000 shapes.
+        """
+    claim bilevel-sources-have-a-ceiling {
+        text """
+            `CompiledDocumentPage::bilevel_raster_height` reports the full-page-equivalent height of a page's one-bit ink layer (the stencil itself, or a one-bit soft mask) and nothing for a continuous-tone page, and the pipeline lowers the truetyping working height to it, never below the height the caller asked for.
+            """
+    }
+    claim one-font-per-page {
+        text """
+            `PreparedGlyphLayer::font` names the bank a page's glyph ids index; the writer reserves one Type0 id per bank and writes each font at finalize, so a page never draws from two.
+            """
+    }
+    claim the-actor-says-what-it-died-of {
+        text """
+            The writer actor stores its error in a `OnceLock` the handle shares before it drops the receiver, so a send that finds the channel closed reports `PDF writer failed: <cause>` instead of `PDF writer actor has stopped`.
+            """
+    }
+    derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
 }
 
 record lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 : decision {

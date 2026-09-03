@@ -1290,21 +1290,23 @@ record lege-ecosystem.work.glyph-font-text-output/1 : work {
         Replace the JBIG2/CCITT raster text layer with a PDF text object drawn from one document-wide TrueType font whose glyphs are clustered connected components of the binarized pages. Staged: (1) pixel-exact staircase outlines, first-seen prototypes, incremental document-wide dictionary, writer emits the font at finalize under a reserved id; (2) font-oriented clustering: majority-vote prototypes, edge-tolerant structural matching, alias merging into TrueType composites, page-median descent and advance; (3) quadratic Bezier outlines fitted to the prototypes with a raster-back check and staircase fallback; (4) ToUnicode by aligning glyph placements to OCR words, replacing the invisible OCR layer on glyph pages; (5) text orientation and skew straightening from the components themselves, and deduplication under the printing-press prior (a book has one piece of type per letter, so like shapes inked differently are one glyph); (6) text at any angle, the same orientation measurement turning pages upright for OCR in every text format, and a matching path fast enough not to matter (no rayon; word-parallel kernels); (7) the rest of the page's cost at the raised render height: the renderer's fast paths for gray scans, the preserved mask's coverage plane, and the background encoded at the height the caller asked for.
         """
     note """
-        Pass 8 (2026-09-03) promoted the format on the user's sign-off. It is `truetyping` everywhere a user can see it (CLI value, `--truetyping`, interactive format 4, both help locales) and the default PDF text encoder in the Freya GUI, with JBIG2 and compatibility mode as mutually exclusive checkboxes; `glyphfont` stays an accepted spelling and the module keeps its name. Two things had to be true first. The user made the GUI default conditional on sideways pages being flippable in production, so `/Rotate` was added to the writer and set from the quarter turns the detector already measures (sideways only; 180 rests on too weak a margin). And the truetyping render bump was being cleared by any explicit target height, which is exactly what the GUI sends, so it became order-independent. Verified: lege lib 323, GUI 43, writer 59, reader 13 tests; warncheck PASS; Hurvitz 60-62 come out upright (`/Rotate 90` x3, rendered and read); Gobineau 40-42 word recall 0.845 and 0.847 with and without an explicit height, both 27.4-27.7 KB with an 11 KB font.
+        Pass 9 (2026-09-03) answered the two failures the user hit on the day truetyping became the default. Wrong letters: the gates could forgive a whole stroke, because a hairline is invisible to a measure of 2x2 blocks and a crossbar four pixels long has both ends touching the bowl. Counters are now identity (no fold across a different number of them, where the strokes are thick enough for the count to mean anything) and the strict gate gained the tolerant gate's far-pixel test. T.88's body text is now correct; what remains is a few substitutions in small bold type. The 836-page failure was the glyph id space, so the session keeps a dictionary per font bank and a page draws from one font; the same book also revealed that rendering an already-binarized source above its own resolution invents edges, so truetyping now traces such a book at the resolution it has. The book that failed after 7 minutes now finishes in 3 with two fonts. The writer actor also records what it died of, since the sender used to report only that the channel had closed. Costs: dictionaries grow 3-10%, Gobineau word recall 0.845 to 0.829-0.833, which is inside its run-to-run band.
         """
-    claim the-page-is-turned-not-the-content {
+    claim the-user-found-it-on-two-books {
         text """
-            Orientation reaches the output as `/Rotate` on the page dictionary rather than as resampled pixels, so the glyph text, the OCR layer and the raster keep the coordinates they were written in and turn together.
+            The default's first day in a user's hands found both failures at once: the ITU T.88 specification came back with whole letters replaced in body text, and an 836-page book died after seven minutes on the 16-bit glyph id space while taking twenty minutes to get halfway.
             """
     }
-    claim the-render-bump-is-order-independent {
+    claim upscaling-a-binarized-scan-is-not-free {
         text """
-            Truetyping raises the render to GLYPHFONT_MIN_TARGET_HEIGHT whether the format or the target height was set last: `raise_render_height_for_truetyping` runs from `set_text_format`, `set_target_height` and `set_target_dimensions` alike, remembering the asked-for height for the background and scaling a fixed width with it. Before this the setters cleared the bump, and the GUI always sends `--target-height`, so promoting truetyping there would have traced every outline at 1200 px: 26 KB of font on a 3-page scan instead of 11 KB.
+            Rendering a book that is already black and white above its own resolution is actively harmful: on a 1200 px source at 2400 px, 120 pages made 24 381 glyphs in 3 minutes; at 1400 px they made 9 363 in 18 seconds, and the text read better.
             """
     }
     depends_on [ @lege-ecosystem-perf.renderer.gray8-draws-take-the-rgb8-fast-paths ]
     implements [
+        @lege-ecosystem.decision.a-fold-may-not-change-a-letters-counters,
         @lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate,
+        @lege-ecosystem.decision.truetyping-banks-fonts-and-respects-a-bilevel-source,
         @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format
     ]
 }

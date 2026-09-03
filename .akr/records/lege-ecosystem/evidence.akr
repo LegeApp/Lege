@@ -1565,6 +1565,18 @@ record lege-ecosystem.evidence.truetyping-promotion-verification/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.truetyping-substitution-and-glyph-space-fixes/1 : evidence {
+    title "Letter substitutions, the glyph id wall and the upscaled-scan slowdown all verify"
+    state verified
+    result pass
+    method command
+    observed_at git:fff533a83a7a0196fcc587f392c25002041bd1de
+    command "cargo test --profile debug-fast -p lege --lib -p lege-pdf-write -p lege-pdf-read -p lege-ipc -p lege-document-export; cargo test --profile debug-fast -p lege-gui-freya; bash lege-misc/dev-misc/warncheck.sh"
+    summary """
+        lege lib 326 passed / 1 ignored, Freya GUI 43, writer 61, reader 13, ipc 2, export 2; warncheck PASS. End to end: T-REC-T.88 pages 10-14 render with correct body text and table (was "wbicb", "tbe", "deeoded", "ure"); the 836-page historyofchinese scan completes in 2m59s over two glyph fonts (39763 glyphs, 8.5 MB) where it died after ~7 minutes on the 16-bit id space; 30 pages of it make 2737 glyphs in 3.2s against 7806 in 13.7s before the bilevel clamp; Gobineau 40-42 word recall 0.829-0.833 against 0.845, inside its band.
+        """
+}
+
 record lege-ecosystem.evidence.turboocr-linux-trt11-probe-20260821/1 : evidence {
     title "The lean TurboOCR text worker compiled with CUDA 13.3 and TensorRT 11 on Linux; detector and recognizer engines serialized, loaded, and passed real CUDA inference on an RTX 4060 Laptop GPU."
     state verified
