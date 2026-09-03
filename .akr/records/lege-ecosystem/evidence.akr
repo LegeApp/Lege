@@ -567,6 +567,18 @@ record lege-ecosystem.evidence.freya-viewer-build-aliases/1 : evidence {
         """
 }
 
+record lege-ecosystem.evidence.glyphfont-pass5-straighten-dedup-verification/1 : evidence {
+    title "Glyphfont pass 5 (straightening and deduplication) verified"
+    state verified
+    result pass
+    method command
+    observed_at git:d1020482bf483b99e47b8b6bd5b9ffd15eda079b
+    command "cargo test --profile debug-fast -p lege --lib; lege-misc/dev-misc/warncheck.sh; lege <book> <pages> --text-format glyphfont [--ocr] with LEGE_GLYPH_DUMP set"
+    summary """
+        lege lib 305 passed / 1 ignored (6 straighten tests, 22 glyphfont tests incl. tolerant-gate fixtures); warncheck PASS. Gobineau 20 pages 2143 -> 713 shapes, 495 -> 331 KB, 30.3 s; Gobineau 40-42 with OCR 337 -> 144 shapes, 74 -> 52 KB, pdftotext word recall 0.864 vs the OCR layer; Hurvitz 60-62 detected as one quarter turn, skew -0.3 deg, renders back in place; fold sheets show only same-letter folds after the stroke-interior floor.
+        """
+}
+
 record lege-ecosystem.evidence.glyphfont-stage2-tests/1 : evidence {
     title "Glyph font Stage 2 unit tests"
     state verified

@@ -5,7 +5,7 @@ build {
     tool "akr 0.4.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:efc5f417b8d864d248871d0cd13b9ff53e5e8d60dfe3694ea20f2d1c18ddc8a8"
+    source_graph "sha256:341385f462ad5d1eb49c8f8fb30ece999b28f32f5d95cf776683ecb50480122c"
 }
 
 source ".akr/project.akr" {
@@ -64,8 +64,8 @@ source ".akr/records/lege-ecosystem/decisions.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:02087626a28a586496be1bac243aa89d599d9a8a22f609df4db2ee2de7833474"
-    records 138
+    hash "sha256:be8617342c5cc63ec88c46b81e76283a79d20c41a571c08e1ca8088b7fc04b19"
+    records 139
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -94,7 +94,7 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:88e115e7c5250183ab6fe449f31a2390e1e8b4784977af0bb1b9defbb3bdbb67"
+    hash "sha256:ac593bc10b1a7575a78eeab48d985f117187a58f4f0bc1200393b062600ca783"
     records 110
 }
 
@@ -431,6 +431,11 @@ seal @lege-ecosystem.evidence.freya-embedded-about-tests/1 {
 seal @lege-ecosystem.evidence.freya-viewer-build-aliases/1 {
     state verified
     hash "sha256:46ffe33e75a48383fd0048f6829641be3df98e72e945cbe8e86b9c8412e1392b"
+}
+
+seal @lege-ecosystem.evidence.glyphfont-pass5-straighten-dedup-verification/1 {
+    state verified
+    hash "sha256:5762300299df32ad0e936c2f35341527de232adc91be10c3eb2c12796bd80fb8"
 }
 
 seal @lege-ecosystem.evidence.glyphfont-stage2-tests/1 {
