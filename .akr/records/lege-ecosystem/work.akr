@@ -1273,119 +1273,40 @@ record lege-ecosystem.work.glyph-font-text-output/1 : work {
     scope [
         path "lege-document-ocr/crates/export/src/lib.rs",
         path "lege-pdf/read/src/session.rs",
-        path "lege-pdf/render/crates/pdf-render-cpu/**",
         path "lege-pdf/write/**",
+        path "lege-process/GUI/Freya/**",
+        path "lege-process/core/accumulator.rs",
         path "lege-process/core/clean_gray.rs",
+        path "lege-process/core/main.rs",
         path "lege-process/core/pdf_artifact.rs",
         path "lege-process/core/truetype_writer.rs",
-        path "lege-process/encoding/bitrows.rs",
-        path "lege-process/encoding/glyphfont.rs",
-        path "lege-process/encoding/straighten.rs",
-        path "lege-process/encoding/vectorize.rs",
-        path "lege-process/ocr/fast.rs",
-        path "lege-process/ocr/orient.rs",
-        path "lege-process/ocr/slow.rs",
+        path "lege-process/encoding/**",
+        path "lege-process/language_service/**",
         path "lege-process/pipeline/config.rs",
-        path "lege-process/pipeline/djvu_pipeline.rs",
+        path "lege-process/pipeline/helper_functions.rs",
         path "lege-process/pipeline/pdf_tokio_pipeline.rs"
     ]
     intent """
         Replace the JBIG2/CCITT raster text layer with a PDF text object drawn from one document-wide TrueType font whose glyphs are clustered connected components of the binarized pages. Staged: (1) pixel-exact staircase outlines, first-seen prototypes, incremental document-wide dictionary, writer emits the font at finalize under a reserved id; (2) font-oriented clustering: majority-vote prototypes, edge-tolerant structural matching, alias merging into TrueType composites, page-median descent and advance; (3) quadratic Bezier outlines fitted to the prototypes with a raster-back check and staircase fallback; (4) ToUnicode by aligning glyph placements to OCR words, replacing the invisible OCR layer on glyph pages; (5) text orientation and skew straightening from the components themselves, and deduplication under the printing-press prior (a book has one piece of type per letter, so like shapes inked differently are one glyph); (6) text at any angle, the same orientation measurement turning pages upright for OCR in every text format, and a matching path fast enough not to matter (no rayon; word-parallel kernels); (7) the rest of the page's cost at the raised render height: the renderer's fast paths for gray scans, the preserved mask's coverage plane, and the background encoded at the height the caller asked for.
         """
     note """
-        Pass 7 (2026-09-03) profiled the whole run rather than the dictionary: with the dictionary at about 1 s per 20 pages, glyphfont mode still took 14.9 s wall and 66 s CPU against JBIG2's 6.6 s and 26 s, all of it in stages that scale with the 2400 px working height: the renderer's output render (22.7 s CPU, the generic per-pixel sampler on gray sources), the preserved-mask probe (5.9 s, a Lanczos3 resize), and the background JPEG 2000 encode at full 2400 px (about 12 s). After the pass: 4.3 s wall and 18 s CPU for glyphfont, 3.3 s and 13 s for JBIG2 mode, whose output also shrank from 617 KB to 378 KB with visibly cleaner text edges. Remaining per-page costs are decode-bound (JPX at full resolution when the page renders above half the source height, JBIG2 decoded once for the renders and once more by the probe). Open from pass 6: dense CJK candidate scans, page-order nondeterminism of the dictionary, the GUI control gated on the user's review.
+        Pass 8 (2026-09-03) promoted the format on the user's sign-off. It is `truetyping` everywhere a user can see it (CLI value, `--truetyping`, interactive format 4, both help locales) and the default PDF text encoder in the Freya GUI, with JBIG2 and compatibility mode as mutually exclusive checkboxes; `glyphfont` stays an accepted spelling and the module keeps its name. Two things had to be true first. The user made the GUI default conditional on sideways pages being flippable in production, so `/Rotate` was added to the writer and set from the quarter turns the detector already measures (sideways only; 180 rests on too weak a margin). And the truetyping render bump was being cleared by any explicit target height, which is exactly what the GUI sends, so it became order-independent. Verified: lege lib 323, GUI 43, writer 59, reader 13 tests; warncheck PASS; Hurvitz 60-62 come out upright (`/Rotate 90` x3, rendered and read); Gobineau 40-42 word recall 0.845 and 0.847 with and without an explicit height, both 27.4-27.7 KB with an 11 KB font.
         """
-    claim advances-exclude-word-spaces {
+    claim the-page-is-turned-not-the-content {
         text """
-            A prototype's advance is its frame width plus the lower-median gap to the next glyph among gaps no larger than twice the page's typical letter gap plus 3 px, so letters that often end words do not advance past the space after them.
+            Orientation reaches the output as `/Rotate` on the page dictionary rather than as resampled pixels, so the glyph text, the OCR layer and the raster keep the coordinates they were written in and turn together.
             """
     }
-    claim analysis-outside-the-lock {
+    claim the-render-bump-is-order-independent {
         text """
-            A page's components and frame need no dictionary, so `PageAnalysis::of` runs before the dictionary mutex is taken and pages analyse in parallel; only `process_analysis` (matching, lines, metrics) serializes.
-            """
-    }
-    claim background-at-requested-height {
-        text """
-            Glyph-font output raises the render height to 2400 px for glyph shapes only. The config remembers the height the caller asked for (`glyph_requested_height`, cleared by a later explicit height) and the preserved-mask background is box-downsampled by `target_height / requested` before its JPEG 2000 encode, so the continuous-tone layer keeps the requested resolution and does not cost four times as much; the glyph layer keeps its own 2400 px grid.
-            """
-    }
-    claim bound-then-packed-diff {
-        text """
-            Matching costs nothing on the candidates that cannot match: buckets keyed by size hold (ink, prototype) sorted by ink so a search visits only the admissible ink range, the minimum L1 distance between ink-per-row and ink-per-column profiles over the alignment shifts is an exact lower bound on the aligned XOR and rejects 97 percent of the rest, and the survivors are measured in 64-bit rows (XOR, 2x2 blocks, spread-based far pixels, far blob) with early exits past the gate's limits and hardware popcount where available; the comparator only finds the alignment. No rayon: the dictionary is one serial section per page.
-            """
-    }
-    claim coverage-is-area-average {
-        text """
-            The preserved mask's working coverage plane is the exact area average of the decoded 0/255 opacity over each target pixel (separable integer passes with fractional edge weights in units of 1/target), not a Lanczos3 resize: that is what coverage means, it does not ring, and it costs a tenth as much. The background consumer treats a pixel at least half under ink as ink and whitens lesser coverage in proportion (alpha = min(255, 2 x coverage)), the soft counterpart of the ordinary path's thresholded white-out; on Gobineau this removed the gray halos the Lanczos plane left around letters and cut the 20-page JBIG2-mode output from 617 KB to 378 KB.
-            """
-    }
-    claim em-sized-for-extractors {
-        text """
-            The font em is 62.5 source pixels (16 units per pixel), about twice the real type size at 2400 px, so extractor heuristics stated in fractions of the font size (poppler's 0.1 em duplicate and word-break tests) fall between letter advances and word spaces.
-            """
-    }
-    claim fit-checked-or-staircase {
-        text """
-            A fitted outline is emitted only after rasterizing it back over its prototype bitmap passes the same thick-difference test used for matching; otherwise the glyph keeps its pixel-exact staircase, so vectorization can cost bytes but never fidelity.
-            """
-    }
-    claim frame-fixed-shape-evolves {
-        text """
-            Every prototype's frame, advance and descent are fixed once its first page is placed, because page content referencing them is already written; only the shape inside the frame (majority vote) and the glyph's outline owner (alias to a heavier cluster, rendered as a composite) may change until finalize.
-            """
-    }
-    claim incremental-not-two-pass {
-        text """
-            The dictionary grows as pages complete in any order; the font is written once at finalize under an object id reserved by the first glyph page, so no page bitmap is retained.
-            """
-    }
-    claim ocr-reads-pages-upright {
-        text """
-            The recognizer always sees an upright page: before OCR, in every text format, the binarized page's frame is measured and the OCR raster is turned onto a canvas holding its rotated corners (quarter turns copy pixels; skews of 0.75 degrees or more are resampled bilinearly, smaller ones are left to the recognizer), regions are mapped in and recognized boxes back onto the page as scanned; this replaces the heavy rotate and deskew models.
-            """
-    }
-    claim one-pixel-snapping {
-        text """
-            Placement is quantized to one source pixel: glyphs within 1 px of the pen are drawn at the pen with the pen tracked from the drawn position, and a baseline offset beyond 1 px becomes a position-variant glyph rather than a text rise, so lines are single strings with a straight text matrix.
-            """
-    }
-    claim orientation-from-bottoms {
-        text """
-            A page's orientation comes from its components alone and at any angle: the directions from each component to its nearest neighbours, folded into a quarter circle, give the text axis, which is the residual skew of all four quarter-turn candidates; the candidate whose rotated ink bottoms pile into the sharpest rows (sum of squared counts over 3-pixel windows) wins, refined at 0.02 degrees with 2-pixel windows. Upright Latin text has one sharp bottom edge but two top edges, so a page is only flipped when the flipped bottoms score 1.15 times higher (symmetric pages score within a few percent of even; rasterization at an angle compresses the ratio), and only taken as sideways at 1.5 times, since typewritten text piles into columns nearly as sharp as lines.
-            """
-    }
-    claim stacked-pieces-are-one-glyph {
-        text """
-            Pieces whose horizontal extents overlap by half the narrower one within a line are placed as one compound glyph (a multi-component composite), so text extraction sees one character per cell and the pen never moves backwards inside a word.
-            """
-    }
-    claim staircases-deflate-better {
-        text """
-            Deflated in the PDF, staircase outlines are 12-17 percent smaller than fitted curves at half-pixel quantization despite 2.5 times more points, because their repeating deltas compress; the fitted font is chosen for resolution independence, not bytes.
-            """
-    }
-    claim straighten-positions-not-pixels {
-        text """
-            Nothing in the glyph path is resampled: quarter turns of bilevel components are lossless, the skew is rotated out of component positions about the page centre, each line's baseline is a Theil-Sen fit through its glyph bottoms, and the text matrix maps level lines back through the full inverse (reskew, then unturn) so glyphs land on their scanned ink; the output page is not straightened, which keeps an MRC background registered. OCR word boxes are mapped into the same upright frame before voting.
-            """
-    }
-    claim structural-match-gate {
-        text """
-            Two shapes are the same glyph when, at the comparator's best alignment, XOR pixels are at most 22 percent of the larger ink count and 2x2 all-XOR blocks are at most ink/40: edge noise is one pixel thick, a missing crossbar, serif or dot is not.
-            """
-    }
-    claim text-from-votes {
-        text """
-            A glyph id's Unicode text is the majority of votes cast by aligning OCR words to the glyph cells beneath them, exact one-to-one alignments outweighing positional ones four to one; a swallowed piece maps to the empty string and unvoted ids stay unmapped.
-            """
-    }
-    claim tolerant-gate-needs-stroke-interior {
-        text """
-            A shape may fold into a heavier one under the tolerant gate (a pixel of stroke weight forgiven, at most three connected far pixels, ink within 30 percent, one hop heaviest-first) only when both shapes' four-neighbour interior pixels are at least a fifth of their ink; on one-pixel strokes the forgiveness swallows the letter (s into a, c into o), so such shapes only match strictly.
+            Truetyping raises the render to GLYPHFONT_MIN_TARGET_HEIGHT whether the format or the target height was set last: `raise_render_height_for_truetyping` runs from `set_text_format`, `set_target_height` and `set_target_dimensions` alike, remembering the asked-for height for the background and scaling a fixed width with it. Before this the setters cleared the bump, and the GUI always sends `--target-height`, so promoting truetyping there would have traced every outline at 1200 px: 26 KB of font on a 3-page scan instead of 11 KB.
             """
     }
     depends_on [ @lege-ecosystem-perf.renderer.gray8-draws-take-the-rgb8-fast-paths ]
+    implements [
+        @lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate,
+        @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format
+    ]
 }
 
 record lege-ecosystem.work.handoff-remaining-jp2lam-jpeg-2000-decode-gaps/1 : work {
@@ -2612,6 +2533,47 @@ record lege-ecosystem.work.prepared-onnx-shared-gpu-session/1 : work {
             verified_by [ @lege-ecosystem.evidence.prepared-onnx-session-build-20260813/1 ]
         }
     }
+}
+
+record lege-ecosystem.work.preservation-mode/1 : work {
+    title "Preservation mode: an MRC document beside the e-ink preparation mode"
+    state proposed
+    scope [
+        path "lege-codecs/djvulibrust/**",
+        path "lege-process/GUI/Freya/**",
+        path "lege-process/PRESERVATION-MODE-PLAN.md",
+        path "lege-process/core/clean_gray.rs",
+        path "lege-process/core/djvu.rs",
+        path "lege-process/pipeline/config.rs",
+        path "lege-process/pipeline/pdf_tokio_pipeline.rs"
+    ]
+    intent """
+        Give Lege a second top-level mode. Preparation, everything it does today, rebuilds a book for an e-ink screen: binarize, dither, drop the colour, re-encode at the device's height. Preservation would keep the book as it is — no binarization of the page, no colour touched — and compress it as layers instead: a JPEG 2000 background under a crisp JBIG2 ink layer (or the DjVu equivalent, IW44 under JB2), at a requested resolution, with hOCR still running and truetyping available as an opt-in. The plan is written; nothing is implemented.
+        """
+    note """
+        The plan is `lege-process/PRESERVATION-MODE-PLAN.md` (2026-09-03). The load-bearing finding is that the one path that already preserves a page's own colour and ink, `encode_preserved_mrc_base_layer`, is reachable only when the input PDF is *already* MRC: `qualifying_jbig2_smask` is a strict structural probe over the compiled page, and nothing synthesizes its shape for an ordinary scan. Every other route converts to luma and normalizes contrast in `clean_page_for_mrc` before thresholding. So the mode cannot be built before the encoder it needs, which is why this is a plan and not a branch. Order: (1) an ink coverage plane from a fresh render, by supersampling the Sauvola mask into the existing exact-area `coverage_spans`; (2) colour through the MRC encoder — three-channel `mrc_background_with_coverage`, RGB JP2 and RGB IW44 backgrounds; (3) `PageMode::Preserved` with its own region policies and a CLI switch; (4) DjVu parity, a full-page colour background under the JB2 layer, and the `with_shared_dict` the encoder exposes and Lege never calls; (5) the GUI preparation/preservation toggle, first control in the left column with one sentence of tooltip each; (6) ink colour, which is what makes the result correct rather than merely faithful in shape. Not to be confused with `lege-document-ocr/PRESERVE-MODE-PLAN.md`, which is the business OCR CLI keeping a source PDF's own page images byte for byte.
+        """
+    claim coverage-has-no-producer {
+        text """
+            `mrc_background_with_coverage` consumes a continuous 0-255 ink coverage plane, but the only producer is the decoded source /SMask; binarization emits bilevel, so a preservation mode needs a coverage plane derived from a fresh render (supersampled Sauvola through `coverage_spans`).
+            """
+    }
+    claim hocr-is-already-independent {
+        text """
+            On the default PP-OCR backend the recognizer reads the RGB raster rather than the bilevel mask and the text reaches the writer on its own channel, so hOCR carries into preservation mode unchanged.
+            """
+    }
+    claim preserved-path-needs-an-mrc-input {
+        text """
+            The colour-preserving MRC path fires only when the input PDF is already MRC: `RenderSession::preserved_jbig2_smask` returns None unless the page is one full-page image whose /SMask is itself JBIG2, and no code synthesizes that shape for a plain scan.
+            """
+    }
+    claim the-writers-already-layer {
+        text """
+            Neither writer blocks the mode: `lege-pdf-write` already stacks a JPX background (RGB or grey) under a JBIG2 /ImageMask stencil, and djvulibrust's LayerData already models Background(Pixmap) with Foreground/Mask(Bitmap). What is missing is a colour-capable segmentation, not a container.
+            """
+    }
+    derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
 }
 
 record lege-ecosystem.work.preserve-jbig2-smask-text-plane/1 : work {

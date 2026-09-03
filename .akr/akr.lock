@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:d3a936402600b812915267dbe01324d4af97cda7902df5b2e18d5ebfe9dcb7df"
+    source_graph "sha256:d619cb1e193b86154ac0f05ca02921b973afdd9a303c1f45406a014aa61d0fcf"
 }
 
 source ".akr/project.akr" {
@@ -59,13 +59,13 @@ source ".akr/records/lege-ecosystem/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem/decisions.akr" {
-    hash "sha256:6b3b7cbd90b5c651093b558cef9d73d2acdf32e4239967f3e2b32455ddfd9a97"
-    records 1
+    hash "sha256:766a986e0625ae09506609c4a7a4e1456ec939a21e59a2b7637d1d5f9745f7c5"
+    records 3
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:eb46d933bef2cfd5d9440c1c18fb7bd6d0923c69bf0eadc9a1dc5ce030ae7e22"
-    records 141
+    hash "sha256:745da19326b7a8b2aab66db03cb2e129f8a9cab6c14cd2af31c9bfaf9d2165c4"
+    records 142
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -94,14 +94,38 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:eff0c16a4141f3a55777e6df3f4b47918e75c8729b9abd0e24ab2106c85c7da0"
-    records 110
+    hash "sha256:ee5dabc5ec01115dd857152c65ed2c689b8c4f0bd0d724daa574b7eff27b60ed"
+    records 111
+}
+
+resolution @lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate/1 {
+    slot derived_from
+    to @lege-ecosystem.work.glyph-font-text-output/1
+    hash "sha256:c60472a3f37ac5379f5a267a7a1355211b3495759ad7758b375fd602634c6d08"
+}
+
+resolution @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 {
+    slot derived_from
+    to @lege-ecosystem.work.glyph-font-text-output/1
+    hash "sha256:c60472a3f37ac5379f5a267a7a1355211b3495759ad7758b375fd602634c6d08"
 }
 
 resolution @lege-ecosystem.work.glyph-font-text-output/1 {
     slot depends_on
     to @lege-ecosystem-perf.renderer.gray8-draws-take-the-rgb8-fast-paths/1
     hash "sha256:902fb8863ab8933dbda42ab1bcf93f789122cfd7fefeeb82211ead80c81180c7"
+}
+
+resolution @lege-ecosystem.work.glyph-font-text-output/1 {
+    slot implements
+    to @lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate/1
+    hash "sha256:063d5a39331622aa7e075a34381fa290adf26248afb0bd8eb5d5c361631f84a7"
+}
+
+resolution @lege-ecosystem.work.glyph-font-text-output/1 {
+    slot implements
+    to @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1
+    hash "sha256:b13ec144bb401125e85d0bb7e80243f83fb1b22e2f6bf70c3eb4accf9651275f"
 }
 
 resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
@@ -120,6 +144,12 @@ resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
     slot part_of
     to @lege-ecosystem.milestone.business-pdf-ocr-cli/1
     hash "sha256:688eace70abe98436e3fd71f3b0e704a84726503b26860a89b56b29b237bd189"
+}
+
+resolution @lege-ecosystem.work.preservation-mode/1 {
+    slot derived_from
+    to @lege-ecosystem.work.glyph-font-text-output/1
+    hash "sha256:c60472a3f37ac5379f5a267a7a1355211b3495759ad7758b375fd602634c6d08"
 }
 
 resolution @lege-ecosystem.work.windows-document-ocr-winsafe-installer/1 {
@@ -838,6 +868,11 @@ seal @lege-ecosystem.evidence.thorough-ppocrv6-throughput-quality-20260822/1 {
 seal @lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1 {
     state verified
     hash "sha256:66862fb84cf769b8caa9d9c080f769cc74fdeb6a53f7fb7e9f1ba4efcaf768da"
+}
+
+seal @lege-ecosystem.evidence.truetyping-promotion-verification/1 {
+    state verified
+    hash "sha256:b1f7dc4bf776f0a453e9c3163bbbd45cafc513a2b7df3d058dc9bd8a3ac766d2"
 }
 
 seal @lege-ecosystem.evidence.turboocr-linux-trt11-probe-20260821/1 {

@@ -1,6 +1,37 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate/1 : decision {
+    title "A sideways page is turned upright with /Rotate, never on its head"
+    state proposed
+    scope [
+        path "lege-pdf/write/src/artifact.rs",
+        path "lege-pdf/write/src/pages.rs",
+        path "lege-process/core/pdf_artifact.rs",
+        path "lege-process/pipeline/pdf_tokio_pipeline.rs"
+    ]
+    decision """
+        The PDF writer emits `/Rotate` on the page dictionary, and Lege sets it from the quarter turns the orientation detector already measures, so a page scanned sideways opens upright. Only the sideways turns (90 and 270) are acted on; a 180 reading is ignored. Nothing is resampled and no coordinate changes: the raster, the OCR text layer and the glyph text keep the space they were written in and turn together.
+        """
+    context """
+        Orientation detection has shipped since pass 6 and drives OCR (a sideways CJK scan went from 27 to about 1100 words a page), but the output was never turned: `straighten.rs` puts every glyph back where it was scanned. The user made the GUI default conditional on sideways pages being flippable in production, so the flip had to become real rather than possible. The detector calls a page sideways only when the turned page's baselines are half again as sharp as the page's own, but calls it upside down on a margin of 1.15, which is a much weaker signal.
+        """
+    consequences """
+        A page whose orientation nothing measured is left alone: the frame is computed for every page under truetyping, but only when OCR is on in the other text formats. `/Rotate` is written per page, never inherited from `/Pages`, so a book may mix orientations. DjVu has no equivalent attribute and would need the raster itself turned, so DjVu output is unchanged. The requested height was applied to the sideways render, so an upright page comes out taller than the device asked for.
+        """
+    claim no-180-turn {
+        text """
+            Turns of 2 are dropped rather than written: the upside-down margin is 1.15 against the sideways 1.5, and a page wrongly stood on its head is worse for an e-ink reader than one left as scanned.
+            """
+    }
+    claim rotate-from-quarter-turns {
+        text """
+            `PageFrame.turns` counts clockwise quarter turns that make the text upright, which is exactly the `/Rotate` convention, so the value passes through unchanged (`core/pdf_artifact.rs::display_rotation`).
+            """
+    }
+    derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
+}
+
 record lege-ecosystem.decision.top-level-application-license-agpl/1 : decision {
     title "License the top-level Lege applications under AGPL-3.0-only"
     state active
@@ -29,4 +60,40 @@ record lege-ecosystem.decision.top-level-application-license-agpl/1 : decision {
         @lege-ecosystem.evidence.djvu-license-linkage-boundary-audit-20260822/1,
         @lege-ecosystem.evidence.djvu-subprocess-license-surface-audit-20260822/1
     ]
+}
+
+record lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 : decision {
+    title "Truetyping is the name and the default for PDF text output"
+    state proposed
+    scope [
+        path "lege-process/GUI/Freya/**",
+        path "lege-process/core/main.rs",
+        path "lege-process/language_service/**",
+        path "lege-process/pipeline/config.rs"
+    ]
+    decision """
+        The glyph-font text format is called `truetyping` in every user-facing surface and is the default PDF text encoder in the Freya GUI. `glyphfont` stays an accepted spelling of the CLI and config value forever, normalized at parse time, so scripted runs and saved settings keep working; the Rust module, the log prefixes and the AKR history keep the name they were built under, because they name the mechanism rather than the product. In the GUI the two opt-outs are checkboxes that exclude each other by construction: `CompressionType` gained a `Truetyping` variant and is now the single field the text encoder is read from, so JBIG2 and compatibility mode (CCITT4 + baseline JPEG) cannot both be on, and clearing either returns to truetyping.
+        """
+    context """
+        Seven passes brought the format to parity: on a 20-page scan it is 183 KB against JBIG2 symbol mode's 378 KB at equal or better legibility, and the user signed off on the rendered outputs. The old `effective_text_format` derived the encoder from `image_processing_type` whenever layout analysis was on, so the GUI's real default was CCITT4 and the compatibility checkbox's `compression_type` flip was a no-op on the default path. Making the text encoder an explicit field removes that coupling: how image regions are treated no longer decides how text is written.
+        """
+    consequences """
+        Dithered image regions no longer imply JBIG2 text, so the JBIG2 halftone toggle needs its own gate on the text encoder (it was relying on the coupling) in both the panel and the argument builder. Raster reflow re-renders every page as an image and has no text encoder, so it refuses truetyping on the CLI and is not offered it in the GUI. The Freya GUI is the only frontend changed: the sheet-music GUI and lege-viewer carry their own copies of the option model and keep the old default.
+        """
+    claim image-handling-no-longer-picks-the-encoder {
+        text """
+            `effective_text_format` no longer consults `image_processing_type` or `layout_analysis`; before this change Original meant CCITT4 and Dithered meant JBIG2 whenever layout analysis was on, which made CCITT4 the GUI's actual default.
+            """
+    }
+    claim one-field-decides-the-encoder {
+        text """
+            The Freya GUI reads the PDF text encoder from `CompressionType` alone (`Truetyping | Jbig2 | Ccitt4`); `ProcessingOptions::set_text_encoder` keeps `jpeg_compat` and the JBIG2 sub-options in step, which is what makes the two checkboxes mutually exclusive.
+            """
+    }
+    claim truetyping-is-canonical {
+        text """
+            `truetyping` is the canonical text_format value; `glyphfont` is normalized to it in `PipelineConfig::set_text_format` and in the CLI's `--text-format` parser, so the pipeline compares one constant (`pipeline::config::TRUETYPING`).
+            """
+    }
+    derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
 }

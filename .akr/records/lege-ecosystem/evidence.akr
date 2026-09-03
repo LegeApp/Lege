@@ -1553,6 +1553,18 @@ record lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1 : e
         """
 }
 
+record lege-ecosystem.evidence.truetyping-promotion-verification/1 : evidence {
+    title "Truetyping promotion, page rotation and the order-independent render bump verify"
+    state verified
+    result pass
+    method command
+    observed_at git:3123627e92f7b801393e95b265802c86a3c8011c
+    command "cargo test --profile debug-fast -p lege --lib -p lege-pdf-write -p lege-pdf-read -p lege-ipc -p lege-document-export; cargo test --profile debug-fast -p lege-gui-freya; bash lege-misc/dev-misc/warncheck.sh"
+    summary """
+        lege lib 323 passed / 1 ignored, Freya GUI 43, writer 59, reader 13, ipc 2, export 2; warncheck PASS across all 37 feature configurations. End to end: Hurvitz 60-62 through `--truetyping` carry /Rotate 90 on all three pages and render upright; Gobineau 40-42 give word recall 0.845 without an explicit height and 0.847 with `--target-height 1200`, 27423 and 27670 bytes with an 11 KB font either way, and `--text-format glyphfont` still runs as an alias.
+        """
+}
+
 record lege-ecosystem.evidence.turboocr-linux-trt11-probe-20260821/1 : evidence {
     title "The lean TurboOCR text worker compiled with CUDA 13.3 and TensorRT 11 on Linux; detector and recognizer engines serialized, loaded, and passed real CUDA inference on an RTX 4060 Laptop GPU."
     state verified
