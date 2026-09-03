@@ -2,10 +2,10 @@ akr-lock 0.1
 project lege-ecosystem
 
 build {
-    tool "akr 0.4.0"
+    tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:76cadb5829c4fee4ac586317da4b86d722ee3a1f1ac4e7c3f08bee5a0cfd2782"
+    source_graph "sha256:d3a936402600b812915267dbe01324d4af97cda7902df5b2e18d5ebfe9dcb7df"
 }
 
 source ".akr/project.akr" {
@@ -19,8 +19,8 @@ source ".akr/records/lege-ecosystem-perf/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem-perf/decisions.akr" {
-    hash "sha256:cba634876086326cdcb758a4097f19c291e0c30c428c7b9c0815371fefef72e0"
-    records 2
+    hash "sha256:be163ff30c6ba99d4f23a9e7762f950ea5368ca0252937004bb5167ebedc99e5"
+    records 3
 }
 
 source ".akr/records/lege-ecosystem-perf/evidence.akr" {
@@ -64,8 +64,8 @@ source ".akr/records/lege-ecosystem/decisions.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:c514bf51f25d27c6fe4f488fb420a47b23f5edb8078dd0a7c35462d4181e3e7c"
-    records 140
+    hash "sha256:eb46d933bef2cfd5d9440c1c18fb7bd6d0923c69bf0eadc9a1dc5ce030ae7e22"
+    records 141
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -94,8 +94,14 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:d3124526d2fe989ce056b9057df910800407179e8584b19975607ece94ff58d6"
+    hash "sha256:eff0c16a4141f3a55777e6df3f4b47918e75c8729b9abd0e24ab2106c85c7da0"
     records 110
+}
+
+resolution @lege-ecosystem.work.glyph-font-text-output/1 {
+    slot depends_on
+    to @lege-ecosystem-perf.renderer.gray8-draws-take-the-rgb8-fast-paths/1
+    hash "sha256:902fb8863ab8933dbda42ab1bcf93f789122cfd7fefeeb82211ead80c81180c7"
 }
 
 resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
@@ -150,6 +156,12 @@ resolution @lege-ecosystem.work.windows-tensorrt-ocr-runtime/1 {
     slot part_of
     to @lege-ecosystem.milestone.business-pdf-ocr-cli/1
     hash "sha256:688eace70abe98436e3fd71f3b0e704a84726503b26860a89b56b29b237bd189"
+}
+
+resolution @lege-ecosystem-perf.renderer.gray8-draws-take-the-rgb8-fast-paths/1 {
+    slot derived_from
+    to @lege-ecosystem-perf.renderer.mrc-masked-draw-fast-path/1
+    hash "sha256:9160de8d4e98a2b1e2d27cde48269799bc699196121bee080baa83bb0539cb03"
 }
 
 resolution @lege-ecosystem-perf.work.renderer-jp2-memory-fixes-2026-08-25/1 {
@@ -441,6 +453,11 @@ seal @lege-ecosystem.evidence.glyphfont-pass5-straighten-dedup-verification/1 {
 seal @lege-ecosystem.evidence.glyphfont-pass6-angle-ocr-speed-verification/1 {
     state verified
     hash "sha256:6162ef48ceb1cc372d7ac0a1f9f5735f8025ef7a5fb6d3f0bcfe13e8d800f622"
+}
+
+seal @lege-ecosystem.evidence.glyphfont-pass7-render-cost-verification/1 {
+    state verified
+    hash "sha256:97259135ffaf80fac407effa513587ce59829889363d6e8e294c014cf84aef98"
 }
 
 seal @lege-ecosystem.evidence.glyphfont-stage2-tests/1 {

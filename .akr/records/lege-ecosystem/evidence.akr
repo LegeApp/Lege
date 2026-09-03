@@ -591,6 +591,18 @@ record lege-ecosystem.evidence.glyphfont-pass6-angle-ocr-speed-verification/1 : 
         """
 }
 
+record lege-ecosystem.evidence.glyphfont-pass7-render-cost-verification/1 : evidence {
+    title "Glyphfont pass 7: renderer gray fast paths, coverage plane, background height verified"
+    state verified
+    result pass
+    method command
+    observed_at git:4a13ec3c7236e694ac65ab737dbacf67938da7ae
+    command "cargo test --profile debug-fast -p lege --lib; cargo test --profile debug-fast -p pdf-render-cpu; cargo test --profile debug-fast -p lege-pdf-read; bash lege-misc/dev-misc/warncheck.sh; target/debug-fast/lege <Gobineau> 40-59 [--text-format glyphfont] --no-ocr --debug-runtime-stats; target/debug-fast/lege <Gobineau> 40-42 --text-format glyphfont --ocr; target/debug-fast/lege <Hurvitz> 60-62 --text-format glyphfont --ocr"
+    summary """
+        lege lib 317 passed / 1 ignored; pdf-render-cpu and lege-pdf-read suites green including the new gray-vs-RGB twin and area-average tests; warncheck PASS across the matrix. Gobineau pages 40-59 (machine quiet, load 1.5): glyphfont 14.9 s wall / 66 s CPU -> 4.3 s / 18 s, JBIG2 mode 6.6 s / 26 s -> 3.3 s / 13 s; per-stage CPU: output render 22.7 -> 3.0 s, analysis render 6.2 -> 2.3 s, preserved-mask probe 5.9 -> 1.7 s, encode 13.2 -> 4.0 s; shared image cache 0 -> 20 hits. Sizes: glyphfont 20 pages 342 KB -> 183 KB, JBIG2 617 KB -> 378 KB with visibly cleaner letter edges (crop compared by eye). Pages 40-42 with OCR: word recall 0.833 / 0.853 / 0.853 over three runs (precision 0.803-0.816), inside the run-to-run band. Hurvitz sideways spread 60-62: glyphfont 438 KB, 1098 / 1127 / 1068 extracted words; JBIG2 152 KB unchanged (not a preserved-mask source). Review copies in ~/Downloads/lege-review-2026-09-03/.
+        """
+}
+
 record lege-ecosystem.evidence.glyphfont-stage2-tests/1 : evidence {
     title "Glyph font Stage 2 unit tests"
     state verified
