@@ -267,6 +267,10 @@ async fn process_single_page(
 
     // OCR or text extraction (can run concurrently with other pages)
     checkpoint(&cancellation, "before OCR/text extraction")?;
+    // How the page's text sits, so the recognizer reads it upright. In
+    // "jpeg" mode `binarized` holds the OCR luma, which thresholds well
+    // enough for this.
+    let page_frame = page_frame_for_ocr(&config, &binarized, width, height);
     let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
         // Recognize on the high-res raster when available, else the page image.
         // Detections and the returned hOCR are in output (page) space.
@@ -282,6 +286,7 @@ async fn process_single_page(
             height as u32,
             &config,
             page_index,
+            page_frame,
         )
         .await?
     } else if config.enable_ocr() {
@@ -294,6 +299,7 @@ async fn process_single_page(
             &adjusted_detections,
             &config,
             page_index,
+            page_frame,
         )
         .await?
     } else {
@@ -1545,6 +1551,7 @@ async fn perform_ocr(
     detections: &[crate::engine::Detection],
     config: &PipelineConfig,
     page_index: usize,
+    frame: Option<crate::ocr::orient::PageFrame>,
 ) -> Result<Option<String>> {
     // Note: This function is only called when config.enable_ocr() is true
 
@@ -1558,6 +1565,7 @@ async fn perform_ocr(
             cleaned_gray,
             config.ocr_language(),
             config.invert_input(),
+            frame,
         )
         .await;
         return match result {
@@ -1568,9 +1576,30 @@ async fn perform_ocr(
 
     #[cfg(not(lege_paddle_ocr))]
     {
-        let _ = (page_rgb, cleaned_gray);
+        // The legacy mask-based path recognizes the page as scanned.
+        let _ = (page_rgb, cleaned_gray, frame);
         perform_ocr_binarized(binarized, width, height, detections, config, page_index).await
     }
+}
+
+/// The orientation of a page's text for the recognizer, measured from its
+/// binarized raster when OCR is on. `None` leaves the page as it is.
+fn page_frame_for_ocr(
+    config: &PipelineConfig,
+    binarized: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<crate::ocr::orient::PageFrame> {
+    if !config.enable_ocr() || binarized.len() < width * height {
+        return None;
+    }
+    let frame = crate::encoding::straighten::detect_frame_of_pixels(
+        binarized,
+        width,
+        height,
+        crate::encoding::straighten::analysis_dpi(height),
+    );
+    (!frame.is_identity()).then_some(frame)
 }
 
 /// Tesseract/WinOCR fast path: region- or tile-based OCR over the 1bpp mask.
@@ -1720,7 +1749,7 @@ async fn encode_mrc_base_layer(
                 &binarized,
                 width,
                 height,
-                glyph_analysis_dpi(height),
+                crate::encoding::straighten::analysis_dpi(height),
             )?;
             crate::accumulator::ContentType::GlyphText {
                 runs: Arc::new(runs),
@@ -2143,13 +2172,6 @@ async fn encode_base_layer(
     }
 }
 
-/// Resolution hint for component cleanup in glyph extraction. The output
-/// raster carries no physical size, so assume a roughly ten-inch page; this
-/// only tunes the speck-removal threshold, never geometry.
-fn glyph_analysis_dpi(height_px: usize) -> i32 {
-    ((height_px as f32 / 10.0).round() as i32).clamp(72, 1200)
-}
-
 /// Glyph-font base layer: segment the binarized page into components, match
 /// them against the document-wide glyph dictionary, and hand back the page's
 /// glyph placements instead of an encoded raster.
@@ -2168,7 +2190,7 @@ async fn encode_glyph_text(
         Some(sem) => Some(sem.acquire_owned().await.ok()),
         None => None,
     };
-    let dpi = glyph_analysis_dpi(height);
+    let dpi = crate::encoding::straighten::analysis_dpi(height);
     let runs = crate::runtime_stats::spawn_blocking_stage(
         crate::runtime_stats::Stage::Encode,
         move || session.process_page_pixels(&binarized, width, height, dpi),
@@ -2270,7 +2292,7 @@ async fn encode_base_layer_fused(
             Some(sem) => Some(sem.acquire_owned().await.ok()),
             None => None,
         };
-        let dpi = glyph_analysis_dpi(height);
+        let dpi = crate::encoding::straighten::analysis_dpi(height);
         let runs = crate::runtime_stats::spawn_blocking_stage(
             crate::runtime_stats::Stage::Encode,
             move || {
@@ -3156,6 +3178,7 @@ async fn process_planned_pdf_products(
         source_height: height,
         correction: identity_margin_correction(),
     };
+    let page_frame = page_frame_for_ocr(&config, &binarized, width as usize, height as usize);
     let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
         if uses_preserved_mask {
             // On preserved-mask pages OCR must consume the source-derived
@@ -3170,6 +3193,7 @@ async fn process_planned_pdf_products(
                 height,
                 &config,
                 page_index,
+                page_frame,
             )
             .await?
         } else {
@@ -3190,6 +3214,7 @@ async fn process_planned_pdf_products(
                 height,
                 &config,
                 page_index,
+                page_frame,
             )
             .await?
         }
@@ -3204,6 +3229,7 @@ async fn process_planned_pdf_products(
             &detections,
             &config,
             page_index,
+            page_frame,
         )
         .await?
     } else {

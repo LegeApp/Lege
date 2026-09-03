@@ -10,27 +10,43 @@
 //! bottom edge (the baseline) but two top edges (x-height and ascender), so
 //! the bottom histogram is decisively sharper than the top one.
 //!
+//! The text may sit at any angle. Neighbouring glyphs lie along their line,
+//! so the directions from each component to its nearest neighbours pile up
+//! at the angle of the text axis; folded into a quarter circle that angle
+//! is the skew of every quarter-turn candidate at once, and the bottom
+//! histogram only has to decide among the four and refine the angle. At a
+//! large angle a component's lowest point is no longer its box's bottom
+//! edge, so bottoms are taken from the ink itself, rotated.
+//!
 //! Nothing is resampled. A quarter turn of a bilevel component is lossless,
 //! and the skew is removed from the component *positions* only: each
 //! glyph's bottom is put on its straight baseline while its shape stays as
-//! scanned, which at the couple of degrees a scan is off is invisible and
-//! is all the line grouping needs.
+//! scanned. Output puts every glyph back where it was scanned (see
+//! [`PageFrame::to_scanned`]), so the page is not straightened; the
+//! straight frame is where lines are found and shapes compared.
 
-use jbig2enc_rust::jbig2cc::BBox;
-use jbig2enc_rust::jbig2sym::BitImage;
+use std::collections::HashMap;
+
+use anyhow::{Result, anyhow};
+use jbig2enc_rust::jbig2cc::{BBox, analyze_page};
+use jbig2enc_rust::jbig2sym::{BitImage, binary_pixels_to_bitimage};
 
 /// Fewer text-sized components than this and the page is taken as upright
 /// and straight: there is not enough structure to measure.
 const MIN_LAYOUT_COMPONENTS: usize = 40;
-/// Skew search range and steps, degrees.
+/// Skew search range around the text axis when the axis is known, and
+/// around level when it is not, degrees; and the search steps.
+const AXIS_SEARCH_DEG: f64 = 1.5;
 const SKEW_RANGE_DEG: f64 = 6.0;
 const SKEW_COARSE_STEP_DEG: f64 = 0.25;
 const SKEW_FINE_STEP_DEG: f64 = 0.02;
 /// A page is only turned upside down when the bottom edges of the flipped
 /// page are this much sharper than those of the page as it is; below it
-/// (all-capital or CJK pages, whose tops and bottoms are alike) the page is
-/// taken as upright.
-const FLIP_MARGIN: f64 = 1.3;
+/// (all-capital or CJK pages, whose tops and bottoms are alike, and score
+/// within a few percent of each other) the page is taken as upright.
+/// Latin text scores its bottoms a third sharper than its tops, less once
+/// rasterization at an angle blurs the piles, so the margin is kept small.
+const FLIP_MARGIN: f64 = 1.15;
 /// A page is only taken as sideways when the bottoms of the turned page are
 /// this much sharper than those of the page as it is. Upright pages are the
 /// common case, and typewritten text piles its glyphs into columns nearly
@@ -43,6 +59,25 @@ const SKEW_GAIN_MIN: f64 = 1.05;
 /// median are not text (specks, rules, pictures) and do not vote.
 const TEXT_SIZE_MIN_RATIO: f64 = 0.4;
 const TEXT_SIZE_MAX_RATIO: f64 = 4.0;
+/// Bottoms pile into rows this many pixels wide: two for the sampling
+/// wobble of level text, one more once the text is at an angle and the
+/// lowest point of each shape is a rasterized corner. Orientation is
+/// judged with the wider window; the skew is refined with the narrower,
+/// which resolves a few hundredths of a degree.
+const ORIENTATION_WINDOW_PX: usize = 3;
+const SKEW_WINDOW_PX: usize = 2;
+/// The text axis histogram: bins of this many degrees over a quarter
+/// circle.
+const AXIS_BIN_DEG: f64 = 0.5;
+/// Neighbours farther than this many median glyph sizes away are on some
+/// other line or in the margin and do not vote for the axis.
+const AXIS_NEIGHBOUR_REACH: f64 = 3.0;
+/// Nearest neighbours per component that vote.
+const AXIS_NEIGHBOURS: usize = 2;
+/// The axis histogram's peak must hold this many times the mean bin count
+/// to be believed; a flat histogram (a picture, a table of rules) is not
+/// text along an axis.
+const AXIS_PEAK_MIN_RATIO: f64 = 4.0;
 
 /// How a page's text was straightened: the quarter turns applied to the
 /// page so its text reads upright, and the skew rotated out of the turned
@@ -61,6 +96,31 @@ pub struct PageFrame {
 }
 
 impl PageFrame {
+    /// The frame that leaves a page as it is.
+    pub fn identity(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            turns: 0,
+            skew: 0.0,
+        }
+    }
+
+    /// Whether the frame changes nothing.
+    pub fn is_identity(&self) -> bool {
+        self.turns % 4 == 0 && self.skew == 0.0
+    }
+
+    /// The same orientation for a raster of another size (the OCR raster,
+    /// rendered at a different resolution).
+    pub fn resized(&self, width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            ..*self
+        }
+    }
+
     /// The page's size after turning.
     pub fn turned_size(&self) -> (u32, u32) {
         if self.turns % 2 == 1 {
@@ -114,10 +174,53 @@ impl PageFrame {
         (cx + rx * c + ry * s, cy - rx * s + ry * c)
     }
 
+    /// An upright-frame point with the skew put back: the turned-page
+    /// point it came from.
+    pub fn reskew_point(&self, x: f64, y: f64) -> (f64, f64) {
+        if self.skew == 0.0 {
+            return (x, y);
+        }
+        let (w, h) = self.turned_size();
+        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+        let (s, c) = self.skew.sin_cos();
+        let (rx, ry) = (x - cx, y - cy);
+        (cx + rx * c - ry * s, cy + rx * s + ry * c)
+    }
+
     /// A page point (as scanned) in the upright, straightened frame.
     pub fn to_upright(&self, x: f64, y: f64) -> (f64, f64) {
         let (tx, ty) = self.turn_point(x, y);
         self.deskew_point(tx, ty)
+    }
+
+    /// An upright-frame point back on the page as scanned.
+    pub fn to_scanned(&self, x: f64, y: f64) -> (f64, f64) {
+        let (tx, ty) = self.reskew_point(x, y);
+        self.unturn_point(tx, ty)
+    }
+
+    /// A direction in the upright frame expressed on the page as scanned.
+    pub fn scanned_direction(&self, dx: f64, dy: f64) -> (f64, f64) {
+        let (s, c) = self.skew.sin_cos();
+        self.unturn_direction(dx * c - dy * s, dx * s + dy * c)
+    }
+
+    /// The box `(x0, y0, x1, y1)` the turned page covers in the upright
+    /// frame: the page itself when there is no skew, and its rotated
+    /// corners' bounds otherwise.
+    pub fn upright_bounds(&self) -> (f64, f64, f64, f64) {
+        let (w, h) = self.turned_size();
+        let (w, h) = (w as f64, h as f64);
+        let corners =
+            [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| self.deskew_point(x, y));
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (x, y) in corners {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        (x0, y0, x1, y1)
     }
 
     /// A component's box after the quarter turns.
@@ -155,8 +258,8 @@ impl PageFrame {
         let (w, h) = (bitmap.width, bitmap.height);
         let (tw, th) = if turns % 2 == 1 { (h, w) } else { (w, h) };
         let mut out = BitImage::new(tw as u32, th as u32).expect("turned component fits");
-        for y in 0..h {
-            for x in 0..w {
+        for (y, x0, x1) in row_spans(&bitmap) {
+            for x in x0..x1 {
                 if !bitmap.get_usize(x, y) {
                     continue;
                 }
@@ -172,14 +275,49 @@ impl PageFrame {
     }
 }
 
+/// Resolution hint for component cleanup. The output raster carries no
+/// physical size, so assume a roughly ten-inch page; this only tunes the
+/// speck-removal threshold, never geometry.
+pub fn analysis_dpi(height_px: usize) -> i32 {
+    ((height_px as f32 / 10.0).round() as i32).clamp(72, 1200)
+}
+
+/// A binarized page in the pipeline's image convention (one byte per
+/// pixel, `<= 128` is ink) as a bitmap.
+pub fn page_bitmap(pixels: &[u8], width: usize, height: usize) -> Result<BitImage> {
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| anyhow!("page dimensions overflow"))?;
+    if pixels.len() < expected {
+        return Err(anyhow!(
+            "page buffer holds {} bytes, {}x{} needs {}",
+            pixels.len(),
+            width,
+            height,
+            expected
+        ));
+    }
+    let logical: Vec<u8> = pixels[..expected]
+        .iter()
+        .map(|&v| u8::from(v <= 128))
+        .collect();
+    binary_pixels_to_bitimage(&logical, width, height).map_err(|e| anyhow!("{e}"))
+}
+
+/// A binarized page's orientation and skew, from its components (the
+/// same analysis the glyph dictionary runs; `dpi` only tunes speck
+/// removal). A page that cannot be read is taken as it is.
+pub fn detect_frame_of_pixels(pixels: &[u8], width: usize, height: usize, dpi: i32) -> PageFrame {
+    let Ok(page) = page_bitmap(pixels, width, height) else {
+        return PageFrame::identity(width as u32, height as u32);
+    };
+    let shapes = analyze_page(&page, dpi.max(72), 1).extract_shapes();
+    detect_frame(&shapes, width as u32, height as u32)
+}
+
 /// Decide a page's orientation and skew from its components.
 pub fn detect_frame(shapes: &[(BitImage, BBox)], width: u32, height: u32) -> PageFrame {
-    let mut frame = PageFrame {
-        width,
-        height,
-        turns: 0,
-        skew: 0.0,
-    };
+    let mut frame = PageFrame::identity(width, height);
     let size = |b: &BBox| (b.xmax - b.xmin).max(b.ymax - b.ymin);
     let mut sizes: Vec<i32> = shapes.iter().map(|(_, b)| size(b)).collect();
     if sizes.len() < MIN_LAYOUT_COMPONENTS {
@@ -187,26 +325,36 @@ pub fn detect_frame(shapes: &[(BitImage, BBox)], width: u32, height: u32) -> Pag
     }
     sizes.sort_unstable();
     let median = sizes[sizes.len() / 2] as f64;
-    let boxes: Vec<BBox> = shapes
+    let text: Vec<&(BitImage, BBox)> = shapes
         .iter()
-        .map(|(_, b)| *b)
-        .filter(|b| {
+        .filter(|(_, b)| {
             let s = size(b) as f64;
             s >= median * TEXT_SIZE_MIN_RATIO && s <= median * TEXT_SIZE_MAX_RATIO
         })
         .collect();
-    if boxes.len() < MIN_LAYOUT_COMPONENTS {
+    if text.len() < MIN_LAYOUT_COMPONENTS {
         return frame;
     }
 
-    // Best baseline sharpness over the coarse skew grid, per quarter turn.
-    let coarse = angle_grid(0.0, SKEW_RANGE_DEG, SKEW_COARSE_STEP_DEG);
-    let mut best = [(0.0f64, 0.0f64); 4]; // (score, angle)
+    // The angle of the text axis, whichever way the text runs, and how far
+    // around it to look; without one, look around level.
+    let (axis, range) = match text_axis(&text, median) {
+        Some(axis) => (axis, AXIS_SEARCH_DEG),
+        None => (0.0, SKEW_RANGE_DEG),
+    };
+
+    // Best baseline sharpness over the coarse grid, per quarter turn.
+    let coarse = angle_grid(0.0, range, SKEW_COARSE_STEP_DEG);
+    let mut best = [(0.0f64, 0.0f64); 4]; // (score, angle off the axis)
     for turns in 0..4u8 {
-        let turned = PageFrame { turns, ..frame };
-        let bottoms = bottom_points(&turned, &boxes);
+        let candidate = PageFrame {
+            turns,
+            skew: axis,
+            ..frame
+        };
+        let bottoms = glyph_bottoms(&candidate, &text);
         for &angle in &coarse {
-            let score = baseline_sharpness(&bottoms, angle);
+            let score = baseline_sharpness(&bottoms, angle, ORIENTATION_WINDOW_PX);
             if score > best[turns as usize].0 {
                 best[turns as usize] = (score, angle);
             }
@@ -227,18 +375,26 @@ pub fn detect_frame(shapes: &[(BitImage, BBox)], width: u32, height: u32) -> Pag
     };
 
     // Refine the skew for the chosen turn.
-    let bottoms = bottom_points(&frame, &boxes);
+    let candidate = PageFrame {
+        skew: axis,
+        ..frame
+    };
+    let bottoms = glyph_bottoms(&candidate, &text);
     let (_, coarse_angle) = best[frame.turns as usize];
-    let mut fine_best = (baseline_sharpness(&bottoms, coarse_angle), coarse_angle);
+    let mut fine_best = (
+        baseline_sharpness(&bottoms, coarse_angle, SKEW_WINDOW_PX),
+        coarse_angle,
+    );
     for angle in angle_grid(coarse_angle, SKEW_COARSE_STEP_DEG, SKEW_FINE_STEP_DEG) {
-        let score = baseline_sharpness(&bottoms, angle);
+        let score = baseline_sharpness(&bottoms, angle, SKEW_WINDOW_PX);
         if score > fine_best.0 {
             fine_best = (score, angle);
         }
     }
-    let straight = baseline_sharpness(&bottoms, 0.0);
+    // Only when it beats no correction at all.
+    let straight = baseline_sharpness(&glyph_bottoms(&frame, &text), 0.0, SKEW_WINDOW_PX);
     if fine_best.0 >= straight * SKEW_GAIN_MIN {
-        frame.skew = fine_best.1;
+        frame.skew = axis + fine_best.1;
     }
     frame
 }
@@ -252,22 +408,159 @@ fn angle_grid(centre_rad: f64, range_deg: f64, step_deg: f64) -> Vec<f64> {
         .collect()
 }
 
-/// `(x centre, bottom)` of every box after the frame's quarter turns.
-fn bottom_points(frame: &PageFrame, boxes: &[BBox]) -> Vec<(f64, f64)> {
-    boxes
+/// The angle of the text axis, radians in `(−45°, 45°]`, from the
+/// directions between each component and its nearest neighbours, or `None`
+/// when they do not agree on one.
+fn text_axis(shapes: &[&(BitImage, BBox)], median_size: f64) -> Option<f64> {
+    let centres: Vec<(f64, f64)> = shapes
         .iter()
-        .map(|b| {
-            let t = frame.turn_box(b);
-            ((t.xmin + t.xmax) as f64 / 2.0, t.ymax as f64)
+        .map(|(_, b)| {
+            (
+                (b.xmin + b.xmax) as f64 / 2.0,
+                (b.ymin + b.ymax) as f64 / 2.0,
+            )
+        })
+        .collect();
+    let reach = (median_size * AXIS_NEIGHBOUR_REACH).max(1.0);
+    let cell_of = |x: f64, y: f64| ((x / reach).floor() as i32, (y / reach).floor() as i32);
+    let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (i, &(x, y)) in centres.iter().enumerate() {
+        grid.entry(cell_of(x, y)).or_default().push(i);
+    }
+
+    let bins = (90.0 / AXIS_BIN_DEG).round() as usize;
+    let mut hist = vec![0u32; bins];
+    let mut votes = 0u32;
+    let reach2 = reach * reach;
+    for (i, &(x, y)) in centres.iter().enumerate() {
+        let (gx, gy) = cell_of(x, y);
+        let mut nearest = [(f64::MAX, usize::MAX); AXIS_NEIGHBOURS];
+        for ny in gy - 1..=gy + 1 {
+            for nx in gx - 1..=gx + 1 {
+                let Some(list) = grid.get(&(nx, ny)) else {
+                    continue;
+                };
+                for &j in list {
+                    if j == i {
+                        continue;
+                    }
+                    let (dx, dy) = (centres[j].0 - x, centres[j].1 - y);
+                    let d2 = dx * dx + dy * dy;
+                    if d2 > reach2 || d2 >= nearest[AXIS_NEIGHBOURS - 1].0 {
+                        continue;
+                    }
+                    let mut k = AXIS_NEIGHBOURS - 1;
+                    while k > 0 && nearest[k - 1].0 > d2 {
+                        nearest[k] = nearest[k - 1];
+                        k -= 1;
+                    }
+                    nearest[k] = (d2, j);
+                }
+            }
+        }
+        for (_, j) in nearest {
+            if j == usize::MAX {
+                continue;
+            }
+            let (dx, dy) = (centres[j].0 - x, centres[j].1 - y);
+            // Folded into a quarter circle: lines and columns, either way
+            // along, all vote for the same residual angle.
+            let deg = (dy.atan2(dx).to_degrees() + 45.0).rem_euclid(90.0) - 45.0;
+            let bin = (((deg + 45.0) / AXIS_BIN_DEG).floor() as usize).min(bins - 1);
+            hist[bin] += 1;
+            votes += 1;
+        }
+    }
+    if (votes as usize) < MIN_LAYOUT_COMPONENTS {
+        return None;
+    }
+    // Circular three-bin smoothing, the peak, and its parabolic refinement.
+    let smooth: Vec<f64> = (0..bins)
+        .map(|b| (hist[(b + bins - 1) % bins] + hist[b] + hist[(b + 1) % bins]) as f64)
+        .collect();
+    let (peak, &peak_value) = smooth
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))?;
+    let mean = smooth.iter().sum::<f64>() / bins as f64;
+    if peak_value < mean * AXIS_PEAK_MIN_RATIO {
+        return None;
+    }
+    let (left, right) = (smooth[(peak + bins - 1) % bins], smooth[(peak + 1) % bins]);
+    let curvature = left - 2.0 * peak_value + right;
+    let offset = if curvature.abs() > f64::EPSILON {
+        (0.5 * (left - right) / curvature).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    let deg = -45.0 + (peak as f64 + 0.5 + offset) * AXIS_BIN_DEG;
+    Some(deg.to_radians())
+}
+
+/// `(x centre, bottom)` of every component in the frame's upright
+/// coordinates. Without skew the bottom is the turned box's bottom edge;
+/// with it, the lowest corner of the component's ink once rotated (a box
+/// edge is no longer the lowest point of a rotated shape). A component
+/// without ink uses its box.
+fn glyph_bottoms(frame: &PageFrame, shapes: &[&(BitImage, BBox)]) -> Vec<(f64, f64)> {
+    shapes
+        .iter()
+        .map(|(bitmap, b)| {
+            if frame.skew == 0.0 {
+                let t = frame.turn_box(b);
+                return ((t.xmin + t.xmax) as f64 / 2.0, t.ymax as f64);
+            }
+            let (cx, _) = frame.to_upright(
+                (b.xmin + b.xmax) as f64 / 2.0,
+                (b.ymin + b.ymax) as f64 / 2.0,
+            );
+            let mut bottom = f64::MIN;
+            let mut lowest = |x: f64, y: f64| bottom = bottom.max(frame.to_upright(x, y).1);
+            let mut inked = false;
+            for (y, x0, x1) in row_spans(bitmap) {
+                inked = true;
+                let y0 = (b.ymin + y as i32) as f64;
+                let x0 = (b.xmin + x0 as i32) as f64;
+                let x1 = (b.xmin + x1 as i32) as f64;
+                lowest(x0, y0);
+                lowest(x1, y0);
+                lowest(x0, y0 + 1.0);
+                lowest(x1, y0 + 1.0);
+            }
+            if !inked {
+                for (x, y) in [
+                    (b.xmin, b.ymin),
+                    (b.xmax, b.ymin),
+                    (b.xmin, b.ymax),
+                    (b.xmax, b.ymax),
+                ] {
+                    lowest(x as f64, y as f64);
+                }
+            }
+            (cx, bottom)
         })
         .collect()
 }
 
+/// Each inked row of a bitmap as `(y, first x, one past the last x)`.
+pub fn row_spans(bitmap: &BitImage) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+    let stride = bitmap.width.div_ceil(32);
+    let words = bitmap.packed_words();
+    (0..bitmap.height).filter_map(move |y| {
+        let row = &words[y * stride..(y + 1) * stride];
+        let first = row.iter().position(|&w| w != 0)?;
+        let last = row.iter().rposition(|&w| w != 0)?;
+        let x0 = first * 32 + row[first].leading_zeros() as usize;
+        let x1 = last * 32 + 32 - row[last].trailing_zeros() as usize;
+        Some((y, x0, x1))
+    })
+}
+
 /// How sharply the points' bottoms pile into rows once lines at `skew`
-/// are made level: the sum of squared counts over two-pixel windows (each
-/// pair of adjacent one-pixel bins), so a pile that straddles a bin edge
+/// are made level: the sum of squared counts over `window`-pixel windows
+/// (runs of adjacent one-pixel bins), so a pile that straddles a bin edge
 /// scores the same as one that does not.
-fn baseline_sharpness(points: &[(f64, f64)], skew: f64) -> f64 {
+fn baseline_sharpness(points: &[(f64, f64)], skew: f64, window: usize) -> f64 {
     let tan = skew.tan();
     let projected: Vec<i64> = points
         .iter()
@@ -277,14 +570,14 @@ fn baseline_sharpness(points: &[(f64, f64)], skew: f64) -> f64 {
         return 0.0;
     };
     let max = *projected.iter().max().unwrap();
-    let mut bins = vec![0u32; (max - min + 2) as usize];
+    let mut bins = vec![0u32; (max - min) as usize + window];
     for p in projected {
         bins[(p - min) as usize] += 1;
     }
-    bins.windows(2)
+    bins.windows(window)
         .map(|w| {
-            let pair = (w[0] + w[1]) as f64;
-            pair * pair
+            let run = w.iter().sum::<u32>() as f64;
+            run * run
         })
         .sum()
 }
@@ -527,5 +820,136 @@ mod tests {
         assert!((slope - 0.01).abs() < 1e-9);
         assert!((intercept - 100.0).abs() < 1e-9);
         assert!(fit_baseline(&points[..5]).is_none());
+    }
+
+    /// The upright page of `text_page`, filled rectangles rotated `deg`
+    /// clockwise about the page centre and rasterized, as a scan of it.
+    fn rotated_page(deg: f64) -> (Vec<(BitImage, BBox)>, u32, u32) {
+        let (upright, w, h) = text_page(0, 0.0);
+        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+        let (s, c) = deg.to_radians().sin_cos();
+        let rot = |x: f64, y: f64| {
+            let (rx, ry) = (x - cx, y - cy);
+            (cx + rx * c - ry * s, cy + rx * s + ry * c)
+        };
+        let unrot = |x: f64, y: f64| {
+            let (rx, ry) = (x - cx, y - cy);
+            (cx + rx * c + ry * s, cy - rx * s + ry * c)
+        };
+        let shapes = upright
+            .iter()
+            .map(|(_, b)| {
+                let corners = [
+                    (b.xmin, b.ymin),
+                    (b.xmax, b.ymin),
+                    (b.xmin, b.ymax),
+                    (b.xmax, b.ymax),
+                ]
+                .map(|(x, y)| rot(x as f64, y as f64));
+                let xmin = corners.iter().map(|c| c.0).fold(f64::MAX, f64::min).floor() as i32;
+                let ymin = corners.iter().map(|c| c.1).fold(f64::MAX, f64::min).floor() as i32;
+                let xmax = corners.iter().map(|c| c.0).fold(f64::MIN, f64::max).ceil() as i32;
+                let ymax = corners.iter().map(|c| c.1).fold(f64::MIN, f64::max).ceil() as i32;
+                let mut bm = BitImage::new((xmax - xmin) as u32, (ymax - ymin) as u32).unwrap();
+                for py in ymin..ymax {
+                    for px in xmin..xmax {
+                        let (ux, uy) = unrot(px as f64 + 0.5, py as f64 + 0.5);
+                        if ux >= b.xmin as f64
+                            && ux < b.xmax as f64
+                            && uy >= b.ymin as f64
+                            && uy < b.ymax as f64
+                        {
+                            bm.set_usize((px - xmin) as usize, (py - ymin) as usize, true);
+                        }
+                    }
+                }
+                (
+                    bm,
+                    BBox {
+                        xmin,
+                        ymin,
+                        xmax,
+                        ymax,
+                    },
+                )
+            })
+            .collect();
+        (shapes, w, h)
+    }
+
+    #[test]
+    fn text_at_any_angle_is_found() {
+        // (page rotation clockwise, expected turns, expected skew)
+        for (deg, turns, skew) in [
+            (20.0, 0u8, 20.0),
+            (-35.0, 0, -35.0),
+            (110.0, 3, 20.0),
+            (200.0, 2, 20.0),
+            (-80.0, 1, 10.0),
+            (44.0, 0, 44.0),
+        ] {
+            let (shapes, w, h) = rotated_page(deg);
+            let f = detect_frame(&shapes, w, h);
+            assert_eq!(
+                f.turns, turns,
+                "page rotated {deg}° given {} turns",
+                f.turns
+            );
+            assert!(
+                (f.skew.to_degrees() - skew).abs() <= 0.05,
+                "page rotated {deg}°: skew measured as {}°",
+                f.skew.to_degrees()
+            );
+            // The first line's bottoms (descenders aside) are level upright.
+            let mut bottoms: Vec<f64> = shapes[..60]
+                .iter()
+                .enumerate()
+                .filter(|(col, _)| col % 9 != 3)
+                .map(|(_, (bm, b))| {
+                    row_spans(bm)
+                        .flat_map(|(y, x0, x1)| {
+                            let y1 = (b.ymin + y as i32 + 1) as f64;
+                            [
+                                f.to_upright((b.xmin + x0 as i32) as f64, y1).1,
+                                f.to_upright((b.xmin + x1 as i32) as f64, y1).1,
+                            ]
+                        })
+                        .fold(f64::MIN, f64::max)
+                })
+                .collect();
+            bottoms.sort_by(|a, b| a.total_cmp(b));
+            let spread = bottoms[bottoms.len() * 9 / 10] - bottoms[bottoms.len() / 10];
+            assert!(spread <= 2.0, "{deg}°: levelled bottoms spread {spread}");
+        }
+    }
+
+    #[test]
+    fn scanned_and_upright_are_inverses() {
+        for turns in 0..4u8 {
+            for skew in [-0.4, 0.0, 0.01, 0.7] {
+                let f = PageFrame {
+                    width: 300,
+                    height: 500,
+                    turns,
+                    skew,
+                };
+                for (x, y) in [(0.0, 0.0), (17.5, 400.25), (299.0, 3.0)] {
+                    let (ux, uy) = f.to_upright(x, y);
+                    let (sx, sy) = f.to_scanned(ux, uy);
+                    assert!(
+                        (sx - x).abs() < 1e-9 && (sy - y).abs() < 1e-9,
+                        "t{turns} s{skew}"
+                    );
+                    // Directions follow points.
+                    let (ux2, uy2) = (ux + 3.0, uy - 2.0);
+                    let (sx2, sy2) = f.to_scanned(ux2, uy2);
+                    let (dx, dy) = f.scanned_direction(3.0, -2.0);
+                    assert!((sx2 - sx - dx).abs() < 1e-9 && (sy2 - sy - dy).abs() < 1e-9);
+                }
+                let (x0, y0, x1, y1) = f.upright_bounds();
+                let (tw, th) = f.turned_size();
+                assert!(x1 - x0 >= tw as f64 - 1e-9 && y1 - y0 >= th as f64 - 1e-9);
+            }
+        }
     }
 }

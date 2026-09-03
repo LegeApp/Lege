@@ -13,6 +13,7 @@ use lege_ocr::{
 };
 
 use crate::engine::Detection;
+use crate::ocr::orient::{PageFrame, Upright};
 use crate::pipeline::config::PipelineConfig;
 use crate::reflow::{PlacedKind, PxRect, ReflowPage, SourcePageSet};
 use crate::types::ContentCategory;
@@ -109,6 +110,11 @@ fn with_pipeline<R>(language: &str, f: impl FnOnce(&mut OcrPipeline) -> R) -> R 
 /// maps 1:1 onto the page. Recognition happens at `image`'s resolution and the
 /// results are scaled back down to output space.
 ///
+/// `frame` says how the page's text sits (in output space or any other
+/// size of the same page); a page that is sideways, upside down or at an
+/// angle is recognized upright and the boxes mapped back (see
+/// [`orient`](super::orient)).
+///
 /// This is a drop-in replacement for the fast OCR path when
 /// `config.slow_ocr_enabled()` is true.
 #[allow(clippy::too_many_arguments)]
@@ -120,6 +126,7 @@ pub async fn perform_slow_ocr(
     output_height: u32,
     config: &PipelineConfig,
     page_index: usize,
+    frame: Option<PageFrame>,
 ) -> Result<Option<String>> {
     let image_w = image.width();
     let image_h = image.height();
@@ -127,7 +134,7 @@ pub async fn perform_slow_ocr(
         return Ok(None);
     }
 
-    let regions = ocr_regions(
+    let mut regions = ocr_regions(
         detections,
         page_index,
         image_w,
@@ -137,17 +144,40 @@ pub async fn perform_slow_ocr(
     );
 
     let language = config.ocr_language().to_string();
-    let coord_map = CoordinateMap::identity(image_w, image_h, image_w as f32, image_h as f32);
 
     // Run in spawn_blocking because OCR engine calls (and GPU binarization) are
     // synchronous. The pipeline (and its OCR engine) is cached per worker thread.
-    let image_clone = image.clone();
     let has_matching_binary = binarized.len() == image_w as usize * image_h as usize;
-    let binarized_clone = if has_matching_binary {
-        binarized.to_vec()
-    } else {
-        Vec::new()
+    let upright = frame.and_then(|f| Upright::of(&f, image_w, image_h));
+    let (image_clone, binarized_clone, canvas_w, canvas_h) = match &upright {
+        Some(up) => {
+            let (cw, ch) = up.canvas_size();
+            for region in &mut regions {
+                region.bbox_highres = up.rect_to_canvas(region.bbox_highres);
+            }
+            let mask = if has_matching_binary {
+                // Resampled mask values are thresholded back to a mask.
+                up.resample(binarized, image_w, image_h, 1)
+                    .into_iter()
+                    .map(|v| if v <= 128 { 0 } else { 255 })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (up.rgb(image), mask, cw, ch)
+        }
+        None => (
+            image.clone(),
+            if has_matching_binary {
+                binarized.to_vec()
+            } else {
+                Vec::new()
+            },
+            image_w,
+            image_h,
+        ),
     };
+    let coord_map = CoordinateMap::identity(canvas_w, canvas_h, canvas_w as f32, canvas_h as f32);
 
     let mut slow_page =
         crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Ocr, move || {
@@ -164,6 +194,9 @@ pub async fn perform_slow_ocr(
         })
         .await
         .map_err(|e| anyhow::anyhow!("slow OCR task panicked: {e}"))??;
+    if let Some(up) = &upright {
+        up.lines_to_page(&mut slow_page.lines);
+    }
 
     // Scale recognition results from the OCR raster's space back to output space
     // and rebuild the page hOCR there (the writer treats hOCR coordinates as

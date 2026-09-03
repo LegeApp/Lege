@@ -1246,6 +1246,15 @@ async fn extract_djvu_text_layer(
     detections: &[crate::engine::Detection],
     page_index: usize,
 ) -> Result<Option<String>> {
+    // How the page's text sits, so the recognizer reads it upright.
+    let page_frame = (config.enable_ocr() && binarized.len() >= width * height).then(|| {
+        crate::encoding::straighten::detect_frame_of_pixels(
+            binarized,
+            width,
+            height,
+            crate::encoding::straighten::analysis_dpi(height),
+        )
+    });
     if config.enable_ocr() && config.slow_ocr_enabled() {
         // Recognize on the high-res raster when available; detections and the
         // returned hOCR are in output (page) space.
@@ -1261,6 +1270,7 @@ async fn extract_djvu_text_layer(
             height as u32,
             config,
             page_index,
+            page_frame,
         )
         .await
         {
@@ -1285,13 +1295,15 @@ async fn extract_djvu_text_layer(
                 reusable_cleaned,
                 config.ocr_language(),
                 config.invert_input(),
+                page_frame,
             )
             .await
         };
 
         #[cfg(not(lege_paddle_ocr))]
         let result = {
-            let _ = cleaned_gray;
+            // The legacy mask-based path recognizes the page as scanned.
+            let _ = (cleaned_gray, page_frame);
             let use_regions = crate::ocr::fast::should_use_region_ocr(
                 config.enable_layout_detection(),
                 detections,

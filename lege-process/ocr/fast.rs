@@ -12,6 +12,7 @@ use lege_ocr::engine::default_engine;
 use lege_ocr::fast as ocr_fast;
 use lege_ocr::hocr::{adjust_offsets, finalize, strip_to_body};
 
+use crate::ocr::orient::{PageFrame, Upright};
 use crate::reflow::ReflowPage;
 #[cfg(not(lege_paddle_ocr))]
 use crate::reflow::{PlacedKind, PxRect};
@@ -53,11 +54,16 @@ pub fn should_use_region_ocr(
 /// pass that buffer to avoid doing the work twice. The engine performs its own
 /// text-line detection, so no layout regions or tiling are needed; the returned
 /// hOCR is already in page-global coordinates.
+///
+/// `frame` says how the page's text sits; a page that is sideways, upside
+/// down or at an angle is turned upright for the recognizer and the
+/// returned boxes are mapped back onto the page (see [`orient`](super::orient)).
 pub async fn perform_page_rgb_ocr(
     page_rgb: &RgbImage,
     cleaned_gray: Option<&[u8]>,
     language: &str,
     invert_input: bool,
+    frame: Option<PageFrame>,
 ) -> Result<String> {
     let _permit = OCR_SEMAPHORE
         .acquire()
@@ -101,14 +107,11 @@ pub async fn perform_page_rgb_ocr(
             } else {
                 luma
             };
-            let gray = GrayImage::from_raw(width as u32, height as u32, cleaned)
-                .context("failed to build cleaned OCR image")?;
             // A perfectly flat page has no ink for the detector to find; skip
             // the engine and return an empty text layer.
-            let pixels = gray.as_raw();
-            if pixels
+            if cleaned
                 .first()
-                .is_none_or(|first| pixels.iter().all(|value| value == first))
+                .is_none_or(|first| cleaned.iter().all(|value| value == first))
             {
                 return Ok(lege_ocr::hocr::build_page_hocr(
                     &[],
@@ -116,8 +119,22 @@ pub async fn perform_page_rgb_ocr(
                     height as u32,
                 ));
             }
+            // Recognize the page upright; the boxes come back onto the page.
+            let upright = frame.and_then(|f| Upright::of(&f, width as u32, height as u32));
+            let gray = match &upright {
+                Some(up) => {
+                    let (cw, ch) = up.canvas_size();
+                    let pixels = up.resample(&cleaned, width as u32, height as u32, 1);
+                    GrayImage::from_raw(cw, ch, pixels)
+                }
+                None => GrayImage::from_raw(width as u32, height as u32, cleaned),
+            }
+            .context("failed to build cleaned OCR image")?;
             let engine = default_engine();
-            let lines = engine.ocr_page(&gray, &lang)?;
+            let mut lines = engine.ocr_page(&gray, &lang)?;
+            if let Some(up) = &upright {
+                up.lines_to_page(&mut lines);
+            }
             Ok(lege_ocr::hocr::build_page_hocr(
                 &lines,
                 width as u32,
@@ -330,7 +347,7 @@ pub async fn perform_reflow_page_fast_ocr(
     #[cfg(lege_paddle_ocr)]
     {
         let _ = page;
-        let hocr = perform_page_rgb_ocr(composed, None, language, false).await?;
+        let hocr = perform_page_rgb_ocr(composed, None, language, false, None).await?;
         let body = strip_to_body(&hocr);
         if body.trim().is_empty() {
             return Ok(None);

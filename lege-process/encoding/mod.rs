@@ -11,6 +11,7 @@ pub mod prelude;
 pub mod streamline;
 
 // Raster text -> per-document glyph font (the `glyphfont` text format).
+pub mod bitrows;
 pub mod glyphfont;
 pub mod straighten;
 pub mod vectorize;

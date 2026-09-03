@@ -156,14 +156,15 @@ fn glyph_runs_to_lines(
             });
             pen_px = Some(drawn_x + g.width as i32);
         }
-        // Lines are level in the upright frame; on a page scanned sideways
-        // or upside down the text matrix turns them back onto the raster.
+        // Lines are level in the upright frame; the text matrix puts them
+        // back where they were scanned, turned and skewed, so the glyphs
+        // (whose shapes are as scanned) land on their ink.
         let frame = &runs.frame;
-        let (ox, oy) = frame.unturn_point(first.x as f64, line.baseline_y as f64);
+        let (ox, oy) = frame.to_scanned(first.x as f64, line.baseline_y as f64);
         let origin_x = el.x as f64 + ox * sx;
         let origin_y = (page.height - el.y) as f64 - oy * sy;
-        let (ax, ay) = frame.unturn_direction(1.0, 0.0);
-        let (bx, by) = frame.unturn_direction(0.0, -1.0);
+        let (ax, ay) = frame.scanned_direction(1.0, 0.0);
+        let (bx, by) = frame.scanned_direction(0.0, -1.0);
         lines.push(GlyphLine {
             matrix: Affine::new(
                 EM_PIXELS * ax * sx,

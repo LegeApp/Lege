@@ -39,6 +39,12 @@ pub fn get_tessdata_path_for_language(_language: &str) -> Option<String> {
     None
 }
 
+/// The page-orientation type the pipelines hand to OCR; without OCR only
+/// the frame itself is needed.
+pub mod orient {
+    pub use crate::encoding::straighten::PageFrame;
+}
+
 pub mod fast {
     use super::*;
     use crate::engine::Detection;
@@ -56,6 +62,7 @@ pub mod fast {
         _cleaned_gray: Option<&[u8]>,
         _language: &str,
         _invert_input: bool,
+        _frame: Option<super::orient::PageFrame>,
     ) -> Result<String> {
         unavailable()
     }
@@ -112,6 +119,7 @@ pub mod slow {
         _output_height: u32,
         _config: &PipelineConfig,
         _page_index: usize,
+        _frame: Option<super::orient::PageFrame>,
     ) -> Result<Option<String>> {
         unavailable()
     }

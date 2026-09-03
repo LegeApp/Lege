@@ -7,6 +7,7 @@
 // own `#[cfg]`-gated module and is re-exported so callers see one flat API.
 
 pub mod fast;
+pub mod orient;
 pub mod slow;
 
 /// Re-export the shared `OcrResult` type from lege-ocr.
