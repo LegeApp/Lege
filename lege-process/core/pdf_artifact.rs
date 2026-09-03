@@ -156,10 +156,23 @@ fn glyph_runs_to_lines(
             });
             pen_px = Some(drawn_x + g.width as i32);
         }
-        let origin_x = el.x as f64 + first.x as f64 * sx;
-        let origin_y = (page.height - el.y) as f64 - line.baseline_y as f64 * sy;
+        // Lines are level in the upright frame; on a page scanned sideways
+        // or upside down the text matrix turns them back onto the raster.
+        let frame = &runs.frame;
+        let (ox, oy) = frame.unturn_point(first.x as f64, line.baseline_y as f64);
+        let origin_x = el.x as f64 + ox * sx;
+        let origin_y = (page.height - el.y) as f64 - oy * sy;
+        let (ax, ay) = frame.unturn_direction(1.0, 0.0);
+        let (bx, by) = frame.unturn_direction(0.0, -1.0);
         lines.push(GlyphLine {
-            matrix: Affine::new(EM_PIXELS * sx, 0.0, 0.0, EM_PIXELS * sy, origin_x, origin_y),
+            matrix: Affine::new(
+                EM_PIXELS * ax * sx,
+                -EM_PIXELS * ay * sy,
+                EM_PIXELS * bx * sx,
+                -EM_PIXELS * by * sy,
+                origin_x,
+                origin_y,
+            ),
             items: items.into_boxed_slice(),
         });
     }
@@ -396,6 +409,7 @@ mod tests {
                 ],
             }],
             glyph_count: 3,
+            frame: Default::default(),
         };
         let page = Page {
             width: 1000.0,
