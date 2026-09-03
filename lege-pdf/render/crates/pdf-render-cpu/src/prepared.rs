@@ -560,6 +560,14 @@ impl ImageCacheKey {
         target: Option<(u32, u32)>,
     ) -> Self {
         let (h0, h1) = content_hash_128(data);
+        // Only JPX decodes at a reduced resolution for a small footprint, so
+        // only its payload varies with the target. Every other codec yields
+        // the same samples whatever the draw size; keying them by target
+        // would decode the same JBIG2 or JPEG again for every render size of
+        // the page (Lege renders each page at two).
+        let target = matches!(kind, pdf_page_ir::ImageCodecKind::Jpx)
+            .then_some(target)
+            .flatten();
         let parms_hash = match parms {
             None => 0,
             Some(p) => {

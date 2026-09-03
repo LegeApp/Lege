@@ -676,6 +676,34 @@ fn paint_image(
     // general compositor; every fast path below is source-over.
     let blend = choose_blend(img.blend);
     let blend_is_normal = matches!(blend, BlendChoice::Normal);
+    // Eight-bit gray sources (book scans, MRC pages) are one byte per texel
+    // where every fast path below reads three. Promote the axis-aligned
+    // opaque ones to RGB8 once so they qualify; sampling the promoted image
+    // is byte-identical (see `PreparedImage::gray8_promoted_to_rgb8`). A
+    // magnified draw under a mask has no fast path either way, so it is not
+    // expanded for nothing.
+    let promoted_gray;
+    let img = if blend_is_normal
+        && cmask.is_none()
+        && soft.is_none()
+        && img.alpha == 255
+        && img.inv.b == 0.0
+        && img.inv.c == 0.0
+        && matches!(img.color_space, pdf_page_ir::ImageColorSpace::Gray)
+        && (img.footprint[0] > 1.0
+            || img.footprint[1] > 1.0
+            || (img.smask.is_none() && img.mask.is_none()))
+    {
+        match img.gray8_promoted_to_rgb8() {
+            Some(rgb) => {
+                promoted_gray = rgb;
+                &promoted_gray
+            }
+            None => img,
+        }
+    } else {
+        img
+    };
     let fast_rgb8_base = blend_is_normal
         && cmask.is_none()
         && soft.is_none()

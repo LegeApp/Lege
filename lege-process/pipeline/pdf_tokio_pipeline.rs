@@ -1868,20 +1868,24 @@ async fn encode_preserved_mrc_base_layer(
     let cover_format = *config.cover_format();
     let high_quality = config.high_quality_output();
     let jpeg_compat = config.jpeg_compat();
+    let background_subsample = config.glyph_background_subsample();
     crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Encode, move || {
         use crate::encoding::{
             EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
             Jbig2Settings,
         };
 
-        // Preserve all source pixels outside the native text mask. Downsampling
-        // here would make the selected dither/original policy less than global.
+        // Preserve all source pixels outside the native text mask at the
+        // requested resolution: downsampling below it would make the
+        // selected dither/original policy less than global. Glyph-font
+        // output renders above that height for its own sake only, and the
+        // background comes back down to it here.
         let (bg, ow, oh) = crate::clean_gray::mrc_background_with_coverage(
             &cleaned_gray,
             &working_coverage,
             width,
             height,
-            1,
+            background_subsample,
         );
         let ow = ow as u32;
         let oh = oh as u32;
@@ -2843,6 +2847,7 @@ async fn prepare_planned_pdf_page(
         return Ok(None);
     }
     crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Render, move || {
+        let t_prepare = std::time::Instant::now();
         let geometry = session
             .page_geometry(page_index as u32)
             .map_err(|error| anyhow!("page geometry failed: {error}"))?;
@@ -2851,6 +2856,12 @@ async fn prepare_planned_pdf_page(
         let page = session
             .compile(page_index as u32)
             .map_err(|error| anyhow!("page compile failed: {error}"))?;
+        crate::perf_log!(
+            t_prepare,
+            "[PROFILING] Page {} planned compile",
+            page_index + 1
+        );
+        let t_mask = std::time::Instant::now();
         // Native MRC mask preservation is a source property, not a page-mode
         // preference. When it qualifies, use it for both dithered and original
         // image policies so layout detection cannot accidentally threshold the
@@ -2858,6 +2869,11 @@ async fn prepare_planned_pdf_page(
         let preserved_mask = session
             .preserved_jbig2_smask(&page, output_width, output_height, Some(&cancellation))
             .map_err(|error| anyhow!("preserved JBIG2 SMask preparation failed: {error}"))?;
+        crate::perf_log!(
+            t_mask,
+            "[PROFILING] Page {} planned preserved-mask probe",
+            page_index + 1
+        );
         if preserved_mask.is_none()
             && (config.is_grayscale_mode()
                 || (config.dither_images() && !config.keep_original_images()))
@@ -2879,6 +2895,7 @@ async fn prepare_planned_pdf_page(
         if plan.base.product.format != lege_pdf_read::RasterFormat::Gray8 {
             return Ok(None);
         }
+        let t_analysis = std::time::Instant::now();
         let analysis_image = if let Some(target) = plan.analysis.take() {
             let plane = session
                 .render_cancellable(&page, &target.product, Some(&cancellation))
@@ -2891,6 +2908,11 @@ async fn prepare_planned_pdf_page(
         } else {
             RgbImage::from_pixel(1, 1, image::Rgb([255, 255, 255]))
         };
+        crate::perf_log!(
+            t_analysis,
+            "[PROFILING] Page {} planned analysis render",
+            page_index + 1
+        );
         Ok(Some(PlannedPdfContext {
             page,
             plan,
@@ -3169,7 +3191,19 @@ async fn process_planned_pdf_products(
             .collect()
     } else {
         let options = crate::pipeline::policies::binarize_options_for(&config, false);
-        crate::color::binarization::binarize_gray(&gray, width as usize, height as usize, &options)
+        let t_bin = std::time::Instant::now();
+        let b = crate::color::binarization::binarize_gray(
+            &gray,
+            width as usize,
+            height as usize,
+            &options,
+        );
+        crate::perf_log!(
+            t_bin,
+            "[PROFILING] Page {} planned binarize",
+            page_index + 1
+        );
+        b
     };
     checkpoint(&cancellation, "after planned mask preparation")?;
 
@@ -3244,6 +3278,8 @@ async fn process_planned_pdf_products(
     };
 
     let mut elements = Vec::new();
+    let t_regions = std::time::Instant::now();
+    let region_count = products.regions.len();
     for region in products.regions {
         checkpoint(&cancellation, "during planned region encoding")?;
         let Some(crop) = region.target.product.crop else {
@@ -3276,6 +3312,12 @@ async fn process_planned_pdf_products(
         });
     }
 
+    crate::perf_log!(
+        t_regions,
+        "[PROFILING] Page {} planned {} region encodes",
+        page_index + 1,
+        region_count
+    );
     let force_jbig2_generic = config.text_format() == "jbig2"
         && detections
             .iter()
@@ -3505,82 +3547,92 @@ async fn run_page_owned_job(
     }
 
     let text_session = glyph_session.clone();
-    let processed_page = if let (Some(mut planned), Some(session)) =
-        (planned_pdf, document_session.clone())
-    {
-        let detections = scale_detections_to_output(
-            &inference_data,
-            planned.output_width,
-            planned.output_height,
-        );
-        let has_text = detections
-            .iter()
-            .any(|detection| crate::types::LABEL_CLASSIFIER.is_substantive_text(detection));
-        planned.plan.regions = if planned.preserved_mask.is_some() {
-            // The source mask identifies text precisely. Process the entire
-            // remaining continuous-tone plane with the selected image policy;
-            // adding layout-selected crops would duplicate content and make
-            // correctness depend on Paddle's labels.
-            Vec::new()
-        } else {
-            detections
+    let processed_page =
+        if let (Some(mut planned), Some(session)) = (planned_pdf, document_session.clone()) {
+            let detections = scale_detections_to_output(
+                &inference_data,
+                planned.output_width,
+                planned.output_height,
+            );
+            let has_text = detections
                 .iter()
-                .filter(|detection| crate::types::LABEL_CLASSIFIER.is_image_label(detection))
-                .filter(|detection| {
-                    !(has_text
-                        && bbox_is_effectively_full_page(
+                .any(|detection| crate::types::LABEL_CLASSIFIER.is_substantive_text(detection));
+            planned.plan.regions = if planned.preserved_mask.is_some() {
+                // The source mask identifies text precisely. Process the entire
+                // remaining continuous-tone plane with the selected image policy;
+                // adding layout-selected crops would duplicate content and make
+                // correctness depend on Paddle's labels.
+                Vec::new()
+            } else {
+                detections
+                    .iter()
+                    .filter(|detection| crate::types::LABEL_CLASSIFIER.is_image_label(detection))
+                    .filter(|detection| {
+                        !(has_text
+                            && bbox_is_effectively_full_page(
+                                detection.bbox,
+                                planned.output_width,
+                                planned.output_height,
+                                0.90,
+                            ))
+                    })
+                    .filter_map(|detection| {
+                        crate::pipeline::page_output_plan::region_target(
                             detection.bbox,
                             planned.output_width,
                             planned.output_height,
-                            0.90,
-                        ))
-                })
-                .filter_map(|detection| {
-                    crate::pipeline::page_output_plan::region_target(
-                        detection.bbox,
-                        planned.output_width,
-                        planned.output_height,
-                    )
-                })
-                .collect()
+                        )
+                    })
+                    .collect()
+            };
+            let render_session = session.clone();
+            let compiled_page = planned.page.clone();
+            let plan = planned.plan.clone();
+            let render_cancellation = cancellation.clone();
+            let products = crate::runtime_stats::spawn_blocking_stage(
+                crate::runtime_stats::Stage::Render,
+                move || {
+                    let t_render = std::time::Instant::now();
+                    let products = render_session.render_output_plan(
+                        &compiled_page,
+                        &plan,
+                        Some(&render_cancellation),
+                    );
+                    crate::perf_log!(
+                        t_render,
+                        "[PROFILING] Page {} planned output render",
+                        page_index + 1
+                    );
+                    products
+                },
+            )
+            .await
+            .map_err(|error| anyhow!("page product render task panicked: {error}"))?
+            .map_err(|error| anyhow!("page product render failed: {error}"))?;
+            process_planned_pdf_products(
+                config,
+                session,
+                page_index,
+                page_start,
+                products,
+                planned.preserved_mask,
+                detections,
+                cancellation.clone(),
+                glyph_session,
+            )
+            .await?
+        } else {
+            process_single_page(
+                config,
+                document_session,
+                inference_data,
+                page_start,
+                margin_analysis,
+                cancellation.clone(),
+                glyph_session,
+            )
+            .await?
         };
-        let render_session = session.clone();
-        let compiled_page = planned.page.clone();
-        let plan = planned.plan.clone();
-        let render_cancellation = cancellation.clone();
-        let products = crate::runtime_stats::spawn_blocking_stage(
-            crate::runtime_stats::Stage::Render,
-            move || {
-                render_session.render_output_plan(&compiled_page, &plan, Some(&render_cancellation))
-            },
-        )
-        .await
-        .map_err(|error| anyhow!("page product render task panicked: {error}"))?
-        .map_err(|error| anyhow!("page product render failed: {error}"))?;
-        process_planned_pdf_products(
-            config,
-            session,
-            page_index,
-            page_start,
-            products,
-            planned.preserved_mask,
-            detections,
-            cancellation.clone(),
-            glyph_session,
-        )
-        .await?
-    } else {
-        process_single_page(
-            config,
-            document_session,
-            inference_data,
-            page_start,
-            margin_analysis,
-            cancellation.clone(),
-            glyph_session,
-        )
-        .await?
-    };
     checkpoint(&cancellation, "before writer handoff")?;
 
     // Recognized words teach the glyph font which text its shapes stand for.

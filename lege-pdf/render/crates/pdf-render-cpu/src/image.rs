@@ -588,6 +588,44 @@ impl PreparedImage {
         self.row_bits()
     }
 
+    /// An 8-bit gray image re-expressed as RGB8: the same texels with each
+    /// gray byte tripled and the colour space marked RGB. `pixel()` answers
+    /// `[g, g, g, 255]` for such a gray texel and `[r, g, b, 255]` for an
+    /// RGB8 one, so sampling the promoted image is byte-identical to sampling
+    /// the original by construction. What the promotion buys is eligibility
+    /// for the executor's axis-aligned RGB8 fast paths, which read three
+    /// bytes per texel: scanned books and Lege's own MRC pages are 8-bit gray
+    /// almost without exception, and without this every one of their page
+    /// draws took the generic per-pixel sampler.
+    ///
+    /// `None` when the image is not exactly that shape or too large to expand
+    /// (then the generic path runs, unchanged).
+    pub(crate) fn gray8_promoted_to_rgb8(&self) -> Option<PreparedImage> {
+        // 64 Mpx -> 192 MiB of RGB8, the same ceiling as the CMYK conversion.
+        const MAX_PROMOTE_PIXELS: usize = 64 * 1024 * 1024;
+        if self.is_stencil
+            || self.bpc != 8
+            || self.decode.is_some()
+            || self.sample_lut.is_some()
+            || !matches!(self.color_space, ImageColorSpace::Gray)
+        {
+            return None;
+        }
+        let n = (self.width as usize).checked_mul(self.height as usize)?;
+        if n == 0 || n > MAX_PROMOTE_PIXELS || self.samples.len() < n {
+            return None;
+        }
+        let mut rgb = Vec::with_capacity(n * 3);
+        for &g in &self.samples[..n] {
+            rgb.extend_from_slice(&[g, g, g]);
+        }
+        Some(PreparedImage {
+            color_space: ImageColorSpace::Rgb,
+            samples: Arc::from(rgb),
+            ..self.clone()
+        })
+    }
+
     /// Convert an opaque 8-bit CMYK source (no `/Decode`) to a packed RGB8
     /// buffer, one pixel through the *exact* same `cmyk_to_rgb` + `to_u8` path
     /// `pixel()` uses. Box-averaging this buffer is byte-identical to the

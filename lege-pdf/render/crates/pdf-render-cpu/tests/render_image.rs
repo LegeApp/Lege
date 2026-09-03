@@ -429,6 +429,71 @@ fn minified_images_are_area_averaged_not_point_sampled() {
     }
 }
 
+/// Gray8 scans reach the axis-aligned RGB8 fast paths through a one-time
+/// promotion of the samples. Every promoted draw must match the gray draw
+/// texel for texel: minified under a one-bit soft mask (the MRC shape),
+/// minified unmasked, and magnified with either interpolation.
+#[test]
+fn gray8_draws_match_their_rgb8_twins() {
+    let gray: Vec<u8> = (0..64 * 64).map(|i| ((i * 37) % 251) as u8).collect();
+    let rgb: Vec<u8> = gray.iter().flat_map(|g| [*g, *g, *g]).collect();
+    let smask = || ImageSMask {
+        width: 64,
+        height: 64,
+        bits_per_component: 1,
+        decode: None,
+        samples: Arc::from(checkerboard(64, 64)),
+        codec: None,
+        codec_data: None,
+        codec_parms: None,
+    };
+    let cases: [(&str, f64, u32, bool, InterpolationMode); 4] = [
+        (
+            "minified under a soft mask",
+            8.0,
+            8,
+            true,
+            InterpolationMode::Nearest,
+        ),
+        ("minified", 8.0, 8, false, InterpolationMode::Nearest),
+        (
+            "magnified nearest",
+            8.0,
+            256,
+            false,
+            InterpolationMode::Nearest,
+        ),
+        (
+            "magnified bilinear",
+            8.0,
+            256,
+            false,
+            InterpolationMode::Bilinear,
+        ),
+    ];
+    let backend = CpuBackend::default();
+    for (name, scale, dim, masked, interpolation) in cases {
+        let render = |cs: ImageColorSpace, samples: Vec<u8>| {
+            let mut img = image_ir(64, 64, 8, cs, samples, false, masked.then(smask));
+            img.interpolation = interpolation;
+            let (host, _) = backend
+                .render_to_host(&request(page(img, Color::BLACK, scale), dim))
+                .unwrap();
+            host.pixels
+        };
+        let from_gray = render(ImageColorSpace::Gray, gray.clone());
+        let from_rgb = render(ImageColorSpace::Rgb, rgb.clone());
+        assert!(
+            from_gray == from_rgb,
+            "{name}: the gray draw differs from its RGB8 twin"
+        );
+        assert!(
+            from_gray.iter().any(|&b| b != 255),
+            "{name}: the draw painted nothing"
+        );
+    }
+}
+
 #[test]
 fn magnified_images_still_honour_the_interpolation_flag() {
     // Blowing 2x1 up to 8x8 is magnification: the footprint is under a texel,

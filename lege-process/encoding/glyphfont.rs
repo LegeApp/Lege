@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use jbig2enc_rust::jbig2cc::analyze_page;
+use jbig2enc_rust::jbig2cc::{BBox, analyze_page};
 use jbig2enc_rust::jbig2comparator::Comparator;
 use jbig2enc_rust::jbig2sym::BitImage;
 use lege_pdf_write::font::{EmbeddedFont, ToUnicode, to_unicode_cmap};
@@ -191,6 +191,39 @@ pub struct PlacedGlyph {
 pub struct GlyphLine {
     pub baseline_y: i32,
     pub glyphs: Vec<PlacedGlyph>,
+}
+
+/// A page's components and its frame, computed without the dictionary.
+pub struct PageAnalysis {
+    shapes: Vec<(BitImage, BBox)>,
+    frame: PageFrame,
+    components: Duration,
+    frame_time: Duration,
+}
+
+impl PageAnalysis {
+    /// Segment a binarized page (1 = ink) into components and find which way
+    /// its text reads and how far its lines are off level.
+    pub fn of(page: &BitImage, dpi: i32) -> Self {
+        let started = Instant::now();
+        // losslevel 1: erase isolated specks of at most `dpi²/20000 − 1`
+        // pixels (one pixel at ~220 dpi). Everything else becomes a glyph.
+        let cc = analyze_page(page, dpi.max(72), 1);
+        let shapes = cc.extract_shapes();
+        drop(cc);
+        let components = started.elapsed();
+        // Components are turned upright (losslessly) and their positions
+        // levelled against this frame, so every line is horizontal.
+        let started = Instant::now();
+        let frame = detect_frame(&shapes, page.width as u32, page.height as u32);
+        let frame_time = started.elapsed();
+        Self {
+            shapes,
+            frame,
+            components,
+            frame_time,
+        }
+    }
 }
 
 /// A page's text as glyph placements, ready for the PDF artifact adapter.
@@ -776,19 +809,22 @@ impl GlyphDictionary {
     /// the dictionary (growing it as needed), and return the page's glyph
     /// placements grouped into lines.
     pub fn process_page(&mut self, page: &BitImage, dpi: i32) -> PageGlyphRuns {
-        let started = Instant::now();
-        // losslevel 1: erase isolated specks of at most `dpi²/20000 − 1`
-        // pixels (one pixel at ~220 dpi). Everything else becomes a glyph.
-        let cc = analyze_page(page, dpi.max(72), 1);
-        let shapes = cc.extract_shapes();
-        drop(cc);
-        self.profile.components += started.elapsed();
-        // Which way the text reads and how far its lines are off level:
-        // components are turned upright (losslessly) and their positions
-        // levelled, so every line below is horizontal.
-        let started = Instant::now();
-        let frame = detect_frame(&shapes, page.width as u32, page.height as u32);
-        self.profile.frame += started.elapsed();
+        self.process_analysis(PageAnalysis::of(page, dpi))
+    }
+
+    /// Match an analysed page's components against the dictionary (growing
+    /// it as needed) and return the page's glyph placements grouped into
+    /// lines. The analysis needs no dictionary, so pages analyse in parallel
+    /// and only this step serializes on it.
+    pub fn process_analysis(&mut self, analysis: PageAnalysis) -> PageGlyphRuns {
+        let PageAnalysis {
+            shapes,
+            frame,
+            components,
+            frame_time,
+        } = analysis;
+        self.profile.components += components;
+        self.profile.frame += frame_time;
 
         let mut instances = Vec::with_capacity(shapes.len());
         for (bitmap, bbox) in shapes {
@@ -2196,12 +2232,16 @@ impl GlyphFontSession {
         dpi: i32,
     ) -> Result<PageGlyphRuns> {
         let page = page_bitmap(pixels, width, height).map_err(|e| anyhow!("glyph font: {e}"))?;
+        // Components and frame need no dictionary: pages analyse in
+        // parallel and only the matching below waits for the lock.
+        let analysis = PageAnalysis::of(&page, dpi);
+        drop(page);
 
         let runs = self
             .dict
             .lock()
             .map_err(|_| anyhow!("glyph font dictionary poisoned"))?
-            .process_page(&page, dpi);
+            .process_analysis(analysis);
         self.pages.fetch_add(1, Ordering::Relaxed);
         if std::env::var_os("LEGE_GLYPH_DUMP").is_some() {
             eprintln!(

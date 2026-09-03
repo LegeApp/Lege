@@ -421,6 +421,11 @@ pub struct PipelineConfig {
     pub(crate) enable_ocr_hint: bool,
     pub(crate) target_height: u32,
     pub(crate) target_width: Option<u32>,
+    /// The height the caller asked for before glyph-font output raised
+    /// `target_height` to its working minimum; `None` when nothing was
+    /// raised or an explicit height came later. See
+    /// [`Self::glyph_background_subsample`].
+    pub(crate) glyph_requested_height: Option<u32>,
     /// Dithering for **layout image regions** only (not body text). Ignored when layout detection is off.
     pub(crate) image_region_dither_mode: ImageRegionDitherMode,
     pub(crate) binarization: BinarizationConfig,
@@ -536,6 +541,7 @@ impl PipelineConfig {
             enable_ocr_hint: true,
             target_height: 1200,
             target_width: None,
+            glyph_requested_height: None,
             image_region_dither_mode: ImageRegionDitherMode::None,
             binarization: BinarizationConfig::default(),
             enable_ocr: false,
@@ -933,6 +939,7 @@ impl PipelineConfig {
                 // so the source raster should be fine enough for clean glyph
                 // shapes; a later explicit target height still overrides.
                 if format == "glyphfont" && self.target_height < GLYPHFONT_MIN_TARGET_HEIGHT {
+                    self.glyph_requested_height = Some(self.target_height);
                     self.target_height = GLYPHFONT_MIN_TARGET_HEIGHT;
                     self.target_width = None;
                 }
@@ -964,7 +971,23 @@ impl PipelineConfig {
         }
         self.target_height = height;
         self.target_width = None;
+        self.glyph_requested_height = None;
         Ok(())
+    }
+
+    /// Box-downsample factor that takes a raster rendered at the glyph-font
+    /// working height back to the height the caller asked for. Glyph-font
+    /// output raises the render height for clean glyph shapes; the
+    /// continuous-tone background gains nothing from that and costs four
+    /// times as much to encode, so it is encoded at the requested
+    /// resolution (never below it). 1 when nothing was raised.
+    pub fn glyph_background_subsample(&self) -> usize {
+        match self.glyph_requested_height {
+            Some(requested) if requested > 0 && self.target_height > requested => {
+                (self.target_height / requested).max(1) as usize
+            }
+            _ => 1,
+        }
     }
     pub fn set_target_dimensions(&mut self, width: u32, height: u32) -> Result<()> {
         if self.crop_free_aspect {
@@ -984,6 +1007,7 @@ impl PipelineConfig {
         }
         self.target_height = h;
         self.target_width = Some(w);
+        self.glyph_requested_height = None;
         Ok(())
     }
     pub fn set_dither_images(&mut self, dither: bool) {

@@ -299,7 +299,8 @@ pub enum Jbig2StencilPolarity {
 
 /// Source-preserving foreground text plane for a conservatively qualified MRC
 /// page. Encoded bytes stay authoritative; `working_coverage` is a separate
-/// Lanczos3-resized opacity plane used only by processing and analysis.
+/// area-averaged opacity plane on the target grid, used only by processing
+/// and analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreservedJbig2Smask {
     pub page_data: Arc<[u8]>,
@@ -598,32 +599,129 @@ fn rgb_surface_from_rgba(rendered: &HostPage, page_index: u32) -> Result<RgbSurf
     })
 }
 
+/// Resample a 0/255 opacity plane onto the target grid by exact area
+/// averaging: each target pixel is the coverage of the source region it
+/// spans, with the fractional edge rows and columns weighted by their
+/// overlap. That is what a coverage plane means, so there is no ringing and
+/// no overshoot, and the separable integer passes cost about a tenth of the
+/// Lanczos3 resize this replaced (which was the whole preserved-mask probe
+/// on a 6 Mpx page).
 fn resize_smask_coverage(
     decoded: DecodedBilevelSmask,
     target_width: u32,
     target_height: u32,
 ) -> Option<GraySurface> {
-    if decoded.stride != decoded.width as usize || target_width == 0 || target_height == 0 {
+    let (source_width, source_height) = (decoded.width as usize, decoded.height as usize);
+    if decoded.stride != source_width
+        || source_width == 0
+        || source_height == 0
+        || target_width == 0
+        || target_height == 0
+    {
         return None;
     }
-    let native =
-        image::GrayImage::from_raw(decoded.width, decoded.height, decoded.opacity.to_vec())?;
-    let resized = if decoded.width == target_width && decoded.height == target_height {
-        native
-    } else {
-        image::imageops::resize(
-            &native,
-            target_width,
-            target_height,
-            image::imageops::FilterType::Lanczos3,
-        )
-    };
+    let source = decoded.opacity.get(..source_width * source_height)?;
+    if (target_width as usize, target_height as usize) == (source_width, source_height) {
+        return Some(GraySurface {
+            width: target_width,
+            height: target_height,
+            stride: source_width,
+            pixels: Arc::clone(&decoded.opacity),
+        });
+    }
+    let (tw, th) = (target_width as usize, target_height as usize);
+    let columns = coverage_spans(source_width, tw);
+    let rows = coverage_spans(source_height, th);
+
+    // Horizontal pass: per source row, the weighted column sums. Weights are
+    // in units of 1/tw source pixel and add up to `source_width` per target
+    // column, so the sum stays below 255 * source_width.
+    let mut horizontal = vec![0u32; source_height * tw];
+    for (source_row, sums) in source
+        .chunks_exact(source_width)
+        .zip(horizontal.chunks_exact_mut(tw))
+    {
+        for (sum, span) in sums.iter_mut().zip(&columns) {
+            *sum = span
+                .taps()
+                .map(|(i, weight)| weight * u32::from(source_row[i]))
+                .sum();
+        }
+    }
+    // Vertical pass: the same over the row sums, then one exact rounded
+    // divide by the pixel's full source area.
+    let denominator = (source_width * source_height) as u64;
+    let mut pixels = vec![0u8; tw * th];
+    for (out_row, span) in pixels.chunks_exact_mut(tw).zip(&rows) {
+        for (x, out) in out_row.iter_mut().enumerate() {
+            let sum: u64 = span
+                .taps()
+                .map(|(i, weight)| u64::from(weight) * u64::from(horizontal[i * tw + x]))
+                .sum();
+            *out = ((sum + denominator / 2) / denominator).min(255) as u8;
+        }
+    }
     Some(GraySurface {
         width: target_width,
         height: target_height,
-        stride: target_width as usize,
-        pixels: Arc::from(resized.into_raw()),
+        stride: tw,
+        pixels: Arc::from(pixels),
     })
+}
+
+/// The source pixels one target pixel spans along an axis, with each tap's
+/// overlap in units of 1/`target` source pixel. Target pixel `j` covers the
+/// source interval `[j*source/target, (j+1)*source/target)`; measured in
+/// those units it is `[j*source, (j+1)*source)` and source pixel `i` is
+/// `[i*target, (i+1)*target)`, so every overlap is an exact integer and the
+/// weights of one span add up to `source`.
+#[derive(Clone, Copy)]
+struct CoverageSpan {
+    first: usize,
+    last: usize,
+    first_weight: u32,
+    last_weight: u32,
+    interior_weight: u32,
+}
+
+impl CoverageSpan {
+    fn taps(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
+        (self.first..=self.last).map(move |i| {
+            let weight = if self.first == self.last {
+                self.first_weight
+            } else if i == self.first {
+                self.first_weight
+            } else if i == self.last {
+                self.last_weight
+            } else {
+                self.interior_weight
+            };
+            (i, weight)
+        })
+    }
+}
+
+fn coverage_spans(source: usize, target: usize) -> Vec<CoverageSpan> {
+    (0..target)
+        .map(|j| {
+            let start = j * source;
+            let end = (j + 1) * source;
+            let first = start / target;
+            let last = ((end - 1) / target).min(source - 1);
+            let overlap = |i: usize| -> u32 {
+                let lo = start.max(i * target);
+                let hi = end.min((i + 1) * target);
+                hi.saturating_sub(lo) as u32
+            };
+            CoverageSpan {
+                first,
+                last,
+                first_weight: overlap(first),
+                last_weight: overlap(last),
+                interior_weight: target as u32,
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -993,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn lanczos_working_plane_preserves_fractional_edge_coverage() {
+    fn working_plane_preserves_fractional_edge_coverage() {
         let decoded = DecodedBilevelSmask {
             width: 2,
             height: 2,
@@ -1009,5 +1107,51 @@ mod tests {
                 .any(|&sample| sample > 0 && sample < 255),
             "resized analysis mask must retain antialiased edge coverage"
         );
+        // Target pixel 3 spans source [6/7, 8/7): 1/7 of the first source
+        // pixel and 1/7 of the second, so its coverage is their mean.
+        assert_eq!(working.pixels[3], 128);
+        assert_eq!(working.pixels[0], 0);
+        assert_eq!(working.pixels[6], 255);
+    }
+
+    #[test]
+    fn working_plane_is_the_exact_area_average() {
+        // A 4x4 checkerboard halved: every 2x2 block is half ink.
+        let mut checker = [0u8; 16];
+        for (i, v) in checker.iter_mut().enumerate() {
+            if (i % 4 + i / 4) % 2 == 0 {
+                *v = 255;
+            }
+        }
+        let decoded = DecodedBilevelSmask {
+            width: 4,
+            height: 4,
+            stride: 4,
+            opacity: Arc::from(checker),
+        };
+        let working = resize_smask_coverage(decoded, 2, 2).expect("valid coverage");
+        assert_eq!(&working.pixels[..], &[128, 128, 128, 128]);
+
+        // 3 -> 2 along one axis: the first target pixel takes one source
+        // pixel and half of the next (255/2 over a span of 1.5 = 85), the
+        // second the remaining half and one.
+        let decoded = DecodedBilevelSmask {
+            width: 3,
+            height: 1,
+            stride: 3,
+            opacity: Arc::from([0, 255, 255]),
+        };
+        let working = resize_smask_coverage(decoded, 2, 1).expect("valid coverage");
+        assert_eq!(&working.pixels[..], &[85, 255]);
+
+        // Same size: the plane is passed through untouched.
+        let decoded = DecodedBilevelSmask {
+            width: 3,
+            height: 1,
+            stride: 3,
+            opacity: Arc::from([0, 255, 7]),
+        };
+        let working = resize_smask_coverage(decoded, 3, 1).expect("valid coverage");
+        assert_eq!(&working.pixels[..], &[0, 255, 7]);
     }
 }

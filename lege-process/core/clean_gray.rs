@@ -622,7 +622,11 @@ pub fn mrc_background(
 /// Produce an MRC background using a continuous source-mask opacity plane.
 /// Unlike [`mrc_background`], this never derives or consumes a thresholded
 /// scan mask: each cleaned pixel is blended toward paper white by its
-/// Lanczos-resampled source `/SMask` coverage before box downsampling.
+/// area-averaged source `/SMask` coverage before box downsampling. A pixel
+/// at least half under ink counts as ink, as it would under the thresholded
+/// mask of the ordinary path; lesser coverage whitens in proportion, so the
+/// scan's dark ring around each letter is taken out where the foreground
+/// layer will not hide it.
 pub fn mrc_background_with_coverage(
     cleaned: &[u8],
     coverage: &[u8],
@@ -650,7 +654,7 @@ pub fn mrc_background_with_coverage(
                         break;
                     }
                     let idx = y * width + x;
-                    let alpha = u32::from(coverage[idx]);
+                    let alpha = (u32::from(coverage[idx]) * 2).min(255);
                     let value = (u32::from(cleaned[idx]) * (255 - alpha) + 255 * alpha + 127) / 255;
                     sum += value;
                     n += 1;
@@ -804,12 +808,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn continuous_coverage_whitens_without_thresholding() {
+    fn continuous_coverage_whitens_in_proportion_to_ink() {
+        // A third under ink whitens by two thirds; half or more is ink.
         let cleaned = [10, 20, 30, 40];
         let coverage = [0, 85, 170, 255];
         let (out, width, height) = mrc_background_with_coverage(&cleaned, &coverage, 4, 1, 1);
         assert_eq!((width, height), (4, 1));
-        assert_eq!(out, [10, 98, 180, 255]);
+        assert_eq!(out, [10, 177, 255, 255]);
     }
 
     #[test]
