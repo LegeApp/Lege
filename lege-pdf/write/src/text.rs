@@ -7,7 +7,7 @@
 //! font is selected at size 1.0, and each run's own `size` drives the text
 //! matrix scale — matching the current writer's `emit_invisible_text`.
 
-use crate::artifact::{GLYPH_FONT_RESOURCE, PreparedGlyphLayer, PreparedTextLayer, TextFont};
+use crate::artifact::{PreparedGlyphLayer, PreparedTextLayer, TextFont, glyph_font_resource};
 use crate::content::ContentWriter;
 use crate::types::Affine;
 
@@ -49,7 +49,7 @@ pub fn emit_glyph_layer(content: &mut ContentWriter, layer: &PreparedGlyphLayer)
     content.set_char_spacing(0.0);
     content.set_word_spacing(0.0);
     content.set_horizontal_scale(100.0);
-    content.set_font(GLYPH_FONT_RESOURCE, 1.0);
+    content.set_font(glyph_font_resource(layer.font), 1.0);
 
     let mut current_rise: i32 = 0;
     let mut pending: Vec<(u16, i32)> = Vec::new();
@@ -172,6 +172,7 @@ mod tests {
     fn glyph_layer_groups_by_rise() {
         let mut c = ContentWriter::new();
         let layer = PreparedGlyphLayer {
+            font: 0,
             lines: Box::new([
                 GlyphLine {
                     matrix: Affine::scale_translate(100.0, 100.0, 72.0, 700.0),

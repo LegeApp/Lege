@@ -225,6 +225,10 @@ pub struct TextRun {
 #[derive(Debug)]
 pub struct PreparedGlyphLayer {
     pub lines: Box<[GlyphLine]>,
+    /// Which glyph font the page's ids index (see [`glyph_font_resource`]).
+    /// A page draws from one font; a document that outgrows one font's
+    /// 16-bit id space carries several, and later pages move on to the next.
+    pub font: u16,
 }
 
 /// One text line: a text matrix (scale + baseline origin, already in PDF user
@@ -270,7 +274,12 @@ impl TextFont {
 }
 
 /// The page resource name of the document-wide glyph font (`/F2`).
-pub const GLYPH_FONT_RESOURCE: ResourceName = ResourceName::Font(2);
+/// The page resource name of glyph font `bank`. One font holds at most
+/// 65536 glyph ids, so a document with more shapes than that carries several
+/// (`/F2`, `/F3`, …), each page drawing from exactly one.
+pub fn glyph_font_resource(bank: u16) -> ResourceName {
+    ResourceName::Font(2u16.saturating_add(bank))
+}
 
 #[cfg(test)]
 mod tests {

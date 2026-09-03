@@ -989,6 +989,11 @@ impl PipelineConfig {
     /// continuous-tone background gains nothing from that and costs four
     /// times as much to encode, so it is encoded at the requested
     /// resolution (never below it). 1 when nothing was raised.
+    /// The height the caller asked for, when truetyping is rendering above it.
+    pub fn glyph_requested_height(&self) -> Option<u32> {
+        self.glyph_requested_height
+    }
+
     pub fn glyph_background_subsample(&self) -> usize {
         match self.glyph_requested_height {
             Some(requested) if requested > 0 && self.target_height > requested => {
@@ -1030,14 +1035,42 @@ impl PipelineConfig {
         if self.text_format != TRUETYPING || self.target_height >= GLYPHFONT_MIN_TARGET_HEIGHT {
             return;
         }
-        let requested = self.target_height;
+        self.set_truetyping_working_height(GLYPHFONT_MIN_TARGET_HEIGHT);
+    }
+
+    /// Lower the working height a scan is traced at to what the scan itself
+    /// holds ([`lege_pdf_read::CompiledDocumentPage::natural_raster_height`]),
+    /// never below the height the caller asked for. Rendering a scan above
+    /// its own resolution invents detail: the interpolated edges differ from
+    /// one impression of a letter to the next, so the dictionary fills with
+    /// near-duplicates and every stage pays for pixels that carry nothing.
+    pub fn clamp_truetyping_render_height(&mut self, natural: u32) {
+        let Some(requested) = self.glyph_requested_height else {
+            return;
+        };
+        let working = natural.max(requested);
+        if working >= self.target_height {
+            return;
+        }
+        self.set_truetyping_working_height(working);
+    }
+
+    /// Set the height the page is rendered at while keeping the caller's own
+    /// height as the background's (see [`Self::glyph_background_subsample`]).
+    fn set_truetyping_working_height(&mut self, working: u32) {
+        let requested = self.glyph_requested_height.unwrap_or(self.target_height);
+        if working <= requested {
+            self.glyph_requested_height = None;
+            self.target_height = requested;
+            return;
+        }
         if let Some(width) = self.target_width.as_mut() {
-            let scaled = (u64::from(*width) * u64::from(GLYPHFONT_MIN_TARGET_HEIGHT)
-                / u64::from(requested)) as u32;
+            let scaled =
+                (u64::from(*width) * u64::from(working) / u64::from(self.target_height)) as u32;
             *width = scaled.max(1);
         }
         self.glyph_requested_height = Some(requested);
-        self.target_height = GLYPHFONT_MIN_TARGET_HEIGHT;
+        self.target_height = working;
     }
     pub fn set_dither_images(&mut self, dither: bool) {
         self.image_region_dither_mode = if dither {

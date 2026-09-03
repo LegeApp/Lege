@@ -1052,9 +1052,10 @@ pub enum WriterMessage {
         title: Option<String>,
         author: Option<String>,
     },
-    /// Supply the document-wide glyph font (`text_format = "truetyping"`).
-    /// Must arrive before Finalize; pages reference it by a reserved id.
-    SetGlyphFont(lege_pdf_write::font::EmbeddedFont),
+    /// Supply the document's glyph fonts, one per bank (`text_format =
+    /// "truetyping"`). Must arrive before Finalize; pages reference them by
+    /// reserved ids.
+    SetGlyphFonts(Vec<lege_pdf_write::font::EmbeddedFont>),
     /// Signal that all pages have been sent and PDF should be finalized
     Finalize,
 }
@@ -1063,9 +1064,20 @@ pub enum WriterMessage {
 #[derive(Clone)]
 pub struct PdfWriterHandle {
     sender: mpsc::Sender<WriterMessage>,
+    /// What the actor died of, set before it drops its receiver so a sender
+    /// that finds the channel closed can say why instead of only that it is.
+    failure: Arc<std::sync::OnceLock<String>>,
 }
 
 impl PdfWriterHandle {
+    /// The error to report when the channel is closed.
+    fn stopped(&self) -> anyhow::Error {
+        match self.failure.get() {
+            Some(reason) => anyhow::anyhow!("PDF writer failed: {reason}"),
+            None => anyhow::anyhow!("PDF writer actor has stopped"),
+        }
+    }
+
     /// Send a page to be written to the PDF
     pub async fn send_page(
         &self,
@@ -1075,7 +1087,7 @@ impl PdfWriterHandle {
         self.sender
             .send(WriterMessage::AppendPage { page, page_index })
             .await
-            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+            .map_err(|_| self.stopped())?;
         Ok(())
     }
 
@@ -1091,7 +1103,7 @@ impl PdfWriterHandle {
                 source_to_output,
             })
             .await
-            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+            .map_err(|_| self.stopped())?;
         Ok(())
     }
 
@@ -1104,7 +1116,7 @@ impl PdfWriterHandle {
         self.sender
             .send(WriterMessage::SetSyntheticOutline(items))
             .await
-            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+            .map_err(|_| self.stopped())?;
         Ok(())
     }
 
@@ -1116,20 +1128,20 @@ impl PdfWriterHandle {
         self.sender
             .send(WriterMessage::SetDocumentIdentity { title, author })
             .await
-            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+            .map_err(|_| self.stopped())?;
         Ok(())
     }
 
-    /// Send the document-wide glyph font. Must be called before finalize()
-    /// whenever any page carried glyph text.
-    pub async fn send_glyph_font(
+    /// Send the document's glyph fonts, one per bank. Must be called before
+    /// finalize() whenever any page carried glyph text.
+    pub async fn send_glyph_fonts(
         &self,
-        font: lege_pdf_write::font::EmbeddedFont,
+        fonts: Vec<lege_pdf_write::font::EmbeddedFont>,
     ) -> Result<(), anyhow::Error> {
         self.sender
-            .send(WriterMessage::SetGlyphFont(font))
+            .send(WriterMessage::SetGlyphFonts(fonts))
             .await
-            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+            .map_err(|_| self.stopped())?;
         Ok(())
     }
 
@@ -1138,7 +1150,7 @@ impl PdfWriterHandle {
         self.sender
             .send(WriterMessage::Finalize)
             .await
-            .map_err(|_| anyhow::anyhow!("PDF writer actor has stopped"))?;
+            .map_err(|_| self.stopped())?;
         Ok(())
     }
 }
@@ -1157,9 +1169,19 @@ pub fn spawn_pdf_writer_actor(
 ) {
     let (tx, mut rx) = mpsc::channel::<WriterMessage>(channel_capacity.max(1));
 
-    let handle = PdfWriterHandle { sender: tx };
+    let failure: Arc<std::sync::OnceLock<String>> = Arc::new(std::sync::OnceLock::new());
+    let handle = PdfWriterHandle {
+        sender: tx,
+        failure: Arc::clone(&failure),
+    };
 
     let task = tokio::spawn(async move {
+        // Recorded before the receiver is dropped, so a page worker that
+        // finds the channel closed reports the cause and not the symptom.
+        let fail = |error: anyhow::Error| -> anyhow::Error {
+            let _ = failure.set(format!("{error:#}"));
+            error
+        };
         use lege_pdf_write::meta::PdfProfile;
         use lege_pdf_write::writer::DocumentWriter;
         use std::io::{BufWriter, Write};
@@ -1224,11 +1246,11 @@ pub fn spawn_pdf_writer_actor(
                                     page_index,
                                     e
                                 );
-                                return Err(anyhow::anyhow!(
+                                return Err(fail(anyhow::anyhow!(
                                     "Failed to convert page {}: {}",
                                     page_index,
                                     e
-                                ));
+                                )));
                             }
                         };
                     for (id, bytes) in globals {
@@ -1240,11 +1262,11 @@ pub fn spawn_pdf_writer_actor(
                             page_index,
                             e
                         );
-                        return Err(anyhow::anyhow!(
+                        return Err(fail(anyhow::anyhow!(
                             "Failed to write page {}: {}",
                             page_index,
                             e
-                        ));
+                        )));
                     }
 
                     pages_written += 1;
@@ -1274,8 +1296,8 @@ pub fn spawn_pdf_writer_actor(
                 WriterMessage::SetSyntheticOutline(items) => {
                     pending_synthetic = Some(items);
                 }
-                WriterMessage::SetGlyphFont(font) => {
-                    writer.set_glyph_font(font);
+                WriterMessage::SetGlyphFonts(fonts) => {
+                    writer.set_glyph_fonts(fonts);
                 }
                 WriterMessage::SetDocumentIdentity { title, author } => {
                     writer.set_metadata(lege_pdf_write::meta::DocumentMeta {
@@ -1293,11 +1315,11 @@ pub fn spawn_pdf_writer_actor(
                         total_pages
                     );
                     if pages_written != total_pages {
-                        return Err(anyhow::anyhow!(
+                        return Err(fail(anyhow::anyhow!(
                             "[PdfWriterActor] Refusing to finalize incomplete PDF: wrote {} of {} pages",
                             pages_written,
                             total_pages
-                        ));
+                        )));
                     }
                     do_finalize = true;
                     break;
@@ -1323,7 +1345,7 @@ pub fn spawn_pdf_writer_actor(
             }
             let mut inner = writer
                 .finalize()
-                .map_err(|e| anyhow::anyhow!("Finalize failed: {}", e))?;
+                .map_err(|e| fail(anyhow::anyhow!("Finalize failed: {}", e)))?;
             inner
                 .flush()
                 .map_err(|e| anyhow::anyhow!("Failed to flush output: {}", e))?;
@@ -1631,7 +1653,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bounded_writer_handle_applies_backpressure() {
         let (tx, mut rx) = mpsc::channel::<WriterMessage>(1);
-        let handle = PdfWriterHandle { sender: tx };
+        let handle = PdfWriterHandle {
+            sender: tx,
+            failure: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
 
         handle
             .send_page(empty_page(0), 0)

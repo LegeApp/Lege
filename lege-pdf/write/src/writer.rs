@@ -44,11 +44,12 @@ pub struct DocumentWriter<W: Write> {
     font_id: Option<ObjectId>,
     /// Memoized Helvetica fallback id.
     helvetica_id: Option<ObjectId>,
-    /// The document-wide glyph font program, supplied before `finalize`.
-    glyph_font: Option<EmbeddedFont>,
-    /// Reserved Type0 id for the glyph font: allocated by the first page that
-    /// carries a glyph layer, written at finalization.
-    glyph_font_id: Option<ObjectId>,
+    /// The glyph font programs, supplied before `finalize`. A document with
+    /// more shapes than one font's 16-bit id space holds carries several.
+    glyph_fonts: Vec<EmbeddedFont>,
+    /// Reserved Type0 id per glyph font bank: allocated by the first page
+    /// that draws from that bank, written at finalization.
+    glyph_font_ids: Vec<Option<ObjectId>>,
     bookmarks: Vec<OutlineItem>,
 }
 
@@ -69,8 +70,8 @@ impl<W: Write> std::fmt::Debug for DocumentWriter<W> {
             .field("embedded_font", &self.embedded_font)
             .field("font_id", &self.font_id)
             .field("helvetica_id", &self.helvetica_id)
-            .field("glyph_font", &self.glyph_font)
-            .field("glyph_font_id", &self.glyph_font_id)
+            .field("glyph_fonts", &self.glyph_fonts)
+            .field("glyph_font_ids", &self.glyph_font_ids)
             .field("bookmarks", &self.bookmarks)
             .finish()
     }
@@ -102,8 +103,8 @@ impl<W: Write> DocumentWriter<W> {
             embedded_font: None,
             font_id: None,
             helvetica_id: None,
-            glyph_font: None,
-            glyph_font_id: None,
+            glyph_fonts: Vec::new(),
+            glyph_font_ids: Vec::new(),
             bookmarks: Vec::new(),
         };
         // Reserve the /Pages root so pages written on arrival can carry a valid
@@ -123,7 +124,13 @@ impl<W: Write> DocumentWriter<W> {
     /// Pages carrying a glyph layer reference its reserved object id; the
     /// program itself is written at finalization.
     pub fn set_glyph_font(&mut self, font: EmbeddedFont) {
-        self.glyph_font = Some(font);
+        self.set_glyph_fonts(vec![font]);
+    }
+
+    /// Provide the glyph fonts, bank by bank (see
+    /// [`PreparedGlyphLayer::font`](crate::artifact::PreparedGlyphLayer)).
+    pub fn set_glyph_fonts(&mut self, fonts: Vec<EmbeddedFont>) {
+        self.glyph_fonts = fonts;
     }
 
     /// Provide document metadata (dates, title, …). The profile is taken from
@@ -193,15 +200,19 @@ impl<W: Write> DocumentWriter<W> {
             .as_ref()
             .is_some_and(|gl| gl.lines.iter().any(|l| !l.items.is_empty()));
         if has_glyphs {
-            let gid = match self.glyph_font_id {
+            let bank = artifact.glyph_layer.as_ref().unwrap().font;
+            if self.glyph_font_ids.len() <= usize::from(bank) {
+                self.glyph_font_ids.resize(usize::from(bank) + 1, None);
+            }
+            let gid = match self.glyph_font_ids[usize::from(bank)] {
                 Some(id) => id,
                 None => {
                     let id = self.sink.alloc_id();
-                    self.glyph_font_id = Some(id);
+                    self.glyph_font_ids[usize::from(bank)] = Some(id);
                     id
                 }
             };
-            fonts.push((crate::artifact::GLYPH_FONT_RESOURCE, gid));
+            fonts.push((crate::artifact::glyph_font_resource(bank), gid));
             emit_glyph_layer(&mut content, artifact.glyph_layer.as_ref().unwrap());
         }
 
@@ -247,11 +258,15 @@ impl<W: Write> DocumentWriter<W> {
     /// Finish the document: page tree, outline, metadata, catalog, xref,
     /// trailer. Errors (listing gaps) if any logical page never arrived.
     pub fn finalize(mut self) -> Result<W> {
-        if let Some(id) = self.glyph_font_id {
-            let font = self.glyph_font.as_ref().ok_or_else(|| {
-                WriteError::InvalidArtifact(
-                    "pages carry glyph text but no glyph font was set before finalize".to_string(),
-                )
+        for (bank, id) in self.glyph_font_ids.clone().into_iter().enumerate() {
+            let Some(id) = id else {
+                continue;
+            };
+            let font = self.glyph_fonts.get(bank).ok_or_else(|| {
+                WriteError::InvalidArtifact(format!(
+                    "pages draw from glyph font {bank} but only {} were set before finalize",
+                    self.glyph_fonts.len()
+                ))
             })?;
             write_embedded_font_at(&mut self.sink, font, id)?;
         }
@@ -379,9 +394,46 @@ mod tests {
                         rise: 0,
                     }]),
                 }]),
+                font: 0,
             }),
             rotation: PageRotation::Upright,
         }
+    }
+
+    #[test]
+    fn a_second_glyph_bank_gets_its_own_font_and_resource() {
+        let mut w = DocumentWriter::new(Vec::new(), 2).unwrap();
+        let mut second = glyph_page(1);
+        second.glyph_layer.as_mut().unwrap().font = 1;
+        w.add_page(&glyph_page(0)).unwrap();
+        w.add_page(&second).unwrap();
+        let mut font = sample_font();
+        font.symbolic = true;
+        font.to_unicode = ToUnicode::None;
+        font.cid_widths = Some(Arc::from(&[0u16, 500][..]));
+        w.set_glyph_fonts(vec![font.clone(), font]);
+        let bytes = w.finalize().unwrap();
+        let t = String::from_utf8_lossy(&bytes).into_owned();
+        assert_eq!(
+            t.matches("/Subtype /Type0").count(),
+            2,
+            "one font per bank: {t}"
+        );
+        assert!(t.contains("/F2"), "{t}");
+        assert!(t.contains("/F3"), "{t}");
+    }
+
+    #[test]
+    fn a_bank_without_a_font_fails_finalize() {
+        let mut w = DocumentWriter::new(Vec::new(), 1).unwrap();
+        let mut page = glyph_page(0);
+        page.glyph_layer.as_mut().unwrap().font = 1;
+        w.add_page(&page).unwrap();
+        let mut font = sample_font();
+        font.symbolic = true;
+        font.to_unicode = ToUnicode::None;
+        w.set_glyph_fonts(vec![font]);
+        assert!(w.finalize().is_err());
     }
 
     #[test]
@@ -389,7 +441,7 @@ mod tests {
         let mut w = DocumentWriter::new(Vec::new(), 2).unwrap();
         w.add_page(&glyph_page(1)).unwrap();
         w.add_page(&glyph_page(0)).unwrap();
-        let reserved = w.glyph_font_id.expect("first glyph page reserves the id");
+        let reserved = w.glyph_font_ids[0].expect("first glyph page reserves the id");
         let mut font = sample_font();
         font.symbolic = true;
         font.to_unicode = ToUnicode::None;

@@ -39,6 +39,7 @@ pub fn page_to_artifact(
     // The glyph dictionary measures every page's frame; the OCR frame on
     // `Page` is only there when OCR ran.
     let mut glyph_turns: Option<u8> = None;
+    let mut glyph_bank = 0u16;
 
     for el in &page.elements {
         if let ContentType::GlyphText {
@@ -48,6 +49,7 @@ pub fn page_to_artifact(
         } = &el.content
         {
             glyph_turns = Some(runs.frame.turns);
+            glyph_bank = runs.bank;
             glyph_lines.extend(glyph_runs_to_lines(
                 page,
                 el,
@@ -74,6 +76,7 @@ pub fn page_to_artifact(
     };
     let glyph_layer = (!glyph_lines.is_empty()).then(|| PreparedGlyphLayer {
         lines: glyph_lines.into_boxed_slice(),
+        font: glyph_bank,
     });
 
     let artifact = PdfPageArtifact {
@@ -433,6 +436,7 @@ mod tests {
             }],
             glyph_count: 3,
             frame: Default::default(),
+            bank: 0,
         };
         let page = Page {
             width: 1000.0,

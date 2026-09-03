@@ -1589,6 +1589,36 @@ async fn perform_ocr(
     }
 }
 
+/// The render height at which a document that is already black and white
+/// comes out pixel for pixel, sampled over the range. A book keeps its
+/// covers and its plates in continuous tone, so the sample decides by
+/// majority; `None` when fewer than half of the sampled pages carry a
+/// bilevel ink layer, which leaves the render height as it was.
+fn bilevel_source_height(
+    session: &Arc<lege_pdf_read::RenderSession>,
+    page_start: usize,
+    page_end: usize,
+) -> Option<u32> {
+    const SAMPLES: usize = 8;
+    let total = page_end.saturating_sub(page_start);
+    if total == 0 {
+        return None;
+    }
+    let step = total.div_ceil(SAMPLES).max(1);
+    let (mut sampled, mut bilevel, mut natural) = (0usize, 0usize, 0u32);
+    for page in (page_start..page_end).step_by(step).take(SAMPLES) {
+        let Ok(compiled) = session.compile(page as u32) else {
+            continue;
+        };
+        sampled += 1;
+        if let Some(height) = compiled.bilevel_raster_height() {
+            bilevel += 1;
+            natural = natural.max(height);
+        }
+    }
+    (natural > 0 && bilevel * 2 >= sampled).then_some(natural)
+}
+
 /// The orientation of a page's text for the recognizer, measured from its
 /// binarized raster when OCR is on. `None` leaves the page as it is.
 fn page_frame_for_ocr(
@@ -3766,6 +3796,27 @@ pub async fn create_and_run_pdf_source_pipeline(
     }
     let document_session = source.document_session();
 
+    // Truetyping raised the render height for outline fidelity. A book that
+    // is already black and white has no more detail to give, and rendering it
+    // larger only invents edges, so it is rendered at its own resolution.
+    let config = match document_session
+        .as_ref()
+        .filter(|_| config.glyph_requested_height().is_some())
+        .and_then(|session| bilevel_source_height(session, page_start, page_end))
+    {
+        Some(natural) if natural < config.target_height() => {
+            let mut lowered = (*config).clone();
+            lowered.clamp_truetyping_render_height(natural);
+            info_log!(
+                "[PDF-Parallel] Truetyping renders at {} px: the source holds {} px",
+                lowered.target_height(),
+                natural
+            );
+            Arc::new(lowered)
+        }
+        _ => config,
+    };
+
     // Gate the GPU resize backend by document size: cold-start cost only pays
     // back once we have enough pages to amortize device init.
     const MIN_PAGES_FOR_GPU_RESIZE: usize = 10;
@@ -4071,22 +4122,24 @@ pub async fn create_and_run_pdf_source_pipeline(
         }
         if occurrences > 0 {
             let builder = Arc::clone(session);
-            let font = crate::runtime_stats::spawn_blocking_stage(
+            let fonts = crate::runtime_stats::spawn_blocking_stage(
                 crate::runtime_stats::Stage::Encode,
-                move || builder.build_embedded_font(),
+                move || builder.build_embedded_fonts(),
             )
             .await
             .map_err(|e| anyhow!("glyph font build task panicked: {}", e))??;
             // Building the font folds duplicate clusters, so the distinct
             // count is only final now.
             let (_, distinct, _, _) = session.stats();
+            let bytes: usize = fonts.iter().map(|font| font.data.len()).sum();
             info_log!(
-                "[PDF-Parallel] Glyph font program: {} bytes, {} distinct shapes after merging, {} glyph ids mapped to text",
-                font.data.len(),
+                "[PDF-Parallel] Glyph font program: {} bytes over {} font(s), {} distinct shapes after merging, {} glyph ids mapped to text",
+                bytes,
+                fonts.len(),
                 distinct,
                 session.mapped_glyphs()
             );
-            pdf_writer_handle.send_glyph_font(font).await?;
+            pdf_writer_handle.send_glyph_fonts(fonts).await?;
         }
     }
 

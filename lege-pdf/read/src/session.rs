@@ -141,6 +141,21 @@ impl CompiledDocumentPage {
         self.raster.operations.len()
     }
 
+    /// The render height at which this page's *bilevel* raster comes out
+    /// pixel for pixel: the full-page-equivalent pixel height of the
+    /// one-bit image covering the page. `None` for every other page — one
+    /// with no image over it, or one whose image carries continuous tone.
+    ///
+    /// A page that is already black and white holds no more detail at any
+    /// scale, and rendering it larger only invents edges: the interpolation
+    /// lands differently on each impression of a letter, so shapes that
+    /// should match no longer do. A greyscale or colour scan is the
+    /// opposite — its soft edges resolve *better* the finer they are
+    /// sampled — so it has no ceiling here.
+    pub fn bilevel_raster_height(&self) -> Option<u32> {
+        bilevel_raster_height(&self.raster)
+    }
+
     pub fn gray_suitability(&self) -> GraySuitability {
         let risky = PageFeatures::TRANSPARENCY
             | PageFeatures::SOFT_MASKS
@@ -808,6 +823,79 @@ fn qualifying_jbig2_smask(page: &CompiledPage) -> Option<Jbig2SmaskCandidate> {
         return None;
     }
     candidate
+}
+
+/// See [`CompiledDocumentPage::bilevel_raster_height`]. An image counts when
+/// it covers at least this share of the page's shorter side in both axes: a
+/// scan covers the page, a logo or a figure does not.
+const PAGE_IMAGE_COVERAGE: f64 = 0.6;
+
+fn bilevel_raster_height(page: &CompiledPage) -> Option<u32> {
+    let crop = page.bounds.crop;
+    let (page_w, page_h) = (crop.width().abs(), crop.height().abs());
+    if !(page_w > 0.0 && page_h > 0.0) {
+        return None;
+    }
+    let mut ctm = Matrix::IDENTITY;
+    let mut stack = Vec::new();
+    let mut ink: Option<u32> = None;
+    for op in page.operations.iter() {
+        match op {
+            DisplayOp::Save => stack.push(ctm),
+            DisplayOp::Restore => ctm = stack.pop().unwrap_or(Matrix::IDENTITY),
+            DisplayOp::ConcatTransform(matrix) => ctm = matrix.then(ctm),
+            DisplayOp::DrawImage {
+                image, transform, ..
+            } => {
+                let Some(image) = page.images.get(image.index()) else {
+                    continue;
+                };
+                let placement = transform.then(ctm);
+                if !placement.is_finite() {
+                    continue;
+                }
+                // The unit image square's extent on the page.
+                let drawn_w = placement.a.abs() + placement.c.abs();
+                let drawn_h = placement.b.abs() + placement.d.abs();
+                if drawn_h <= 0.0
+                    || drawn_w < page_w * PAGE_IMAGE_COVERAGE
+                    || drawn_h < page_h * PAGE_IMAGE_COVERAGE
+                {
+                    continue;
+                }
+                // The ink layer: the image itself when it is one bit, else
+                // the one-bit mask painted through it. A continuous-tone
+                // image with no such mask is not a ceiling — it is a scan,
+                // and it resolves better the finer it is sampled.
+                let bilevel = if image.is_stencil || image.bits_per_component == 1 {
+                    Some((image.width, image.height))
+                } else {
+                    image
+                        .smask
+                        .as_ref()
+                        .filter(|smask| smask.bits_per_component == 1)
+                        .map(|smask| (smask.width, smask.height))
+                };
+                let Some((width, height)) = bilevel.filter(|(_, height)| *height > 0) else {
+                    continue;
+                };
+                // A quarter-turned placement puts the image's width along the
+                // page's height.
+                let along_page_height = if placement.b.abs() > placement.d.abs() {
+                    width
+                } else {
+                    height
+                };
+                let implied = (f64::from(along_page_height) * page_h / drawn_h).round();
+                if implied.is_finite() && implied >= 1.0 {
+                    let implied = implied as u32;
+                    ink = Some(ink.map_or(implied, |n: u32| n.max(implied)));
+                }
+            }
+            _ => {}
+        }
+    }
+    ink
 }
 
 fn is_unflipped_full_page(

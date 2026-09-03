@@ -61,6 +61,10 @@ pub const EM_PIXELS: f64 = UNITS_PER_EM as f64 / UNITS_PER_PIXEL as f64;
 pub const MAX_GLYPH_PIXELS: usize = (i16::MAX as usize) / (UNITS_PER_PIXEL as usize);
 /// Glyph ids are 16-bit CIDs; id 0 is `.notdef`.
 pub const MAX_GLYPHS: usize = u16::MAX as usize;
+/// Prototypes one dictionary may hold: what is left of a font's glyph ids
+/// once `.notdef` and the word space are taken. A document that needs more
+/// starts another dictionary, and its later pages draw from another font.
+pub const MAX_PROTOTYPES: usize = MAX_GLYPHS - FIRST_SHAPE_GID as usize;
 /// Glyph id of the blank word-space glyph.
 pub const SPACE_GID: u16 = 1;
 /// Advance of the space glyph, font units (a quarter em).
@@ -72,7 +76,9 @@ pub const FIRST_SHAPE_GID: u32 = 2;
 pub const FONT_NAME: &str = "LegeGlyphs";
 
 /// Width/height slack (pixels) when looking for a matching prototype; grows
-/// by one per 16 pixels of glyph size.
+/// by one per 16 pixels of glyph size. Narrowing it does not make matching
+/// safer: the search keeps the best candidate it is offered, so excluding the
+/// right prototype only hands the instance to the next best wrong one.
 const DIM_LIMIT: u32 = 2;
 /// Alignment search radius (pixels) passed to the comparator.
 const SHIFT_LIMIT: i32 = 2;
@@ -199,9 +205,18 @@ pub struct PageAnalysis {
     frame: PageFrame,
     components: Duration,
     frame_time: Duration,
+    /// Median component size (the larger of width and height) in pixels: how
+    /// big this page's type is in the raster the outlines are traced from.
+    median_size: u32,
 }
 
 impl PageAnalysis {
+    /// Components found on the page, an upper bound on the prototypes it can
+    /// add to a dictionary.
+    pub fn shape_count(&self) -> usize {
+        self.shapes.len()
+    }
+
     /// Segment a binarized page (1 = ink) into components and find which way
     /// its text reads and how far its lines are off level.
     pub fn of(page: &BitImage, dpi: i32) -> Self {
@@ -217,12 +232,25 @@ impl PageAnalysis {
         let started = Instant::now();
         let frame = detect_frame(&shapes, page.width as u32, page.height as u32);
         let frame_time = started.elapsed();
+        let mut sizes: Vec<u32> = shapes
+            .iter()
+            .map(|(_, b)| (b.xmax - b.xmin).max(b.ymax - b.ymin).max(0) as u32)
+            .collect();
+        sizes.sort_unstable();
+        let median_size = sizes.get(sizes.len() / 2).copied().unwrap_or(0);
         Self {
             shapes,
             frame,
             components,
             frame_time,
+            median_size,
         }
+    }
+
+    /// How tall this page's type is, in the pixels the outlines come from.
+    /// Zero on a page with no components.
+    pub fn median_size(&self) -> u32 {
+        self.median_size
     }
 }
 
@@ -234,6 +262,10 @@ pub struct PageGlyphRuns {
     pub lines: Vec<GlyphLine>,
     /// Total glyph occurrences on the page.
     pub glyph_count: usize,
+    /// Which dictionary these glyph ids index. One TrueType font holds
+    /// 65536 ids, so a document with more shapes than that keeps several
+    /// dictionaries and a page draws from exactly one.
+    pub bank: u16,
 }
 
 impl PageGlyphRuns {
@@ -271,6 +303,9 @@ struct Prototype {
     profile: InkProfile,
     /// Whether `matcher`'s strokes have an interior (tolerant gate eligibility).
     stroked: bool,
+    /// Counters `matcher` encloses (see [`holes`]). The tolerant gate only
+    /// folds shapes that enclose the same number.
+    counters: u32,
     /// Pixels the frame's bottom edge sits below the text baseline
     /// (positive = descender): the lower median over the glyph's instances on
     /// the page that created it, fixed once that page is placed.
@@ -317,6 +352,7 @@ impl Prototype {
         }
         let black = bitmap.count_ones() as u32;
         let stroked = has_stroke_interior(&bitmap);
+        let counters = holes(&bitmap);
         let profile = InkProfile::of(&bitmap);
         Self {
             frame_w,
@@ -328,6 +364,7 @@ impl Prototype {
             black,
             profile,
             stroked,
+            counters,
             descent: None,
             advance: None,
             next_refresh: 3,
@@ -350,6 +387,7 @@ impl Prototype {
             black: 0,
             profile: InkProfile::default(),
             stroked: false,
+            counters: 0,
             descent: Some(descent),
             advance: root.advance,
             next_refresh: u32::MAX,
@@ -371,6 +409,7 @@ impl Prototype {
             black: 0,
             profile: InkProfile::default(),
             stroked: false,
+            counters: 0,
             descent: None,
             advance: None,
             next_refresh: u32::MAX,
@@ -467,6 +506,7 @@ impl Prototype {
         let resized = cropped.width != self.matcher.width || cropped.height != self.matcher.height;
         self.black = cropped.count_ones() as u32;
         self.stroked = has_stroke_interior(&cropped);
+        self.counters = holes(&cropped);
         self.profile = InkProfile::of(&cropped);
         self.matcher = cropped;
         self.matcher_offset = (x0 as i32 - FRAME_PAD as i32, y0 as i32 - FRAME_PAD as i32);
@@ -504,6 +544,82 @@ fn ink_bounds(bitmap: &BitImage) -> Option<(usize, usize, usize, usize)> {
 fn has_stroke_interior(bitmap: &BitImage) -> bool {
     let rows = BitRows::padded(bitmap);
     rows.interior_count() * 100 >= rows.count() * TOLERANT_INTERIOR_MIN_PERCENT
+}
+
+/// How many counters a shape encloses: background regions (4-connected,
+/// so a diagonal pinch closes them) that the border cannot reach. `c` has
+/// none, `e` one, `g` two. A letter's counters are its identity as much as
+/// its outline is, and unlike its outline they survive a change of weight.
+fn holes(bitmap: &BitImage) -> u32 {
+    let (w, h) = (bitmap.width + 2, bitmap.height + 2);
+    if bitmap.width == 0 || bitmap.height == 0 {
+        return 0;
+    }
+    // 0 = background, not yet reached; 1 = ink; 2 = reached from outside.
+    let mut cell = vec![0u8; w * h];
+    for y in 0..bitmap.height {
+        for x in 0..bitmap.width {
+            if bitmap.get_usize(x, y) {
+                cell[(y + 1) * w + x + 1] = 1;
+            }
+        }
+    }
+    let mut stack = vec![0usize];
+    cell[0] = 2;
+    while let Some(i) = stack.pop() {
+        let (x, y) = (i % w, i / w);
+        let visit = |x: usize, y: usize, cell: &mut Vec<u8>, stack: &mut Vec<usize>| {
+            let j = y * w + x;
+            if cell[j] == 0 {
+                cell[j] = 2;
+                stack.push(j);
+            }
+        };
+        if x > 0 {
+            visit(x - 1, y, &mut cell, &mut stack);
+        }
+        if x + 1 < w {
+            visit(x + 1, y, &mut cell, &mut stack);
+        }
+        if y > 0 {
+            visit(x, y - 1, &mut cell, &mut stack);
+        }
+        if y + 1 < h {
+            visit(x, y + 1, &mut cell, &mut stack);
+        }
+    }
+    let mut counters = 0;
+    for start in 0..w * h {
+        if cell[start] != 0 {
+            continue;
+        }
+        counters += 1;
+        cell[start] = 2;
+        stack.push(start);
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i % w, i / w);
+            let visit = |x: usize, y: usize, cell: &mut Vec<u8>, stack: &mut Vec<usize>| {
+                let j = y * w + x;
+                if cell[j] == 0 {
+                    cell[j] = 2;
+                    stack.push(j);
+                }
+            };
+            if x > 0 {
+                visit(x - 1, y, &mut cell, &mut stack);
+            }
+            if x + 1 < w {
+                visit(x + 1, y, &mut cell, &mut stack);
+            }
+            if y > 0 {
+                visit(x, y - 1, &mut cell, &mut stack);
+            }
+            if y + 1 < h {
+                visit(x, y + 1, &mut cell, &mut stack);
+            }
+        }
+    }
+    counters
 }
 
 /// Ink per row and per column of a shape: a lower bound on how much two
@@ -593,11 +709,25 @@ fn profile_distance(a: &[u16], b: &[u16], max_shift: i32, limit: u32) -> u32 {
 ///
 /// Total difference: scanning noise perturbs stroke edges, and small glyphs
 /// are mostly edge, so the budget is generous. Thick difference: the part of
-/// the budget that may be structural, kept near zero.
+/// the budget that may be structural, kept near zero. Far difference: ink
+/// that the other shape has nothing near, which is what a whole stroke looks
+/// like however thin it is.
 const TOTAL_DIFF_PERCENT: u32 = 22;
 const TOTAL_DIFF_MIN: u32 = 3;
 const THICK_DIFF_DIVISOR: u32 = 40;
 const THICK_DIFF_MIN: u32 = 1;
+/// Far pixels the strict gate allows: ink with none of the other shape's
+/// within a pixel of it. A change of impression puts its difference along
+/// the strokes it thickens, so it is never far; a stroke one shape has and
+/// the other lacks is far along its length. Two shapes that agree everywhere
+/// have none, and a percent covers a broken edge on a large glyph.
+const STRICT_FAR_PERCENT: u32 = 1;
+const STRICT_FAR_MIN: u32 = 2;
+/// The largest group of far pixels the strict gate allows. A hairline bar —
+/// the crossing of an `e`, the foot of a `u` against an `n` — is a connected
+/// run this long even where it is one pixel thick, which no count of 2×2
+/// blocks can see.
+const STRICT_FAR_BLOB_MAX: u32 = 2;
 /// Ink-count pre-filter: shapes whose ink differs by more than this fraction
 /// are not compared (bold against regular, mostly).
 const BLACK_DIFF_PERCENT: u32 = 20;
@@ -654,8 +784,22 @@ impl Gate {
     /// them (the strict gate).
     fn far_limit(self, ink: u32) -> Option<u32> {
         match self {
-            Gate::Strict => None,
+            Gate::Strict => Some((ink * STRICT_FAR_PERCENT / 100).max(STRICT_FAR_MIN)),
             Gate::Tolerant => Some((ink * TOLERANT_FAR_PERCENT / 100).max(TOLERANT_FAR_MIN)),
+        }
+    }
+
+    /// Whether a difference is worth measuring the far pixels of: the tests
+    /// that cost nothing beyond the exclusive-or already done. The far
+    /// measures need two dilations and a blob search, so they are only paid
+    /// for by a candidate that has passed everything else.
+    fn accept_coarse(self, diff: Diff, ink: u32) -> bool {
+        if diff.total > self.total_limit(ink) {
+            return false;
+        }
+        match self {
+            Gate::Strict => diff.thick <= (ink / THICK_DIFF_DIVISOR).max(THICK_DIFF_MIN),
+            Gate::Tolerant => true,
         }
     }
 
@@ -668,7 +812,14 @@ impl Gate {
         match self {
             Gate::Strict => {
                 let thick_limit = (ink / THICK_DIFF_DIVISOR).max(THICK_DIFF_MIN);
-                (diff.thick <= thick_limit).then_some((diff.thick, diff.total, 0))
+                // Ranked by structure first: a candidate that agrees
+                // everywhere beats one that is merely close, so a rejection
+                // never hands the instance to a worse match that survived.
+                (diff.thick <= thick_limit && diff.far_blob <= STRICT_FAR_BLOB_MAX).then_some((
+                    diff.far_blob,
+                    diff.thick,
+                    diff.total,
+                ))
             }
             Gate::Tolerant => {
                 let far_limit = self.far_limit(ink).unwrap_or(0);
@@ -822,6 +973,7 @@ impl GlyphDictionary {
             frame,
             components,
             frame_time,
+            median_size: _,
         } = analysis;
         self.profile.components += components;
         self.profile.frame += frame_time;
@@ -877,6 +1029,7 @@ impl GlyphDictionary {
         PageGlyphRuns {
             frame,
             lines,
+            bank: 0,
             glyph_count,
         }
     }
@@ -1352,6 +1505,17 @@ impl GlyphDictionary {
         let w = bitmap.width as u32;
         let h = bitmap.height as u32;
         let black = bitmap.count_ones() as u32;
+        // Both gates forgive ink: the strict one a fifth of it, the tolerant
+        // one everything within a pixel of the other shape — which at reading
+        // sizes is a whole hairline. A `c` and an `e` differ by a bar four
+        // pixels long whose ends touch the bowl, leaving two pixels to
+        // notice. What no impression can do is open or close a counter, so
+        // shapes that enclose a different number of them never fold together.
+        //
+        // Only where the strokes have an interior, though: a wall one pixel
+        // thick is opened or closed by one speck of dirt, and its counters
+        // say more about the scan than about the letter.
+        let counters = has_stroke_interior(bitmap).then(|| holes(bitmap));
         let dim_limit = DIM_LIMIT + w.max(h) / 16;
 
         // The ink counts the pre-filter admits: a lighter prototype may be
@@ -1381,6 +1545,9 @@ impl GlyphDictionary {
                     if !accept(idx, proto) || (gate == Gate::Tolerant && !proto.stroked) {
                         continue;
                     }
+                    if proto.stroked && counters.is_some_and(|c| c != proto.counters) {
+                        continue;
+                    }
                     // Shapes whose ink profiles alone differ by more than
                     // the gate allows cannot match at any alignment.
                     let total_limit = gate.total_limit(ink);
@@ -1400,6 +1567,16 @@ impl GlyphDictionary {
                     ) else {
                         continue;
                     };
+                    // Two passes: the second measures the far pixels, and is
+                    // only reached by a candidate the cheap tests admit.
+                    let Some(coarse) =
+                        bitrows::diff(bitmap, &proto.matcher, r.dx, r.dy, total_limit, None)
+                    else {
+                        continue;
+                    };
+                    if !gate.accept_coarse(coarse, ink) {
+                        continue;
+                    }
                     let Some(diff) = bitrows::diff(
                         bitmap,
                         &proto.matcher,
@@ -1688,6 +1865,41 @@ impl GlyphDictionary {
         // with the pixels the gate had to forgive (within a pixel of the
         // other shape) in blue and the far ones in red.
         let folds: Vec<(u32, u32)> = self.tolerant_folds.iter().copied().take(1200).collect();
+        {
+            // What the gate saw for each fold, so a bad fold can be told
+            // from a good one by its numbers and not only by eye.
+            let mut listing = std::fs::File::create(dir.join("folds.txt"))?;
+            writeln!(
+                listing,
+                "# light\troot\tink\ttotal\tthick\tfar\tblob\tholes"
+            )?;
+            for &(light, heavy) in &folds {
+                let (root, _, _) = self.resolve_alias(heavy);
+                let a = self.protos[light as usize].matcher.clone();
+                let b = self.protos[root as usize].matcher.clone();
+                let Some((dx, dy)) = self
+                    .comparator
+                    .compare_for_symbol_unify(&a, &b, u32::MAX, SHIFT_LIMIT, SHIFT_LIMIT)
+                    .map(|r| (r.dx, r.dy))
+                else {
+                    continue;
+                };
+                let Some(d) = bitrows::diff(&a, &b, dx, dy, u32::MAX, Some(u32::MAX)) else {
+                    continue;
+                };
+                let ink = a.count_ones().max(b.count_ones());
+                writeln!(
+                    listing,
+                    "{light}\t{root}\t{ink}\t{}\t{}\t{}\t{}\t{} {}",
+                    d.total,
+                    d.thick,
+                    d.far,
+                    d.far_blob,
+                    holes(&a),
+                    holes(&b)
+                )?;
+            }
+        }
         if !folds.is_empty() {
             let zoom = 2usize;
             let pair_w = zoom * (2 * cell_w + 2);
@@ -2204,8 +2416,12 @@ pub(crate) fn trace_pixel_loops(bitmap: &BitImage) -> Vec<Vec<(i32, i32)>> {
 /// The document-wide dictionary shared by concurrently processed pages, plus
 /// counters for the run summary.
 pub struct GlyphFontSession {
-    dict: Mutex<GlyphDictionary>,
+    /// One dictionary per font bank, in the order pages first drew from
+    /// them. All but the last are full.
+    dicts: Mutex<Vec<GlyphDictionary>>,
     pages: AtomicUsize,
+    /// Prototypes a dictionary may hold before the next page starts another.
+    max_prototypes: usize,
 }
 
 impl Default for GlyphFontSession {
@@ -2216,9 +2432,17 @@ impl Default for GlyphFontSession {
 
 impl GlyphFontSession {
     pub fn new() -> Self {
+        Self::with_prototype_cap(MAX_PROTOTYPES)
+    }
+
+    /// A session whose dictionaries hold at most `max_prototypes` shapes.
+    /// Only the font's own id space justifies a lower cap in production; the
+    /// tests use it to reach a second bank without 65 000 shapes.
+    pub fn with_prototype_cap(max_prototypes: usize) -> Self {
         Self {
-            dict: Mutex::new(GlyphDictionary::new()),
+            dicts: Mutex::new(vec![GlyphDictionary::new()]),
             pages: AtomicUsize::new(0),
+            max_prototypes: max_prototypes.max(1),
         }
     }
 
@@ -2235,21 +2459,42 @@ impl GlyphFontSession {
         // Components and frame need no dictionary: pages analyse in
         // parallel and only the matching below waits for the lock.
         let analysis = PageAnalysis::of(&page, dpi);
+        let type_size = analysis.median_size();
         drop(page);
 
-        let runs = self
-            .dict
-            .lock()
-            .map_err(|_| anyhow!("glyph font dictionary poisoned"))?
-            .process_analysis(analysis);
+        let runs = {
+            let mut dicts = self
+                .dicts
+                .lock()
+                .map_err(|_| anyhow!("glyph font dictionary poisoned"))?;
+            // A page's glyph ids all index one font, so a page that would
+            // carry the dictionary past a font's id space starts the next
+            // one instead. Every component can add a prototype, and a few
+            // add a position variant or a compound besides.
+            let headroom = 2 * analysis.shape_count() + 64;
+            if dicts
+                .last()
+                .is_none_or(|dict| dict.len() + headroom > self.max_prototypes)
+            {
+                dicts.push(GlyphDictionary::new());
+            }
+            let bank = (dicts.len() - 1) as u16;
+            let mut runs = dicts
+                .last_mut()
+                .expect("a dictionary was just ensured")
+                .process_analysis(analysis);
+            runs.bank = bank;
+            runs
+        };
         self.pages.fetch_add(1, Ordering::Relaxed);
         if std::env::var_os("LEGE_GLYPH_DUMP").is_some() {
             eprintln!(
-                "[glyphfont] page {}x{}: {} quarter turns, skew {:.2}°, {} lines, {} glyphs",
+                "[glyphfont] page {}x{}: {} quarter turns, skew {:.2}°, type {} px, {} lines, {} glyphs",
                 width,
                 height,
                 runs.frame.turns,
                 runs.frame.skew.to_degrees(),
+                type_size,
                 runs.lines.len(),
                 runs.glyph_count
             );
@@ -2260,41 +2505,62 @@ impl GlyphFontSession {
     /// Record a page's recognized words against its glyph placements; see
     /// [`GlyphDictionary::record_text`].
     pub fn record_text(&self, runs: &PageGlyphRuns, words: &[TextWord]) -> Result<()> {
-        self.dict
+        let mut dicts = self
+            .dicts
             .lock()
-            .map_err(|_| anyhow!("glyph font dictionary poisoned"))?
-            .record_text(runs, words);
+            .map_err(|_| anyhow!("glyph font dictionary poisoned"))?;
+        if let Some(dict) = dicts.get_mut(usize::from(runs.bank)) {
+            dict.record_text(runs, words);
+        }
         Ok(())
     }
 
-    pub fn build_embedded_font(&self) -> Result<EmbeddedFont> {
-        let mut dict = self
-            .dict
+    /// One font program per bank, in bank order.
+    pub fn build_embedded_fonts(&self) -> Result<Vec<EmbeddedFont>> {
+        let mut dicts = self
+            .dicts
             .lock()
             .map_err(|_| anyhow!("glyph font dictionary poisoned"))?;
-        dict.finalize();
-        if let Some(dir) = std::env::var_os("LEGE_GLYPH_DUMP") {
-            dict.dump(std::path::Path::new(&dir))?;
+        let dump = std::env::var_os("LEGE_GLYPH_DUMP");
+        let mut fonts = Vec::with_capacity(dicts.len());
+        for (bank, dict) in dicts.iter_mut().enumerate() {
+            dict.finalize();
+            if let Some(dir) = dump.as_ref() {
+                let dir = std::path::Path::new(dir);
+                let dir = if bank == 0 {
+                    dir.to_path_buf()
+                } else {
+                    dir.join(format!("bank{bank}"))
+                };
+                dict.dump(&dir)?;
+            }
+            fonts.push(dict.build_embedded_font()?);
         }
-        dict.build_embedded_font()
+        Ok(fonts)
     }
 
     /// Glyph ids the last font build mapped to text.
     pub fn mapped_glyphs(&self) -> usize {
-        let dict = self.dict.lock().unwrap_or_else(|e| e.into_inner());
-        dict.mapped()
+        let dicts = self.dicts.lock().unwrap_or_else(|e| e.into_inner());
+        dicts.iter().map(|dict| dict.mapped()).sum()
+    }
+
+    /// How many fonts the document's shapes needed.
+    pub fn banks(&self) -> usize {
+        let dicts = self.dicts.lock().unwrap_or_else(|e| e.into_inner());
+        dicts.len()
     }
 
     /// `(pages, distinct glyphs, glyph occurrences, oversize components dropped)`.
     /// Distinct counts outline-owning shapes (not aliases or compounds);
     /// after the font is built that excludes clusters folded into another.
     pub fn stats(&self) -> (usize, usize, usize, usize) {
-        let dict = self.dict.lock().unwrap_or_else(|e| e.into_inner());
+        let dicts = self.dicts.lock().unwrap_or_else(|e| e.into_inner());
         (
             self.pages.load(Ordering::Relaxed),
-            dict.distinct(),
-            dict.instances(),
-            dict.oversize_dropped(),
+            dicts.iter().map(|dict| dict.distinct()).sum(),
+            dicts.iter().map(|dict| dict.instances()).sum(),
+            dicts.iter().map(|dict| dict.oversize_dropped()).sum(),
         )
     }
 }
@@ -3003,6 +3269,69 @@ mod tests {
     }
 
     #[test]
+    fn counters_are_counted_not_guessed() {
+        // A ring encloses one counter; the same ring cut open encloses none;
+        // two rings stacked enclose two.
+        assert_eq!(holes(&bitmap(&BIG_O)), 1);
+        assert_eq!(holes(&bitmap(&strs(&glyph_c()))), 0);
+        let mut two = BIG_O.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        two.extend(BIG_O.iter().map(|r| r.to_string()));
+        assert_eq!(holes(&bitmap(&strs(&two))), 2);
+        assert_eq!(holes(&bitmap(&["####", "####"])), 0);
+    }
+
+    #[test]
+    fn a_tolerant_fold_never_opens_or_closes_a_counter() {
+        // A ring three pixels thick — strokes with an interior, so the
+        // tolerant gate is allowed to look at it — and the same ring with a
+        // two-row opening cut in its side. The gate forgives the opening,
+        // being everywhere within a pixel of the ring's own ink, but one
+        // shape encloses a counter and the other does not, and no change of
+        // weight opens a counter.
+        let ring: Vec<String> = (0..12)
+            .map(|y| {
+                (0..12)
+                    .map(|x| {
+                        let edge = x < 3 || y < 3 || x > 8 || y > 8;
+                        if edge { '#' } else { '.' }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut open = ring.clone();
+        for row in open.iter_mut().take(7).skip(5) {
+            row.replace_range(9..12, "...");
+        }
+        assert!(has_stroke_interior(&bitmap(&strs(&ring))));
+        assert_eq!(holes(&bitmap(&strs(&ring))), 1);
+        assert_eq!(holes(&bitmap(&strs(&open))), 0);
+        let diff = bitrows::diff(
+            &bitmap(&strs(&open)),
+            &bitmap(&strs(&ring)),
+            0,
+            0,
+            u32::MAX,
+            Some(u32::MAX),
+        )
+        .unwrap();
+        let ink = bitmap(&strs(&ring)).count_ones() as u32;
+        assert!(
+            Gate::Tolerant.accept(diff, ink).is_some(),
+            "the gate itself forgives the opening"
+        );
+
+        let mut dict = GlyphDictionary::new();
+        let closed = dict.insert_prototype(bitmap(&strs(&ring)), 20, 0);
+        let broken = dict.insert_prototype(bitmap(&strs(&open)), 20, 0);
+        dict.finalize();
+        assert_ne!(
+            dict.resolve_alias(broken).0,
+            closed,
+            "the counters keep them apart"
+        );
+    }
+
+    #[test]
     fn a_heavier_impression_folds_into_its_type_but_a_c_stays_off_the_o() {
         let mut dict = GlyphDictionary::new();
         let o = dict.insert_prototype(bitmap(&BIG_O), 20, 0);
@@ -3076,7 +3405,35 @@ mod tests {
         }
         let runs = session.process_page_pixels(&pixels, w, h, 300).unwrap();
         assert_eq!(runs.glyph_count, 1);
+        assert_eq!(runs.bank, 0);
         assert_eq!(session.stats(), (1, 1, 1, 0));
-        session.build_embedded_font().unwrap();
+        session.build_embedded_fonts().unwrap();
+    }
+
+    #[test]
+    fn a_full_dictionary_sends_the_next_page_to_the_next_font() {
+        // A page of one component reserves that component plus the fixed
+        // headroom, so a dictionary of exactly that size takes the first page
+        // and has no room for the second once the first has left a shape in
+        // it.
+        let session = GlyphFontSession::with_prototype_cap(2 + 64);
+        let (w, h) = (12usize, 8usize);
+        let mut pixels = vec![255u8; w * h];
+        for (dy, row) in GLYPH_H.iter().enumerate() {
+            for (dx, ch) in row.bytes().enumerate() {
+                if ch == b'#' {
+                    pixels[(dy + 1) * w + dx + 1] = 0;
+                }
+            }
+        }
+        let first = session.process_page_pixels(&pixels, w, h, 300).unwrap();
+        let second = session.process_page_pixels(&pixels, w, h, 300).unwrap();
+        assert_eq!(first.bank, 0);
+        assert_eq!(second.bank, 1);
+        assert_eq!(session.banks(), 2);
+        // Each bank is a font of its own, and each holds the shape its pages
+        // drew, so the glyph ids on both pages resolve.
+        let fonts = session.build_embedded_fonts().unwrap();
+        assert_eq!(fonts.len(), 2);
     }
 }
