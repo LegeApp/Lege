@@ -157,6 +157,41 @@ record lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 : ob
     verified_by [ @lege-ecosystem.evidence.ppocrv6-wgpu-embedded-20260822/1 ]
 }
 
+record lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1 : observation {
+    title "Truetyping letters sit a pixel or two off the baseline, and identical shapes make it obvious"
+    state verified
+    scope [
+        path "lege-process/core/pdf_artifact.rs",
+        path "lege-process/encoding/glyphfont.rs"
+    ]
+    statement """
+        In truetyping output, individual letters within a word sit a pixel or two above where they belong — `this` with its `is` riding high, `doomed in any` with the `in` lifted — while the line as a whole is level. The user reported it after the substitution fixes landed, and it is visible on page 500 of the 836-page Gernet run (`~/Downloads/lege-review-2026-09-03/truetyping-vertical-wobble-p500.png`, rendered at 1400 px working height). The effect is amplified by how completely the dictionary deduplicates: every `e` on the page is the same outline, so the only variation left between them is their height, and the eye reads that as letters out of place. JBIG2 symbol mode, which shares the same shapes through the same clustering, does not show it; sym-unify is not the comparison, plain symbol mode is.
+        """
+    observed_at git:9925fb523be7d23bdf664b1aa66dd9ae44ecc1ee
+    method observation
+    watches [ "lege-process/encoding/glyphfont.rs", "lege-process/core/pdf_artifact.rs" ]
+    claim a-pixel-is-a-tenth-of-a-letter-at-this-height {
+        text """
+            The snap is one pixel of the *working* raster, so its visual weight depends on the render height: at the 1400 px this book was traced at, body type is about ten pixels, and a pixel is a tenth of the x-height.
+            """
+    }
+    claim jbig2-shares-the-shape-but-not-the-position {
+        text """
+            JBIG2 symbol mode carries each occurrence's own top-left on the page (`TextRegionSymbolInstance { x, y }`, jbig2enc-rust dictionary.rs:645) beside the shared symbol id, so a shared bitmap costs nothing in placement. Truetyping shares the shape *and* the position: an occurrence is drawn at its prototype's descent, not its own.
+            """
+    }
+    claim the-prototypes-descent-comes-from-one-page {
+        text """
+            `fix_new_prototype_metrics` fixes a prototype's descent once, as the lower median of its occurrences on the page that created it; every later page is measured against that page's estimate, and nothing revises it.
+            """
+    }
+    claim the-vertical-residual-is-thrown-away-or-turned-into-a-glyph {
+        text """
+            `GlyphDictionary::process_analysis` replaces an occurrence's measured bottom with its prototype's `descent`: a residual within `RISE_SNAP_PX` (1 px of the working raster) is snapped to zero, and a larger one becomes a *position variant*, a second glyph whose own descent was fixed by its first instance and which then absorbs later occurrences within `VARIANT_JOIN_PX` (also 1 px).
+            """
+    }
+}
+
 record lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/1 : observation {
     title "Windows OCR first-pass benchmark on a 200-page scanned book"
     state superseded

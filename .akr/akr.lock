@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:5825baa91291de937fca6ce8f216201fd435bfef1f784da7e18c245bb9ccf92a"
+    source_graph "sha256:f826839575637ff3157e93700ccb247ef4f8d32676df23335f79439450a9b2a4"
 }
 
 source ".akr/project.akr" {
@@ -74,8 +74,8 @@ source ".akr/records/lege-ecosystem/milestones.akr" {
 }
 
 source ".akr/records/lege-ecosystem/observations.akr" {
-    hash "sha256:66e27ebe9b212c202cb8ba8390d7c7add2c7323116a21bdf47608100a15ee3a7"
-    records 13
+    hash "sha256:7912a54dd2fc3c9438eb553c40cbea90826ff9aa7ab4affb9dd89404417fe3c5"
+    records 14
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
@@ -94,8 +94,8 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:77f768fd4bc7d25685322272ee802427d9bb581d5cb3679c4c04f25cfa14cf07"
-    records 111
+    hash "sha256:01a268f2d272143ee851f48b369b92f5314d74656b9f8e49afc622235a1755dd"
+    records 112
 }
 
 resolution @lege-ecosystem.decision.a-fold-may-not-change-a-letters-counters/1 {
@@ -171,6 +171,18 @@ resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
 }
 
 resolution @lege-ecosystem.work.preservation-mode/1 {
+    slot derived_from
+    to @lege-ecosystem.work.glyph-font-text-output/1
+    hash "sha256:a0d688577c0a8c15811b1ae59280ccf118508e03a454130b4c704021faac3043"
+}
+
+resolution @lege-ecosystem.work.truetyping-vertical-placement/1 {
+    slot derived_from
+    to @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1
+    hash "sha256:b113c1f176a1c737a5035e388b563a820ea1f4b128e62bfe270438d16d375908"
+}
+
+resolution @lege-ecosystem.work.truetyping-vertical-placement/1 {
     slot derived_from
     to @lege-ecosystem.work.glyph-font-text-output/1
     hash "sha256:a0d688577c0a8c15811b1ae59280ccf118508e03a454130b4c704021faac3043"
@@ -1062,6 +1074,11 @@ seal @lege-ecosystem.observation.ocr-v5-v6-recipe-20260820/1 {
 seal @lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 {
     state verified
     hash "sha256:5bf5660ff9341545cf5d523d8b4475feee73afebba5b083d3d02d2c9f6c7e015"
+}
+
+seal @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1 {
+    state verified
+    hash "sha256:b113c1f176a1c737a5035e388b563a820ea1f4b128e62bfe270438d16d375908"
 }
 
 seal @lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/1 {

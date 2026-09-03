@@ -3116,6 +3116,38 @@ record lege-ecosystem.work.treat-9-7-as-the-first-arithmetic-kernel-target/1 : w
     }
 }
 
+record lege-ecosystem.work.truetyping-vertical-placement/1 : work {
+    title "Handoff: put truetyping's letters back on their own baseline"
+    state proposed
+    scope [
+        path "lege-codecs/jbig2enc-rust/src/encode/document/symbol/**",
+        path "lege-pdf/write/src/text.rs",
+        path "lege-process/core/pdf_artifact.rs",
+        path "lege-process/encoding/glyphfont.rs"
+    ]
+    intent """
+        Give every truetyping occurrence the vertical position it was scanned at, rather than its prototype's. The shapes may be shared — that is the point of the format — but the placement should not be, and JBIG2 symbol mode already shows what that looks like on the same clustering.
+        """
+    note """
+        Raised by the user on 2026-09-03 after the substitution and glyph-space fixes (fff533a8) landed: most letters are now right, but some ride high within the word, and because the dictionary deduplicates so completely the wobble is the only difference left between two instances of a letter, which makes it read as letters out of place. Their comparison is plain JBIG2 symbol mode, not sym-unify, which does not show the effect.
+
+        What to measure first, before changing anything. The suspected path is `process_analysis`: an occurrence's own bottom is discarded in favour of its prototype's `descent`, residuals within a pixel are snapped away and larger ones become position variants pinned to their first instance. But the share of the error that comes from the snap, from a prototype descent estimated on one page, from the Theil-Sen line baseline, and from component bottoms measured on broken serifs is *not known*. Instrument the difference between each occurrence's measured bottom and the y it is finally drawn at, and put the distribution in the glyph dump beside the fold sheet; the answer should say which of the four to fix and whether one pixel of the working raster is the whole story.
+
+        What the fix probably looks like. `GlyphItem::rise` already carries a per-glyph text rise in thousandths of an em, and the writer already emits it — so an exact residual can be expressed without any new writer surface, and in font units rather than whole pixels. The reason it is not used today is deliberate and must be weighed rather than dropped: the variant machinery exists so every occurrence sits on its line's baseline with no rise, because poppler-based extractors break a line into separate runs at a rise change. Options in rough order of appeal: (1) keep the rise at zero and make the variant grid finer than a whole pixel, since the variants are already composites and cost little; (2) emit the exact residual as a rise and measure what it does to extraction (the recall script on Gobineau is the existing gauge); (3) revise a prototype's descent as its evidence grows instead of fixing it from the first page that saw it.
+
+        Watch the file size while doing it: finer variants mean more glyph ids, and pass 9 already spends 4-5% more shapes on the matching gates.
+        """
+    claim the-corpus-to-judge-this-on-is-the-original-scan {
+        text """
+            The 836-page file pass 9 was fixed against, `historyofchinese00gern_0_1-1_processed_1784935875.pdf`, is a Lege output being reprocessed — a copy of a copy, chosen by mistake. The book to judge truetyping on is the original archive.org scan of the same title, which is greyscale and keeps its full resolution, and where the bilevel clamp does not apply.
+            """
+    }
+    derived_from [
+        @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline,
+        @lege-ecosystem.work.glyph-font-text-output
+    ]
+}
+
 record lege-ecosystem.work.two-traps-do-not-fix-these-by-loosening-a-check/1 : work {
     title "5. Two traps — do NOT \"fix\" these by loosening a check"
     state proposed
