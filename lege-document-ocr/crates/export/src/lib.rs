@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use lege_docir::{Document, PageSourceKind, RegionContent, TextView};
 use lege_pdf_write::artifact::{
-    ColorModel, PdfImageElement, PdfImageResource, PdfPageArtifact, PreparedTextLayer, TextFont,
-    TextRun,
+    ColorModel, PageRotation, PdfImageElement, PdfImageResource, PdfPageArtifact,
+    PreparedTextLayer, TextFont, TextRun,
 };
 use lege_pdf_write::types::{Affine, PdfRect};
 use lege_pdf_write::writer::DocumentWriter;
@@ -375,6 +375,7 @@ fn rasterized_searchable_pdf(request: &ExportRequest<'_>, path: &Path) -> Result
                 }]),
                 text_layer: page_text_layer(page, request.text_view),
                 glyph_layer: None,
+                rotation: PageRotation::Upright,
             };
             writer.add_page(&artifact)?;
         }

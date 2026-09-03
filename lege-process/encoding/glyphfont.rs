@@ -1,4 +1,4 @@
-//! Raster text → per-document glyph font (the `glyphfont` text format).
+//! Raster text → per-document glyph font (the `truetyping` text format).
 //!
 //! A printed book sets its text in a handful of typefaces, so the connected
 //! components of its binarized pages cluster into a modest set of glyph

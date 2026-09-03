@@ -393,10 +393,15 @@ mod page_selection_tests {
     }
 }
 
-/// Smallest render height (pixels) used for `text_format = "glyphfont"`
+/// Smallest render height (pixels) used for `text_format = "truetyping"`
 /// unless the caller sets one explicitly. Glyph outlines are traced from this
 /// raster, so it is chosen for shape fidelity rather than for a screen.
 pub const GLYPHFONT_MIN_TARGET_HEIGHT: u32 = 2400;
+
+/// The text format whose printed text becomes an embedded per-book TrueType
+/// font. `glyphfont` was its name while it was being built and stays an
+/// accepted spelling of it, so scripted runs keep working.
+pub const TRUETYPING: &str = "truetyping";
 
 /// How body-text regions are rendered. Orthogonal to the output container
 /// (PDF vs DjVu, chosen by `text_format`) and to image-region handling.
@@ -624,10 +629,10 @@ impl PipelineConfig {
 
     pub fn validate(&self) -> Result<()> {
         match self.text_format.as_ref() {
-            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "glyphfont" => {}
+            "jbig2" | "ccitt4" | "jpeg" | "djvu" | TRUETYPING => {}
             _ => {
                 return Err(anyhow!(
-                    "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, glyphfont",
+                    "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, truetyping",
                     self.text_format
                 ));
             }
@@ -927,26 +932,28 @@ impl PipelineConfig {
 
     // Setters
     pub fn set_text_format(&mut self, format: &str) -> Result<()> {
+        // `glyphfont` was the name this format was built under.
+        let format = if format == "glyphfont" {
+            TRUETYPING
+        } else {
+            format
+        };
         match format {
-            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "epub" | "glyphfont" => {
+            "jbig2" | "ccitt4" | "jpeg" | "djvu" | "epub" | TRUETYPING => {
                 self.text_format = format.to_string();
                 // EPUB is a text-only reflowable format: it needs the slow,
                 // structured OCR path and has no image-encoding stage.
                 if format == "epub" {
                     self.set_slow_ocr(true);
                 }
-                // Glyph-font output is resolution independent on the reader,
-                // so the source raster should be fine enough for clean glyph
-                // shapes; a later explicit target height still overrides.
-                if format == "glyphfont" && self.target_height < GLYPHFONT_MIN_TARGET_HEIGHT {
-                    self.glyph_requested_height = Some(self.target_height);
-                    self.target_height = GLYPHFONT_MIN_TARGET_HEIGHT;
-                    self.target_width = None;
-                }
+                // Truetyping is resolution independent on the reader, so the
+                // source raster is chosen for outline fidelity rather than for
+                // a screen; the requested height is kept for the background.
+                self.raise_render_height_for_truetyping();
                 Ok(())
             }
             _ => Err(anyhow!(
-                "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, epub, glyphfont",
+                "Invalid text_format: '{}'. Must be one of: jbig2, ccitt4, jpeg, djvu, epub, truetyping",
                 format
             )),
         }
@@ -972,6 +979,7 @@ impl PipelineConfig {
         self.target_height = height;
         self.target_width = None;
         self.glyph_requested_height = None;
+        self.raise_render_height_for_truetyping();
         Ok(())
     }
 
@@ -1008,7 +1016,28 @@ impl PipelineConfig {
         self.target_height = h;
         self.target_width = Some(w);
         self.glyph_requested_height = None;
+        self.raise_render_height_for_truetyping();
         Ok(())
+    }
+
+    /// Truetyping traces its outlines from the rendered page, so the page is
+    /// rendered at least [`GLYPHFONT_MIN_TARGET_HEIGHT`] tall whatever height
+    /// was asked for; the asked-for height is remembered and the background
+    /// comes back down to it at encode time (see
+    /// [`Self::glyph_background_subsample`]). Order-independent: it applies
+    /// whether the format or the height was set first.
+    fn raise_render_height_for_truetyping(&mut self) {
+        if self.text_format != TRUETYPING || self.target_height >= GLYPHFONT_MIN_TARGET_HEIGHT {
+            return;
+        }
+        let requested = self.target_height;
+        if let Some(width) = self.target_width.as_mut() {
+            let scaled = (u64::from(*width) * u64::from(GLYPHFONT_MIN_TARGET_HEIGHT)
+                / u64::from(requested)) as u32;
+            *width = scaled.max(1);
+        }
+        self.glyph_requested_height = Some(requested);
+        self.target_height = GLYPHFONT_MIN_TARGET_HEIGHT;
     }
     pub fn set_dither_images(&mut self, dither: bool) {
         self.image_region_dither_mode = if dither {
@@ -1305,5 +1334,54 @@ mod no_layout_feature_tests {
         config.set_enable_layout_detection(true);
 
         assert!(!config.enable_layout_detection());
+    }
+}
+
+#[cfg(test)]
+mod truetyping_height_tests {
+    use super::{GLYPHFONT_MIN_TARGET_HEIGHT, PipelineConfig, TRUETYPING};
+
+    #[test]
+    fn the_working_height_is_raised_whichever_was_asked_for_first() {
+        let mut format_first = PipelineConfig::default();
+        format_first.set_text_format(TRUETYPING).unwrap();
+        format_first.set_target_height(1200).unwrap();
+
+        let mut height_first = PipelineConfig::default();
+        height_first.set_target_height(1200).unwrap();
+        height_first.set_text_format(TRUETYPING).unwrap();
+
+        for config in [&format_first, &height_first] {
+            assert_eq!(config.target_height(), GLYPHFONT_MIN_TARGET_HEIGHT);
+            assert_eq!(config.glyph_background_subsample(), 2);
+        }
+    }
+
+    #[test]
+    fn a_fixed_width_is_scaled_with_the_raised_height() {
+        let mut config = PipelineConfig::default();
+        config.set_text_format(TRUETYPING).unwrap();
+        config.set_target_dimensions(900, 1200).unwrap();
+
+        assert_eq!(config.target_height(), GLYPHFONT_MIN_TARGET_HEIGHT);
+        assert_eq!(config.target_width(), Some(1800));
+    }
+
+    #[test]
+    fn glyphfont_is_still_accepted_as_a_spelling_of_truetyping() {
+        let mut config = PipelineConfig::default();
+        config.set_text_format("glyphfont").unwrap();
+        assert_eq!(config.text_format(), TRUETYPING);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn other_formats_keep_the_height_they_were_given() {
+        let mut config = PipelineConfig::default();
+        config.set_text_format("jbig2").unwrap();
+        config.set_target_height(1200).unwrap();
+
+        assert_eq!(config.target_height(), 1200);
+        assert_eq!(config.glyph_background_subsample(), 1);
     }
 }

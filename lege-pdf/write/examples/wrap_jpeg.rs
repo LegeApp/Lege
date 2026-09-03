@@ -6,7 +6,9 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::sync::Arc;
 
-use lege_pdf_write::artifact::{ColorModel, PdfImageElement, PdfImageResource, PdfPageArtifact};
+use lege_pdf_write::artifact::{
+    ColorModel, PageRotation, PdfImageElement, PdfImageResource, PdfPageArtifact,
+};
 use lege_pdf_write::types::{Affine, PdfRect};
 use lege_pdf_write::writer::DocumentWriter;
 
@@ -40,6 +42,7 @@ fn main() {
             }]),
             text_layer: None,
             glyph_layer: None,
+            rotation: PageRotation::Upright,
         };
         writer.add_page(&art).expect("add page");
     }

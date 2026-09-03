@@ -10,8 +10,8 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use lege_pdf_write::artifact::{
-    ColorModel, GlyphItem, GlyphLine, PdfImageElement, PdfImageResource, PdfPageArtifact,
-    PreparedGlyphLayer, PreparedTextLayer, TextFont, TextRun,
+    ColorModel, GlyphItem, GlyphLine, PageRotation, PdfImageElement, PdfImageResource,
+    PdfPageArtifact, PreparedGlyphLayer, PreparedTextLayer, TextFont, TextRun,
 };
 use lege_pdf_write::font::EmbeddedFont;
 use lege_pdf_write::resources::SharedResourceId;
@@ -36,6 +36,9 @@ pub fn page_to_artifact(
     let mut elements = Vec::with_capacity(page.elements.len());
     let mut globals = Vec::new();
     let mut glyph_lines: Vec<GlyphLine> = Vec::new();
+    // The glyph dictionary measures every page's frame; the OCR frame on
+    // `Page` is only there when OCR ran.
+    let mut glyph_turns: Option<u8> = None;
 
     for el in &page.elements {
         if let ContentType::GlyphText {
@@ -44,6 +47,7 @@ pub fn page_to_artifact(
             pixel_height,
         } = &el.content
         {
+            glyph_turns = Some(runs.frame.turns);
             glyph_lines.extend(glyph_runs_to_lines(
                 page,
                 el,
@@ -78,8 +82,26 @@ pub fn page_to_artifact(
         elements: elements.into_boxed_slice(),
         text_layer,
         glyph_layer,
+        rotation: display_rotation(glyph_turns.unwrap_or(page.quarter_turns)),
     };
     Ok((artifact, globals))
+}
+
+/// Which way up the reader should show the page.
+///
+/// A page scanned sideways is turned by `/Rotate`: nothing is resampled and
+/// the content keeps the coordinates it was written in, so the text layer,
+/// the glyph text and the raster all turn together. Only the sideways
+/// quarter turns are acted on. They are decided by a wide margin (the turned
+/// page's baselines must be half again as sharp as the page's own), while an
+/// upside-down page rests on a much narrower one, and a page wrongly turned
+/// on its head is worse than a page left as it was scanned.
+fn display_rotation(quarter_turns: u8) -> PageRotation {
+    match quarter_turns % 4 {
+        1 => PageRotation::Clockwise90,
+        3 => PageRotation::Clockwise270,
+        _ => PageRotation::Upright,
+    }
 }
 
 /// Turn a page's glyph placements (pixel space, y down) into writer lines in
@@ -418,6 +440,7 @@ mod tests {
             index: 0,
             hocr_text: Some("<p class='ocr_line'>ignored</p>".into()),
             binarized: None,
+            quarter_turns: 0,
             elements: vec![ContentElement {
                 x: 0.0,
                 y: 0.0,
@@ -450,5 +473,35 @@ mod tests {
             line.matrix,
             Affine::new(EM_PIXELS, 0.0, 0.0, EM_PIXELS, 10.0, 900.0)
         );
+    }
+
+    fn page_turned(quarter_turns: u8) -> Page {
+        Page {
+            width: 100.0,
+            height: 100.0,
+            index: 0,
+            hocr_text: None,
+            binarized: None,
+            quarter_turns,
+            elements: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_sideways_page_is_turned_upright_for_the_reader() {
+        let (art, _) = page_to_artifact(&page_turned(1), false).unwrap();
+        assert_eq!(art.rotation, PageRotation::Clockwise90);
+        let (art, _) = page_to_artifact(&page_turned(3), false).unwrap();
+        assert_eq!(art.rotation, PageRotation::Clockwise270);
+    }
+
+    #[test]
+    fn an_upside_down_reading_is_left_alone() {
+        // The 180° signal is much weaker than the sideways one, and a page
+        // wrongly stood on its head is worse than one left as scanned.
+        let (art, _) = page_to_artifact(&page_turned(2), false).unwrap();
+        assert_eq!(art.rotation, PageRotation::Upright);
+        let (art, _) = page_to_artifact(&page_turned(0), false).unwrap();
+        assert_eq!(art.rotation, PageRotation::Upright);
     }
 }

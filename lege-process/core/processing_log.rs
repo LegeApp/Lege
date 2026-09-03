@@ -25,7 +25,7 @@ pub fn from_pipeline_config(config: &PipelineConfig) -> ProcessingOptions {
     if options.output_format == OutputFormat::Pdf {
         options.compression_type = match config.text_format() {
             "jbig2" => CompressionType::Jbig2,
-            "ccitt4" => CompressionType::Ccitt4,
+            "truetyping" => CompressionType::Truetyping,
             _ => CompressionType::Ccitt4,
         };
     }

@@ -53,6 +53,7 @@ fn to_shared_options(options: &GuiProcessingOptions) -> shared_log::ProcessingOp
         GuiOutputFormat::Epub => shared_log::OutputFormat::Epub,
     };
     shared.compression_type = match options.compression_type {
+        GuiCompressionType::Truetyping => shared_log::CompressionType::Truetyping,
         GuiCompressionType::Ccitt4 => shared_log::CompressionType::Ccitt4,
         GuiCompressionType::Jbig2 => shared_log::CompressionType::Jbig2,
     };

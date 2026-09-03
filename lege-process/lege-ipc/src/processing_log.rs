@@ -41,17 +41,23 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
-/// Compression types (CCITT4/JBIG2)
+/// How the page's text was written (CCITT4/JBIG2/truetyping)
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CompressionType {
     #[default]
     Ccitt4,
     Jbig2,
+    /// An embedded per-book TrueType font, not a raster codec.
+    Truetyping,
 }
 
 impl CompressionType {
     pub fn all() -> Vec<CompressionType> {
-        vec![CompressionType::Ccitt4, CompressionType::Jbig2]
+        vec![
+            CompressionType::Truetyping,
+            CompressionType::Jbig2,
+            CompressionType::Ccitt4,
+        ]
     }
 }
 
@@ -60,6 +66,7 @@ impl std::fmt::Display for CompressionType {
         let label = match self {
             CompressionType::Ccitt4 => "CCITT4",
             CompressionType::Jbig2 => "JBIG2",
+            CompressionType::Truetyping => "Truetyping",
         };
         write!(f, "{label}")
     }

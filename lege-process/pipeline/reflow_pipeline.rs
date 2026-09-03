@@ -830,6 +830,7 @@ pub(crate) async fn run_raster_reflow_pipeline(
             hocr_text,
             index: reflow_page.index,
             binarized: None,
+            quarter_turns: 0,
         };
         pdf_writer_handle.send_page(page, reflow_page.index).await?;
 

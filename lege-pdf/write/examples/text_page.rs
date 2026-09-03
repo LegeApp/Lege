@@ -6,7 +6,9 @@
 use std::fs::File;
 use std::io::BufWriter;
 
-use lege_pdf_write::artifact::{PdfPageArtifact, PreparedTextLayer, TextFont, TextRun};
+use lege_pdf_write::artifact::{
+    PageRotation, PdfPageArtifact, PreparedTextLayer, TextFont, TextRun,
+};
 use lege_pdf_write::types::PdfRect;
 use lege_pdf_write::writer::DocumentWriter;
 
@@ -42,6 +44,7 @@ fn main() {
             font: TextFont::HelveticaFallback,
         }),
         glyph_layer: None,
+        rotation: PageRotation::Upright,
     };
 
     let file = BufWriter::new(File::create(&out).expect("create output"));

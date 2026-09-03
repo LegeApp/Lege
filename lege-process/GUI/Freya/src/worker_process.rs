@@ -431,9 +431,12 @@ pub fn gui_options_to_cli_args(
     }
 
     // Image processing
+    // Mirrors the toggle's own visibility condition: halftone segments are a
+    // JBIG2 feature, so they need JBIG2 as the text encoder too.
     let use_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
         && options.layout_analysis
         && matches!(options.image_processing_type, ImageProcessingType::Dithered)
+        && matches!(options.compression_type, CompressionType::Jbig2)
         && options.use_jbig2_halftone;
     if use_jbig2_halftone {
         args.push("--halftone".into());
@@ -982,10 +985,9 @@ mod tests {
     }
 
     #[test]
-    fn layout_cli_uses_image_output_format() {
+    fn dithered_images_no_longer_change_the_text_encoder() {
         let mut options = ProcessingOptions::new();
         options.layout_analysis = true;
-        options.compression_type = CompressionType::Ccitt4;
         options.image_processing_type = ImageProcessingType::Dithered;
 
         let args = gui_options_to_cli_args(
@@ -997,10 +999,29 @@ mod tests {
 
         assert_eq!(
             cli_arg_after(&args, "--text-format").as_deref(),
-            Some("jbig2")
+            Some("truetyping")
         );
         assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
         assert!(args.iter().any(|arg| arg == OsStr::new("--dither")));
+    }
+
+    #[test]
+    fn the_default_pdf_run_asks_for_truetyping() {
+        let options = ProcessingOptions::new();
+
+        let args = gui_options_to_cli_args(
+            &PathBuf::from("input.pdf"),
+            &PathBuf::from("output.pdf"),
+            &options,
+            true,
+        );
+
+        assert_eq!(
+            cli_arg_after(&args, "--text-format").as_deref(),
+            Some("truetyping")
+        );
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--jpeg-compat")));
+        assert!(!args.iter().any(|arg| arg == OsStr::new("--no-symbol")));
     }
 
     #[test]
@@ -1058,6 +1079,9 @@ mod tests {
         let mut options = ProcessingOptions::new();
         options.layout_analysis = true;
         options.image_processing_type = ImageProcessingType::Dithered;
+        // Halftone segments live in the JBIG2 stream, so the text encoder has
+        // to be JBIG2 for the flag to be sent at all.
+        options.set_text_encoder(CompressionType::Jbig2);
         options.use_jbig2_halftone = true;
 
         let args = gui_options_to_cli_args(

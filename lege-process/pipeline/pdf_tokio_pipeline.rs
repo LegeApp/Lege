@@ -54,6 +54,9 @@ pub struct ProcessedPage {
     /// Title candidates for the automatic table of contents. Text only; empty
     /// on any page with no title detection.
     pub toc: crate::toc::PageTocData,
+    /// Quarter turns clockwise that would make the page's text upright, 0 when
+    /// it is upright already or when nothing measured it.
+    pub quarter_turns: u8,
 }
 
 pub(crate) fn build_inference_future(
@@ -271,6 +274,7 @@ async fn process_single_page(
     // "jpeg" mode `binarized` holds the OCR luma, which thresholds well
     // enough for this.
     let page_frame = page_frame_for_ocr(&config, &binarized, width, height);
+    let quarter_turns = page_frame.map_or(0, |frame| frame.turns);
     let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
         // Recognize on the high-res raster when available, else the page image.
         // Detections and the returned hOCR are in output (page) space.
@@ -360,6 +364,7 @@ async fn process_single_page(
             elements,
             hocr_text,
             toc,
+            quarter_turns,
         });
     }
 
@@ -409,6 +414,7 @@ async fn process_single_page(
                     elements,
                     hocr_text,
                     toc,
+                    quarter_turns,
                 });
             }
             Err(e) => {
@@ -466,6 +472,7 @@ async fn process_single_page(
         elements,
         hocr_text,
         toc,
+        quarter_turns,
     })
 }
 
@@ -1248,7 +1255,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     }),
                 };
                 // The overlay is a bilevel raster even when the base layer is
-                // not (`glyphfont`), so name the codec, not the text format.
+                // not (`truetyping`), so name the codec, not the text format.
                 let overlay_fmt = match config.text_format() {
                     "ccitt4" => "ccitt4",
                     _ => "jbig2",
@@ -1735,7 +1742,7 @@ async fn encode_mrc_base_layer(
     let jbig2_mode = crate::encoding::Jbig2Mode::Generic;
     // Glyph-font output keeps the JP2 background and draws the ink layer as
     // text instead of a JBIG2 stencil.
-    let glyph_session = if config.text_format() == "glyphfont" {
+    let glyph_session = if config.text_format() == crate::pipeline::config::TRUETYPING {
         Some(
             glyph_session
                 .ok_or_else(|| anyhow!("glyphfont text format selected without a glyph session"))?,
@@ -2047,7 +2054,7 @@ async fn encode_base_layer(
 
     let encoding_start = std::time::Instant::now();
 
-    if config.text_format() == "glyphfont" {
+    if config.text_format() == crate::pipeline::config::TRUETYPING {
         return encode_glyph_text(binarized, width, height, page_index, glyph_session).await;
     }
 
@@ -2288,7 +2295,7 @@ async fn encode_base_layer_fused(
 
     let encoding_start = std::time::Instant::now();
 
-    if config.text_format() == "glyphfont" {
+    if config.text_format() == crate::pipeline::config::TRUETYPING {
         let session = glyph_session
             .ok_or_else(|| anyhow!("glyphfont text format selected without a glyph session"))?;
         let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
@@ -3213,6 +3220,7 @@ async fn process_planned_pdf_products(
         correction: identity_margin_correction(),
     };
     let page_frame = page_frame_for_ocr(&config, &binarized, width as usize, height as usize);
+    let quarter_turns = page_frame.map_or(0, |frame| frame.turns);
     let hocr_text = if config.enable_ocr() && config.slow_ocr_enabled() {
         if uses_preserved_mask {
             // On preserved-mask pages OCR must consume the source-derived
@@ -3336,7 +3344,7 @@ async fn process_planned_pdf_products(
         .await?;
         // Glyph-font output replaces the passed-through source mask with text
         // drawn from the same decoded ink view, over the cleaned background.
-        let foreground = if config.text_format() == "glyphfont" {
+        let foreground = if config.text_format() == crate::pipeline::config::TRUETYPING {
             encode_glyph_text(
                 binarized,
                 width as usize,
@@ -3405,6 +3413,7 @@ async fn process_planned_pdf_products(
         elements,
         hocr_text,
         toc,
+        quarter_turns,
     })
 }
 
@@ -3692,6 +3701,7 @@ async fn run_page_owned_job(
         hocr_text: processed_page.hocr_text,
         index: processed_page.index,
         binarized: None,
+        quarter_turns: processed_page.quarter_turns,
     };
     let output_index = page.index;
     pdf_writer_handle.send_page(page, output_index).await?;
@@ -3879,8 +3889,8 @@ pub async fn create_and_run_pdf_source_pipeline(
     );
     // One glyph dictionary for the whole document: pages match against it as
     // they finish (any order) and the font is emitted once at finalize.
-    let glyph_session =
-        (config.text_format() == "glyphfont").then(|| Arc::new(GlyphFontSession::new()));
+    let glyph_session = (config.text_format() == crate::pipeline::config::TRUETYPING)
+        .then(|| Arc::new(GlyphFontSession::new()));
     let mut jobs = tokio::task::JoinSet::new();
     let mut next_page = page_start;
     let mut hocr_pages = Vec::new();

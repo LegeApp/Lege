@@ -375,7 +375,7 @@ fn hardware_acceleration_status() -> (bool, String) {
 #[derive(Default)]
 struct CliOptions {
     // --- Output format ---
-    text_format: Option<String>, // --text-format ccitt4|jbig2|jpeg|djvu|epub|glyphfont
+    text_format: Option<String>, // --text-format ccitt4|jbig2|jpeg|djvu|epub|truetyping
     cover_format: Option<String>, // --cover-format jpeg|jp2|ccitt4|jbig2|none
 
     // --- Binarization ---
@@ -502,10 +502,15 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                     .get(i + 1)
                     .ok_or_else(|| anyhow!("Missing value after --text-format"))?;
                 let normalized = val.trim().to_ascii_lowercase();
+                // `glyphfont` was truetyping's name while it was being built.
+                let normalized = match normalized.as_str() {
+                    "glyphfont" => "truetyping".to_string(),
+                    _ => normalized,
+                };
                 match normalized.as_str() {
-                    "ccitt4" | "jbig2" | "jpeg" | "djvu" | "epub" | "glyphfont" => {}
+                    "ccitt4" | "jbig2" | "jpeg" | "djvu" | "epub" | "truetyping" => {}
                     _ => bail!(
-                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, djvu, epub, or glyphfont",
+                        "Invalid --text-format '{}'. Use: ccitt4, jbig2, jpeg, djvu, epub, or truetyping",
                         val
                     ),
                 }
@@ -909,6 +914,10 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
                 opts.original_images = true;
                 i += 1;
             }
+            "--truetyping" => {
+                opts.text_format = Some("truetyping".to_string());
+                i += 1;
+            }
             "--grayscale" | "--gray" => {
                 opts.grayscale = true;
                 i += 1;
@@ -1082,6 +1091,11 @@ fn apply_reflow_option(config: &mut PipelineConfig, requested: bool) -> Result<(
     }
     if !config.enable_layout_detection() {
         bail!("--reflow requires layout detection (do not combine with --no-layout/--invert)");
+    }
+    if config.text_format() == lege::pipeline::config::TRUETYPING {
+        bail!(
+            "--reflow re-renders each page as an image and has no text encoder, so it cannot be combined with truetyping"
+        );
     }
     config.set_enable_reflow(true);
     Ok(())
@@ -3374,14 +3388,15 @@ fn parse_format_selection_with_options(
     }
 
     // Map the numbered menu to text format
-    // 1: CCITT4, 2: JBIG2, 3: DJVU
+    // 1: CCITT4, 2: JBIG2, 3: DJVU, 4: truetyping
     let text_format = match format_num {
         1 => "ccitt4".to_string(),
         2 => "jbig2".to_string(),
         3 => "djvu".to_string(),
+        4 => "truetyping".to_string(),
         _ => {
             return Err(anyhow!(
-                "Invalid text encoding format. Only 1 (CCITT4), 2 (JBIG2), or 3 (DJVU) are supported."
+                "Invalid text encoding format. Only 1 (CCITT4), 2 (JBIG2), 3 (DJVU), or 4 (truetyping) are supported."
             ));
         }
     };
@@ -3520,9 +3535,9 @@ fn parse_main_format(input: &str) -> Result<(u32, usize, bool, bool, bool)> {
     }
 
     let format_num: u32 = numeric_part.parse()?;
-    if format_num < 1 || format_num > 3 {
+    if format_num < 1 || format_num > 4 {
         return Err(anyhow!(
-            "Format number must be 1 (CCITT4), 2 (JBIG2), or 3 (DJVU)"
+            "Format number must be 1 (CCITT4), 2 (JBIG2), 3 (DJVU) or 4 (truetyping)"
         ));
     }
 

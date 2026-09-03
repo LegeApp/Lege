@@ -1663,9 +1663,12 @@ fn pages_device_card(
     page_range_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
+    // Halftone segments are a JBIG2 feature, so they need JBIG2 as the text
+    // encoder as well as dithered image regions to apply to.
     let show_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
         && options.layout_analysis
-        && matches!(options.image_processing_type, ImageProcessingType::Dithered);
+        && matches!(options.image_processing_type, ImageProcessingType::Dithered)
+        && matches!(options.compression_type, CompressionType::Jbig2);
     // Symbol substitution is a JBIG2 feature, so the opt-out is only
     // meaningful while JBIG2 is actually the text encoder. Compatibility mode
     // swaps it for CCITT4, and grayscale/MRC has no bilevel text plane at
@@ -1855,9 +1858,34 @@ fn pages_device_card(
             },
         ),
     ));
-    // Compatibility mode: JPEG for image regions + CCITT4 for binarized text —
-    // the maximum-compatibility encoders. Meaningless in grayscale/MRC mode
-    // (the gray background is always JP2), so it disappears there.
+    // The two opt-outs from truetyping, which exclude each other: JBIG2 keeps
+    // the text as a raster codec, and compatibility mode pairs CCITT4 text
+    // with baseline JPEG images. Clearing either returns to truetyping. Both
+    // are PDF-only.
+    if matches!(options.output_format, OutputFormat::Pdf) {
+        col2.push(tooltip_wrap_at(
+            state,
+            TooltipArea::PagesDeviceCard,
+            GUI_TEXT.interactive.tooltips.jbig2_text.clone(),
+            AttachedPosition::Left,
+            compact_checkbox_row(
+                GUI_TEXT.interactive.labels.jbig2_text.clone(),
+                matches!(options.compression_type, CompressionType::Jbig2),
+                {
+                    let mut state = state;
+                    move |_| {
+                        let mut s = state.write();
+                        let enable = !matches!(s.options.compression_type, CompressionType::Jbig2);
+                        s.options.set_text_encoder(if enable {
+                            CompressionType::Jbig2
+                        } else {
+                            CompressionType::Truetyping
+                        });
+                    }
+                },
+            ),
+        ));
+    }
     if !options.grayscale_mode {
         col2.push(tooltip_wrap_at(
             state,
@@ -1872,14 +1900,11 @@ fn pages_device_card(
                     move |_| {
                         let mut s = state.write();
                         let enable = !s.options.jpeg_compat;
-                        s.options.jpeg_compat = enable;
-                        // Compatibility pairs CCITT4 text with JPEG images;
-                        // off restores the JBIG2/JP2 defaults.
-                        s.options.compression_type = if enable {
+                        s.options.set_text_encoder(if enable {
                             CompressionType::Ccitt4
                         } else {
-                            CompressionType::Jbig2
-                        };
+                            CompressionType::Truetyping
+                        });
                     }
                 },
             ),

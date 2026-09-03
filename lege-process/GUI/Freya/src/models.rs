@@ -21,11 +21,18 @@ pub enum OcrMode {
     Thorough,
 }
 
+/// How binarized text is written into a PDF. One choice, not a combination:
+/// the page's text is either a per-book font or a raster codec.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CompressionType {
+    /// Truetyping: the printed text becomes an embedded per-book TrueType
+    /// font and the page carries real text objects. The default.
     #[default]
-    Ccitt4,
+    Truetyping,
+    /// JBIG2 symbol-substitution raster text.
     Jbig2,
+    /// CCITT Group 4 raster text; reached through compatibility mode.
+    Ccitt4,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,6 +81,7 @@ impl std::fmt::Display for OcrMode {
 impl std::fmt::Display for CompressionType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Truetyping => write!(f, "Truetyping"),
             Self::Ccitt4 => write!(f, "CCITT4"),
             Self::Jbig2 => write!(f, "JBIG2"),
         }
@@ -143,8 +151,9 @@ impl ProcessingOptions {
     pub fn new() -> Self {
         Self {
             output_format: OutputFormat::Pdf,
-            // JBIG2 default; CCITT4 is reachable via Compatibility mode.
-            compression_type: CompressionType::Jbig2,
+            // Truetyping default; JBIG2 and CCITT4 (compatibility mode) are
+            // the two opt-outs.
+            compression_type: CompressionType::Truetyping,
             // Symbol substitution is the encoder default and what makes JBIG2
             // worth choosing on text; this is the opt-out.
             no_symbol_mode: false,
@@ -162,19 +171,34 @@ impl ProcessingOptions {
         }
     }
 
+    /// The `--text-format` this configuration asks the worker for. For PDF it
+    /// is the text encoder alone: image regions are chosen separately, by
+    /// `image_processing_type`.
     pub fn effective_text_format(&self) -> &'static str {
         match self.output_format {
             OutputFormat::Djvu => "djvu",
             OutputFormat::Epub => "epub",
-            OutputFormat::Pdf if self.layout_analysis => match self.image_processing_type {
-                ImageProcessingType::Original => "ccitt4",
-                ImageProcessingType::Dithered => "jbig2",
-            },
+            // Raster reflow re-renders every page as an image and never asks
+            // the text encoder anything; truetyping would only raise the
+            // render height for glyph tracing that never happens.
+            OutputFormat::Pdf if self.reflow => "ccitt4",
             OutputFormat::Pdf => match self.compression_type {
-                CompressionType::Ccitt4 => "ccitt4",
+                CompressionType::Truetyping => "truetyping",
                 CompressionType::Jbig2 => "jbig2",
+                CompressionType::Ccitt4 => "ccitt4",
             },
         }
+    }
+
+    /// Choose the PDF text encoder. Compatibility mode and JBIG2 are the two
+    /// opt-outs from truetyping and exclude each other; clearing either one
+    /// returns to truetyping.
+    pub fn set_text_encoder(&mut self, encoder: CompressionType) {
+        self.jpeg_compat = matches!(encoder, CompressionType::Ccitt4);
+        if !matches!(encoder, CompressionType::Jbig2) {
+            self.no_symbol_mode = false;
+        }
+        self.compression_type = encoder;
     }
 
     /// Keep GUI state aligned with the core pipeline's effective feature
@@ -381,29 +405,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_layout_text_format_uses_base_compression_setting() {
+    fn pdf_text_format_is_truetyping_until_an_encoder_is_chosen() {
         let mut options = ProcessingOptions::new();
-        options.layout_analysis = false;
-        options.image_processing_type = ImageProcessingType::Dithered;
+        assert_eq!(options.effective_text_format(), "truetyping");
 
-        options.compression_type = CompressionType::Ccitt4;
+        options.set_text_encoder(CompressionType::Jbig2);
+        assert_eq!(options.effective_text_format(), "jbig2");
+
+        options.set_text_encoder(CompressionType::Ccitt4);
         assert_eq!(options.effective_text_format(), "ccitt4");
 
-        options.compression_type = CompressionType::Jbig2;
-        assert_eq!(options.effective_text_format(), "jbig2");
+        options.set_text_encoder(CompressionType::Truetyping);
+        assert_eq!(options.effective_text_format(), "truetyping");
     }
 
     #[test]
-    fn layout_text_format_uses_image_processing_setting() {
+    fn image_handling_no_longer_decides_the_text_encoder() {
         let mut options = ProcessingOptions::new();
-        options.layout_analysis = true;
-        options.compression_type = CompressionType::Jbig2;
-
-        options.image_processing_type = ImageProcessingType::Original;
-        assert_eq!(options.effective_text_format(), "ccitt4");
-
         options.image_processing_type = ImageProcessingType::Dithered;
-        assert_eq!(options.effective_text_format(), "jbig2");
+        assert_eq!(options.effective_text_format(), "truetyping");
+
+        options.layout_analysis = false;
+        assert_eq!(options.effective_text_format(), "truetyping");
+    }
+
+    #[test]
+    fn the_two_opt_outs_exclude_each_other() {
+        let mut options = ProcessingOptions::new();
+
+        options.set_text_encoder(CompressionType::Ccitt4);
+        assert!(options.jpeg_compat);
+
+        options.set_text_encoder(CompressionType::Jbig2);
+        assert!(!options.jpeg_compat);
+
+        options.no_symbol_mode = true;
+        options.set_text_encoder(CompressionType::Truetyping);
+        assert!(!options.jpeg_compat);
+        assert!(
+            !options.no_symbol_mode,
+            "a JBIG2-only sub-option cannot outlive JBIG2"
+        );
     }
 }
 /// Process-unique identifier for a queue entry.

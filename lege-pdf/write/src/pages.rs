@@ -8,6 +8,7 @@
 
 use std::io::Write;
 
+use crate::artifact::PageRotation;
 use crate::serialize::{write_i64, write_name, write_real, write_ref, write_u64};
 use crate::sink::PdfSink;
 use crate::types::{ObjectId, PdfRect, Result, WriteError};
@@ -74,6 +75,8 @@ impl WrittenPageSlots {
 
 /// Write one page dictionary. `xobjects` maps the bare resource name (e.g.
 /// `Im1`) to its object id; `fonts` does the same for `/Font` (empty in M1).
+/// `rotation` is written as `/Rotate` on the page itself, never inherited from
+/// `/Pages`, so a book may mix orientations.
 pub fn write_page_dict<W: Write>(
     sink: &mut PdfSink<W>,
     page_id: ObjectId,
@@ -82,6 +85,7 @@ pub fn write_page_dict<W: Write>(
     xobjects: &[(crate::types::ResourceName, ObjectId)],
     fonts: &[(crate::types::ResourceName, ObjectId)],
     contents: ObjectId,
+    rotation: PageRotation,
 ) -> Result<()> {
     let mut d = Vec::new();
     d.extend_from_slice(b"<<");
@@ -115,6 +119,11 @@ pub fn write_page_dict<W: Write>(
 
     kname(&mut d, b"Contents");
     write_ref(&mut d, contents);
+
+    if rotation != PageRotation::Upright {
+        kname(&mut d, b"Rotate");
+        d.extend_from_slice(rotation.degrees().to_string().as_bytes());
+    }
     d.extend_from_slice(b">>");
 
     sink.write_indirect(page_id, &d)
@@ -268,6 +277,7 @@ mod tests {
             &[(ResourceName::Image(1), ObjectId::new(3))],
             &[],
             ObjectId::new(4),
+            PageRotation::Upright,
         )
         .unwrap();
         let t = String::from_utf8_lossy(&sink.finish().unwrap()).into_owned();
@@ -276,5 +286,28 @@ mod tests {
         assert!(t.contains("/MediaBox [0 0 612 792]"));
         assert!(t.contains("/XObject <</Im1 3 0 R>>"), "{t}");
         assert!(t.contains("/Contents 4 0 R"));
+        assert!(
+            !t.contains("/Rotate"),
+            "an upright page carries no /Rotate: {t}"
+        );
+    }
+
+    #[test]
+    fn a_turned_page_carries_its_rotation() {
+        let mut sink = PdfSink::new(Vec::new(), "1.7").unwrap();
+        let page = sink.alloc_id();
+        write_page_dict(
+            &mut sink,
+            page,
+            ObjectId::new(1),
+            PdfRect::from_size(612.0, 792.0),
+            &[],
+            &[],
+            ObjectId::new(4),
+            PageRotation::Clockwise270,
+        )
+        .unwrap();
+        let t = String::from_utf8_lossy(&sink.finish().unwrap()).into_owned();
+        assert!(t.contains("/Rotate 270"), "{t}");
     }
 }

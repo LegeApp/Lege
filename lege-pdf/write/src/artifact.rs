@@ -30,6 +30,44 @@ pub struct PdfPageArtifact {
     /// Visible glyph-font text (the page's printed text as text objects drawn
     /// with the document-wide glyph font), if any.
     pub glyph_layer: Option<PreparedGlyphLayer>,
+    /// How the reader should turn the page for display (`/Rotate`). The page's
+    /// own content stays in the coordinates it was written in.
+    pub rotation: PageRotation,
+}
+
+/// The `/Rotate` entry: how far clockwise a reader turns the page before
+/// displaying it. Scanned pages keep the orientation they were scanned in;
+/// this says which way is up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageRotation {
+    /// No `/Rotate` entry is written.
+    #[default]
+    Upright,
+    Clockwise90,
+    Half,
+    Clockwise270,
+}
+
+impl PageRotation {
+    /// Quarter turns clockwise, 0-3. Values outside that range wrap.
+    pub fn from_quarter_turns(turns: u8) -> Self {
+        match turns % 4 {
+            1 => Self::Clockwise90,
+            2 => Self::Half,
+            3 => Self::Clockwise270,
+            _ => Self::Upright,
+        }
+    }
+
+    /// The `/Rotate` value in degrees.
+    pub fn degrees(self) -> u16 {
+        match self {
+            Self::Upright => 0,
+            Self::Clockwise90 => 90,
+            Self::Half => 180,
+            Self::Clockwise270 => 270,
+        }
+    }
 }
 
 impl PdfPageArtifact {
@@ -256,6 +294,7 @@ mod tests {
             }]),
             text_layer: None,
             glyph_layer: None,
+            rotation: PageRotation::Upright,
         };
         // Globals excluded; only the 500-byte page payload counts.
         assert_eq!(art.resident_bytes(), 500);

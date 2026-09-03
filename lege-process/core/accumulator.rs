@@ -48,7 +48,7 @@ pub enum ContentType {
         paint_one: bool,
     },
     /// The page's printed text as glyph placements into the document-wide
-    /// glyph font (`text_format = "glyphfont"`). Not an image: the writer
+    /// glyph font (`text_format = "truetyping"`). Not an image: the writer
     /// draws it as a text object. `pixel_width`/`pixel_height` give the
     /// raster the placements were measured on, for the pixel → point scale.
     GlyphText {
@@ -142,4 +142,8 @@ pub struct Page {
     /// Only populated when DJVU output is requested. For PDF, use JBIG2 in
     /// elements.
     pub binarized: Option<Vec<u8>>,
+    /// Quarter turns clockwise that would make this page's text upright, as
+    /// measured from its components (see `encoding::straighten`). The page's
+    /// content is written as scanned; this only says which way is up.
+    pub quarter_turns: u8,
 }

@@ -10,7 +10,7 @@ pub mod prelude;
 // Main encoding manager
 pub mod streamline;
 
-// Raster text -> per-document glyph font (the `glyphfont` text format).
+// Raster text -> per-document glyph font (the `truetyping` text format).
 pub mod bitrows;
 pub mod glyphfont;
 pub mod straighten;

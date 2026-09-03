@@ -233,6 +233,7 @@ impl<W: Write> DocumentWriter<W> {
             &xobjects,
             &fonts,
             contents_id,
+            artifact.rotation,
         )?;
 
         self.slots.set(artifact.index, page_id)?;
@@ -326,8 +327,8 @@ fn deflate(data: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::artifact::{
-        ColorModel, GlyphItem, GlyphLine, PdfImageElement, PdfImageResource, PreparedGlyphLayer,
-        PreparedTextLayer, TextRun,
+        ColorModel, GlyphItem, GlyphLine, PageRotation, PdfImageElement, PdfImageResource,
+        PreparedGlyphLayer, PreparedTextLayer, TextRun,
     };
     use crate::font::ToUnicode;
     use crate::types::{Affine, PdfRect};
@@ -347,6 +348,7 @@ mod tests {
             }]),
             text_layer: None,
             glyph_layer: None,
+            rotation: PageRotation::Upright,
         }
     }
 
@@ -378,6 +380,7 @@ mod tests {
                     }]),
                 }]),
             }),
+            rotation: PageRotation::Upright,
         }
     }
 
@@ -494,6 +497,7 @@ mod tests {
                 font: TextFont::Embedded,
             }),
             glyph_layer: None,
+            rotation: PageRotation::Upright,
         };
         w.add_page(&art).unwrap();
         assert!(w.saw_text());

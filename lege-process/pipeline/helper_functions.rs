@@ -1052,7 +1052,7 @@ pub enum WriterMessage {
         title: Option<String>,
         author: Option<String>,
     },
-    /// Supply the document-wide glyph font (`text_format = "glyphfont"`).
+    /// Supply the document-wide glyph font (`text_format = "truetyping"`).
     /// Must arrive before Finalize; pages reference it by a reserved id.
     SetGlyphFont(lege_pdf_write::font::EmbeddedFont),
     /// Signal that all pages have been sent and PDF should be finalized
@@ -1435,6 +1435,7 @@ mod tests {
             hocr_text: None,
             index,
             binarized: None,
+            quarter_turns: 0,
         }
     }
 
