@@ -503,10 +503,10 @@ record lege-ecosystem.encode-quality.improve-photographic-rate-control/1 : work 
     title "Rework jp2lam lossy rate control for perceptual, resolution-stable photographic quality"
     state proposed
     intent """
-        Raise jp2lam lossy photographic quality-per-byte toward JPEG XL/BPG and make a fixed quality hold constant PERCEPTUAL quality across resolutions. Work the causes in lege-ecosystem.encode-quality.root-cause: replace MSE-only, size-matched, single-image-calibrated rate control with perceptually weighted, butteraugli-anchored, cross-resolution-validated rate control, and connect the existing but disabled perceptual model. Grade every change with butteraugli + ssimulacra2 against a libjxl reference, not by file size.
+        Raise jp2lam lossy photographic quality-per-byte toward JPEG XL/BPG and make a fixed quality hold constant PERCEPTUAL quality across resolutions. The local allocator work is the existing perceptually weighted PCRD (size-matched Annex-J curves). The remaining encode-time quality objective is a SSIMULACRA2 score floor, not a butteraugli-anchored quality mapping: see lege-ecosystem.work.jp2lam-ssim-controller and lege-ecosystem.decision.jp2lam-ssim-canonical-metric. Grade screens with the pinned in-tree metric; keep butteraugli as a reported secondary column only.
         """
     note """
-        Partial implementation landed in the current working tree: the native lossy allocator now size-matches perceptually weighted Annex-J curves to the established MSE byte target, maps luma masking through tile/subband origins, and uses smooth strength plus actual-bpp gates. Qualified same-size improvements at q25/q50/q75; q90 remains deliberately weak and mixed; q98 stays on the byte-identical baseline. The larger butteraugli-anchored quality mapping and resolution-stability objective remains open.
+        Partial implementation landed: native lossy allocator size-matches perceptually weighted Annex-J curves to the established MSE byte target, maps luma masking through tile/subband origins, and uses smooth strength plus actual-bpp gates. Qualified same-size improvements at q25/q50/q75; q90 remains deliberately weak and mixed; q98 stays on the byte-identical baseline. The global quality controller is now tracked as lege-ecosystem.work.jp2lam-ssim-controller (shared JPXL SSIMULACRA2 metric; two-dimensional quant+PCRD search). Butteraugli is measurement-only.
         """
     supported_by [
         @lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/2,
@@ -1401,6 +1401,17 @@ record lege-ecosystem.work.jp2lam-jpeg-2000-decoder-optimization-plan/1 : work {
     }
 }
 
+record lege-ecosystem.work.jp2lam-ssim-controller/1 : work {
+    title "jp2lam SSIMULACRA2 score-floor quality controller"
+    state proposed
+    intent """
+        Give jp2lam a SSIMULACRA2 score-floor quality controller: the smallest exact stream, within a bounded probe budget, whose reconstructed pixels meet a requested minimum score. Share JPXL's pinned production metric (`ssimulacra2-jpxl-1` in jpxl-perceptual) rather than a second implementation. Port JPXL controller mathematics (log-loss crossing, geometric bracket, work budgets, refuse-under-target) into a JPEG 2000-native two-dimensional search: outer global quantizer scale, inner PCRD body-bytes truncation over stored Tier-1 passes. Keep existing perceptual PCRD as the local allocator. Do not port the JPXL predictor, quantizer ladder, or structure-reuse rules. Do not change RateControl::Quality(u8) semantics until a later mapping session. v1 is Sessions 1-5 of the 2026-09-04 implementation plan (shared metric, Perceptual API, slow evaluator, PCRD-only proof, outer QuantRung).
+        """
+    note """
+        Session 1 (2026-09-04) landed: jpxl-perceptual default path no longer requires jpxl-core (AVX2 dispatch uses a local cpu module; jpxl-core is evaluator-only). jp2lam path-deps jpxl-perceptual with default-features=false, re-exports METRIC_VERSION, and has tests/metric_identity.rs. MSRV stays 1.95. Next: Session 2 RateControl::Perceptual types, no search.
+        """
+}
+
 record lege-ecosystem.work.layout-vertical-bands-ocr-horizontal/1 : work {
     title "Correct DocLayout underdetection with vertical bands"
     state proposed
@@ -2103,6 +2114,53 @@ record lege-ecosystem.work.ocr-product-foundation/2 : work {
     }
     part_of [ @lege-ecosystem.milestone.business-pdf-ocr-cli/1 ]
     supersedes [ @lege-ecosystem.work.ocr-product-foundation/1 ]
+}
+
+record lege-ecosystem.work.office-printing/1 : work {
+    title "Build lege-pdf-print: office printing for the Lege PDF stack"
+    state completed
+    scope [
+        path "lege-pdf/agent/src/commands/print.rs",
+        path "lege-pdf/print/**",
+        path "lege-pdf/read/src/session.rs",
+        path "lege-pdf/render/crates/pdf-document/src/pages.rs"
+    ]
+    intent """
+        Implement phases 0-4 of lege-pdf/print/PLAN.md: page-box parsing in the renderer, a pure imposition core, banded sheet composition over lege-pdf-read, file/CUPS/winspool spooler backends, and a `lege-pdf print` frontend with a spooler-free --dry-run. Nothing in the ecosystem printed before this: a repo-wide search for cups, winspool, PrintDlg and StartDoc returned nothing.
+        """
+    note """
+        Built on branch feat/printing by five parallel agents against a crate skeleton that fixed the shared vocabulary first (PrintOptions, PrintJob, Placement, Sheet, the Spooler trait, paper and margins), so the phases were written against a settled API rather than against each other.
+        """
+    claim banding {
+        text """
+            Sheets compose in horizontal bands rather than whole rasters: an A4 sheet at 1200 DPI in RGB is about 390 MB. Each placement is rendered once, cropped to the part that survives clipping, and dropped once the last band passes it.
+            """
+    }
+    claim copies-belong-to-the-spooler {
+        text """
+            impose emits the sheet run for exactly one copy. expand_copies is a separate function that callers use only for the file backend and dry-run, because CUPS and winspool both take a native copy count and expanding as well would print copies squared pages.
+            """
+    }
+    claim imposition-is-pure {
+        text """
+            layout.rs is pure geometry with no I/O, no OS and no renderer dependency: it is where a wrong-looking printout's bug would live, and the only part that can be tested exhaustively without a printer.
+            """
+    }
+    claim page-boxes {
+        text """
+            pdf-document parses /BleedBox, /TrimBox and /ArtBox from the page's own dictionary only, because ISO 32000-1 Table 29 makes exactly Resources, MediaBox, CropBox and Rotate inheritable. Each is clamped to the MediaBox and falls back to the CropBox, so a document carrying no prepress boxes behaves identically whichever box a print job asks for.
+            """
+    }
+    claim pass-through-gate {
+        text """
+            A job takes the pass-through route -- the original PDF bytes spooled unmodified -- only when PrintOptions::is_pass_through_capable() and DeviceCapabilities::accepts_pdf both hold. Windows reports accepts_pdf false and rejects a PDF payload, so gating on the options alone would fail there instead of composing.
+            """
+    }
+    claim print-is-not-an-mcp-tool {
+        text """
+            The print subcommand is deliberately not exposed as an MCP tool. Spooling actuates hardware, which no bounded read contract should hand a model, and a planning-only tool would be a strictly weaker duplicate of --dry-run, which an agent can already shell out to safely.
+            """
+    }
 }
 
 record lege-ecosystem.work.open-source-monorepo-relaunch/1 : work {

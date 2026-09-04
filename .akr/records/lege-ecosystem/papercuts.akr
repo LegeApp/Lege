@@ -105,6 +105,18 @@ record lege-ecosystem.papercut.after-validating-the-exact-workspace-scratch/1 : 
     created_at 2026-08-14
 }
 
+record lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/1 : papercut {
+    title "AKR MCP failed to connect and codegraph MCP timed out this session; akr…"
+    state verified
+    statement """
+        AKR MCP failed to connect and codegraph MCP timed out this session; akr get can hang on freshness rebuild, so Session 7 used akr search plus the implementation plan instead of knowledge.context.
+        """
+    observed_at git:f0b65b4687d6b2ec76ba813c6bed35db06e3816e
+    about "akr"
+    author "grok"
+    created_at 2026-09-04
+}
+
 record lege-ecosystem.papercut.akr-mcp-server-failed-to-connect-at-session/1 : papercut {
     title "AKR MCP server failed to connect at session start, so…"
     state verified
@@ -1098,6 +1110,19 @@ record lege-ecosystem.papercut.creating-the-publication-work-record-first/1 : pa
     created_at 2026-08-23
 }
 
+record lege-ecosystem.papercut.djvu-page-parallel-test-shared-a-pid-keyed-scratch-path/1 : papercut {
+    title "djvulibrust's page-parallel test raced itself on a pid-keyed scratch path"
+    state verified
+    scope [ path "lege-codecs/djvulibrust/tests/page_parallel_test.rs" ]
+    statement """
+        tests/page_parallel_test.rs produced an intermittent `ddjvu failed to decode page 1` under load. Its three tests run on threads of one process, but assert_decodes_with_page_count wrote its scratch document to a path keyed only on std::process::id(), so two tests wrote different documents to the same file and handed it to ddjvu; whichever lost the race decoded the other's document. Fixed by adding a per-call sequence number to the path and cleaning up on success.
+        """
+    observed_at git:cde509dd110d564cdb99a127c64bbf8805ab2efc
+    about """
+        A test that shells out to an external tool through a shared temp path is only safe if the path is unique per call, not per process -- the Rust harness's default is threads in one process, not one process per test.
+        """
+}
+
 record lege-ecosystem.papercut.during-packaging-inventory-an-rg-filter-whose/1 : papercut {
     title "During packaging inventory, an rg filter whose pattern began with…"
     state verified
@@ -1410,6 +1435,17 @@ record lege-ecosystem.papercut.running-cargo-test-p-jp2lam-from-the-workspace/1 
     created_at 2026-08-24
 }
 
+record lege-ecosystem.papercut.strict-akr-validate-is-blocked-by-unrelated/1 : papercut {
+    title "Strict akr validate is blocked by unrelated…"
+    state verified
+    statement """
+        Strict akr validate is blocked by unrelated lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/1: its recorded Git observation f0b65b4 is not an ancestor of the current checkout, so AKR-G012 is promoted to an error.
+        """
+    observed_at git:9a41f67896a097271ff3f768db0508d6a72528b2
+    author "root"
+    created_at 2026-09-04
+}
+
 record lege-ecosystem.papercut.strict-cargo-clippy-p-lege-gpu-lib-no-deps/1 : papercut {
     title "Strict `cargo clippy -p lege-gpu --lib --no-deps --features…"
     state verified
@@ -1527,6 +1563,17 @@ record lege-ecosystem.papercut.the-focused-no-default-features-djvu-library/1 : 
     observed_at git:3f520cc03211e48adaa77c1da9bc639c53d2d351
     author "gpt-5.6-sol"
     created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.the-handoff-path-used-lowercase-lege-ecosystem/1 : papercut {
+    title "The handoff path used lowercase lege-ecosystem, but the checked-out…"
+    state verified
+    statement """
+        The handoff path used lowercase lege-ecosystem, but the checked-out directory is Lege-ecosystem; initial command could not start until the path casing was resolved.
+        """
+    observed_at git:9a41f67896a097271ff3f768db0508d6a72528b2
+    author "root"
+    created_at 2026-09-04
 }
 
 record lege-ecosystem.papercut.the-lean-turboocr-linux-build-finds-cuda/1 : papercut {

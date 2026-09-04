@@ -1,6 +1,19 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.encode-quality.evidence.jp2lam-ssim-oracle-seven-photo-2026-09-04/1 : evidence {
+    title "Session 8b completed 7 top-level 1024x768 PNGs with metric ssimulacra2-jpxl-1: 7 done markers and 21 labels, all Floor. Target 80 achieved 80.2023..85.7983; 85 achieved 85.7983..89.2035; 90 achieved 91.5885..92.8378. No censored-top or failure outcomes."
+    state verified
+    result pass
+    method command
+    observed_at git:9a41f67896a097271ff3f768db0508d6a72528b2
+    command "cargo run --example perceptual_oracle -- test-set /tmp/jp2lam-ssim-oracle 80,85,90 7"
+    artifact "/tmp/jp2lam-ssim-oracle"
+    summary """
+        Session 8b completed 7 top-level 1024x768 PNGs with metric ssimulacra2-jpxl-1: 7 done markers and 21 labels, all Floor. Target 80 achieved 80.2023..85.7983; 85 achieved 85.7983..89.2035; 90 achieved 91.5885..92.8378. No censored-top or failure outcomes.
+        """
+}
+
 record lege-ecosystem.encode-quality.evidence.perceptual-pcrd-curve-2026-08-13/1 : evidence {
     title "Size-matched perceptual PCRD curve benchmark"
     state superseded
@@ -284,6 +297,18 @@ record lege-ecosystem.evidence.djvu-direct-api-feature-build-20260822/1 : eviden
     artifact "lege-codecs/djvulibrust/Cargo.toml"
     summary """
         DJVULibRust 0.11.0 compiled with the planned simd and rayon features; its public builder API test passed (1 passed, 57 filtered out).
+        """
+}
+
+record lege-ecosystem.evidence.djvu-iw44-encode-speedup-2026-09-04/1 : evidence {
+    title "DjVu IW44 page encode is ~15% faster with unchanged output"
+    state verified
+    result pass
+    method command
+    observed_at git:cde509dd110d564cdb99a127c64bbf8805ab2efc
+    command "cargo run --release --example benchmark --features simd (baseline and optimized binaries built, copied aside, and run interleaved; best of four each)"
+    summary """
+        Removing bounds checks and repeated field indexing from the IW44 coder's encode_prepare and encode_buckets cut a 1600x1200 page encode from 88.5 ms to 75.2 ms, about 15%, with bit-identical output (3848 bytes both). Measured by interleaved A/B because the host was running other work and absolute times drifted by more than the effect being measured.
         """
 }
 
@@ -1146,6 +1171,18 @@ record lege-ecosystem.evidence.ocr-v5-v6-recipe-20260820/2 : evidence {
         The two-page recipe PDF completed under embedded PP-OCRv5/WGPU and PP-OCRv6-tiny/TensorRT. Against the pipeline's non-forced native extraction, normalized v5 measured CER 17.88% / WER 19.16% and v6 measured CER 12.00% / WER 14.17%; v6 cached engine initialization plus end-to-end run completed successfully. Revised 2026-08-22: the scorer and the three transcripts were moved out of .agent/scratch, which prunes, into lege-document-ocr/scripts/, and the rescued files reproduce all four figures exactly.
         """
     supersedes [ @lege-ecosystem.evidence.ocr-v5-v6-recipe-20260820/1 ]
+}
+
+record lege-ecosystem.evidence.office-printing-tests-2026-09-04/1 : evidence {
+    title "lege-pdf-print and its frontends pass tests and clippy, and compose a correct sheet"
+    state verified
+    result pass
+    method command
+    observed_at git:771a6636939a6f170b916a320542c311d35778de
+    command "cargo test -p lege-pdf-print -p lege-pdf-agent -p pdf-document -p lege-pdf-read; cargo clippy -p lege-pdf-print -p lege-pdf-agent --all-targets"
+    summary """
+        147 tests in lege-pdf-print and lege-pdf-agent and 76 in pdf-document and lege-pdf-read pass; clippy --all-targets reports no error or warning in either printing crate. End to end, `lege-pdf print <pdf> --to-file <dir> --n-up 2 --dpi 150` composed a correct 1240x1754 A4 sheet PNG with the page in the left cell.
+        """
 }
 
 record lege-ecosystem.evidence.packaged-tensorrt-layout-discovery-20260815/1 : evidence {

@@ -32,6 +32,54 @@ record lege-ecosystem.decision.a-fold-may-not-change-a-letters-counters/1 : deci
     derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
 }
 
+record lege-ecosystem.decision.jp2lam-ssim-canonical-metric/1 : decision {
+    title "jp2lam encode-time quality is shared JPXL SSIMULACRA2"
+    state proposed
+    scope [ path "lege-codecs/jp2lam/**" ]
+    topic jp2lam-ssim-controller
+    decision """
+        jp2lam's encode-time perceptual quality target is SSIMULACRA2, using the same production implementation and metric version as JPXL (`ssimulacra2-jpxl-1` in jpegXL-rs/JPXL/crates/jpxl-perceptual). A requested score of 90.0 means the same floor in both codecs. The rust-av ssimulacra2 crate remains a test-only parity oracle. Butteraugli remains a measurement column (examples/perceptual_curve.rs and corpus screens), not the encode-time objective and not a veto. Do not introduce a second production SSIMULACRA2.
+        """
+    context """
+        The 2026-09-04 ssimulacrascheduler plan and the existing JPXL perceptual-quality contract. jp2lam already has perceptually weighted PCRD (local allocator) and a rust-av scoring harness. Sharing the JPXL in-tree metric is what makes a later score-matched byte comparison valid. Mixing rust-av scores with in-tree scores in one table is a known JPXL failure (jpegxl-rs.observation.pqc-pr4-rate-curve-axis-audit-2026-08-23).
+        """
+    consequences """
+        jp2lam depends on jpxl-perceptual (path, default-features=false). RateControl::Perceptual will take a SSIMULACRA2 score and effort, not a Butteraugli distance. Quality(u8) stays the legacy baseline until an explicit mapping session. lege-ecosystem.encode-quality.improve-photographic-rate-control's remaining 'butteraugli-anchored quality mapping' is no longer the encode-time objective.
+        """
+}
+
+record lege-ecosystem.decision.nup-grid-is-read-in-the-sheets-own-frame/1 : decision {
+    title "The N-up cell grid is read in the sheet's own frame, not transposed for a landscape sheet"
+    state proposed
+    scope [ path "lege-pdf/print/src/layout.rs" ]
+    decision """
+        NUp::grid() is applied to whichever way the sheet is turned, rather than being treated as portrait-relative and transposed when the sheet is landscape. A booklet is the exception: it is always two cells side by side, because the fold is always the vertical centre line.
+        """
+    context """
+        Transposing keeps each cell's shape fixed relative to the paper, which is the intuitive reading, but it costs paper on the two non-square grids. Measured on A4 pages onto A4 paper under FitToPage and Orientation::Auto: two-up falls from 0.707 to 0.500 and six-up from 0.354 to 0.333. The square grids -- four-, nine- and sixteen-up -- are unaffected either way.
+        """
+    consequences """
+        Reading the grid in the sheet's frame is also exactly the conventional CUPS arrangement: a landscape sheet with two columns for two-up, three-by-two for six-up. Orientation::Auto finds those arrangements unaided, because they score strictly better on the visible-fraction-then-coverage metric it already uses.
+        """
+    derived_from [ @lege-ecosystem.work.office-printing ]
+}
+
+record lege-ecosystem.decision.printing-defers-prepress-to-lege-pdf-write/1 : decision {
+    title "Office printing is built; prepress is deferred, and belongs in lege-pdf/write rather than the rasterizer"
+    state proposed
+    scope [ path "lege-pdf/print/**", path "lege-pdf/render/**", path "lege-pdf/write/**" ]
+    decision """
+        lege-pdf-print implements office printing only -- paper, imposition, sheet composition, spooling -- and explicitly defers prepress: CMYK separations, an output ICC profile and rendering intent, overprint simulation, halftone screening and PDF/X conformance. When prepress is wanted, it is to be built in lege-pdf/write emitting PDF/X, not by teaching the display rasterizer to produce CMYK.
+        """
+    context """
+        The renderer's frozen surface contract has exactly two OutputFormat variants, Rgba8PremultipliedSrgb and Gray8; colour conversion is one-directional into sRGB by policy; and overprint is detected into a PageFeatures flag and explicitly not simulated. Every prepress want is therefore blocked on a contract-level change.
+        """
+    consequences """
+        A commercial printer wants a file, not a bitmap, and that file is a PDF/X -- which lege-pdf/write already has the OutputIntent and font-embedding machinery for, and which phase 0's Trim and Bleed parsing now supplies boxes to. The renderer would be involved only for on-screen soft-proofing, which is the last piece to build rather than the first.
+        """
+    derived_from [ @lege-ecosystem.work.office-printing ]
+}
+
 record lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate/1 : decision {
     title "A sideways page is turned upright with /Rotate, never on its head"
     state proposed
