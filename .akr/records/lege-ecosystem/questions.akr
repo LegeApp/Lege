@@ -1,0 +1,11 @@
+akr 0.1
+project lege-ecosystem
+
+record lege-ecosystem.question.cups-may-double-apply-the-hardware-margin-to-a-composed-sheet/1 : question {
+    title "Does CUPS scale a composed sheet again, shrinking the margin we already left?"
+    state open
+    scope [ path "lege-pdf/print/src/compose.rs", path "lege-pdf/print/src/spool/cups.rs" ]
+    question """
+        lege-pdf-print composes a sheet at the full paper size, placing content inside the imageable area -- paper minus the hardware margin -- and leaving the unprintable border blank. It then hands that PNG to `lp` with `-o fit-to-page`. CUPS' image filter scales an image to the printer's imageable area by default, so the sheet is very likely scaled a second time, shrinking the content by roughly the hardware margin again and shifting it. The printout would be subtly small and off-centre rather than obviously wrong -- exactly the failure mode PLAN.md section 4 phase 1 warns is invisible except on paper. Two candidate fixes: pass `-o ppi=<compose dpi>` so CUPS honours the raster's intended resolution instead of fitting it, or compose only the imageable area rather than the whole sheet. Neither can be chosen here: this machine's CUPS reports no destinations, so nothing was measured. Whoever has a printer should print one sheet with a known 20 mm margin and measure it. Raised while reviewing build_lp_args after the phase 3 work landed. The pass-through path is unaffected, since CUPS' PDF filter honours page geometry, and so is the file backend, which writes the raster untouched.
+        """
+}

@@ -300,6 +300,18 @@ record lege-ecosystem.evidence.djvu-direct-api-feature-build-20260822/1 : eviden
         """
 }
 
+record lege-ecosystem.evidence.djvu-encode-second-pass-2026-09-04/1 : evidence {
+    title "DjVu page encode is 1.3-1.5x faster with bit-identical output"
+    state verified
+    result pass
+    method command
+    observed_at git:ca90b1f74165ec5a879dfa84c38aabb55002df4e
+    command "interleaved A/B of benchmark binaries built from HEAD and from the change, pinned to one core, best of nine; plus cargo test --features cli"
+    summary """
+        Second DjVu encode pass: 1600x1200 gradient page 104.4 -> 78.7 ms (1.33x), noise page 127.9 -> 109.7 ms (1.17x), 2480x3508 white page 399.5 -> 264.5 ms (1.51x), full A4 bilevel page 466.1 -> 320.7 ms (1.45x). Output bit-identical across a 64-case matrix of sizes, image kinds, colour/grey and bg_subsample. Independently reproduced by the parent session at 1.30x on the gradient page with identical output bytes. Three ZP-coder micro-variants measured slower and were reverted.
+        """
+}
+
 record lege-ecosystem.evidence.djvu-iw44-encode-speedup-2026-09-04/1 : evidence {
     title "DjVu IW44 page encode is ~15% faster with unchanged output"
     state verified
@@ -1705,6 +1717,18 @@ record lege-ecosystem.evidence.turboocr-linux-trt11-probe-20260821/1 : evidence 
     artifact "lege-document-ocr/turboocr/src/engine/trt/onnx_to_trt.cpp"
     summary """
         The lean TurboOCR text worker compiled with CUDA 13.3 and TensorRT 11 on Linux; detector and recognizer engines serialized, loaded, and passed real CUDA inference on an RTX 4060 Laptop GPU.
+        """
+}
+
+record lege-ecosystem.evidence.viewer-stage-6-7-tests-2026-09-04/1 : evidence {
+    title "lege-viewer stage 6 and 7 work passes tests and clippy; the visual and gestural behaviour is unverified"
+    state verified
+    result pass
+    method command
+    observed_at git:9f07c2f3a77f5f29563dc2dc89ab1ed07f9ab48f
+    command "cargo test -p lege-viewer; cargo clippy -p lege-viewer --all-targets --no-deps"
+    summary """
+        79 lib and 33 integration tests pass, up from 63 and 30 before the stage 6 and 7 work; clippy --all-targets is silent, including four pre-existing denials that had been failing the crate's own verify command. Everything visual and gestural -- the password prompt and page-error notice in both themes, middle-click on a real scrollbar, the track repeat's timing feel, and touch -- is unverified, because the viewer is a winit application and no display was available.
         """
 }
 

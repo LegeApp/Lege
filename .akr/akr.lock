@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:3fe0a59e2c51e54cb7c6c9d77e9f3ae3a2922f1cd4b8ce1b9863df35519af0c8"
+    source_graph "sha256:d49c57d3962c926c9c08364e8c6dbf13dee7078467e247cb3134385beaef6e3c"
 }
 
 source ".akr/project.akr" {
@@ -64,8 +64,8 @@ source ".akr/records/lege-ecosystem/decisions.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:cb23b4819d2db516c280ae20f6f5c7929bbb8cb9ab3f89824ea9887bab8f983b"
-    records 153
+    hash "sha256:892fe66d83114c9f5a6b7a4e38d81de60a7b453786fc4ba37e563178fc3c2755"
+    records 155
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -74,8 +74,8 @@ source ".akr/records/lege-ecosystem/milestones.akr" {
 }
 
 source ".akr/records/lege-ecosystem/observations.akr" {
-    hash "sha256:7912a54dd2fc3c9438eb553c40cbea90826ff9aa7ab4affb9dd89404417fe3c5"
-    records 14
+    hash "sha256:f060f50250c6b90e3e4bc15873f8dee7de7f5b4f908c3aa5ea54f077df94404b"
+    records 16
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
@@ -88,14 +88,19 @@ source ".akr/records/lege-ecosystem/policies.akr" {
     records 7
 }
 
+source ".akr/records/lege-ecosystem/questions.akr" {
+    hash "sha256:7e6c63e15c1798023536f1c9cd425422012b341cde0274ea066b9c5fd06d75fb"
+    records 1
+}
+
 source ".akr/records/lege-ecosystem/requirements.akr" {
     hash "sha256:4b0610ccdac83aa3332403dfcd548536e96a2233303abcb476220ccfbea2d2cd"
     records 5
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:d749a0bfee72c7ff72aca14c282e5abd814d04c2b54c64e0902249914959b635"
-    records 114
+    hash "sha256:310d1bb148ae3ca8e331e263fd7c36dc1206e083133098fa1600935b8923ad2c"
+    records 115
 }
 
 resolution @lege-ecosystem.decision.a-fold-may-not-change-a-letters-counters/1 {
@@ -416,6 +421,11 @@ seal @lege-ecosystem.evidence.djvu-current-focused-tests-20260822/1 {
 seal @lege-ecosystem.evidence.djvu-direct-api-feature-build-20260822/1 {
     state verified
     hash "sha256:047c2c56b8e4cb8b72fe8364ab5197360c49eb97ffc79c9096baa670e73794bd"
+}
+
+seal @lege-ecosystem.evidence.djvu-encode-second-pass-2026-09-04/1 {
+    state verified
+    hash "sha256:a7d3416817dcee37d8b10853863f179bbee1343f0ea62d7a54215d390ce7fd69"
 }
 
 seal @lege-ecosystem.evidence.djvu-iw44-encode-speedup-2026-09-04/1 {
@@ -983,6 +993,11 @@ seal @lege-ecosystem.evidence.turboocr-linux-trt11-probe-20260821/1 {
     hash "sha256:51699025c1a4f2cf32627301b4182f714095f854f5a58ac45e8790065912b363"
 }
 
+seal @lege-ecosystem.evidence.viewer-stage-6-7-tests-2026-09-04/1 {
+    state verified
+    hash "sha256:f17012f05a26e21bbac0847d97fa7a83e4e5f369c1de7d1bdaf3ad0393f744fc"
+}
+
 seal @lege-ecosystem.evidence.windows-ocr-200-page-benchmark-20260814/1 {
     state verified
     hash "sha256:54d5de5c05c0e9a4e9c8761de4595ed73e3ce9ba44692bb1cbb9e6a2c009e1b4"
@@ -1088,6 +1103,11 @@ seal @lege-ecosystem.milestone.business-pdf-ocr-cli/1 {
     hash "sha256:688eace70abe98436e3fd71f3b0e704a84726503b26860a89b56b29b237bd189"
 }
 
+seal @lege-ecosystem.observation.a-bitonal-djvu-page-costs-more-in-iw44-than-in-jb2/1 {
+    state verified
+    hash "sha256:0c9d12809284b62cf5ccaf16a7b112e6ea1a4eb17c37ddbcd0284446bb3c27d2"
+}
+
 seal @lege-ecosystem.observation.bpg-variance-separates-line-art/1 {
     state superseded
     hash "sha256:80d333f95e7eacad0b0f5f2e97730ae5d4d7cabefcda89eb17ecf5e73aeba354"
@@ -1141,6 +1161,11 @@ seal @lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 {
 seal @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1 {
     state verified
     hash "sha256:b113c1f176a1c737a5035e388b563a820ea1f4b128e62bfe270438d16d375908"
+}
+
+seal @lege-ecosystem.observation.viewer-broken-page-was-retried-forever/1 {
+    state verified
+    hash "sha256:19d894071573fb6c90f18bc173909e513b9b995c652170c2280517983ec4f37f"
 }
 
 seal @lege-ecosystem.observation.windows-ocr-200-page-benchmark-20260814/1 {
@@ -1651,6 +1676,11 @@ seal @lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/1 {
 seal @lege-ecosystem.papercut.while-validating-a-single-structures-pdf-page/2 {
     state withdrawn
     hash "sha256:da54f51fa91cf5e1ca059deea592a66fe8f05bca6beb4077885756618947fd6b"
+}
+
+seal @lege-ecosystem.question.cups-may-double-apply-the-hardware-margin-to-a-composed-sheet/1 {
+    state open
+    hash "sha256:4b979cb7459b8a42a0aeaf20ad12e5de45fe6944116ddde1fa6d9b381ce02778"
 }
 
 seal @lege-ecosystem.work.about-image-pdf-agent-tool/1 {

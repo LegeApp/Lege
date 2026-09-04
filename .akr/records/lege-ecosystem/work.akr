@@ -3271,6 +3271,48 @@ record lege-ecosystem.work.vertical-lifting-layout/1 : work {
     }
 }
 
+record lege-ecosystem.work.viewer-movement-and-reliability/1 : work {
+    title "Complete lege-viewer stage 6 movement and start stage 7 reliability"
+    state proposed
+    scope [ path "lege-viewer/**" ]
+    intent """
+        Finish the one-scroll-model interaction vocabulary lege-viewer/STAGES.md calls stage 6 -- drag-to-pan, middle-click autoscroll, kinetic movement, configurable wheel scaling, page snapping, track and thumb refinement, and deterministic trace replay -- then take stage 7's two highest-value reliability items: the encrypted-document password flow and page-local failure handling.
+        """
+    note """
+        Stage 6's exit gate is met for the scroll model: every movement source now applies a ScrollCommand to the one f64 model, and Page Up/Down semantics from Optimization A were not touched. Anchor-level trace replay is still not asserted.
+        """
+    claim a-broken-page-is-quarantined {
+        text """
+            A page that fails non-fatally is set aside after two failures, or one panic. Before this it was re-requested on every replan, refailed, and had each report answered with a full-canvas redraw, so one broken page burned a core forever on an idle document.
+            """
+    }
+    claim autoscroll-must-be-visible {
+        text """
+            The autoscroll anchor is drawn on the canvas and the gesture ends on any wheel, any other click, focus loss or a DPI change. A mode that moves the document on its own must be visible, and a physical-pixel anchor stops meaning anything once the scale factor moves.
+            """
+    }
+    claim encryption-is-classified-not-string-matched {
+        text """
+            An encrypted document is distinguished from a corrupt one by classifying the renderer's typed pdf_security::SecurityError, not by matching an error message. An unsupported security scheme stays a failure rather than a prompt, because no password the reader can type opens it.
+            """
+    }
+    claim kinetic-is-a-preference-for-mice-and-mandatory-for-touch {
+        text """
+            Momentum on a released pointer drag is off by default because it reads as lag on a mouse; a touch flick always glides, because momentum's absence there reads as a broken surface. A long stall integrates at most one slow frame, so a suspended machine cannot teleport the document.
+            """
+    }
+    claim one-recording-helper {
+        text """
+            Every movement source funnels through one recording helper rather than calling the scroll model directly, which is what makes an input trace complete by construction instead of complete by remembering to add each new call site.
+            """
+    }
+    claim replay-uses-a-simulated-clock {
+        text """
+            Trace replay steps a simulated clock at the event loop's own 8 ms animation cadence rather than reading wall time, so a trace containing a kinetic fling reproduces the same final position on any machine.
+            """
+    }
+}
+
 record lege-ecosystem.work.what-was-already-fixed-do-not-redo/1 : work {
     title "What was already fixed (do not redo)"
     state proposed
