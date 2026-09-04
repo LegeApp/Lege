@@ -289,6 +289,8 @@ fn emit(env: &Envelope, data: &SearchPageData, mode: OutputMode, _multi: bool) -
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     fn matches_for(

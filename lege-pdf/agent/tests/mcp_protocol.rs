@@ -1,5 +1,7 @@
 //! MCP stdio protocol and end-to-end tool smoke tests.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

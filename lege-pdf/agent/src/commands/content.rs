@@ -379,6 +379,8 @@ fn emit(env: &Envelope, data: &ContentData, mode: OutputMode) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

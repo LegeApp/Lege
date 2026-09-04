@@ -88,6 +88,14 @@ pub struct PrintArgs<'a> {
     pub margin: Option<f64>,
     pub margin_mm: Option<f64>,
     pub margin_in: Option<f64>,
+    /// Per-edge overrides in points, applied over whichever uniform margin
+    /// was given. A binding margin is asymmetric by definition, and duplex
+    /// mirrors it onto the back side, so the uniform form alone cannot ask
+    /// for the one margin duplex exists to serve.
+    pub margin_left: Option<f64>,
+    pub margin_right: Option<f64>,
+    pub margin_top: Option<f64>,
+    pub margin_bottom: Option<f64>,
     pub scaling: Option<&'a str>,
     pub n_up: Option<&'a str>,
     pub n_up_order: NUpOrderArg,
@@ -538,7 +546,7 @@ fn parse_margins(args: &PrintArgs<'_>) -> Result<Margins> {
     if given > 1 {
         bail!("specify only one of --margin, --margin-mm, --margin-in");
     }
-    let margins = if let Some(pt) = args.margin {
+    let mut margins = if let Some(pt) = args.margin {
         Margins::uniform(pt)
     } else if let Some(mm) = args.margin_mm {
         Margins::millimetres(mm)
@@ -547,6 +555,20 @@ fn parse_margins(args: &PrintArgs<'_>) -> Result<Margins> {
     } else {
         Margins::ZERO
     };
+    // Per-edge overrides come last, so `--margin 36 --margin-left 72` reads
+    // as "36 all round, but 72 on the binding edge".
+    if let Some(left) = args.margin_left {
+        margins.left = left;
+    }
+    if let Some(right) = args.margin_right {
+        margins.right = right;
+    }
+    if let Some(top) = args.margin_top {
+        margins.top = top;
+    }
+    if let Some(bottom) = args.margin_bottom {
+        margins.bottom = bottom;
+    }
     margins.validate()?;
     Ok(margins)
 }

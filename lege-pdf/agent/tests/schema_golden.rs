@@ -1,5 +1,7 @@
 //! Golden schema and smoke tests against the in-tree hello_world fixture.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use lege_pdf_agent::pages::{parse_bbox, parse_one_based, parse_page_range};
 
 #[test]

@@ -415,6 +415,8 @@ fn emit(env: &Envelope, data: &ImagesPageData, mode: OutputMode, multi: bool) ->
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
     use pdf_content::semantic::ImageId;
     use pdf_page_ir::PageBounds;

@@ -3,6 +3,8 @@
 //! Everything here is `--dry-run` or `--to-file`: no test may touch a real
 //! print queue.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -134,6 +136,67 @@ fn duplex_counts_sides_and_sheets_of_paper_separately() {
     assert_eq!(data["copies_applied_by"], "spooler");
     assert_eq!(data["sheets"].as_array().unwrap().len(), 2);
     assert_eq!(data["sheets"][1]["side"], "back");
+}
+
+#[test]
+fn a_binding_margin_mirrors_onto_the_back_side() {
+    // The whole point of a per-edge margin: duplex flips the sheet, so the
+    // binding margin has to move to the opposite edge on the back or the
+    // gutter lands in the middle of every other page. Uniform margins hide
+    // this completely, which is why the CLI has to be able to ask for an
+    // asymmetric one.
+    let edge = |sheet: &serde_json::Value, name: &str| -> f64 {
+        let bounds = &sheet["bounds"];
+        let imageable = &sheet["imageable"];
+        let value = |v: &serde_json::Value, key: &str| v[key].as_f64().unwrap_or_default();
+        match name {
+            "left" => value(imageable, "x0"),
+            "right" => value(bounds, "x1") - value(imageable, "x1"),
+            "bottom" => value(imageable, "y0"),
+            _ => value(bounds, "y1") - value(imageable, "y1"),
+        }
+    };
+
+    // The binding axis is a property of the sheet, not of the option name:
+    // long-edge binding mirrors left/right on a portrait sheet and top/bottom
+    // on a landscape one. Pin the orientation so the axis is unambiguous.
+    let long = json(&[
+        "--dry-run",
+        "--orientation",
+        "portrait",
+        "--duplex",
+        "long",
+        "--margin",
+        "36",
+        "--margin-left",
+        "90",
+    ])["data"]
+        .clone();
+    let sheets = long["sheets"].as_array().expect("sheets");
+    assert_eq!(sheets.len(), 2);
+    assert!((edge(&sheets[0], "left") - 90.0).abs() < 1e-6);
+    assert!((edge(&sheets[0], "right") - 36.0).abs() < 1e-6);
+    assert!((edge(&sheets[1], "left") - 36.0).abs() < 1e-6);
+    assert!((edge(&sheets[1], "right") - 90.0).abs() < 1e-6);
+
+    // Short-edge binding flips about the other axis, so it moves top and
+    // bottom instead.
+    let short = json(&[
+        "--dry-run",
+        "--orientation",
+        "portrait",
+        "--duplex",
+        "short",
+        "--margin",
+        "36",
+        "--margin-top",
+        "90",
+    ])["data"]
+        .clone();
+    let sheets = short["sheets"].as_array().expect("sheets");
+    assert!((edge(&sheets[0], "top") - 90.0).abs() < 1e-6);
+    assert!((edge(&sheets[1], "bottom") - 90.0).abs() < 1e-6);
+    assert!((edge(&sheets[1], "top") - 36.0).abs() < 1e-6);
 }
 
 #[test]

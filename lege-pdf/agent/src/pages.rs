@@ -111,6 +111,8 @@ pub fn parse_bbox(raw: &str) -> Result<[f64; 4]> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

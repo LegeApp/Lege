@@ -178,6 +178,18 @@ enum Command {
         /// Uniform user margin in inches.
         #[arg(long)]
         margin_in: Option<f64>,
+        /// Left-edge margin in points, overriding the uniform margin.
+        #[arg(long)]
+        margin_left: Option<f64>,
+        /// Right-edge margin in points, overriding the uniform margin.
+        #[arg(long)]
+        margin_right: Option<f64>,
+        /// Top-edge margin in points, overriding the uniform margin.
+        #[arg(long)]
+        margin_top: Option<f64>,
+        /// Bottom-edge margin in points, overriding the uniform margin.
+        #[arg(long)]
+        margin_bottom: Option<f64>,
         /// actual | fit | shrink | fill | NN%
         #[arg(long)]
         scaling: Option<String>,
@@ -389,6 +401,10 @@ fn main() -> ExitCode {
             margin,
             margin_mm,
             margin_in,
+            margin_left,
+            margin_right,
+            margin_top,
+            margin_bottom,
             scaling,
             n_up,
             n_up_order,
@@ -414,6 +430,10 @@ fn main() -> ExitCode {
             margin,
             margin_mm,
             margin_in,
+            margin_left,
+            margin_right,
+            margin_top,
+            margin_bottom,
             scaling: scaling.as_deref(),
             n_up: n_up.as_deref(),
             n_up_order,
