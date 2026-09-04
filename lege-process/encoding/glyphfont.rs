@@ -82,20 +82,18 @@ pub const FONT_NAME: &str = "LegeGlyphs";
 const DIM_LIMIT: u32 = 2;
 /// Alignment search radius (pixels) passed to the comparator.
 const SHIFT_LIMIT: i32 = 2;
-/// An occurrence whose baseline offset differs from its prototype's by more
-/// than `RISE_SNAP_PX` becomes a *position variant*: a composite glyph of
-/// the same shape at that offset. Every occurrence then sits on its line's
-/// baseline with no text rise, which keeps each line one string and keeps
-/// text extractors from breaking lines at rise changes.
+/// An occurrence whose baseline offset differs from its prototype's becomes
+/// a *position variant*: a composite glyph of the same shape at that exact
+/// offset. Every occurrence then sits where it was scanned while the shared
+/// outline remains deduplicated. The variant also avoids text rise, which
+/// keeps each line one string and keeps text extractors from breaking lines
+/// at rise changes.
 ///
 /// Variants whose offset differs from the root's by more than this many
 /// pixels (or half the frame height, whichever is larger) are a different
 /// *character position* — the tittle of an `i` rather than a full stop, an
 /// apostrophe rather than a comma — and keep their own text votes.
 const SEMANTIC_RISE_MIN_PX: i32 = 4;
-/// A position variant absorbs occurrences whose baseline offset is within
-/// this many pixels of its own (the residual is then snapped away).
-const VARIANT_JOIN_PX: i32 = RISE_SNAP_PX;
 /// Vote weight for a word whose glyph cells and characters match one to one.
 /// Loose alignments mislabel neighbours when OCR and segmentation disagree
 /// on where a word's pieces are, and a rare letter's few votes must not be
@@ -331,11 +329,6 @@ struct Prototype {
 /// Padding around a prototype frame in its vote map. Must cover the largest
 /// size difference plus alignment shift a matching instance can have.
 const FRAME_PAD: usize = 6;
-/// Snap occurrences this close to the prototype's baseline onto it. Glyph
-/// bottoms on a scan wobble by a pixel from sampling; a real superscript or
-/// subscript sits far further off.
-const RISE_SNAP_PX: i32 = 1;
-
 impl Prototype {
     fn new(bitmap: BitImage) -> Self {
         let frame_w = bitmap.width;
@@ -1008,19 +1001,19 @@ impl GlyphDictionary {
         for line in &mut lines {
             for placed in &mut line.glyphs {
                 // `group_lines` leaves each glyph's own descent (bottom −
-                // baseline) in `rise_px`; resolve it against the prototype.
-                // Far off the prototype's position it is a position variant.
+                // baseline) in `rise_px`. The outline may be shared, but its
+                // vertical placement may not: use an exact position variant
+                // whenever the occurrence differs from the prototype.
                 let inst_descent = placed.rise_px;
                 let proto_descent = self.protos[placed.glyph as usize].descent.unwrap_or(0);
-                let rise = proto_descent - inst_descent;
-                let (glyph, rise) = if rise.abs() > RISE_SNAP_PX {
+                let glyph = if proto_descent != inst_descent {
                     self.position_variant(placed.glyph, inst_descent)
                 } else {
-                    (placed.glyph, rise)
+                    placed.glyph
                 };
                 let proto = &self.protos[glyph as usize];
                 placed.glyph = glyph;
-                placed.rise_px = if rise.abs() <= RISE_SNAP_PX { 0 } else { rise };
+                placed.rise_px = 0;
                 placed.width = proto.advance.unwrap_or(proto.frame_w as u32);
             }
         }
@@ -1122,8 +1115,10 @@ impl GlyphDictionary {
     }
 
     /// The compound glyph for a stacked cell: an existing one whose parts
-    /// and offsets (within a pixel) match, else a new one. Returns the
-    /// cell's placement in `group_lines` convention.
+    /// and offsets match exactly, else a new one. The parts' outlines may be
+    /// shared, but reusing a compound with different offsets would move an
+    /// accent or tittle away from where it was scanned. Returns the cell's
+    /// placement in `group_lines` convention.
     fn compound_of(&mut self, cell: &[PlacedGlyph], baseline_y: i32) -> PlacedGlyph {
         // Parts in reading order (top to bottom, then left to right), each
         // with its box in page pixels.
@@ -1150,7 +1145,7 @@ impl GlyphDictionary {
                     .parts
                     .iter()
                     .zip(&offsets)
-                    .all(|(a, b)| (a.1 - b.1).abs() <= 1 && (a.2 - b.2).abs() <= 1)
+                    .all(|(a, b)| a == b)
             })
         });
         let idx = match existing {
@@ -1178,28 +1173,23 @@ impl GlyphDictionary {
     }
 
     /// The glyph id for prototype `root`'s shape sitting `descent` pixels
-    /// below the baseline, far from where the root itself sits: an existing
-    /// variant within `VARIANT_JOIN_PX`, else a new one. Returns the id and
-    /// the occurrence's residual rise against it.
-    fn position_variant(&mut self, root: u32, descent: i32) -> (u32, i32) {
+    /// below the baseline: the existing variant at that exact offset, else a
+    /// new one. The root owns the outline; the variant owns only placement.
+    fn position_variant(&mut self, root: u32, descent: i32) -> u32 {
         let existing = self.variants.get(&root).and_then(|list| {
             list.iter()
-                .map(|&idx| {
-                    let rise = self.protos[idx as usize].descent.unwrap_or(0) - descent;
-                    (idx, rise)
-                })
-                .filter(|(_, rise)| rise.abs() <= VARIANT_JOIN_PX)
-                .min_by_key(|(_, rise)| rise.abs())
+                .copied()
+                .find(|&idx| self.protos[idx as usize].descent == Some(descent))
         });
-        if let Some((idx, rise)) = existing {
+        if let Some(idx) = existing {
             self.protos[idx as usize].uses += 1;
-            return (idx, rise);
+            return idx;
         }
         let idx = self.protos.len() as u32;
         let variant = Prototype::position_variant(&self.protos[root as usize], root, descent);
         self.protos.push(variant);
         self.variants.entry(root).or_default().push(idx);
-        (idx, 0)
+        idx
     }
 
     /// Align a page's recognized words with its glyph placements and record,
@@ -2883,7 +2873,7 @@ mod tests {
     }
 
     #[test]
-    fn one_pixel_baseline_wobble_is_snapped() {
+    fn one_pixel_baseline_difference_keeps_its_scanned_position() {
         let page = page_with(
             &[
                 (GLYPH_H, 2, 2),
@@ -2897,11 +2887,75 @@ mod tests {
         let mut dict = GlyphDictionary::new();
         let runs = dict.process_page(&page, 300);
         assert_eq!(runs.lines.len(), 1);
-        assert!(
-            runs.lines[0].glyphs.iter().all(|g| g.rise_px == 0),
-            "{:?}",
-            runs.lines[0]
+        assert_eq!(dict.distinct(), 1, "the H outline remains deduplicated");
+        assert_eq!(dict.len(), 2, "the lower H gets an exact position variant");
+        let line = &runs.lines[0];
+        let root = line.glyphs.iter().find(|g| g.x == 2).unwrap().glyph;
+        let lower = line.glyphs.iter().find(|g| g.x == 10).unwrap().glyph;
+        assert_ne!(lower, root);
+        assert_eq!(dict.resolve_alias(lower), (root, 0, 0));
+        assert_eq!(
+            dict.alias_rise(lower),
+            -1,
+            "the shared outline is placed one pixel lower"
         );
+        dict.record_text(&runs, &[word("HHHH", 2.0, 2.0, 31.0, 8.0)]);
+        let entries = dict.to_unicode_entries();
+        for glyph in [root, lower] {
+            assert!(
+                entries.iter().any(|(gid, text)| {
+                    u32::from(*gid) == glyph + FIRST_SHAPE_GID && text == "H"
+                }),
+                "the position variant must share its root's OCR text: {entries:?}"
+            );
+        }
+        assert!(
+            line.glyphs.iter().all(|g| g.rise_px == 0),
+            "position variants keep the line in one text run: {line:?}"
+        );
+    }
+
+    #[test]
+    fn compound_deduplication_requires_exact_part_offsets() {
+        let mut dict = GlyphDictionary::new();
+        let stem = dict.insert_prototype(bitmap(GLYPH_STEM), 1, 0);
+        let dot = dict.insert_prototype(bitmap(GLYPH_DOT), 1, 0);
+        let stem_at_baseline = PlacedGlyph {
+            glyph: stem,
+            x: 8,
+            width: 2,
+            rise_px: 0,
+        };
+        let first = dict.compound_of(
+            &[
+                stem_at_baseline,
+                PlacedGlyph {
+                    glyph: dot,
+                    x: 8,
+                    width: 2,
+                    rise_px: -10,
+                },
+            ],
+            20,
+        );
+        let second = dict.compound_of(
+            &[
+                stem_at_baseline,
+                PlacedGlyph {
+                    glyph: dot,
+                    x: 8,
+                    width: 2,
+                    rise_px: -9,
+                },
+            ],
+            20,
+        );
+
+        assert_ne!(
+            first.glyph, second.glyph,
+            "a one-pixel tittle shift is placement, not deduplicated shape"
+        );
+        assert_eq!(dict.distinct(), 2, "the dot and stem outlines stay shared");
     }
 
     #[test]
