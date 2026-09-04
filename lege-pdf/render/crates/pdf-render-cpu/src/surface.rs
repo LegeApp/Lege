@@ -62,22 +62,40 @@ impl Surface {
 
     /// Allocate the main page surface (origin `(0,0)`) and paint its background.
     pub fn new(width: usize, height: usize, background: Background) -> Self {
+        Self::new_recycled(width, height, background, None)
+    }
+
+    /// Allocate the main page surface, reusing `recycled` when it is an
+    /// exactly-sized buffer this call can take sole ownership of.
+    ///
+    /// A page surface is a large, short-lived allocation: at sweep resolution
+    /// a single page is well past glibc's 32 MiB dynamic `mmap` ceiling, so
+    /// every render `mmap`s fresh pages and pays a minor fault plus a kernel
+    /// page-zero for each of them *before* the background fill can write a
+    /// byte. Reusing the previous render's buffer keeps those pages resident,
+    /// which turns the whole background paint into a plain resident memset.
+    /// The bytes written are exactly those [`Surface::new`] would have
+    /// written, so the surface the executor sees is identical either way.
+    pub fn new_recycled(
+        width: usize,
+        height: usize,
+        background: Background,
+        recycled: Option<Arc<[u8]>>,
+    ) -> Self {
         let Some(pixels) = Self::checked_pixels(width, height) else {
             return Self::empty();
         };
-        let data = match background {
-            Background::Transparent => filled_arc(pixels * 4, 0),
-            Background::White => filled_arc(pixels * 4, 0xFF),
-            Background::Solid(c) => {
-                let a = c.a.clamp(0.0, 1.0);
-                let px = [
-                    to_u8(c.r.clamp(0.0, 1.0) * a),
-                    to_u8(c.g.clamp(0.0, 1.0) * a),
-                    to_u8(c.b.clamp(0.0, 1.0) * a),
-                    to_u8(a),
-                ];
-                repeated_rgba_arc(pixels, px)
+        let len = pixels * 4;
+        let data = match reuse(recycled, len) {
+            Some(mut buf) => {
+                paint_background(unique_arc_mut(&mut buf), background);
+                buf
             }
+            None => match background {
+                Background::Transparent => filled_arc(len, 0),
+                Background::White => filled_arc(len, 0xFF),
+                Background::Solid(c) => repeated_rgba_arc(pixels, solid_rgba(c)),
+            },
         };
         Self {
             width,
@@ -212,8 +230,29 @@ impl Surface {
         reason = "Arc::new_uninit_slice hands back MaybeUninit; see SAFETY comment"
     )]
     pub fn into_output(self, format: OutputFormat) -> (usize, Arc<[u8]>) {
+        self.into_output_recycling(format, &mut None)
+    }
+
+    /// [`Surface::into_output`], additionally parking this surface's buffer in
+    /// `pool` so the next render of the same geometry can repaint it in place
+    /// instead of faulting in a fresh mapping. For the RGBA format the parked
+    /// handle is a second `Arc` on the *returned* buffer, so the pool never
+    /// keeps a page alive past its consumer: reuse is granted only once that
+    /// consumer has dropped it (see [`reuse`]).
+    #[allow(
+        unsafe_code,
+        reason = "Arc::new_uninit_slice hands back MaybeUninit; see SAFETY comment"
+    )]
+    pub(crate) fn into_output_recycling(
+        self,
+        format: OutputFormat,
+        pool: &mut Option<Arc<[u8]>>,
+    ) -> (usize, Arc<[u8]>) {
         match format {
-            OutputFormat::Rgba8PremultipliedSrgb => (self.width * 4, self.data),
+            OutputFormat::Rgba8PremultipliedSrgb => {
+                *pool = Some(Arc::clone(&self.data));
+                (self.width * 4, self.data)
+            }
             OutputFormat::Gray8 => {
                 let pixels = self.width * self.height;
                 // `zip` stops at the shorter side. The RGBA buffer is exactly
@@ -241,7 +280,12 @@ impl Surface {
                 // SAFETY: the loop initialized `out[..written]` and the fill
                 // above initialized `out[written..]`, so every element of
                 // `out` is initialized regardless of the source length.
-                (self.width, unsafe { out.assume_init() })
+                let gray = unsafe { out.assume_init() };
+                let width = self.width;
+                // The RGBA buffer is not the returned page here, so it can be
+                // parked outright — nothing else holds it.
+                *pool = Some(self.data);
+                (width, gray)
             }
         }
     }
@@ -272,9 +316,49 @@ pub(crate) fn zeroed_arc(len: usize) -> Arc<[u8]> {
     filled_arc(len, 0)
 }
 
+/// The premultiplied RGBA bytes of a `Background::Solid` color.
+#[inline]
+fn solid_rgba(c: pdf_page_ir::Color) -> [u8; 4] {
+    let a = c.a.clamp(0.0, 1.0);
+    [
+        to_u8(c.r.clamp(0.0, 1.0) * a),
+        to_u8(c.g.clamp(0.0, 1.0) * a),
+        to_u8(c.b.clamp(0.0, 1.0) * a),
+        to_u8(a),
+    ]
+}
+
+/// Write `background` over an already-allocated surface buffer. Byte-for-byte
+/// what the matching `filled_arc`/`repeated_rgba_arc` allocation would hold.
+fn paint_background(buf: &mut [u8], background: Background) {
+    match background {
+        Background::Transparent => buf.fill(0),
+        Background::White => buf.fill(0xFF),
+        Background::Solid(c) => {
+            let px = solid_rgba(c);
+            for chunk in buf.chunks_exact_mut(4) {
+                chunk.copy_from_slice(&px);
+            }
+        }
+    }
+}
+
+/// Accept a recycled buffer only when it is exactly the size wanted and this
+/// call can take sole ownership of it — a buffer the previous consumer still
+/// holds is dropped here rather than retained, so the pool never pins memory
+/// that is in use elsewhere.
+fn reuse(recycled: Option<Arc<[u8]>>, len: usize) -> Option<Arc<[u8]>> {
+    let mut buf = recycled?;
+    if buf.len() != len {
+        return None;
+    }
+    Arc::get_mut(&mut buf)?;
+    Some(buf)
+}
+
 #[allow(
     unsafe_code,
-    reason = "Arc::new_uninit_slice/new_zeroed_slice hand back MaybeUninit; see SAFETY comments"
+    reason = "Arc::new_uninit_slice hands back MaybeUninit; see SAFETY comment"
 )]
 fn repeated_rgba_arc(pixels: usize, rgba: [u8; 4]) -> Arc<[u8]> {
     let mut data = Arc::<[u8]>::new_uninit_slice(pixels * 4);
@@ -302,6 +386,7 @@ pub(crate) fn unique_arc_mut<T>(data: &mut Arc<[T]>) -> &mut [T] {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panics are the assertion mechanism
     use super::*;
 
     #[test]
@@ -314,6 +399,77 @@ mod tests {
         assert_eq!(stride, 8);
         assert_eq!(&*output, &[17, 255, 255, 255, 255, 255, 255, 255]);
         assert_eq!(Arc::strong_count(&output), 1);
+    }
+
+    #[test]
+    fn a_recycled_surface_is_byte_identical_to_a_fresh_one() {
+        let backgrounds = [
+            Background::White,
+            Background::Transparent,
+            Background::Solid(pdf_page_ir::Color {
+                r: 0.25,
+                g: 0.5,
+                b: 0.75,
+                a: 0.5,
+            }),
+        ];
+        for background in backgrounds {
+            // A dirtied buffer of the right size, sole-owned: the shape a
+            // previous render hands back.
+            let recycled = filled_arc(5 * 3 * 4, 0x5A);
+            let allocation = Arc::as_ptr(&recycled);
+            let reused = Surface::new_recycled(5, 3, background, Some(recycled));
+            let fresh = Surface::new(5, 3, background);
+            assert_eq!(&*reused.data, &*fresh.data, "{background:?}");
+            assert_eq!(
+                Arc::as_ptr(&reused.data),
+                allocation,
+                "the recycled allocation should have been kept"
+            );
+        }
+    }
+
+    #[test]
+    fn recycling_declines_a_shared_or_mismatched_buffer() {
+        // Still held elsewhere: must not be written through.
+        let shared = filled_arc(2 * 4, 0x11);
+        let keep = Arc::clone(&shared);
+        let surface = Surface::new_recycled(2, 1, Background::White, Some(shared));
+        assert_ne!(Arc::as_ptr(&surface.data), Arc::as_ptr(&keep));
+        assert_eq!(&*keep, &[0x11; 8]);
+        assert_eq!(&*surface.data, &[255; 8]);
+
+        // Wrong length: also declined.
+        let wrong = filled_arc(4, 0x22);
+        let ptr = Arc::as_ptr(&wrong);
+        let surface = Surface::new_recycled(2, 1, Background::White, Some(wrong));
+        assert_ne!(Arc::as_ptr(&surface.data), ptr);
+        assert_eq!(&*surface.data, &[255; 8]);
+    }
+
+    #[test]
+    fn into_output_parks_the_buffer_for_the_next_render() {
+        let mut pool = None;
+        let surface = Surface::new(3, 2, Background::White);
+        let allocation = Arc::as_ptr(&surface.data);
+        let (_, pixels) =
+            surface.into_output_recycling(OutputFormat::Rgba8PremultipliedSrgb, &mut pool);
+        // Parked, but the consumer still owns it, so it is not reusable yet.
+        assert_eq!(Arc::as_ptr(pool.as_ref().unwrap()), allocation);
+        assert!(reuse(pool.clone(), 3 * 2 * 4).is_none());
+        drop(pixels);
+        // Once the consumer drops it, the same allocation comes back.
+        let recycled = reuse(pool, 3 * 2 * 4).expect("sole owner now");
+        assert_eq!(Arc::as_ptr(&recycled), allocation);
+
+        // Gray8 does not hand back the RGBA buffer, so it is parked outright.
+        let mut pool = None;
+        let surface = Surface::new(3, 2, Background::White);
+        let allocation = Arc::as_ptr(&surface.data);
+        let (_, gray) = surface.into_output_recycling(OutputFormat::Gray8, &mut pool);
+        assert_eq!(gray.len(), 6);
+        assert_eq!(Arc::as_ptr(pool.as_ref().unwrap()), allocation);
+        assert!(reuse(pool, 3 * 2 * 4).is_some());
     }
 
     #[test]

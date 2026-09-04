@@ -50,6 +50,13 @@ pub struct CpuWorkerContext {
     raster: RasterKernel,
     kernels: KernelSet,
     pub(crate) fonts: crate::prepared::FontProgramCache,
+    /// The previous render's page buffer, kept so the next render of the same
+    /// geometry repaints resident memory instead of faulting in a fresh
+    /// mapping. At most one buffer, always the most recent page's size, and
+    /// only ever handed back out when its consumer has dropped it — so this
+    /// retains no more than the one page surface the worker was already sized
+    /// for, and nothing at all until a page has been rendered.
+    pub(crate) surface_buffer: Option<std::sync::Arc<[u8]>>,
 }
 
 impl Default for CpuWorkerContext {
@@ -58,6 +65,7 @@ impl Default for CpuWorkerContext {
             raster: RasterKernel::default(),
             kernels: KernelSet::select(),
             fonts: crate::prepared::FontProgramCache::default(),
+            surface_buffer: None,
         }
     }
 }
@@ -78,6 +86,7 @@ pub fn execute(
 ) {
     #[cfg(feature = "profiling")]
     let start = Instant::now();
+    let _in_flight = PageInFlight::enter();
     let CpuWorkerContext {
         raster, kernels, ..
     } = ctx;
@@ -831,8 +840,20 @@ fn paint_image(
         // Mask geometry is fixed for the whole draw; resolve it once.
         let clip_win = cmask.map(ClipMask::clip_window);
         let soft_win = soft.map(ClipMask::soft_window);
-        for y in y0..y1 {
-            let row = surface.row_mut(y);
+        // One destination row. Every term is a pure function of the source,
+        // the masks and this pixel's own device coordinate, and the only write
+        // is into this row, so the rows are independent and the per-pixel
+        // arithmetic does not depend on how they are scheduled. Returns
+        // `(covered, sample_attempts, sample_taps)`; the last two stay zero
+        // unless the profiling counters are compiled in.
+        let paint_row = |y: usize, row: &mut [u8]| -> (u64, u64, u64) {
+            let mut covered = 0u64;
+            // Profiling-only accumulators: unread, and never assigned, in an
+            // ordinary build.
+            #[allow(unused_mut)]
+            let mut sample_attempts = 0u64;
+            #[allow(unused_mut)]
+            let mut sample_taps = 0u64;
             for x in x0..x1 {
                 // Clip mask coverage.
                 let mut cov: u16 = 255;
@@ -891,7 +912,31 @@ fn paint_image(
                 composite_px_blended(px, [color[0], color[1], color[2]], a as u8, blend);
                 covered += 1;
             }
+            (covered, sample_attempts, sample_taps)
+        };
+
+        let (buf, first_abs_y, row_stride) = surface.rows_mut_abs(y0, y1);
+        let parallel = image_row_parallel_enabled()
+            && (x1 - x0).saturating_mul(y1 - y0) >= IMAGE_ROW_PAR_PIXEL_THRESHOLD;
+        let totals = if parallel {
+            buf.par_chunks_mut(row_stride)
+                .enumerate()
+                .map(|(i, row)| paint_row(first_abs_y + i, row))
+                .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+        } else {
+            buf.chunks_exact_mut(row_stride)
+                .enumerate()
+                .map(|(i, row)| paint_row(first_abs_y + i, row))
+                .fold((0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+        };
+        covered += totals.0;
+        #[cfg(feature = "profiling")]
+        {
+            sample_attempts += totals.1;
+            sample_taps += totals.2;
         }
+        #[cfg(not(feature = "profiling"))]
+        let _ = (totals.1, totals.2);
     }
     stats.covered_pixels += covered;
     stats.ops_painted += 1;
@@ -1104,6 +1149,91 @@ struct BilevelIntegral {
 }
 
 impl BilevelIntegral {
+    /// Fill `sat` with the same table the serial walk in [`Self::build`]
+    /// produces, in three passes: every block of rows sums from zero in
+    /// parallel; the block-boundary carries are chained once (a handful of
+    /// rows); every block but the first then adds its carry back, in parallel.
+    /// Each cell ends as the same sum of the same `u32` terms, so the table is
+    /// bit-identical to the serial one.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_parallel(
+        sat: &mut [u32],
+        samples: &[u8],
+        stride: usize,
+        sw: usize,
+        sh: usize,
+        row_bits: usize,
+        col_lo: u32,
+        row_lo: u32,
+    ) {
+        // Row 0 of the table is the all-zero sentinel and is never written.
+        let body = &mut sat[stride..];
+        let threads = rayon::current_num_threads().max(1);
+        // Two blocks per thread keeps the tail balanced without making the
+        // serial carry chain (one row of `stride` adds per block) matter.
+        let block_rows = sh.div_ceil(threads * 2).max(1);
+        let chunk = block_rows * stride;
+
+        body.par_chunks_mut(chunk).enumerate().for_each(|(b, blk)| {
+            let first_ly = b * block_rows;
+            let rows = blk.len() / stride;
+            for i in 0..rows {
+                let source_row = row_lo as usize + first_ly + i;
+                let base_bit = source_row * row_bits + col_lo as usize;
+                let (before, rest) = blk.split_at_mut(i * stride);
+                let cur = &mut rest[..stride];
+                let mut rowsum = 0u32;
+                if i == 0 {
+                    for (lx, bitpos) in (base_bit..base_bit + sw).enumerate() {
+                        let byte = samples[bitpos >> 3];
+                        rowsum += ((byte >> (7 - (bitpos & 7))) & 1) as u32;
+                        cur[lx + 1] = rowsum;
+                    }
+                } else {
+                    let prev = &before[(i - 1) * stride..i * stride];
+                    for (lx, bitpos) in (base_bit..base_bit + sw).enumerate() {
+                        let byte = samples[bitpos >> 3];
+                        rowsum += ((byte >> (7 - (bitpos & 7))) & 1) as u32;
+                        cur[lx + 1] = prev[lx + 1] + rowsum;
+                    }
+                }
+            }
+        });
+
+        let blocks = body.len().div_ceil(chunk);
+        if blocks < 2 {
+            return;
+        }
+        // `carries[b]` is the running column total of every row before block
+        // `b`; block 0 needs none. Only whole blocks are ever a predecessor,
+        // so the last row of block `b - 1` is always at `b * block_rows - 1`.
+        let mut carries = vec![0u32; blocks * stride];
+        for b in 1..blocks {
+            let last = (b * block_rows - 1) * stride;
+            let (done, pending) = carries.split_at_mut(b * stride);
+            let prev_carry = &done[(b - 1) * stride..];
+            for ((dst, carry), tail) in pending[..stride]
+                .iter_mut()
+                .zip(prev_carry)
+                .zip(&body[last..last + stride])
+            {
+                *dst = *carry + *tail;
+            }
+        }
+
+        body.par_chunks_mut(chunk)
+            .enumerate()
+            .skip(1)
+            .for_each(|(b, blk)| {
+                let carry = &carries[b * stride..(b + 1) * stride];
+                for row in blk.chunks_exact_mut(stride) {
+                    for (cell, add) in row.iter_mut().zip(carry) {
+                        *cell += *add;
+                    }
+                }
+            });
+    }
+
     /// Cap on the integral-image allocation. Above this the referenced source
     /// region is large enough that per-pixel popcount (whose total work is
     /// bounded by the box footprint, not the source area) is preferred, and the
@@ -1142,17 +1272,28 @@ impl BilevelIntegral {
         let row_bits = img.packed_row_bits();
         let samples: &[u8] = &img.samples;
         let mut sat = vec![0u32; entries];
-        for ly in 0..sh {
-            let source_row = row_lo as usize + ly;
-            let base_bit = source_row * row_bits + col_lo as usize;
-            let (prev, cur) = sat.split_at_mut((ly + 1) * stride);
-            let prev = &prev[ly * stride..ly * stride + stride];
-            let cur = &mut cur[..stride];
-            let mut rowsum = 0u32;
-            for (lx, bitpos) in (base_bit..base_bit + sw).enumerate() {
-                let byte = samples[bitpos >> 3];
-                rowsum += ((byte >> (7 - (bitpos & 7))) & 1) as u32;
-                cur[lx + 1] = prev[lx + 1] + rowsum;
+        // The table is a running sum, so the rows form one dependency chain —
+        // but a *block* of rows can be summed from zero independently and then
+        // shifted by the running total that reaches it, and integer addition
+        // is associative, so the finished table is bit-for-bit the same one
+        // the serial walk below produces. That matters here because the table
+        // is the draw's dominant cost: a full-page bilevel scan writes ~100 MB
+        // of `u32`, most of it first-touch page faults, and those parallelize.
+        if image_row_parallel_enabled() && entries >= BILEVEL_SAT_PAR_MIN_ENTRIES {
+            Self::fill_parallel(&mut sat, samples, stride, sw, sh, row_bits, col_lo, row_lo);
+        } else {
+            for ly in 0..sh {
+                let source_row = row_lo as usize + ly;
+                let base_bit = source_row * row_bits + col_lo as usize;
+                let (prev, cur) = sat.split_at_mut((ly + 1) * stride);
+                let prev = &prev[ly * stride..ly * stride + stride];
+                let cur = &mut cur[..stride];
+                let mut rowsum = 0u32;
+                for (lx, bitpos) in (base_bit..base_bit + sw).enumerate() {
+                    let byte = samples[bitpos >> 3];
+                    rowsum += ((byte >> (7 - (bitpos & 7))) & 1) as u32;
+                    cur[lx + 1] = prev[lx + 1] + rowsum;
+                }
             }
         }
         Some(Self {
@@ -1252,77 +1393,106 @@ fn paint_binary_box_sat(
     output_origin: usize,
 ) -> (u64, u64, u64) {
     let alpha = img.alpha as u16;
-    let mut painted = 0u64;
-    let mut attempts = 0u64;
-    let mut taps = 0u64;
-
-    // All-zero / all-one boxes short-circuit without division; the mixed
-    // boxes memoize on `(weight, weighted ones)` — long runs of identical
-    // fractional boxes (repeated column patterns) then cost one division
-    // set, not one per pixel. Clip coverage and destination blending stay
-    // per pixel.
-    let mut memo_key = (u64::MAX, u64::MAX);
-    let mut memo_color = [0u8; 4];
     // Fixed for the whole draw; resolve it once rather than per pixel.
     let clip_win = cmask.map(ClipMask::clip_window);
 
-    for (local_y, row_taps) in source_rows.iter().enumerate() {
-        let y = y0 + local_y;
-        let row = surface.row_mut(y);
-        for (local_x, col_taps) in source_columns.iter().enumerate() {
-            let x = x0 + local_x;
-            let cov = clip_win.as_ref().map_or(255, |cw| cw.coverage(x, y));
-            if cov == 0 {
-                continue;
+    // One destination row: it reads the shared summed-area table and the axis
+    // tables, and writes only its own output row, so rows are independent.
+    // The mix memo below is a pure function of `(weight, weighted ones)`, so
+    // giving each row its own memo changes only how often the division is
+    // repeated, never the colour it yields.
+    let paint_row =
+        |y: usize, row_taps: &Option<crate::image::AxisTaps>, row: &mut [u8]| -> (u64, u64, u64) {
+            let mut painted = 0u64;
+            let mut attempts = 0u64;
+            let mut taps = 0u64;
+            // All-zero / all-one boxes short-circuit without division; the mixed
+            // boxes memoize on `(weight, weighted ones)` — long runs of identical
+            // fractional boxes (repeated column patterns) then cost one division
+            // set, not one per pixel. Clip coverage and destination blending stay
+            // per pixel.
+            let mut memo_key = (u64::MAX, u64::MAX);
+            let mut memo_color = [0u8; 4];
+            for (local_x, col_taps) in source_columns.iter().enumerate() {
+                let x = x0 + local_x;
+                let cov = clip_win.as_ref().map_or(255, |cw| cw.coverage(x, y));
+                if cov == 0 {
+                    continue;
+                }
+                attempts += 1;
+                let (Some(tx), Some(ty)) = (col_taps, row_taps) else {
+                    continue;
+                };
+                let weight = tx.total * ty.total;
+                if weight == 0 {
+                    continue;
+                }
+                taps += (tx.hi - tx.lo + 1) as u64 * (ty.hi - ty.lo + 1) as u64;
+                let ones_w = sat.weighted_ones(tx, ty);
+                let color = if ones_w == 0 {
+                    zero
+                } else if ones_w >= weight {
+                    one
+                } else if memo_key == (weight, ones_w) {
+                    memo_color
+                } else {
+                    let c = crate::image::mix_bilevel(zero, one, ones_w, weight);
+                    memo_key = (weight, ones_w);
+                    memo_color = c;
+                    c
+                };
+                let a = mul_div_255(mul_div_255(color[3] as u16, alpha), cov);
+                if a == 0 {
+                    continue;
+                }
+                let target = (x - output_origin) * 4;
+                if a == 255 {
+                    row[target] = color[0];
+                    row[target + 1] = color[1];
+                    row[target + 2] = color[2];
+                    row[target + 3] = 255;
+                } else {
+                    let ia = 255 - a;
+                    row[target] = (mul_div_255(color[0] as u16, a)
+                        + mul_div_255(row[target] as u16, ia))
+                        as u8;
+                    row[target + 1] = (mul_div_255(color[1] as u16, a)
+                        + mul_div_255(row[target + 1] as u16, ia))
+                        as u8;
+                    row[target + 2] = (mul_div_255(color[2] as u16, a)
+                        + mul_div_255(row[target + 2] as u16, ia))
+                        as u8;
+                    row[target + 3] = (a + mul_div_255(row[target + 3] as u16, ia)) as u8;
+                }
+                painted += 1;
             }
-            attempts += 1;
-            let (Some(tx), Some(ty)) = (col_taps, row_taps) else {
-                continue;
-            };
-            let weight = tx.total * ty.total;
-            if weight == 0 {
-                continue;
-            }
-            taps += (tx.hi - tx.lo + 1) as u64 * (ty.hi - ty.lo + 1) as u64;
-            let ones_w = sat.weighted_ones(tx, ty);
-            let color = if ones_w == 0 {
-                zero
-            } else if ones_w >= weight {
-                one
-            } else if memo_key == (weight, ones_w) {
-                memo_color
-            } else {
-                let c = crate::image::mix_bilevel(zero, one, ones_w, weight);
-                memo_key = (weight, ones_w);
-                memo_color = c;
-                c
-            };
-            let a = mul_div_255(mul_div_255(color[3] as u16, alpha), cov);
-            if a == 0 {
-                continue;
-            }
-            let target = (x - output_origin) * 4;
-            if a == 255 {
-                row[target] = color[0];
-                row[target + 1] = color[1];
-                row[target + 2] = color[2];
-                row[target + 3] = 255;
-            } else {
-                let ia = 255 - a;
-                row[target] =
-                    (mul_div_255(color[0] as u16, a) + mul_div_255(row[target] as u16, ia)) as u8;
-                row[target + 1] = (mul_div_255(color[1] as u16, a)
-                    + mul_div_255(row[target + 1] as u16, ia))
-                    as u8;
-                row[target + 2] = (mul_div_255(color[2] as u16, a)
-                    + mul_div_255(row[target + 2] as u16, ia))
-                    as u8;
-                row[target + 3] = (a + mul_div_255(row[target + 3] as u16, ia)) as u8;
-            }
-            painted += 1;
-        }
+            (painted, attempts, taps)
+        };
+
+    let dest_w = source_columns.len();
+    let dest_h = source_rows.len();
+    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y0 + dest_h);
+    // Align the row table with the clipped output window.
+    let row_offset = first_output_y.saturating_sub(y0);
+    let row_slice = source_rows.get(row_offset..).unwrap_or(&[]);
+
+    let parallel = image_row_parallel_enabled()
+        && dest_w.saturating_mul(dest_h) >= IMAGE_ROW_PAR_PIXEL_THRESHOLD;
+    if parallel {
+        output
+            .par_chunks_mut(output_stride)
+            .zip(row_slice.par_iter())
+            .enumerate()
+            .map(|(i, (row, taps))| paint_row(first_output_y + i, taps, row))
+            .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+    } else {
+        output
+            .chunks_exact_mut(output_stride)
+            .zip(row_slice.iter())
+            .enumerate()
+            .map(|(i, (row, taps))| paint_row(first_output_y + i, taps, row))
+            .fold((0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
     }
-    (painted, attempts, taps)
 }
 
 /// Fast path for the common scan/viewer case: an opaque, unmasked, axis-aligned
@@ -1500,17 +1670,18 @@ fn paint_axis_aligned_rgb8_bilinear_opaque(
         &[]
     };
 
-    let painted = if dest_w.saturating_mul(dest_h) >= PAR_PIXEL_THRESHOLD {
-        buf.par_chunks_mut(stride)
-            .zip(row_slice.par_iter())
-            .map(|(row, axis)| paint_row(axis, row))
-            .sum()
-    } else {
-        buf.chunks_exact_mut(stride)
-            .zip(row_slice.iter())
-            .map(|(row, axis)| paint_row(axis, row))
-            .sum()
-    };
+    let painted =
+        if image_row_parallel_enabled() && dest_w.saturating_mul(dest_h) >= PAR_PIXEL_THRESHOLD {
+            buf.par_chunks_mut(stride)
+                .zip(row_slice.par_iter())
+                .map(|(row, axis)| paint_row(axis, row))
+                .sum()
+        } else {
+            buf.chunks_exact_mut(stride)
+                .zip(row_slice.iter())
+                .map(|(row, axis)| paint_row(axis, row))
+                .sum()
+        };
 
     // Four source taps per painted destination pixel (edge clamps may alias).
     (painted, painted.saturating_mul(4))
@@ -1882,103 +2053,133 @@ fn paint_axis_aligned_rgb8_area_min_masked(
     }
 
     let output_origin = surface.origin_x;
-    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y1);
-    let mut painted = 0u64;
-    let mut taps = 0u64;
-    for (local_y, &(row_interior, row_axes)) in rows.iter().enumerate() {
-        let y = y0 + local_y;
-        let row_offset = (y - first_output_y) * output_stride;
-        let row = &mut output[row_offset..row_offset + output_stride];
-        for (local_x, &(col_interior, col_axes)) in columns.iter().enumerate() {
-            let x = x0 + local_x;
-            let px = &mut row[(x - output_origin) * 4..][..4];
+    let dest_w = x1 - x0;
+    let dest_h = y1 - y0;
+    let columns = columns.as_slice();
 
-            let (Some((tx, mx)), Some((ty, my)), true) =
-                (col_axes, row_axes, col_interior && row_interior)
-            else {
-                // Border band, or a column/row whose center maps outside the
-                // image: the generic per-pixel treatment, minus the clip and
-                // soft-clip terms this path's eligibility already excluded.
-                let (dx, dy) = (x as f64 + 0.5, y as f64 + 0.5);
-                let edge = img.edge_coverage(dx, dy);
-                if edge == Some(0) {
+    // One destination row: reads only its own base/mask source rows and writes
+    // only its own output row, so rows are independent and the per-pixel
+    // arithmetic is untouched by how they are scheduled.
+    let paint_row =
+        |y: usize,
+         &(row_interior, row_axes): &(bool, Option<(crate::image::AxisTaps, MaskAxis)>),
+         row: &mut [u8]|
+         -> (u64, u64) {
+            let mut painted = 0u64;
+            let mut taps = 0u64;
+            for (local_x, &(col_interior, col_axes)) in columns.iter().enumerate() {
+                let x = x0 + local_x;
+                let px = &mut row[(x - output_origin) * 4..][..4];
+
+                let (Some((tx, mx)), Some((ty, my)), true) =
+                    (col_axes, row_axes, col_interior && row_interior)
+                else {
+                    // Border band, or a column/row whose center maps outside the
+                    // image: the generic per-pixel treatment, minus the clip and
+                    // soft-clip terms this path's eligibility already excluded.
+                    let (dx, dy) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let edge = img.edge_coverage(dx, dy);
+                    if edge == Some(0) {
+                        continue;
+                    }
+                    let color = match edge {
+                        None => img.shade(dx, dy),
+                        Some(_) => img.shade_clamped(dx, dy),
+                    };
+                    let Some(color) = color else { continue };
+                    let cov = match edge {
+                        Some(ec) => mul_div_255(255, ec),
+                        None => 255,
+                    };
+                    let a = mul_div_255(color[3] as u16, cov);
+                    if a == 0 {
+                        continue;
+                    }
+                    composite_px_blended(
+                        px,
+                        [color[0], color[1], color[2]],
+                        a as u8,
+                        BlendChoice::Normal,
+                    );
+                    painted += 1;
+                    continue;
+                };
+
+                let weight = tx.total * ty.total;
+                if weight == 0 {
                     continue;
                 }
-                let color = match edge {
-                    None => img.shade(dx, dy),
-                    Some(_) => img.shade_clamped(dx, dy),
+                taps += (tx.hi - tx.lo + 1) as u64 * (ty.hi - ty.lo + 1) as u64;
+
+                // The mask first: a fully transparent destination pixel skips the
+                // box average entirely, and on a scanned page the foreground layer
+                // is transparent over most of the sheet.
+                let alpha = match (mask, mx, my) {
+                    (AreaMinMask::Soft(sm), MaskAxis::Taps(mtx), MaskAxis::Taps(mty)) => {
+                        let coverage = crate::image::bilevel_smask_coverage(sm, &mtx, &mty);
+                        (255.0 * crate::image::apply_smask_decode(sm, coverage)) as u8
+                    }
+                    (AreaMinMask::Stencil(sm), MaskAxis::Texel(col), MaskAxis::Texel(srow)) => {
+                        if crate::image::stencil_hides_at(sm, col, srow) {
+                            0
+                        } else {
+                            255
+                        }
+                    }
+                    // The axis kinds are built from `mask` above, so the mixed
+                    // combinations cannot occur.
+                    _ => 0,
                 };
-                let Some(color) = color else { continue };
-                let cov = match edge {
-                    Some(ec) => mul_div_255(255, ec),
-                    None => 255,
-                };
-                let a = mul_div_255(color[3] as u16, cov);
-                if a == 0 {
+                if alpha == 0 {
                     continue;
                 }
-                composite_px_blended(
-                    px,
-                    [color[0], color[1], color[2]],
-                    a as u8,
-                    BlendChoice::Normal,
-                );
-                painted += 1;
-                continue;
-            };
 
-            let weight = tx.total * ty.total;
-            if weight == 0 {
-                continue;
-            }
-            taps += (tx.hi - tx.lo + 1) as u64 * (ty.hi - ty.lo + 1) as u64;
-
-            // The mask first: a fully transparent destination pixel skips the
-            // box average entirely, and on a scanned page the foreground layer
-            // is transparent over most of the sheet.
-            let alpha = match (mask, mx, my) {
-                (AreaMinMask::Soft(sm), MaskAxis::Taps(mtx), MaskAxis::Taps(mty)) => {
-                    let coverage = crate::image::bilevel_smask_coverage(sm, &mtx, &mty);
-                    (255.0 * crate::image::apply_smask_decode(sm, coverage)) as u8
-                }
-                (AreaMinMask::Stencil(sm), MaskAxis::Texel(col), MaskAxis::Texel(srow)) => {
-                    if crate::image::stencil_hides_at(sm, col, srow) {
-                        0
-                    } else {
-                        255
+                let (mut a0, mut a1, mut a2) = (0u64, 0u64, 0u64);
+                for sr in ty.lo..=ty.hi {
+                    let wy = ty.weight_at(sr);
+                    let base = sr as usize * stride + tx.lo as usize * 3;
+                    let end = sr as usize * stride + (tx.hi as usize + 1) * 3;
+                    for (col, texel) in (tx.lo..).zip(rgb[base..end].chunks_exact(3)) {
+                        let w = wy * tx.weight_at(col);
+                        a0 += w * texel[0] as u64;
+                        a1 += w * texel[1] as u64;
+                        a2 += w * texel[2] as u64;
                     }
                 }
-                // The axis kinds are built from `mask` above, so the mixed
-                // combinations cannot occur.
-                _ => 0,
-            };
-            if alpha == 0 {
-                continue;
-            }
+                let color = [
+                    ((a0 + weight / 2) / weight).min(255) as u8,
+                    ((a1 + weight / 2) / weight).min(255) as u8,
+                    ((a2 + weight / 2) / weight).min(255) as u8,
+                ];
 
-            let (mut a0, mut a1, mut a2) = (0u64, 0u64, 0u64);
-            for sr in ty.lo..=ty.hi {
-                let wy = ty.weight_at(sr);
-                let base = sr as usize * stride + tx.lo as usize * 3;
-                let end = sr as usize * stride + (tx.hi as usize + 1) * 3;
-                for (col, texel) in (tx.lo..).zip(rgb[base..end].chunks_exact(3)) {
-                    let w = wy * tx.weight_at(col);
-                    a0 += w * texel[0] as u64;
-                    a1 += w * texel[1] as u64;
-                    a2 += w * texel[2] as u64;
-                }
+                composite_px_blended(px, color, alpha, BlendChoice::Normal);
+                painted += 1;
             }
-            let color = [
-                ((a0 + weight / 2) / weight).min(255) as u8,
-                ((a1 + weight / 2) / weight).min(255) as u8,
-                ((a2 + weight / 2) / weight).min(255) as u8,
-            ];
+            (painted, taps)
+        };
 
-            composite_px_blended(px, color, alpha, BlendChoice::Normal);
-            painted += 1;
-        }
+    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y1);
+    // Align the row table with the clipped output window.
+    let row_offset = first_output_y.saturating_sub(y0);
+    let row_slice = rows.get(row_offset..).unwrap_or(&[]);
+
+    let parallel = image_row_parallel_enabled()
+        && dest_w.saturating_mul(dest_h) >= IMAGE_ROW_PAR_PIXEL_THRESHOLD;
+    if parallel {
+        output
+            .par_chunks_mut(output_stride)
+            .zip(row_slice.par_iter())
+            .enumerate()
+            .map(|(i, (row, axes))| paint_row(first_output_y + i, axes, row))
+            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+    } else {
+        output
+            .chunks_exact_mut(output_stride)
+            .zip(row_slice.iter())
+            .enumerate()
+            .map(|(i, (row, axes))| paint_row(first_output_y + i, axes, row))
+            .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
     }
-    (painted, taps)
 }
 
 /// Core of the opaque axis-aligned area-minification fast paths. `rgb` is a
@@ -2020,16 +2221,21 @@ fn area_min_box_average_opaque(
     }
 
     let output_origin = surface.origin_x;
-    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y1);
-    let mut painted = 0u64;
-    let mut taps = 0u64;
-    for (local_y, row_taps) in source_rows.iter().enumerate() {
-        let Some(ty) = row_taps else { continue };
-        let y = y0 + local_y;
-        let row_offset = (y - first_output_y) * output_stride;
-        let row = &mut output[row_offset..row_offset + output_stride];
-        for (local_x, col_taps) in source_columns.iter().enumerate() {
-            let Some(tx) = col_taps else { continue };
+    let dest_w = x1 - x0;
+    let dest_h = y1 - y0;
+    let columns = source_columns.as_slice();
+
+    // One destination row: reads only its own source rows and writes only its
+    // own output row, so rows are independent and the per-pixel arithmetic is
+    // untouched by how they are scheduled.
+    let paint_row = |row_taps: &Option<crate::image::AxisTaps>, row: &mut [u8]| -> (u64, u64) {
+        let Some(ty) = *row_taps else {
+            return (0, 0);
+        };
+        let mut painted = 0u64;
+        let mut taps = 0u64;
+        for (local_x, col_taps) in columns.iter().enumerate() {
+            let Some(tx) = *col_taps else { continue };
             let weight = tx.total * ty.total;
             if weight == 0 {
                 continue;
@@ -2054,8 +2260,103 @@ fn area_min_box_average_opaque(
             painted += 1;
             taps += (tx.hi - tx.lo + 1) as u64 * (ty.hi - ty.lo + 1) as u64;
         }
-    }
+        (painted, taps)
+    };
+
+    let (output, first_output_y, output_stride) = surface.rows_mut_abs(y0, y1);
+    // Align the row table with the clipped output window.
+    let row_offset = first_output_y.saturating_sub(y0);
+    let row_slice = source_rows.get(row_offset..).unwrap_or(&[]);
+
+    // Same fan-out policy as the sibling bilinear fast path: below this many
+    // destination pixels the rayon scheduling costs more than it saves.
+    let parallel = image_row_parallel_enabled()
+        && dest_w.saturating_mul(dest_h) >= IMAGE_ROW_PAR_PIXEL_THRESHOLD;
+    let (painted, taps) = if parallel {
+        output
+            .par_chunks_mut(output_stride)
+            .zip(row_slice.par_iter())
+            .map(|(row, ty)| paint_row(ty, row))
+            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+    } else {
+        output
+            .chunks_exact_mut(output_stride)
+            .zip(row_slice.iter())
+            .map(|(row, ty)| paint_row(ty, row))
+            .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+    };
     (painted, taps)
+}
+
+/// Table size above which the bilevel summed-area table is filled across the
+/// rayon pool. Below it the serial walk is already a fraction of a millisecond
+/// and the fan-out would not pay for itself.
+const BILEVEL_SAT_PAR_MIN_ENTRIES: usize = 1 << 20;
+
+/// Destination-pixel count above which an image draw paints its independent
+/// destination rows across the rayon pool. Mirrors the bilinear fast path's
+/// own long-standing `PAR_PIXEL_THRESHOLD`.
+const IMAGE_ROW_PAR_PIXEL_THRESHOLD: usize = 256 * 256;
+
+/// Page executions running in this process right now. Intra-page row fan-out
+/// only pays when the render has the machine to itself: under the document
+/// scheduler every core is already carrying another page, and fanning out
+/// there oversubscribes the box — measured at −31 % whole-document throughput
+/// on a 640-page bilevel scan — for no extra work done.
+static PAGES_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII counter for [`PAGES_IN_FLIGHT`], held for one top-level page execution.
+struct PageInFlight;
+
+impl PageInFlight {
+    fn enter() -> Self {
+        PAGES_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for PageInFlight {
+    fn drop(&mut self) {
+        PAGES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// How the image row loops decide to fan out over the rayon pool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowParPolicy {
+    /// Always serial.
+    Never,
+    /// Fan out only while this is the sole page render in flight.
+    Auto,
+    /// Always fan out above the pixel threshold.
+    Always,
+}
+
+/// `PDF_RENDERER_IMAGE_ROW_PAR` selects the policy: unset or `auto` is
+/// load-aware, `off`/`0`/`false` forces the serial row loop and `on`/`1`/
+/// `always` forces the fan-out. The override exists for paired A/B isolation
+/// on one binary. Read once.
+fn row_par_policy() -> RowParPolicy {
+    use std::sync::OnceLock;
+    static POLICY: OnceLock<RowParPolicy> = OnceLock::new();
+    *POLICY.get_or_init(|| match std::env::var("PDF_RENDERER_IMAGE_ROW_PAR") {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "off" | "0" | "false" => RowParPolicy::Never,
+            "on" | "1" | "true" | "always" => RowParPolicy::Always,
+            _ => RowParPolicy::Auto,
+        },
+        Err(_) => RowParPolicy::Auto,
+    })
+}
+
+/// Whether the image row loops should fan their destination rows out over the
+/// rayon pool. Consulted once per draw, never per pixel.
+fn image_row_parallel_enabled() -> bool {
+    match row_par_policy() {
+        RowParPolicy::Never => false,
+        RowParPolicy::Always => true,
+        RowParPolicy::Auto => PAGES_IN_FLIGHT.load(std::sync::atomic::Ordering::Relaxed) <= 1,
+    }
 }
 
 /// Render a tiling-pattern fill: replicate the compiled cell across the
@@ -3734,5 +4035,85 @@ mod cancel_tests {
         execute(&page, &mut surface, &mut ctx, &mut stats);
         assert!(!stats.cancelled);
         assert_eq!(stats.commands, 64);
+    }
+}
+
+#[cfg(test)]
+mod bilevel_sat_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    /// The serial reference walk from `BilevelIntegral::build`, verbatim.
+    #[allow(clippy::too_many_arguments)]
+    fn serial_fill(
+        sat: &mut [u32],
+        samples: &[u8],
+        stride: usize,
+        sw: usize,
+        sh: usize,
+        row_bits: usize,
+        col_lo: u32,
+        row_lo: u32,
+    ) {
+        for ly in 0..sh {
+            let source_row = row_lo as usize + ly;
+            let base_bit = source_row * row_bits + col_lo as usize;
+            let (prev, cur) = sat.split_at_mut((ly + 1) * stride);
+            let prev = &prev[ly * stride..ly * stride + stride];
+            let cur = &mut cur[..stride];
+            let mut rowsum = 0u32;
+            for (lx, bitpos) in (base_bit..base_bit + sw).enumerate() {
+                let byte = samples[bitpos >> 3];
+                rowsum += ((byte >> (7 - (bitpos & 7))) & 1) as u32;
+                cur[lx + 1] = prev[lx + 1] + rowsum;
+            }
+        }
+    }
+
+    /// The blocked parallel fill must reproduce the serial table exactly —
+    /// including its zero sentinel row and column — for row counts that fall
+    /// short of, land on, and overrun the block boundary.
+    #[test]
+    fn parallel_sat_fill_matches_serial_bit_exact() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for &(width, height) in &[
+            (1usize, 1usize),
+            (7, 3),
+            (8, 8),
+            (13, 1),
+            (1, 97),
+            (64, 64),
+            (129, 251),
+            (255, 129),
+        ] {
+            let row_bits = width.next_multiple_of(8);
+            let samples: Vec<u8> = (0..(row_bits / 8) * height).map(|_| next() as u8).collect();
+            // Exercise both a full-image window and an offset sub-window.
+            for &(want_col_lo, want_row_lo) in &[(0usize, 0usize), (1, 1)] {
+                let (col_lo, row_lo) = (
+                    if want_col_lo < width { want_col_lo } else { 0 },
+                    if want_row_lo < height { want_row_lo } else { 0 },
+                );
+                let (sw, sh) = (width - col_lo, height - row_lo);
+                let (col_lo, row_lo) = (col_lo as u32, row_lo as u32);
+                let stride = sw + 1;
+                let entries = stride * (sh + 1);
+                let mut want = vec![0u32; entries];
+                serial_fill(
+                    &mut want, &samples, stride, sw, sh, row_bits, col_lo, row_lo,
+                );
+                let mut got = vec![0u32; entries];
+                BilevelIntegral::fill_parallel(
+                    &mut got, &samples, stride, sw, sh, row_bits, col_lo, row_lo,
+                );
+                assert_eq!(got, want, "{width}x{height} window ({col_lo},{row_lo})");
+            }
+        }
     }
 }

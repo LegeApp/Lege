@@ -1890,7 +1890,14 @@ impl CpuBackend {
 
         #[cfg(feature = "profiling")]
         let prep_start = std::time::Instant::now();
-        let mut surface = Surface::new(width as usize, height as usize, request.background);
+        let mut surface = Surface::new_recycled(
+            width as usize,
+            height as usize,
+            request.background,
+            surface_reuse_enabled()
+                .then(|| ctx.surface_buffer.take())
+                .flatten(),
+        );
         stats.surface_bytes = surface.bytes();
         #[cfg(feature = "profiling")]
         {
@@ -1911,7 +1918,13 @@ impl CpuBackend {
 
         #[cfg(feature = "profiling")]
         let output_start = std::time::Instant::now();
-        let (stride, pixels) = surface.into_output(request.output_format);
+        let mut discard = None;
+        let pool = if surface_reuse_enabled() {
+            &mut ctx.surface_buffer
+        } else {
+            &mut discard
+        };
+        let (stride, pixels) = surface.into_output_recycling(request.output_format, pool);
         stats.output_bytes = pixels.len() as u64;
         #[cfg(feature = "profiling")]
         {
@@ -2074,7 +2087,14 @@ impl CpuBackend {
         }
         let total_start = std::time::Instant::now();
         let surface_start = std::time::Instant::now();
-        let mut surface = Surface::new(width as usize, height as usize, request.background);
+        let mut surface = Surface::new_recycled(
+            width as usize,
+            height as usize,
+            request.background,
+            surface_reuse_enabled()
+                .then(|| ctx.surface_buffer.take())
+                .flatten(),
+        );
         let mut stats = RenderStats {
             surface_bytes: surface.bytes(),
             ..RenderStats::default()
@@ -2086,7 +2106,13 @@ impl CpuBackend {
         }
         stats.absorb_diagnostics(&prepared.diagnostics);
         let output_start = std::time::Instant::now();
-        let (stride, pixels) = surface.into_output(request.output_format);
+        let mut discard = None;
+        let pool = if surface_reuse_enabled() {
+            &mut ctx.surface_buffer
+        } else {
+            &mut discard
+        };
+        let (stride, pixels) = surface.into_output_recycling(request.output_format, pool);
         stats.output_bytes = pixels.len() as u64;
         stats.output = output_start.elapsed();
         let mut profile = stats.profile.clone();
@@ -2119,6 +2145,21 @@ impl Default for CpuBackend {
     fn default() -> Self {
         Self::new(CpuBackendOptions::default())
     }
+}
+
+/// Whether the per-worker page-surface buffer is reused across renders. On by
+/// default; `PDF_RENDERER_SURFACE_REUSE=off` (or `0`) disables it, for paired
+/// A/B isolation on one binary. Read once.
+fn surface_reuse_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("PDF_RENDERER_SURFACE_REUSE") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v != "off" && v != "0" && v != "false"
+        }
+        Err(_) => true,
+    })
 }
 
 /// Whether the document-scoped shared font parse cache is active. On by default;
