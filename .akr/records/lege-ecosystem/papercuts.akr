@@ -186,6 +186,17 @@ record lege-ecosystem.papercut.android-emulator-verification-initially-failed/1 
     created_at 2026-08-21
 }
 
+record lege-ecosystem.papercut.at-the-end-of-a-long-build-and-test-session-the/1 : papercut {
+    title "At the end of a long build-and-test session the project drive…"
+    state verified
+    statement """
+        At the end of a long build-and-test session the project drive (/mnt/Samsung980_1TB) filled to 0 bytes free, and the failure surfaced first as a cargo test --workspace failure that reads like a build error rather than a disk error ("No space left on device (os error 28)"), then as a failed AKR write that left a zero-byte evidence.akr.tmpNNNNNNN beside the real record. About 53 GB of the drive was regenerable build output: 41 GB in the root target/ and 12 GB more across lege-codecs/{djvulibrust,jp2lam,jbig2enc-rust}/target, since the codec crates keep their own build graphs and so their own target dirs. A periodic cargo clean across all four target directories, or a check of free space before a long agent session, would avoid losing a test sweep to this.
+        """
+    observed_at git:4a7349f94b1fb6f6f90b871be5dbb9b5736062de
+    author "claude"
+    created_at 2026-09-04
+}
+
 record lege-ecosystem.papercut.both-fff-fixture-discovery-and-text-ocr/1 : papercut {
     title "Both FFF fixture discovery and text/OCR searches failed together with…"
     state verified
@@ -1357,6 +1368,17 @@ record lege-ecosystem.papercut.real-gpu-lege-ocr-test-binaries-sigsegv-during/1 
     created_at 2026-08-22
 }
 
+record lege-ecosystem.papercut.review-startup-akr-mcp-and-fff-are-rooted-at/1 : papercut {
+    title "Review startup: AKR MCP and FFF are rooted at /home/dk instead of…"
+    state verified
+    statement """
+        Review startup: AKR MCP and FFF are rooted at /home/dk instead of Lege-ecosystem; use project-local CLI and rg fallback.
+        """
+    observed_at git:4a7349f94b1fb6f6f90b871be5dbb9b5736062de
+    author "codex"
+    created_at 2026-09-04
+}
+
 record lege-ecosystem.papercut.running-cargo-fmt-all-emitted-the-same-four/1 : papercut {
     title "Running cargo fmt --all emitted the same four nightly-only rustfmt…"
     state superseded
@@ -1674,6 +1696,17 @@ record lege-ecosystem.papercut.the-repository-wide-strict-akr-check-is/1 : paper
     observed_at git:1ea79e4c540163f7423eba8ab087c632adfacc65
     author "codex"
     created_at 2026-08-13
+}
+
+record lege-ecosystem.papercut.the-session-8c-49-94mp-oracle-sweep-makes-no/1 : papercut {
+    title "The Session 8c 49.94MP oracle sweep makes no raw checkpoint for hours:…"
+    state verified
+    statement """
+        The Session 8c 49.94MP oracle sweep makes no raw checkpoint for hours: sweep_source accumulates all 11 quantizer qualities x 5 PCRD bodies before write_jsonl, so an interruption loses the in-flight source and status appears frozen despite active CPU work.
+        """
+    observed_at git:4a7349f94b1fb6f6f90b871be5dbb9b5736062de
+    author "root"
+    created_at 2026-09-04
 }
 
 record lege-ecosystem.papercut.the-shared-context-prefers-discrete-when/1 : papercut {

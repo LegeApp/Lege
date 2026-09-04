@@ -1,6 +1,19 @@
 akr 0.1
 project lege-ecosystem
 
+record lege-ecosystem.encode-quality.evidence.jp2lam-ssim-oracle-8c-interrupted-2026-09-05/1 : evidence {
+    title "Stopped by user after 12 of 19 sources completed and 36 labels were checkpointed. The archive contains all twelve completed JSONL source streams. The first 49.94MP source remained CPU-active but had no durable per-probe record because write_jsonl occurs only after all 55 probes."
+    state verified
+    result inconclusive
+    method command
+    observed_at git:4a7349f94b1fb6f6f90b871be5dbb9b5736062de
+    command "cargo run --example perceptual_oracle -- test-set /tmp/jp2lam-ssim-oracle 80,85,90 --recursive"
+    artifact "/mnt/Samsung980_1TB/Rust-projects/Lege-ecosystem/.agent/scratch/jp2lam-ssim-oracle-8c-rescue-20260905/raw-completed-jsonl.tar.gz"
+    summary """
+        Stopped by user after 12 of 19 sources completed and 36 labels were checkpointed. The archive contains all twelve completed JSONL source streams. The first 49.94MP source remained CPU-active but had no durable per-probe record because write_jsonl occurs only after all 55 probes.
+        """
+}
+
 record lege-ecosystem.encode-quality.evidence.jp2lam-ssim-oracle-seven-photo-2026-09-04/1 : evidence {
     title "Session 8b completed 7 top-level 1024x768 PNGs with metric ssimulacra2-jpxl-1: 7 done markers and 21 labels, all Floor. Target 80 achieved 80.2023..85.7983; 85 achieved 85.7983..89.2035; 90 achieved 91.5885..92.8378. No censored-top or failure outcomes."
     state verified

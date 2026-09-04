@@ -260,6 +260,18 @@ record lege-ecosystem-perf.evidence.renderer-suites-post-wave2-20260825/1 : evid
     author "GitHub Uploader"
 }
 
+record lege-ecosystem-perf.evidence.renderer-surface-and-image-rows-2026-09-04/1 : evidence {
+    title "Surface recycling and gated image-row fan-out: 2.2-4.8x per page, byte-identical, throughput neutral"
+    state verified
+    result pass
+    method command
+    observed_at git:4a7349f94b1fb6f6f90b871be5dbb9b5736062de
+    command "cargo build --release -p pdfium-diff; paired interleaved A/B against a worktree binary of HEAD~1, minimum of four batches; then a 70-document x pages 0/1/4 byte-comparison sweep at scale 2.0; cargo test -p pdf-render-cpu"
+    summary """
+        Tenth renderer pass, measured by interleaved A/B against a binary built from a worktree of the parent commit, minimum of four batches per arm. Per-page: jpeg scan at sweep scale 87.0 -> 38.8 ms (2.24x), bilevel SAT 72.5 -> 15.0 ms (4.82x), bilevel SAT with text 59.1 -> 12.8 ms (4.61x), MRC 10.2 -> 2.8 ms (3.69x), RGB8 area-min with vector 29.1 -> 7.6 ms (3.84x), CMYK area-min with paths 271.1 -> 109.3 ms (2.48x); latin text, vector and mesh pages neutral. Two causes, both outside the per-pixel arithmetic the nine prior passes had already squeezed: a 170 MB page buffer past glibc's 32 MiB mmap threshold cost a kernel page-zero on every render (fresh alloc and fill 52 ms, reused 3.4 ms), and BilevelIntegral::build was 44 of 52 ms on a bilevel scan. The negative result is load-bearing: unconditional row fan-out cost 31% of whole-document throughput on a 640-page scan (4702 -> 6019 ms) because 13 render workers plus a 20-thread rayon pool oversubscribe the machine, so fan-out is gated on a PAGES_IN_FLIGHT guard and whole-document is neutral (median 4786 -> 4784 ms over 14 runs an arm). Output byte-identical: 148 of 148 pages across 70 documents. 193 pdf-render-cpu tests pass, including a new gate asserting the parallel SAT fill matches the retained serial walk element for element across block boundaries.
+        """
+}
+
 record lege-ecosystem-perf.evidence.structures-direct-output-profile-2026-08-09/1 : evidence {
     title "Structures.pdf direct JPX output profile"
     state superseded
