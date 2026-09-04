@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use winit::keyboard::ModifiersState;
 
 use crate::geometry::PointF;
@@ -41,10 +43,29 @@ pub struct ScrollbarDragState {
     pub pointer_offset_in_thumb: f64,
 }
 
+/// A middle-click autoscroll in progress.
+///
+/// The anchor is where the reader pressed. Pointer displacement from it sets
+/// the speed, so the gesture is "point where you want to go" rather than a
+/// drag the arm has to sustain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoScrollState {
+    pub anchor: PointF,
+    /// True once the pointer has left the dead zone. Until then a release is
+    /// read as a click that cancels, not as a deliberate stop.
+    pub engaged: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum PointerCapture {
+    /// Grab-and-drag panning of the canvas. `last` is the previous pointer
+    /// position, so each move applies a delta rather than re-deriving one
+    /// from the origin and accumulating clamp error at the document edges.
     CanvasPan {
         origin: PointF,
+        last: PointF,
+        pressed_at: Instant,
+        moved: bool,
     },
     VerticalThumb(ScrollbarDragState),
     HorizontalThumb(ScrollbarDragState),
@@ -68,6 +89,7 @@ pub struct InputState {
     pub hover: HitTarget,
     pub capture: Option<PointerCapture>,
     pub left_button_down: bool,
+    pub autoscroll: Option<AutoScrollState>,
 }
 
 impl Default for InputState {
@@ -78,6 +100,7 @@ impl Default for InputState {
             hover: HitTarget::None,
             capture: None,
             left_button_down: false,
+            autoscroll: None,
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::ops::{Add, AddAssign, Sub};
+use std::ops::{Add, AddAssign, Div, Mul, Sub};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PointF {
@@ -6,7 +6,7 @@ pub struct PointF {
     pub y: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vec2d {
     pub x: f64,
     pub y: f64,
@@ -57,6 +57,39 @@ impl AddAssign for Vec2d {
     fn add_assign(&mut self, rhs: Self) {
         self.x += rhs.x;
         self.y += rhs.y;
+    }
+}
+
+impl Sub for Vec2d {
+    type Output = Vec2d;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Vec2d {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+        }
+    }
+}
+
+impl Mul<f64> for Vec2d {
+    type Output = Vec2d;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        Vec2d {
+            x: self.x * rhs,
+            y: self.y * rhs,
+        }
+    }
+}
+
+impl Div<f64> for Vec2d {
+    type Output = Vec2d;
+
+    fn div(self, rhs: f64) -> Self::Output {
+        Vec2d {
+            x: self.x / rhs,
+            y: self.y / rhs,
+        }
     }
 }
 

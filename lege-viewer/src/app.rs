@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, Ime, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
@@ -24,7 +26,9 @@ use crate::document::{
 use crate::event::ViewerEvent;
 use crate::frame::FrameScheduler;
 use crate::geometry::{PointF, RectF, RectI, SizeF, Vec2d};
-use crate::input::{HitTarget, InputState, PointerCapture, ScrollbarDragState, ScrollbarPart};
+use crate::input::{
+    AutoScrollState, HitTarget, InputState, PointerCapture, ScrollbarDragState, ScrollbarPart,
+};
 use crate::paint::scroll_exposed_regions;
 use crate::present::{Presenter, PresenterBackend, PresenterPreference, ScrollReuse};
 use crate::processing::{
@@ -55,6 +59,23 @@ struct PageViewArtifacts {
 }
 
 const LINK_PEEK_DELAY: Duration = Duration::from_millis(400);
+
+/// A middle press released within this window, without moving, is a click
+/// that starts autoscroll rather than a pan that ended.
+const AUTOSCROLL_CLICK_WINDOW: Duration = Duration::from_millis(400);
+
+/// Pointer travel, in physical pixels, that turns a middle press from a click
+/// into a pan.
+const PAN_MOVE_THRESHOLD: f64 = 4.0;
+
+/// How far the pointer must leave the autoscroll anchor before the gesture
+/// counts as engaged.
+const AUTOSCROLL_ENGAGE_DISTANCE: f64 = 16.0;
+
+/// Wake cadence while momentum or autoscroll is driving the viewport. The
+/// viewer is otherwise fully event-driven; this is the only timer that runs
+/// at a frame rate, and only while the document is actually moving.
+const MOVEMENT_FRAME_INTERVAL: Duration = Duration::from_millis(8);
 
 #[derive(Debug, Clone)]
 struct LinkHoverState {
@@ -324,6 +345,71 @@ fn centered_button_text(
 
 /// Raised gradient controls with the same lit lip, dark edge and offset shadow
 /// as the sibling image-viewer.
+/// Half-extent of the autoscroll anchor marker, in physical pixels.
+const AUTOSCROLL_ANCHOR_RADIUS: i32 = 11;
+
+fn autoscroll_anchor_rect(state: AutoScrollState) -> RectI {
+    let size = (AUTOSCROLL_ANCHOR_RADIUS * 2 + 2) as u32;
+    RectI {
+        x: state.anchor.x.round() as i32 - AUTOSCROLL_ANCHOR_RADIUS - 1,
+        y: state.anchor.y.round() as i32 - AUTOSCROLL_ANCHOR_RADIUS - 1,
+        width: size,
+        height: size,
+    }
+}
+
+/// Draw the autoscroll anchor: a ring with four ticks, marking the point the
+/// pointer's displacement is measured from.
+///
+/// Without it the mode is invisible -- the document simply starts moving on
+/// its own -- and the reader has no way to see where "stop" is.
+fn paint_autoscroll_anchor(
+    scene: &mut crate::scene::SceneBuilder<'_>,
+    theme: &Theme,
+    state: AutoScrollState,
+) {
+    let cx = state.anchor.x.round() as i32;
+    let cy = state.anchor.y.round() as i32;
+    let ring = RectI {
+        x: cx - AUTOSCROLL_ANCHOR_RADIUS,
+        y: cy - AUTOSCROLL_ANCHOR_RADIUS,
+        width: (AUTOSCROLL_ANCHOR_RADIUS * 2) as u32,
+        height: (AUTOSCROLL_ANCHOR_RADIUS * 2) as u32,
+    };
+    // A translucent plate first, so the marker stays readable over both a
+    // white page and a night-mode one.
+    scene.blend_rect(ring, 0x60_00_00_00);
+    scene.stroke_rect(ring, 2, theme.colors.selection);
+    scene.fill_rect(
+        RectI {
+            x: cx - 1,
+            y: cy - 1,
+            width: 3,
+            height: 3,
+        },
+        theme.colors.selection,
+    );
+    // Four ticks: up, down, left, right. They read as an axis indicator and
+    // cost four rectangles.
+    let ticks = [
+        (cx - 1, cy - AUTOSCROLL_ANCHOR_RADIUS - 4, 3_u32, 4_u32),
+        (cx - 1, cy + AUTOSCROLL_ANCHOR_RADIUS, 3, 4),
+        (cx - AUTOSCROLL_ANCHOR_RADIUS - 4, cy - 1, 4, 3),
+        (cx + AUTOSCROLL_ANCHOR_RADIUS, cy - 1, 4, 3),
+    ];
+    for (x, y, width, height) in ticks {
+        scene.fill_rect(
+            RectI {
+                x,
+                y,
+                width,
+                height,
+            },
+            theme.colors.selection,
+        );
+    }
+}
+
 fn button_paint(x: i32, y: i32, width: u32, toolbar_height: u32, color: u32) -> Vec<RectPaint> {
     let bounds = button_bounds(x, y, width, toolbar_height);
     let x = bounds.x;
@@ -467,6 +553,12 @@ pub struct ViewerApp {
     scrollbar: ScrollbarState,
     status: StatusState,
     scroll: ScrollModel,
+    /// Present only when `LEGE_INPUT_TRACE` names a file. Writes on drop.
+    trace_recorder: Option<crate::trace::TraceRecorder>,
+    /// The finger currently panning the canvas, and where it last was. Only
+    /// one finger drives movement: a second touch is ignored rather than
+    /// fighting the first for the viewport.
+    touch_pan: Option<(u64, PointF)>,
     presented_scroll: Vec2d,
     zoom: f64,
     zoom_mode: ZoomMode,
@@ -669,7 +761,13 @@ impl ViewerApp {
             hovered_control: None,
             scrollbar: ScrollbarState::default(),
             status: StatusState::default(),
-            scroll: ScrollModel::new(),
+            scroll: {
+                let mut scroll = ScrollModel::new();
+                scroll.tuning = settings.movement;
+                scroll
+            },
+            trace_recorder: crate::trace::TraceRecorder::from_environment(),
+            touch_pan: None,
             presented_scroll: Vec2d::ZERO,
             zoom: 1.0,
             zoom_mode: ZoomMode::Automatic,
@@ -836,7 +934,7 @@ impl ViewerApp {
         if let Some(anchor) = anchor
             && let Some(document_y) = anchor.restore(&self.layout, self.viewport_document().height)
         {
-            self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d {
+            self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
                 x: self.scroll.position.x,
                 y: document_y.max(0.0) * self.zoom,
             }));
@@ -892,6 +990,7 @@ impl ViewerApp {
         ViewerSettings {
             trim_enabled: self.trim_enabled,
             color_mode: self.color_mode,
+            movement: self.scroll.tuning,
         }
         .save_async();
     }
@@ -1316,9 +1415,20 @@ impl ViewerApp {
         }
     }
 
+    /// Apply one command to the scroll model, recording it first when a trace
+    /// is being captured. Every movement source funnels through here, so a
+    /// trace is complete by construction rather than by remembering to add
+    /// each new call site.
+    fn apply_scroll(&mut self, command: ScrollCommand) {
+        if let Some(recorder) = self.trace_recorder.as_mut() {
+            recorder.record(command);
+        }
+        self.scroll.apply(command);
+    }
+
     fn scroll_by(&mut self, command: ScrollCommand) {
         let before = self.scroll.position;
-        self.scroll.apply(command);
+        self.apply_scroll(command);
         if self.scroll.position != before {
             self.finish_direct_scroll();
         }
@@ -1402,7 +1512,7 @@ impl ViewerApp {
             }
             .clamp(0.0, (self.layout.total_height - viewport.height).max(0.0));
         }
-        self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d {
+        self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
             x: self.scroll.position.x,
             y: target * self.zoom,
         }));
@@ -1443,6 +1553,38 @@ impl ViewerApp {
             self.hovered_control = hovered_control;
             self.damage.mark_full();
             self.request_redraw();
+        }
+        if let Some(state) = self.input.autoscroll {
+            let offset = self.input.pointer_position - state.anchor;
+            if !state.engaged && offset.length() > AUTOSCROLL_ENGAGE_DISTANCE {
+                self.input.autoscroll = Some(AutoScrollState {
+                    engaged: true,
+                    ..state
+                });
+            }
+            self.apply_scroll(ScrollCommand::SteerAutoScroll(offset));
+            self.request_redraw();
+            return;
+        }
+        if let Some(PointerCapture::CanvasPan {
+            origin,
+            last,
+            pressed_at,
+            moved,
+        }) = self.input.capture
+        {
+            let delta = last - self.input.pointer_position;
+            let travelled = self.input.pointer_position - origin;
+            self.input.capture = Some(PointerCapture::CanvasPan {
+                origin,
+                last: self.input.pointer_position,
+                pressed_at,
+                moved: moved || travelled.length() > PAN_MOVE_THRESHOLD,
+            });
+            if delta.x != 0.0 || delta.y != 0.0 {
+                self.scroll_by(ScrollCommand::DragPan(delta));
+            }
+            return;
         }
         if let Some(PointerCapture::ProcessingPanelResize {
             origin,
@@ -1496,7 +1638,7 @@ impl ViewerApp {
                 self.app_layout.canvas.height,
             );
             let before = self.scroll.position;
-            self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d {
+            self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
                 x: self.scroll.position.x,
                 y: target,
             }));
@@ -1719,6 +1861,153 @@ impl ViewerApp {
         }
     }
 
+    /// Touch panning. One finger drags the document 1:1 and releases into
+    /// momentum; a flick without momentum does not read as a touch surface at
+    /// all, so touch ignores the kinetic preference.
+    fn handle_touch(&mut self, touch: &Touch) {
+        let position = PointF {
+            x: touch.location.x,
+            y: touch.location.y,
+        };
+        match touch.phase {
+            TouchPhase::Started => {
+                if self.touch_pan.is_some() || !self.app_layout.canvas.contains(position) {
+                    return;
+                }
+                self.cancel_autoscroll();
+                self.scroll_by(ScrollCommand::Stop);
+                self.touch_pan = Some((touch.id, position));
+                self.metrics.input_received = Some(Instant::now());
+            }
+            TouchPhase::Moved => {
+                let Some((id, last)) = self.touch_pan else {
+                    return;
+                };
+                if id != touch.id {
+                    return;
+                }
+                self.touch_pan = Some((id, position));
+                let delta = last - position;
+                if delta.x != 0.0 || delta.y != 0.0 {
+                    self.scroll_by(ScrollCommand::DragPan(delta));
+                }
+            }
+            TouchPhase::Ended => {
+                if self.touch_pan.is_some_and(|(id, _)| id == touch.id) {
+                    self.touch_pan = None;
+                    self.scroll_by(ScrollCommand::Fling { from_touch: true });
+                }
+            }
+            TouchPhase::Cancelled => {
+                if self.touch_pan.is_some_and(|(id, _)| id == touch.id) {
+                    self.touch_pan = None;
+                    self.scroll_by(ScrollCommand::Stop);
+                }
+            }
+        }
+    }
+
+    /// The middle button drives both grab-to-pan and autoscroll.
+    ///
+    /// Pressing starts a pan. Releasing it without having moved -- a click,
+    /// not a drag -- promotes the gesture to autoscroll anchored where the
+    /// press landed. That is the vocabulary readers already know from
+    /// browsers and Acrobat, and it needs no modal tool.
+    fn handle_middle_button(&mut self, state: ElementState) {
+        match state {
+            ElementState::Pressed => {
+                if self.input.autoscroll.is_some() {
+                    self.cancel_autoscroll();
+                    return;
+                }
+                if !self.app_layout.canvas.contains(self.input.pointer_position) {
+                    return;
+                }
+                let position = self.input.pointer_position;
+                self.input.capture = Some(PointerCapture::CanvasPan {
+                    origin: position,
+                    last: position,
+                    pressed_at: Instant::now(),
+                    moved: false,
+                });
+                self.metrics.input_received = Some(Instant::now());
+            }
+            ElementState::Released => {
+                let Some(PointerCapture::CanvasPan {
+                    origin,
+                    pressed_at,
+                    moved,
+                    ..
+                }) = self.input.capture
+                else {
+                    return;
+                };
+                self.input.capture = None;
+                if !moved && pressed_at.elapsed() <= AUTOSCROLL_CLICK_WINDOW {
+                    self.begin_autoscroll(origin);
+                    return;
+                }
+                // A released pan throws the document; the model decides
+                // whether the throw was fast enough to be worth continuing.
+                self.scroll_by(ScrollCommand::Fling { from_touch: false });
+                if !self.scroll.wants_animation() {
+                    self.scroll.settle();
+                    self.navigation_settle_deadline = None;
+                    if self.navigation_mode != NavigationMode::Idle {
+                        self.navigation_mode = NavigationMode::Idle;
+                        self.bump_generation();
+                    } else {
+                        self.intent_dirty = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn begin_autoscroll(&mut self, anchor: PointF) {
+        self.input.autoscroll = Some(AutoScrollState {
+            anchor,
+            engaged: false,
+        });
+        self.apply_scroll(ScrollCommand::BeginAutoScroll);
+        self.damage.mark_full();
+        self.request_redraw();
+    }
+
+    /// End autoscroll if it is running. Returns whether it was.
+    fn cancel_autoscroll(&mut self) -> bool {
+        if self.input.autoscroll.take().is_none() {
+            return false;
+        }
+        self.apply_scroll(ScrollCommand::EndAutoScroll);
+        self.navigation_settle_deadline = None;
+        self.navigation_mode = NavigationMode::Idle;
+        self.bump_generation();
+        true
+    }
+
+    /// Integrate kinetic or autoscroll movement. Called from the event loop's
+    /// idle path, which holds a deadline while the model wants animating.
+    fn advance_movement(&mut self, now: Instant) {
+        if !self.scroll.wants_animation() {
+            return;
+        }
+        if let Some(autoscroll) = self.input.autoscroll {
+            // The anchor rides above whatever the scroll reuse path blits, so
+            // its own rectangle is repainted every frame rather than the
+            // whole canvas.
+            self.damage.add(autoscroll_anchor_rect(autoscroll));
+        }
+        if self.scroll.advance(now) {
+            self.finish_direct_scroll();
+        } else if !self.scroll.wants_animation() {
+            // Kinetic motion just ran out, or hit the document edge.
+            self.scroll.settle();
+            self.navigation_mode = NavigationMode::Idle;
+            self.bump_generation();
+        }
+    }
+
     fn handle_mouse_input(&mut self, state: ElementState, button: MouseButton) {
         if std::env::var_os("LEGE_INPUT_TRACE").is_some() {
             eprintln!(
@@ -1729,8 +2018,17 @@ impl ViewerApp {
                 self.scale_factor,
             );
         }
+        if button == MouseButton::Middle {
+            self.handle_middle_button(state);
+            return;
+        }
         if button != MouseButton::Left {
             return;
+        }
+        // Any other click is a deliberate act somewhere else in the document
+        // and ends the autoscroll rather than steering it.
+        if state == ElementState::Pressed {
+            self.cancel_autoscroll();
         }
         self.input.left_button_down = state == ElementState::Pressed;
         match state {
@@ -1853,7 +2151,7 @@ impl ViewerApp {
                 } else if geometry.track.contains(self.input.pointer_position) {
                     if self.input.modifiers.shift_key() {
                         let fraction = geometry.document_fraction_at(self.input.pointer_position.y);
-                        self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d {
+                        self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
                             x: self.scroll.position.x,
                             y: fraction
                                 * (self.layout.total_height * self.zoom
@@ -2185,7 +2483,7 @@ impl ViewerApp {
             placement.bounds.y
                 + (region.y - placement.view_box.y).clamp(0.0, placement.bounds.height)
         });
-        self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d {
+        self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
             x: self.scroll.position.x,
             y: target_y * self.zoom,
         }));
@@ -2275,13 +2573,13 @@ impl ViewerApp {
             Key::Named(NamedKey::ArrowDown) => self.fine_step(1.0),
             Key::Named(NamedKey::ArrowUp) => self.fine_step(-1.0),
             Key::Named(NamedKey::Home) => {
-                self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d::ZERO));
+                self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d::ZERO));
                 self.navigation_mode = NavigationMode::JumpLikely;
                 self.navigation_settle_deadline = Some(Instant::now() + Duration::from_millis(140));
                 self.bump_generation();
             }
             Key::Named(NamedKey::End) => {
-                self.scroll.apply(ScrollCommand::SetAbsolute(Vec2d {
+                self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
                     x: self.scroll.position.x,
                     y: self.scroll.max_position().y,
                 }));
@@ -3352,6 +3650,9 @@ impl ViewerApp {
                     placement.destination,
                     ImageSampling::Nearest,
                 );
+            }
+            if let Some(autoscroll) = self.input.autoscroll {
+                paint_autoscroll_anchor(&mut scene, &self.theme, autoscroll);
             }
         }
         self.metrics.damaged_pixels = self
@@ -4725,6 +5026,12 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Pointer positions are physical pixels, so an autoscroll
+                // anchor recorded at the old scale now points somewhere else
+                // on the document. Ending the gesture is the honest response;
+                // silently re-anchoring would move the page under the reader.
+                self.cancel_autoscroll();
+                self.touch_pan = None;
                 self.scale_factor = scale_factor;
                 if let Some(window) = &self.window {
                     let size = window.inner_size();
@@ -4742,6 +5049,7 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.metrics.input_received = Some(Instant::now());
+                self.cancel_autoscroll();
                 if self.sidebar_visible
                     && self
                         .app_layout
@@ -4786,6 +5094,9 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             WindowEvent::MouseInput { state, button, .. } => {
                 self.handle_mouse_input(state, button);
             }
+            WindowEvent::Touch(touch) => {
+                self.handle_touch(&touch);
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.input.modifiers = modifiers.state();
             }
@@ -4811,6 +5122,8 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             }
             WindowEvent::Ime(Ime::Enabled | Ime::Disabled) => {}
             WindowEvent::Focused(false) => {
+                self.cancel_autoscroll();
+                self.touch_pan = None;
                 self.input.capture = None;
                 self.hovered_control = None;
                 self.commit_resolution_edit();
@@ -4830,6 +5143,7 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+        self.advance_movement(now);
         if self.scrollbar.reveal_preview_if_due(now) {
             self.damage.mark_full();
             self.request_redraw();
@@ -4862,6 +5176,12 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             self.hovered_link
                 .as_ref()
                 .and_then(LinkHoverState::peek_deadline),
+            // Momentum and autoscroll are the only self-driving motion in the
+            // viewer; while either runs, the loop wakes on a frame cadence
+            // instead of waiting for input.
+            self.scroll
+                .wants_animation()
+                .then(|| now + MOVEMENT_FRAME_INTERVAL),
         ]
         .into_iter()
         .flatten()

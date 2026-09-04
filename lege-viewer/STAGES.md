@@ -43,7 +43,9 @@ their build orders are historical where they conflict with this file.
 ## Current position
 
 Stages 0 through 5 and the first seek/scan optimization pass are substantially
-complete. Stage 6 is next.
+complete. Stage 6 is in progress: the movement model, the pointer and touch
+gestures that feed it, and trace replay are done; page snapping and the
+scrollbar-track refinements are not.
 
 | Stage | Result | Status |
 |---|---|---|
@@ -54,7 +56,7 @@ complete. Stage 6 is next.
 | Optimization A | Predictive seek/scan and adaptive viewing | Complete |
 | 4 | Semantic navigation and link peek | Complete |
 | 5 | Renderer-aware display | Complete |
-| 6 | Movement and interaction completion | Next |
+| 6 | Movement and interaction completion | In progress |
 | 7 | Opening, recovery, and document reliability | Planned |
 | 8 | Accessibility and platform integration | Planned |
 | 9 | Product polish and optional reader extensions | Later |
@@ -221,29 +223,61 @@ Exit gate:
 
 ### Stage 6 — Movement and interaction completion
 
+Status: in progress (2026-09-04).
+
 Purpose: complete the one-scroll-model interaction vocabulary without changing
 the already-good direct paging and settle behavior.
 
-Candidate work:
+Done:
 
-- drag-to-pan and middle-mouse autoscroll;
-- fine movement commands and configurable wheel scaling;
-- kinetic movement for touch-capable input, with no animation imposed on
-  direct wheel or thumb manipulation;
+- **Drag-to-pan and middle-mouse autoscroll.** The middle button presses into
+  a 1:1 grab-pan; released without moving inside 400 ms it promotes to
+  autoscroll anchored at the press, steered by pointer displacement through a
+  dead zone and a quadratic speed curve. The anchor is drawn on the canvas —
+  an invisible mode that moves the document on its own is not acceptable — and
+  is cancelled by any wheel, any other click, focus loss, or a DPI change,
+  because a physical-pixel anchor stops meaning anything after a scale change.
+- **Configurable wheel scaling.** `MovementTuning` carries the wheel line
+  distance, a single scale over every wheel and touchpad delta, and the
+  kinetic preference. It is persisted in the viewer settings file (version 2;
+  version 1 files load with defaults) and sanitized on load, since the file is
+  hand-editable and a zero or a NaN there would freeze every scroll. Drag and
+  touch panning stay 1:1 and deliberately ignore the scale.
+- **Kinetic movement.** A released drag or touch flick launches momentum at
+  the model's time-smoothed velocity, decays it exponentially, and stops at
+  the document edge or below a visible-motion threshold. It is off by default
+  for pointer drags — momentum on a mouse reads as lag — and always on for
+  touch, where its absence reads as a broken surface. Any direct input
+  cancels it immediately. A long stall integrates at most one slow frame, so
+  a suspended machine cannot teleport the document.
+- **Touch panning** through `WindowEvent::Touch`, one finger at a time.
+- **Deterministic trace recording and replay.** Every movement source funnels
+  through one recording helper, so a trace is complete by construction.
+  `LEGE_INPUT_TRACE=<path>` writes a JSON trace on exit; replay steps a
+  simulated clock at the event loop's own 8 ms animation cadence rather than
+  reading wall time, so a trace containing a fling reproduces the same final
+  position on any machine. Paging is explicitly not recordable: its meaning
+  lives in line sets, not in the scroll model.
+
+Remaining:
+
 - page snapping as an opt-in command rather than a second layout mode;
-- refined track click, thumb capture, pointer cancellation, and DPI-transition
-  behavior;
-- deterministic input trace recording and replay.
+- refined track click and thumb capture behavior;
+- fine movement commands beyond the existing arrow-key line step.
 
 This stage should be scoped by actual personal use. Features that add no value
 to the intended viewer can be omitted rather than implemented for parity.
 
 Exit gate:
 
-- every movement source feeds the same `f64` scroll model;
-- Page Up/Down behavior established in Optimization A is unchanged;
+- every movement source feeds the same `f64` scroll model — met: pointer,
+  wheel, touch, autoscroll, momentum and the scrollbar thumb all apply
+  `ScrollCommand` to the one model;
+- Page Up/Down behavior established in Optimization A is unchanged — met:
+  `PageStep` is still resolved by `paging.rs` and was not touched;
 - direct manipulation remains immediate during raster activity;
-- replayable traces produce the same final anchor and viewport.
+- replayable traces produce the same final anchor and viewport — met for the
+  scroll model; anchor-level replay is not yet asserted.
 
 ### Stage 7 — Opening, recovery, and document reliability
 

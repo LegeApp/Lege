@@ -6,8 +6,12 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::document::ColorMode;
+use crate::scroll::MovementTuning;
 
-const SETTINGS_VERSION: u32 = 1;
+/// Bumped when a stored field changes meaning. Older files are still read:
+/// fields added since carry `#[serde(default)]`, so a version 1 file loads as
+/// a version 2 file with default movement tuning.
+const SETTINGS_VERSION: u32 = 2;
 const SAVE_COALESCE_DELAY: Duration = Duration::from_millis(75);
 static SETTINGS_SENDER: OnceLock<mpsc::Sender<ViewerSettings>> = OnceLock::new();
 
@@ -49,6 +53,7 @@ impl From<StoredColorMode> for ColorMode {
 pub struct ViewerSettings {
     pub trim_enabled: bool,
     pub color_mode: ColorMode,
+    pub movement: MovementTuning,
 }
 
 impl Default for ViewerSettings {
@@ -56,15 +61,56 @@ impl Default for ViewerSettings {
         Self {
             trim_enabled: false,
             color_mode: ColorMode::Original,
+            movement: MovementTuning::default(),
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct StoredMovement {
+    line_wheel_distance: f64,
+    wheel_scale: f64,
+    kinetic_enabled: bool,
+}
+
+impl Default for StoredMovement {
+    fn default() -> Self {
+        MovementTuning::default().into()
+    }
+}
+
+impl From<MovementTuning> for StoredMovement {
+    fn from(value: MovementTuning) -> Self {
+        Self {
+            line_wheel_distance: value.line_wheel_distance,
+            wheel_scale: value.wheel_scale,
+            kinetic_enabled: value.kinetic_enabled,
+        }
+    }
+}
+
+impl From<StoredMovement> for MovementTuning {
+    fn from(value: StoredMovement) -> Self {
+        // Sanitized on the way in: the file is user-editable and a zero or a
+        // NaN here would freeze or crash every scroll.
+        Self {
+            line_wheel_distance: value.line_wheel_distance,
+            wheel_scale: value.wheel_scale,
+            kinetic_enabled: value.kinetic_enabled,
+        }
+        .sanitized()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 struct StoredSettings {
     version: u32,
     trim_enabled: bool,
     color_mode: StoredColorMode,
+    #[serde(default)]
+    movement: StoredMovement,
 }
 
 impl ViewerSettings {
@@ -76,12 +122,13 @@ impl ViewerSettings {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<StoredSettings>(&bytes).ok())
         {
-            Some(stored) if stored.version == SETTINGS_VERSION => Self {
+            Some(stored) if stored.version <= SETTINGS_VERSION => Self {
                 trim_enabled: stored.trim_enabled,
                 color_mode: stored.color_mode.into(),
+                movement: stored.movement.into(),
             },
             Some(_) => {
-                eprintln!("Lege Viewer ignored settings with an unsupported version");
+                eprintln!("Lege Viewer ignored settings written by a newer version");
                 Self::default()
             }
             None => Self::default(),
@@ -123,6 +170,7 @@ fn write_settings_to_path(settings: ViewerSettings, path: &std::path::Path) -> s
         version: SETTINGS_VERSION,
         trim_enabled: settings.trim_enabled,
         color_mode: settings.color_mode.into(),
+        movement: settings.movement.into(),
     };
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -177,6 +225,7 @@ mod tests {
             ViewerSettings {
                 trim_enabled: false,
                 color_mode: ColorMode::Original,
+                ..ViewerSettings::default()
             },
             &path,
         )
@@ -185,6 +234,11 @@ mod tests {
             ViewerSettings {
                 trim_enabled: true,
                 color_mode: ColorMode::Night,
+                movement: MovementTuning {
+                    line_wheel_distance: 60.0,
+                    wheel_scale: 1.5,
+                    kinetic_enabled: true,
+                },
             },
             &path,
         )
@@ -196,5 +250,33 @@ mod tests {
         assert_eq!(stored.version, SETTINGS_VERSION);
         assert!(stored.trim_enabled);
         assert!(matches!(stored.color_mode, StoredColorMode::Night));
+        assert_eq!(stored.movement.wheel_scale, 1.5);
+        assert!(stored.movement.kinetic_enabled);
+    }
+
+    #[test]
+    fn a_version_one_file_loads_with_default_movement_tuning() {
+        let stored: StoredSettings = serde_json::from_str(
+            r#"{"version":1,"trim-enabled":true,"color-mode":"warm-paper"}"#,
+        )
+        .expect("a settings file written before movement tuning existed");
+        assert_eq!(stored.version, 1);
+        let movement: MovementTuning = stored.movement.into();
+        assert_eq!(movement, MovementTuning::default());
+    }
+
+    #[test]
+    fn a_hand_edited_zero_wheel_scale_is_repaired_on_load() {
+        let stored: StoredSettings = serde_json::from_str(
+            r#"{"version":2,"trim-enabled":false,"color-mode":"original",
+                "movement":{"line-wheel-distance":0.0,"wheel-scale":0.0,"kinetic-enabled":false}}"#,
+        )
+        .expect("hand-edited settings");
+        let movement: MovementTuning = stored.movement.into();
+        assert_eq!(movement.wheel_scale, MovementTuning::MIN_WHEEL_SCALE);
+        assert_eq!(
+            movement.line_wheel_distance,
+            MovementTuning::MIN_LINE_DISTANCE
+        );
     }
 }
