@@ -1,9 +1,60 @@
 # lege-pdf-print implementation plan
 
+> **Status, 2026-09-04: phases 0-4 are built.** The crate exists, the CLI
+> prints, and prepress is still deferred exactly as §7 records. What is
+> written below is the design and its reasoning, kept as authored; the
+> deltas between the plan and the implementation are listed under
+> "What was built" immediately after this section. Governing ledger record:
+> `@lege-ecosystem.work.office-printing`.
+
 Plan for a printing submodule under `lege-pdf/`. Nothing in the ecosystem
-prints today: a repo-wide search for `cups`, `winspool`, `PrintDlg` and
-`StartDoc` returns nothing, and `lege-pdf/render` has no notion of a print
-job, a sheet, a margin, or an imposition.
+printed when this was written: a repo-wide search for `cups`, `winspool`,
+`PrintDlg` and `StartDoc` returned nothing, and `lege-pdf/render` had no
+notion of a print job, a sheet, a margin, or an imposition.
+
+---
+
+## What was built
+
+Everything in §4 phases 0-4, with these deliberate departures from the plan
+as drafted:
+
+- **`impose` does not apply copies or collation.** It emits the sheet run for
+  one copy; `expand_copies` is separate. Every target spooler takes a native
+  copy count, a preview wants one copy rather than five, and doing both
+  prints copies² pages.
+- **The N-up grid is read in the sheet's own frame**, not transposed for a
+  landscape sheet. Transposing keeps a cell's shape fixed relative to the
+  paper but wastes it: two-up A4 onto A4 falls from 0.707 to 0.500 and six-up
+  from 0.354 to 0.333. See `@lege-ecosystem.decision.nup-grid-is-read-in-the-sheets-own-frame`.
+- **`Orientation::Auto` turns the sheet, not the page.** Turning both makes
+  `Auto` a literal no-op, since the two produce the same printout. A pinned
+  Portrait or Landscape fixes the sheet and lets the page take the quarter
+  turn instead — the conventional "auto-rotate and centre".
+- **Composition pushes all scaling into the renderer** by sizing each page
+  raster from the placement transform's column magnitudes, then snapping what
+  remains to an exact signed permutation when it is within tolerance. Quarter
+  turns, mirrors and scale then blit as byte copies. Shears and off-axis
+  rotations fall back to nearest-neighbour rather than failing.
+- **Banding is exposed**, not just used: `compose_sheet_banded` hands out
+  `Band`s so a spooler that streams never holds a whole sheet, and
+  `sheet_pixel_size` reports the raster size without composing.
+- **CUPS pass-through pipes the PDF to `lp` on stdin.** No temp file, and no
+  `tempfile` dependency outside dev.
+- **The Windows backend is real `winspool`/GDI FFI**, compile-verified
+  against the `x86_64-pc-windows-msvc` target but not runtime-tested. It is
+  the one platform that reports true hardware margins, via
+  `GetDeviceCaps(PHYSICALOFFSETX/Y, …)`.
+- **`--dry-run` contacts no spooler at all** unless `--query-device` is
+  passed; it plans against an assumed device and says so in its JSON. That
+  keeps the agent-facing path genuinely side-effect-free on a machine with a
+  real printer.
+- **`print` is not an MCP tool.** Spooling actuates hardware, and a
+  planning-only tool would be a weaker duplicate of `--dry-run`.
+
+Not built, and not in the plan either: the GUI print dialog and preview
+(§4 phase 4's second bullet). `preview.rs` renders a sheet to PNG, so the
+remaining work is the dialog itself.
 
 ```text
 lege-pdf/
