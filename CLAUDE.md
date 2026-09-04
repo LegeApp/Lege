@@ -17,6 +17,7 @@ Lege is a fully-automatic PDF processor for E-Ink ebook readers. It renders PDF 
 | `lege-gpu` | `lege-gpu/` | wgpu GPU compute: binarization, resize, custom ONNX runtime |
 | `lege-ocr` | `lege-ocr/` | Shared OCR library + `lege-ocr-debug` |
 | `lege-pdf-write` | `lege-pdf/write/` | Typed append-only PDF writer |
+| `lege-pdf-print` | `lege-pdf/print/` | Office printing: imposition, sheet composition, CUPS/winspool spooling |
 | Future renderer | `lege-pdf/render/` | Reserved for the renderer's independent workspace |
 | `jbig2enc-rust` | `lege-codecs/jbig2enc-rust/` | In-tree JBIG2 encoder/decoder (patched into `lege`) |
 | `jp2lam` | `lege-codecs/jp2lam/` | In-tree JPEG2000 codec (patched into `lege`) |

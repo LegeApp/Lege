@@ -7,6 +7,7 @@
 #   * lege-pdf/write — typed, append-only PDF emitter
 #   * lege-pdf/read  — Lege-owned document intake/read seam
 #   * lege-pdf/agent — agent-facing structured PDF CLI (`lege-pdf`)
+#   * lege-pdf/print — office printing: imposition, sheet composition, spooling
 #   * lege-pdf/render— native Lege PDF document and rendering engine
 #   * lege-codecs/*  — JBIG2 / JPEG2000 / DjVu codecs (own build graphs — excluded,
 #                      linked codecs are wired in via [patch] below)
