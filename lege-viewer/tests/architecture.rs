@@ -1418,3 +1418,206 @@ fn real_pdf_conductor_reaches_the_tile_cache_without_blocking_the_caller() {
         started.elapsed()
     );
 }
+
+/// Stage 7: a page the renderer cannot compile must not stop the document,
+/// and must not be retried forever either.
+#[derive(Debug)]
+struct BrokenPageEngine {
+    inner: SyntheticEngine,
+    broken: PageIndex,
+}
+
+struct BrokenCompileWorker {
+    inner: Box<dyn lege_viewer::document::engine::DocumentCompileWorker>,
+    broken: PageIndex,
+}
+
+impl lege_viewer::document::engine::DocumentCompileWorker for BrokenCompileWorker {
+    fn compile_page(
+        &mut self,
+        page: PageIndex,
+        page_to_doc: lege_viewer::geometry::Affine,
+        cancellation: &CancellationFlag,
+    ) -> Result<
+        Arc<lege_viewer::document::engine::CompiledArtifacts>,
+        lege_viewer::document::engine::DocumentEngineError,
+    > {
+        if page == self.broken {
+            return Err(
+                lege_viewer::document::engine::DocumentEngineError::Engine(
+                    "synthetic page defect".to_owned(),
+                ),
+            );
+        }
+        self.inner.compile_page(page, page_to_doc, cancellation)
+    }
+}
+
+impl DocumentEngine for BrokenPageEngine {
+    fn descriptor(&self) -> &lege_viewer::document::engine::DocumentDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn create_compile_worker(
+        &self,
+    ) -> Box<dyn lege_viewer::document::engine::DocumentCompileWorker> {
+        Box::new(BrokenCompileWorker {
+            inner: self.inner.create_compile_worker(),
+            broken: self.broken,
+        })
+    }
+
+    fn create_raster_worker(&self) -> Box<dyn lege_viewer::document::engine::DocumentRasterWorker> {
+        self.inner.create_raster_worker()
+    }
+}
+
+#[test]
+fn a_broken_page_is_reported_set_aside_and_does_not_stop_the_document() {
+    use lege_viewer::document::{
+        ConductorHandle, MemoryArbiter, SessionUpdate, TileCache, UpdateQueue, ViewportPlanner,
+    };
+    use lege_viewer::geometry::Vec2d;
+
+    let engine: Arc<dyn DocumentEngine> = Arc::new(BrokenPageEngine {
+        inner: SyntheticEngine::new(8),
+        broken: PageIndex(0),
+    });
+    let layout = Arc::new(PageLayoutIndex::build(
+        &engine.descriptor().page_geometries,
+        &Theme::default().metrics,
+    ));
+    let memory = MemoryArbiter::new(64 * 1024 * 1024);
+    let tiles = Arc::new(TileCache::new(engine.descriptor().id, memory.clone()));
+    let updates = UpdateQueue::new(256, Arc::new(TestWake::default()));
+    let conductor = ConductorHandle::spawn(
+        engine,
+        layout.clone(),
+        updates.clone(),
+        memory,
+        tiles.clone(),
+    )
+    .expect("spawn conductor over a document with a broken page");
+    // Tall enough that the broken first page and a healthy second page are
+    // visible together: a page-local failure must stay page-local.
+    let viewport = SizeF {
+        width: 800.0,
+        height: 1_800.0,
+    };
+    let intent = |generation: u64| {
+        ViewportPlanner::default().build(
+            generation,
+            &layout,
+            Vec2d::ZERO,
+            Vec2d::ZERO,
+            viewport,
+            1.0,
+            None,
+        )
+    };
+    conductor.publish_intent(intent(1));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut set_aside = false;
+    let mut healthy_tile = false;
+    let mut generation = 1;
+    while Instant::now() < deadline && !(set_aside && healthy_tile) {
+        for update in updates.drain() {
+            match update {
+                SessionUpdate::PageError {
+                    page, quarantined, ..
+                } => {
+                    assert_eq!(page, PageIndex(0), "only the broken page may fail");
+                    set_aside |= quarantined;
+                }
+                SessionUpdate::TileReady { key, .. } => {
+                    healthy_tile |= key.page != PageIndex(0);
+                }
+                _ => {}
+            }
+        }
+        generation += 1;
+        conductor.publish_intent(intent(generation));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        set_aside,
+        "the broken page was never set aside; it would be retried forever"
+    );
+    assert!(
+        healthy_tile,
+        "a page-local failure stopped the rest of the document from rendering"
+    );
+
+    // Once set aside it stays set aside: replanning must not resurrect it.
+    let settle = Instant::now() + Duration::from_millis(400);
+    let mut retries = 0;
+    while Instant::now() < settle {
+        for update in updates.drain() {
+            if matches!(update, SessionUpdate::PageError { .. }) {
+                retries += 1;
+            }
+        }
+        generation += 1;
+        conductor.publish_intent(intent(generation));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(conductor);
+    assert_eq!(
+        retries, 0,
+        "a quarantined page was compiled again on the next replan"
+    );
+}
+
+#[cfg(feature = "pdf-engine")]
+fn encrypted_pdf_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../lege-pdf/render/crates/pdf-document/tests/fixtures")
+        .join(name)
+}
+
+/// Stage 7: an encrypted document is a question, not a failure. The viewer has
+/// to be able to tell the two apart before it can ask it.
+#[cfg(feature = "pdf-engine")]
+#[test]
+fn an_encrypted_document_asks_for_a_password_rather_than_failing_to_open() {
+    use lege_viewer::document::engine::DocumentEngineError;
+    use lege_viewer::document::pdf_engine::PdfEngine;
+
+    // PDFium's own fixture; user password "hôtel".
+    let path = encrypted_pdf_fixture("encrypted_hello_world_r3.pdf");
+    let error = PdfEngine::open(&path, None).expect_err("locked document");
+    assert!(
+        matches!(error, DocumentEngineError::PasswordRequired),
+        "an encrypted document reported as {error} would send the reader to a file dialog"
+    );
+
+    let error =
+        PdfEngine::open(&path, Some("not the password")).expect_err("wrong password rejected");
+    assert!(
+        matches!(error, DocumentEngineError::IncorrectPassword),
+        "a mistyped password must be distinguishable from a broken file, not {error}"
+    );
+
+    let engine = PdfEngine::open(&path, Some("h\u{f4}tel")).expect("correct password opens");
+    assert_eq!(engine.descriptor().page_count, 1);
+}
+
+/// A corrupt file must not be mistaken for a locked one: offering a password
+/// field for a document no password can open is worse than saying it failed.
+#[cfg(feature = "pdf-engine")]
+#[test]
+fn a_malformed_document_is_not_reported_as_needing_a_password() {
+    use lege_viewer::document::engine::DocumentEngineError;
+    use lege_viewer::document::pdf_engine::PdfEngine;
+    use std::io::Write;
+
+    let mut file = tempfile::NamedTempFile::new().expect("temporary file");
+    file.write_all(b"%PDF-1.7\nthis is not a PDF body\n")
+        .expect("write malformed document");
+    let error = PdfEngine::open(file.path(), None).expect_err("malformed document rejected");
+    assert!(
+        matches!(error, DocumentEngineError::Engine(_)),
+        "a malformed document reported as {error} would prompt for a password that cannot exist"
+    );
+}

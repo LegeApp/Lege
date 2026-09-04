@@ -35,6 +35,7 @@ softbuffer-presenter = ["dep:softbuffer"]
 pdf-engine = [
     "dep:pdf-source",
     "dep:pdf-document",
+    "dep:pdf-security",
     "dep:pdf-content",
     "dep:pdf-text",
     "dep:pdf-page-ir",
@@ -63,6 +64,10 @@ lege-gpu = { path = "../lege-gpu", optional = true, features = ["presentation"] 
 
 pdf-source = { workspace = true, optional = true }
 pdf-document = { workspace = true, optional = true }
+# Needed only to tell "this document wants a password" apart from "this file
+# is broken": the distinction is a typed `SecurityError`, and a viewer that
+# matched on the message text would start failing silently the day it changed.
+pdf-security = { workspace = true, optional = true }
 pdf-content = { workspace = true, optional = true }
 pdf-text = { workspace = true, optional = true }
 pdf-page-ir = { workspace = true, optional = true }

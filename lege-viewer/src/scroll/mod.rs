@@ -6,4 +6,7 @@ pub mod paging;
 pub use anchor::ReadingAnchor;
 pub use history::{DocumentLocation, NavigationHistory};
 pub use model::{AxisDirection, MovementTuning, ScrollCommand, ScrollMode, ScrollModel};
-pub use paging::{NOTIONAL_ROWS_PER_PAGE, PagingDirection, notional_page_lines, paging_target};
+pub use paging::{
+    NOTIONAL_ROWS_PER_PAGE, PagingDirection, nearest_page_boundary, notional_page_lines,
+    paging_target,
+};

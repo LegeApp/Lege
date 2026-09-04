@@ -69,6 +69,9 @@ pub enum PointerCapture {
     },
     VerticalThumb(ScrollbarDragState),
     HorizontalThumb(ScrollbarDragState),
+    /// A held click on the scrollbar track, paging until the button is
+    /// released or the thumb arrives under the pointer.
+    TrackRepeat(crate::chrome::TrackRepeat),
     SidebarResize {
         initial_width: f64,
     },

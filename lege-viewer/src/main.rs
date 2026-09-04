@@ -9,6 +9,8 @@ use lege_viewer::ViewerApp;
 use lege_viewer::cli::{LaunchMode, USAGE, parse_launch_config};
 use lege_viewer::document::empty::EmptyEngine;
 use lege_viewer::document::engine::DocumentEngine;
+#[cfg(feature = "pdf-engine")]
+use lege_viewer::document::engine::DocumentEngineError;
 use lege_viewer::document::session::{UpdateQueue, WakeSink};
 use lege_viewer::document::synthetic::SyntheticEngine;
 use lege_viewer::event::ViewerEvent;
@@ -48,14 +50,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let updates = UpdateQueue::new(4096, wake);
 
-    let engine: Arc<dyn DocumentEngine> = match open_engine(config.mode) {
-        Ok(engine) => engine,
+    let startup = match open_engine(config.mode) {
+        Ok(startup) => startup,
         Err(error) => {
             report_startup_error(&error.to_string());
             std::process::exit(1);
         }
     };
+    // A document named on the command line that turns out to be encrypted
+    // must reach the viewer's password prompt, not a fatal error: exiting here
+    // is exactly the command-line workaround the prompt exists to remove.
+    let (engine, locked): (Arc<dyn DocumentEngine>, Option<std::path::PathBuf>) = match startup {
+        Startup::Ready(engine) => (engine, None),
+        Startup::NeedsPassword(path) => (Arc::new(EmptyEngine::new()), Some(path)),
+    };
     let mut app = ViewerApp::new_with_presenter(engine, updates, config.presenter)?;
+    if let Some(path) = locked {
+        app.begin_password_prompt(path);
+    }
     app.set_event_proxy(event_loop.create_proxy());
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -72,18 +84,32 @@ fn report_startup_error(message: &str) {
         .show();
 }
 
-fn open_engine(mode: LaunchMode) -> Result<Arc<dyn DocumentEngine>, Box<dyn std::error::Error>> {
+/// What the launch arguments produced: a document, or a locked one the viewer
+/// has to ask about once its window is up.
+#[derive(Debug)]
+enum Startup {
+    Ready(Arc<dyn DocumentEngine>),
+    NeedsPassword(std::path::PathBuf),
+}
+
+fn open_engine(mode: LaunchMode) -> Result<Startup, Box<dyn std::error::Error>> {
     match mode {
-        LaunchMode::Empty => Ok(Arc::new(EmptyEngine::new())),
-        LaunchMode::Synthetic { page_count } => Ok(Arc::new(SyntheticEngine::new(page_count))),
+        LaunchMode::Empty => Ok(Startup::Ready(Arc::new(EmptyEngine::new()))),
+        LaunchMode::Synthetic { page_count } => Ok(Startup::Ready(Arc::new(
+            SyntheticEngine::new(page_count),
+        ))),
         LaunchMode::Pdf(path) => {
             #[cfg(feature = "pdf-engine")]
             {
-                Ok(Arc::new(
-                    lege_viewer::document::pdf_engine::PdfEngine::open(path, None).map_err(
-                        |error| std::io::Error::other(format!("failed to open PDF: {error}")),
-                    )?,
-                ))
+                match lege_viewer::document::pdf_engine::PdfEngine::open(&path, None) {
+                    Ok(engine) => Ok(Startup::Ready(Arc::new(engine))),
+                    Err(DocumentEngineError::PasswordRequired) => {
+                        Ok(Startup::NeedsPassword(path))
+                    }
+                    Err(error) => {
+                        Err(std::io::Error::other(format!("failed to open PDF: {error}")).into())
+                    }
+                }
             }
             #[cfg(not(feature = "pdf-engine"))]
             {

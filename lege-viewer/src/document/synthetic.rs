@@ -272,6 +272,8 @@ fn raster_synthetic_tile(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]

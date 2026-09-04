@@ -337,6 +337,9 @@ struct Conductor {
     queued: HashSet<WorkKey>,
     in_flight: HashMap<WorkKey, InFlightWork>,
     quarantined_pages: HashSet<PageIndex>,
+    /// How many times each page has failed for a reason other than
+    /// cancellation.
+    page_failures: HashMap<PageIndex, u32>,
     indexed_pages: HashSet<PageIndex>,
     index_cursor: u32,
     compile_workers: usize,
@@ -407,6 +410,7 @@ impl Conductor {
             queued: HashSet::new(),
             in_flight: HashMap::new(),
             quarantined_pages: HashSet::new(),
+            page_failures: HashMap::new(),
             indexed_pages: HashSet::new(),
             index_cursor: 0,
             compile_workers,
@@ -1157,7 +1161,9 @@ impl Conductor {
     }
 
     fn report_page_error(&mut self, page: PageIndex, error: DocumentEngineError) {
-        let quarantined = matches!(error, DocumentEngineError::Panic(_));
+        let failures = self.page_failures.entry(page).or_insert(0);
+        *failures = failures.saturating_add(1);
+        let quarantined = page_is_exhausted(*failures, &error);
         if quarantined {
             self.quarantined_pages.insert(page);
         }
@@ -1481,6 +1487,21 @@ fn raster_job_identity(job: &RasterJob) -> (u64, WorkKey, CancellationFlag, Work
     }
 }
 
+/// A page that has failed this many times is not going to succeed on the next
+/// attempt either.
+///
+/// Without a limit the planner re-requests a permanently broken page on every
+/// replan: a worker stays busy on it, the same error is republished, and the
+/// viewer answers each report with a full-canvas redraw — an idle document
+/// burning a core forever. A panic is conclusive on the first occurrence; an
+/// ordinary error gets one retry, because a transient allocation or
+/// cancellation race should not set a page aside permanently.
+const MAX_PAGE_FAILURES: u32 = 2;
+
+fn page_is_exhausted(failures: u32, error: &DocumentEngineError) -> bool {
+    matches!(error, DocumentEngineError::Panic(_)) || failures >= MAX_PAGE_FAILURES
+}
+
 fn remove_matching_in_flight(
     in_flight: &mut HashMap<WorkKey, InFlightWork>,
     key: WorkKey,
@@ -1521,6 +1542,24 @@ fn vertical_distance(rect: RectF, viewport: RectF) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panicking_page_is_set_aside_at_once_and_a_failing_one_after_a_retry() {
+        let panic = DocumentEngineError::Panic("worker".to_owned());
+        assert!(
+            page_is_exhausted(1, &panic),
+            "a panic is conclusive the first time"
+        );
+        let broken = DocumentEngineError::Engine("bad object".to_owned());
+        assert!(
+            !page_is_exhausted(1, &broken),
+            "an ordinary failure earns one retry"
+        );
+        assert!(
+            page_is_exhausted(2, &broken),
+            "the second identical failure stops the retry loop"
+        );
+    }
 
     #[test]
     fn compile_needs_promote_in_place_without_losing_background_work() {

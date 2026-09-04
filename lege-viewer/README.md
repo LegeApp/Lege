@@ -79,7 +79,13 @@ tools are operational:
   images retain source color;
 - crop-and-palette variant identities across exact tiles, fallback tiles, and
   canonical previews, preventing stale pixels from being promoted as current;
-- persisted viewer-wide trim and palette settings.
+- persisted viewer-wide trim and palette settings;
+- an on-canvas password prompt for encrypted documents, distinguishing "needs
+  a password" from a corrupt file and from an encryption scheme the renderer
+  cannot decrypt, on both the toolbar and the command-line open paths;
+- page-local failure placeholders that name the page and the reason, with a
+  bounded retry so a permanently broken page is set aside rather than
+  re-requested on every replan.
 
 The PDF engine and both presenters are enabled in the default build. CPU
 rasterization remains the default. The decoded-image WGPU renderer can also
@@ -131,10 +137,15 @@ atlas bytes and occupancy, uploads, draw/vertex counts, compose/present time,
 and conductor queue depths. Other values do not enable the diagnostic stream.
 
 Current keyboard controls are PageUp/PageDown or Space, arrow keys, Home/End,
-`+`/`-` zoom, `W` fit width, `P` fit page, `B` contents sidebar, `M` margin
+`+`/`-` zoom, `W` fit width, `P` fit page, `S` snap to the nearest page
+boundary, `B` contents sidebar, `M` margin
 trim, `N` Original/Night/Warm Paper cycle, Alt+Left/
 Alt+Right history, Ctrl+F search, F3/Shift+F3 search navigation, Ctrl+C copy,
-and F11 fullscreen. Search editing supports IME composition, selection,
+and F11 fullscreen. Arrow keys step one text line; Shift makes the step a
+quarter and Control triples it, and Left/Right pan horizontally once a zoom has
+pushed the page past the canvas. On the scrollbar, a held track click repeats,
+and shift-click or middle-click centres the thumb under the pointer and keeps
+it there while the button is down. Search editing supports IME composition, selection,
 cut/copy/paste, and replacement. The Options popup contains the
 Original/Night/Warm/Earth/Sea appearance choices. The Process toolbar section
 opens a resizable processing card with explicit Run, Current page, and Profile
@@ -171,7 +182,7 @@ against a real PDF.
 - true text/vector-first display-list filtering (the current structural tier
   uses compiled text geometry) and renderer-side in-place tile upgrades;
 - renderer tile-run batching;
-- file/password dialogs and broader chrome polish/accessibility;
+- broader chrome polish and accessibility;
 - OCR-backed search for image-only documents and more sophisticated
   synthesized-outline scoring;
 - GPU offscreen image-difference certification, cross-platform visual

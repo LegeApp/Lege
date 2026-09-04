@@ -62,7 +62,7 @@ impl PdfEngine {
         );
         let snapshot = Arc::new(
             DocumentSnapshot::open_with_password(source, DocumentLimits::default(), password)
-                .map_err(|error| DocumentEngineError::Engine(error.to_string()))?,
+                .map_err(classify_open_error)?,
         );
         let mut geometries = Vec::with_capacity(snapshot.page_count() as usize);
         for number in 0..snapshot.page_count() {
@@ -811,6 +811,24 @@ fn ingest_rgba_to_xrgb(
     })
 }
 
+/// Separate an unanswered password question from an actually broken file.
+///
+/// The renderer already reports this as a typed `SecurityError`; flattening it
+/// to a message here would leave the viewer with nothing to match on but
+/// English prose, and no way to tell a reader whose document is merely locked
+/// that it is worth typing a password.
+fn classify_open_error(error: pdf_document::DocumentError) -> DocumentEngineError {
+    match error {
+        pdf_document::DocumentError::Security(pdf_security::SecurityError::PasswordRequired) => {
+            DocumentEngineError::PasswordRequired
+        }
+        pdf_document::DocumentError::Security(pdf_security::SecurityError::IncorrectPassword) => {
+            DocumentEngineError::IncorrectPassword
+        }
+        other => DocumentEngineError::Engine(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -819,7 +837,8 @@ mod tests {
 
     use pdf_render_api::{HostPage, OutputFormat};
 
-    use super::{decode_geometry_scalar, ingest_rgba_to_xrgb};
+    use super::{DocumentEngineError, classify_open_error, decode_geometry_scalar,
+        ingest_rgba_to_xrgb};
 
     fn host_page(width: u32, height: u32, stride: usize, pixels: Vec<u8>) -> HostPage {
         HostPage {
@@ -855,6 +874,31 @@ mod tests {
         );
         let surface = ingest_rgba_to_xrgb(&host).expect("valid padded row");
         assert_eq!(&*surface.pixels, &[0x0012_3456, 0x00aa_bbcc]);
+    }
+
+    #[test]
+    fn a_locked_document_is_reported_as_a_question_not_a_failure() {
+        assert!(matches!(
+            classify_open_error(pdf_security::SecurityError::PasswordRequired.into()),
+            DocumentEngineError::PasswordRequired
+        ));
+        assert!(matches!(
+            classify_open_error(pdf_security::SecurityError::IncorrectPassword.into()),
+            DocumentEngineError::IncorrectPassword
+        ));
+    }
+
+    #[test]
+    fn an_unsupported_encryption_scheme_is_a_failure_not_a_password_prompt() {
+        // Nothing the reader can type opens a document the renderer cannot
+        // decrypt, so it must not be offered a password field.
+        let error = classify_open_error(
+            pdf_security::SecurityError::UnsupportedScheme(
+                pdf_security::EncryptionScheme::None,
+            )
+            .into(),
+        );
+        assert!(matches!(error, DocumentEngineError::Engine(_)));
     }
 
     #[test]

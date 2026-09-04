@@ -42,10 +42,10 @@ their build orders are historical where they conflict with this file.
 
 ## Current position
 
-Stages 0 through 5 and the first seek/scan optimization pass are substantially
-complete. Stage 6 is in progress: the movement model, the pointer and touch
-gestures that feed it, and trace replay are done; page snapping and the
-scrollbar-track refinements are not.
+Stages 0 through 6 and the first seek/scan optimization pass are substantially
+complete. Stage 7 is in progress: the encrypted-document password flow and
+page-local failure handling are done; reload/reopen invalidation, the corpus
+cases, and the release soak tests are not.
 
 | Stage | Result | Status |
 |---|---|---|
@@ -56,8 +56,8 @@ scrollbar-track refinements are not.
 | Optimization A | Predictive seek/scan and adaptive viewing | Complete |
 | 4 | Semantic navigation and link peek | Complete |
 | 5 | Renderer-aware display | Complete |
-| 6 | Movement and interaction completion | In progress |
-| 7 | Opening, recovery, and document reliability | Planned |
+| 6 | Movement and interaction completion | Complete |
+| 7 | Opening, recovery, and document reliability | In progress |
 | 8 | Accessibility and platform integration | Planned |
 | 9 | Product polish and optional reader extensions | Later |
 
@@ -223,7 +223,7 @@ Exit gate:
 
 ### Stage 6 — Movement and interaction completion
 
-Status: in progress (2026-09-04).
+Status: substantially complete (2026-09-04).
 
 Purpose: complete the one-scroll-model interaction vocabulary without changing
 the already-good direct paging and settle behavior.
@@ -251,6 +251,33 @@ Done:
   cancels it immediately. A long stall integrates at most one slow frame, so
   a suspended machine cannot teleport the document.
 - **Touch panning** through `WindowEvent::Touch`, one finger at a time.
+- **Page snapping as a command.** `S` moves the reading position to the
+  nearest page boundary and settles exactly the way a jump does. It is a
+  command and not a second layout mode: continuous scrolling is untouched,
+  nothing snaps on its own, and a position already on a boundary reports no
+  movement rather than restarting the settle timer for nothing. The nearest
+  boundary is clamped into the scroll range, so a short last page snaps to the
+  end of the document instead of overscrolling.
+- **Track click and thumb capture.** A click on the track pages once and then
+  repeats while the button is held, after a 400 ms pause so a single
+  deliberate page is not mistaken for a run; the repeat stops when the thumb
+  arrives under the pointer, and a stalled frame schedules the next step from
+  now rather than releasing a burst of catch-up pages. Shift-click and
+  middle-click are "scroll here": the thumb centres under the pointer and the
+  gesture continues as a thumb drag without being released first — middle-click
+  on the scrollbar previously did nothing at all. Focus loss ends every pointer
+  gesture, the thumb drag, the held repeat and the processing-panel resize
+  included, because they all live in one `capture` field and the release event
+  is going to another window.
+- **Fine movement commands.** Arrow keys still step one text line of the page
+  being read. Shift is the precise quarter step and Control the coarse triple
+  step; an ambiguous Shift+Control resolves to the smaller of the two, and Alt
+  keeps belonging to the history commands. Left and Right pan horizontally by a
+  tenth of the canvas — clamped so a narrow pane still moves visibly and an
+  ultrawide one does not fling the page sideways — and do nothing at all when
+  the document already fits, rather than pretending to move. There is no
+  horizontal scrollbar, so this is the only keyboard way to reach content that
+  a zoom has pushed off the side.
 - **Deterministic trace recording and replay.** Every movement source funnels
   through one recording helper, so a trace is complete by construction.
   `LEGE_INPUT_TRACE=<path>` writes a JSON trace on exit; replay steps a
@@ -259,14 +286,20 @@ Done:
   position on any machine. Paging is explicitly not recordable: its meaning
   lives in line sets, not in the scroll model.
 
-Remaining:
+Deliberately omitted:
 
-- page snapping as an opt-in command rather than a second layout mode;
-- refined track click and thumb capture behavior;
-- fine movement commands beyond the existing arrow-key line step.
+- **Held-track repeat that re-evaluates its direction.** A held click keeps the
+  direction it started with. Reversing mid-hold because the thumb overshot
+  produces an oscillation, not a control.
+- **Cursor-leave cancellation of a drag.** Dragging the thumb past the window
+  edge is normal and must keep working; the platform's implicit pointer grab
+  delivers the release, and focus loss is the honest cancellation point.
+- **A horizontal scrollbar.** Horizontal movement is a zoomed-in special case
+  in a reader, and drag, touch and the arrow keys already reach it. A permanent
+  second bar would cost canvas height on every page that does not need it.
 
-This stage should be scoped by actual personal use. Features that add no value
-to the intended viewer can be omitted rather than implemented for parity.
+This stage was scoped by actual personal use. Features that add no value to the
+intended viewer were omitted rather than implemented for parity.
 
 Exit gate:
 
@@ -279,16 +312,46 @@ Exit gate:
 - replayable traces produce the same final anchor and viewport — met for the
   scroll model; anchor-level replay is not yet asserted.
 
+Every new movement source funnels through `ViewerApp::apply_scroll`, so the
+snap command, the track gestures and the fine steps are all recorded in a
+trace by construction.
+
 ### Stage 7 — Opening, recovery, and document reliability
+
+Status: in progress (2026-09-04).
 
 Purpose: make the usable core dependable across the documents it claims to
 open before spending time on visual polish.
 
-Implement:
+Done:
 
-- encrypted-document password flow using the renderer's existing security
-  support;
-- clear handling of malformed, partially supported, and page-local failures;
+- **The encrypted-document password flow.** `DocumentEngineError` now carries
+  `PasswordRequired` and `IncorrectPassword`, mapped from the renderer's typed
+  `SecurityError` rather than from its message text, so an encrypted document
+  is distinguishable from a corrupt one — and an unsupported encryption scheme
+  stays a failure, because no password the reader can type will open it. A
+  locked document raises an on-canvas prompt instead of an error: Enter tries
+  the password, Esc cancels, a refusal keeps the prompt and the path and says
+  so rather than presenting an identical field, and Ctrl+V pastes from a
+  password manager. The entry is shown as bullets, is never written to the
+  settings file or the window title, and the chrome surface cache is keyed on
+  its *length* so the key cannot outlive the frame carrying the password. A
+  document named on the command line takes the same path: the viewer opens on
+  its empty engine with the prompt up instead of exiting with a message that a
+  desktop launch would never show.
+- **Page-local failure handling.** A page the renderer cannot produce is drawn
+  with a red frame and an on-page notice naming the page and the reason,
+  instead of the single 18×18 corner square that made a failed page
+  indistinguishable from a blank one. A failure that recurs is no longer a
+  visible change, so it cannot mark the canvas damaged on every retry. Most
+  importantly the retry itself is bounded: a page that fails twice for a
+  reason other than cancellation is set aside like a panicking one, because
+  the planner otherwise re-requested it on every replan — a worker busy on it,
+  the same error republished, and a full-canvas redraw in answer, forever, on
+  an idle document.
+
+Remaining:
+
 - file reload/reopen behavior that invalidates generations and caches safely;
 - empty, zero-page, huge-page, mixed-size, rotated, image-only, and
   transparency-heavy corpus cases;

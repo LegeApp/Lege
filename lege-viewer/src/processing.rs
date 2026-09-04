@@ -780,11 +780,13 @@ mod tests {
 
     #[test]
     fn viewer_options_cover_freya_ocr_layout_and_quality_flags() {
-        let mut options = ProcessingOptions::default();
-        options.use_ocr = true;
-        options.ocr_mode = OcrMode::Best;
-        options.high_quality = true;
-        options.layout_exclusion_pages = [1, 2, 4].into_iter().collect();
+        let options = ProcessingOptions {
+            use_ocr: true,
+            ocr_mode: OcrMode::Best,
+            high_quality: true,
+            layout_exclusion_pages: [1, 2, 4].into_iter().collect(),
+            ..ProcessingOptions::default()
+        };
         let request = ProcessingRequest {
             input: "source.pdf".into(),
             output: "result.pdf".into(),

@@ -255,6 +255,16 @@ pub enum DocumentEngineError {
     TextFirstUnsupported,
     #[error("page {0:?} is out of range")]
     PageOutOfRange(PageIndex),
+    /// The document is encrypted and no password has been supplied yet.
+    ///
+    /// Distinct from [`DocumentEngineError::Engine`] on purpose: this is the
+    /// one open failure that is not a failure at all, only an unanswered
+    /// question, and the viewer has to ask it rather than report it.
+    #[error("this document is protected by a password")]
+    PasswordRequired,
+    /// A password was supplied and did not open the document.
+    #[error("that password did not open the document")]
+    IncorrectPassword,
     #[error("document engine failed: {0}")]
     Engine(String),
     #[error("document worker panicked: {0}")]

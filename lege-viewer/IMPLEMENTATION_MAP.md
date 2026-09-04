@@ -32,6 +32,11 @@ This file maps concepts to code; it does not define development order.
 | Glyph-backed chrome | `ui.rs`, `SceneSurface`, renderer `pdf-font` program data |
 | Alpha overlay parity | `SceneCommand::AlphaSolid`, `Painter::blend_rect`, `lege-gpu::presentation` |
 | Line-continuity paging | `scroll/paging.rs` |
+| Page-boundary snap command | `scroll/paging.rs` (`nearest_page_boundary`), `ViewerApp::snap_to_page_boundary` |
+| Fine movement and modifier steps | `app.rs` (`FineAxis`, `fine_step_scale`, `horizontal_fine_step`, `ViewerApp::fine_step`) |
+| Track click, repeat, and "scroll here" | `chrome/scrollbar.rs` (`TrackRepeat`, `scroll_for_pointer_centered`), `ViewerApp::begin_track_gesture`, `advance_track_repeat` |
+| Encrypted-document password flow | `document/engine.rs` (`DocumentEngineError::PasswordRequired`), `document/pdf_engine.rs` (`classify_open_error`), `app.rs` (`PasswordPrompt`, `render_password_prompt`), `main.rs` (`Startup`) |
+| Page-local failure placeholder and retry bound | `app.rs` (`render_page_error_notices`, `paint_scene` error frame), `document/conductor.rs` (`page_is_exhausted`) |
 | Reading anchor | `scroll/anchor.rs` |
 | Jump-only history | `scroll/history.rs` |
 | Custom scrollbar/document map | `chrome/scrollbar.rs`, `app.rs` (ticks, delayed hover popup, thumbnail ring) |

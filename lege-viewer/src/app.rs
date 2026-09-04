@@ -8,13 +8,13 @@ use winit::event::{
     ElementState, Ime, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
 
-use crate::chrome::{AppLayout, ScrollbarGeometry, ScrollbarState, StatusState};
+use crate::chrome::{AppLayout, ScrollbarGeometry, ScrollbarState, StatusState, TrackRepeat};
 use crate::damage::DamageRegion;
 use crate::diagnostics::{FrameMetrics, SeekTrace};
-use crate::document::engine::DocumentEngine;
+use crate::document::engine::{DocumentEngine, DocumentEngineError};
 use crate::document::layout::PageLayoutIndex;
 use crate::document::session::{SessionUpdate, UpdateQueue};
 use crate::document::synthetic::SyntheticEngine;
@@ -39,7 +39,7 @@ use crate::processing::{
 use crate::scene::{FrameScene, ImageSampling, SceneBuilder, SceneSurface};
 use crate::scroll::{
     DocumentLocation, NavigationHistory, PagingDirection, ReadingAnchor, ScrollCommand, ScrollMode,
-    ScrollModel, notional_page_lines, paging_target,
+    ScrollModel, nearest_page_boundary, notional_page_lines, paging_target,
 };
 use crate::settings::ViewerSettings;
 use crate::text::{
@@ -102,6 +102,74 @@ struct LinkPeekView {
     target_page: PageIndex,
     target_region: Option<RectF>,
     pointer: PointF,
+}
+
+/// An encrypted document waiting for its password.
+///
+/// A locked document is not a broken one, and refusing to open it with a
+/// message on a terminal the reader may never see is the same as refusing to
+/// open it at all. The prompt keeps the path so the attempt can be repeated
+/// as many times as the reader wants without reopening the file dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PasswordPrompt {
+    path: std::path::PathBuf,
+    entry: String,
+    /// Set once an attempt has been refused, so the second prompt does not
+    /// look identical to the first.
+    refused: bool,
+}
+
+/// Longest password the field accepts. Far beyond any real one, and short
+/// enough that a stuck key cannot grow the buffer without bound.
+const MAX_PASSWORD_LENGTH: usize = 512;
+
+impl PasswordPrompt {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            entry: String::new(),
+            refused: false,
+        }
+    }
+
+    fn insert(&mut self, text: &str) {
+        // Control characters are keystrokes, not password content: Enter and
+        // Escape arrive here as "\r" and "\u{1b}" on some platforms.
+        for character in text.chars().filter(|character| !character.is_control()) {
+            if self.entry.len() + character.len_utf8() > MAX_PASSWORD_LENGTH {
+                return;
+            }
+            self.entry.push(character);
+        }
+    }
+
+    fn backspace(&mut self) {
+        self.entry.pop();
+    }
+
+    fn clear(&mut self) {
+        self.entry.clear();
+    }
+
+    /// What the field shows. The password itself is never drawn, never
+    /// written to the settings file, and never logged.
+    fn masked(&self) -> String {
+        "•".repeat(self.entry.chars().count())
+    }
+
+    fn title(&self) -> &'static str {
+        if self.refused {
+            "That password did not open the document"
+        } else {
+            "This document is password protected"
+        }
+    }
+
+    fn file_name(&self) -> std::borrow::Cow<'_, str> {
+        self.path
+            .file_name()
+            .map_or_else(|| self.path.to_string_lossy(), std::ffi::OsStr::to_string_lossy)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -528,6 +596,8 @@ pub struct ViewerApp {
     history: NavigationHistory,
     pointer_warm: Option<(PageIndex, WarmReason)>,
     hovered_link: Option<LinkHoverState>,
+    /// Set while an encrypted document is waiting for its password.
+    password_prompt: Option<PasswordPrompt>,
 
     window: Option<Arc<Window>>,
     presenter: Option<Box<dyn Presenter>>,
@@ -733,6 +803,7 @@ impl ViewerApp {
             history: NavigationHistory::default(),
             pointer_warm: None,
             hovered_link: None,
+            password_prompt: None,
             window: None,
             presenter: None,
             presenter_preference,
@@ -1173,8 +1244,14 @@ impl ViewerApp {
                     message,
                     quarantined: _,
                 } => {
-                    self.page_errors.insert(page, message);
-                    any_visible_change = true;
+                    // Only a *new* failure is a visible change. Repeating one
+                    // that is already on screen would mark the whole canvas
+                    // damaged on every retry and spin the frame loop.
+                    let changed = self
+                        .page_errors
+                        .insert(page, message.clone())
+                        .is_none_or(|previous| previous != message);
+                    any_visible_change |= changed;
                 }
                 SessionUpdate::QueueDepths {
                     compile_pending,
@@ -1524,17 +1601,145 @@ impl ViewerApp {
         self.bump_generation();
     }
 
-    fn fine_step(&mut self, direction: f64) {
-        let median = self
-            .status
-            .current_page
-            .and_then(|page| self.page_artifacts.get(&page))
-            .and_then(|artifacts| artifacts.text.lines.median_height)
-            .unwrap_or(42.0);
-        self.scroll_by(ScrollCommand::FineStep(Vec2d {
-            x: 0.0,
-            y: direction * median * self.zoom,
+    /// One fine movement step along `axis`, scaled by the held modifiers.
+    ///
+    /// The vertical unit is a text line of the page being read, so the
+    /// document moves by something the reader can see happen. The horizontal
+    /// unit is a fraction of the canvas, because a "line" has no width — and
+    /// it does nothing at all when the document already fits, rather than
+    /// pretending to move.
+    fn fine_step(&mut self, axis: FineAxis, direction: f64) {
+        let scale = fine_step_scale(self.input.modifiers);
+        let delta = match axis {
+            FineAxis::Vertical => {
+                let median = self
+                    .status
+                    .current_page
+                    .and_then(|page| self.page_artifacts.get(&page))
+                    .and_then(|artifacts| artifacts.text.lines.median_height)
+                    .unwrap_or(42.0);
+                Vec2d {
+                    x: 0.0,
+                    y: direction * median * self.zoom * scale,
+                }
+            }
+            FineAxis::Horizontal => {
+                if self.scroll.max_position().x <= 0.0 {
+                    return;
+                }
+                Vec2d {
+                    x: direction * horizontal_fine_step(self.app_layout.canvas.width) * scale,
+                    y: 0.0,
+                }
+            }
+        };
+        self.scroll_by(ScrollCommand::FineStep(delta));
+    }
+
+    /// Move the reading position to the nearest page boundary.
+    ///
+    /// An explicit command rather than a second layout mode: continuous
+    /// scrolling is untouched, nothing snaps on its own, and the move settles
+    /// exactly the way a jump does.
+    fn snap_to_page_boundary(&mut self) {
+        let viewport = self.viewport_document();
+        let max_scroll = (self.layout.total_height - viewport.height).max(0.0);
+        let Some(target) = nearest_page_boundary(
+            self.layout
+                .placements()
+                .iter()
+                .map(|placement| placement.bounds.y),
+            viewport.y,
+            max_scroll,
+        ) else {
+            return;
+        };
+        self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
+            x: self.scroll.position.x,
+            y: target * self.zoom,
         }));
+        self.navigation_mode = NavigationMode::JumpLikely;
+        self.navigation_settle_deadline = Some(Instant::now() + Duration::from_millis(140));
+        self.bump_generation();
+    }
+
+    /// A press on the scrollbar track.
+    ///
+    /// `scroll_here` puts the thumb under the pointer and hands the gesture
+    /// straight to the thumb drag, so the press can be steered without being
+    /// released first. Otherwise the press pages once and keeps paging while
+    /// the button is held.
+    fn begin_track_gesture(&mut self, geometry: ScrollbarGeometry, scroll_here: bool) {
+        if scroll_here {
+            let target = geometry.scroll_for_pointer_centered(
+                self.input.pointer_position.y,
+                self.layout.total_height * self.zoom,
+                self.app_layout.canvas.height,
+            );
+            self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
+                x: self.scroll.position.x,
+                y: target,
+            }));
+            self.navigation_mode = NavigationMode::JumpLikely;
+            self.navigation_settle_deadline = Some(Instant::now() + Duration::from_millis(140));
+            self.bump_generation();
+            self.input.capture = Some(PointerCapture::VerticalThumb(ScrollbarDragState {
+                pointer_offset_in_thumb: geometry.thumb.height * 0.5,
+            }));
+            self.scrollbar.begin_drag();
+            return;
+        }
+        let forward = self.input.pointer_position.y >= geometry.thumb.y;
+        self.page_step(if forward {
+            PagingDirection::Down
+        } else {
+            PagingDirection::Up
+        });
+        self.input.capture = Some(PointerCapture::TrackRepeat(TrackRepeat::begin(
+            forward,
+            Instant::now(),
+        )));
+    }
+
+    /// Continue a held track click. Called from the event loop's idle path,
+    /// which holds the repeat's deadline while one is captured.
+    fn advance_track_repeat(&mut self, now: Instant) {
+        let Some(PointerCapture::TrackRepeat(mut repeat)) = self.input.capture else {
+            return;
+        };
+        if !repeat.step_due(now) {
+            return;
+        }
+        // The thumb has arrived under the pointer: the document has caught up
+        // with the click, and paging further would run past the place the
+        // reader actually pointed at.
+        if self
+            .scrollbar_geometry()
+            .thumb
+            .contains(self.input.pointer_position)
+        {
+            self.input.capture = None;
+            return;
+        }
+        self.input.capture = Some(PointerCapture::TrackRepeat(repeat));
+        self.page_step(if repeat.forward {
+            PagingDirection::Down
+        } else {
+            PagingDirection::Up
+        });
+    }
+
+    /// Return the viewer to a settled, non-skimming state after a pointer
+    /// gesture that was moving the document ends.
+    fn settle_after_pointer_release(&mut self) {
+        self.scroll.settle();
+        self.navigation_settle_deadline = None;
+        if self.navigation_mode != NavigationMode::Idle {
+            self.navigation_mode = NavigationMode::Idle;
+            self.bump_generation();
+        } else {
+            self.intent_dirty = true;
+        }
     }
 
     fn scrollbar_geometry(&self) -> ScrollbarGeometry {
@@ -1920,6 +2125,14 @@ impl ViewerApp {
                     self.cancel_autoscroll();
                     return;
                 }
+                // Middle-click on the track is "scroll here" everywhere else;
+                // without it the gesture would land on the scrollbar and do
+                // nothing at all.
+                let geometry = self.scrollbar_geometry();
+                if geometry.track.contains(self.input.pointer_position) {
+                    self.begin_track_gesture(geometry, true);
+                    return;
+                }
                 if !self.app_layout.canvas.contains(self.input.pointer_position) {
                     return;
                 }
@@ -1933,6 +2146,13 @@ impl ViewerApp {
                 self.metrics.input_received = Some(Instant::now());
             }
             ElementState::Released => {
+                if matches!(self.input.capture, Some(PointerCapture::VerticalThumb(_))) {
+                    // Released a "scroll here" grab on the track.
+                    self.input.capture = None;
+                    self.scrollbar.end_drag();
+                    self.settle_after_pointer_release();
+                    return;
+                }
                 let Some(PointerCapture::CanvasPan {
                     origin,
                     pressed_at,
@@ -2149,24 +2369,7 @@ impl ViewerApp {
                     }));
                     self.scrollbar.begin_drag();
                 } else if geometry.track.contains(self.input.pointer_position) {
-                    if self.input.modifiers.shift_key() {
-                        let fraction = geometry.document_fraction_at(self.input.pointer_position.y);
-                        self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d {
-                            x: self.scroll.position.x,
-                            y: fraction
-                                * (self.layout.total_height * self.zoom
-                                    - self.app_layout.canvas.height)
-                                    .max(0.0),
-                        }));
-                        self.navigation_mode = NavigationMode::JumpLikely;
-                        self.navigation_settle_deadline =
-                            Some(Instant::now() + Duration::from_millis(140));
-                        self.bump_generation();
-                    } else if self.input.pointer_position.y < geometry.thumb.y {
-                        self.page_step(PagingDirection::Up);
-                    } else {
-                        self.page_step(PagingDirection::Down);
-                    }
+                    self.begin_track_gesture(geometry, self.input.modifiers.shift_key());
                 } else if self.app_layout.canvas.contains(self.input.pointer_position)
                     && let Some(link) = self
                         .hovered_link
@@ -2194,14 +2397,7 @@ impl ViewerApp {
             ElementState::Released => {
                 self.input.capture = None;
                 self.scrollbar.end_drag();
-                self.scroll.settle();
-                self.navigation_settle_deadline = None;
-                if self.navigation_mode != NavigationMode::Idle {
-                    self.navigation_mode = NavigationMode::Idle;
-                    self.bump_generation();
-                } else {
-                    self.intent_dirty = true;
-                }
+                self.settle_after_pointer_release();
             }
         }
     }
@@ -2496,6 +2692,11 @@ impl ViewerApp {
         if state != ElementState::Pressed {
             return;
         }
+        // A modal question owns the keyboard: nothing else can be meant while
+        // the viewer is asking for a password.
+        if self.handle_password_key(key) {
+            return;
+        }
         if self.input.modifiers.control_key()
             && matches!(key, Key::Character(character) if character.as_str().eq_ignore_ascii_case("o"))
         {
@@ -2570,8 +2771,10 @@ impl ViewerApp {
                     self.navigate_to(location, false);
                 }
             }
-            Key::Named(NamedKey::ArrowDown) => self.fine_step(1.0),
-            Key::Named(NamedKey::ArrowUp) => self.fine_step(-1.0),
+            Key::Named(NamedKey::ArrowDown) => self.fine_step(FineAxis::Vertical, 1.0),
+            Key::Named(NamedKey::ArrowUp) => self.fine_step(FineAxis::Vertical, -1.0),
+            Key::Named(NamedKey::ArrowRight) => self.fine_step(FineAxis::Horizontal, 1.0),
+            Key::Named(NamedKey::ArrowLeft) => self.fine_step(FineAxis::Horizontal, -1.0),
             Key::Named(NamedKey::Home) => {
                 self.apply_scroll(ScrollCommand::SetAbsolute(Vec2d::ZERO));
                 self.navigation_mode = NavigationMode::JumpLikely;
@@ -2608,6 +2811,9 @@ impl ViewerApp {
             }
             Key::Character(character) if character.as_str().eq_ignore_ascii_case("n") => {
                 self.cycle_color_mode();
+            }
+            Key::Character(character) if character.as_str().eq_ignore_ascii_case("s") => {
+                self.snap_to_page_boundary();
             }
             _ => {}
         }
@@ -3458,14 +3664,112 @@ impl ViewerApp {
     /// Open `path`, reporting any failure where a user who launched the viewer
     /// by double-clicking it can actually see it.
     fn open_document(&mut self, path: &std::path::Path) {
-        match open_pdf_engine(path) {
+        self.open_document_with_password(path, None);
+    }
+
+    /// Open `path`, asking for a password rather than failing when the
+    /// document turns out to be encrypted.
+    fn open_document_with_password(&mut self, path: &std::path::Path, password: Option<&str>) {
+        match open_pdf_engine(path, password) {
             Ok(engine) => {
+                self.dismiss_password_prompt();
                 if let Err(error) = self.adopt_engine(engine) {
                     report_document_error(path, &error.to_string());
                 }
             }
-            Err(error) => report_document_error(path, &error),
+            Err(DocumentEngineError::PasswordRequired) => {
+                self.begin_password_prompt(path.to_path_buf());
+            }
+            Err(DocumentEngineError::IncorrectPassword) => {
+                // Keep the prompt and the path: the reader mistyped, and
+                // sending them back to the file dialog for that would be
+                // absurd.
+                let prompt = self
+                    .password_prompt
+                    .get_or_insert_with(|| PasswordPrompt::new(path.to_path_buf()));
+                prompt.refused = true;
+                prompt.clear();
+                self.damage.mark_full();
+                self.request_redraw();
+            }
+            Err(error) => {
+                self.dismiss_password_prompt();
+                report_document_error(path, &error.to_string());
+            }
         }
+    }
+
+    /// Ask for the password of an encrypted document.
+    ///
+    /// Public because the launch path needs it: a document named on the
+    /// command line that turns out to be encrypted has to reach the same
+    /// prompt as one opened from the toolbar, rather than exiting with a
+    /// message.
+    pub fn begin_password_prompt(&mut self, path: std::path::PathBuf) {
+        self.password_prompt = Some(PasswordPrompt::new(path));
+        // The prompt owns the keyboard while it is up; IME belongs to the
+        // search field, which is not what is being typed into now.
+        if let Some(window) = &self.window {
+            window.set_ime_allowed(false);
+        }
+        self.damage.mark_full();
+        self.request_redraw();
+    }
+
+    fn dismiss_password_prompt(&mut self) {
+        if self.password_prompt.take().is_some() {
+            self.damage.mark_full();
+            self.request_redraw();
+        }
+    }
+
+    /// Try the typed password. Kept out of `handle_password_key` so the
+    /// borrow of the prompt ends before the open is attempted.
+    fn submit_password(&mut self) {
+        let Some(prompt) = self.password_prompt.as_ref() else {
+            return;
+        };
+        let path = prompt.path.clone();
+        let password = prompt.entry.clone();
+        self.open_document_with_password(&path, Some(password.as_str()));
+    }
+
+    /// Keys belong to the password prompt while it is up. Returns whether the
+    /// key was consumed.
+    fn handle_password_key(&mut self, key: &Key) -> bool {
+        let Some(prompt) = self.password_prompt.as_mut() else {
+            return false;
+        };
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.dismiss_password_prompt();
+                return true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.submit_password();
+                return true;
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(),
+            Key::Named(NamedKey::Space) => prompt.insert(" "),
+            Key::Character(character) if self.input.modifiers.control_key() => {
+                // Ctrl+key is a command, not password text. Paste is the one
+                // worth honouring: readers keep passwords in managers.
+                if character.as_str().eq_ignore_ascii_case("v")
+                    && let Ok(text) = self.clipboard.get()
+                {
+                    if let Some(prompt) = self.password_prompt.as_mut() {
+                        prompt.insert(&text);
+                    }
+                } else {
+                    return true;
+                }
+            }
+            Key::Character(character) => prompt.insert(character.as_str()),
+            _ => return true,
+        }
+        self.damage.mark_full();
+        self.request_redraw();
+        true
     }
 
     /// Replace the current document wholesale. Every per-document cache,
@@ -4240,10 +4544,246 @@ impl ViewerApp {
             },
         });
 
-        if self.engine.descriptor().page_count == 0 {
+        if self.password_prompt.is_some() {
+            // The prompt already says why the canvas is empty, and two
+            // explanations stacked on each other say less than one.
+            self.render_password_prompt(&mut surfaces);
+        } else if self.engine.descriptor().page_count == 0 {
             self.render_empty_state(&mut surfaces);
         }
+        self.render_page_error_notices(&mut surfaces);
         surfaces
+    }
+
+    /// Say so on any visible page the renderer could not produce.
+    ///
+    /// A failed page is otherwise indistinguishable from a blank one, and a
+    /// reader who cannot tell the difference has to assume the document lies.
+    /// The rest of the document keeps rendering either way — the failure is
+    /// page-local and stays that way.
+    fn render_page_error_notices(&mut self, output: &mut Vec<ChromeSurfacePlacement>) {
+        if self.page_errors.is_empty() {
+            return;
+        }
+        let canvas = self.app_layout.canvas;
+        let document_origin_x = self.document_origin_x();
+        let viewport = self.viewport_document();
+        let visible = self.layout.visible_pages(viewport);
+        let notices = self.layout.placements()[visible]
+            .iter()
+            .filter_map(|placement| {
+                let message = self.page_errors.get(&placement.page)?;
+                let page_screen = RectF {
+                    x: document_origin_x + placement.bounds.x * self.zoom - self.scroll.position.x,
+                    y: canvas.y + placement.bounds.y * self.zoom - self.scroll.position.y,
+                    width: placement.bounds.width * self.zoom,
+                    height: placement.bounds.height * self.zoom,
+                };
+                let area = page_screen.intersection(canvas)?;
+                Some((placement.page, message.clone(), area))
+            })
+            .collect::<Vec<_>>();
+        for (page, message, area) in notices {
+            const MIN_WIDTH: f64 = 220.0;
+            const HEIGHT: f64 = 96.0;
+            let width = (area.width - 32.0).clamp(0.0, 460.0);
+            if width < MIN_WIDTH || area.height < HEIGHT + 16.0 {
+                // Too little of the page is on screen to say anything on it;
+                // the red frame painted around it still marks the failure.
+                continue;
+            }
+            let width_px = width.round() as u32;
+            let height_px = HEIGHT.round() as u32;
+            let surface = self.ui_text.render(
+                [0x4c45_4745, 21, u64::from(page.0), 0],
+                width_px,
+                height_px,
+                self.theme.colors.paper,
+                &[RectPaint {
+                    rect: RectI {
+                        x: 0,
+                        y: 0,
+                        width: width_px,
+                        height: 3,
+                    },
+                    color: self.theme.colors.error,
+                }],
+                &[
+                    TextPaint {
+                        text: format!("Page {} could not be displayed", page.0 + 1),
+                        x: 12,
+                        y: 16,
+                        max_width: width_px.saturating_sub(24),
+                        size: 15.0,
+                        color: self.theme.colors.text,
+                        bold: true,
+                        centered: false,
+                    },
+                    TextPaint {
+                        text: message,
+                        x: 12,
+                        y: 42,
+                        max_width: width_px.saturating_sub(24),
+                        size: 12.0,
+                        color: self.theme.colors.muted_text,
+                        bold: false,
+                        centered: false,
+                    },
+                ],
+            );
+            output.push(ChromeSurfacePlacement {
+                surface,
+                destination: RectF {
+                    x: (area.x + (area.width - width) * 0.5).round(),
+                    y: (area.y + (area.height - HEIGHT) * 0.5).round(),
+                    width,
+                    height: HEIGHT,
+                },
+            });
+        }
+    }
+
+    /// Ask for an encrypted document's password on screen.
+    ///
+    /// The typed characters are shown as bullets and never leave this struct:
+    /// the entry is not written to the settings file, not put in the window
+    /// title, and not printed on any failure path.
+    fn render_password_prompt(&mut self, output: &mut Vec<ChromeSurfacePlacement>) {
+        const WIDTH: u32 = 460;
+        const HEIGHT: u32 = 176;
+        let Some(prompt) = self.password_prompt.as_ref() else {
+            return;
+        };
+        let canvas = self.app_layout.canvas;
+        if canvas.width < f64::from(WIDTH) || canvas.height < f64::from(HEIGHT) {
+            return;
+        }
+        let title = prompt.title().to_owned();
+        let file_name = prompt.file_name().into_owned();
+        let masked = prompt.masked();
+        let refused = prompt.refused;
+        let dark = color_luminance(self.theme.colors.chrome) < 0.35;
+        let field = RectI {
+            x: 20,
+            y: 82,
+            width: WIDTH - 40,
+            height: 30,
+        };
+        let rectangles = vec![
+            RectPaint {
+                rect: RectI {
+                    x: 4,
+                    y: 4,
+                    width: WIDTH - 4,
+                    height: HEIGHT - 4,
+                },
+                color: 0x0018_1818,
+            },
+            RectPaint {
+                rect: RectI {
+                    x: 0,
+                    y: 0,
+                    width: WIDTH - 5,
+                    height: HEIGHT - 5,
+                },
+                color: self.theme.colors.chrome,
+            },
+            RectPaint {
+                rect: field,
+                color: if refused {
+                    self.theme.colors.error
+                } else {
+                    self.theme.colors.selection
+                },
+            },
+            RectPaint {
+                rect: RectI {
+                    x: field.x + 1,
+                    y: field.y + 1,
+                    width: field.width - 2,
+                    height: field.height - 2,
+                },
+                color: hover_adjusted_color(self.theme.colors.chrome, true, dark),
+            },
+        ];
+        let text = vec![
+            TextPaint {
+                text: title,
+                x: 20,
+                y: 18,
+                max_width: WIDTH - 40,
+                size: 16.0,
+                color: if refused {
+                    self.theme.colors.error
+                } else {
+                    self.theme.colors.text
+                },
+                bold: true,
+                centered: false,
+            },
+            TextPaint {
+                text: file_name,
+                x: 20,
+                y: 48,
+                max_width: WIDTH - 40,
+                size: 13.0,
+                color: self.theme.colors.muted_text,
+                bold: false,
+                centered: false,
+            },
+            TextPaint {
+                text: if masked.is_empty() {
+                    "Type the password".to_owned()
+                } else {
+                    masked.clone()
+                },
+                x: field.x + 8,
+                y: field.y + 7,
+                max_width: field.width - 16,
+                size: 14.0,
+                color: if masked.is_empty() {
+                    self.theme.colors.muted_text
+                } else {
+                    self.theme.colors.text
+                },
+                bold: false,
+                centered: false,
+            },
+            TextPaint {
+                text: "Enter opens the document · Esc cancels".to_owned(),
+                x: 20,
+                y: 128,
+                max_width: WIDTH - 40,
+                size: 12.0,
+                color: self.theme.colors.muted_text,
+                bold: false,
+                centered: false,
+            },
+        ];
+        // Keyed on the *length* of the entry, never its content: the cache key
+        // outlives the frame and must not be able to leak the password.
+        let surface = self.ui_text.render(
+            [
+                0x4c45_4745,
+                20,
+                masked.chars().count() as u64,
+                u64::from(refused),
+            ],
+            WIDTH,
+            HEIGHT,
+            self.theme.colors.chrome,
+            &rectangles,
+            &text,
+        );
+        output.push(ChromeSurfacePlacement {
+            surface,
+            destination: RectF {
+                x: (canvas.x + (canvas.width - f64::from(WIDTH)) * 0.5).round(),
+                y: (canvas.y + (canvas.height - f64::from(HEIGHT)) * 0.5).round(),
+                width: f64::from(WIDTH),
+                height: f64::from(HEIGHT),
+            },
+        });
     }
 
     /// The canvas stays blank until a document is chosen, so say why and point
@@ -4975,10 +5515,10 @@ impl ViewerApp {
 
 impl Drop for ViewerApp {
     fn drop(&mut self) {
-        if self.processing_ui.running {
-            if let Some(control) = &self.processing_control {
-                control.cancel();
-            }
+        if self.processing_ui.running
+            && let Some(control) = &self.processing_control
+        {
+            control.cancel();
         }
     }
 }
@@ -5111,7 +5651,11 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                if self.processing_ui.resolution_editing {
+                if let Some(prompt) = self.password_prompt.as_mut() {
+                    prompt.insert(&text);
+                    self.damage.mark_full();
+                    self.request_redraw();
+                } else if self.processing_ui.resolution_editing {
                     self.insert_resolution_text(&text);
                     self.damage.mark_full();
                     self.request_redraw();
@@ -5124,7 +5668,12 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             WindowEvent::Focused(false) => {
                 self.cancel_autoscroll();
                 self.touch_pan = None;
+                // Every pointer gesture ends here: the canvas pan, the thumb
+                // drag, a held track repeat, and the panel resize all live in
+                // `capture`, and the release event that would have ended them
+                // is going to another window.
                 self.input.capture = None;
+                self.input.left_button_down = false;
                 self.hovered_control = None;
                 self.commit_resolution_edit();
                 self.scrollbar.end_drag();
@@ -5144,6 +5693,7 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         self.advance_movement(now);
+        self.advance_track_repeat(now);
         if self.scrollbar.reveal_preview_if_due(now) {
             self.damage.mark_full();
             self.request_redraw();
@@ -5182,6 +5732,10 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
             self.scroll
                 .wants_animation()
                 .then(|| now + MOVEMENT_FRAME_INTERVAL),
+            match self.input.capture {
+                Some(PointerCapture::TrackRepeat(repeat)) => Some(repeat.deadline()),
+                _ => None,
+            },
         ]
         .into_iter()
         .flatten()
@@ -5195,15 +5749,22 @@ impl ApplicationHandler<ViewerEvent> for ViewerApp {
 }
 
 #[cfg(feature = "pdf-engine")]
-fn open_pdf_engine(path: &std::path::Path) -> Result<Arc<dyn DocumentEngine>, String> {
-    crate::document::pdf_engine::PdfEngine::open(path, None)
+fn open_pdf_engine(
+    path: &std::path::Path,
+    password: Option<&str>,
+) -> Result<Arc<dyn DocumentEngine>, DocumentEngineError> {
+    crate::document::pdf_engine::PdfEngine::open(path, password)
         .map(|engine| Arc::new(engine) as Arc<dyn DocumentEngine>)
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(not(feature = "pdf-engine"))]
-fn open_pdf_engine(_path: &std::path::Path) -> Result<Arc<dyn DocumentEngine>, String> {
-    Err("this build does not include the PDF engine".to_owned())
+fn open_pdf_engine(
+    _path: &std::path::Path,
+    _password: Option<&str>,
+) -> Result<Arc<dyn DocumentEngine>, DocumentEngineError> {
+    Err(DocumentEngineError::Engine(
+        "this build does not include the PDF engine".to_owned(),
+    ))
 }
 
 /// A Windows build has no console of its own, so a failed open has to be shown
@@ -5250,6 +5811,38 @@ fn default_processing_output(input: &std::path::Path, extension: &str) -> std::p
         .filter(|name| !name.is_empty())
         .unwrap_or("document");
     input.with_file_name(format!("{stem}-lege.{extension}"))
+}
+
+/// Which axis a fine movement command moves along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FineAxis {
+    Vertical,
+    Horizontal,
+}
+
+/// How far a modified arrow key moves relative to the plain one.
+///
+/// Shift is the precise step — a quarter line, for nudging a figure or a
+/// footnote into view. Control is the coarse one, for covering a page without
+/// losing the line-continuity contract Page Up/Down owns. Anything else, held
+/// modifiers included, is the ordinary step rather than a surprise.
+fn fine_step_scale(modifiers: ModifiersState) -> f64 {
+    if modifiers.shift_key() {
+        0.25
+    } else if modifiers.control_key() {
+        3.0
+    } else {
+        1.0
+    }
+}
+
+/// The horizontal fine step for a canvas of `canvas_width` physical pixels.
+///
+/// A tenth of the visible width moves visibly without losing the reader's
+/// place, and the clamp keeps it sane on both a narrow pane and an ultrawide
+/// display.
+fn horizontal_fine_step(canvas_width: f64) -> f64 {
+    (canvas_width * 0.1).clamp(24.0, 160.0)
 }
 
 fn fit_page_scale(canvas: SizeF, page: SizeF, margin: f64) -> f64 {
@@ -5402,15 +5995,9 @@ fn paint_scene(
         painter.pop_clip();
 
         if page_errors.contains_key(&placement.page) {
-            painter.fill_rect(
-                RectI {
-                    x: page_rect.x + 6,
-                    y: page_rect.y + 6,
-                    width: 18,
-                    height: 18,
-                },
-                theme.colors.error,
-            );
+            // A page that failed must not read as a page that is merely
+            // blank, and must not read as one that is still loading either.
+            painter.stroke_rect(page_rect, 3, theme.colors.error);
         }
         draw_page_number_marker(
             painter,
@@ -5780,6 +6367,80 @@ mod tests {
         assert_eq!(
             toolbar_action_at(ZOOM_GROUP_X),
             Some(ToolbarAction::ZoomOut)
+        );
+    }
+
+    #[test]
+    fn modified_arrows_step_smaller_and_larger_than_the_plain_one() {
+        assert_eq!(fine_step_scale(ModifiersState::empty()), 1.0);
+        assert!(
+            fine_step_scale(ModifiersState::SHIFT) < 1.0,
+            "shift is the precise step"
+        );
+        assert!(
+            fine_step_scale(ModifiersState::CONTROL) > 1.0,
+            "control is the coarse step"
+        );
+        assert_eq!(
+            fine_step_scale(ModifiersState::SHIFT | ModifiersState::CONTROL),
+            fine_step_scale(ModifiersState::SHIFT),
+            "an ambiguous combination resolves to the safer, smaller step"
+        );
+        assert_eq!(
+            fine_step_scale(ModifiersState::ALT),
+            1.0,
+            "alt belongs to the history commands and must not rescale movement"
+        );
+    }
+
+    #[test]
+    fn the_horizontal_fine_step_stays_usable_on_any_canvas() {
+        assert_eq!(horizontal_fine_step(1_000.0), 100.0);
+        assert_eq!(
+            horizontal_fine_step(60.0),
+            24.0,
+            "a narrow pane still moves far enough to see"
+        );
+        assert_eq!(
+            horizontal_fine_step(6_000.0),
+            160.0,
+            "an ultrawide canvas does not fling the page sideways"
+        );
+    }
+
+    #[test]
+    fn the_password_field_shows_bullets_and_never_the_password() {
+        let mut prompt = PasswordPrompt::new(std::path::PathBuf::from("/tmp/locked.pdf"));
+        assert_eq!(prompt.file_name(), "locked.pdf");
+        assert!(!prompt.refused);
+        prompt.insert("hunter2");
+        assert_eq!(prompt.masked(), "•".repeat(7));
+        assert!(!prompt.masked().contains('h'));
+        prompt.backspace();
+        assert_eq!(prompt.entry, "hunter");
+        prompt.clear();
+        assert!(prompt.entry.is_empty());
+    }
+
+    #[test]
+    fn the_password_field_ignores_control_characters_and_is_bounded() {
+        let mut prompt = PasswordPrompt::new(std::path::PathBuf::from("locked.pdf"));
+        prompt.insert("a\r\n\u{1b}b");
+        assert_eq!(prompt.entry, "ab", "keystrokes are not password content");
+        prompt.clear();
+        prompt.insert(&"x".repeat(MAX_PASSWORD_LENGTH + 10));
+        assert!(prompt.entry.len() <= MAX_PASSWORD_LENGTH);
+    }
+
+    #[test]
+    fn a_refused_password_changes_what_the_prompt_says() {
+        let mut prompt = PasswordPrompt::new(std::path::PathBuf::from("locked.pdf"));
+        let first = prompt.title();
+        prompt.refused = true;
+        assert_ne!(
+            prompt.title(),
+            first,
+            "a second identical prompt would look like nothing happened"
         );
     }
 

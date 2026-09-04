@@ -3536,6 +3536,7 @@ dependencies = [
  "pdf-render-api",
  "pdf-render-cpu",
  "pdf-render-wgpu",
+ "pdf-security",
  "pdf-source",
  "pdf-test-support",
  "pdf-text",

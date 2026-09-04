@@ -282,6 +282,8 @@ fn blend_xrgb(destination: u32, source_argb: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]
