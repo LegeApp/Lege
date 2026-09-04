@@ -1553,6 +1553,30 @@ record lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1 : e
         """
 }
 
+record lege-ecosystem.evidence.truetyping-exact-placement-lege-lib/1 : evidence {
+    title "Lege library suite passes with exact truetyping placement"
+    state verified
+    result pass
+    method command
+    observed_at git:c7b6d3658e5bc12bb301035d7fe110d6ceb14698
+    command "cargo test -p lege --lib"
+    summary """
+        The lege library suite passed 327 tests with one corpus-dependent parity test ignored.
+        """
+}
+
+record lege-ecosystem.evidence.truetyping-exact-placement-regressions/1 : evidence {
+    title "Truetyping exact-placement regressions pass"
+    state verified
+    result pass
+    method command
+    observed_at git:c7b6d3658e5bc12bb301035d7fe110d6ceb14698
+    command "cargo test -p lege --lib encoding::glyphfont::tests"
+    summary """
+        All 26 glyphfont tests passed, including exact one-pixel baseline placement, shared OCR mapping, and exact stacked-part offset regressions.
+        """
+}
+
 record lege-ecosystem.evidence.truetyping-promotion-verification/1 : evidence {
     title "Truetyping promotion, page rotation and the order-independent render bump verify"
     state verified

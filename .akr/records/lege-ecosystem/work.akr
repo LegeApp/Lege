@@ -3118,7 +3118,7 @@ record lege-ecosystem.work.treat-9-7-as-the-first-arithmetic-kernel-target/1 : w
 
 record lege-ecosystem.work.truetyping-vertical-placement/1 : work {
     title "Handoff: put truetyping's letters back on their own baseline"
-    state proposed
+    state completed
     scope [
         path "lege-codecs/jbig2enc-rust/src/encode/document/symbol/**",
         path "lege-pdf/write/src/text.rs",
@@ -3141,6 +3141,24 @@ record lege-ecosystem.work.truetyping-vertical-placement/1 : work {
         text """
             The 836-page file pass 9 was fixed against, `historyofchinese00gern_0_1-1_processed_1784935875.pdf`, is a Lege output being reprocessed — a copy of a copy, chosen by mistake. The book to judge truetyping on is the original archive.org scan of the same title, which is greyscale and keeps its full resolution, and where the bilevel clamp does not apply.
             """
+    }
+    acceptance {
+        check exact-occurrence-placement {
+            statement """
+                Truetyping preserves a one-pixel occurrence baseline difference and exact stacked-part offsets while sharing the underlying outlines and OCR mapping.
+                """
+            method command
+            command "cargo test -p lege --lib encoding::glyphfont::tests"
+            verified_by [ @lege-ecosystem.evidence.truetyping-exact-placement-regressions/1 ]
+        }
+        check lege-library-regression {
+            statement """
+                The complete lege library test suite remains green.
+                """
+            method command
+            command "cargo test -p lege --lib"
+            verified_by [ @lege-ecosystem.evidence.truetyping-exact-placement-lege-lib/1 ]
+        }
     }
     derived_from [
         @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline,

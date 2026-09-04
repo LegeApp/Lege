@@ -1355,6 +1355,17 @@ record lege-ecosystem.papercut.running-cargo-fmt-all-emitted-the-same-four/2 : p
     created_at 2026-08-15
 }
 
+record lege-ecosystem.papercut.running-cargo-fmt-all-for-the-truetyping-edit/1 : papercut {
+    title "Running `cargo fmt --all` for the truetyping edit also reordered an…"
+    state verified
+    statement """
+        Running `cargo fmt --all` for the truetyping edit also reordered an unrelated `pub mod truetype_writer` line in `lege-process/core/lib.rs`; I had to restore it to keep the patch scoped. A file-scoped formatting shortcut would avoid this incidental churn.
+        """
+    observed_at git:1333c42248438c3a9840dc6a9ec95ea47030d854
+    author "codex"
+    created_at 2026-09-04
+}
+
 record lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 : papercut {
     title "Running `cargo fmt -- <Rust files>` in this workspace made rustfmt…"
     state superseded

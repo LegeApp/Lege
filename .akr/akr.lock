@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:f826839575637ff3157e93700ccb247ef4f8d32676df23335f79439450a9b2a4"
+    source_graph "sha256:a449c26a4d9c2c2f98de05977fc4623ef6a362bb339fbbee1abad32d73ad85ca"
 }
 
 source ".akr/project.akr" {
@@ -64,8 +64,8 @@ source ".akr/records/lege-ecosystem/decisions.akr" {
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:bd842dfef8ff1731b16f1bad526421483c142f8bb89a7ce0d1f0c8d8024ef12d"
-    records 143
+    hash "sha256:970bd3c0110bf819c81791e19e5b46d08ebb7d353d9e637e0ba98603d89a02a3"
+    records 145
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -79,8 +79,8 @@ source ".akr/records/lege-ecosystem/observations.akr" {
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
-    hash "sha256:9a33e8c9a5b78e124cd45118cfb06b2c2aa68080e00c504ca7d4937c09c51d64"
-    records 94
+    hash "sha256:5a9c0360978669e88e798489d686c3e863de695f0029ab3148537b835b17d211"
+    records 95
 }
 
 source ".akr/records/lege-ecosystem/policies.akr" {
@@ -94,7 +94,7 @@ source ".akr/records/lege-ecosystem/requirements.akr" {
 }
 
 source ".akr/records/lege-ecosystem/work.akr" {
-    hash "sha256:01a268f2d272143ee851f48b369b92f5314d74656b9f8e49afc622235a1755dd"
+    hash "sha256:b7d837abc4ddb315b471981b671e43ece6104893e3d998ac795af1e06fa3692f"
     records 112
 }
 
@@ -906,6 +906,16 @@ seal @lege-ecosystem.evidence.top-level-agpl-license-consistency-20260822/1 {
     hash "sha256:66862fb84cf769b8caa9d9c080f769cc74fdeb6a53f7fb7e9f1ba4efcaf768da"
 }
 
+seal @lege-ecosystem.evidence.truetyping-exact-placement-lege-lib/1 {
+    state verified
+    hash "sha256:0ddad4e7909cf997002f853e15653c6687224c9e09692b839c42164e082e2949"
+}
+
+seal @lege-ecosystem.evidence.truetyping-exact-placement-regressions/1 {
+    state verified
+    hash "sha256:51b67b21bab30f011619d2aac4e9ab6b7dc9e1f8b52d798f70851026985f9066"
+}
+
 seal @lege-ecosystem.evidence.truetyping-promotion-verification/1 {
     state verified
     hash "sha256:b1f7dc4bf776f0a453e9c3163bbbd45cafc513a2b7df3d058dc9bd8a3ac766d2"
@@ -1316,6 +1326,11 @@ seal @lege-ecosystem.papercut.running-cargo-fmt-all-emitted-the-same-four/2 {
     hash "sha256:3ea6449687cd606c045da5bc0f81a4f0b3e95900689e223792e02e6fd7d7e3de"
 }
 
+seal @lege-ecosystem.papercut.running-cargo-fmt-all-for-the-truetyping-edit/1 {
+    state verified
+    hash "sha256:26ff4e9fa85fcccf7e33debdb73583e398ddd7e8618c9d1cc31d0beb9daf8a35"
+}
+
 seal @lege-ecosystem.papercut.running-cargo-fmt-rust-files-in-this-workspace/1 {
     state superseded
     hash "sha256:75c0205977a568abaacee80c985ba36ee1dd30e0851e8ef250719ddbd229cb4d"
@@ -1709,6 +1724,11 @@ seal @lege-ecosystem.work.public-monorepo-reupload/1 {
 seal @lege-ecosystem.work.thorough-ppocrv6-performance-and-output-preflight/1 {
     state completed
     hash "sha256:b56f599954fb66710471b513508ddc50473b3b115e842401ebf3cce74b57bfc3"
+}
+
+seal @lege-ecosystem.work.truetyping-vertical-placement/1 {
+    state completed
+    hash "sha256:1e78be81c10cd1c649203d351b72dd5b61b357a3a8032b7085f88e294a5ae100"
 }
 
 seal @lege-ecosystem.work.windows-document-ocr-winsafe-installer/1 {
