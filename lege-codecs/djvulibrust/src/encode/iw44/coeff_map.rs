@@ -54,20 +54,30 @@ impl Block {
         block_x: usize,
         block_y: usize,
     ) {
-        let data_start_x = block_x * 32;
-        let data_start_y = block_y * 32;
+        let base = block_y * 32 * bw + block_x * 32;
 
-        for (i, &loc) in ZIGZAG_LOC.iter().enumerate() {
-            let row = loc >> 5;
-            let col = loc & 31;
-            let coeff = data16[(data_start_y + row) * bw + data_start_x + col];
-            if coeff != 0 {
-                let bucket_idx = (i / 16) as u8;
-                let coeff_idx_in_bucket = i % 16;
-                self.present |= 1u64 << bucket_idx;
-                self.buckets[bucket_idx as usize][coeff_idx_in_bucket] = coeff;
+        // Walk the block row by row (32 contiguous i16, one cache line) and use
+        // the inverse zigzag to find each coefficient's slot, rather than
+        // walking the zigzag and jumping around the plane: the reads become
+        // sequential and the scattered accesses land in the block's own 2 KB of
+        // buckets, which is L1-resident. `ZIGZAG_LOC` is a permutation, so this
+        // performs exactly the same set of assignments (see the
+        // `fused_matches_two_step` test, which still compares against the
+        // original two-step path).
+        let mut present = self.present;
+        for row in 0..32usize {
+            let src = &data16[base + row * bw..base + row * bw + 32];
+            let inv = &super::zigzag::ZIGZAG_INV[row * 32..row * 32 + 32];
+            for col in 0..32usize {
+                let coeff = src[col];
+                if coeff != 0 {
+                    let i = inv[col] as usize;
+                    present |= 1u64 << (i >> 4);
+                    self.buckets[i >> 4][i & 15] = coeff;
+                }
             }
         }
+        self.present = present;
     }
 
     /// Write coefficients from buckets back to a liftblock in zigzag order.
@@ -97,6 +107,15 @@ impl Block {
     #[inline]
     pub fn get_bucket_raw(&self, bucket_idx: u8) -> &[i16; 16] {
         &self.buckets[bucket_idx as usize]
+    }
+
+    /// Bitmask of buckets that have been written. Bit `i` clear guarantees
+    /// bucket `i` is all zeros; bit `i` set only means the bucket was written
+    /// at some point (`get_bucket_mut` sets it unconditionally), so the mask is
+    /// conservative in the safe direction for "is this bucket empty?" tests.
+    #[inline]
+    pub fn present_mask(&self) -> u64 {
+        self.present
     }
 
     #[inline]

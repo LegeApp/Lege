@@ -92,20 +92,27 @@ impl<W: Write> ZEncoder<W> {
     }
 
     /// Encodes a single bit using the provided statistical context.
+    ///
+    /// `self.finished` is deliberately not checked here. It is only ever set by
+    /// `finish`, which takes `self` by value, so no caller can reach this
+    /// method with the stream finished -- and this is the innermost loop of the
+    /// whole encoder, run tens of millions of times for one page.
     #[inline(always)]
     pub fn encode(&mut self, bit: bool, ctx: &mut BitContext) -> Result<(), ZCodecError> {
-        if self.finished {
-            return Err(ZCodecError::Finished);
-        }
+        // One load of the table entry for all three paths: `encode_mps` needs
+        // `m`/`up` and `encode_lps` needs `dn`, all indexed by the *incoming*
+        // context, so re-indexing `self.table` inside them repeated this load
+        // two or three times per coded bit.
+        let entry = self.table[*ctx as usize];
 
         // CRITICAL: z = a + p[ctx], not just p[ctx]!
-        let z = self.a + self.table[*ctx as usize].p as u32;
+        let z = self.a + entry.p as u32;
         if bit != (*ctx & 1 != 0) {
             // LPS path
-            self.encode_lps(ctx, z)?;
+            self.encode_lps(ctx, entry, z)?;
         } else if z >= 0x8000 {
             // MPS path (only if z >= 0x8000)
-            self.encode_mps(ctx, z)?;
+            self.encode_mps(ctx, entry, z)?;
         } else {
             // Fast path: just update a
             self.a = z;
@@ -123,12 +130,11 @@ impl<W: Write> ZEncoder<W> {
     /// if (bit) encode_lps_simple(z);
     /// else     encode_mps_simple(z);
     /// ```
+    ///
+    /// As with `encode`, the finished flag is not rechecked: `finish` consumes
+    /// the encoder, so it cannot be set while this is callable.
     #[inline(always)]
     pub fn encode_raw(&mut self, bit: bool) -> Result<(), ZCodecError> {
-        if self.finished {
-            return Err(ZCodecError::Finished);
-        }
-
         // CRITICAL: Match C++ formula exactly: z = 0x8000 + ((a+a+a) >> 3)
         // This gives z = 0x8000 + 3*a/8, NOT 0x8000 + a/2
         let z = 0x8000u32 + ((self.a + self.a + self.a) >> 3);
@@ -140,13 +146,18 @@ impl<W: Write> ZEncoder<W> {
     }
 
     #[inline(always)]
-    fn encode_mps(&mut self, ctx: &mut BitContext, mut z: u32) -> Result<(), ZCodecError> {
+    fn encode_mps(
+        &mut self,
+        ctx: &mut BitContext,
+        entry: ZpTableEntry,
+        mut z: u32,
+    ) -> Result<(), ZCodecError> {
         let d = 0x6000 + ((z + self.a) >> 2);
         if z > d {
             z = d;
         }
-        if self.a >= self.table[*ctx as usize].m as u32 {
-            *ctx = self.table[*ctx as usize].up;
+        if self.a >= entry.m as u32 {
+            *ctx = entry.up;
         }
         self.a = z;
         if self.a >= 0x8000 {
@@ -158,12 +169,17 @@ impl<W: Write> ZEncoder<W> {
     }
 
     #[inline(always)]
-    fn encode_lps(&mut self, ctx: &mut BitContext, mut z: u32) -> Result<(), ZCodecError> {
+    fn encode_lps(
+        &mut self,
+        ctx: &mut BitContext,
+        entry: ZpTableEntry,
+        mut z: u32,
+    ) -> Result<(), ZCodecError> {
         let d = 0x6000 + ((z + self.a) >> 2);
         if z > d {
             z = d;
         }
-        *ctx = self.table[*ctx as usize].dn;
+        *ctx = entry.dn;
         z = 0x10000 - z;
         self.subend = self.subend.wrapping_add(z);
         self.a = self.a.wrapping_add(z);

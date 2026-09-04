@@ -11,28 +11,29 @@ const NEW: u8 = 0x02; // New coefficient to be encoded
 const ACTIVE: u8 = 0x04; // Active coefficient (already encoded)
 const ZERO: u8 = 0x00; // Zero state (coefficient not significant)
 
-/// 1 bit / coefficient (32 × smaller than `Vec<bool>`)
-const WORD_BITS: usize = 32;
-
-#[inline]
-fn words_for_coeffs(n: usize) -> usize {
-    (n + WORD_BITS - 1) / WORD_BITS
-}
+/// Widest band is 16 buckets (`BAND_BUCKETS[7..9]`), each 16 coefficients.
+const MAX_BAND_BUCKETS: usize = 16;
 
 /// Represents the IW44 codec for encoding wavelet coefficients.
 /// Each codec instance owns its own slice state (curbit, curband) as per djvulibre design.
 pub struct Codec {
     pub map: CoeffMap,                    // Original coefficient map
     pub emap: CoeffMap,                   // Encoded coefficient map
-    pub coeff_state: Vec<u8>,             // State of each coefficient
-    pub bucket_state: Vec<u8>,            // State of each bucket
+    pub coeff_state: Vec<u8>,             // Band-0 carry-over state (see `is_null_slice`)
     pub quant_hi: [i32; 10],              // Quantization thresholds for bands 1-9
     pub quant_lo: [i32; 16],              // Quantization thresholds for band 0
     pub ctx_root: BitContext,             // Context for root bit
     pub ctx_bucket: Vec<Vec<BitContext>>, // Contexts for bucket bits [band][ctx]
     pub ctx_start: Vec<BitContext>,       // Contexts for new coefficient activation [ctx]
     pub ctx_mant: BitContext,             // Context for mantissa bits
-    pub signif: Vec<u32>, // 1 bit / coefficient (1 == coefficient is already significant)
+    /// Coefficient states for the band currently being coded, for one block.
+    ///
+    /// These were `num_blocks * 1024` and `num_blocks * 64` byte arrays, but
+    /// nothing reads a block's state outside the single `encode_buckets` call
+    /// that wrote it, so a page-sized encode was streaming ~2 MB through L2/L3
+    /// on every band of every bit-plane for data that fits in 272 bytes of L1.
+    scratch_coeff: [u8; MAX_BAND_BUCKETS * 16],
+    scratch_bucket: [u8; MAX_BAND_BUCKETS],
     // Per-codec slice state (owned by each Y/Cb/Cr codec independently)
     pub curbit: i32,    // Current bitplane (starts at 1, goes to -1 when done)
     pub curband: i32,   // Current band (0-9)
@@ -118,20 +119,18 @@ impl Codec {
         }
         let ctx_start = vec![0u8; 16]; // 16 contexts (0-15)
 
-        let coeffs = num_blocks * max_buckets * max_coeffs_per_bucket;
-
         Codec {
             emap: CoeffMap::new(map.iw, map.ih), // Encoded map starts empty
             map,
             coeff_state: vec![ZERO; num_blocks * max_buckets * max_coeffs_per_bucket],
-            bucket_state: vec![ZERO; num_blocks * max_buckets],
             quant_hi,
             quant_lo,
             ctx_root: 0u8,
             ctx_bucket,
             ctx_start,
             ctx_mant: 0u8,
-            signif: vec![0; words_for_coeffs(coeffs)],
+            scratch_coeff: [ZERO; MAX_BAND_BUCKETS * 16],
+            scratch_bucket: [ZERO; MAX_BAND_BUCKETS],
             // Initialize slice state (matches djvulibre IW44Image constructor)
             curbit: 1,  // Start at bitplane 1
             curband: 0, // Start at band 0
@@ -142,48 +141,6 @@ impl Codec {
     /// Returns a reference to the coefficient map.
     pub fn map(&self) -> &CoeffMap {
         &self.map
-    }
-
-    #[inline]
-    fn is_signif(&self, idx: usize) -> bool {
-        (self.signif[idx / WORD_BITS] >> (idx % WORD_BITS)) & 1 != 0
-    }
-
-    /// Quickly scans if there is any work to be done for a given (bit, band) slice.
-    /// Returns true if at least one coefficient is either NEW or ACTIVE.
-    /// This is much faster than the full two-pass approach as it returns immediately
-    /// upon finding the first instance of activity.
-    pub fn has_data_for_slice(&self, _bit: i32, band: i32) -> bool {
-        let band = band as usize;
-        let bucket_info = BAND_BUCKETS[band];
-
-        for blockno in 0..self.map.num_blocks {
-            let coeff_base_idx = blockno * 64 * 16;
-            for bucket_offset in 0..bucket_info.size {
-                let bucket_idx = bucket_info.start + bucket_offset;
-
-                for i in 0..16 {
-                    let gidx = coeff_base_idx + bucket_idx * 16 + i;
-                    if self.is_signif(gidx) {
-                        return true;
-                    }
-                }
-
-                let coeffs = self.map.blocks[blockno].get_bucket_raw(bucket_idx as u8);
-                for i in 0..16 {
-                    let step = if band == 0 {
-                        self.quant_lo[i]
-                    } else {
-                        self.quant_hi[band]
-                    };
-                    if (coeffs[i] as i32).abs() >= step {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
     }
 
     /// This is the encode_slice implementation - temporarily removing slice activity optimization
@@ -219,7 +176,6 @@ impl Codec {
         _bit: i32,
     ) -> u8 {
         let coeff_base = blockno * 64 * 16;
-        let bucket_base = blockno * 64;
 
         // Destructured so the coefficient maps can be read while the state
         // arrays are written. Indexing `self.map.blocks[blockno]` inside the
@@ -230,7 +186,8 @@ impl Codec {
             map,
             emap,
             coeff_state,
-            bucket_state,
+            scratch_coeff,
+            scratch_bucket,
             quant_hi,
             quant_lo,
             ..
@@ -238,19 +195,50 @@ impl Codec {
         let map_block = &map.blocks[blockno];
         let emap_block = &emap.blocks[blockno];
 
+        // Buckets whose `present` bit is clear in *both* maps are all-zero in
+        // both, so every one of their sixteen states is the same constant and
+        // does not depend on the data at all. `present` is only ever cleared
+        // together with a zeroing write (`zero_bucket`, `set_coeff_at_zigzag_index`)
+        // and is set conservatively by every writer, so "bit clear" is a sound
+        // proof of "all zeros".
+        let empty_mask = !(map_block.present_mask() | emap_block.present_mask());
+
+        // Band 0 carries state across slices (its `cstate` is seeded by
+        // `is_null_slice` and read back here), so only bands 1..9 may skip the
+        // per-coefficient work. `is_null_slice` guarantees `0 < thres < 0x8000`
+        // for those bands, which pins the all-zero state to plain UNK.
+        if band != 0 && nbucket > 0 {
+            let thres = quant_hi[band as usize];
+            let band_mask = if nbucket >= 64 {
+                u64::MAX
+            } else {
+                (((1u64 << nbucket) - 1) << fbucket) & u64::MAX
+            };
+            if thres > 0 && (empty_mask & band_mask) == band_mask {
+                // The whole band is empty in this block: every coefficient is
+                // UNK, so there are no NEW and no ACTIVE coefficients. Passes 2
+                // and 3 and the NEW->ACTIVE promotion are all gated on NEW or
+                // ACTIVE bucket states, and pass 1 reads only `bucket_state`,
+                // so nothing in this call ever reads `coeff_state` -- and for
+                // bands 1..9 `coeff_state` is rewritten from scratch on every
+                // entry to this function, so leaving it stale is invisible.
+                scratch_bucket[..nbucket].fill(UNK);
+                return UNK;
+            }
+        }
+
         let mut bbstate = 0;
 
         for buck in 0..nbucket {
             let bucket_idx = fbucket + buck;
-            let coeff_idx0 = coeff_base + bucket_idx * 16;
             // get_bucket_raw returns the backing array directly (all-zero if never written),
             // which is semantically equivalent to the None branch for absent buckets.
             let src16 = map_block.get_bucket_raw(bucket_idx as u8);
             let ep16 = emap_block.get_bucket_raw(bucket_idx as u8);
             // One bounds check for the whole bucket rather than sixteen, and
             // a fixed-size slice the optimizer can vectorize over.
-            let Some(cstate) = coeff_state
-                .get_mut(coeff_idx0..coeff_idx0 + 16)
+            let Some(cstate) = scratch_coeff
+                .get_mut(buck * 16..buck * 16 + 16)
                 .and_then(|slice| <&mut [u8; 16]>::try_from(slice).ok())
             else {
                 continue;
@@ -260,23 +248,59 @@ impl Codec {
             if band != 0 {
                 // Band other than zero: derive state from pcoeff/epcoeff like DjVuLibre
                 let thres = quant_hi[band as usize];
-                for i in 0..16 {
-                    let state = if ep16[i] != 0 {
-                        ACTIVE
-                    } else if (src16[i] as i32).abs() >= thres {
-                        NEW | UNK
-                    } else {
-                        UNK
-                    };
-                    cstate[i] = state;
-                    bstate |= state;
+                if thres > 0 && (empty_mask >> bucket_idx) & 1 != 0 {
+                    // Both maps are all-zero here: `ep16[i] == 0` and
+                    // `0 >= thres` is false, so every state is UNK.
+                    cstate.fill(UNK);
+                    scratch_bucket[buck] = UNK;
+                    bbstate |= UNK;
+                    continue;
+                }
+                if thres > 0 && thres < 0x8000 {
+                    // Branchless form of the same three-way select, so the
+                    // sixteen coefficients vectorize instead of compiling to
+                    // sixteen unpredictable branch pairs. `is_null_slice`
+                    // guarantees `0 < thres < 0x8000` for bands 1..9, which
+                    // lets the magnitude test run in u16 (`unsigned_abs` maps
+                    // i16::MIN to 32768 without overflowing) rather than
+                    // widening every coefficient to i32.
+                    let thres_u = thres as u16;
+                    for i in 0..16 {
+                        let sig = (src16[i].unsigned_abs() >= thres_u) as u8;
+                        // sig -> NEW|UNK (0x03), !sig -> UNK (0x01)
+                        let state = if ep16[i] != 0 { ACTIVE } else { UNK | (sig << 1) };
+                        cstate[i] = state;
+                        bstate |= state;
+                    }
+                } else {
+                    for i in 0..16 {
+                        let state = if ep16[i] != 0 {
+                            ACTIVE
+                        } else if (src16[i] as i32).abs() >= thres {
+                            NEW | UNK
+                        } else {
+                            UNK
+                        };
+                        cstate[i] = state;
+                        bstate |= state;
+                    }
                 }
             } else {
                 // Band zero: preserve prior coeff_state ZERO/UNK behavior like DjVuLibre
                 // CRITICAL: Must read existing cstate[i] value first (C++ does this)
+                //
+                // Band 0 is the one band whose incoming state is not derived
+                // here: `is_null_slice` seeds it for every block before the
+                // block loop starts, so that seed still lives in the
+                // `coeff_state` array. Its own result is only consumed within
+                // this slice, so it goes to the scratch copy like every other
+                // band. Reading a stale array (rather than the seed) would be
+                // a silent correctness bug, so this reads `coeff_state`
+                // explicitly.
+                let prev = &coeff_state[coeff_base + bucket_idx * 16..coeff_base + bucket_idx * 16 + 16];
                 for i in 0..16 {
                     let thres = quant_lo[i];
-                    let mut cstatetmp = cstate[i];
+                    let mut cstatetmp = prev[i];
 
                     debug_assert!(
                         cstatetmp == ZERO
@@ -285,7 +309,7 @@ impl Codec {
                             || cstatetmp == (NEW | UNK),
                         "Invalid coeff state: {} at gidx={}",
                         cstatetmp,
-                        coeff_idx0 + i
+                        coeff_base + bucket_idx * 16 + i
                     );
 
                     if cstatetmp != ZERO {
@@ -302,7 +326,7 @@ impl Codec {
                 }
             }
 
-            bucket_state[bucket_base + bucket_idx] = bstate;
+            scratch_bucket[buck] = bstate;
             bbstate |= bstate;
         }
 
@@ -416,18 +440,17 @@ impl Codec {
         // For each bucket with potential new coefficients, encode whether it actually has any.
         // Only run this pass if we have NEW coefficients (gated by root bit or forced for small bands)
         if encode_new_passes {
-            let bucket_offset = blockno * 64;
             // Destructured so the emap block and the bucket states can be read
             // while a context is borrowed mutably for the encoder.
             let Self {
                 emap,
-                bucket_state,
+                scratch_bucket,
                 ctx_bucket,
                 ..
             } = self;
             let emap_block = &emap.blocks[blockno];
             let ctx_band = &mut ctx_bucket[band as usize];
-            let states = &bucket_state[bucket_offset + fbucket..bucket_offset + fbucket + nbucket];
+            let states = &scratch_bucket[..nbucket];
             for (buckno, &state) in states.iter().enumerate() {
                 if (state & UNK) != 0 {
                     let mut ctx = 0;
@@ -462,13 +485,11 @@ impl Codec {
         // THIS IS WHERE THE MAGNITUDE IS FIRST RECORDED.
         // Only run this pass if we have NEW coefficients (gated by root bit or forced for small bands)
         if encode_new_passes {
-            let coeff_offset = blockno * 64 * 16;
-            let bucket_offset = blockno * 64;
             let Self {
                 map,
                 emap,
-                coeff_state,
-                bucket_state,
+                scratch_coeff,
+                scratch_bucket,
                 ctx_start,
                 quant_hi,
                 quant_lo,
@@ -476,17 +497,20 @@ impl Codec {
             } = self;
             let map_block = &map.blocks[blockno];
             let emap_block = &mut emap.blocks[blockno];
+            // Loop-invariant for every band but 0, where the threshold is
+            // per-coefficient; hoisting it out of the coefficient loop drops a
+            // branch and a load from the innermost body.
+            let band_thres = if band == 0 { 0 } else { quant_hi[band as usize] };
             for buckno in 0..nbucket {
-                let bucket_state_value = bucket_state[bucket_offset + fbucket + buckno];
+                let bucket_state_value = scratch_bucket[buckno];
                 if (bucket_state_value & NEW) != 0 {
                     let pcoeff_bucket = map_block.get_bucket_raw((fbucket + buckno) as u8);
                     let epcoeff_bucket = emap_block.get_bucket_mut((fbucket + buckno) as u8);
 
                     let mut gotcha = 0;
                     let maxgotcha = 7;
-                    let coeff_idx_base = coeff_offset + (fbucket + buckno) * 16;
                     // One bounds check for the bucket's sixteen states.
-                    let cstate = &coeff_state[coeff_idx_base..coeff_idx_base + 16];
+                    let cstate = &scratch_coeff[buckno * 16..buckno * 16 + 16];
                     let active_bit = if (bucket_state_value & ACTIVE) != 0 {
                         8
                     } else {
@@ -519,11 +543,7 @@ impl Codec {
                                 // 2. Set the initial reconstructed value in emap (magnitude with sign).
                                 // Use the BASE threshold for initial reconstruction (not bit-plane shifted)
                                 // C++ logic: `epcoeff[i] = thres + (thres>>1);` where thres is the BASE threshold
-                                let thres = if band == 0 {
-                                    quant_lo[i]
-                                } else {
-                                    quant_hi[band as usize]
-                                };
+                                let thres = if band == 0 { quant_lo[i] } else { band_thres };
                                 let mag = (thres + (thres >> 1)) as i16;
                                 // Store only magnitude in epcoeff (sign is tracked separately in bitstream)
                                 epcoeff_bucket[i] = mag;
@@ -542,12 +562,11 @@ impl Codec {
         // For coefficients that are already significant, refine their magnitude by one bit.
         // This pass runs independently of Pass 1/2 (can have ACTIVE without NEW)
         if has_active {
-            let bucket_offset = blockno * 64;
             let Self {
                 map,
                 emap,
-                coeff_state,
-                bucket_state,
+                scratch_coeff,
+                scratch_bucket,
                 ctx_mant,
                 quant_hi,
                 quant_lo,
@@ -555,12 +574,16 @@ impl Codec {
             } = self;
             let map_block = &map.blocks[blockno];
             let emap_block = &mut emap.blocks[blockno];
+            // Same hoist as pass 2: for bands 1..9 both the threshold and the
+            // `3 * thresh` adaptive/raw cutoff are constant across the whole
+            // pass, and this is the encoder's single hottest loop.
+            let band_thres = if band == 0 { 0 } else { quant_hi[band as usize] };
+            let band_thres3 = band_thres.saturating_mul(3);
             for buckno in 0..nbucket {
-                if (bucket_state[bucket_offset + fbucket + buckno] & ACTIVE) != 0 {
+                if (scratch_bucket[buckno] & ACTIVE) != 0 {
                     let pcoeff_bucket = map_block.get_bucket_raw((fbucket + buckno) as u8);
                     let epcoeff_bucket = emap_block.get_bucket_mut((fbucket + buckno) as u8);
-                    let coeff_idx_base = (blockno * 64 * 16) + (fbucket + buckno) * 16;
-                    let cstate = &coeff_state[coeff_idx_base..coeff_idx_base + 16];
+                    let cstate = &scratch_coeff[buckno * 16..buckno * 16 + 16];
                     for i in 0..16 {
                         if (cstate[i] & ACTIVE) != 0 {
                             // All operations here are on magnitudes. epcoeff stores magnitudes only.
@@ -569,10 +592,11 @@ impl Codec {
 
                             // Use the base threshold (no bitplane shift) like DjVuLibre
                             // C++ uses `thres = quant_lo[i]` for band 0 or `quant_hi[band]` otherwise
-                            let thresh = if band == 0 {
-                                quant_lo[i]
+                            let (thresh, thresh3) = if band == 0 {
+                                let t = quant_lo[i];
+                                (t, t.saturating_mul(3))
                             } else {
-                                quant_hi[band as usize]
+                                (band_thres, band_thres3)
                             };
 
                             // The refinement bit (`pix`) is 1 if the true magnitude is in the upper half
@@ -580,7 +604,7 @@ impl Codec {
                             let pix = abs_pcoeff >= ecoeff;
 
                             // Encode the refinement bit adaptively or raw based on magnitude
-                            if ecoeff <= 3 * thresh {
+                            if ecoeff <= thresh3 {
                                 zp.encode(pix, ctx_mant)?;
                             } else {
                                 // Use encode_raw_bit for raw contexts (128, 129) instead of IWencoder
@@ -597,34 +621,24 @@ impl Codec {
             }
         }
 
-        // --- State Promotion: NEW -> ACTIVE ---
-        // After encoding, any coefficient that was NEW is now considered ACTIVE for subsequent bit-planes.
-        // Only promote if we actually encoded NEW coefficients (gated by encode_new_passes)
-        if encode_new_passes {
-            let coeff_base = blockno * 64 * 16 + fbucket * 16;
-            let bucket_base = blockno * 64;
-            // `mark_signif` takes `&mut self`, which cannot be held while
-            // `coeff_state` is borrowed; it is one bit-set, so it is inlined
-            // here rather than splitting the loop in two.
-            let Self {
-                coeff_state,
-                bucket_state,
-                signif,
-                ..
-            } = self;
-            for buck in 0..nbucket {
-                if (bucket_state[bucket_base + fbucket + buck] & NEW) != 0 {
-                    let base = coeff_base + buck * 16;
-                    for i in 0..16 {
-                        let gidx = base + i;
-                        if (coeff_state[gidx] & NEW) != 0 {
-                            signif[gidx / WORD_BITS] |= 1 << (gidx % WORD_BITS);
-                            coeff_state[gidx] = ACTIVE;
-                        }
-                    }
-                }
-            }
-        }
+        // The NEW -> ACTIVE promotion loop that used to stand here was dead.
+        // It wrote two things and nothing else read either of them:
+        //
+        //   * `signif`, a one-bit-per-coefficient side table whose only reader
+        //     was `has_data_for_slice`, a slice-skipping optimization that was
+        //     never wired up (`encode_slice` says as much) -- and it was a
+        //     scattered read-modify-write over a quarter-megabyte bitmap.
+        //   * `coeff_state[gidx] = ACTIVE`, which is overwritten before it can
+        //     be read: for bands 1..9 `encode_prepare` re-derives all sixteen
+        //     states of every bucket it touches from `map`/`emap` on entry, and
+        //     band 0's state is re-seeded by `is_null_slice` at the top of
+        //     every band-0 slice. Bands never share buckets, so no other band
+        //     can observe it either.
+        //
+        // The ACTIVE state a coefficient needs on the next bit-plane is carried
+        // by `emap` (pass 2 writes the reconstructed magnitude there, and
+        // `encode_prepare` maps `epcoeff != 0` back to ACTIVE), not by this
+        // loop.
 
         Ok(())
     }

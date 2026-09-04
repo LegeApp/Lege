@@ -378,101 +378,74 @@ impl<W: Write> JB2Encoder<W> {
         zc: &mut ZEncoder<Vec<u8>>,
         bitmap: &BitImage,
     ) -> Result<(), Jb2Error> {
-        let dw = bitmap.width as i32;
-        let dh = bitmap.height as i32;
+        let dw = bitmap.width;
+        let dh = bitmap.height;
+        if dw == 0 || dh == 0 {
+            return Ok(());
+        }
 
-        // DjVuLibre scans from top row (dy = rows-1) down to bottom (dy = 0)
-        // But first we need to set up row pointers with border padding
-
-        // Create padded row access (simulating GBitmap's minborder(3))
-        // We'll create a simple wrapper that returns 0 for out-of-bounds
-        // NOTE: Flip Y coordinate because DjVu uses bottom-left origin (y=0 at bottom)
-        // while BitImage uses top-left origin (y=0 at top)
-        let get_pixel = |x: i32, y: i32| -> u8 {
-            if x < 0 || y < 0 || x >= dw || y >= dh {
-                0
-            } else {
-                // Flip Y: DjVu y=0 is at bottom, BitImage y=0 is at top
-                let flipped_y = dh - 1 - y;
-                bitmap.get_pixel_unchecked(x as usize, flipped_y as usize) as u8
+        // DjVuLibre scans from the top row down and reads a ten-pixel template
+        // that reaches two rows up and two columns either side. The old code
+        // served every one of those reads through a bounds-checking closure
+        // over the packed `BitImage` (four calls, four `bits[bit / 8]` slice
+        // indexes and a y-flip per coded pixel). This is DjVuLibre's own answer:
+        // unpack once into a byte plane with a two-pixel border and the y-flip
+        // already applied (its `GBitmap::minborder(3)`), so the template reads
+        // become plain in-bounds loads at fixed offsets.
+        //
+        // `stride = dw + 4` gives the two border columns on each side;
+        // `dh + 2` rows give the two all-zero rows the template reads above the
+        // top row. Everything outside the bitmap stays 0, exactly what the
+        // closure returned for out-of-bounds.
+        let stride = dw + 4;
+        let mut pad = vec![0u8; stride * (dh + 2)];
+        for y in 0..dh {
+            // DjVu's origin is bottom-left, `BitImage`'s is top-left.
+            let src_y = dh - 1 - y;
+            let row = &mut pad[y * stride + 2..y * stride + 2 + dw];
+            for (x, cell) in row.iter_mut().enumerate() {
+                *cell = bitmap.get_pixel_unchecked(x, src_y) as u8;
             }
-        };
+        }
 
         // Iterate from top row down (DjVuLibre order)
         for dy in (0..dh).rev() {
-            // Get initial context for this row
-            let mut context = self.get_direct_context(&get_pixel, 0, dy);
+            // Row bases for the current row and the two rows above it, at x = 0.
+            let r0 = dy * stride + 2;
+            let r1 = r0 + stride;
+            let r2 = r1 + stride;
+
+            // Same ten-bit template as `get_direct_context`:
+            //   up2: [x-1, x, x+1]              -> bits 9, 8, 7
+            //   up1: [x-2, x-1, x, x+1, x+2]    -> bits 6, 5, 4, 3, 2
+            //   up0: [x-2, x-1]                 -> bits 1, 0
+            let mut context = ((pad[r2 - 1] as usize) << 9)
+                | ((pad[r2] as usize) << 8)
+                | ((pad[r2 + 1] as usize) << 7)
+                | ((pad[r1 - 2] as usize) << 6)
+                | ((pad[r1 - 1] as usize) << 5)
+                | ((pad[r1] as usize) << 4)
+                | ((pad[r1 + 1] as usize) << 3)
+                | ((pad[r1 + 2] as usize) << 2)
+                | ((pad[r0 - 2] as usize) << 1)
+                | (pad[r0 - 1] as usize);
 
             for dx in 0..dw {
-                // Get pixel value
-                let n = get_pixel(dx, dy);
+                let n = pad[r0 + dx];
 
-                // Encode the pixel
                 zc.encode(n != 0, &mut self.bitdist[context])?;
 
-                // Shift context for next pixel
+                // Same shift as `shift_direct_context` for x = dx + 1.
                 if dx + 1 < dw {
-                    context = self.shift_direct_context(context, n, &get_pixel, dx + 1, dy);
+                    context = ((context << 1) & 0x37a)
+                        | ((pad[r1 + dx + 3] as usize) << 2)
+                        | ((pad[r2 + dx + 2] as usize) << 7)
+                        | (n as usize);
                 }
             }
         }
 
         Ok(())
-    }
-
-    /// Get the direct context for position (x, y).
-    /// This matches DjVuLibre's get_direct_context() exactly.
-    fn get_direct_context<F>(&self, get_pixel: &F, x: i32, y: i32) -> usize
-    where
-        F: Fn(i32, i32) -> u8,
-    {
-        // DjVuLibre uses up2, up1, up0 where up0 is current row, up1 is row above, up2 is 2 rows above
-        // Since we're scanning top-down, "up" means higher y values
-        // up2 = y + 2, up1 = y + 1, up0 = y
-        let up2_y = y + 2;
-        let up1_y = y + 1;
-        // up0_y = y (current row)
-
-        // Template positions (column offsets relative to current x):
-        // up2: [x-1, x, x+1] -> bits [9, 8, 7]
-        // up1: [x-2, x-1, x, x+1, x+2] -> bits [6, 5, 4, 3, 2]
-        // up0: [x-2, x-1] -> bits [1, 0]
-
-        ((get_pixel(x - 1, up2_y) as usize) << 9)
-            | ((get_pixel(x, up2_y) as usize) << 8)
-            | ((get_pixel(x + 1, up2_y) as usize) << 7)
-            | ((get_pixel(x - 2, up1_y) as usize) << 6)
-            | ((get_pixel(x - 1, up1_y) as usize) << 5)
-            | ((get_pixel(x, up1_y) as usize) << 4)
-            | ((get_pixel(x + 1, up1_y) as usize) << 3)
-            | ((get_pixel(x + 2, up1_y) as usize) << 2)
-            | ((get_pixel(x - 2, y) as usize) << 1)
-            | ((get_pixel(x - 1, y) as usize) << 0)
-    }
-
-    /// Shift the direct context for the next pixel.
-    /// This matches DjVuLibre's shift_direct_context() exactly.
-    fn shift_direct_context<F>(
-        &self,
-        context: usize,
-        next: u8,
-        get_pixel: &F,
-        x: i32,
-        y: i32,
-    ) -> usize
-    where
-        F: Fn(i32, i32) -> u8,
-    {
-        let up2_y = y + 2;
-        let up1_y = y + 1;
-
-        // Shift and bring in new bits
-        // ((context << 1) & 0x37a) preserves bits [9,8,6,5,4,3,1] shifted left
-        // Then we add: up1[x+2] at bit 2, up2[x+1] at bit 7, next at bit 0
-        ((context << 1) & 0x37a)
-            | ((get_pixel(x + 2, up1_y) as usize) << 2)
-            | ((get_pixel(x + 1, up2_y) as usize) << 7)
-            | (next as usize)
     }
 
     /// Encode start of dictionary record (width=0, height=0 for dictionaries)
@@ -1027,6 +1000,12 @@ impl<W: Write> JB2Encoder<W> {
         for i in 0..inherited_shape_count {
             shape_in_lib[i] = true;
         }
+        // Running count of `shape_in_lib` entries that are true. The library
+        // size is needed once per blit, and recomputing it with
+        // `shape_in_lib.iter().filter(..).count()` made a page with n blits
+        // O(n^2) -- ~10^8 bool tests for a dense scanned page whose symbols
+        // repeat. It only ever grows by one, right below.
+        let mut lib_count = inherited_shape_count;
 
         // Encode each blit
         for &(left, bottom, shapeno) in blits.iter() {
@@ -1057,7 +1036,7 @@ impl<W: Write> JB2Encoder<W> {
                     bottom,
                     shape_height,
                     shape_width,
-                    shape_in_lib.iter().filter(|&&x| x).count() as i32,
+                    lib_count as i32,
                 )?;
             } else {
                 // Shape not in library - encode it
@@ -1084,7 +1063,7 @@ impl<W: Write> JB2Encoder<W> {
                         parent_bitmap,
                         left,
                         bottom,
-                        shape_in_lib.iter().filter(|&&x| x).count() as i32,
+                        lib_count as i32,
                     )?;
                 } else {
                     // Use NEW_MARK
@@ -1093,6 +1072,7 @@ impl<W: Write> JB2Encoder<W> {
 
                 // Mark shape as in library
                 shape_in_lib[shapeno] = true;
+                lib_count += 1;
             }
 
             // Check if we need to reset contexts

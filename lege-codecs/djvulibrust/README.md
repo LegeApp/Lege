@@ -39,7 +39,7 @@ Add the library from crates.io:
 
 ```toml
 [dependencies]
-djvu_encoder = { version = "0.11", features = ["rayon"] }
+djvu_encoder = { version = "0.12", features = ["rayon"] }
 ```
 
 Create a simple multi-page document:

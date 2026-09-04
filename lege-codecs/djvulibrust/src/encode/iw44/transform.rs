@@ -140,18 +140,27 @@ impl Encode {
         // Source row h-1 (bottom of visual image) -> Destination row 0
         // Only write to the actual image area (0..h rows, 0..w columns)
         // Padding area (w..stride columns and h..buffer_h rows) stays at zero
+        // Row-at-a-time so the widening shift vectorizes. The old per-pixel
+        // form paid a `src_idx < channel_buf.len()` test and two bounds-checked
+        // indexes for every one of the (8.7 M on an A4 page at 300 dpi) pixels
+        // of each of the three planes. `(v as i16) << IW_SHIFT` is exactly the
+        // old `((v as i32) << IW_SHIFT) as i16`: an i8 shifted left by 6 spans
+        // [-8192, 8128], well inside i16.
+        const SHIFT: u32 = crate::encode::iw44::constants::IW_SHIFT as u32;
+        let n = channel_buf.len();
         for y in 0..h {
             let src_y = h - 1 - y; // Flip: top becomes bottom
-            for x in 0..w {
-                let src_idx = src_y * w + x;
-                let dst_idx = y * stride + x;
-
-                let val = if src_idx < channel_buf.len() {
-                    channel_buf[src_idx] as i32
-                } else {
-                    0
-                };
-                data16[dst_idx] = (val << crate::encode::iw44::constants::IW_SHIFT) as i16;
+            let src_start = src_y * w;
+            if src_start >= n {
+                continue;
+            }
+            // Short final row (a truncated buffer) keeps the old behavior of
+            // leaving the remaining columns at the zero `fill` above.
+            let len = w.min(n - src_start);
+            let src = &channel_buf[src_start..src_start + len];
+            let dst = &mut data16[y * stride..y * stride + len];
+            for (d, &v) in dst.iter_mut().zip(src.iter()) {
+                *d = (v as i16) << SHIFT;
             }
         }
         // Padding area (columns w..stride and rows h..buffer_h) remains zero

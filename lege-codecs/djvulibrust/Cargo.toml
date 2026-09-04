@@ -2,7 +2,7 @@
 
 [package]
 name = "djvu_encoder"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Native Rust DjVu document encoder with an optional command-line interface"
 # The encoder library and its optional standalone CLI are distributed under

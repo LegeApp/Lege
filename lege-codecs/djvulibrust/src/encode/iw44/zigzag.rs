@@ -84,6 +84,23 @@ pub const ZIGZAG_LOC: [usize; 1024] = [
 ///
 /// # Panics
 /// Panics if index >= 1024
+/// Inverse of [`ZIGZAG_LOC`]: `ZIGZAG_INV[loc]` is the coefficient index `i`
+/// for which `ZIGZAG_LOC[i] == loc`.
+///
+/// `ZIGZAG_LOC` is a permutation of `0..1024`, so this is well defined and
+/// lets a 32x32 block be read out of the transform plane in row-major
+/// (sequential, one cache line per row) order instead of jumping through the
+/// plane in zigzag order.
+pub const ZIGZAG_INV: [u16; 1024] = {
+    let mut inv = [0u16; 1024];
+    let mut i = 0;
+    while i < 1024 {
+        inv[ZIGZAG_LOC[i]] = i as u16;
+        i += 1;
+    }
+    inv
+};
+
 #[inline]
 pub fn get_zigzag_loc(index: usize) -> usize {
     ZIGZAG_LOC[index]
