@@ -226,6 +226,14 @@ pub fn build_lp_args(
         }
         // Actual size is the filter chain's default; saying so would be
         // redundant. A composed sheet is fitted, never percentage-scaled.
+        //
+        // UNSETTLED, and only a printer can settle it: a composed sheet is
+        // already the full paper size with the hardware margin left blank,
+        // and CUPS' image filter fits an image to the imageable area by
+        // default -- so this may shrink the sheet a second time, by roughly
+        // that margin again. `-o ppi=<compose dpi>` or composing only the
+        // imageable area would each avoid it. See
+        // @lege-ecosystem.question.cups-may-double-apply-the-hardware-margin-to-a-composed-sheet.
         (_, Scaling::ActualSize) | (false, Scaling::Percent(_)) => {
             if !pass_through {
                 opt(&mut args, "fit-to-page".to_string());
