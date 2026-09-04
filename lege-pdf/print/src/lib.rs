@@ -16,12 +16,14 @@
 //! PDF/X — is deliberately out of scope; see `PLAN.md` §7.
 
 pub mod compose;
+pub mod job;
 pub mod layout;
 pub mod paper;
 pub mod preview;
 pub mod spool;
 
 pub use compose::{ComposeOptions, SheetRaster, compose_sheet};
+pub use job::{PrintRoute, SubmittedJob, plan_sheets, print_document};
 pub use layout::{Placement, Sheet, Side, impose};
 pub use paper::{Margins, Orientation, PaperSize, Rect};
 pub use preview::{PreviewOptions, render_preview_png};
