@@ -90,27 +90,62 @@ pub enum ReadError {
 }
 
 /// Visible page geometry in PDF user space.
+///
+/// `crop_box` is the visible page and drives every method that does not name
+/// a box explicitly — that is what a viewer shows and what this crate has
+/// always meant by "the page". The other four boxes are carried for callers
+/// that need a different extent (printing to the trim area, prepress); each
+/// is clamped to the MediaBox and defaults to the CropBox when the document
+/// omits it, so they are always populated and never degenerate on their own.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PageGeometry {
     pub crop_box: [f64; 4],
+    /// The physical sheet the page was authored for.
+    pub media_box: [f64; 4],
+    /// Trim plus bleed allowance; equals `crop_box` when absent.
+    pub bleed_box: [f64; 4],
+    /// The finished page after trimming; equals `crop_box` when absent.
+    pub trim_box: [f64; 4],
+    /// The author-declared meaningful content extent; equals `crop_box` when
+    /// absent.
+    pub art_box: [f64; 4],
     pub rotate: u16,
 }
 
 impl PageGeometry {
+    /// Width of the *crop* box, before `/Rotate`.
     pub fn width(self) -> f64 {
         (self.crop_box[2] - self.crop_box[0]).max(0.0)
     }
 
+    /// Height of the *crop* box, before `/Rotate`.
     pub fn height(self) -> f64 {
         (self.crop_box[3] - self.crop_box[1]).max(0.0)
     }
 
+    /// Width of the *crop* box as displayed, i.e. after `/Rotate`.
     pub fn display_width(self) -> f64 {
         display_extent(self.width(), self.height(), self.rotate).0
     }
 
+    /// Height of the *crop* box as displayed, i.e. after `/Rotate`.
     pub fn display_height(self) -> f64 {
         display_extent(self.width(), self.height(), self.rotate).1
+    }
+
+    /// The displayed `(width, height)` of an arbitrary page box of this page,
+    /// i.e. its extent with the page's `/Rotate` applied.
+    ///
+    /// Callers pick the box — pass one of the fields above — so this crate
+    /// needs no opinion about which box a given consumer means.
+    /// `display_width`/`display_height` are exactly this applied to
+    /// `crop_box`.
+    pub fn display_size_of_box(self, b: [f64; 4]) -> (f64, f64) {
+        display_extent(
+            (b[2] - b[0]).max(0.0),
+            (b[3] - b[1]).max(0.0),
+            self.rotate,
+        )
     }
 }
 
@@ -365,6 +400,10 @@ impl RenderSession {
             .map_err(|_| self.page_out_of_range(page))?;
         Ok(PageGeometry {
             crop_box: page_ref.crop_box,
+            media_box: page_ref.media_box,
+            bleed_box: page_ref.bleed_box,
+            trim_box: page_ref.trim_box,
+            art_box: page_ref.art_box,
             rotate: page_ref.rotate,
         })
     }

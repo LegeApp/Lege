@@ -2,6 +2,7 @@ pub mod content;
 pub mod images;
 pub mod inspect;
 pub mod mcp;
+pub mod print;
 pub mod render;
 pub mod search;
 pub mod serve;

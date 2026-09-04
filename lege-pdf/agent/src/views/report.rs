@@ -65,6 +65,11 @@ pub struct PageView {
     pub page_index: u32,
     pub media_box: [f64; 4],
     pub crop_box: [f64; 4],
+    /// The non-inheritable prepress boxes. Each defaults to `crop_box` when
+    /// the page does not declare it, so they are always present.
+    pub bleed_box: [f64; 4],
+    pub trim_box: [f64; 4],
+    pub art_box: [f64; 4],
     pub rotate: u16,
     pub media_box_present: bool,
     pub compile: CompileView,

@@ -167,6 +167,9 @@ fn build_data(
                     page_index: pz.0,
                     media_box: pref.media_box,
                     crop_box: pref.crop_box,
+                    bleed_box: pref.bleed_box,
+                    trim_box: pref.trim_box,
+                    art_box: pref.art_box,
                     rotate: pref.rotate,
                     media_box_present: status.map(|s| s.media_box_present).unwrap_or(true),
                     compile,
@@ -312,8 +315,21 @@ fn print_human(env: &Envelope, data: &InspectData) {
             CompileView::Failed { error } => format!("failed ({error})"),
             CompileView::Unknown => "unknown".into(),
         };
+        // Bleed/Trim/Art default to the CropBox, so only mention the ones a
+        // document actually declares — otherwise every line grows by three
+        // identical rectangles.
+        let mut boxes = String::new();
+        for (label, rect) in [
+            ("bleed", page.bleed_box),
+            ("trim", page.trim_box),
+            ("art", page.art_box),
+        ] {
+            if rect != page.crop_box {
+                boxes.push_str(&format!(" {label}={rect:?}"));
+            }
+        }
         println!(
-            "page {} index {} rotate {} crop={:?} compile={compile}",
+            "page {} index {} rotate {} crop={:?}{boxes} compile={compile}",
             page.page, page.page_index, page.rotate, page.crop_box
         );
     }

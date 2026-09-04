@@ -17,6 +17,11 @@ use crate::{DocumentError, PageAnnotation, PageIndex, PageRef, PageTreeIndex, Pa
 const LETTER: [f64; 4] = [0.0, 0.0, 612.0, 792.0];
 
 /// Attributes inheritable through the page tree (ISO 32000-1 Table 29).
+///
+/// Exactly four: `/Resources`, `/MediaBox`, `/CropBox` and `/Rotate`.
+/// `/BleedBox`, `/TrimBox` and `/ArtBox` are deliberately absent — the spec
+/// does not list them as inheritable, so they are read from the page's own
+/// dictionary by [`resolve_page_boxes`].
 #[derive(Debug, Clone, Default)]
 struct Inherited {
     resources: Option<PdfObject>,
@@ -212,11 +217,15 @@ pub(crate) fn build_page_tree(
 
         let media_box = inherited.media_box.unwrap_or(LETTER);
         let crop_box = clamp_to(inherited.crop_box.unwrap_or(media_box), media_box);
+        let boxes = resolve_page_boxes(dict, media_box, crop_box, resolver, ctx);
         pages.push(PageRef {
             index: PageIndex(pages.len() as u32),
             object: node_id,
             media_box,
             crop_box,
+            bleed_box: boxes.bleed,
+            trim_box: boxes.trim,
+            art_box: boxes.art,
             rotate: normalize_rotation(inherited.rotate.unwrap_or(0)),
             resources: inherited.resources.clone(),
             contents: dict.get(names.known.contents).cloned(),
@@ -358,12 +367,18 @@ fn append_blank_pages(
     }
     let media_box = inherited.media_box.unwrap_or(LETTER);
     let crop_box = clamp_to(inherited.crop_box.unwrap_or(media_box), media_box);
+    // A placeholder has no page dictionary, so the non-inheritable boxes take
+    // their default: the CropBox.
+    let boxes = PageBoxes::all(crop_box);
     for _ in 0..count {
         pages.push(PageRef {
             index: PageIndex(pages.len() as u32),
             object: None,
             media_box,
             crop_box,
+            bleed_box: boxes.bleed,
+            trim_box: boxes.trim,
+            art_box: boxes.art,
             rotate: normalize_rotation(inherited.rotate.unwrap_or(0)),
             resources: inherited.resources.clone(),
             contents: None,
@@ -450,11 +465,15 @@ pub(crate) fn recover_orphan_pages(
         inherited = inherited.updated_from(dict, resolver, ctx);
         let media_box = inherited.media_box.unwrap_or(LETTER);
         let crop_box = clamp_to(inherited.crop_box.unwrap_or(media_box), media_box);
+        let boxes = resolve_page_boxes(dict, media_box, crop_box, resolver, ctx);
         pages.push(PageRef {
             index: PageIndex(pages.len() as u32),
             object: Some(entry.id),
             media_box,
             crop_box,
+            bleed_box: boxes.bleed,
+            trim_box: boxes.trim,
+            art_box: boxes.art,
             rotate: normalize_rotation(inherited.rotate.unwrap_or(0)),
             resources: inherited.resources,
             contents: dict.get(names.known.contents).cloned(),
@@ -710,19 +729,71 @@ fn normalize_rotation(rotate: i64) -> u16 {
     if r % 90 == 0 { r as u16 } else { 0 }
 }
 
-/// Intersect `rect` with `bounds`; an empty intersection collapses to
-/// `bounds` (a CropBox entirely outside the MediaBox is ignored).
-fn clamp_to(rect: [f64; 4], bounds: [f64; 4]) -> [f64; 4] {
+/// Intersect `rect` with `bounds`, or `None` when the intersection has no
+/// area (a box entirely outside its bounds is meaningless).
+fn intersect(rect: [f64; 4], bounds: [f64; 4]) -> Option<[f64; 4]> {
     let out = [
         rect[0].max(bounds[0]),
         rect[1].max(bounds[1]),
         rect[2].min(bounds[2]),
         rect[3].min(bounds[3]),
     ];
-    if out[2] - out[0] <= 0.0 || out[3] - out[1] <= 0.0 {
-        return bounds;
+    (out[2] - out[0] > 0.0 && out[3] - out[1] > 0.0).then_some(out)
+}
+
+/// Intersect `rect` with `bounds`; an empty intersection collapses to
+/// `bounds` (a CropBox entirely outside the MediaBox is ignored).
+fn clamp_to(rect: [f64; 4], bounds: [f64; 4]) -> [f64; 4] {
+    intersect(rect, bounds).unwrap_or(bounds)
+}
+
+/// The non-inheritable page boxes: `/BleedBox`, `/TrimBox`, `/ArtBox`
+/// (ISO 32000-1 §14.11.2, Table 30).
+///
+/// Each is read from the page's **own** dictionary only — unlike
+/// MediaBox/CropBox/Resources/Rotate these do not inherit through `/Parent`.
+/// Each is clamped to `media_box` exactly as CropBox is, and falls back to
+/// `crop_box` when absent, malformed, degenerate, or disjoint from the
+/// MediaBox. Since `crop_box` itself defaults to `media_box`, the spec's
+/// chain "Art/Trim/Bleed → Crop → Media" holds.
+fn resolve_page_boxes(
+    dict: &Dictionary,
+    media_box: [f64; 4],
+    crop_box: [f64; 4],
+    resolver: &Resolver<'_>,
+    ctx: &mut ParseContext,
+) -> PageBoxes {
+    let names = resolver.names;
+    let mut one = |key: &[u8]| {
+        resolve_rect(dict.get(names.intern(key)), resolver, ctx)
+            .and_then(|rect| intersect(rect, media_box))
+            .unwrap_or(crop_box)
+    };
+    PageBoxes {
+        bleed: one(b"BleedBox"),
+        trim: one(b"TrimBox"),
+        art: one(b"ArtBox"),
     }
-    out
+}
+
+/// The three non-inheritable boxes, resolved together.
+#[derive(Debug, Clone, Copy)]
+struct PageBoxes {
+    bleed: [f64; 4],
+    trim: [f64; 4],
+    art: [f64; 4],
+}
+
+impl PageBoxes {
+    /// The defaulting case: no page dictionary to read from (a synthesized
+    /// blank placeholder), so every box collapses to the CropBox.
+    const fn all(rect: [f64; 4]) -> Self {
+        Self {
+            bleed: rect,
+            trim: rect,
+            art: rect,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -752,5 +823,97 @@ mod tests {
         assert_eq!(clamp_to([-50.0, -50.0, 700.0, 900.0], media), media);
         // Disjoint crop box → media box.
         assert_eq!(clamp_to([1000.0, 1000.0, 2000.0, 2000.0], media), media);
+    }
+
+    #[test]
+    fn intersect_rejects_empty_and_disjoint() {
+        let media = [0.0, 0.0, 612.0, 792.0];
+        assert_eq!(
+            intersect([100.0, 100.0, 500.0, 700.0], media),
+            Some([100.0, 100.0, 500.0, 700.0])
+        );
+        // Oversized boxes are trimmed to the bounds.
+        assert_eq!(intersect([-50.0, -50.0, 700.0, 900.0], media), Some(media));
+        // Disjoint and edge-touching intersections have no area.
+        assert_eq!(intersect([1000.0, 1000.0, 2000.0, 2000.0], media), None);
+        assert_eq!(intersect([612.0, 0.0, 800.0, 792.0], media), None);
+    }
+
+    #[test]
+    fn page_boxes_default_and_clamp() {
+        // TrimBox is inset; BleedBox overhangs the MediaBox and is clamped to
+        // it; ArtBox is absent and must fall back to CropBox.
+        let page = single_page(
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792] >>",
+            "<< /Type /Page /Parent 2 0 R /CropBox [10 10 600 780] \
+             /TrimBox [50 50 500 700] /BleedBox [-20 -20 700 900] >>",
+        );
+        assert_eq!(page.media_box, [0.0, 0.0, 612.0, 792.0]);
+        assert_eq!(page.crop_box, [10.0, 10.0, 600.0, 780.0]);
+        assert_eq!(page.trim_box, [50.0, 50.0, 500.0, 700.0]);
+        assert_eq!(page.bleed_box, [0.0, 0.0, 612.0, 792.0]);
+        assert_eq!(page.art_box, page.crop_box);
+    }
+
+    #[test]
+    fn page_boxes_do_not_inherit_but_crop_does() {
+        // A TrimBox on the *parent* must be ignored: only Resources,
+        // MediaBox, CropBox and Rotate inherit. CropBox does.
+        let page = single_page(
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792] \
+             /CropBox [5 5 605 785] /TrimBox [100 100 200 200] >>",
+            "<< /Type /Page /Parent 2 0 R >>",
+        );
+        assert_eq!(page.crop_box, [5.0, 5.0, 605.0, 785.0]);
+        assert_eq!(page.trim_box, page.crop_box);
+        assert_eq!(page.bleed_box, page.crop_box);
+        assert_eq!(page.art_box, page.crop_box);
+    }
+
+    #[test]
+    fn degenerate_and_disjoint_page_boxes_fall_back_to_crop() {
+        // Zero-width TrimBox, disjoint BleedBox, short ArtBox array.
+        let page = single_page(
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792] >>",
+            "<< /Type /Page /Parent 2 0 R /CropBox [10 10 600 780] \
+             /TrimBox [100 100 100 400] /BleedBox [900 900 1000 1000] \
+             /ArtBox [1 2 3] >>",
+        );
+        assert_eq!(page.crop_box, [10.0, 10.0, 600.0, 780.0]);
+        assert_eq!(page.trim_box, page.crop_box);
+        assert_eq!(page.bleed_box, page.crop_box);
+        assert_eq!(page.art_box, page.crop_box);
+    }
+
+    #[test]
+    fn missing_media_box_defaults_to_letter_and_boxes_follow() {
+        let page = single_page(
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+            "<< /Type /Page /Parent 2 0 R >>",
+        );
+        assert_eq!(page.media_box, LETTER);
+        assert_eq!(page.crop_box, LETTER);
+        assert_eq!(page.bleed_box, LETTER);
+        assert_eq!(page.trim_box, LETTER);
+        assert_eq!(page.art_box, LETTER);
+    }
+
+    /// Build a one-page document from a page-tree root and a page dictionary,
+    /// open it, and return the single resolved [`crate::PageRef`].
+    fn single_page(pages_dict: &str, page_dict: &str) -> crate::PageRef {
+        use pdf_test_support::builder::PdfBuilder;
+
+        let mut builder = PdfBuilder::new();
+        builder.add_object(1, "<< /Type /Catalog /Pages 2 0 R >>");
+        builder.add_object(2, pages_dict);
+        builder.add_object(3, page_dict);
+        builder.finish_classic_xref("/Root 1 0 R");
+        let source: std::sync::Arc<dyn pdf_source::PdfSource> = std::sync::Arc::new(
+            pdf_source::OwnedBytesSource::new(builder.into_bytes()),
+        );
+        let snapshot = crate::DocumentSnapshot::open(source, crate::DocumentLimits::default())
+            .expect("document opens");
+        assert_eq!(snapshot.page_count(), 1);
+        snapshot.page(PageIndex(0)).expect("page 0").clone()
     }
 }

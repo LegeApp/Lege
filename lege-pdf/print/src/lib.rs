@@ -22,9 +22,14 @@ pub mod paper;
 pub mod preview;
 pub mod spool;
 
-pub use compose::{ComposeOptions, SheetRaster, compose_sheet};
-pub use job::{PrintRoute, SubmittedJob, plan_sheets, print_document};
-pub use layout::{Placement, Sheet, Side, impose};
+pub use compose::{
+    Band, ComposeOptions, SheetRaster, compose_sheet, compose_sheet_banded, sheet_pixel_size,
+};
+pub use job::{
+    PrintRequest, PrintRoute, RouteKind, SubmittedJob, compose_options_for, plan_sheets,
+    print_document, print_document_with, route_for, source_pages,
+};
+pub use layout::{Placement, Sheet, Side, expand_copies, impose};
 pub use paper::{Margins, Orientation, PaperSize, Rect};
 pub use preview::{PreviewOptions, render_preview_png};
 pub use spool::{
@@ -170,24 +175,19 @@ pub enum PageBoxKind {
 }
 
 /// How a source page is fitted to the area available for it on the sheet.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Scaling {
     /// 1:1. Content that does not fit is clipped.
     ActualSize,
     /// Scale up or down to fit, preserving aspect ratio.
     FitToPage,
     /// Scale down to fit but never up. The sane default.
+    #[default]
     ShrinkToFit,
     /// Cover the imageable area, cropping the overflow.
     FillPage,
     /// An explicit factor, `1.0` being 1:1.
     Percent(f64),
-}
-
-impl Default for Scaling {
-    fn default() -> Self {
-        Self::ShrinkToFit
-    }
 }
 
 /// Sheets per side of paper, or a saddle-stitched booklet.
@@ -480,7 +480,13 @@ impl PrintJob {
         Self { pages, options }
     }
 
-    /// Build a job from an open document, taking every page's geometry.
+    /// Build a job from an open document, taking every page's geometry from
+    /// the box named by `options.source_box`.
+    ///
+    /// Every box is populated by `lege-pdf-read` — Bleed/Trim/Art default to
+    /// the CropBox and the CropBox to the MediaBox — so a document that
+    /// declares no prepress boxes prints identically whichever box is asked
+    /// for.
     pub fn from_session(
         session: &lege_pdf_read::RenderSession,
         options: PrintOptions,
@@ -489,18 +495,30 @@ impl PrintJob {
         let mut pages = Vec::with_capacity(count as usize);
         for index in 0..count {
             let geometry = session.page_geometry(index)?;
-            pages.push(SourcePage::new(
-                index,
-                geometry.display_width(),
-                geometry.display_height(),
-            ));
+            let (width, height) =
+                geometry.display_size_of_box(source_box(geometry, options.source_box));
+            pages.push(SourcePage::new(index, width, height));
         }
         Ok(Self { pages, options })
     }
 }
 
+/// The page box a [`PageBoxKind`] names, out of a page's geometry.
+#[must_use]
+fn source_box(geometry: lege_pdf_read::PageGeometry, kind: PageBoxKind) -> [f64; 4] {
+    match kind {
+        PageBoxKind::Crop => geometry.crop_box,
+        PageBoxKind::Media => geometry.media_box,
+        PageBoxKind::Trim => geometry.trim_box,
+        PageBoxKind::Bleed => geometry.bleed_box,
+        PageBoxKind::Art => geometry.art_box,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -527,6 +545,28 @@ mod tests {
         assert_eq!(PageRange::parse("8-", 10).unwrap().resolve(10), vec![7, 8, 9]);
         assert_eq!(PageRange::parse("5-3", 10).unwrap().resolve(10), vec![2, 3, 4]);
         assert_eq!(PageRange::parse("odd", 5).unwrap().resolve(5), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn source_box_selects_the_named_box_and_rotates_it() {
+        let geometry = lege_pdf_read::PageGeometry {
+            crop_box: [0.0, 0.0, 600.0, 800.0],
+            media_box: [0.0, 0.0, 612.0, 792.0],
+            bleed_box: [10.0, 10.0, 590.0, 790.0],
+            trim_box: [20.0, 20.0, 580.0, 780.0],
+            art_box: [30.0, 30.0, 570.0, 770.0],
+            rotate: 90,
+        };
+        assert_eq!(source_box(geometry, PageBoxKind::Crop), geometry.crop_box);
+        assert_eq!(source_box(geometry, PageBoxKind::Media), geometry.media_box);
+        assert_eq!(source_box(geometry, PageBoxKind::Bleed), geometry.bleed_box);
+        assert_eq!(source_box(geometry, PageBoxKind::Trim), geometry.trim_box);
+        assert_eq!(source_box(geometry, PageBoxKind::Art), geometry.art_box);
+        // /Rotate 90 swaps the axes: the 560x760 trim box prints 760x560.
+        assert_eq!(
+            geometry.display_size_of_box(source_box(geometry, PageBoxKind::Trim)),
+            (760.0, 560.0)
+        );
     }
 
     #[test]

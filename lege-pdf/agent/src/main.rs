@@ -5,7 +5,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use lege_pdf_agent::bounds::Bounds;
-use lege_pdf_agent::commands::{content, images, inspect, mcp, render, search, serve, text};
+use lege_pdf_agent::commands::{
+    content, images, inspect, mcp, print, render, search, serve, text,
+};
 use lege_pdf_agent::schema::OutputMode;
 
 #[derive(Debug, Parser)]
@@ -147,6 +149,73 @@ enum Command {
         ocr: text::OcrMode,
         #[arg(long, default_value = "eng")]
         ocr_language: String,
+    },
+    /// Print a document, or plan the job without spooling it.
+    Print {
+        /// The PDF to print. Optional only with `--list-printers`.
+        #[arg(required_unless_present = "list_printers")]
+        file: Option<PathBuf>,
+        /// Target queue. Defaults to the system default printer.
+        #[arg(long)]
+        printer: Option<String>,
+        /// Enumerate print queues and exit.
+        #[arg(long)]
+        list_printers: bool,
+        /// One-based page selection: 1,3-5 / odd / even / all.
+        #[arg(long)]
+        pages: Option<String>,
+        /// Paper: a4, letter, … or an explicit 210x297mm / 8.5x11in / 612x792pt.
+        #[arg(long)]
+        paper: Option<String>,
+        #[arg(long, value_enum, default_value_t = print::OrientationArg::Auto)]
+        orientation: print::OrientationArg,
+        /// Uniform user margin in points.
+        #[arg(long, conflicts_with_all = ["margin_mm", "margin_in"])]
+        margin: Option<f64>,
+        /// Uniform user margin in millimetres.
+        #[arg(long, conflicts_with = "margin_in")]
+        margin_mm: Option<f64>,
+        /// Uniform user margin in inches.
+        #[arg(long)]
+        margin_in: Option<f64>,
+        /// actual | fit | shrink | fill | NN%
+        #[arg(long)]
+        scaling: Option<String>,
+        /// 1 | 2 | 4 | 6 | 9 | 16 | booklet
+        #[arg(long)]
+        n_up: Option<String>,
+        #[arg(long, value_enum, default_value_t = print::NUpOrderArg::RightDown)]
+        n_up_order: print::NUpOrderArg,
+        /// Draw a hairline around each N-up cell.
+        #[arg(long)]
+        n_up_border: bool,
+        #[arg(long, value_enum, default_value_t = print::DuplexArg::None)]
+        duplex: print::DuplexArg,
+        #[arg(long, default_value_t = 1)]
+        copies: u16,
+        #[arg(long)]
+        no_collate: bool,
+        /// Print the selected pages last-to-first.
+        #[arg(long)]
+        reverse: bool,
+        #[arg(long, value_enum, default_value_t = print::SourceBoxArg::Crop)]
+        source_box: print::SourceBoxArg,
+        /// Compose in grayscale, or ask the driver for mono on pass-through.
+        #[arg(long)]
+        gray: bool,
+        /// Composition resolution. Ignored on the pass-through route.
+        #[arg(long)]
+        dpi: Option<f64>,
+        /// Spool with the file backend into this directory; no real printer.
+        #[arg(long)]
+        to_file: Option<PathBuf>,
+        /// Report the plan as JSON and spool nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// In a dry run, ask the real queue for its capabilities instead of
+        /// assuming a conservative device.
+        #[arg(long, requires = "dry_run")]
+        query_device: bool,
     },
     /// Persistent stdio JSONL service with snapshot cache.
     Serve {
@@ -309,6 +378,58 @@ fn main() -> ExitCode {
             output,
             snapshot: None,
             identity: None,
+        }),
+        Command::Print {
+            file,
+            printer,
+            list_printers,
+            pages,
+            paper,
+            orientation,
+            margin,
+            margin_mm,
+            margin_in,
+            scaling,
+            n_up,
+            n_up_order,
+            n_up_border,
+            duplex,
+            copies,
+            no_collate,
+            reverse,
+            source_box,
+            gray,
+            dpi,
+            to_file,
+            dry_run,
+            query_device,
+        } => print::run(print::PrintArgs {
+            path: file.as_deref(),
+            password,
+            printer: printer.as_deref(),
+            list_printers,
+            pages: pages.as_deref(),
+            paper: paper.as_deref(),
+            orientation,
+            margin,
+            margin_mm,
+            margin_in,
+            scaling: scaling.as_deref(),
+            n_up: n_up.as_deref(),
+            n_up_order,
+            n_up_border,
+            duplex,
+            copies,
+            no_collate,
+            reverse,
+            source_box,
+            gray,
+            dpi,
+            to_file: to_file.as_deref(),
+            dry_run,
+            query_device,
+            bounds,
+            output,
         }),
         Command::Serve {
             stdio,

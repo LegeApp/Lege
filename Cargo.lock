@@ -3141,6 +3141,7 @@ dependencies = [
 name = "jp2lam"
 version = "0.3.0"
 dependencies = [
+ "jpxl-perceptual",
  "memmap2",
  "rayon",
  "tempfile",
@@ -3152,6 +3153,10 @@ name = "jpeg-encoder"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6"
+
+[[package]]
+name = "jpxl-perceptual"
+version = "0.3.0"
 
 [[package]]
 name = "js-sys"
@@ -3445,6 +3450,7 @@ dependencies = [
  "clap",
  "image",
  "lege-ocr",
+ "lege-pdf-print",
  "pdf-content",
  "pdf-document",
  "pdf-font",
@@ -3462,6 +3468,17 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "lege-pdf-print"
+version = "0.1.0"
+dependencies = [
+ "lege-pdf-read",
+ "png 0.18.1",
+ "tempfile",
+ "thiserror 2.0.19",
+ "windows",
 ]
 
 [[package]]

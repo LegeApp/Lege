@@ -16,6 +16,9 @@ windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Printing",
+    # StartDocW / StartPage / EndPage / EndDoc / DeviceCapabilitiesW live here
+    # in windows-rs rather than under Win32_Graphics_Printing.
+    "Win32_Storage_Xps",
 ] }
 
 [dev-dependencies]

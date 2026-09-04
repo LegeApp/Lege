@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 png = { workspace = true }
 image = { workspace = true }
 lege-ocr = { path = "../../lege-ocr", features = ["tesseract-ocr"] }
+lege-pdf-print = { path = "../print" }
 pdf-source = { workspace = true }
 pdf-document = { workspace = true }
 pdf-content = { workspace = true }

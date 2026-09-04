@@ -91,11 +91,29 @@ fn session_exposes_geometry_and_opaque_compilation() {
     assert_eq!(first.width(), 612.0);
     assert_eq!(first.height(), 792.0);
 
+    // No page in the fixture declares Bleed/Trim/ArtBox, so each defaults to
+    // the CropBox — and the CropBox to the MediaBox on page zero.
+    assert_eq!(first.media_box, [0.0, 0.0, 612.0, 792.0]);
+    assert_eq!(first.trim_box, first.crop_box);
+    assert_eq!(first.bleed_box, first.crop_box);
+    assert_eq!(first.art_box, first.crop_box);
+
     let second = session.page_geometry(1).expect("page one geometry");
     assert_eq!(second.crop_box, [10.0, 10.0, 400.0, 500.0]);
     assert_eq!(second.rotate, 90);
     assert_eq!(second.display_width(), 490.0);
     assert_eq!(second.display_height(), 390.0);
+
+    // An absent TrimBox reports as the CropBox, and its rotated extent is
+    // therefore the page's display size.
+    assert_eq!(second.trim_box, second.crop_box);
+    assert_eq!(
+        second.display_size_of_box(second.trim_box),
+        (second.display_width(), second.display_height())
+    );
+    // The MediaBox is larger and is *not* swallowed by the CropBox.
+    assert_eq!(second.media_box, [0.0, 0.0, 612.0, 792.0]);
+    assert_eq!(second.display_size_of_box(second.media_box), (792.0, 612.0));
 
     let compiled = session.compile(0).expect("page should compile");
     assert_eq!(compiled.page_index(), 0);
@@ -510,6 +528,10 @@ fn export_rejects_unusable_resolutions_and_oversized_pages() {
     // page-range export does not abort partway through.
     let degenerate = lege_pdf_read::PageGeometry {
         crop_box: [0.0, 0.0, 0.0, 0.0],
+        media_box: [0.0, 0.0, 0.0, 0.0],
+        bleed_box: [0.0, 0.0, 0.0, 0.0],
+        trim_box: [0.0, 0.0, 0.0, 0.0],
+        art_box: [0.0, 0.0, 0.0, 0.0],
         rotate: 0,
     };
     assert_eq!(

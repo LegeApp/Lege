@@ -164,6 +164,16 @@ pub struct PageRef {
     /// CropBox after inheritance, clamped to MediaBox; equals media_box if
     /// absent.
     pub crop_box: [f64; 4],
+    /// BleedBox, clamped to MediaBox; equals crop_box if absent. Read from
+    /// the page's own dictionary — unlike MediaBox/CropBox it does not
+    /// inherit (ISO 32000-1 §14.11.2).
+    pub bleed_box: [f64; 4],
+    /// TrimBox — the finished page after trimming — clamped to MediaBox;
+    /// equals crop_box if absent. Non-inheritable, like `bleed_box`.
+    pub trim_box: [f64; 4],
+    /// ArtBox — the author-declared meaningful content extent — clamped to
+    /// MediaBox; equals crop_box if absent. Non-inheritable, like `bleed_box`.
+    pub art_box: [f64; 4],
     /// Normalized rotation in {0, 90, 180, 270}.
     pub rotate: u16,
     /// The page's raw /Resources value (possibly inherited): usually a
