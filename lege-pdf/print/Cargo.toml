@@ -1,0 +1,25 @@
+[package]
+name = "lege-pdf-print"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Office printing for the Lege PDF stack: imposition, sheet composition, spooling"
+
+[dependencies]
+thiserror = { workspace = true }
+lege-pdf-read = { path = "../read" }
+png = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Printing",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

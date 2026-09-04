@@ -29,6 +29,7 @@ members = [
     "lege-pdf/agent",           # agent-facing `lege-pdf` CLI (structured PDF tool)
     "lege-pdf/render/crates/*", # native PDF document + rendering engine
     "lege-pdf/write",           # `lege-pdf-write`
+    "lege-pdf/print",           # `lege-pdf-print`: imposition, sheets, spooling
     "lege-viewer",              # `lege-viewer`: native viewer + processing workspace
     "lege-misc/bindings/lege-render-ffi", # C ABI over the renderer facade
     "lege-misc/xtask",          # packaging tasks (`cargo appimage`)
