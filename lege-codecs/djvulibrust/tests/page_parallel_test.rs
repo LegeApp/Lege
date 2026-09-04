@@ -12,6 +12,17 @@
 
 use djvu_encoder::{DjvuBuilder, PageBuilder, Pixel, Pixmap};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Distinguishes concurrent calls to `assert_decodes_with_page_count`.
+///
+/// The test harness runs the tests in this file on threads of ONE process,
+/// so a scratch path keyed on the pid alone is shared: two tests then write
+/// different documents to the same file and hand it to `ddjvu`, and whichever
+/// loses the race decodes the other's document. That is exactly the
+/// intermittent `ddjvu failed to decode page 1` this file used to produce
+/// under load.
+static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn synthetic_page_image(page_num: usize, width: u32, height: u32) -> Pixmap {
     Pixmap::from_fn(width, height, |x, y| {
@@ -36,10 +47,12 @@ fn assert_decodes_with_page_count(djvu_bytes: &[u8], expected_pages: usize) {
         return;
     }
     let dir = std::env::temp_dir();
-    let djvu_path = dir.join(format!(
-        "djvulibrust_page_parallel_test_{}.djvu",
-        std::process::id()
-    ));
+    let unique = format!(
+        "{}_{}",
+        std::process::id(),
+        SCRATCH_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let djvu_path = dir.join(format!("djvulibrust_page_parallel_test_{unique}.djvu"));
     std::fs::write(&djvu_path, djvu_bytes).expect("write djvu");
 
     let output = Command::new("djvudump")
@@ -53,10 +66,7 @@ fn assert_decodes_with_page_count(djvu_bytes: &[u8], expected_pages: usize) {
         "djvudump output doesn't look like a {expected_pages}-page document:\n{dump}"
     );
 
-    let ppm_path = dir.join(format!(
-        "djvulibrust_page_parallel_test_{}.ppm",
-        std::process::id()
-    ));
+    let ppm_path = dir.join(format!("djvulibrust_page_parallel_test_{unique}.ppm"));
     let output = Command::new("ddjvu")
         .args([
             "-format=ppm",
@@ -72,6 +82,10 @@ fn assert_decodes_with_page_count(djvu_bytes: &[u8], expected_pages: usize) {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(ppm_path.exists() && std::fs::metadata(&ppm_path).unwrap().len() > 0);
+
+    // Only on success: a failed run leaves its inputs behind to be looked at.
+    let _ = std::fs::remove_file(&djvu_path);
+    let _ = std::fs::remove_file(&ppm_path);
 }
 
 #[test]
