@@ -2205,11 +2205,12 @@ fn handle_simple_processing(
         }
     }
 
-    // Image-region modes are format-specific: halftone is JBIG2-only.
+    // Halftone image regions are JBIG2 streams, but the page's text may be
+    // encoded either as JBIG2 or as a TrueType font.
     let tf = pipeline_config.text_format();
-    if cli_opts.halftone && tf != "jbig2" {
+    if cli_opts.halftone && !matches!(tf, "jbig2" | "truetyping") {
         bail!(
-            "--halftone requires --text-format jbig2 (got {}). Halftone segments are JBIG2-only.",
+            "--halftone requires --text-format jbig2 or truetyping (got {}). Halftone image regions are encoded as JBIG2.",
             tf
         );
     }
@@ -3380,9 +3381,9 @@ fn parse_format_selection_with_options(
     // Parse main format option
     let (format_num, c_count, has_s_flag, has_u_flag, has_g_flag) = parse_main_format(main_part)?;
 
-    if has_halftone_flag && format_num != 2 {
+    if has_halftone_flag && !matches!(format_num, 2 | 4) {
         return Err(anyhow!(
-            "--halftone is only valid with format 2 (JBIG2). Choose `2` or `2 --halftone`, not format {}.",
+            "--halftone is only valid with format 2 (JBIG2) or 4 (truetyping), not format {}.",
             format_num
         ));
     }
@@ -3630,15 +3631,11 @@ mod cli_parser_tests {
     use super::*;
 
     #[test]
-    fn interactive_format_4_is_not_epub() {
-        let err = match parse_format_selection_with_options("4") {
-            Ok(_) => panic!("format 4 should not parse"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("Format number must be"),
-            "unexpected error: {err}"
-        );
+    fn interactive_format_4_selects_truetyping_and_accepts_halftone() {
+        let parsed = parse_format_selection_with_options("4 --halftone")
+            .expect("truetyping should accept JBIG2 halftone image regions");
+        assert_eq!(parsed.0, "truetyping");
+        assert!(parsed.15, "halftone selection should be retained");
     }
 
     #[test]
@@ -4913,9 +4910,9 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     }
 
     let tf = pipeline_config.text_format();
-    if cli_opts.halftone && tf != "jbig2" {
+    if cli_opts.halftone && !matches!(tf, "jbig2" | "truetyping") {
         bail!(
-            "--halftone requires --text-format jbig2 (got {}). Halftone segments are JBIG2-only.",
+            "--halftone requires --text-format jbig2 or truetyping (got {}). Halftone image regions are encoded as JBIG2.",
             tf
         );
     }

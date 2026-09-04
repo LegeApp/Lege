@@ -198,7 +198,40 @@ impl ProcessingOptions {
         if !matches!(encoder, CompressionType::Jbig2) {
             self.no_symbol_mode = false;
         }
+        if matches!(encoder, CompressionType::Ccitt4) {
+            self.use_jbig2_halftone = false;
+        }
         self.compression_type = encoder;
+    }
+
+    /// Select original or conventionally dithered image regions. JBIG2
+    /// halftone is represented by the same durable fields for compatibility
+    /// with existing saved settings, but behaves as a third exclusive choice
+    /// in the GUI.
+    pub fn set_image_processing_type(&mut self, image_type: ImageProcessingType) {
+        self.image_processing_type = image_type;
+        self.use_jbig2_halftone = false;
+    }
+
+    /// Select JBIG2 halftone encoding for detected image regions. This is
+    /// independent of whether the page's text uses truetyping or JBIG2.
+    pub fn set_jbig2_halftone_images(&mut self) {
+        self.image_processing_type = ImageProcessingType::Dithered;
+        self.use_jbig2_halftone = true;
+    }
+
+    pub fn can_select_jbig2_halftone_images(&self) -> bool {
+        matches!(self.output_format, OutputFormat::Pdf)
+            && matches!(
+                self.compression_type,
+                CompressionType::Truetyping | CompressionType::Jbig2
+            )
+    }
+
+    pub fn uses_jbig2_halftone_images(&self) -> bool {
+        self.can_select_jbig2_halftone_images()
+            && matches!(self.image_processing_type, ImageProcessingType::Dithered)
+            && self.use_jbig2_halftone
     }
 
     /// Keep GUI state aligned with the core pipeline's effective feature
@@ -446,6 +479,23 @@ mod tests {
             !options.no_symbol_mode,
             "a JBIG2-only sub-option cannot outlive JBIG2"
         );
+    }
+
+    #[test]
+    fn halftone_images_survive_truetyping_and_jbig2_text_selection() {
+        let mut options = ProcessingOptions::new();
+        options.set_jbig2_halftone_images();
+        assert!(options.uses_jbig2_halftone_images());
+
+        options.set_text_encoder(CompressionType::Jbig2);
+        assert!(options.uses_jbig2_halftone_images());
+
+        options.set_text_encoder(CompressionType::Truetyping);
+        assert!(options.uses_jbig2_halftone_images());
+
+        options.set_text_encoder(CompressionType::Ccitt4);
+        assert!(!options.uses_jbig2_halftone_images());
+        assert!(!options.use_jbig2_halftone);
     }
 }
 /// Process-unique identifier for a queue entry.

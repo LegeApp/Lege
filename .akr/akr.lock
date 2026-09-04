@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:a449c26a4d9c2c2f98de05977fc4623ef6a362bb339fbbee1abad32d73ad85ca"
+    source_graph "sha256:7a66305087ac85795015fae5c0ee6c69cd4ddb9ac68acc642fc520c08992099f"
 }
 
 source ".akr/project.akr" {
@@ -59,13 +59,13 @@ source ".akr/records/lege-ecosystem/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem/decisions.akr" {
-    hash "sha256:5c45f1afcc92a14621d85407a83acc4a970a472087785801a003a7eeeaaef942"
+    hash "sha256:1fcdbcedf70ec9ffaf401eb48f48e7aec47fcc61df926bda18d8563ae24959a4"
     records 5
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
-    hash "sha256:970bd3c0110bf819c81791e19e5b46d08ebb7d353d9e637e0ba98603d89a02a3"
-    records 145
+    hash "sha256:b2eef0964796772acda2b2890cf24db3cd7335ee4acb9f687e0d0332c63eccbc"
+    records 150
 }
 
 source ".akr/records/lege-ecosystem/milestones.akr" {
@@ -79,8 +79,8 @@ source ".akr/records/lege-ecosystem/observations.akr" {
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
-    hash "sha256:5a9c0360978669e88e798489d686c3e863de695f0029ab3148537b835b17d211"
-    records 95
+    hash "sha256:8bc6b3c49cf3481f277fde7ddb96f0341bd9c7e15cd527b43b919555035f49d1"
+    records 96
 }
 
 source ".akr/records/lege-ecosystem/policies.akr" {
@@ -149,7 +149,7 @@ resolution @lege-ecosystem.work.glyph-font-text-output/1 {
 resolution @lege-ecosystem.work.glyph-font-text-output/1 {
     slot implements
     to @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1
-    hash "sha256:b13ec144bb401125e85d0bb7e80243f83fb1b22e2f6bf70c3eb4accf9651275f"
+    hash "sha256:188125faaf1b61ba5e612c6f73b607dd65e2a4ae4382635e4c0d56d5ab92bd95"
 }
 
 resolution @lege-ecosystem.work.package-primary-tensorrt-ocr-runtime/1 {
@@ -561,6 +561,11 @@ seal @lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/2 {
     hash "sha256:063fbabeffc9414790905379d0e4af57a2e313fbcf7264e77b4cd840e453a703"
 }
 
+seal @lege-ecosystem.evidence.jbig2-generic-gernet-75p/1 {
+    state verified
+    hash "sha256:01706f36d413770166f0ec644c7b85bc062bc553c0b5aa6937434e35d5cc6016"
+}
+
 seal @lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 {
     state superseded
     hash "sha256:43df16e366aae8a2040a7e69e0ecb50569b86d03d628441a584a89096011c8e6"
@@ -914,6 +919,26 @@ seal @lege-ecosystem.evidence.truetyping-exact-placement-lege-lib/1 {
 seal @lege-ecosystem.evidence.truetyping-exact-placement-regressions/1 {
     state verified
     hash "sha256:51b67b21bab30f011619d2aac4e9ab6b7dc9e1f8b52d798f70851026985f9066"
+}
+
+seal @lege-ecosystem.evidence.truetyping-gernet-75p/1 {
+    state verified
+    hash "sha256:565d69fc83f65a3272d6ea513d1ed7be3723958cef4dcbdd3e4351d765acdaef"
+}
+
+seal @lege-ecosystem.evidence.truetyping-gernet-page501-placement/1 {
+    state verified
+    hash "sha256:49a113c9a53e364e4a32953ce40c11f9aac3cfcf1885edcda881d8dcc42c1e0d"
+}
+
+seal @lege-ecosystem.evidence.truetyping-gernet-page510-rotation/1 {
+    state verified
+    hash "sha256:d4d7a36dcc63e1449a585d10b3d4a86fd098e060c6419d4385e445ce3ceefc3a"
+}
+
+seal @lege-ecosystem.evidence.truetyping-jbig2-gernet-raster-agreement/1 {
+    state verified
+    hash "sha256:7a8f08bbbb3c9076d20e74d0ec022bf030445e950786afdbba217fe06d6ade36"
 }
 
 seal @lege-ecosystem.evidence.truetyping-promotion-verification/1 {
@@ -1374,6 +1399,11 @@ seal @lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 {
 seal @lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/2 {
     state withdrawn
     hash "sha256:d6284a47f5365c1efaee9f32979846fb03bea351384b609d1272350fb7a22ee3"
+}
+
+seal @lege-ecosystem.papercut.the-cli-treats-a-bare-numeric-positional/1 {
+    state verified
+    hash "sha256:b6a35b353e083e06f7e56f33649302362465286657155261459308ac97f93de6"
 }
 
 seal @lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/1 {

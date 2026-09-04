@@ -431,13 +431,11 @@ pub fn gui_options_to_cli_args(
     }
 
     // Image processing
-    // Mirrors the toggle's own visibility condition: halftone segments are a
-    // JBIG2 feature, so they need JBIG2 as the text encoder too.
+    // JBIG2 halftone is an image-region codec choice, independent of whether
+    // the page's text plane is truetyping or JBIG2.
     let use_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
         && options.layout_analysis
-        && matches!(options.image_processing_type, ImageProcessingType::Dithered)
-        && matches!(options.compression_type, CompressionType::Jbig2)
-        && options.use_jbig2_halftone;
+        && options.uses_jbig2_halftone_images();
     if use_jbig2_halftone {
         args.push("--halftone".into());
     } else if matches!(options.image_processing_type, ImageProcessingType::Dithered)
@@ -1075,28 +1073,30 @@ mod tests {
     }
 
     #[test]
-    fn layout_cli_uses_halftone_instead_of_standard_dither_when_enabled() {
-        let mut options = ProcessingOptions::new();
-        options.layout_analysis = true;
-        options.image_processing_type = ImageProcessingType::Dithered;
-        // Halftone segments live in the JBIG2 stream, so the text encoder has
-        // to be JBIG2 for the flag to be sent at all.
-        options.set_text_encoder(CompressionType::Jbig2);
-        options.use_jbig2_halftone = true;
+    fn layout_cli_uses_halftone_with_truetyping_or_jbig2_text() {
+        for (encoder, text_format) in [
+            (CompressionType::Truetyping, "truetyping"),
+            (CompressionType::Jbig2, "jbig2"),
+        ] {
+            let mut options = ProcessingOptions::new();
+            options.layout_analysis = true;
+            options.set_text_encoder(encoder);
+            options.set_jbig2_halftone_images();
 
-        let args = gui_options_to_cli_args(
-            &PathBuf::from("input.pdf"),
-            &PathBuf::from("output.pdf"),
-            &options,
-            true,
-        );
+            let args = gui_options_to_cli_args(
+                &PathBuf::from("input.pdf"),
+                &PathBuf::from("output.pdf"),
+                &options,
+                true,
+            );
 
-        assert_eq!(
-            cli_arg_after(&args, "--text-format").as_deref(),
-            Some("jbig2")
-        );
-        assert!(args.iter().any(|arg| arg == OsStr::new("--halftone")));
-        assert!(!args.iter().any(|arg| arg == OsStr::new("--dither")));
+            assert_eq!(
+                cli_arg_after(&args, "--text-format").as_deref(),
+                Some(text_format)
+            );
+            assert!(args.iter().any(|arg| arg == OsStr::new("--halftone")));
+            assert!(!args.iter().any(|arg| arg == OsStr::new("--dither")));
+        }
     }
 
     #[test]

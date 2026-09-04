@@ -689,6 +689,18 @@ record lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/2 : evi
     supersedes [ @lege-ecosystem.evidence.installer-ready-tensorrt-payload-20260815/1 ]
 }
 
+record lege-ecosystem.evidence.jbig2-generic-gernet-75p/1 : evidence {
+    title "JBIG2 generic 75-page Gernet control run"
+    state verified
+    result pass
+    method command
+    observed_at git:bfd832672eead679dab9e8d0ff31feb90c4c334d
+    command "env NO_COLOR=1 LEGE_NO_PAUSE=1 /usr/bin/time -f 'TIME wall=%e user=%U sys=%S maxrss_kb=%M' target/release/lege /home/dk/Downloads/historyofchinese00gern_0_1-1.pdf 475-549 --target-height 1400 --text-format jbig2 --no-symbol --output /home/dk/Downloads/lege-review-2026-09-04/gernet-p475-549-jbig2-generic.pdf --debug-runtime-stats"
+    summary """
+        JBIG2 generic --no-symbol processed the same 75 pages successfully into a valid control PDF in 9.07 s wall time.
+        """
+}
+
 record lege-ecosystem.evidence.jp2lam-perceptual-curve-2026-08-12/1 : evidence {
     title "Size-matched jp2lam perceptual curve qualification"
     state superseded
@@ -1574,6 +1586,51 @@ record lege-ecosystem.evidence.truetyping-exact-placement-regressions/1 : eviden
     command "cargo test -p lege --lib encoding::glyphfont::tests"
     summary """
         All 26 glyphfont tests passed, including exact one-pixel baseline placement, shared OCR mapping, and exact stacked-part offset regressions.
+        """
+}
+
+record lege-ecosystem.evidence.truetyping-gernet-75p/1 : evidence {
+    title "TrueTyping 75-page Gernet corpus run"
+    state verified
+    result pass
+    method command
+    observed_at git:bfd832672eead679dab9e8d0ff31feb90c4c334d
+    command "env NO_COLOR=1 LEGE_NO_PAUSE=1 LEGE_GLYPH_DUMP=/home/dk/Downloads/lege-review-2026-09-04/gernet-475-549-glyphdump /usr/bin/time -f 'TIME wall=%e user=%U sys=%S maxrss_kb=%M' target/release/lege /home/dk/Downloads/historyofchinese00gern_0_1-1.pdf 475-549 --target-height 1400 --text-format truetyping --output /home/dk/Downloads/lege-review-2026-09-04/gernet-p475-549-truetyping-exact.pdf --debug-runtime-stats"
+    summary """
+        Current TrueTyping processed source pages 475-549 successfully into a valid 75-page PDF in 12.32 s wall time.
+        """
+}
+
+record lege-ecosystem.evidence.truetyping-gernet-page501-placement/1 : evidence {
+    title "Gernet page 501 placement comparison"
+    state verified
+    result pass
+    method manual
+    observed_at git:bfd832672eead679dab9e8d0ff31feb90c4c334d
+    summary """
+        On the known failure text around 'were doomed in any case', current TrueTyping preserves the control baseline and removes the prior output's visibly lifted glyph runs.
+        """
+}
+
+record lege-ecosystem.evidence.truetyping-gernet-page510-rotation/1 : evidence {
+    title "Gernet page 510 TrueTyping rotation anomaly"
+    state verified
+    result fail
+    method observation
+    observed_at git:bfd832672eead679dab9e8d0ff31feb90c4c334d
+    summary """
+        Current TrueTyping reproducibly emits source page 510 as a 2319x1400 landscape raster rotated 90 degrees; JBIG2 generic emits it portrait at 845x1400.
+        """
+}
+
+record lege-ecosystem.evidence.truetyping-jbig2-gernet-raster-agreement/1 : evidence {
+    title "TrueTyping/JBIG2 Gernet raster agreement"
+    state verified
+    result pass
+    method observation
+    observed_at git:bfd832672eead679dab9e8d0ff31feb90c4c334d
+    summary """
+        Across 74 like-oriented pages, median symmetric ink distance was 0.139 px, median 99.85% of ink was within 1.5 px, and 72 pages preferred zero vertical shift; source page 501 was 99.75% within 1.5 px.
         """
 }
 

@@ -1513,37 +1513,65 @@ fn output_settings_card(
         ]),
     );
 
+    let mut image_processing_choices = vec![
+        compact_choice_button(
+            image_processing_button_label(ImageProcessingType::Original),
+            matches!(options.image_processing_type, ImageProcessingType::Original),
+            {
+                let mut state = state;
+                move |_| {
+                    state
+                        .write()
+                        .options
+                        .set_image_processing_type(ImageProcessingType::Original);
+                }
+            },
+        ),
+        compact_choice_button(
+            image_processing_button_label(ImageProcessingType::Dithered),
+            matches!(options.image_processing_type, ImageProcessingType::Dithered)
+                && !options.uses_jbig2_halftone_images(),
+            {
+                let mut state = state;
+                move |_| {
+                    state
+                        .write()
+                        .options
+                        .set_image_processing_type(ImageProcessingType::Dithered);
+                }
+            },
+        ),
+    ];
+    if options.can_select_jbig2_halftone_images() {
+        image_processing_choices.push(compact_choice_button(
+            GUI_TEXT.interactive.labels.jbig2_halftone.clone(),
+            options.uses_jbig2_halftone_images(),
+            {
+                let mut state = state;
+                move |_| {
+                    state.write().options.set_jbig2_halftone_images();
+                }
+            },
+        ));
+    }
+
+    let image_processing_tooltip = if options.can_select_jbig2_halftone_images() {
+        format!(
+            "{} {}",
+            GUI_TEXT.interactive.tooltips.image_output_type,
+            GUI_TEXT.interactive.tooltips.jbig2_halftone
+        )
+    } else {
+        GUI_TEXT.interactive.tooltips.image_output_type.clone()
+    };
     let image_control = tooltip_wrap_at(
         state,
         TooltipArea::OutputCard,
-        GUI_TEXT.interactive.tooltips.image_output_type.clone(),
+        image_processing_tooltip,
         AttachedPosition::Right,
         settings_row(
             GUI_TEXT.interactive.labels.image_output_type.clone(),
-            compact_choice_row(vec![
-                compact_choice_button(
-                    image_processing_button_label(ImageProcessingType::Original),
-                    matches!(options.image_processing_type, ImageProcessingType::Original),
-                    {
-                        let mut state = state;
-                        move |_| {
-                            state.write().options.image_processing_type =
-                                ImageProcessingType::Original;
-                        }
-                    },
-                ),
-                compact_choice_button(
-                    image_processing_button_label(ImageProcessingType::Dithered),
-                    matches!(options.image_processing_type, ImageProcessingType::Dithered),
-                    {
-                        let mut state = state;
-                        move |_| {
-                            state.write().options.image_processing_type =
-                                ImageProcessingType::Dithered;
-                        }
-                    },
-                ),
-            ]),
+            compact_choice_row(image_processing_choices),
         ),
     );
 
@@ -1663,12 +1691,6 @@ fn pages_device_card(
     page_range_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
-    // Halftone segments are a JBIG2 feature, so they need JBIG2 as the text
-    // encoder as well as dithered image regions to apply to.
-    let show_jbig2_halftone = matches!(options.output_format, OutputFormat::Pdf)
-        && options.layout_analysis
-        && matches!(options.image_processing_type, ImageProcessingType::Dithered)
-        && matches!(options.compression_type, CompressionType::Jbig2);
     // Symbol substitution is a JBIG2 feature, so the opt-out is only
     // meaningful while JBIG2 is actually the text encoder. Compatibility mode
     // swaps it for CCITT4, and grayscale/MRC has no bilevel text plane at
@@ -1800,26 +1822,6 @@ fn pages_device_card(
             ),
         ),
     ];
-    if show_jbig2_halftone {
-        col1.push(tooltip_wrap_at(
-            state,
-            TooltipArea::PagesDeviceCard,
-            GUI_TEXT.interactive.tooltips.jbig2_halftone.clone(),
-            AttachedPosition::Left,
-            compact_checkbox_row(
-                GUI_TEXT.interactive.labels.jbig2_halftone.clone(),
-                options.use_jbig2_halftone,
-                {
-                    let mut state = state;
-                    move |_| {
-                        let mut s = state.write();
-                        s.options.use_jbig2_halftone = !s.options.use_jbig2_halftone;
-                    }
-                },
-            ),
-        ));
-    }
-
     if show_jbig2_no_symbol {
         col1.push(tooltip_wrap_at(
             state,

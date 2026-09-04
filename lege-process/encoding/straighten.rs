@@ -34,6 +34,11 @@ use jbig2enc_rust::jbig2sym::{BitImage, binary_pixels_to_bitimage};
 /// Fewer text-sized components than this and the page is taken as upright
 /// and straight: there is not enough structure to measure.
 const MIN_LAYOUT_COMPONENTS: usize = 40;
+/// At the 2400-pixel TrueTyping analysis height, real body text is comfortably
+/// larger than this. A smaller median is normally map hatching, screened
+/// illustrations, or scan noise; treating its rows as baselines can rotate an
+/// otherwise upright non-text page.
+const MIN_ORIENTATION_COMPONENT_PX: f64 = 6.0;
 /// Skew search range around the text axis when the axis is known, and
 /// around level when it is not, degrees; and the search steps.
 const AXIS_SEARCH_DEG: f64 = 1.5;
@@ -325,6 +330,9 @@ pub fn detect_frame(shapes: &[(BitImage, BBox)], width: u32, height: u32) -> Pag
     }
     sizes.sort_unstable();
     let median = sizes[sizes.len() / 2] as f64;
+    if median < MIN_ORIENTATION_COMPONENT_PX {
+        return frame;
+    }
     let text: Vec<&(BitImage, BBox)> = shapes
         .iter()
         .filter(|(_, b)| {
@@ -805,6 +813,26 @@ mod tests {
         }
         let f = detect_frame(&shapes, w, h);
         assert_eq!(f.turns, 0);
+    }
+
+    #[test]
+    fn fine_illustration_texture_does_not_rotate_the_page() {
+        let mut shapes = Vec::new();
+        for row in 0..12 {
+            for col in 0..12 {
+                shapes.push((
+                    BitImage::new(3, 4).unwrap(),
+                    BBox {
+                        xmin: 100 + row * 18,
+                        ymin: 100 + col * 12,
+                        xmax: 103 + row * 18,
+                        ymax: 104 + col * 12,
+                    },
+                ));
+            }
+        }
+        let f = detect_frame(&shapes, 1600, 2400);
+        assert_eq!(f, PageFrame::identity(1600, 2400));
     }
 
     #[test]

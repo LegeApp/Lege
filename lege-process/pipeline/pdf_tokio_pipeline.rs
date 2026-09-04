@@ -1171,9 +1171,7 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     }
                     _ => {}
                 }
-            } else if image_region_mode == ImageRegionDitherMode::Halftone
-                && config.text_format() == "jbig2"
-            {
+            } else if image_region_mode == ImageRegionDitherMode::Halftone {
                 // Halftone overlay: grayscale → jbig2halftone.rs (halftone region segments)
                 // Invert grayscale so that bright→low pattern index (few dots) and
                 // dark→high pattern index (many dots).  Combined with Decode [1, 0]

@@ -1464,6 +1464,17 @@ record lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/2 
     supersedes [ @lege-ecosystem.papercut.the-cli-help-says-a-single-page-number-such-as/1 ]
 }
 
+record lege-ecosystem.papercut.the-cli-treats-a-bare-numeric-positional/1 : papercut {
+    title "The CLI treats a bare numeric positional argument such as '510' as a…"
+    state verified
+    statement """
+        The CLI treats a bare numeric positional argument such as '510' as a legacy target-height value rather than a one-page range, silently starting all 836 pages; single-page tests must use the non-obvious '510-510' form.
+        """
+    observed_at git:bfd832672eead679dab9e8d0ff31feb90c4c334d
+    author "codex"
+    created_at 2026-09-04
+}
+
 record lege-ecosystem.papercut.the-encode-quality-work-record-points-to-mnt/1 : papercut {
     title "The encode-quality work record points to…"
     state superseded

@@ -33,7 +33,7 @@
       "add_folder": "Loads a book from a folder of page images.",
       "output_directory": "Choose where processed files are saved. Outputs default to this folder.",
       "base_format": "1bit encoding - JBIG2 or CCITT4",
-      "image_output_type": "Dithered images are 1bit and may look better on e-ink.",
+      "image_output_type": "Keep image regions original, dither them to 1 bit, or encode them as JBIG2 halftones. Halftone images work with truetyping and JBIG2 text.",
       "layout_detection": "GPU accelerated layout detection also preserves image areas from binarization.",
       "heavy_model": "Heavy Sauvola AI model (ONNX) for degraded pages. benefits from layout detection.",
       "inverted_colors": "For digitally created documents with dark background and light text. Will convert to white background, black text",

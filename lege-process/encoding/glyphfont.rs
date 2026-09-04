@@ -26,6 +26,7 @@
 //! JBIG2 symbol mode.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -35,6 +36,7 @@ use jbig2enc_rust::jbig2cc::{BBox, analyze_page};
 use jbig2enc_rust::jbig2comparator::Comparator;
 use jbig2enc_rust::jbig2sym::BitImage;
 use lege_pdf_write::font::{EmbeddedFont, ToUnicode, to_unicode_cmap};
+use rayon::prelude::*;
 
 use crate::encoding::bitrows::{self, BitRows, Diff};
 use crate::encoding::straighten::{PageFrame, detect_frame, fit_baseline, page_bitmap};
@@ -199,10 +201,11 @@ pub struct GlyphLine {
 
 /// A page's components and its frame, computed without the dictionary.
 pub struct PageAnalysis {
-    shapes: Vec<(BitImage, BBox)>,
+    shapes: Vec<(BitImage, BBox, ShapeFeatures)>,
     frame: PageFrame,
     components: Duration,
     frame_time: Duration,
+    features_time: Duration,
     /// Median component size (the larger of width and height) in pixels: how
     /// big this page's type is in the raster the outlines are traced from.
     median_size: u32,
@@ -236,11 +239,26 @@ impl PageAnalysis {
             .collect();
         sizes.sort_unstable();
         let median_size = sizes.get(sizes.len() / 2).copied().unwrap_or(0);
+        // Rotation and feature extraction do not need the shared dictionary.
+        // Do them while other pages are still rendering/analysing instead of
+        // holding the document-wide matching lock for every pixel walk.
+        let started = Instant::now();
+        let shapes = shapes
+            .into_par_iter()
+            .map(|(bitmap, bbox)| {
+                let bitmap = frame.turn_bitmap(bitmap);
+                let bbox = frame.turn_box(&bbox);
+                let features = ShapeFeatures::of(&bitmap);
+                (bitmap, bbox, features)
+            })
+            .collect();
+        let features_time = started.elapsed();
         Self {
             shapes,
             frame,
             components,
             frame_time,
+            features_time,
             median_size,
         }
     }
@@ -330,7 +348,13 @@ struct Prototype {
 /// size difference plus alignment shift a matching instance can have.
 const FRAME_PAD: usize = 6;
 impl Prototype {
+    #[cfg(test)]
     fn new(bitmap: BitImage) -> Self {
+        let features = ShapeFeatures::of(&bitmap);
+        Self::new_with_features(bitmap, features)
+    }
+
+    fn new_with_features(bitmap: BitImage, features: ShapeFeatures) -> Self {
         let frame_w = bitmap.width;
         let frame_h = bitmap.height;
         let pw = frame_w + 2 * FRAME_PAD;
@@ -343,10 +367,6 @@ impl Prototype {
                 }
             }
         }
-        let black = bitmap.count_ones() as u32;
-        let stroked = has_stroke_interior(&bitmap);
-        let counters = holes(&bitmap);
-        let profile = InkProfile::of(&bitmap);
         Self {
             frame_w,
             frame_h,
@@ -354,10 +374,10 @@ impl Prototype {
             uses: 1,
             matcher: bitmap,
             matcher_offset: (0, 0),
-            black,
-            profile,
-            stroked,
-            counters,
+            black: features.black,
+            profile: features.profile,
+            stroked: features.stroked,
+            counters: features.counters,
             descent: None,
             advance: None,
             next_refresh: 3,
@@ -497,10 +517,11 @@ impl Prototype {
             }
         }
         let resized = cropped.width != self.matcher.width || cropped.height != self.matcher.height;
-        self.black = cropped.count_ones() as u32;
-        self.stroked = has_stroke_interior(&cropped);
-        self.counters = holes(&cropped);
-        self.profile = InkProfile::of(&cropped);
+        let features = ShapeFeatures::of(&cropped);
+        self.black = features.black;
+        self.stroked = features.stroked;
+        self.counters = features.counters;
+        self.profile = features.profile;
         self.matcher = cropped;
         self.matcher_offset = (x0 as i32 - FRAME_PAD as i32, y0 as i32 - FRAME_PAD as i32);
         resized
@@ -534,9 +555,14 @@ fn ink_bounds(bitmap: &BitImage) -> Option<(usize, usize, usize, usize)> {
 
 /// Whether a shape's strokes are thick enough for the tolerant gate; see
 /// `TOLERANT_INTERIOR_MIN_PERCENT`.
+#[cfg(test)]
 fn has_stroke_interior(bitmap: &BitImage) -> bool {
+    has_stroke_interior_with_ink(bitmap, bitmap.count_ones() as u32)
+}
+
+fn has_stroke_interior_with_ink(bitmap: &BitImage, ink: u32) -> bool {
     let rows = BitRows::padded(bitmap);
-    rows.interior_count() * 100 >= rows.count() * TOLERANT_INTERIOR_MIN_PERCENT
+    rows.interior_count() * 100 >= ink * TOLERANT_INTERIOR_MIN_PERCENT
 }
 
 /// How many counters a shape encloses: background regions (4-connected,
@@ -622,6 +648,31 @@ fn holes(bitmap: &BitImage) -> u32 {
 struct InkProfile {
     rows: Vec<u16>,
     cols: Vec<u16>,
+}
+
+/// Shape facts shared by both matching gates. Computing stroke interiors and
+/// counters walks every glyph pixel, so an occurrence computes them once and
+/// carries them through strict matching, tolerant matching, and insertion.
+struct ShapeFeatures {
+    profile: InkProfile,
+    black: u32,
+    stroked: bool,
+    counters: u32,
+}
+
+impl ShapeFeatures {
+    fn of(bitmap: &BitImage) -> Self {
+        let profile = InkProfile::of(bitmap);
+        let black = profile.rows.iter().map(|&ink| u32::from(ink)).sum();
+        let stroked = has_stroke_interior_with_ink(bitmap, black);
+        let counters = if stroked { holes(bitmap) } else { 0 };
+        Self {
+            profile,
+            black,
+            stroked,
+            counters,
+        }
+    }
 }
 
 impl InkProfile {
@@ -846,6 +897,8 @@ struct Profile {
     components: Duration,
     /// Orientation and skew detection.
     frame: Duration,
+    /// Bitmap rotation and structural features, outside the dictionary lock.
+    features: Duration,
     /// Strict matching of instances against prototypes.
     strict: Duration,
     /// Tolerant matching (instances that missed strictly).
@@ -866,6 +919,7 @@ struct Profile {
     tolerant_candidates: u64,
     /// Instances matched per gate, and new prototypes.
     strict_hits: u64,
+    exact_hits: u64,
     tolerant_hits: u64,
     inserted: u64,
 }
@@ -874,13 +928,15 @@ impl Profile {
     fn report(&self) -> String {
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
         format!(
-            "components {:.0} ms, frame {:.0} ms, strict {:.0} ms ({} hits, {} compared of {} candidates), \
+            "components {:.0} ms, frame {:.0} ms, features {:.0} ms, strict {:.0} ms ({} hits, {} exact, {} compared of {} candidates), \
              tolerant {:.0} ms ({} hits, {} compared of {} candidates), fold {:.0} ms, lines {:.0} ms, \
              {} inserted; finalize {:.0} ms, outlines {:.0} ms",
             ms(self.components),
             ms(self.frame),
+            ms(self.features),
             ms(self.strict),
             self.strict_hits,
+            self.exact_hits,
             self.strict_compared,
             self.strict_candidates,
             ms(self.tolerant),
@@ -905,7 +961,16 @@ pub struct GlyphDictionary {
     /// Matcher (width, height) → `(ink, prototype index)` sorted by ink,
     /// for cheap candidate lookup: a search starts at the first admissible
     /// ink count and stops at the last, touching no other prototype.
-    buckets: HashMap<(u32, u32), Vec<(u32, u32)>>,
+    buckets: HashMap<(u32, u32, u32), Vec<(u32, u32)>>,
+    /// Matcher (width, height) -> populated structural classes. Class zero
+    /// has no stroke interior; a stroked shape uses `counters + 1`.
+    /// Matching a stroked occurrence can therefore skip every prototype
+    /// whose counter identity would reject it after comparison anyway.
+    bucket_classes: HashMap<(u32, u32), Vec<u32>>,
+    /// Exact matcher bitmap -> prototype ids, before the similarity search.
+    /// Scanned books repeat many glyph bitmaps byte-for-byte; those need no
+    /// alignment or difference pass at all.
+    exact: HashMap<(u32, u32, u64), Vec<u32>>,
     comparator: Comparator,
     instances: usize,
     /// Components too large for a glyph (see `MAX_GLYPH_PIXELS`), dropped.
@@ -966,20 +1031,20 @@ impl GlyphDictionary {
             frame,
             components,
             frame_time,
+            features_time,
             median_size: _,
         } = analysis;
         self.profile.components += components;
         self.profile.frame += frame_time;
+        self.profile.features += features_time;
 
         let mut instances = Vec::with_capacity(shapes.len());
-        for (bitmap, bbox) in shapes {
-            let bitmap = frame.turn_bitmap(bitmap);
-            let bbox = frame.turn_box(&bbox);
+        for (bitmap, bbox, features) in shapes {
             if bitmap.width > MAX_GLYPH_PIXELS || bitmap.height > MAX_GLYPH_PIXELS {
                 self.oversize_dropped += 1;
                 continue;
             }
-            let (glyph, dx, dy) = self.match_or_insert(bitmap);
+            let (glyph, dx, dy) = self.match_or_insert(bitmap, features);
             let proto = &self.protos[glyph as usize];
             // The component's bottom-left corner, levelled; its bottom is
             // what sits on the baseline.
@@ -1410,7 +1475,7 @@ impl GlyphDictionary {
     /// Find the prototype this component belongs to, or add it as a new one.
     /// Returns `(index, dx, dy)`: the prototype frame's offset relative to
     /// the component's top-left.
-    fn match_or_insert(&mut self, bitmap: BitImage) -> (u32, i32, i32) {
+    fn match_or_insert(&mut self, bitmap: BitImage, features: ShapeFeatures) -> (u32, i32, i32) {
         let w = bitmap.width as u32;
         let h = bitmap.height as u32;
 
@@ -1418,14 +1483,18 @@ impl GlyphDictionary {
         // type inked a little differently, judged only against prototypes
         // established enough to have a clean majority shape.
         let started = Instant::now();
-        let profile = InkProfile::of(&bitmap);
-        let mut found = self.find_match(&bitmap, &profile, Gate::Strict, |_, _| true);
+        let mut found = self.find_exact(&bitmap).map(|idx| (idx, 0, 0));
+        if found.is_some() {
+            self.profile.exact_hits += 1;
+        } else {
+            found = self.find_match(&bitmap, &features, Gate::Strict, |_, _| true);
+        }
         self.profile.strict += started.elapsed();
         if found.is_some() {
             self.profile.strict_hits += 1;
-        } else if has_stroke_interior(&bitmap) {
+        } else if features.stroked {
             let started = Instant::now();
-            found = self.find_match(&bitmap, &profile, Gate::Tolerant, |_, p| {
+            found = self.find_match(&bitmap, &features, Gate::Tolerant, |_, p| {
                 p.uses >= ESTABLISHED_USES
             });
             self.profile.tolerant += started.elapsed();
@@ -1456,28 +1525,96 @@ impl GlyphDictionary {
 
         self.profile.inserted += 1;
         let idx = self.protos.len() as u32;
-        let proto = Prototype::new(bitmap);
+        let proto = Prototype::new_with_features(bitmap, features);
         let black = proto.black;
+        let class = Self::feature_class(proto.stroked, proto.counters);
         self.protos.push(proto);
-        Self::index(&mut self.buckets, (w, h), black, idx);
+        Self::index(
+            &mut self.buckets,
+            &mut self.bucket_classes,
+            (w, h),
+            class,
+            black,
+            idx,
+        );
+        Self::index_exact(&mut self.exact, &self.protos[idx as usize].matcher, idx);
         (idx, 0, 0)
+    }
+
+    fn feature_class(stroked: bool, counters: u32) -> u32 {
+        if stroked {
+            counters.saturating_add(1)
+        } else {
+            0
+        }
+    }
+
+    fn bitmap_hash(bitmap: &BitImage) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        bitmap.width.hash(&mut hasher);
+        bitmap.height.hash(&mut hasher);
+        bitmap.packed_words().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn exact_key(bitmap: &BitImage) -> (u32, u32, u64) {
+        (
+            bitmap.width as u32,
+            bitmap.height as u32,
+            Self::bitmap_hash(bitmap),
+        )
+    }
+
+    fn find_exact(&self, bitmap: &BitImage) -> Option<u32> {
+        self.exact.get(&Self::exact_key(bitmap)).and_then(|ids| {
+            ids.iter().copied().find(|&idx| {
+                self.protos[idx as usize].matcher.packed_words() == bitmap.packed_words()
+            })
+        })
+    }
+
+    fn index_exact(exact: &mut HashMap<(u32, u32, u64), Vec<u32>>, bitmap: &BitImage, idx: u32) {
+        let ids = exact.entry(Self::exact_key(bitmap)).or_default();
+        let at = ids.partition_point(|&known| known < idx);
+        ids.insert(at, idx);
+    }
+
+    fn unindex_exact(
+        exact: &mut HashMap<(u32, u32, u64), Vec<u32>>,
+        key: (u32, u32, u64),
+        idx: u32,
+    ) {
+        if let Some(ids) = exact.get_mut(&key) {
+            ids.retain(|&known| known != idx);
+        }
     }
 
     /// Put prototype `idx` with `black` ink into its bucket, in ink order.
     fn index(
-        buckets: &mut HashMap<(u32, u32), Vec<(u32, u32)>>,
+        buckets: &mut HashMap<(u32, u32, u32), Vec<(u32, u32)>>,
+        classes: &mut HashMap<(u32, u32), Vec<u32>>,
         key: (u32, u32),
+        class: u32,
         black: u32,
         idx: u32,
     ) {
-        let bucket = buckets.entry(key).or_default();
+        let known = classes.entry(key).or_default();
+        if let Err(at) = known.binary_search(&class) {
+            known.insert(at, class);
+        }
+        let bucket = buckets.entry((key.0, key.1, class)).or_default();
         let at = bucket.partition_point(|&(b, i)| (b, i) < (black, idx));
         bucket.insert(at, (black, idx));
     }
 
     /// Take prototype `idx` out of the bucket for `key`.
-    fn unindex(buckets: &mut HashMap<(u32, u32), Vec<(u32, u32)>>, key: (u32, u32), idx: u32) {
-        if let Some(bucket) = buckets.get_mut(&key) {
+    fn unindex(
+        buckets: &mut HashMap<(u32, u32, u32), Vec<(u32, u32)>>,
+        key: (u32, u32),
+        class: u32,
+        idx: u32,
+    ) {
+        if let Some(bucket) = buckets.get_mut(&(key.0, key.1, class)) {
             bucket.retain(|&(_, i)| i != idx);
         }
     }
@@ -1488,13 +1625,13 @@ impl GlyphDictionary {
     fn find_match(
         &mut self,
         bitmap: &BitImage,
-        profile: &InkProfile,
+        features: &ShapeFeatures,
         gate: Gate,
         accept: impl Fn(u32, &Prototype) -> bool,
     ) -> Option<(u32, i32, i32)> {
         let w = bitmap.width as u32;
         let h = bitmap.height as u32;
-        let black = bitmap.count_ones() as u32;
+        let black = features.black;
         // Both gates forgive ink: the strict one a fifth of it, the tolerant
         // one everything within a pixel of the other shape — which at reading
         // sizes is a whole hairline. A `c` and an `e` differ by a bar four
@@ -1505,7 +1642,7 @@ impl GlyphDictionary {
         // Only where the strokes have an interior, though: a wall one pixel
         // thick is opened or closed by one speck of dirt, and its counters
         // say more about the scan than about the letter.
-        let counters = has_stroke_interior(bitmap).then(|| holes(bitmap));
+        let counters = features.stroked.then_some(features.counters);
         let dim_limit = DIM_LIMIT + w.max(h) / 16;
 
         // The ink counts the pre-filter admits: a lighter prototype may be
@@ -1518,70 +1655,88 @@ impl GlyphDictionary {
         // (rank, index, dx, dy)
         let mut best: Option<((u32, u32, u32), u32, i32, i32)> = None;
         let (mut candidates, mut compared) = (0u64, 0u64);
-        for bw in w.saturating_sub(dim_limit)..=w + dim_limit {
+        'search: for bw in w.saturating_sub(dim_limit)..=w + dim_limit {
             for bh in h.saturating_sub(dim_limit)..=h + dim_limit {
-                let Some(bucket) = self.buckets.get(&(bw, bh)) else {
+                let Some(all_classes) = self.bucket_classes.get(&(bw, bh)) else {
                     continue;
                 };
-                let start = bucket.partition_point(|&(b, _)| b < ink_lo);
-                for &(proto_black, idx) in bucket[start..].iter().take_while(|&&(b, _)| b <= ink_hi)
-                {
-                    candidates += 1;
-                    let ink = proto_black.max(black);
-                    if proto_black.abs_diff(black) > ink * percent / 100 + TOTAL_DIFF_MIN {
-                        continue;
-                    }
-                    let proto = &self.protos[idx as usize];
-                    if !accept(idx, proto) || (gate == Gate::Tolerant && !proto.stroked) {
-                        continue;
-                    }
-                    if proto.stroked && counters.is_some_and(|c| c != proto.counters) {
-                        continue;
-                    }
-                    // Shapes whose ink profiles alone differ by more than
-                    // the gate allows cannot match at any alignment.
-                    let total_limit = gate.total_limit(ink);
-                    if profile.distance_bound(&proto.profile, total_limit) > total_limit {
-                        continue;
-                    }
-                    compared += 1;
-                    // The comparator only finds the alignment; its word-wise
-                    // error is loose, so it gets a loose budget and the
-                    // packed diff decides.
-                    let Some(r) = self.comparator.compare_for_refine_family(
-                        bitmap,
-                        &proto.matcher,
-                        gate.comparator_budget(ink),
-                        SHIFT_LIMIT,
-                        SHIFT_LIMIT,
-                    ) else {
+                let selected = [0, counters.unwrap_or(0).saturating_add(1)];
+                let classes: &[u32] = match (gate, counters) {
+                    (Gate::Tolerant, Some(_)) => &selected[1..],
+                    (Gate::Strict, Some(_)) => &selected,
+                    (Gate::Strict, None) => all_classes,
+                    (Gate::Tolerant, None) => &[],
+                };
+                for &class in classes {
+                    let Some(bucket) = self.buckets.get(&(bw, bh, class)) else {
                         continue;
                     };
-                    // Two passes: the second measures the far pixels, and is
-                    // only reached by a candidate the cheap tests admit.
-                    let Some(coarse) =
-                        bitrows::diff(bitmap, &proto.matcher, r.dx, r.dy, total_limit, None)
-                    else {
-                        continue;
-                    };
-                    if !gate.accept_coarse(coarse, ink) {
-                        continue;
-                    }
-                    let Some(diff) = bitrows::diff(
-                        bitmap,
-                        &proto.matcher,
-                        r.dx,
-                        r.dy,
-                        total_limit,
-                        gate.far_limit(ink),
-                    ) else {
-                        continue;
-                    };
-                    let Some(rank) = gate.accept(diff, ink) else {
-                        continue;
-                    };
-                    if best.is_none_or(|(b, ..)| rank < b) {
-                        best = Some((rank, idx, r.dx, r.dy));
+                    let start = bucket.partition_point(|&(b, _)| b < ink_lo);
+                    for &(proto_black, idx) in
+                        bucket[start..].iter().take_while(|&&(b, _)| b <= ink_hi)
+                    {
+                        candidates += 1;
+                        let ink = proto_black.max(black);
+                        if proto_black.abs_diff(black) > ink * percent / 100 + TOTAL_DIFF_MIN {
+                            continue;
+                        }
+                        let proto = &self.protos[idx as usize];
+                        if !accept(idx, proto) || (gate == Gate::Tolerant && !proto.stroked) {
+                            continue;
+                        }
+                        if proto.stroked && counters.is_some_and(|c| c != proto.counters) {
+                            continue;
+                        }
+                        // Shapes whose ink profiles alone differ by more than
+                        // the gate allows cannot match at any alignment.
+                        let total_limit = gate.total_limit(ink);
+                        if features.profile.distance_bound(&proto.profile, total_limit)
+                            > total_limit
+                        {
+                            continue;
+                        }
+                        compared += 1;
+                        // The comparator only finds the alignment; its word-wise
+                        // error is loose, so it gets a loose budget and the
+                        // packed diff decides.
+                        let Some(r) = self.comparator.compare_for_refine_family(
+                            bitmap,
+                            &proto.matcher,
+                            gate.comparator_budget(ink),
+                            SHIFT_LIMIT,
+                            SHIFT_LIMIT,
+                        ) else {
+                            continue;
+                        };
+                        // Two passes: the second measures the far pixels, and is
+                        // only reached by a candidate the cheap tests admit.
+                        let Some(coarse) =
+                            bitrows::diff(bitmap, &proto.matcher, r.dx, r.dy, total_limit, None)
+                        else {
+                            continue;
+                        };
+                        if !gate.accept_coarse(coarse, ink) {
+                            continue;
+                        }
+                        let Some(diff) = bitrows::diff(
+                            bitmap,
+                            &proto.matcher,
+                            r.dx,
+                            r.dy,
+                            total_limit,
+                            gate.far_limit(ink),
+                        ) else {
+                            continue;
+                        };
+                        let Some(rank) = gate.accept(diff, ink) else {
+                            continue;
+                        };
+                        if best.is_none_or(|(b, ..)| rank < b) {
+                            best = Some((rank, idx, r.dx, r.dy));
+                            if rank == (0, 0, 0) {
+                                break 'search;
+                            }
+                        }
                     }
                 }
             }
@@ -1604,13 +1759,28 @@ impl GlyphDictionary {
     fn refresh(&mut self, idx: u32) {
         let proto = &mut self.protos[idx as usize];
         let old_key = (proto.matcher.width as u32, proto.matcher.height as u32);
+        let old_exact = Self::exact_key(&proto.matcher);
         let old_black = proto.black;
-        let resized = proto.refresh_matcher();
+        let old_class = Self::feature_class(proto.stroked, proto.counters);
+        proto.refresh_matcher();
         let black = proto.black;
         let new_key = (proto.matcher.width as u32, proto.matcher.height as u32);
-        if resized || black != old_black {
-            Self::unindex(&mut self.buckets, old_key, idx);
-            Self::index(&mut self.buckets, new_key, black, idx);
+        let new_class = Self::feature_class(proto.stroked, proto.counters);
+        if new_key != old_key || new_class != old_class || black != old_black {
+            Self::unindex(&mut self.buckets, old_key, old_class, idx);
+            Self::index(
+                &mut self.buckets,
+                &mut self.bucket_classes,
+                new_key,
+                new_class,
+                black,
+                idx,
+            );
+        }
+        let new_exact = Self::exact_key(&self.protos[idx as usize].matcher);
+        if new_exact != old_exact {
+            Self::unindex_exact(&mut self.exact, old_exact, idx);
+            Self::index_exact(&mut self.exact, &self.protos[idx as usize].matcher, idx);
         }
     }
 
@@ -1619,20 +1789,25 @@ impl GlyphDictionary {
     /// "Heavier" breaks ties by index, so two shapes with equal counts can
     /// still fold one into the other.
     fn try_alias(&mut self, idx: u32, gate: Gate) -> bool {
-        let (matcher, profile, offset, uses) = {
+        let (matcher, features, offset, uses) = {
             let p = &self.protos[idx as usize];
             if gate == Gate::Tolerant && !p.stroked {
                 return false;
             }
             (
                 p.matcher.clone(),
-                p.profile.clone(),
+                ShapeFeatures {
+                    profile: p.profile.clone(),
+                    black: p.black,
+                    stroked: p.stroked,
+                    counters: p.counters,
+                },
                 p.matcher_offset,
                 p.uses,
             )
         };
         let heavier = |i: u32, p: &Prototype| p.uses > uses || (p.uses == uses && i < idx);
-        let Some((target, dx, dy)) = self.find_match(&matcher, &profile, gate, heavier) else {
+        let Some((target, dx, dy)) = self.find_match(&matcher, &features, gate, heavier) else {
             return false;
         };
         // Target matcher pixel q is at `offset + (dx, dy) + q` in this frame
@@ -1644,7 +1819,10 @@ impl GlyphDictionary {
             offset.1 + dy - t.matcher_offset.1,
         );
         let key = (matcher.width as u32, matcher.height as u32);
-        Self::unindex(&mut self.buckets, key, idx);
+        let exact_key = Self::exact_key(&matcher);
+        let class = Self::feature_class(features.stroked, features.counters);
+        Self::unindex(&mut self.buckets, key, class, idx);
+        Self::unindex_exact(&mut self.exact, exact_key, idx);
         self.protos[idx as usize].alias = Some((target, origin.0, origin.1));
         if gate == Gate::Tolerant {
             self.tolerant_folds.push((idx, target));
@@ -1986,8 +2164,17 @@ impl GlyphDictionary {
         proto.advance = Some(proto.frame_w as u32);
         let idx = self.protos.len() as u32;
         let black = proto.black;
+        let class = Self::feature_class(proto.stroked, proto.counters);
         self.protos.push(proto);
-        Self::index(&mut self.buckets, key, black, idx);
+        Self::index(
+            &mut self.buckets,
+            &mut self.bucket_classes,
+            key,
+            class,
+            black,
+            idx,
+        );
+        Self::index_exact(&mut self.exact, &self.protos[idx as usize].matcher, idx);
         idx
     }
 
@@ -2011,7 +2198,25 @@ impl GlyphDictionary {
         glyphs.push(GlyphOutline::empty(SPACE_ADVANCE));
         widths.push(SPACE_ADVANCE);
         let mut fitted_count = 0usize;
-        let mut outlines = Duration::ZERO;
+        let outlines_started = Instant::now();
+        let mut simple_outlines: Vec<Option<(Vec<Vec<OutlinePoint>>, bool)>> = self
+            .protos
+            .par_iter()
+            .map(|proto| {
+                if !proto.is_simple() {
+                    return None;
+                }
+                let descent = proto.descent.unwrap_or(0);
+                let shape = proto.majority();
+                let baseline_row = (FRAME_PAD + proto.frame_h) as i32 - descent;
+                let origin_x = -(FRAME_PAD as i32);
+                Some(match vectorize(&shape, origin_x, baseline_row) {
+                    Some(contours) => (contours, true),
+                    None => (trace_outline_at(&shape, origin_x, baseline_row), false),
+                })
+            })
+            .collect();
+        let outlines = outlines_started.elapsed();
         for (idx, proto) in self.protos.iter().enumerate() {
             let descent = proto.descent.unwrap_or(0);
             let advance_px = proto.advance.unwrap_or(proto.frame_w as u32);
@@ -2042,18 +2247,10 @@ impl GlyphDictionary {
                 glyphs.push(GlyphOutline::composite(advance, components));
                 continue;
             }
-            let started = Instant::now();
-            let shape = proto.majority();
-            let baseline_row = (FRAME_PAD + proto.frame_h) as i32 - descent;
-            let origin_x = -(FRAME_PAD as i32);
-            let contours = match vectorize(&shape, origin_x, baseline_row) {
-                Some(fitted) => {
-                    fitted_count += 1;
-                    fitted
-                }
-                None => trace_outline_at(&shape, origin_x, baseline_row),
-            };
-            outlines += started.elapsed();
+            let (contours, fitted) = simple_outlines[idx]
+                .take()
+                .expect("every simple prototype was outlined");
+            fitted_count += usize::from(fitted);
             glyphs.push(GlyphOutline {
                 contours,
                 advance,

@@ -88,12 +88,12 @@ fn main() {
 /// Read external version from the file in the project root
 fn read_external_version_file() -> Option<String> {
     let version_file = Path::new("external_version.txt");
-    if version_file.exists() {
-        if let Ok(content) = std::fs::read_to_string(version_file) {
-            let content = content.trim();
-            if !content.is_empty() {
-                return Some(content.to_string());
-            }
+    if version_file.exists()
+        && let Ok(content) = std::fs::read_to_string(version_file)
+    {
+        let content = content.trim();
+        if !content.is_empty() {
+            return Some(content.to_string());
         }
     }
     None

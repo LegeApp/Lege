@@ -26,7 +26,8 @@ pub enum ImageRegionDitherMode {
     Stucki,
     /// **CCITT4** → clustered 4×4 ordered dither on image regions (`--dither`; invalid with JBIG2/DjVu).
     Ccitt4ClusteredDot4x4,
-    /// `--halftone`, **JBIG2 only** → grayscale crops for `jbig2halftone.rs` (invalid with CCITT4/DjVu).
+    /// `--halftone` → grayscale crops for `jbig2halftone.rs`; valid with a
+    /// JBIG2 or truetyping text plane, invalid with CCITT4/DjVu.
     Halftone,
     /// `--gray-jp2` → encode image regions as grayscale JPEG 2000 (jp2lam) instead of dithering.
     /// Skips bilevel quantization entirely; the overlay stream is a JP2-gray XObject.
@@ -156,7 +157,7 @@ fn process_clustered_dot4_dithering(
 /// * `original_rgb`: A slice containing the RGB pixel data for the *entire page*.
 /// * `page_width`: The width of the entire page in pixels.
 /// * `region_bbox`: The bounding box `[x1, y1, x2, y2]` of the image region to process.
-/// * `mode` + `text_format` are validated together: [`ImageRegionDitherMode::Halftone`] requires `jbig2`;
+/// * `mode` + `text_format` are validated together: [`ImageRegionDitherMode::Halftone`] requires `jbig2` or `truetyping`;
 ///   [`ImageRegionDitherMode::Ccitt4ClusteredDot4x4`] requires `ccitt4`; Stucki applies to JBIG2/DjVu only.
 /// * `use_heavy_binarization`: If `true`, uses the ONNX-based heavy binarization for better quality.
 ///
@@ -242,14 +243,15 @@ pub fn process_image_region(
 
     match mode {
         ImageRegionDitherMode::Halftone => {
-            if text_format != "jbig2" {
+            if !matches!(text_format, "jbig2" | "truetyping") {
                 return Err(anyhow!(
-                    "halftone image regions require --text-format jbig2 (got {}). \
+                    "halftone image regions require --text-format jbig2 or truetyping (got {}). \
                      CCITT4 uses clustered-dot 4×4 with --dither; DjVu uses Stucki with --dither.",
                     text_format
                 ));
             }
-            // JBIG2 only: grayscale crop for jbig2halftone.rs (not used on CCITT4 / DjVu).
+            // The crop becomes a JBIG2 overlay independently of the page's
+            // JBIG2 or truetyping text plane (not used on CCITT4 / DjVu).
             #[cfg(feature = "debug-logging")]
             crate::encoding::streamline::log_debug_message(
                 "  → dispatching to grayscale crop (halftone → jbig2halftone.rs encodes later)",
@@ -876,5 +878,49 @@ pub fn merge_dithered_region(
                 binarized[dst_idx] = grayscale_data[src_idx];
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod halftone_text_plane_tests {
+    use super::{ImageRegionDitherMode, process_image_region};
+
+    #[test]
+    fn truetyping_accepts_jbig2_halftone_image_regions() {
+        let rgb = [32, 64, 96, 224, 192, 160];
+        let (gray_rgb, width, height) = process_image_region(
+            &rgb,
+            2,
+            1,
+            [0.0, 0.0, 2.0, 1.0],
+            ImageRegionDitherMode::Halftone,
+            "truetyping",
+            false,
+        )
+        .expect("truetyping and halftone image regions are compatible");
+
+        assert_eq!((width, height), (2, 1));
+        assert_eq!(gray_rgb.len(), 6);
+        assert!(
+            gray_rgb
+                .chunks_exact(3)
+                .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2])
+        );
+    }
+
+    #[test]
+    fn ccitt4_still_rejects_jbig2_halftone_image_regions() {
+        let error = process_image_region(
+            &[0, 0, 0],
+            1,
+            1,
+            [0.0, 0.0, 1.0, 1.0],
+            ImageRegionDitherMode::Halftone,
+            "ccitt4",
+            false,
+        )
+        .expect_err("compatibility mode must not acquire a JBIG2 dependency");
+
+        assert!(error.to_string().contains("jbig2 or truetyping"));
     }
 }

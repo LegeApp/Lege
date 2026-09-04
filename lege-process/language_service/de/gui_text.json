@@ -33,7 +33,7 @@
       "add_folder": "Lädt ein Buch aus einem Ordner mit Seitenbildern.",
       "output_directory": "Wählen Sie, wo verarbeitete Dateien gespeichert werden. Ausgaben werden standardmäßig in diesem Ordner abgelegt.",
       "base_format": "1-Bit-Kodierung – JBIG2 oder CCITT4",
-      "image_output_type": "Originalfarbe mit CCITT4-Kodierung oder gerastert mit JBIG2-Kodierung.",
+      "image_output_type": "Bildbereiche original belassen, auf 1 Bit rastern oder als JBIG2-Halbtöne kodieren. Halbtonbilder funktionieren mit TrueTyping- und JBIG2-Text.",
       "layout_detection": "GPU-beschleunigte Layout-Erkennung schützt Bildbereiche vor der Binarisierung; deaktivieren, wenn das Dokument keine Bilder enthält.",
       "heavy_model": "Schweres Sauvola-KI-Modell (ONNX) für beschädigte oder schwierige Seiten. Profitiert von Layout-Erkennung.",
       "inverted_colors": "Für digital erstellte Dokumente mit dunklem Hintergrund und hellem Text. Wandelt sie in weißen Hintergrund und schwarzen Text um.",

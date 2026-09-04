@@ -135,19 +135,26 @@ record lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 : dec
     state proposed
     scope [
         path "lege-process/GUI/Freya/**",
+        path "lege-process/color/color_processing.rs",
         path "lege-process/core/main.rs",
         path "lege-process/language_service/**",
-        path "lege-process/pipeline/config.rs"
+        path "lege-process/pipeline/config.rs",
+        path "lege-process/pipeline/pdf_tokio_pipeline.rs"
     ]
     decision """
-        The glyph-font text format is called `truetyping` in every user-facing surface and is the default PDF text encoder in the Freya GUI. `glyphfont` stays an accepted spelling of the CLI and config value forever, normalized at parse time, so scripted runs and saved settings keep working; the Rust module, the log prefixes and the AKR history keep the name they were built under, because they name the mechanism rather than the product. In the GUI the two opt-outs are checkboxes that exclude each other by construction: `CompressionType` gained a `Truetyping` variant and is now the single field the text encoder is read from, so JBIG2 and compatibility mode (CCITT4 + baseline JPEG) cannot both be on, and clearing either returns to truetyping.
+        The glyph-font text format is called `truetyping` in every user-facing surface and is the default PDF text encoder in the Freya GUI. `glyphfont` stays an accepted spelling of the CLI and config value forever, normalized at parse time, so scripted runs and saved settings keep working; the Rust module, the log prefixes and the AKR history keep the name they were built under, because they name the mechanism rather than the product. In the GUI the two text-encoder opt-outs are checkboxes that exclude each other by construction: `CompressionType` gained a `Truetyping` variant and is now the single field the text encoder is read from, so JBIG2 and compatibility mode (CCITT4 + baseline JPEG) cannot both be on, and clearing either returns to truetyping. Detected image regions are a separate three-way choice: Original, Dithered, or JBIG2 halftone. Halftone remains available with either truetyping or JBIG2 text and is embedded as its own JBIG2 overlay; compatibility mode and DjVu do not offer it.
         """
     context """
         Seven passes brought the format to parity: on a 20-page scan it is 183 KB against JBIG2 symbol mode's 378 KB at equal or better legibility, and the user signed off on the rendered outputs. The old `effective_text_format` derived the encoder from `image_processing_type` whenever layout analysis was on, so the GUI's real default was CCITT4 and the compatibility checkbox's `compression_type` flip was a no-op on the default path. Making the text encoder an explicit field removes that coupling: how image regions are treated no longer decides how text is written.
         """
     consequences """
-        Dithered image regions no longer imply JBIG2 text, so the JBIG2 halftone toggle needs its own gate on the text encoder (it was relying on the coupling) in both the panel and the argument builder. Raster reflow re-renders every page as an image and has no text encoder, so it refuses truetyping on the CLI and is not offered it in the GUI. The Freya GUI is the only frontend changed: the sheet-music GUI and lege-viewer carry their own copies of the option model and keep the old default.
+        Text encoding and detected-image encoding remain orthogonal. Choosing Dithered or JBIG2 halftone does not switch the text encoder; the halftone choice stays visible with truetyping and JBIG2 text, while compatibility mode keeps its CCITT4 + baseline-JPEG promise and DjVu keeps its native image path. Raster reflow re-renders every page as an image and has no text encoder, so it refuses truetyping on the CLI and is not offered it in the GUI. The Freya GUI is the only frontend changed: the sheet-music GUI and lege-viewer carry their own copies of the option model and keep the old default.
         """
+    claim halftone-images-are-independent {
+        text """
+            The Freya image row presents Original, Dithered, and JBIG2 halftone as exclusive choices. The durable `image_processing_type` plus `use_jbig2_halftone` fields preserve old saved settings; the worker forwards `--halftone` for both truetyping and JBIG2 text, and the PDF pipeline emits the detected image crop as a JBIG2 halftone overlay with its own globals.
+            """
+    }
     claim image-handling-no-longer-picks-the-encoder {
         text """
             `effective_text_format` no longer consults `image_processing_type` or `layout_analysis`; before this change Original meant CCITT4 and Dithered meant JBIG2 whenever layout analysis was on, which made CCITT4 the GUI's actual default.
@@ -155,7 +162,7 @@ record lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 : dec
     }
     claim one-field-decides-the-encoder {
         text """
-            The Freya GUI reads the PDF text encoder from `CompressionType` alone (`Truetyping | Jbig2 | Ccitt4`); `ProcessingOptions::set_text_encoder` keeps `jpeg_compat` and the JBIG2 sub-options in step, which is what makes the two checkboxes mutually exclusive.
+            The Freya GUI reads the PDF text encoder from `CompressionType` alone (`Truetyping | Jbig2 | Ccitt4`); `ProcessingOptions::set_text_encoder` keeps `jpeg_compat` and the text-encoder-specific sub-options in step, which is what makes the two checkboxes mutually exclusive.
             """
     }
     claim truetyping-is-canonical {
