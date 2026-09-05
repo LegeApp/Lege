@@ -30,6 +30,7 @@ pub fn build_glyphless_ttf() -> Vec<u8> {
         cap_height: CAP_HEIGHT,
         glyphs: &glyphs,
     })
+    .expect("two empty glyphs always assemble")
     .data
 }
 

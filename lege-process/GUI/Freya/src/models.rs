@@ -220,12 +220,11 @@ impl ProcessingOptions {
         self.use_jbig2_halftone = true;
     }
 
+    /// JBIG2 halftone image regions need a JBIG2-capable page: the effective
+    /// text encoder, not the stored choice, decides. Raster reflow forces
+    /// `ccitt4`, and the CLI rejects `--text-format ccitt4 --halftone`.
     pub fn can_select_jbig2_halftone_images(&self) -> bool {
-        matches!(self.output_format, OutputFormat::Pdf)
-            && matches!(
-                self.compression_type,
-                CompressionType::Truetyping | CompressionType::Jbig2
-            )
+        matches!(self.effective_text_format(), "truetyping" | "jbig2")
     }
 
     pub fn uses_jbig2_halftone_images(&self) -> bool {
@@ -263,6 +262,9 @@ impl ProcessingOptions {
     pub fn set_reflow(&mut self, enabled: bool) {
         self.reflow = enabled;
         if enabled {
+            // Reflow's ccitt4 pages cannot carry JBIG2 halftone regions;
+            // the image choice falls back to conventional dithering.
+            self.use_jbig2_halftone = false;
             self.layout_analysis = true;
             self.invert_input = false;
             self.center_margins = false;
@@ -322,6 +324,32 @@ mod reflow_tests {
         options.set_invert_input(true);
         assert!(!options.reflow);
         assert!(!options.layout_analysis);
+    }
+
+    #[test]
+    fn reflow_and_halftone_never_produce_a_rejected_job() {
+        // Halftone first, then reflow.
+        let mut options = ProcessingOptions::new();
+        options.set_jbig2_halftone_images();
+        options.set_reflow(true);
+        options.normalize_processing_dependencies();
+        assert_eq!(options.effective_text_format(), "ccitt4");
+        assert!(!options.uses_jbig2_halftone_images());
+        assert!(!options.can_select_jbig2_halftone_images());
+
+        // Reflow first, then halftone.
+        let mut options = ProcessingOptions::new();
+        options.set_reflow(true);
+        options.set_jbig2_halftone_images();
+        options.normalize_processing_dependencies();
+        assert_eq!(options.effective_text_format(), "ccitt4");
+        assert!(!options.uses_jbig2_halftone_images());
+
+        // And it comes back once reflow is off.
+        options.set_reflow(false);
+        options.set_jbig2_halftone_images();
+        assert!(options.can_select_jbig2_halftone_images());
+        assert!(options.uses_jbig2_halftone_images());
     }
 
     #[test]

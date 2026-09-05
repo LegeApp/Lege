@@ -56,7 +56,6 @@ pub mod engine;
 #[path = "engine_disabled.rs"]
 pub mod engine;
 pub mod glyphless_font; // Minimal glyphless TTF for the invisible OCR text layer
-pub mod truetype_writer; // sfnt assembler shared by the glyphless and glyph fonts
 pub mod hocr; // hOCR parsing + line grouping (moved out of accumulator)
 pub mod icon;
 #[cfg(feature = "layout-detection")]
@@ -89,6 +88,7 @@ pub mod reflow; // RasterReflow: raster-first reflow for scanned books (scaffold
 pub mod resize;
 pub mod resolution_preset;
 pub mod runtime_stats;
+pub mod truetype_writer; // sfnt assembler shared by the glyphless and glyph fonts
 // resize context is now merged into pipeline::policies
 pub mod text_loader;
 pub mod toc; // Automatic table of contents: title capture + outline synthesis

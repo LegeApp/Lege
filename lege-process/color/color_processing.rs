@@ -13,6 +13,46 @@ const MAX_OVERLAY_PIXELS: u64 = 8192u64 * 8192u64; // 67Mpx upper cap for region
 /// (paper texture, scan noise) that create a visible secondary pattern.
 pub const PAPER_WHITE_FLOOR: u8 = 245;
 
+/// Halftone ink coverage (0 = paper, 255 = solid) for one grayscale sample.
+///
+/// Below [`PAPER_WHITE_FLOOR`] this is the plain linear-reflectance inversion.
+/// At and above the floor the coverage rolls off linearly to zero at 255
+/// instead of snapping to paper white: paper texture and scan noise still
+/// clean up, but bright tones inside a detected photograph keep their detail
+/// and no longer hit a ~9% coverage cliff at the floor.
+#[inline]
+pub fn halftone_ink_from_gray(g: u8) -> u8 {
+    let ink = 255 - crate::color::linearize::SRGB_GRAY_TO_LINEAR_U8[g as usize];
+    if g < PAPER_WHITE_FLOOR {
+        ink
+    } else {
+        let span = (255 - PAPER_WHITE_FLOOR) as u32;
+        (ink as u32 * (255 - g as u32) / span) as u8
+    }
+}
+
+#[cfg(test)]
+mod paper_white_rolloff_tests {
+    use super::{PAPER_WHITE_FLOOR, halftone_ink_from_gray};
+
+    #[test]
+    fn rolloff_is_continuous_and_reaches_zero() {
+        assert_eq!(halftone_ink_from_gray(255), 0);
+        let below = halftone_ink_from_gray(PAPER_WHITE_FLOOR - 1);
+        let at = halftone_ink_from_gray(PAPER_WHITE_FLOOR);
+        // Was a 24 -> 0 cliff; the rolloff keeps the step in line with the
+        // neighbouring ~2/step slope.
+        assert!(
+            below.abs_diff(at) <= 3,
+            "cliff at the floor: {below} -> {at}"
+        );
+        // Monotone non-increasing across the whole range.
+        for g in 0..255u8 {
+            assert!(halftone_ink_from_gray(g) >= halftone_ink_from_gray(g + 1));
+        }
+    }
+}
+
 /// How to reduce detected **image** regions to 1-bit before merging into the page mask.
 /// Body text / full-page binarization is separate (Sauvola etc.); this applies only where
 /// the pipeline passes layout-detected image labels.

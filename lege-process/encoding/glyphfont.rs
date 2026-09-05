@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -61,6 +62,12 @@ pub const UNITS_PER_EM: u16 = 1000;
 pub const EM_PIXELS: f64 = UNITS_PER_EM as f64 / UNITS_PER_PIXEL as f64;
 /// Largest glyph dimension (pixels) whose outline coordinates fit `i16`.
 pub const MAX_GLYPH_PIXELS: usize = (i16::MAX as usize) / (UNITS_PER_PIXEL as usize);
+/// Contours a component's outline may have and still be a valid simple
+/// glyph, and points it may have. The `glyf` format allows `i16::MAX`
+/// contours and `u16::MAX` points; half of each leaves room for the
+/// prototype's majority shape drifting from the instance that created it.
+pub const MAX_GLYPH_CONTOURS: usize = i16::MAX as usize / 2;
+pub const MAX_GLYPH_POINTS: usize = u16::MAX as usize / 2;
 /// Glyph ids are 16-bit CIDs; id 0 is `.notdef`.
 pub const MAX_GLYPHS: usize = u16::MAX as usize;
 /// Prototypes one dictionary may hold: what is left of a font's glyph ids
@@ -106,6 +113,44 @@ const LOOSE_ALIGNMENT_WEIGHT: u32 = 1;
 /// Gaps beyond twice the page's typical letter gap plus this are word spaces.
 const LETTER_GAP_SLACK_PX: i32 = 3;
 
+/// Whether a component can become a valid simple TrueType glyph: it must fit
+/// the outline coordinate range and the `glyf` contour/point counts. Nothing
+/// that fails this is dropped — the page keeps it in a lossless residual
+/// raster instead (see [`PageGlyphRuns::residual`]).
+fn component_fits(bitmap: &BitImage) -> bool {
+    if bitmap.width > MAX_GLYPH_PIXELS || bitmap.height > MAX_GLYPH_PIXELS {
+        return false;
+    }
+    // Every traced point sits on a boundary edge and every boundary edge
+    // borders an ink pixel, so 4 · (ink pixels) bounds the point count and
+    // the pixel count bounds the ink. Small components need no tracing.
+    if bitmap.width * bitmap.height * 4 <= MAX_GLYPH_POINTS {
+        return true;
+    }
+    let loops = trace_pixel_loops(bitmap);
+    loops.len() <= MAX_GLYPH_CONTOURS
+        && loops.iter().map(Vec::len).sum::<usize>() <= MAX_GLYPH_POINTS
+}
+
+/// Paint a component's ink into a page-sized 8-bit raster (0 = ink).
+fn paint_residual(buf: &mut [u8], pw: usize, ph: usize, bitmap: &BitImage, x0: i32, y0: i32) {
+    for y in 0..bitmap.height {
+        let py = y0 + y as i32;
+        if py < 0 || py as usize >= ph {
+            continue;
+        }
+        for x in 0..bitmap.width {
+            let px = x0 + x as i32;
+            if px < 0 || px as usize >= pw {
+                continue;
+            }
+            if bitmap.get_usize(x, y) {
+                buf[py as usize * pw + px as usize] = 0;
+            }
+        }
+    }
+}
+
 /// The baseline offset beyond which a variant is a different character
 /// position rather than the same character wobbling.
 fn semantic_rise_limit(frame_h: usize) -> i32 {
@@ -126,6 +171,9 @@ pub struct TextWord {
 #[derive(Clone, Copy, Debug)]
 struct GlyphBox {
     glyph: u32,
+    /// Index of this placement in the page's glyphs, read line by line: how
+    /// `record_text` finds the occurrence again to give it its own CID.
+    slot: usize,
     x0: i32,
     x1: i32,
     top: i32,
@@ -202,6 +250,10 @@ pub struct GlyphLine {
 /// A page's components and its frame, computed without the dictionary.
 pub struct PageAnalysis {
     shapes: Vec<(BitImage, BBox, ShapeFeatures)>,
+    /// Components that cannot become valid glyphs, as a page-sized 8-bit
+    /// raster (0 = ink) in the page's own pixel space.
+    residual: Option<Vec<u8>>,
+    residual_components: usize,
     frame: PageFrame,
     components: Duration,
     frame_time: Duration,
@@ -227,6 +279,23 @@ impl PageAnalysis {
         let cc = analyze_page(page, dpi.max(72), 1);
         let shapes = cc.extract_shapes();
         drop(cc);
+        // A component that cannot become a valid glyph is not dropped: it
+        // goes into a lossless residual raster the page draws under its text.
+        let (pw, ph) = (page.width, page.height);
+        let mut residual: Option<Vec<u8>> = None;
+        let mut residual_components = 0usize;
+        let shapes: Vec<(BitImage, BBox)> = shapes
+            .into_iter()
+            .filter(|(bitmap, bbox)| {
+                if component_fits(bitmap) {
+                    return true;
+                }
+                residual_components += 1;
+                let buf = residual.get_or_insert_with(|| vec![255u8; pw * ph]);
+                paint_residual(buf, pw, ph, bitmap, bbox.xmin, bbox.ymin);
+                false
+            })
+            .collect();
         let components = started.elapsed();
         // Components are turned upright (losslessly) and their positions
         // levelled against this frame, so every line is horizontal.
@@ -255,6 +324,8 @@ impl PageAnalysis {
         let features_time = started.elapsed();
         Self {
             shapes,
+            residual,
+            residual_components,
             frame,
             components,
             frame_time,
@@ -282,6 +353,12 @@ pub struct PageGlyphRuns {
     /// 65536 ids, so a document with more shapes than that keeps several
     /// dictionaries and a page draws from exactly one.
     pub bank: u16,
+    /// Ink no glyph can carry (a page rule wider than a glyph may be, a
+    /// connected grid with more contours than `glyf` can index), as a
+    /// page-sized 8-bit raster (0 = ink) in the same pixel space as the
+    /// page this was traced from. The PDF draws it as an image under the
+    /// text, so nothing on the page is lost.
+    pub residual: Option<Arc<[u8]>>,
 }
 
 impl PageGlyphRuns {
@@ -337,6 +414,10 @@ struct Prototype {
     /// The glyph then renders as a composite of the target; its own frame,
     /// advance and descent stay as pages already reference them.
     alias: Option<(u32, i32, i32)>,
+    /// Set when this prototype exists only to give one shape a second text
+    /// identity (an `O` and a `0` with the same outline): it renders as the
+    /// shape it aliases but keeps its own text votes.
+    text_variant: bool,
     /// Non-empty for a *compound*: pieces stacked on one another within a
     /// line (the stem and dot of an `i`, a letter and its accent) that pages
     /// place as one glyph. Each entry is a part prototype and where its
@@ -382,6 +463,7 @@ impl Prototype {
             advance: None,
             next_refresh: 3,
             alias: None,
+            text_variant: false,
             parts: Vec::new(),
         }
     }
@@ -405,6 +487,7 @@ impl Prototype {
             advance: root.advance,
             next_refresh: u32::MAX,
             alias: Some((root_idx, 0, 0)),
+            text_variant: false,
             parts: Vec::new(),
         }
     }
@@ -427,6 +510,7 @@ impl Prototype {
             advance: None,
             next_refresh: u32::MAX,
             alias: None,
+            text_variant: false,
             parts,
         }
     }
@@ -973,8 +1057,8 @@ pub struct GlyphDictionary {
     exact: HashMap<(u32, u32, u64), Vec<u32>>,
     comparator: Comparator,
     instances: usize,
-    /// Components too large for a glyph (see `MAX_GLYPH_PIXELS`), dropped.
-    oversize_dropped: usize,
+    /// Components no glyph can represent, carried by the page residual.
+    residual_components: usize,
     /// Outline glyphs whose curve fit passed its check in the last build;
     /// the rest were emitted as staircases.
     fitted: std::cell::Cell<usize>,
@@ -982,6 +1066,11 @@ pub struct GlyphDictionary {
     variants: HashMap<u32, Vec<u32>>,
     /// Part prototypes (in reading order) → the compounds made of them.
     compounds: HashMap<Vec<u32>, Vec<u32>>,
+    /// (shape identity, recognized text) → the glyph id that carries that
+    /// text. The first text a shape is recognized as keeps the shape's own
+    /// id; every other text gets a text variant, so `O` and `0` extract as
+    /// themselves even when they share one outline.
+    text_ids: HashMap<u32, HashMap<String, u32>>,
     /// Prototype → text it stood for, with vote counts, from `record_text`.
     text_votes: HashMap<u32, HashMap<String, u32>>,
     /// Glyph ids the last build mapped to text.
@@ -1010,8 +1099,8 @@ impl GlyphDictionary {
         self.instances
     }
 
-    pub fn oversize_dropped(&self) -> usize {
-        self.oversize_dropped
+    pub fn residual_components(&self) -> usize {
+        self.residual_components
     }
 
     /// Segment a binarized page (1 = ink) into components, match each against
@@ -1028,22 +1117,21 @@ impl GlyphDictionary {
     pub fn process_analysis(&mut self, analysis: PageAnalysis) -> PageGlyphRuns {
         let PageAnalysis {
             shapes,
+            residual,
+            residual_components,
             frame,
             components,
             frame_time,
             features_time,
             median_size: _,
         } = analysis;
+        self.residual_components += residual_components;
         self.profile.components += components;
         self.profile.frame += frame_time;
         self.profile.features += features_time;
 
         let mut instances = Vec::with_capacity(shapes.len());
         for (bitmap, bbox, features) in shapes {
-            if bitmap.width > MAX_GLYPH_PIXELS || bitmap.height > MAX_GLYPH_PIXELS {
-                self.oversize_dropped += 1;
-                continue;
-            }
             let (glyph, dx, dy) = self.match_or_insert(bitmap, features);
             let proto = &self.protos[glyph as usize];
             // The component's bottom-left corner, levelled; its bottom is
@@ -1089,6 +1177,7 @@ impl GlyphDictionary {
             lines,
             bank: 0,
             glyph_count,
+            residual: residual.map(Arc::from),
         }
     }
 
@@ -1257,6 +1346,58 @@ impl GlyphDictionary {
         idx
     }
 
+    /// The glyph whose text tally an occurrence of `idx` votes in: itself
+    /// for a shape, a text variant or a variant far enough from its root to
+    /// be a different character position, else the root it aliases.
+    fn tally_key(&self, idx: u32) -> u32 {
+        if self.protos[idx as usize].text_variant {
+            return idx;
+        }
+        let (root, _, _) = self.resolve_alias(idx);
+        let frame_h = self.protos[idx as usize].frame_h;
+        if root == idx || self.alias_rise(idx).abs() > semantic_rise_limit(frame_h) {
+            idx
+        } else {
+            root
+        }
+    }
+
+    /// The glyph id that stands for `text` in glyph `idx`'s shape: `idx`
+    /// itself for the first text the shape is recognized as, else a text
+    /// variant drawing the same outline with its own text votes.
+    fn text_identity(&mut self, idx: u32, text: &str) -> u32 {
+        // A text variant votes with the shape it came from, so the identity
+        // set is keyed by the shape, not by the occurrence.
+        let owner = {
+            let p = &self.protos[idx as usize];
+            if p.text_variant {
+                let (root, _, _) = self.resolve_alias(idx);
+                self.tally_key(root)
+            } else {
+                self.tally_key(idx)
+            }
+        };
+        let taken = self.text_ids.entry(owner).or_default();
+        if taken.is_empty() {
+            taken.insert(text.to_string(), idx);
+            return idx;
+        }
+        if let Some(&existing) = taken.get(text) {
+            self.protos[existing as usize].uses += 1;
+            return existing;
+        }
+        let variant_idx = self.protos.len() as u32;
+        self.text_ids
+            .get_mut(&owner)
+            .expect("just created")
+            .insert(text.to_string(), variant_idx);
+        let descent = self.protos[idx as usize].descent.unwrap_or(0);
+        let mut variant = Prototype::position_variant(&self.protos[idx as usize], idx, descent);
+        variant.text_variant = true;
+        self.protos.push(variant);
+        variant_idx
+    }
+
     /// Align a page's recognized words with its glyph placements and record,
     /// per glyph, the text its occurrences stood for. Votes accumulate over
     /// the document; [`to_unicode_entries`](Self::to_unicode_entries) turns
@@ -1269,16 +1410,19 @@ impl GlyphDictionary {
     /// both and a broken letter's pieces vote for it and for nothing. In a
     /// cell the largest glyph carries the text; the rest vote for the empty
     /// string, which keeps them out of extracted text.
-    pub fn record_text(&mut self, runs: &PageGlyphRuns, words: &[TextWord]) {
+    pub fn record_text(&mut self, runs: &mut PageGlyphRuns, words: &[TextWord]) {
+        let mut remap: Vec<(usize, u32)> = Vec::new();
         let mut boxes: Vec<GlyphBox> = runs
             .lines
             .iter()
             .flat_map(|line| line.glyphs.iter().map(move |g| (line.baseline_y, g)))
-            .map(|(baseline, g)| {
+            .enumerate()
+            .map(|(slot, (baseline, g))| {
                 let p = &self.protos[g.glyph as usize];
                 let bottom = baseline + p.descent.unwrap_or(0) - g.rise_px;
                 GlyphBox {
                     glyph: g.glyph,
+                    slot,
                     x0: g.x,
                     x1: g.x + p.frame_w as i32,
                     top: bottom - p.frame_h as i32,
@@ -1400,12 +1544,41 @@ impl GlyphDictionary {
                     .unwrap_or(0);
                 for (i, b) in cell.iter().enumerate() {
                     let vote = if i == carrier { text.as_str() } else { "" };
+                    // A shape can stand for more than one character. Give
+                    // this occurrence the id that means what OCR read, so
+                    // the outline stays shared but the text does not.
+                    let glyph = if vote.is_empty() {
+                        b.glyph
+                    } else {
+                        let id = self.text_identity(b.glyph, vote);
+                        if id != b.glyph {
+                            remap.push((b.slot, id));
+                        }
+                        id
+                    };
                     *self
                         .text_votes
-                        .entry(b.glyph)
+                        .entry(glyph)
                         .or_default()
                         .entry(vote.to_string())
                         .or_insert(0) += weight;
+                }
+            }
+        }
+
+        if !remap.is_empty() {
+            remap.sort_unstable();
+            let mut slot = 0usize;
+            let mut next = remap.iter().peekable();
+            for line in &mut runs.lines {
+                for g in &mut line.glyphs {
+                    if let Some(&&(s, id)) = next.peek() {
+                        if s == slot {
+                            g.glyph = id;
+                            next.next();
+                        }
+                    }
+                    slot += 1;
                 }
             }
         }
@@ -1417,15 +1590,7 @@ impl GlyphDictionary {
     /// from the root's position keeps its own, since the same dot is a full
     /// stop on the baseline and part of an `i` above it.
     pub fn to_unicode_entries(&self) -> Vec<(u16, String)> {
-        let tally_key = |idx: u32| -> u32 {
-            let (root, _, _) = self.resolve_alias(idx);
-            let frame_h = self.protos[idx as usize].frame_h;
-            if root == idx || self.alias_rise(idx).abs() > semantic_rise_limit(frame_h) {
-                idx
-            } else {
-                root
-            }
-        };
+        let tally_key = |idx: u32| self.tally_key(idx);
         let mut tallies: HashMap<u32, HashMap<&str, u32>> = HashMap::new();
         for (&idx, votes) in &self.text_votes {
             let tally = tallies.entry(tally_key(idx)).or_default();
@@ -2281,7 +2446,8 @@ impl GlyphDictionary {
             descent,
             cap_height,
             glyphs: &glyphs,
-        });
+        })
+        .map_err(|e| anyhow!("glyph font: {e}"))?;
 
         self.outlines.set(outlines);
         if std::env::var_os("LEGE_GLYPH_DUMP").is_some() {
@@ -2691,7 +2857,7 @@ impl GlyphFontSession {
 
     /// Record a page's recognized words against its glyph placements; see
     /// [`GlyphDictionary::record_text`].
-    pub fn record_text(&self, runs: &PageGlyphRuns, words: &[TextWord]) -> Result<()> {
+    pub fn record_text(&self, runs: &mut PageGlyphRuns, words: &[TextWord]) -> Result<()> {
         let mut dicts = self
             .dicts
             .lock()
@@ -2738,7 +2904,8 @@ impl GlyphFontSession {
         dicts.len()
     }
 
-    /// `(pages, distinct glyphs, glyph occurrences, oversize components dropped)`.
+    /// `(pages, distinct glyphs, glyph occurrences, components kept in page
+    /// residual rasters)`.
     /// Distinct counts outline-owning shapes (not aliases or compounds);
     /// after the font is built that excludes clusters folded into another.
     pub fn stats(&self) -> (usize, usize, usize, usize) {
@@ -2747,7 +2914,7 @@ impl GlyphFontSession {
             self.pages.load(Ordering::Relaxed),
             dicts.iter().map(|dict| dict.distinct()).sum(),
             dicts.iter().map(|dict| dict.instances()).sum(),
-            dicts.iter().map(|dict| dict.oversize_dropped()).sum(),
+            dicts.iter().map(|dict| dict.residual_components()).sum(),
         )
     }
 }
@@ -3082,13 +3249,12 @@ mod tests {
             12,
         );
         let mut dict = GlyphDictionary::new();
-        let runs = dict.process_page(&page, 300);
+        let mut runs = dict.process_page(&page, 300);
         assert_eq!(runs.lines.len(), 1);
         assert_eq!(dict.distinct(), 1, "the H outline remains deduplicated");
         assert_eq!(dict.len(), 2, "the lower H gets an exact position variant");
-        let line = &runs.lines[0];
-        let root = line.glyphs.iter().find(|g| g.x == 2).unwrap().glyph;
-        let lower = line.glyphs.iter().find(|g| g.x == 10).unwrap().glyph;
+        let root = runs.lines[0].glyphs.iter().find(|g| g.x == 2).unwrap().glyph;
+        let lower = runs.lines[0].glyphs.iter().find(|g| g.x == 10).unwrap().glyph;
         assert_ne!(lower, root);
         assert_eq!(dict.resolve_alias(lower), (root, 0, 0));
         assert_eq!(
@@ -3096,7 +3262,7 @@ mod tests {
             -1,
             "the shared outline is placed one pixel lower"
         );
-        dict.record_text(&runs, &[word("HHHH", 2.0, 2.0, 31.0, 8.0)]);
+        dict.record_text(&mut runs, &[word("HHHH", 2.0, 2.0, 31.0, 8.0)]);
         let entries = dict.to_unicode_entries();
         for glyph in [root, lower] {
             assert!(
@@ -3106,6 +3272,7 @@ mod tests {
                 "the position variant must share its root's OCR text: {entries:?}"
             );
         }
+        let line = &runs.lines[0];
         assert!(
             line.glyphs.iter().all(|g| g.rise_px == 0),
             "position variants keep the line in one text run: {line:?}"
@@ -3396,9 +3563,9 @@ mod tests {
     #[test]
     fn recognized_words_vote_text_onto_glyphs() {
         let mut dict = GlyphDictionary::new();
-        let runs = dict.process_page(&word_page(), 72);
+        let mut runs = dict.process_page(&word_page(), 72);
         dict.record_text(
-            &runs,
+            &mut runs,
             &[
                 word("lli", 2.0, 0.0, 10.0, 20.0),
                 word(".", 14.0, 18.0, 16.0, 20.0),
@@ -3429,8 +3596,8 @@ mod tests {
     fn a_touching_pair_votes_for_both_letters() {
         let page = page_with(&[(GLYPH_BLOCK, 2, 2)], 12, 14);
         let mut dict = GlyphDictionary::new();
-        let runs = dict.process_page(&page, 72);
-        dict.record_text(&runs, &[word("fi", 2.0, 2.0, 8.0, 12.0)]);
+        let mut runs = dict.process_page(&page, 72);
+        dict.record_text(&mut runs, &[word("fi", 2.0, 2.0, 8.0, 12.0)]);
         assert_eq!(
             dict.to_unicode_entries(),
             vec![(SPACE_GID, " ".to_string()), (2, "fi".to_string())]
@@ -3442,8 +3609,8 @@ mod tests {
         // Two pieces under one recognized character: the larger carries it.
         let page = page_with(&[(GLYPH_BLOCK, 2, 2), (GLYPH_DOT, 10, 10)], 16, 14);
         let mut dict = GlyphDictionary::new();
-        let runs = dict.process_page(&page, 72);
-        dict.record_text(&runs, &[word("m", 2.0, 2.0, 12.0, 12.0)]);
+        let mut runs = dict.process_page(&page, 72);
+        dict.record_text(&mut runs, &[word("m", 2.0, 2.0, 12.0, 12.0)]);
         let entries = dict.to_unicode_entries();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[1], (2, "m".to_string()));
@@ -3686,5 +3853,118 @@ mod tests {
         // drew, so the glyph ids on both pages resolve.
         let fonts = session.build_embedded_fonts().unwrap();
         assert_eq!(fonts.len(), 2);
+    }
+
+    /// Every `glyf` record's `numberOfContours`: `-1` for the composites the
+    /// dictionary emits for aliases and variants, `>= 0` for simple glyphs.
+    /// A narrowed count shows up here as a large negative number.
+    fn glyf_contour_counts(font: &[u8]) -> Vec<i16> {
+        let u16at = |p: usize| u16::from_be_bytes(font[p..p + 2].try_into().unwrap());
+        let u32at = |p: usize| u32::from_be_bytes(font[p..p + 4].try_into().unwrap()) as usize;
+        let table = |tag: &[u8]| {
+            (0..u16at(4) as usize)
+                .map(|i| 12 + i * 16)
+                .find(|&p| &font[p..p + 4] == tag)
+                .map(|p| (u32at(p + 8), u32at(p + 12)))
+                .unwrap_or_else(|| panic!("table {:?} missing", std::str::from_utf8(tag)))
+        };
+        let (loca, loca_len) = table(b"loca");
+        let (glyf, _) = table(b"glyf");
+        let n = loca_len / 4 - 1;
+        (0..n)
+            .filter(|i| u32at(loca + i * 4) != u32at(loca + (i + 1) * 4))
+            .map(|i| u16at(glyf + u32at(loca + i * 4)) as i16)
+            .collect()
+    }
+
+    #[test]
+    fn a_page_rule_too_wide_for_a_glyph_is_kept_as_residual() {
+        let (w, h) = (2200usize, 80usize);
+        let mut page = BitImage::new(w as u32, h as u32).unwrap();
+        for y in 30..33 {
+            for x in 20..2180 {
+                page.set_usize(x, y, true);
+            }
+        }
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 72);
+        assert_eq!(runs.glyph_count, 0, "the rule is no glyph");
+        assert_eq!(dict.residual_components(), 1);
+        let residual = runs.residual.as_ref().expect("the rule must be preserved");
+        assert_eq!(residual.len(), w * h);
+        assert_eq!(
+            residual.iter().filter(|&&v| v == 0).count(),
+            2160 * 3,
+            "every pixel of the rule is in the residual"
+        );
+        assert_eq!(residual[31 * w + 100], 0);
+        assert_eq!(residual[10 * w + 100], 255, "and nothing else is");
+    }
+
+    #[test]
+    fn a_dense_grid_is_kept_as_residual_not_a_malformed_glyph() {
+        let mut page = BitImage::new(400, 400).unwrap();
+        for y in 10..390 {
+            for x in 10..390 {
+                if x % 2 == 0 || y % 2 == 0 {
+                    page.set_usize(x, y, true);
+                }
+            }
+        }
+        let mut dict = GlyphDictionary::new();
+        let runs = dict.process_page(&page, 72);
+        assert_eq!(runs.glyph_count, 0, "the grid is no glyph");
+        assert_eq!(dict.residual_components(), 1);
+        assert!(runs.residual.is_some(), "the grid must be preserved");
+        // A page of ordinary text through the same dictionary, so the font
+        // has real glyphs to check.
+        let text = page_with(&[(GLYPH_H, 2, 2), (GLYPH_O, 10, 2)], 24, 12);
+        assert!(dict.process_page(&text, 300).glyph_count > 0);
+        dict.finalize();
+        let font = dict.build_embedded_font().unwrap();
+        for (i, n) in glyf_contour_counts(&font.data).into_iter().enumerate() {
+            assert!(
+                n >= -1,
+                "glyph {i} has numberOfContours {n}: a narrowed count"
+            );
+        }
+        lege_pdf_read::read_face_metrics(&font.data, 0).expect("font parses");
+    }
+
+    #[test]
+    fn one_shape_recognized_as_two_characters_gets_two_cids() {
+        let page = page_with(&[(GLYPH_O, 2, 2), (GLYPH_O, 12, 2)], 24, 12);
+        let mut dict = GlyphDictionary::new();
+        let mut runs = dict.process_page(&page, 300);
+        assert_eq!(dict.distinct(), 1, "one ring outline");
+        let before: Vec<u32> = runs.lines[0].glyphs.iter().map(|g| g.glyph).collect();
+        assert_eq!(before[0], before[1], "both rings match one prototype");
+
+        dict.record_text(
+            &mut runs,
+            &[
+                word("O", 2.0, 2.0, 7.0, 7.0),
+                word("0", 12.0, 2.0, 17.0, 7.0),
+            ],
+        );
+
+        let after: Vec<u32> = runs.lines[0].glyphs.iter().map(|g| g.glyph).collect();
+        assert_ne!(after[0], after[1], "the two identities need two CIDs");
+        assert_eq!(dict.distinct(), 1, "and still share one outline");
+        let entries = dict.to_unicode_entries();
+        let text_of = |glyph: u32| -> String {
+            entries
+                .iter()
+                .find(|(gid, _)| u32::from(*gid) == glyph + FIRST_SHAPE_GID)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(text_of(after[0]), "O");
+        assert_eq!(text_of(after[1]), "0");
+        // The variant renders as the shape it aliases, so the outline is
+        // emitted once and the font still parses.
+        dict.finalize();
+        let font = dict.build_embedded_font().unwrap();
+        lege_pdf_read::read_face_metrics(&font.data, 0).expect("font parses");
     }
 }

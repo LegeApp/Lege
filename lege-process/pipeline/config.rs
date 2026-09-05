@@ -616,7 +616,10 @@ impl PipelineConfig {
             use_heavy_duty: false,
             patch_percentage: 0.0,
             no_patch: false,
-            use_fixed_threshold: true,
+            // Adaptive (Sauvola + background-normalised Otsu) is the documented
+            // default. A fixed 180 cut turns any page whose paper renders darker
+            // than that -- yellowed scans sit near 150 -- into solid ink.
+            use_fixed_threshold: false,
             fixed_threshold: 180,
         };
         cfg.set_binarization(bin);

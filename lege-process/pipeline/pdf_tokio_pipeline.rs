@@ -1177,19 +1177,11 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                 // dark→high pattern index (many dots).  Combined with Decode [1, 0]
                 // in the PDF this yields black dots on a white default — traditional
                 // halftone polarity whose white background blends with the base layer.
-                // Also clamp near-white to pure white before inverting to avoid sparse
-                // dots from paper texture / scan noise.
+                // Near-white rolls off smoothly to paper white rather than being
+                // clamped, so photographic highlights keep their gradient.
                 let inverted_gray: Vec<u8> = grayscale_data
                     .iter()
-                    .map(|&g| {
-                        if g >= crate::color::color_processing::PAPER_WHITE_FLOOR {
-                            0u8
-                        } else {
-                            // Linearize before inverting so halftone dot coverage tracks
-                            // perceived tone (bilevel tone == linear reflectance).
-                            255u8 - crate::color::linearize::SRGB_GRAY_TO_LINEAR_U8[g as usize]
-                        }
-                    })
+                    .map(|&g| crate::color::color_processing::halftone_ink_from_gray(g))
                     .collect();
 
                 match crate::encoding::encode_halftone_region_grayscale(
@@ -1961,13 +1953,7 @@ async fn encode_preserved_mrc_base_layer(
             ImageRegionDitherMode::Halftone => {
                 let inverted = bg
                     .iter()
-                    .map(|&gray| {
-                        if gray >= crate::color::color_processing::PAPER_WHITE_FLOOR {
-                            0
-                        } else {
-                            255 - crate::color::linearize::SRGB_GRAY_TO_LINEAR_U8[gray as usize]
-                        }
-                    })
+                    .map(|&gray| crate::color::color_processing::halftone_ink_from_gray(gray))
                     .collect::<Vec<_>>();
                 let (global_data, page_data) =
                     crate::encoding::encode_halftone_region_grayscale(&inverted, ow, oh)
@@ -2255,26 +2241,32 @@ async fn encode_glyph_text(
 /// page's pixel space; the element's placement covers any scale between.
 fn record_glyph_text(
     session: &GlyphFontSession,
-    elements: &[crate::accumulator::ContentElement],
+    elements: &mut [crate::accumulator::ContentElement],
     hocr: &str,
 ) -> Result<()> {
-    let Some((el, runs, pixel_width, pixel_height)) =
-        elements.iter().find_map(|el| match &el.content {
-            crate::accumulator::ContentType::GlyphText {
-                runs,
-                pixel_width,
-                pixel_height,
-            } => Some((el, runs, *pixel_width, *pixel_height)),
-            _ => None,
-        })
+    let Some(el) = elements.iter_mut().find(|el| {
+        matches!(
+            el.content,
+            crate::accumulator::ContentType::GlyphText { .. }
+        )
+    }) else {
+        return Ok(());
+    };
+    let (el_x, el_y, el_w, el_h) = (el.x, el.y, el.width, el.height);
+    let crate::accumulator::ContentType::GlyphText {
+        runs,
+        pixel_width,
+        pixel_height,
+    } = &mut el.content
     else {
         return Ok(());
     };
-    if runs.is_empty() || el.width <= 0.0 || el.height <= 0.0 {
+    let (pixel_width, pixel_height) = (*pixel_width, *pixel_height);
+    if runs.is_empty() || el_w <= 0.0 || el_h <= 0.0 {
         return Ok(());
     }
-    let sx = pixel_width as f32 / el.width;
-    let sy = pixel_height as f32 / el.height;
+    let sx = pixel_width as f32 / el_w;
+    let sy = pixel_height as f32 / el_h;
     let lines = match crate::hocr::parse_hocr(hocr) {
         Ok(lines) => lines,
         Err(e) => {
@@ -2288,16 +2280,19 @@ fn record_glyph_text(
         .filter(|w| !w.text.trim().is_empty())
         .map(|w| crate::encoding::glyphfont::TextWord {
             text: w.text.clone(),
-            x0: (w.x - el.x) * sx,
-            y0: (w.y - el.y) * sy,
-            x1: (w.x + w.width - el.x) * sx,
-            y1: (w.y + w.height - el.y) * sy,
+            x0: (w.x - el_x) * sx,
+            y0: (w.y - el_y) * sy,
+            x1: (w.x + w.width - el_x) * sx,
+            y1: (w.y + w.height - el_y) * sy,
         })
         .collect();
     if words.is_empty() {
         return Ok(());
     }
-    session.record_text(runs, &words)
+    // Recording may give occurrences their own CIDs (one outline, two
+    // characters), so the page's runs are updated in place before it is
+    // handed to the writer.
+    session.record_text(Arc::make_mut(runs), &words)
 }
 
 /// Fused binarize + base-layer encode in a single spawn_blocking task.
@@ -3584,7 +3579,7 @@ async fn run_page_owned_job(
     }
 
     let text_session = glyph_session.clone();
-    let processed_page =
+    let mut processed_page =
         if let (Some(mut planned), Some(session)) = (planned_pdf, document_session.clone()) {
             let detections = scale_detections_to_output(
                 &inference_data,
@@ -3676,7 +3671,7 @@ async fn run_page_owned_job(
     if let (Some(session), Some(hocr)) =
         (text_session.as_ref(), processed_page.hocr_text.as_deref())
     {
-        record_glyph_text(session, &processed_page.elements, hocr)?;
+        record_glyph_text(session, &mut processed_page.elements, hocr)?;
     }
 
     let encoded_val = encode_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4099,25 +4094,18 @@ pub async fn create_and_run_pdf_source_pipeline(
     }
 
     if let Some(session) = glyph_session.as_ref() {
-        let (pages, glyphs, occurrences, oversize) = session.stats();
+        let (pages, glyphs, occurrences, residual) = session.stats();
         info_log!(
             "[PDF-Parallel] Glyph font: {} pages, {} distinct glyphs, {} occurrences{}",
             pages,
             glyphs,
             occurrences,
-            if oversize > 0 {
-                format!(", {} oversize components dropped", oversize)
+            if residual > 0 {
+                format!(", {} components kept as raster residual", residual)
             } else {
                 String::new()
             }
         );
-        if oversize > 0 {
-            crate::warn_log!(
-                "[PDF-Parallel] Glyph font dropped {} components wider or taller than {} px",
-                oversize,
-                crate::encoding::glyphfont::MAX_GLYPH_PIXELS
-            );
-        }
         if occurrences > 0 {
             let builder = Arc::clone(session);
             let fonts = crate::runtime_stats::spawn_blocking_stage(

@@ -219,16 +219,28 @@ fn encode_composite(components: &[(GlyphComponent, &EncodedGlyph)]) -> EncodedGl
     }
 }
 
-fn encode_glyph(g: &GlyphOutline) -> EncodedGlyph {
+fn encode_glyph(g: &GlyphOutline) -> Result<EncodedGlyph, String> {
     let contours: Vec<&Vec<OutlinePoint>> = g.contours.iter().filter(|c| c.len() >= 3).collect();
     let Some(bbox) = g.bbox().filter(|_| !contours.is_empty()) else {
-        return EncodedGlyph {
+        return Ok(EncodedGlyph {
             bytes: Vec::new(),
             bbox: None,
             points: 0,
             contours: 0,
-        };
+        });
     };
+    // `numberOfContours` is int16 and a contour's last point index is uint16:
+    // narrowing either silently turns a simple glyph into a malformed (often
+    // "composite", i.e. negative count) record. Callers must keep outlines
+    // inside these limits, or route the shape elsewhere.
+    let total_points: usize = contours.iter().map(|c| c.len()).sum();
+    if contours.len() > i16::MAX as usize || total_points > u16::MAX as usize {
+        return Err(format!(
+            "glyph outline too complex for the glyf format: {} contours, {} points",
+            contours.len(),
+            total_points
+        ));
+    }
 
     let mut out = Vec::new();
     push_i16(&mut out, contours.len() as i16);
@@ -287,12 +299,12 @@ fn encode_glyph(g: &GlyphOutline) -> EncodedGlyph {
         out.push(0);
     }
 
-    EncodedGlyph {
+    Ok(EncodedGlyph {
         bytes: out,
         bbox: Some(bbox),
         points: end as u16,
         contours: contours.len() as u16,
-    }
+    })
 }
 
 fn build_cmap() -> Vec<u8> {
@@ -418,12 +430,13 @@ fn build_name(name: &str) -> Vec<u8> {
 
 /// Build a complete, self-contained TrueType font. `spec.glyphs` must hold at
 /// least one glyph (`.notdef`); at most 65535 are representable.
-pub fn build_truetype(spec: &TrueTypeSpec) -> BuiltFont {
-    assert!(
-        !spec.glyphs.is_empty() && spec.glyphs.len() <= u16::MAX as usize,
-        "TrueType needs 1..=65535 glyphs, got {}",
-        spec.glyphs.len()
-    );
+pub fn build_truetype(spec: &TrueTypeSpec) -> Result<BuiltFont, String> {
+    if spec.glyphs.is_empty() || spec.glyphs.len() > u16::MAX as usize {
+        return Err(format!(
+            "TrueType needs 1..=65535 glyphs, got {}",
+            spec.glyphs.len()
+        ));
+    }
     let num_glyphs = spec.glyphs.len() as u16;
 
     // glyf + loca (long offsets), maxima, hmtx.
@@ -445,8 +458,8 @@ pub fn build_truetype(spec: &TrueTypeSpec) -> BuiltFont {
     let simple: Vec<Option<EncodedGlyph>> = spec
         .glyphs
         .iter()
-        .map(|g| g.components.is_empty().then(|| encode_glyph(g)))
-        .collect();
+        .map(|g| g.components.is_empty().then(|| encode_glyph(g)).transpose())
+        .collect::<Result<_, _>>()?;
     for (g, simple_enc) in spec.glyphs.iter().zip(simple.iter()) {
         let enc = match simple_enc {
             Some(enc) => enc.clone(),
@@ -642,16 +655,67 @@ pub fn build_truetype(spec: &TrueTypeSpec) -> BuiltFont {
     let field = head_offset + 8;
     font[field..field + 4].copy_from_slice(&adjustment.to_be_bytes());
 
-    BuiltFont {
+    Ok(BuiltFont {
         data: font,
         bbox: font_bbox,
         num_glyphs,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_truetype_ok(spec: &TrueTypeSpec) -> BuiltFont {
+        build_truetype(spec).expect("font builds")
+    }
+
+    #[test]
+    fn too_many_points_is_an_error_not_a_narrowed_count() {
+        // One contour of 70000 points: the endpoint index no longer fits u16.
+        let contour: Vec<OutlinePoint> = (0..70_000)
+            .map(|i| OutlinePoint::on((i % 1000) as i16, (i / 1000) as i16))
+            .collect();
+        let g = GlyphOutline {
+            contours: vec![contour],
+            advance: 100,
+            components: Vec::new(),
+        };
+        assert!(encode_glyph(&g).is_err());
+        assert!(
+            build_truetype(&TrueTypeSpec {
+                name: "T",
+                units_per_em: 1000,
+                ascent: 800,
+                descent: -200,
+                cap_height: 700,
+                glyphs: &[GlyphOutline::empty(0), g],
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn too_many_contours_is_an_error_not_a_negative_count() {
+        // 40000 separate contours: the count no longer fits i16, and a
+        // narrowed one would read as a (negative) composite glyph.
+        let contours: Vec<Vec<OutlinePoint>> = (0..40_000i32)
+            .map(|i| {
+                let (x, y) = ((i % 200) as i16 * 3, (i / 200) as i16 * 3);
+                vec![
+                    OutlinePoint::on(x, y),
+                    OutlinePoint::on(x + 1, y),
+                    OutlinePoint::on(x, y + 1),
+                ]
+            })
+            .collect();
+        let g = GlyphOutline {
+            contours,
+            advance: 100,
+            components: Vec::new(),
+        };
+        assert!(encode_glyph(&g).is_err());
+    }
 
     fn square(x0: i16, y0: i16, x1: i16, y1: i16) -> Vec<OutlinePoint> {
         // Clockwise with y up: top-left, top-right, bottom-right, bottom-left.
@@ -674,7 +738,7 @@ mod tests {
             advance: 100,
             components: Vec::new(),
         };
-        let e = encode_glyph(&g);
+        let e = encode_glyph(&g).expect("encodes");
         // header: 2 (contours) + 8 (bbox) + 2 (endPts) + 2 (instructionLength)
         let flags = &e.bytes[14..17];
         assert_eq!(flags[0] & 1, 1);
@@ -685,7 +749,7 @@ mod tests {
 
     #[test]
     fn empty_glyph_encodes_to_nothing() {
-        let e = encode_glyph(&GlyphOutline::empty(500));
+        let e = encode_glyph(&GlyphOutline::empty(500)).expect("encodes");
         assert!(e.bytes.is_empty());
         assert_eq!(e.points, 0);
         assert!(e.bbox.is_none());
@@ -698,7 +762,7 @@ mod tests {
             advance: 120,
             components: Vec::new(),
         };
-        let e = encode_glyph(&g);
+        let e = encode_glyph(&g).expect("encodes");
         assert_eq!(e.contours, 1);
         assert_eq!(e.points, 4);
         assert_eq!(e.bbox, Some([0, 0, 100, 200]));
@@ -718,7 +782,7 @@ mod tests {
             advance: 1000,
             components: Vec::new(),
         };
-        let e = encode_glyph(&g);
+        let e = encode_glyph(&g).expect("encodes");
         // Point 2 (1000, 20): dx = 1000 -> no short flag, two bytes.
         let flag = e.bytes[15];
         assert_eq!(flag & 0x02, 0, "x not short");
@@ -740,7 +804,7 @@ mod tests {
                 components: Vec::new(),
             },
         ];
-        let built = build_truetype(&TrueTypeSpec {
+        let built = build_truetype_ok(&TrueTypeSpec {
             name: "LegeGlyphs",
             units_per_em: 1000,
             ascent: 800,
@@ -792,7 +856,7 @@ mod tests {
                 ],
             ),
         ];
-        let built = build_truetype(&TrueTypeSpec {
+        let built = build_truetype_ok(&TrueTypeSpec {
             name: "T",
             units_per_em: 1000,
             ascent: 800,
