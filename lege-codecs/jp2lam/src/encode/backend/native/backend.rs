@@ -32,6 +32,57 @@ pub(crate) struct NativeComponentCoefficients {
     pub data: Vec<i32>,
 }
 
+/// Unquantized irreversible 9/7 coefficients for one tile-component.
+///
+/// Retained across perceptual outer quantizer rungs so each probe requantizes
+/// this plane instead of rerunning the forward transform.
+#[derive(Debug, Clone)]
+pub(crate) struct UnquantizedComponentDwt {
+    pub component_index: usize,
+    pub x0: usize,
+    pub y0: usize,
+    pub width: usize,
+    pub height: usize,
+    pub levels: u8,
+    pub data: Vec<f32>,
+}
+
+/// Unquantized 9/7 planes for every component of one tile.
+#[derive(Debug, Clone)]
+pub(crate) struct UnquantizedTileDwt {
+    pub tile: TileRect,
+    pub components: Vec<UnquantizedComponentDwt>,
+}
+
+#[cfg(test)]
+mod forward_dwt_calls {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+
+    pub(super) fn inc() {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn reset() {
+        CALLS.store(0, Ordering::SeqCst);
+    }
+
+    pub(crate) fn get() -> u32 {
+        CALLS.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_forward_dwt_calls() {
+    forward_dwt_calls::reset();
+}
+
+#[cfg(test)]
+pub(crate) fn forward_dwt_call_count() -> u32 {
+    forward_dwt_calls::get()
+}
+
 impl CodestreamBackend for NativeBackend {
     fn supports(&self, context: &EncodeContext<'_>) -> bool {
         // Enable for testing - GrayLossless lane is under development
@@ -117,8 +168,27 @@ impl NativeBackend {
         y0: u32,
         width: u32,
         height: u32,
-        mut data: Vec<f32>,
+        data: Vec<f32>,
     ) -> Result<NativeComponentCoefficients> {
+        let dwt =
+            self.forward_dwt_97_from_input(context, component_index, x0, y0, width, height, data)?;
+        self.quantize_unquantized_component(context, &dwt)
+    }
+
+    /// Forward 9/7 only: keep the unquantized coefficient plane.
+    fn forward_dwt_97_from_input(
+        &self,
+        context: &EncodeContext<'_>,
+        component_index: usize,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+        mut data: Vec<f32>,
+    ) -> Result<UnquantizedComponentDwt> {
+        #[cfg(test)]
+        forward_dwt_calls::inc();
+
         crate::encode::counters::record_tile_samples(data.len() * std::mem::size_of::<f32>());
         crate::encode::counters::record_dwt_coefficients(data.len() * std::mem::size_of::<f32>());
 
@@ -135,29 +205,45 @@ impl NativeBackend {
             y0 as usize,
         )?;
 
-        let precision = context
-            .plan
-            .components
-            .get(component_index)
-            .map(|component| component.precision)
-            .unwrap_or(8);
-        let quantized = quantize_97_coefficients(
-            &data,
-            width,
-            height,
-            levels,
-            precision,
-            &context.plan.subband_quants,
-            x0 as usize,
-            y0 as usize,
-        )?;
-
-        Ok(NativeComponentCoefficients {
+        Ok(UnquantizedComponentDwt {
+            component_index,
             x0: x0 as usize,
             y0: y0 as usize,
             width,
             height,
             levels,
+            data,
+        })
+    }
+
+    /// Requantize a cached unquantized 9/7 plane with the caller's current QCD.
+    pub(crate) fn quantize_unquantized_component(
+        &self,
+        context: &EncodeContext<'_>,
+        dwt: &UnquantizedComponentDwt,
+    ) -> Result<NativeComponentCoefficients> {
+        let precision = context
+            .plan
+            .components
+            .get(dwt.component_index)
+            .map(|component| component.precision)
+            .unwrap_or(8);
+        let quantized = quantize_97_coefficients(
+            &dwt.data,
+            dwt.width,
+            dwt.height,
+            dwt.levels,
+            precision,
+            &context.plan.subband_quants,
+            dwt.x0,
+            dwt.y0,
+        )?;
+        Ok(NativeComponentCoefficients {
+            x0: dwt.x0,
+            y0: dwt.y0,
+            width: dwt.width,
+            height: dwt.height,
+            levels: dwt.levels,
             data: quantized,
         })
     }
@@ -663,6 +749,113 @@ impl NativeBackend {
         Ok(stored)
     }
 
+    /// Forward-transform one tile without quantization or Tier-1.
+    pub(crate) fn prepare_unquantized_dwt_for_tile_rect(
+        &self,
+        context: &EncodeContext<'_>,
+        tile: TileRect,
+    ) -> Result<UnquantizedTileDwt> {
+        if !matches!(context.plan.transform, WaveletTransform::Irreversible97) {
+            return Err(Jp2LamError::EncodeFailed(
+                "unquantized DWT cache supports irreversible 9/7 only".into(),
+            ));
+        }
+
+        if native_use_mct(&context.plan) {
+            let inputs =
+                IctTileInputs::load(context, tile.x0, tile.y0, tile.width(), tile.height())?;
+            let mut components = Vec::with_capacity(3);
+            for component_index in 0..3 {
+                let data = inputs.output_component(component_index)?;
+                components.push(self.forward_dwt_97_from_input(
+                    context,
+                    component_index,
+                    tile.x0,
+                    tile.y0,
+                    tile.width(),
+                    tile.height(),
+                    data,
+                )?);
+            }
+            return Ok(UnquantizedTileDwt { tile, components });
+        }
+
+        let mut components = Vec::with_capacity(context.plan.component_count as usize);
+        for (component_index, component) in context.plan.components.iter().enumerate() {
+            let tc = tile_component_rect(&tile, component_index as u16, component);
+            if tc.width() == 0 || tc.height() == 0 {
+                return Err(Jp2LamError::EncodeFailed(format!(
+                    "tile {} component {component_index} has empty tile-component extent",
+                    tile.tile_index
+                )));
+            }
+            let data = irreversible_input_component_rect(
+                context,
+                component_index,
+                tc.x0,
+                tc.y0,
+                tc.width(),
+                tc.height(),
+            )?;
+            components.push(self.forward_dwt_97_from_input(
+                context,
+                component_index,
+                tc.x0,
+                tc.y0,
+                tc.width(),
+                tc.height(),
+                data,
+            )?);
+        }
+        Ok(UnquantizedTileDwt { tile, components })
+    }
+
+    /// Quantize + Tier-1 encode a cached unquantized tile into the block store.
+    pub(crate) fn prepare_stored_tier1_from_unquantized_dwt(
+        &self,
+        context: &EncodeContext<'_>,
+        cached: &UnquantizedTileDwt,
+        store: &mut EncodedBlockStore,
+    ) -> Result<Vec<StoredTier1Layout>> {
+        let mut stored = Vec::with_capacity(cached.components.len());
+        for dwt in &cached.components {
+            let coefficients = self.quantize_unquantized_component(context, dwt)?;
+            let encoded = self.encode_tier1_coefficients(
+                context,
+                cached.tile.tile_index,
+                dwt.component_index,
+                &coefficients,
+            )?;
+            stored.push(store_tier1_layout(
+                store,
+                dwt.component_index as u16,
+                encoded,
+            )?);
+        }
+        Ok(stored)
+    }
+
+    /// Retain unquantized 9/7 planes for every tile when the declared working
+    /// memory budget can hold the cache plus one tile's source peak. `None`
+    /// means fall back to recomputing the forward transform per outer rung.
+    pub(crate) fn try_cache_unquantized_dwt(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_rects: &[TileRect],
+    ) -> Result<Option<Vec<UnquantizedTileDwt>>> {
+        if !matches!(context.plan.transform, WaveletTransform::Irreversible97) {
+            return Ok(None);
+        }
+        if !unquantized_dwt_cache_fits(&context.plan, tile_rects) {
+            return Ok(None);
+        }
+        let mut cache = Vec::with_capacity(tile_rects.len());
+        for tile in tile_rects {
+            cache.push(self.prepare_unquantized_dwt_for_tile_rect(context, *tile)?);
+        }
+        Ok(Some(cache))
+    }
+
     pub(crate) fn prepare_codestream_parts(
         &self,
         context: &EncodeContext<'_>,
@@ -731,8 +924,146 @@ impl NativeBackend {
 
     pub(crate) fn prepare_codestream_bytes(&self, context: &EncodeContext<'_>) -> Result<Vec<u8>> {
         let _p = crate::encode::profile_enter("prepare_codestream_bytes");
+        if context.plan.perceptual.is_some() {
+            return self.encode_perceptual_bytes(context);
+        }
         let parts = self.prepare_codestream_parts(context)?;
         parts.encode(&native_emit_plan(&context.plan))
+    }
+
+    fn encode_perceptual_bytes(&self, context: &EncodeContext<'_>) -> Result<Vec<u8>> {
+        let grid = tile_grid(&context.plan);
+        let tile_rects = grid.tile_rects();
+        let (tile_parts, winner_plan) = self.search_perceptual_tile_parts(context, &tile_rects)?;
+        let emit_plan = native_emit_plan(&winner_plan);
+        let main_header_segments = build_main_header_segments(&emit_plan)?;
+        let parts = CodestreamParts {
+            main_header_segments,
+            tile_parts,
+        };
+        parts.encode(&emit_plan)
+    }
+
+    fn search_perceptual_tile_parts(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_rects: &[TileRect],
+    ) -> Result<(Vec<TilePart>, EncodingPlan)> {
+        let dwt_cache = self.try_cache_unquantized_dwt(context, tile_rects)?;
+        self.search_perceptual_tile_parts_with_optional_cache(
+            context,
+            tile_rects,
+            dwt_cache.as_deref(),
+        )
+    }
+
+    pub(crate) fn search_perceptual_tile_parts_with_optional_cache(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_rects: &[TileRect],
+        dwt_cache: Option<&[UnquantizedTileDwt]>,
+    ) -> Result<(Vec<TilePart>, EncodingPlan)> {
+        use crate::encode::ssim::{QualityBudget, StreamEvaluator};
+        use crate::plan::{apply_perceptual_quant_scale, perceptual_quant_scale_for_quality};
+
+        let target = context.plan.perceptual.ok_or_else(|| {
+            Jp2LamError::EncodeFailed("perceptual search requires a perceptual target".into())
+        })?;
+        let mut evaluator = StreamEvaluator::from_view_ref(&context.image)?;
+        let budget = QualityBudget::for_effort(target.effort).max_evaluations();
+        let mut best: Option<(u64, Vec<TilePart>, EncodingPlan)> = None;
+        let mut finest_score = f64::NEG_INFINITY;
+        let outer_rungs = [75_u8, 90, 99];
+        for quality in outer_rungs {
+            if evaluator.evaluations() >= budget {
+                break;
+            }
+            let scale = perceptual_quant_scale_for_quality(quality);
+            let mut plan = context.plan.clone();
+            plan.quant_scale = scale;
+            plan.quality = quality;
+            plan.subband_quants = plan.base_subband_quants.clone();
+            apply_perceptual_quant_scale(&mut plan.subband_quants, scale);
+            let rung_emit = native_emit_plan(&plan);
+            let rung_headers = build_main_header_segments(&rung_emit)?;
+            let rung_context = EncodeContext {
+                image: context.image.clone(),
+                plan: plan.clone(),
+            };
+            let mut store =
+                EncodedBlockStore::from_resource_limits(&rung_context.plan.resource_limits);
+            let mut stored_tiles = Vec::with_capacity(tile_rects.len());
+            if let Some(cache) = dwt_cache {
+                if cache.len() != tile_rects.len() {
+                    return Err(Jp2LamError::EncodeFailed(
+                        "unquantized DWT cache tile count does not match the tile grid".into(),
+                    ));
+                }
+                for (cached, tile) in cache.iter().zip(tile_rects) {
+                    if cached.tile != *tile {
+                        return Err(Jp2LamError::EncodeFailed(
+                            "unquantized DWT cache tile does not match the tile grid".into(),
+                        ));
+                    }
+                    stored_tiles.push((
+                        cached.tile,
+                        self.prepare_stored_tier1_from_unquantized_dwt(
+                            &rung_context,
+                            cached,
+                            &mut store,
+                        )?,
+                    ));
+                }
+            } else {
+                for tile in tile_rects {
+                    stored_tiles.push((
+                        *tile,
+                        self.prepare_stored_tier1_for_tile_rect(&rung_context, *tile, &mut store)?,
+                    ));
+                }
+            }
+            let shared_store = store.into_shared();
+            match select_perceptual_tile_parts(
+                &stored_tiles,
+                &rung_context,
+                &rung_emit,
+                &rung_headers,
+                shared_store,
+                &mut evaluator,
+                budget,
+                &mut finest_score,
+            ) {
+                Ok(parts) => {
+                    let encoded = CodestreamParts {
+                        main_header_segments: rung_headers,
+                        tile_parts: parts.clone(),
+                    };
+                    let bytes = complete_output_len(&rung_context, &rung_emit, &encoded)?;
+                    if best
+                        .as_ref()
+                        .is_none_or(|(best_bytes, _, _)| bytes < *best_bytes)
+                    {
+                        best = Some((bytes, parts, plan));
+                    }
+                }
+                Err(Jp2LamError::PerceptualTargetMissed { status, .. })
+                    if status == "SaturatedTop" =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        best.map(|(_, parts, plan)| (parts, plan))
+            .ok_or(Jp2LamError::PerceptualTargetMissed {
+                achieved: finest_score,
+                target: target.score,
+                status: if finest_score < target.score && finest_score.is_finite() {
+                    "SaturatedTop"
+                } else {
+                    "UnderTargetWorkCap"
+                },
+            })
     }
 
     /// Measure the encoded result using the crate's decoder.
@@ -1226,7 +1557,7 @@ fn select_layout_passes(
     Ok(all_selections)
 }
 
-fn select_stored_tile_passes(
+pub(crate) fn select_stored_tile_passes(
     stored_tiles: &[(TileRect, Vec<StoredTier1Layout>)],
     context: &EncodeContext<'_>,
     target_body_bytes: Option<u32>,
@@ -1349,7 +1680,7 @@ fn select_stored_tile_passes(
         .collect()
 }
 
-fn build_stored_tile_parts(
+pub(crate) fn build_stored_tile_parts(
     stored_tiles: &[(TileRect, Vec<StoredTier1Layout>)],
     stored_selections: Vec<Vec<t1::NativeTier1SelectionLayout>>,
     shared_store: SharedEncodedBlockStore,
@@ -1374,6 +1705,150 @@ fn build_stored_tile_parts(
             })
         })
         .collect()
+}
+
+pub(crate) fn max_stored_body_bytes(stored_tiles: &[(TileRect, Vec<StoredTier1Layout>)]) -> u32 {
+    stored_tiles
+        .iter()
+        .flat_map(|(_, layouts)| layouts)
+        .flat_map(|layout| &layout.bands)
+        .flat_map(|band| &band.blocks)
+        .filter_map(|block| block.passes.last())
+        .fold(0u64, |total, pass| {
+            total.saturating_add(pass.cumulative_length as u64)
+        })
+        .min(u64::from(u32::MAX)) as u32
+}
+
+fn select_perceptual_tile_parts(
+    stored_tiles: &[(TileRect, Vec<StoredTier1Layout>)],
+    context: &EncodeContext<'_>,
+    emit_plan: &EncodingPlan,
+    main_header_segments: &[Vec<u8>],
+    shared_store: SharedEncodedBlockStore,
+    evaluator: &mut crate::encode::ssim::StreamEvaluator,
+    budget: u32,
+    finest_score: &mut f64,
+) -> Result<Vec<TilePart>> {
+    use crate::encode::ssim::{BRACKET_RATIO, aim_body_bytes, interpolate_body_bytes};
+
+    let target = context.plan.perceptual.ok_or_else(|| {
+        Jp2LamError::EncodeFailed("perceptual search requires a perceptual target".into())
+    })?;
+    let max_body = max_stored_body_bytes(stored_tiles).max(1);
+
+    struct Observation {
+        body: u32,
+        score: f64,
+        output_bytes: u64,
+        tile_parts: Vec<TilePart>,
+    }
+
+    let mut probed: Vec<Observation> = Vec::new();
+
+    let probe = |body: u32,
+                 probed: &mut Vec<Observation>,
+                 evaluator: &mut crate::encode::ssim::StreamEvaluator|
+     -> Result<usize> {
+        let body = body.clamp(1, max_body);
+        if let Some(index) = probed.iter().position(|obs| obs.body == body) {
+            return Ok(index);
+        }
+        let selections = select_stored_tile_passes(stored_tiles, context, Some(body))?;
+        let reconstruct_started = std::time::Instant::now();
+        let reconstructed = crate::encode::ssim_recon::reconstruct_stored_selection(
+            &context.plan,
+            context.image.colorspace,
+            stored_tiles,
+            &selections,
+            shared_store.as_ref(),
+        )?;
+        let reconstruct_millis =
+            u64::try_from(reconstruct_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let observation = evaluator.score_image(&reconstructed, Some(reconstruct_millis))?;
+        let tile_parts = build_stored_tile_parts(stored_tiles, selections, shared_store.clone())?;
+        let parts = CodestreamParts {
+            main_header_segments: main_header_segments.to_vec(),
+            tile_parts: tile_parts.clone(),
+        };
+        let output_bytes = complete_output_len(context, emit_plan, &parts)?;
+        probed.push(Observation {
+            body,
+            score: observation.score,
+            output_bytes,
+            tile_parts,
+        });
+        Ok(probed.len() - 1)
+    };
+
+    let ceiling = probe(max_body, &mut probed, evaluator)?;
+    *finest_score = finest_score.max(probed[ceiling].score);
+    if probed[ceiling].score < target.score {
+        return Err(Jp2LamError::PerceptualTargetMissed {
+            achieved: probed[ceiling].score,
+            target: target.score,
+            status: "SaturatedTop",
+        });
+    }
+
+    let mut next_body = aim_body_bytes(max_body, probed[ceiling].score, target.score)
+        .min(max_body.saturating_sub(1).max(1));
+    while evaluator.evaluations() < budget {
+        if probed
+            .iter()
+            .any(|obs| obs.body == next_body.clamp(1, max_body))
+        {
+            break;
+        }
+        let index = probe(next_body, &mut probed, evaluator)?;
+        let mut best_feasible: Option<(u32, f64)> = None;
+        let mut worst_infeasible: Option<(u32, f64)> = None;
+        for obs in &probed {
+            if obs.score >= target.score {
+                if best_feasible.is_none_or(|(body, _)| obs.body < body) {
+                    best_feasible = Some((obs.body, obs.score));
+                }
+            } else if worst_infeasible.is_none_or(|(body, _)| obs.body > body) {
+                worst_infeasible = Some((obs.body, obs.score));
+            }
+        }
+        if let (Some(lo), Some(hi)) = (worst_infeasible, best_feasible) {
+            if hi.0.saturating_sub(lo.0) <= 1 {
+                break;
+            }
+            match interpolate_body_bytes(lo, hi, target.score) {
+                Some(body) if body != lo.0 && body != hi.0 => next_body = body,
+                _ => break,
+            }
+        } else if probed[index].score >= target.score {
+            next_body = (f64::from(probed[index].body) / BRACKET_RATIO)
+                .round()
+                .clamp(1.0, f64::from(max_body)) as u32;
+            if next_body == probed[index].body {
+                break;
+            }
+        } else {
+            next_body =
+                ((f64::from(probed[index].body) * BRACKET_RATIO).round() as u32).clamp(1, max_body);
+            if next_body == probed[index].body {
+                break;
+            }
+        }
+    }
+
+    let winner = probed
+        .iter()
+        .filter(|obs| obs.score >= target.score)
+        .min_by_key(|obs| obs.output_bytes)
+        .ok_or_else(|| Jp2LamError::PerceptualTargetMissed {
+            achieved: probed
+                .iter()
+                .map(|obs| obs.score)
+                .fold(f64::NEG_INFINITY, f64::max),
+            target: target.score,
+            status: "UnderTargetWorkCap",
+        })?;
+    Ok(winner.tile_parts.clone())
 }
 
 fn select_exact_rate_tile_parts(
@@ -1434,7 +1909,7 @@ fn select_exact_rate_tile_parts(
     })
 }
 
-fn complete_output_len(
+pub(crate) fn complete_output_len(
     context: &EncodeContext<'_>,
     emit_plan: &EncodingPlan,
     parts: &CodestreamParts,
@@ -1668,6 +2143,57 @@ fn native_use_mct(plan: &EncodingPlan) -> bool {
     // advertised bit-plane counts. Keep lossless RGB independent for the Phase 0
     // correctness baseline; re-enable RCT with QCC/range-aware signaling.
     plan.use_mct && matches!(plan.transform, WaveletTransform::Irreversible97)
+}
+
+/// Bytes retained for a full-image unquantized 9/7 cache, plus the largest
+/// tile's source peak while the cache is being filled. `None` means overflow.
+pub(crate) fn unquantized_dwt_retention_bytes(
+    plan: &EncodingPlan,
+    tile_rects: &[TileRect],
+) -> Option<usize> {
+    let sample = std::mem::size_of::<f32>();
+    let mut cache_bytes = 0usize;
+    let mut max_source_peak = 0usize;
+    let mct = native_use_mct(plan);
+    for tile in tile_rects {
+        if mct {
+            let pixels = usize::try_from(tile.width())
+                .ok()?
+                .checked_mul(usize::try_from(tile.height()).ok()?)?;
+            let plane = pixels.checked_mul(sample)?;
+            cache_bytes = cache_bytes.checked_add(plane.checked_mul(3)?)?;
+            max_source_peak = max_source_peak.max(plane.checked_mul(3)?);
+        } else {
+            let mut tile_cache = 0usize;
+            let mut tile_source = 0usize;
+            for (component_index, component) in plan.components.iter().enumerate() {
+                let tc = tile_component_rect(tile, component_index as u16, component);
+                let pixels = usize::try_from(tc.width())
+                    .ok()?
+                    .checked_mul(usize::try_from(tc.height()).ok()?)?;
+                let plane = pixels.checked_mul(sample)?;
+                tile_cache = tile_cache.checked_add(plane)?;
+                tile_source = tile_source.max(plane);
+            }
+            cache_bytes = cache_bytes.checked_add(tile_cache)?;
+            max_source_peak = max_source_peak.max(tile_source);
+        }
+    }
+    cache_bytes.checked_add(max_source_peak)
+}
+
+/// Whether the perceptual search may keep unquantized DWT planes for every tile.
+///
+/// No declared `max_working_memory` means the default unbounded path: cache.
+/// A declared budget that cannot hold the cache plus one tile's source peak
+/// falls back to recomputing the forward transform per outer rung.
+pub(crate) fn unquantized_dwt_cache_fits(plan: &EncodingPlan, tile_rects: &[TileRect]) -> bool {
+    match plan.resource_limits.max_working_memory {
+        None => true,
+        Some(limit) => unquantized_dwt_retention_bytes(plan, tile_rects)
+            .map(|required| required <= limit)
+            .unwrap_or(false),
+    }
 }
 
 /// Whether component-level Rayon jobs are permitted for this encode.

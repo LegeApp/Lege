@@ -57,6 +57,12 @@ pub(super) fn derive_subband_quants(
 /// q50 keeps the ISO-derived irreversible step sizes. Lower qualities increase
 /// step size for stronger quantization; higher qualities reduce step size so
 /// q95/q99 are not capped by the same coefficient precision as q50.
+pub(super) fn apply_global_quant_scale(quants: &mut [SubbandQuant], scale: f64) {
+    for sq in quants.iter_mut() {
+        *sq = scale_one_quant(sq, scale);
+    }
+}
+
 pub(super) fn apply_quality_step_scaling(quants: &mut Vec<SubbandQuant>, quality: u8) {
     if quality >= 100 {
         return;
@@ -95,7 +101,7 @@ fn document_step_scale(quality: u8) -> f64 {
 ///
 /// Calibrated so q=42→1.32×, q=30→2.0×, q=10→4.0×, q=1→~5.5×,
 /// q=75→0.42×, q=90→0.25×, and q=99→0.031×.
-fn quality_step_scaler(quality: u8) -> f64 {
+pub(super) fn quality_step_scaler(quality: u8) -> f64 {
     if quality == 0 {
         return 8.0;
     }

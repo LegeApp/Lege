@@ -5,8 +5,8 @@ use crate::error::{Jp2LamError, Result};
 #[cfg(test)]
 use crate::model::Image;
 use crate::model::{
-    ColorEncoding, ColorSpace, ComponentView, EncodeOptions, ImageView, OutputFormat, RateControl,
-    ResourceLimits, TilePolicy,
+    ColorEncoding, ColorSpace, ComponentView, EncodeOptions, ImageView, OutputFormat,
+    PerceptualTarget, RateControl, ResourceLimits, TilePolicy,
 };
 use derive::{
     apply_document_step_scaling, apply_quality_step_scaling, derive_code_block_size, derive_lane,
@@ -75,6 +75,8 @@ pub(crate) enum RateMode {
     /// Quantization step size does the rate control; PCRD only trims passes
     /// with negligible measured-ΔMSE payoff. Used by `ContentProfile::Document`.
     DocumentTrim,
+    /// SSIMULACRA2 floor: global quantizer plus PCRD body-byte search.
+    PerceptualTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +140,13 @@ pub(crate) struct EncodingPlan {
     pub output_rate_target: Option<OutputRateTarget>,
     pub lane: EncodeLane,
     pub rate_mode: RateMode,
+    /// Set when the caller asked for a SSIMULACRA2 floor.
+    pub perceptual: Option<PerceptualTarget>,
+    /// Global quantization step multiplier (`1.0` is the ISO-derived q50 step).
+    /// Smaller is finer. Used by [`RateMode::PerceptualTarget`].
+    pub quant_scale: f64,
+    /// Unscaled ISO-derived subband steps, before the global multiplier.
+    pub base_subband_quants: Vec<SubbandQuant>,
     pub progression_order: ProgressionOrder,
     pub transform: WaveletTransform,
     pub quantization_style: QuantizationStyle,
@@ -201,19 +210,22 @@ impl EncodingPlan {
 
         let encoding_colorspace = image.colorspace.encoding_domain();
         let rate_control = resolve_rate_control(image, options)?;
-        let (quality, output_rate_target) = match rate_control {
-            RateControl::Lossless => (100, None),
-            RateControl::Quality(quality) => (quality, None),
-            RateControl::TargetBytes(bytes) => (99, Some(OutputRateTarget::Bytes(bytes))),
+        let (quality, output_rate_target, perceptual) = match rate_control {
+            RateControl::Lossless => (100, None, None),
+            RateControl::Quality(quality) => (quality, None, None),
+            RateControl::Perceptual(target) => (99, None, Some(target)),
+            RateControl::TargetBytes(bytes) => (99, Some(OutputRateTarget::Bytes(bytes)), None),
             RateControl::TargetBitsPerPixel(bpp) => (
                 99,
                 Some(OutputRateTarget::Bytes(target_bytes_from_bpp(image, bpp)?)),
+                None,
             ),
             RateControl::CompressionRatio(ratio) => (
                 99,
                 Some(OutputRateTarget::Bytes(target_bytes_from_ratio(
                     image, ratio,
                 )?)),
+                None,
             ),
         };
         let is_lossless = matches!(rate_control, RateControl::Lossless);
@@ -247,14 +259,22 @@ impl EncodingPlan {
             decomposition_levels,
             transform,
         );
+        let base_subband_quants = subband_quants.clone();
         // Scale step sizes at the plan level so quantizer, tier-1 bitplane
         // analysis, PCRD distortion estimates, and the QCD header all agree.
-        let rate_mode = if matches!(options.profile, crate::model::ContentProfile::Document)
+        let rate_mode = if perceptual.is_some() {
+            RateMode::PerceptualTarget
+        } else if matches!(options.profile, crate::model::ContentProfile::Document)
             && matches!(transform, WaveletTransform::Irreversible97)
         {
             RateMode::DocumentTrim
         } else {
             RateMode::QualityLambda
+        };
+        let quant_scale = if matches!(rate_mode, RateMode::PerceptualTarget) {
+            derive::quality_step_scaler(75)
+        } else {
+            1.0
         };
         if matches!(transform, WaveletTransform::Irreversible97) {
             match rate_mode {
@@ -263,6 +283,9 @@ impl EncodingPlan {
                 }
                 RateMode::QualityLambda => {
                     apply_quality_step_scaling(&mut subband_quants, quality);
+                }
+                RateMode::PerceptualTarget => {
+                    derive::apply_global_quant_scale(&mut subband_quants, quant_scale);
                 }
             }
         }
@@ -279,6 +302,9 @@ impl EncodingPlan {
             output_rate_target,
             lane,
             rate_mode,
+            perceptual,
+            quant_scale,
+            base_subband_quants,
             progression_order: ProgressionOrder::Lrcp,
             transform,
             quantization_style,
@@ -303,6 +329,14 @@ impl EncodingPlan {
     }
 }
 
+pub(crate) fn perceptual_quant_scale_for_quality(quality: u8) -> f64 {
+    derive::quality_step_scaler(quality)
+}
+
+pub(crate) fn apply_perceptual_quant_scale(quants: &mut [SubbandQuant], scale: f64) {
+    derive::apply_global_quant_scale(quants, scale);
+}
+
 fn resolve_rate_control(image: &ImageView<'_>, options: &EncodeOptions) -> Result<RateControl> {
     let rate_control = options.rate_control.unwrap_or_else(|| {
         if options.quality >= 100 {
@@ -316,6 +350,23 @@ fn resolve_rate_control(image: &ImageView<'_>, options: &EncodeOptions) -> Resul
         RateControl::Quality(quality) => Err(Jp2LamError::InvalidInput(format!(
             "quality rate control must be in 0..=99, got {quality}"
         ))),
+        RateControl::Perceptual(target) => {
+            if !target.score.is_finite() || !(0.0..=100.0).contains(&target.score) {
+                return Err(Jp2LamError::InvalidInput(format!(
+                    "perceptual minimum score must be finite and in 0..=100, got {}",
+                    target.score
+                )));
+            }
+            if target.score >= 100.0 {
+                return Err(Jp2LamError::PerceptualTargetMissed {
+                    achieved: 0.0,
+                    target: target.score,
+                    status: "SaturatedTop",
+                });
+            }
+            reject_unsupported_perceptual_source(image)?;
+            Ok(rate_control)
+        }
         RateControl::TargetBytes(0) => Err(Jp2LamError::InvalidInput(
             "target output bytes must be non-zero".into(),
         )),
@@ -335,6 +386,25 @@ fn resolve_rate_control(image: &ImageView<'_>, options: &EncodeOptions) -> Resul
             "compression ratio must be finite and positive, got {value}"
         ))),
     }
+}
+
+fn reject_unsupported_perceptual_source(image: &ImageView<'_>) -> Result<()> {
+    let domain = image.colorspace.encoding_domain();
+    if !matches!(domain, ColorSpace::Gray | ColorSpace::Srgb) {
+        return Err(Jp2LamError::InvalidInput(format!(
+            "perceptual targeting supports 8-bit gray and sRGB only, got {:?}",
+            image.colorspace
+        )));
+    }
+    for component in &image.components {
+        if component.precision != 8 || component.signed {
+            return Err(Jp2LamError::InvalidInput(format!(
+                "perceptual targeting supports 8-bit unsigned samples, got precision {} signed {}",
+                component.precision, component.signed
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn target_bytes_from_bpp(image: &ImageView<'_>, bpp: f32) -> Result<u64> {
@@ -642,6 +712,39 @@ mod tests {
             );
             assert!(result.is_err(), "accepted {rate_control:?}");
         }
+    }
+
+    #[test]
+    fn perceptual_intent_builds_a_fine_quantizer_plan() {
+        use crate::model::{PerceptualEffort, PerceptualTarget};
+
+        let image = gray_image(16, 16);
+        let target = PerceptualTarget::new(90.0, PerceptualEffort::Balanced).expect("target");
+        let plan = EncodingPlan::build(
+            &image,
+            &EncodeOptions {
+                rate_control: Some(RateControl::Perceptual(target)),
+                ..Default::default()
+            },
+        )
+        .expect("perceptual plan");
+        assert_eq!(plan.rate_mode, RateMode::PerceptualTarget);
+        assert_eq!(plan.quality, 99);
+        assert_eq!(plan.perceptual, Some(target));
+        assert!(!plan.is_lossless());
+
+        let bad = EncodingPlan::build(
+            &image,
+            &EncodeOptions {
+                rate_control: Some(RateControl::Perceptual(PerceptualTarget {
+                    score: 101.0,
+                    effort: PerceptualEffort::Fast,
+                })),
+                ..Default::default()
+            },
+        )
+        .expect_err("out of range score");
+        assert!(!bad.is_perceptual_not_implemented(), "{bad}");
     }
 
     #[test]

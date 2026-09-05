@@ -1,4 +1,4 @@
-mod native;
+pub(crate) mod native;
 
 use super::context::EncodeContext;
 use crate::error::Result;

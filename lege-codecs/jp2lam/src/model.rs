@@ -715,6 +715,106 @@ pub enum ContentProfile {
     Document,
 }
 
+/// How hard the perceptual controller may work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PerceptualEffort {
+    /// Three pixel probes and two exact prices (plus one documented rescue).
+    Fast,
+    /// Five pixel probes and three exact prices (plus one documented rescue).
+    #[default]
+    Balanced,
+    /// Ten pixel probes and four exact prices (plus one documented rescue).
+    Quality,
+}
+
+/// A minimum SSIMULACRA2 score the encoder must meet.
+///
+/// Construct with [`PerceptualTarget::new`] so out-of-range scores are rejected
+/// at the edge. Direct struct literals are still re-checked at plan time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PerceptualTarget {
+    /// Minimum acceptable score, finite and in `0.0..=100.0`.
+    pub score: f64,
+    /// Probe / exact-price budget.
+    pub effort: PerceptualEffort,
+}
+
+impl PerceptualTarget {
+    /// Builds a target, rejecting a score that is not finite and in `0..=100`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::Jp2LamError::InvalidInput`] when `score` is NaN,
+    /// infinite, below zero, or above 100.
+    pub fn new(score: f64, effort: PerceptualEffort) -> crate::error::Result<Self> {
+        if !score.is_finite() || !(0.0..=100.0).contains(&score) {
+            return Err(crate::error::Jp2LamError::InvalidInput(format!(
+                "perceptual minimum score must be finite and in 0..=100, got {score}"
+            )));
+        }
+        Ok(Self { score, effort })
+    }
+}
+
+/// Why a completed score-targeted search stopped where it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualityStatus {
+    /// The selected stream meets the target.
+    Met,
+    /// The selected stream meets the target but the budget ran out before the
+    /// overshoot could be tightened.
+    MetWorkCap,
+    /// Even the coarsest quantizer meets the target; the coarsest was chosen.
+    SaturatedFloor,
+    /// Even the finest quantizer misses the target.
+    SaturatedTop,
+    /// The probe budget (plus its one rescue probe) ran out before any
+    /// candidate met the target.
+    UnderTargetWorkCap,
+}
+
+/// What one scored candidate reported.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerceptualObservation {
+    /// Canonical SSIMULACRA2 score against the source.
+    pub score: f64,
+    /// Wall time of candidate reconstruction, in milliseconds.
+    pub reconstruct_millis: Option<u64>,
+    /// Wall time of the metric pass, in milliseconds.
+    pub metric_millis: Option<u64>,
+}
+
+/// One scored probe in a perceptual search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerceptualProbe {
+    /// Global quantizer scale used for this probe (`1.0` is the ISO-derived
+    /// q50 step). Smaller is finer.
+    pub quant_scale: f64,
+    /// PCRD body-byte truncation applied at that quantizer.
+    pub pcrd_bytes: u32,
+    /// Canonical score of the reconstructed candidate.
+    pub score: f64,
+    /// Whether `score` met the requested floor.
+    pub feasible: bool,
+}
+
+/// Ordered diagnostic of one perceptual encode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerceptualTrace {
+    /// Requested SSIMULACRA2 floor.
+    pub target_score: f64,
+    /// Pinned metric identity the scores came from.
+    pub metric_version: &'static str,
+    /// Probes in search order.
+    pub probes: Vec<PerceptualProbe>,
+    /// Winner score, when any candidate was scored.
+    pub winner_score: Option<f64>,
+    /// Winner output bytes, when a stream was priced.
+    pub winner_bytes: Option<u64>,
+    /// Why the search stopped.
+    pub status: QualityStatus,
+}
+
 /// Caller-visible compression intent.
 ///
 /// Exact-rate variants target the complete selected output: the raw codestream
@@ -727,6 +827,9 @@ pub enum RateControl {
     Lossless,
     /// Calibrated photographic quality in the inclusive range 0..=99.
     Quality(u8),
+    /// Smallest exact stream whose reconstructed pixels meet a SSIMULACRA2
+    /// floor. Does not change the meaning of [`Self::Quality`].
+    Perceptual(PerceptualTarget),
     /// Target complete output size in bytes.
     TargetBytes(u64),
     /// Target complete output bits per full-image pixel, across all components.
@@ -830,8 +933,23 @@ impl Default for EncodeOptions {
 mod tests {
     use super::{
         ColorSpace, ComponentView, ContentProfile, EncodeOptions, Image, ImageView, OutputFormat,
-        Preset, RateControl, SamplePrecision, TilePolicy,
+        PerceptualEffort, PerceptualTarget, Preset, RateControl, SamplePrecision, TilePolicy,
     };
+
+    #[test]
+    fn perceptual_target_rejects_scores_outside_zero_to_one_hundred() {
+        for score in [f64::NAN, f64::INFINITY, -0.1, 100.1] {
+            assert!(
+                PerceptualTarget::new(score, PerceptualEffort::Balanced).is_err(),
+                "accepted {score}"
+            );
+        }
+        let ok = PerceptualTarget::new(90.0, PerceptualEffort::Fast).expect("90 is in range");
+        assert_eq!(ok.score, 90.0);
+        assert_eq!(ok.effort, PerceptualEffort::Fast);
+        assert!(PerceptualTarget::new(0.0, PerceptualEffort::Quality).is_ok());
+        assert!(PerceptualTarget::new(100.0, PerceptualEffort::Balanced).is_ok());
+    }
 
     #[test]
     fn photographic_presets_and_constructor_use_explicit_photo_profile() {

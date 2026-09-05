@@ -46,6 +46,9 @@ tempfile = "3"
 # tree compiles and links two copies of `wide`.
 wide = { version = "=0.7.33", optional = true }
 zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+# Shared production SSIMULACRA2 (`ssimulacra2-jpxl-1`). Default features omit
+# the JXL evaluator; rust-av `ssimulacra2` stays a test-only oracle below.
+jpxl-perceptual = { path = "../../../jpegXL-rs/JPXL/crates/jpxl-perceptual", version = "0.3.0", default-features = false }
 
 [dev-dependencies]
 butteraugli = "0.9.3"

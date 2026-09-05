@@ -1,7 +1,8 @@
 //! Local photographic quality-curve harness.
 //!
 //! Prints one CSV row per input/quality pair using the crate decoder as the
-//! reconstruction path and Butteraugli + SSIMULACRA2 as perceptual graders.
+//! reconstruction path, Butteraugli as a measurement column, and the pinned
+//! in-tree SSIMULACRA2 (`ssimulacra2-jpxl-1`) as the production grader.
 //!
 //! Usage:
 //!   cargo run --release --example perceptual_curve -- test-set 25,50,75,90,98 7
@@ -9,9 +10,8 @@
 use butteraugli::{ButteraugliParams, Img, RGB8, butteraugli};
 use jp2lam::{
     DecodeLimits, DecodeRequest, DecodeResult, EncodeOptions, Image, Jp2Decoder, OutputFormat,
-    RateControl, encode,
+    RateControl, StreamEvaluator, encode,
 };
-use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic, compute_frame_ssimulacra2};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +44,9 @@ fn main() -> Result<(), String> {
         let jp2_image = Image::from_rgb_bytes(width, height, source.as_raw())
             .map_err(|error| error.to_string())?;
 
+        let mut evaluator =
+            StreamEvaluator::from_view(jp2_image.as_view().map_err(|error| error.to_string())?)
+                .map_err(|error| format!("metric reference {}: {error}", input.display()))?;
         for &quality in &qualities {
             let bytes = encode(
                 &jp2_image,
@@ -79,12 +82,10 @@ fn main() -> Result<(), String> {
                 width as usize,
                 height as usize,
             )?;
-            let ssimulacra2 = ssimulacra2_score(
-                source.as_raw(),
-                &reconstructed,
-                width as usize,
-                height as usize,
-            )?;
+            let ssimulacra2 = evaluator
+                .score_stream(&bytes)
+                .map_err(|error| format!("ssimulacra2 {} q{quality}: {error}", input.display()))?
+                .score;
             println!(
                 "{},{width},{height},{:.3},{quality},{},{:.5},{psnr:.5},{butteraugli:.6},{ssimulacra2:.6}",
                 input.display(),
@@ -143,49 +144,6 @@ fn butteraugli_score(
     )
     .map(|result| result.score)
     .map_err(|error| error.to_string())
-}
-
-fn ssimulacra2_score(
-    source: &[u8],
-    decoded: &[u8],
-    width: usize,
-    height: usize,
-) -> Result<f64, String> {
-    let source = Rgb::new(
-        source
-            .chunks_exact(3)
-            .map(|pixel| {
-                [
-                    pixel[0] as f32 / 255.0,
-                    pixel[1] as f32 / 255.0,
-                    pixel[2] as f32 / 255.0,
-                ]
-            })
-            .collect(),
-        width,
-        height,
-        TransferCharacteristic::SRGB,
-        ColorPrimaries::BT709,
-    )
-    .map_err(|error| error.to_string())?;
-    let decoded = Rgb::new(
-        decoded
-            .chunks_exact(3)
-            .map(|pixel| {
-                [
-                    pixel[0] as f32 / 255.0,
-                    pixel[1] as f32 / 255.0,
-                    pixel[2] as f32 / 255.0,
-                ]
-            })
-            .collect(),
-        width,
-        height,
-        TransferCharacteristic::SRGB,
-        ColorPrimaries::BT709,
-    )
-    .map_err(|error| error.to_string())?;
-    compute_frame_ssimulacra2(source, decoded).map_err(|error| error.to_string())
 }
 
 fn rgb_psnr(source: &[u8], decoded: &[u8]) -> f64 {

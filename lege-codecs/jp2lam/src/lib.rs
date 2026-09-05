@@ -31,13 +31,25 @@ pub use encode::counters::{
     CLEANUP_PASSES, EMPTY_BLOCKS, MQ_SYMBOLS, MR_PASSES, MemoryCounterSnapshot, SP_PASSES,
     TOTAL_BLOCKS, TOTAL_PASS_BYTES, memory_snapshot, print, reset,
 };
+pub use encode::ssim::StreamEvaluator;
+pub use encode::ssim_oracle::{
+    OracleConfig, OracleFeatures, OracleLabel, OracleProbe, OracleStatus, OracleSweepResult,
+    default_oracle_body_fractions, default_oracle_quant_qualities, default_oracle_targets,
+    reduce_labels, sweep_source,
+};
 pub use encode::{
     EncodeMetrics, clear_timing_data, encode, encode_to_writer, encode_view, encode_view_to_writer,
     encode_with_psnr, print_timing_data,
 };
 pub use error::{Jp2LamError, Result};
+/// Pinned production SSIMULACRA2 identity, shared with JPXL.
+///
+/// A perceptual encode is only comparable across codecs when both score with
+/// this string. Bumping it is an encoder-behaviour change.
+pub use jpxl_perceptual::METRIC_VERSION;
 pub use model::{
     ColorEncoding, ColorSpace, Component, ComponentSampleData, ComponentView, ContentProfile,
-    EncodeOptions, IccComponentModel, Image, ImageView, OutputFormat, Preset, RateControl,
-    ResourceLimits, SamplePrecision, TilePolicy,
+    EncodeOptions, IccComponentModel, Image, ImageView, OutputFormat, PerceptualEffort,
+    PerceptualObservation, PerceptualProbe, PerceptualTarget, PerceptualTrace, Preset,
+    QualityStatus, RateControl, ResourceLimits, SamplePrecision, TilePolicy,
 };

@@ -10,6 +10,15 @@ pub enum Jp2LamError {
     DecodeFailed(String),
     UnsupportedFeature(String),
     Io(String),
+    /// Historical variant from Session 2; the controller is now wired.
+    #[allow(dead_code)]
+    PerceptualNotImplemented,
+    /// Bounded search finished without a stream at or above the SSIMULACRA2 floor.
+    PerceptualTargetMissed {
+        achieved: f64,
+        target: f64,
+        status: &'static str,
+    },
 }
 
 impl Display for Jp2LamError {
@@ -20,6 +29,17 @@ impl Display for Jp2LamError {
             Self::DecodeFailed(msg) => write!(f, "decode failed: {msg}"),
             Self::UnsupportedFeature(msg) => write!(f, "unsupported feature: {msg}"),
             Self::Io(msg) => write!(f, "I/O error: {msg}"),
+            Self::PerceptualNotImplemented => {
+                write!(f, "perceptual SSIMULACRA2 targeting is not implemented yet")
+            }
+            Self::PerceptualTargetMissed {
+                achieved,
+                target,
+                status,
+            } => write!(
+                f,
+                "perceptual encode missed SSIMULACRA2 floor {target}: achieved {achieved} ({status})"
+            ),
         }
     }
 }
@@ -35,6 +55,16 @@ impl Jp2LamError {
         matches!(self, Self::UnsupportedFeature(_))
     }
 
+    #[must_use]
+    pub fn is_perceptual_not_implemented(&self) -> bool {
+        matches!(self, Self::PerceptualNotImplemented)
+    }
+
+    #[must_use]
+    pub fn is_perceptual_target_missed(&self) -> bool {
+        matches!(self, Self::PerceptualTargetMissed { .. })
+    }
+
     pub fn message(&self) -> &str {
         match self {
             Self::InvalidInput(msg)
@@ -42,6 +72,12 @@ impl Jp2LamError {
             | Self::DecodeFailed(msg)
             | Self::UnsupportedFeature(msg)
             | Self::Io(msg) => msg,
+            Self::PerceptualNotImplemented => {
+                "perceptual SSIMULACRA2 targeting is not implemented yet"
+            }
+            Self::PerceptualTargetMissed { .. } => {
+                "perceptual encode missed the requested SSIMULACRA2 floor"
+            }
         }
     }
 }

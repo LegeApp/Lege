@@ -1,6 +1,11 @@
 pub(crate) mod backend;
 pub(crate) mod block_store;
 pub(crate) mod context;
+pub(crate) mod ssim;
+#[cfg(test)]
+pub(crate) mod ssim_dwt;
+pub(crate) mod ssim_oracle;
+pub(crate) mod ssim_recon;
 
 #[cfg(feature = "counters")]
 pub mod counters;
@@ -144,19 +149,36 @@ pub fn encode_view_to_writer<W: Write>(
             "native backend does not support this lane".to_string(),
         ));
     }
-    let parts = native.prepare_codestream_parts(&context)?;
-    let emit_plan = native.emit_plan(&context.plan);
-    match context.plan.output_format {
-        OutputFormat::J2k => parts.write_to(&emit_plan, writer),
-        OutputFormat::Jp2 => {
-            let codestream_len = parts.byte_len(&emit_plan)?;
-            jp2::write_jp2_header_for_view(
-                &context.image,
-                &context.plan.color_encoding,
-                codestream_len,
-                writer,
-            )?;
-            parts.write_to(&emit_plan, writer)
+    if context.plan.perceptual.is_some() {
+        let j2k = native.encode_codestream(&context)?;
+        match context.plan.output_format {
+            OutputFormat::J2k => writer
+                .write_all(&j2k)
+                .map_err(|err| Jp2LamError::Io(err.to_string())),
+            OutputFormat::Jp2 => {
+                jp2::wrap_codestream_view(&context.image, &context.plan.color_encoding, &j2k)
+                    .and_then(|jp2| {
+                        writer
+                            .write_all(&jp2)
+                            .map_err(|err| Jp2LamError::Io(err.to_string()))
+                    })
+            }
+        }
+    } else {
+        let parts = native.prepare_codestream_parts(&context)?;
+        let emit_plan = native.emit_plan(&context.plan);
+        match context.plan.output_format {
+            OutputFormat::J2k => parts.write_to(&emit_plan, writer),
+            OutputFormat::Jp2 => {
+                let codestream_len = parts.byte_len(&emit_plan)?;
+                jp2::write_jp2_header_for_view(
+                    &context.image,
+                    &context.plan.color_encoding,
+                    codestream_len,
+                    writer,
+                )?;
+                parts.write_to(&emit_plan, writer)
+            }
         }
     }
 }

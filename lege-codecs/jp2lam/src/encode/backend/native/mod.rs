@@ -10,6 +10,14 @@ mod rate;
 mod t1;
 mod t2;
 
-pub(crate) use backend::{NativeBackend, NativeComponentCoefficients};
+pub(crate) use backend::{
+    NativeBackend, NativeComponentCoefficients, UnquantizedComponentDwt, UnquantizedTileDwt,
+    build_stored_tile_parts, complete_output_len, max_stored_body_bytes, select_stored_tile_passes,
+};
+#[cfg(test)]
+pub(crate) use backend::{
+    forward_dwt_call_count, reset_forward_dwt_calls, unquantized_dwt_cache_fits,
+    unquantized_dwt_retention_bytes,
+};
 
-pub(crate) use t1::{NativeEncodedTier1Layout, NativeEncodedTier1Pass};
+pub(crate) use t1::{NativeEncodedTier1Layout, NativeEncodedTier1Pass, NativeTier1SelectionLayout};

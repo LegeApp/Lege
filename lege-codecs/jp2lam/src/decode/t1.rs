@@ -85,6 +85,10 @@ impl Tier1Scratch {
         }
     }
 
+    pub(crate) fn coefficients(&self) -> &[i32] {
+        &self.coefficients
+    }
+
     fn reset(&mut self, width: usize, height: usize) -> Result<()> {
         let coefficient_count = width
             .checked_mul(height)
@@ -535,6 +539,39 @@ fn read_segmentation_symbol(decoder: &mut MqDecoder<'_>) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Decode a payload prefix of `pass_count` coding passes into `scratch`.
+///
+/// Used by the perceptual candidate reconstructor so a stored Tier-1
+/// truncation can be inverted without serializing a codestream.
+pub(crate) fn decode_pass_prefix(
+    width: usize,
+    height: usize,
+    band: BandOrientation,
+    max_bitplanes: u8,
+    zero_bitplanes: u32,
+    pass_count: u32,
+    data: &[u8],
+    scratch: &mut Tier1Scratch,
+) -> Result<()> {
+    let segment = DecodedCodewordSegment {
+        passes: pass_count,
+        data: std::borrow::Cow::Borrowed(data),
+    };
+    let mut stats = StatsSink::disabled();
+    decode_codeblock_segments_into(
+        width,
+        height,
+        band,
+        max_bitplanes,
+        zero_bitplanes,
+        pass_count,
+        CodeBlockStyle::default(),
+        std::slice::from_ref(&segment),
+        scratch,
+        &mut stats,
+    )
 }
 
 /// Decode one code-block's coding passes.

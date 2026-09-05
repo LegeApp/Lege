@@ -124,6 +124,12 @@ impl EncodedBlockStore {
         })
     }
 
+    pub(crate) fn copy_prefix(&self, payload: PayloadRef, prefix_len: usize) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        self.write_prefix_to(payload, prefix_len, &mut out)?;
+        Ok(out)
+    }
+
     pub(crate) fn write_prefix_to<W: Write>(
         &self,
         payload: PayloadRef,

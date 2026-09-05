@@ -6,7 +6,7 @@
 
 mod codestream;
 mod jp2_parse;
-mod reconstruct;
+pub(crate) mod reconstruct;
 mod stats;
 pub(crate) mod t1;
 pub(crate) mod t2;
