@@ -172,6 +172,44 @@ record lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 : ob
     verified_by [ @lege-ecosystem.evidence.ppocrv6-wgpu-embedded-20260822/1 ]
 }
 
+record lege-ecosystem.observation.truetyping-halftone-review-20260905/1 : observation {
+    title "TrueTyping and JBIG2 halftone review with diagnostic reproductions"
+    state verified
+    statement """
+        Reviewed TrueTyping and JBIG2 halftoning at 4a7349f9. Reproduced low-range halftone corruption in native and jbig2dec decoders, partial-cell ink loss, default dictionary tone bias, oversized TrueTyping component loss, malformed contour counts from a 380px connected grid, O/0 semantic collision, and GUI reflow/halftone incompatibility. Additional code findings concern blanket OCR fallback suppression, highlight clipping, and inert/misleading halftone controls. Full findings, priorities, evidence, limitations and quality experiments: docs/reviews/truetyping-halftone-20260905.md. Existing tests passed: 26 glyphfont tests and 7 halftone decoder tests. No application fixes made.
+        """
+    observed_at git:4a7349f94b1fb6f6f90b871be5dbb9b5736062de
+    method instrumented
+    watches [
+        "lege-process/encoding/glyphfont.rs",
+        "lege-process/core/truetype_writer.rs",
+        "lege-process/core/pdf_artifact.rs",
+        "lege-process/pipeline/pdf_tokio_pipeline.rs",
+        "lege-process/GUI/Freya/src/models.rs",
+        "lege-process/GUI/Freya/src/worker_process.rs",
+        "lege-codecs/jbig2enc-rust/src/encode/halftone.rs"
+    ]
+    derived_from [ @lege-ecosystem.work.glyph-font-text-output/1 ]
+}
+
+record lege-ecosystem.observation.truetyping-halftone-review-fixes-20260905/1 : observation {
+    title "All ten findings of the 2026-09-05 TrueTyping/halftone review are fixed and corpus-validated"
+    state verified
+    scope [ path "lege-codecs/jbig2enc-rust/**", path "lege-process/**" ]
+    statement """
+        Implemented at working tree on 2325cfd6 (uncommitted): jbig2enc halftone emits ceil(log2(patterns)) gray-code planes, edge cells are edge-replicated, quantizer and dictionary agree on round(i*M*M/(N-1)) populations, sharpening_l is a real unsharp mask (default 0.0 keeps prior output), lossless doc is honest; paper whitening rolls off smoothly above PAPER_WHITE_FLOOR (color_processing::halftone_ink_from_gray). TrueTyping: components that cannot be valid simple glyphs (size, contour or point budget) go to a per-page lossless JBIG2 residual drawn under the text; truetype_writer returns errors instead of narrowing counts; one outline recognised as two strings gets two CIDs; the OCR layer keeps words no glyph covers; Freya gates halftone on the effective encoder and clears it when reflow is entered. Tests: jbig2enc 211 pass (1 pre-existing failure decode_refine_templates::grtemplate1_tpgron), lege lib 338 pass. Corpus: 20-page subsets of the three largest to-sort books (globalhistory, crusades, wheels) with --text-format truetyping --halftone decode cleanly in mutool, every page has normal ink coverage, line-art map pages survive via the residual, halftoned photos have correct tone. Validation first exposed the fixed-threshold CLI default (see decision simple-cli-default-binarization-is-adaptive).
+        """
+    observed_at git:2325cfd672cc1eb52b5b54642f5a0da71aabe7d0
+    method command
+    watches [
+        "lege-codecs/jbig2enc-rust/src/encode/halftone.rs",
+        "lege-process/encoding/glyphfont.rs",
+        "lege-process/core/pdf_artifact.rs",
+        "lege-process/core/truetype_writer.rs"
+    ]
+    derived_from [ @lege-ecosystem.observation.truetyping-halftone-review-20260905 ]
+}
+
 record lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1 : observation {
     title "Truetyping letters sit a pixel or two off the baseline, and identical shapes make it obvious"
     state verified

@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:90368d6809b89bfa786f1704498934b61356b76fa5447183e6aceb1dc43b8e23"
+    source_graph "sha256:1cd898ae821024544145db0ccd727e0564906abdeaf927aa281b8bd65be28d12"
 }
 
 source ".akr/project.akr" {
@@ -59,8 +59,8 @@ source ".akr/records/lege-ecosystem/assessments.akr" {
 }
 
 source ".akr/records/lege-ecosystem/decisions.akr" {
-    hash "sha256:c0a003339017420408d8aef5e0041a1ab21a3055aab3d06e29506461ddbfcdd6"
-    records 8
+    hash "sha256:5913f111e58a54cf6a132aaf233e53311a48db939afaf87b5089f063dbba1fde"
+    records 9
 }
 
 source ".akr/records/lege-ecosystem/evidence.akr" {
@@ -74,13 +74,13 @@ source ".akr/records/lege-ecosystem/milestones.akr" {
 }
 
 source ".akr/records/lege-ecosystem/observations.akr" {
-    hash "sha256:f060f50250c6b90e3e4bc15873f8dee7de7f5b4f908c3aa5ea54f077df94404b"
-    records 16
+    hash "sha256:2f3591280b7367e1f779b8332ea15c8a124a6fe1e02387e4296155ec5ee2f25a"
+    records 18
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
-    hash "sha256:ca96ebf5b4f7232d3f238590f54b29b29196964a0e7d4c7350aa8546cd66ba55"
-    records 103
+    hash "sha256:d7b9ee3811369a82ece74b951bcf4768e7e712cdfd0bdd53ba0179448617eef5"
+    records 104
 }
 
 source ".akr/records/lege-ecosystem/policies.akr" {
@@ -137,6 +137,12 @@ resolution @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 
     slot derived_from
     to @lege-ecosystem.work.glyph-font-text-output/1
     hash "sha256:a0d688577c0a8c15811b1ae59280ccf118508e03a454130b4c704021faac3043"
+}
+
+resolution @lege-ecosystem.observation.truetyping-halftone-review-fixes-20260905/1 {
+    slot derived_from
+    to @lege-ecosystem.observation.truetyping-halftone-review-20260905/1
+    hash "sha256:cebb5552b0b0bc3ab673604548440623c1b7cf57c4e440a67f421f1eda40d892"
 }
 
 resolution @lege-ecosystem.work.glyph-font-text-output/1 {
@@ -1163,6 +1169,16 @@ seal @lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 {
     hash "sha256:5bf5660ff9341545cf5d523d8b4475feee73afebba5b083d3d02d2c9f6c7e015"
 }
 
+seal @lege-ecosystem.observation.truetyping-halftone-review-20260905/1 {
+    state verified
+    hash "sha256:cebb5552b0b0bc3ab673604548440623c1b7cf57c4e440a67f421f1eda40d892"
+}
+
+seal @lege-ecosystem.observation.truetyping-halftone-review-fixes-20260905/1 {
+    state verified
+    hash "sha256:6d1ef467c8138e28a5b8c552e7470643bf24db1b9b79d3a7c15f0d4dafe3bd76"
+}
+
 seal @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1 {
     state verified
     hash "sha256:b113c1f176a1c737a5035e388b563a820ea1f4b128e62bfe270438d16d375908"
@@ -1411,6 +1427,11 @@ seal @lege-ecosystem.papercut.pdf-verification-attempted-qpdf-check-but-qpdf/1 {
 seal @lege-ecosystem.papercut.real-gpu-lege-ocr-test-binaries-sigsegv-during/1 {
     state verified
     hash "sha256:aaf1fe6a3dcd2b93dfc89004a9d6c7bb6efa80d01257235c2daf01b7d6f3f70f"
+}
+
+seal @lege-ecosystem.papercut.review-cli-fallback-akr-start-takes-a/1 {
+    state verified
+    hash "sha256:2bf25834eae600f87b4538809978e58b270838593bfe1bc1edbc8940db892b74"
 }
 
 seal @lege-ecosystem.papercut.review-startup-akr-mcp-and-fff-are-rooted-at/1 {

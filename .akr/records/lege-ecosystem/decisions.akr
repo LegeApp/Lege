@@ -111,6 +111,22 @@ record lege-ecosystem.decision.sideways-pages-are-turned-upright-with-rotate/1 :
     derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
 }
 
+record lege-ecosystem.decision.simple-cli-default-binarization-is-adaptive/1 : decision {
+    title "The simple CLI mode binarizes adaptively by default, not with a fixed 180 threshold"
+    state proposed
+    scope [ path "lege-process/core/main.rs", path "lege-process/pipeline/config.rs" ]
+    topic cli-default-binarization
+    decision """
+        PipelineConfig::simple_cli_defaults sets use_fixed_threshold=false so a bare `lege book.pdf` runs the Sauvola + background-normalised Otsu binarizer that the help text has always documented as the default.
+        """
+    context """
+        Since the initial pipeline commit the simple-mode default was a fixed threshold of 180 while --help said adaptive. Yellowed scans (crusades, globalhistory, Gernet) render their paper near gray 150, so every page came out solid black in any bilevel text format and TrueTyping saw one page-sized component and zero glyphs. The GUI, --image-debug and the music-sheet path already forced adaptive, which is why it went unnoticed. Found on 2026-09-05 while validating the review fixes.
+        """
+    consequences """
+        Simple-mode output on bright-paper scans changes slightly (adaptive instead of a 180 cut). --binarization threshold and --threshold still select the fixed cut explicitly. The mrc-adaptive-mask special case in main.rs that forced adaptive is now redundant but harmless.
+        """
+}
+
 record lege-ecosystem.decision.top-level-application-license-agpl/1 : decision {
     title "License the top-level Lege applications under AGPL-3.0-only"
     state active
