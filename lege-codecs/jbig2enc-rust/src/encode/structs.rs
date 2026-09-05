@@ -111,12 +111,16 @@ pub struct HalftoneConfig {
     pub grid_size_m: u32,
     /// The number of quantization levels (N).
     pub quant_levels_n: u32,
-    /// Sharpening control parameter (L), typically between 0.0 and 2.0.
+    /// Unsharp-mask strength (L) applied to the decimated grayscale image
+    /// before quantization: the quantized value becomes `v + L * (v - blur(v))`.
+    /// Typically 0.0 to 2.0; 0.0 (the default) disables sharpening.
     pub sharpening_l: f32,
     /// The template to use for encoding grayscale bitplanes (usually 0).
     pub template: u8,
-    /// Whether to use lossless encoding (true) or lossy encoding (false).
-    /// Lossless guarantees bit-perfect reconstruction but produces larger files.
+    /// Selects the *lossless* halftone region segment type (23) instead of the
+    /// plain one (22). This is a marker only: the halftone pipeline always
+    /// decimates and quantizes, so reconstruction is never bit-perfect either
+    /// way. Set it when a consumer requires the lossless segment type.
     pub lossless: bool,
     /// Diagnostic backend for the gray-value image inside the halftone region.
     /// When true, use MMR/T.6 coding instead of arithmetic Annex C coding.
@@ -139,7 +143,7 @@ impl Default for HalftoneConfig {
         Self {
             grid_size_m: 4,     // 4x4 grid is a common default
             quant_levels_n: 16, // 16 gray levels
-            sharpening_l: 0.5,  // A moderate amount of sharpening
+            sharpening_l: 0.0,  // Unsharp mask off by default
             template: 0,
             lossless: false, // Default to lossy encoding for better compression
             gray_mmr: false,

@@ -92,9 +92,13 @@ pub fn encode_halftone_region(
         ht_config.template
     };
     let gray_image_payload = if ht_config.gray_mmr {
-        encode_grayscale_image_mmr(&quantized_gray_image)?
+        encode_grayscale_image_mmr(&quantized_gray_image, pattern_dictionary.len())?
     } else {
-        encode_grayscale_image_annex_c(&quantized_gray_image, effective_template)?
+        encode_grayscale_image_annex_c(
+            &quantized_gray_image,
+            effective_template,
+            pattern_dictionary.len(),
+        )?
     };
 
     // Step 7: Assemble the halftone region header.
@@ -417,9 +421,9 @@ pub fn encode_halftone_pdf_split_auto_from_grayscale(
         ht_config.template
     };
     let gray_image_payload = if ht_config.gray_mmr {
-        encode_grayscale_image_mmr(&quantized)?
+        encode_grayscale_image_mmr(&quantized, pattern_dictionary.len())?
     } else {
-        encode_grayscale_image_annex_c(&quantized, effective_template)?
+        encode_grayscale_image_annex_c(&quantized, effective_template, pattern_dictionary.len())?
     };
 
     let page_num = page_number.unwrap_or(1);
@@ -605,37 +609,79 @@ fn prefilter(image: &BitImage) -> Array2<f32> {
 }
 
 /// Step 2: Decimates (downsamples) the grayscale image by summing M x M blocks.
+///
+/// Cells that hang over the right/bottom edge are completed by edge replication
+/// (the last row/column repeats) so a partial cell keeps the same density as a
+/// whole one. Without this the missing samples read as white and solid ink is
+/// lost along the trailing edges.
 fn decimate(gray_image: &Array2<f32>, m: usize) -> Array2<f32> {
     let (h, w) = gray_image.dim();
-    let (out_h, out_w) = ((h + m - 1) / m, (w + m - 1) / m);
+    if h == 0 || w == 0 || m == 0 {
+        return Array2::<f32>::zeros((0, 0));
+    }
+    let (out_h, out_w) = (h.div_ceil(m), w.div_ceil(m));
     let mut out = Array2::<f32>::zeros((out_h, out_w));
 
     for y in 0..out_h {
         for x in 0..out_w {
-            let start_y = y * m;
-            let start_x = x * m;
-            let end_y = (start_y + m).min(h);
-            let end_x = (start_x + m).min(w);
-
-            let window = gray_image.slice(ndarray::s![start_y..end_y, start_x..end_x]);
-            out[[y, x]] = window.sum();
+            let mut sum = 0.0f32;
+            for dy in 0..m {
+                for dx in 0..m {
+                    let sy = (y * m + dy).min(h - 1);
+                    let sx = (x * m + dx).min(w - 1);
+                    sum += gray_image[[sy, sx]];
+                }
+            }
+            out[[y, x]] = sum;
         }
     }
     out
 }
 
-/// Step 3: Quantizes to N levels using a serpentine Floyd-Steinberg pass.
-/// This avoids the large directional noise introduced by the previous global
-/// sharpening term while still preserving tone transitions.
+/// Step 3: Quantizes to the dictionary levels using a serpentine
+/// Floyd-Steinberg pass.
+///
+/// The working unit is *black pixels per cell* (the value `decimate` already
+/// produces), and each level is scored against the real black-pixel population
+/// of its dictionary pattern, so the diffused error is the ink the chosen
+/// pattern actually fails to deposit rather than a nominal `i/(N-1)`.
+///
+/// `l` is the unsharp-mask strength from `HalftoneConfig::sharpening_l`: the
+/// value fed to the quantizer becomes `v + l * (v - blur(v))` over the
+/// decimated image (Valliappan et al.). `l == 0.0` disables it.
 fn quantize_with_error_diffusion(
     decimated_image: &Array2<f32>,
     n: u32,
-    _l: f32,
+    l: f32,
     m: u32,
 ) -> Array2<u8> {
     let (h, w) = decimated_image.dim();
     let mut out = Array2::<u8>::zeros((h, w));
-    let mut temp_image = decimated_image.mapv(|v| v * (n - 1) as f32 / (m * m) as f32);
+    let populations: Vec<f32> = pattern_populations(m as usize, n as usize)
+        .into_iter()
+        .map(|p| p as f32)
+        .collect();
+    let mut temp_image = decimated_image.clone();
+    if l != 0.0 && h > 0 && w > 0 {
+        // Unsharp mask against a 3x3 box blur of the decimated image.
+        for y in 0..h {
+            for x in 0..w {
+                let (y0, y1) = (y.saturating_sub(1), (y + 1).min(h - 1));
+                let (x0, x1) = (x.saturating_sub(1), (x + 1).min(w - 1));
+                let mut sum = 0.0f32;
+                let mut cnt = 0.0f32;
+                for yy in y0..=y1 {
+                    for xx in x0..=x1 {
+                        sum += decimated_image[[yy, xx]];
+                        cnt += 1.0;
+                    }
+                }
+                let blur = sum / cnt;
+                let v = decimated_image[[y, x]];
+                temp_image[[y, x]] = (v + l * (v - blur)).clamp(0.0, (m * m) as f32);
+            }
+        }
+    }
 
     for y in 0..h {
         let left_to_right = y % 2 == 0;
@@ -647,10 +693,19 @@ fn quantize_with_error_diffusion(
 
         for x in xs {
             let pixel_val = temp_image[[y, x]];
-            let quantized_val = pixel_val.round().clamp(0.0, (n - 1) as f32);
-            out[[y, x]] = quantized_val as u8;
+            // Nearest actual pattern coverage (populations are monotone).
+            let mut level = 0usize;
+            let mut best = f32::INFINITY;
+            for (i, &cov) in populations.iter().enumerate() {
+                let d = (pixel_val - cov).abs();
+                if d < best {
+                    best = d;
+                    level = i;
+                }
+            }
+            out[[y, x]] = level as u8;
 
-            let error = pixel_val - quantized_val;
+            let error = pixel_val - populations[level];
 
             if left_to_right {
                 if x + 1 < w {
@@ -684,6 +739,25 @@ fn quantize_with_error_diffusion(
     out
 }
 
+/// Black-pixel population of each of the N dictionary patterns.
+///
+/// Rounded (not ceiled) so the populations straddle the ideal `i*M*M/(N-1)`
+/// instead of being uniformly biased toward extra ink; the quantizer scores
+/// against these same numbers.
+fn pattern_populations(m: usize, n: usize) -> Vec<u32> {
+    let cell = m * m;
+    (0..n)
+        .map(|i| {
+            if n <= 1 {
+                0
+            } else {
+                // round(i * cell / (n - 1))
+                (((2 * i * cell + (n - 1)) / (2 * (n - 1))).min(cell)) as u32
+            }
+        })
+        .collect()
+}
+
 /// Step 4: Generates an ideal pattern dictionary with N patterns of size M x M.
 /// The spec only requires a fixed-size dictionary of patterns; it does not
 /// require Bayer ordering. We use a clustered, center-weighted fill order to
@@ -692,14 +766,9 @@ fn generate_pattern_dictionary(m: usize, n: usize) -> Vec<BitImage> {
     let mut dict = Vec::with_capacity(n);
     let fill_order = clustered_fill_order(m);
 
-    for i in 0..n {
+    for on_pixels in pattern_populations(m, n) {
         let mut pattern = BitImage::new(usize_to_u32(m), usize_to_u32(m)).unwrap();
-
-        let on_pixels = if n <= 1 {
-            0
-        } else {
-            (i * m * m + (n - 2)) / (n - 1)
-        };
+        let on_pixels = on_pixels as usize;
         for &(x, y) in fill_order.iter().take(on_pixels.min(fill_order.len())) {
             pattern.set(usize_to_u32(x), usize_to_u32(y), true);
         }
@@ -788,8 +857,12 @@ fn encode_pattern_dictionary_payload(
 
 /// Encodes the grayscale image according to JBIG2 Annex C.
 /// This involves bitplane decomposition, Gray coding, and arithmetic coding of each plane.
-fn encode_grayscale_image_annex_c(gray_image: &Array2<u8>, template: u8) -> Result<Vec<u8>> {
-    let bitplanes = gray_coded_bitplanes(gray_image);
+fn encode_grayscale_image_annex_c(
+    gray_image: &Array2<u8>,
+    template: u8,
+    num_patterns: usize,
+) -> Result<Vec<u8>> {
+    let bitplanes = gray_coded_bitplanes(gray_image, num_patterns);
     let (h, w) = gray_image.dim();
 
     let mut coder = Jbig2ArithCoder::new();
@@ -816,8 +889,8 @@ fn encode_grayscale_image_annex_c(gray_image: &Array2<u8>, template: u8) -> Resu
     Ok(encoded_payload)
 }
 
-fn encode_grayscale_image_mmr(gray_image: &Array2<u8>) -> Result<Vec<u8>> {
-    let bitplanes = gray_coded_bitplanes(gray_image);
+fn encode_grayscale_image_mmr(gray_image: &Array2<u8>, num_patterns: usize) -> Result<Vec<u8>> {
+    let bitplanes = gray_coded_bitplanes(gray_image, num_patterns);
     let mut out = Vec::new();
 
     for plane in bitplanes.iter().rev() {
@@ -851,13 +924,18 @@ fn encode_bitmap_mmr(image: &BitImage) -> Result<Vec<u8>> {
     Ok(writer.finish())
 }
 
-fn gray_coded_bitplanes(gray_image: &Array2<u8>) -> Vec<BitImage> {
+/// `HBPP = ceil(log2(HNUMPATS))` (T.88 6.6.5 step 3, Annex C.5).
+///
+/// The plane count must come from the pattern dictionary size, not from the
+/// largest index the crop happens to use: decoders derive it that way and will
+/// misread the stream (treating the single emitted plane as the MSB) if the
+/// encoder drops leading zero planes.
+fn gray_coded_bitplanes(gray_image: &Array2<u8>, num_patterns: usize) -> Vec<BitImage> {
     let (h, w) = gray_image.dim();
-    let max_val = gray_image.iter().max().copied().unwrap_or(0);
-    let num_bits = if max_val == 0 {
+    let num_bits = if num_patterns <= 1 {
         1
     } else {
-        (max_val as f32 + 1.0).log2().ceil() as usize
+        (32 - ((num_patterns - 1) as u32).leading_zeros()) as usize
     };
 
     let mut raw_bitplanes: Vec<BitImage> = (0..num_bits)
