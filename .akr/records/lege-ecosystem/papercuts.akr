@@ -107,7 +107,7 @@ record lege-ecosystem.papercut.after-validating-the-exact-workspace-scratch/1 : 
 
 record lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/1 : papercut {
     title "AKR MCP failed to connect and codegraph MCP timed out this session; akr…"
-    state verified
+    state superseded
     statement """
         AKR MCP failed to connect and codegraph MCP timed out this session; akr get can hang on freshness rebuild, so Session 7 used akr search plus the implementation plan instead of knowledge.context.
         """
@@ -115,6 +115,28 @@ record lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/1 : p
     about "akr"
     author "grok"
     created_at 2026-09-04
+}
+
+record lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/2 : papercut {
+    title "AKR MCP failed to connect and codegraph MCP timed out this session; akr…"
+    state superseded
+    statement """
+        AKR MCP failed to connect and codegraph MCP timed out this session; akr get can hang on freshness rebuild, so Session 7 used akr search plus the implementation plan instead of knowledge.context.
+        """
+    observed_at git:9a41f678b47e0e6bd0e0f7a0f0b3f6d0e5f0f0f0
+    about "akr"
+    supersedes [ @lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/1 ]
+}
+
+record lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/3 : papercut {
+    title "AKR MCP failed to connect and codegraph MCP timed out this session; akr…"
+    state verified
+    statement """
+        AKR MCP failed to connect and codegraph MCP timed out this session; akr get can hang on freshness rebuild, so Session 7 used akr search plus the implementation plan instead of knowledge.context.
+        """
+    observed_at git:9a41f67896a097271ff3f768db0508d6a72528b2
+    about "akr"
+    supersedes [ @lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/2 ]
 }
 
 record lege-ecosystem.papercut.akr-mcp-server-failed-to-connect-at-session/1 : papercut {

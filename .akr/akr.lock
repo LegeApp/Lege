@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.0"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:1cd898ae821024544145db0ccd727e0564906abdeaf927aa281b8bd65be28d12"
+    source_graph "sha256:aef71e04139c984aa09eb23dd0b33f461074be2e754941191e1be06bac9d49d1"
 }
 
 source ".akr/project.akr" {
@@ -79,8 +79,8 @@ source ".akr/records/lege-ecosystem/observations.akr" {
 }
 
 source ".akr/records/lege-ecosystem/papercuts.akr" {
-    hash "sha256:d7b9ee3811369a82ece74b951bcf4768e7e712cdfd0bdd53ba0179448617eef5"
-    records 104
+    hash "sha256:546b2c390084cfacca8834abcf7086774afd9f3a1abf261025ea206f28aec5c2"
+    records 106
 }
 
 source ".akr/records/lege-ecosystem/policies.akr" {
@@ -1245,8 +1245,18 @@ seal @lege-ecosystem.papercut.after-validating-the-exact-workspace-scratch/1 {
 }
 
 seal @lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/1 {
+    state superseded
+    hash "sha256:6e3d749f4918d7852a323f69d40bac451728b5bf6e9f3b3f680765b5e35f068c"
+}
+
+seal @lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/2 {
+    state superseded
+    hash "sha256:83ce40ae9b5fd9b71b7d4ec0fb0b648d928afb5e4b7ef6002db483316561f5b4"
+}
+
+seal @lege-ecosystem.papercut.akr-mcp-failed-to-connect-and-codegraph-mcp/3 {
     state verified
-    hash "sha256:4a1ced3d86a2973dab0af5fe2d4b91bee1c22a03311e2495d1627af6fa4e3788"
+    hash "sha256:935ab6bcde52b66c7b839eed2f7255b4780f2dccb90437385c9c22ac63d661aa"
 }
 
 seal @lege-ecosystem.papercut.akr-mcp-server-failed-to-connect-at-session/1 {
