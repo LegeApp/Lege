@@ -32,6 +32,63 @@ record lege-ecosystem.decision.a-fold-may-not-change-a-letters-counters/1 : deci
     derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
 }
 
+record lege-ecosystem.decision.jbig2-is-the-default-pdf-text-format-again/1 : decision {
+    title "JBIG2 is the Freya GUI's default PDF text encoder again; truetyping is the opt-in checkbox"
+    state proposed
+    scope [ path "lege-process/GUI/Freya/**", path "lege-process/language_service/**" ]
+    decision """
+        The Freya GUI's default PDF text encoder is JBIG2 symbol mode again. Truetyping stays a first-class format, keeps its name everywhere, and is offered as a checkbox (TrueTyping text) that excludes compatibility mode; clearing either checkbox returns to JBIG2. CompressionType::default() is Jbig2 and ProcessingOptions::new() starts there. The CLI is unchanged: its non-interactive default was and is ccitt4, truetyping is --truetyping or format 4.
+        """
+    context """
+        On the 886-page archive.org scan crusadeswholesto0000lamb_1.pdf (RGB JPEG pages), after the glyph dictionary was made parallel, the three text encoders on the same debug-fast build and machine came out at: JBIG2 33 s and 21.2 MB, CCITT4 35 s and 27.7 MB, truetyping 120 s and 45.3 MB. Truetyping is 3.6x slower and 2.1x larger than JBIG2 on a real long book, and 41 MB of its output is 22 embedded fonts: position variants, compounds and text variants use about 1000 glyph ids per page, so a 65533-id font fills every 40-odd pages and each new font re-learns the alphabet. The 20-page comparison that justified the earlier default (183 KB against 378 KB) did not see this. The user asked for the reversal on 2026-09-05 once the numbers were confirmed.
+        """
+    consequences """
+        Users who saved settings while truetyping was the default keep an explicit Truetyping in their saved options and stay on it until they clear the checkbox; nothing migrates them. The JBIG2 no-symbol toggle is visible again on the default path. Truetyping's remaining cost to bring down before it can be a default is glyph-id consumption per page, not matching speed.
+        """
+    supersedes [ @lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format ]
+    supported_by [
+        @lege-ecosystem.evidence.truetyping-parallel-probe-benchmark-2026-09-05,
+        @lege-ecosystem.observation.truetyping-dictionary-lock-serialized-every-page
+    ]
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.decision.jbig2-symbol-substitution-is-opt-in/1 : decision {
+    title "JBIG2 writes the bit-exact generic region unless symbol mode is asked for"
+    state proposed
+    scope [ path "lege-process/**" ]
+    topic jbig2-symbol-default
+    decision """
+        The JBIG2 text encoder defaults to the bit-exact generic region. Symbol substitution is opt-in, and when it is asked for it is the unifying mode (Jbig2Mode::SymUnify), never the plain symbol dictionary: a plain dictionary already risks a wrong match and unification is what pays for that risk in bytes. The GUI carries a 'Symbol mode' checkbox (off by default) that sends --sym-unify; --symbol-mode and --jbig2-mode symbol still reach the middle mode from the CLI, and --no-symbol keeps working as an explicit no-op.
+        """
+    context """
+        Symbol substitution was the default from 2026-08-29 with --no-symbol as the opt-out. Substitution errors are silent and change words, and the user saw one in truetyping output on a bolded line ('aoil' for 'soil'). A default that can rewrite text is the wrong default for a reader-facing converter. On 41 pages of a 240-dpi book scan the generic region cost 895 KB against 878 KB for --sym-unify (1.9%), so the safe default is nearly free on noisy scans.
+        """
+    consequences """
+        Default JBIG2 output grows by a few percent on scans and more on clean text, where symbol matching pays best. PipelineConfig, Jbig2Settings and the interactive menu all default to Generic, so a library caller that never sets a mode now gets bit-exact output. set_jbig2_symbol_mode(true) selects SymUnify.
+        """
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.decision.jp2-region-floor-splits-by-region-size/1 : decision {
+    title "The verified JP2 display floor for an ordinary figure region is 65 when it covers under a quarter of the page and 70 otherwise"
+    state proposed
+    scope [
+        path "lege-process/pipeline/helper_functions.rs",
+        path "lege-process/pipeline/quality_policy.rs"
+    ]
+    decision """
+        quality_policy::region_jp2_floor takes a RegionSize: an ordinary (non-HQ, non-cover) region whose pixel area is under one quarter of the output page's area gets floor 65, a larger one keeps 70; HQ (78) and cover (75) are unchanged, as are the full-page base floor (55), the grayscale region floor (65) and the legacy open-loop presets used only as fallback.
+        """
+    context """
+        After the jp2lam perceptual work the floor is a guaranteed display-size score rather than an open-loop preset, so the same number buys the same visible fidelity whatever the region's pixel count. The user asked on 2026-09-06 to bring the quality down a little more, about 65 for small images and 70 for big ones.
+        """
+    consequences """
+        Small figures cost fewer bytes; large plates and covers look as before. Size is measured on the region's placement box against the output page (RegionSize::of), threaded through region_encoding_settings and encode_region_image. Not yet measured on a corpus; the sweep in quality_policy.rs's comment covered the 70 floor only.
+        """
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.decision.jp2lam-ssim-canonical-metric/1 : decision {
     title "jp2lam encode-time quality is shared JPXL SSIMULACRA2"
     state proposed
@@ -45,6 +102,22 @@ record lege-ecosystem.decision.jp2lam-ssim-canonical-metric/1 : decision {
         """
     consequences """
         jp2lam depends on jpxl-perceptual (path, default-features=false). RateControl::Perceptual will take a SSIMULACRA2 score and effort, not a Butteraugli distance. Quality(u8) stays the legacy baseline until an explicit mapping session. lege-ecosystem.encode-quality.improve-photographic-rate-control's remaining 'butteraugli-anchored quality mapping' is no longer the encode-time objective.
+        """
+}
+
+record lege-ecosystem.decision.jp2lam-verified-quality-scale/1 : decision {
+    title "jp2lam quality number is the verified SSIMULACRA2 scale; legacy ladder is ApproxQuality"
+    state proposed
+    scope [ path "lege-codecs/jp2lam/**" ]
+    topic jp2lam-quality-scale
+    decision """
+        The user-facing jp2lam quality scale is the verified SSIMULACRA2 scale: `RateControl::Quality { level, effort }` means a measured `ssimulacra2-jpxl-1` floor of `level` (0..=99, 100 = Lossless), emitting the smallest exact stream that meets it. The legacy open-loop rate ladder is preserved unchanged under `RateControl::ApproxQuality(u8)` (and the `EncodeOptions.quality` field when `rate_control` is absent) and is documented as an approximate, unmeasured preset. It is not recalibrated to the corpus bytes-per-pixel prior. `RateControl::Perceptual(PerceptualTarget)` remains the expert raw-score form. The corpus bpp-vs-score calibration is a navigation prior for the controller's first probe, never a quality definition. No legacy API compatibility is preserved (jp2lam is 0.3.x); `EncodeOptions::photo`, the photo presets and the CLI `qN` form are on the verified scale, and `--approx qN` / the auto content classifier select the legacy preset.
+        """
+    context """
+        User decision 2026-09-05 after the Session 8c calibration: legacy preset 80 measured SSIMULACRA2 52 at 0.8 MP, 30 at 4-6 MP and 14 at 50 MP (perceptual score 80 needs ~1.5 bpp; preset 80 spends 0.77 bpp at 0.8 MP), so an open-loop rate mapping cannot truthfully implement a unified perceptual scale and repointing it would change every consumer's sizes without the verified semantics. Supersedes the 'Quality(u8) stays the legacy baseline until an explicit mapping session' consequence of lege-ecosystem.decision.jp2lam-ssim-canonical-metric: this is that session.
+        """
+    consequences """
+        q80 means SSIMULACRA2 >= 80 in both JPXL and jp2lam; sizes differ by codec, meaning does not. Verified quality requires 8-bit gray/sRGB (documents, ICC and CMYK stay on ApproxQuality / explicit rate targets). The per-image feature predictor is added only if the static bpp prior cannot keep Fast in the 1-3 probe range.
         """
 }
 
@@ -235,4 +308,38 @@ record lege-ecosystem.decision.truetyping-is-the-default-pdf-text-format/1 : dec
             """
     }
     derived_from [ @lege-ecosystem.work.glyph-font-text-output ]
+}
+
+record lege-ecosystem.decision.truetyping-leaves-bilevel-sources-alone/1 : decision {
+    title "Truetyping is skipped when the source's ink is already one bit; source masks pass through"
+    state proposed
+    scope [ path "lege-process/encoding/glyphfont.rs", path "lege-process/pipeline/**" ]
+    decision """
+        A source page whose ink already comes from a one-bit image or a one-bit soft mask (a JBIG2 or CCITT text layer, an MRC mask) is original text: truetyping does not trace it. If the sampled pages of a document are mostly bilevel (bilevel_source_height), the run switches its text format to jbig2 before any page is processed and gives back the height the caller asked for; a single bilevel page in a scanned book drops its glyph session and is encoded as the jbig2 format would (page_ink_is_bilevel); and a preserved JBIG2 SMask passes through untouched under truetyping exactly as it does under jbig2 and ccitt4.
+        """
+    context """
+        The preserved-mask path already passed the source mask through for jbig2 and ccitt4, but truetyping replaced it with glyph text traced from the decoded mask, and a plain bilevel book was traced at its own resolution. Tracing one-bit ink can only move its edges, and the font it makes is a lossy copy of something the input already held losslessly.
+        """
+    consequences """
+        Truetyping on a lege JBIG2 output is a JBIG2 re-encode at the requested height (20 pages: 0.56 MB in 8 s). clamp_truetyping_render_height is gone; set_text_format restores the requested height when leaving truetyping. Implemented 2026-09-06 in lege-process/pipeline/pdf_tokio_pipeline.rs and config.rs.
+        """
+    depends_on [ @lege-ecosystem.decision.jbig2-is-the-default-pdf-text-format-again ]
+    author "GitHub Uploader"
+}
+
+record lege-ecosystem.decision.truetyping-renders-in-grayscale-by-default/1 : decision {
+    title "Truetyping renders its ink mask through the MRC clean path"
+    state proposed
+    scope [ path "lege-process/**" ]
+    topic truetyping-render-mode
+    decision """
+        Choosing truetyping selects grayscale/MRC rendering. In the CLI, --text-format truetyping implies --grayscale unless a bilevel mode is named (--binarization, --threshold, --sauvola-k); in the GUI, ticking TrueTyping flips the Binarized/Grayscale pair to Grayscale, which the user can flip back.
+        """
+    context """
+        Truetyping draws the text as outlines over a background, so the ink mask only decides where the outlines go. Sauvola on a raw scan keeps the paper grain and every speck becomes a glyph; the MRC clean path despeckles it. On 41 pages of the crusades scan: 0.77 MB and 1347 shapes grayscale against 2.56 MB and 13087 bilevel, and the grayscale run was faster. Tested on a Kobo Clara BW: both load and page-turn acceptably, grayscale is considerably smaller.
+        """
+    consequences """
+        Bilevel truetyping stays reachable by naming a binarization mode or unticking Grayscale. Truetyping remains opt-in overall (see @lege-ecosystem.decision.jbig2-is-the-default-pdf-text-format-again): dictionary matching still makes occasional substitution errors on bold text.
+        """
+    author "GitHub Uploader"
 }

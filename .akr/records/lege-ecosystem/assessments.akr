@@ -230,6 +230,22 @@ record lege-ecosystem.assessment.document-ocr-installer-readiness-20260815/3 : a
     }
 }
 
+record lege-ecosystem.assessment.glyph-outlines-rasterized-into-a-jbig2-layer/1 : assessment {
+    title "Rasterizing truetyping's fitted glyph outlines into a JBIG2 text layer is feasible with existing pieces and would give regular glyphs at JBIG2 size"
+    state verified
+    scope [
+        path "lege-process/encoding/glyphfont.rs",
+        path "lege-process/encoding/vectorize.rs"
+    ]
+    statement """
+        Every piece exists: PageAnalysis/GlyphDictionary give per-page placements of majority-voted prototypes at the 2400 px working height, vectorize fits quadratic curves to 0.6 px and rasterize (nonzero winding, pixel-centre sampling) already draws them back, and encode_base_layer takes any bilevel page. A new text-layer option would, per page, paint each placed prototype's fitted outline at output scale (1200-1600 px) onto a white page at positions snapped to the output grid, add the page residual downsampled from the binarized page, and hand the result to the JBIG2 symbol encoder; identical rasters per prototype make the symbol classifier's job exact, so dictionaries shrink. Costs: glyph analysis 140-170 ms/page on top of JBIG2, a scanline rasterizer with area coverage for the downscale (rasterize samples centres only), and no font, so the 65533-id bank limit disappears. The edges are regular rather than smooth: a bilevel layer at device resolution cannot carry antialiasing; the smoothness truetyping shows comes from the reader rendering outlines. Not a size win over plain JBIG2 on clean pages; a quality and consistency win on noisy scans. Not implemented as of 2026-09-06.
+        """
+    confidence medium
+    as_of git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    derived_from [ @lege-ecosystem.decision.jbig2-is-the-default-pdf-text-format-again ]
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.encode-quality.root-cause/1 : assessment {
     title "jp2lam photographic quality limited by MSE-only, disabled-perceptual, size-matched rate control"
     state verified

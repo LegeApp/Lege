@@ -1168,6 +1168,17 @@ record lege-ecosystem.papercut.during-packaging-inventory-an-rg-filter-whose/1 :
     created_at 2026-08-15
 }
 
+record lege-ecosystem.papercut.during-session-8c-rescue-gdb-could-not-attach/1 : papercut {
+    title "During Session 8c rescue, GDB could not attach to the same-user oracle…"
+    state verified
+    statement """
+        During Session 8c rescue, GDB could not attach to the same-user oracle process because yama ptrace_scope=1 permits only the parent; passwordless sudo was unavailable, so in-memory probes could not be extracted before termination.
+        """
+    observed_at git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    author "root"
+    created_at 2026-09-05
+}
+
 record lege-ecosystem.papercut.eagerly-creating-and-tearing-down-a-winrt/1 : papercut {
     title "Eagerly creating and tearing down a WinRT OcrEngine during backend…"
     state verified
@@ -1177,6 +1188,17 @@ record lege-ecosystem.papercut.eagerly-creating-and-tearing-down-a-winrt/1 : pap
     observed_at git:1d6defbf53ad70aa869a547c7c58aeb61141176f
     author "codex"
     created_at 2026-08-15
+}
+
+record lege-ecosystem.papercut.encode-ssim-dwt-cached-outer-rungs-do-not-rerun/1 : papercut {
+    title "encode::ssim_dwt::cached_outer_rungs_do_not_rerun_forward_dwt fails…"
+    state verified
+    statement """
+        encode::ssim_dwt::cached_outer_rungs_do_not_rerun_forward_dwt fails under the default parallel test runner on the untouched tree (3/3 runs, counter reads 10 vs 3) because the global forward-DWT call counter is bumped by the concurrent ssim_oracle/ssim_recon tests; it passes alone or with --test-threads=1. Fix: hold a shared test mutex around every test that runs an encode while this one counts, or make the counter test-scoped.
+        """
+    observed_at git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    author "claude"
+    created_at 2026-09-05
 }
 
 record lege-ecosystem.papercut.evidence-records-routinely-cite-agent-scratch/1 : papercut {
@@ -1342,6 +1364,18 @@ record lege-ecosystem.papercut.knowledge-papercut-rejected-an-otherwise/1 : pape
     about "akr"
     author "codex"
     created_at 2026-08-22
+}
+
+record lege-ecosystem.papercut.knowledge-propose-of-an-observation-with-a/1 : papercut {
+    title "knowledge.propose of an observation with a `claims` array (one anchor +…"
+    state verified
+    statement """
+        knowledge.propose of an observation with a `claims` array (one anchor + text) failed with AKR-P011 "unescaped newline in a quoted string" and AKR-P001 "unexpected character \\", though neither the statement nor the claim text contained a newline or backslash; the same record without `claims` was accepted. The diagnostics point at the wrong thing, so it took three attempts to find that `claims` was the trigger.
+        """
+    observed_at git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    about "akr"
+    author "claude"
+    created_at 2026-09-05
 }
 
 record lege-ecosystem.papercut.knowledge-start-returned-a-2350-token-compact/1 : papercut {

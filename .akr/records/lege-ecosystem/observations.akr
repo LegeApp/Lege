@@ -102,6 +102,23 @@ record lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/2 : o
     supersedes [ @lege-ecosystem.observation.doclayout-m-underdetects-text-and-images/1 ]
 }
 
+record lege-ecosystem.observation.grayscale-mode-makes-truetyping-smaller-and-cleaner/1 : observation {
+    title "Grayscale/MRC mode makes truetyping 3.3x smaller and cleaner on the crusades scan; the win is the MRC despeckle, not antialiasing"
+    state verified
+    scope [ path "lege-process/core/clean_gray.rs", path "lege-process/encoding/glyphfont.rs" ]
+    statement """
+        crusadeswholesto0000lamb_1.pdf pages 1-41 (RGB JPEG scan), same debug-fast build on 2026-09-06: truetyping bilevel 2.56 MB in 18.2 s with 13087 distinct shapes of which 9792 were used once; truetyping plus --grayscale 0.77 MB in 13.9 s with 1347 distinct shapes; jbig2 plus --grayscale 1.62 MB in 7.7 s; bilevel jbig2 about 1.0 MB. The bilevel Sauvola mask keeps paper grain as thousands of small components that the font stores as one-off outlines, while clean_page_for_mrc thresholds a cleaned page and drops small components, so the grayscale run's glyph text is crisp on a faint JP2 background. Truetyping does not conflict with grayscale mode: the ink mask feeds the glyph session and the JP2 background sits under the vector text.
+        """
+    observed_at git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    method command
+    watches [
+        "lege-process/encoding/glyphfont.rs",
+        "lege-process/core/clean_gray.rs",
+        "lege-process/pipeline/pdf_tokio_pipeline.rs"
+    ]
+    author "GitHub Uploader"
+}
+
 record lege-ecosystem.observation.jbig2-symbol-mode-is-lossy/1 : observation {
     title "JBIG2 symbol substitution is lossy, and its size win depends on content"
     state verified
@@ -170,6 +187,23 @@ record lege-ecosystem.observation.ppocrv6-wgpu-blockers-resolved-20260822/1 : ob
     ]
     supersedes [ @lege-ecosystem.observation.ocr-v5-v6-recipe-20260820/1 ]
     verified_by [ @lege-ecosystem.evidence.ppocrv6-wgpu-embedded-20260822/1 ]
+}
+
+record lege-ecosystem.observation.truetyping-dictionary-lock-serialized-every-page/1 : observation {
+    title "Truetyping's shared glyph dictionary serialized every page's matching behind one mutex, and that lock was the whole critical path"
+    state verified
+    scope [ path "lege-process/encoding/glyphfont.rs" ]
+    statement """
+        On the 886-page archive.org scan crusadeswholesto0000lamb_1.pdf (RGB JPEG pages, traced at 2400 px), truetyping took 17.4 s for 41 pages and 72.8 s for 201 pages where CCITT4 took 5.1 s for the same 41 pages and 35.3 s for the whole book. Rendering (1.7 s total) and binarization were not the cost. GlyphFontSession::process_page_pixels matched a page's 5000 components against the document dictionary while holding the dictionary mutex, single-threaded; the strict search alone was 38 s of the 73 s wall on 201 pages, and the per-instance cost grew with the dictionary (273 candidates per instance at 41 pages, 400 at 200). The four page workers spent most of their time waiting for the lock. Fix: the per-component search is a read-only parallel probe (rayon, one Comparator per thread) and only folding the answers (votes, refreshes, inserts) runs in sequence; a miss is re-searched only among the prototypes the page changed; the end-of-document alias passes probe in parallel the same way; banks finalize concurrently; the bucket index uses a multiplicative hasher. After: 41 pages 8.5 s, 201 pages 25.9 s, the whole book 2 min 0 s, with per-page glyph extraction flat at 143 to 168 ms across the book (98 s of pages, 19 s of finalize, font build and write for 22 font banks). A 65533-id bank fills in roughly 40 pages of this book: 41 pages made 13691 distinct shapes but 41794 glyph ids (13471 position variants, 4307 compounds, 8529 text variants), so the full book carries 22 fonts totalling 41 MB of a 45 MB output; glyph-id consumption by variants, not matching speed, is now the format's largest cost on long books.
+        """
+    observed_at git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    method instrumented
+    watches [
+        "lege-process/encoding/glyphfont.rs",
+        "lege-process/pipeline/pdf_tokio_pipeline.rs"
+    ]
+    review_after 2026-12-01
+    author "GitHub Uploader"
 }
 
 record lege-ecosystem.observation.truetyping-halftone-review-20260905/1 : observation {
@@ -243,6 +277,27 @@ record lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline/1 :
             `GlyphDictionary::process_analysis` replaces an occurrence's measured bottom with its prototype's `descent`: a residual within `RISE_SNAP_PX` (1 px of the working raster) is snapped to zero, and a larger one becomes a *position variant*, a second glyph whose own descent was fixed by its first instance and which then absorbs later occurrences within `VARIANT_JOIN_PX` (also 1 px).
             """
     }
+}
+
+record lege-ecosystem.observation.truetyping-text-identity-moved-letters-off-their-baseline/1 : observation {
+    title "Truetyping letters off their baseline came from rises measured against a tilted fit but drawn level, and from OCR text identities handing an occurrence another position variant's id"
+    state verified
+    scope [
+        path "lege-process/core/pdf_artifact.rs",
+        path "lege-process/encoding/glyphfont.rs"
+    ]
+    statement """
+        Two separate causes, both found on page 51 of crusadeswholesto0000lamb_1.pdf and both fixed in glyphfont.rs. (1) group_lines measured each glyph's rise against the Theil-Sen baseline under that glyph while pdf_artifact draws the whole line level at the fit's midpoint value, so on a tilted line, or any line whose fit a stray shape had tilted, glyphs at the ends were drawn off their ink by slope times distance from the midpoint: the runs of letters at line ends riding high or low. Rises are now measured from the one level height the line is drawn at, so position variants are exact by construction. (2) GlyphDictionary::text_identity kept, per shape, the glyph id that first carried a recognized text, and record_text remapped every later occurrence read as that text onto that id, even when the occurrence was a different position variant of the shape at a different baseline offset. Which variant claimed the text first depended on page order, so the same book showed different letters displaced from run to run (the o in every of three pixels low in one run, mont in Clermont raised in another). Primary-text occurrences now keep their own ids and a secondary text gets a text variant of exactly the occurrence's glyph; the regression test text_identities_keep_each_occurrence_at_its_own_baseline_offset covers both readings.
+        """
+    observed_at git:df6bb8cf45e9ee68a6544bbaf9e9136f6cd171d2
+    method instrumented
+    watches [ "lege-process/encoding/glyphfont.rs", "lege-process/core/pdf_artifact.rs" ]
+    review_after 2026-12-01
+    derived_from [
+        @lege-ecosystem.observation.truetyping-letters-ride-off-their-baseline,
+        @lege-ecosystem.work.truetyping-vertical-placement
+    ]
+    author "GitHub Uploader"
 }
 
 record lege-ecosystem.observation.viewer-broken-page-was-retried-forever/1 : observation {
