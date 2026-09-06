@@ -62,7 +62,9 @@ pub enum ScrollCommand {
     /// `from_touch` overrides [`MovementTuning::kinetic_enabled`]: momentum on
     /// a mouse drag is a preference, but a touch flick without momentum is
     /// simply broken, so touch always glides.
-    Fling { from_touch: bool },
+    Fling {
+        from_touch: bool,
+    },
     /// Enter autoscroll. The velocity is set separately by `SteerAutoScroll`
     /// as the pointer moves, so entering is a distinct, zero-speed event.
     BeginAutoScroll,
@@ -316,7 +318,9 @@ impl ScrollModel {
         if !self.wants_animation() {
             return false;
         }
-        let elapsed = now.saturating_duration_since(self.last_update).as_secs_f64();
+        let elapsed = now
+            .saturating_duration_since(self.last_update)
+            .as_secs_f64();
         self.last_update = now;
         if elapsed <= 0.0 {
             return false;
@@ -396,7 +400,8 @@ fn autoscroll_velocity_for(offset: Vec2d) -> Vec2d {
             return 0.0;
         }
         let past = (magnitude - AUTOSCROLL_DEAD_ZONE) / AUTOSCROLL_DEAD_ZONE;
-        let speed = (past * past * AUTOSCROLL_GAIN * AUTOSCROLL_DEAD_ZONE).min(AUTOSCROLL_MAX_SPEED);
+        let speed =
+            (past * past * AUTOSCROLL_GAIN * AUTOSCROLL_DEAD_ZONE).min(AUTOSCROLL_MAX_SPEED);
         speed.copysign(value)
     };
     Vec2d {
@@ -470,7 +475,10 @@ mod tests {
             ScrollCommand::DragPan(Vec2d { x: 0.0, y: 1.0 }),
             start + Duration::from_millis(100),
         );
-        m.apply_at(ScrollCommand::Fling { from_touch: false }, start + Duration::from_millis(110));
+        m.apply_at(
+            ScrollCommand::Fling { from_touch: false },
+            start + Duration::from_millis(110),
+        );
         assert_eq!(m.mode, ScrollMode::Stationary);
         assert!(!m.wants_animation());
     }
@@ -487,7 +495,10 @@ mod tests {
                 start + Duration::from_millis(step * 16),
             );
         }
-        m.apply_at(ScrollCommand::Fling { from_touch: false }, start + Duration::from_millis(56));
+        m.apply_at(
+            ScrollCommand::Fling { from_touch: false },
+            start + Duration::from_millis(56),
+        );
         assert_eq!(m.mode, ScrollMode::Kinetic);
 
         let launched_at = m.position.y;
@@ -530,7 +541,10 @@ mod tests {
                 start + Duration::from_millis(step * 16),
             );
         }
-        m.apply_at(ScrollCommand::Fling { from_touch: false }, start + Duration::from_millis(56));
+        m.apply_at(
+            ScrollCommand::Fling { from_touch: false },
+            start + Duration::from_millis(56),
+        );
         assert_eq!(m.mode, ScrollMode::Stationary);
     }
 
@@ -549,7 +563,10 @@ mod tests {
                 start + Duration::from_millis(step * 16),
             );
         }
-        m.apply_at(ScrollCommand::Fling { from_touch: false }, start + Duration::from_millis(56));
+        m.apply_at(
+            ScrollCommand::Fling { from_touch: false },
+            start + Duration::from_millis(56),
+        );
         let mut now = start + Duration::from_millis(56);
         for _ in 0..200 {
             now += Duration::from_millis(16);
@@ -628,7 +645,10 @@ mod tests {
                 start + Duration::from_millis(step * 16),
             );
         }
-        m.apply_at(ScrollCommand::Fling { from_touch: false }, start + Duration::from_millis(56));
+        m.apply_at(
+            ScrollCommand::Fling { from_touch: false },
+            start + Duration::from_millis(56),
+        );
         assert!(m.wants_animation());
         m.apply_at(
             ScrollCommand::WheelLines(Vec2d { x: 0.0, y: 1.0 }),

@@ -908,9 +908,8 @@ mod tests {
         builder.add_object(2, pages_dict);
         builder.add_object(3, page_dict);
         builder.finish_classic_xref("/Root 1 0 R");
-        let source: std::sync::Arc<dyn pdf_source::PdfSource> = std::sync::Arc::new(
-            pdf_source::OwnedBytesSource::new(builder.into_bytes()),
-        );
+        let source: std::sync::Arc<dyn pdf_source::PdfSource> =
+            std::sync::Arc::new(pdf_source::OwnedBytesSource::new(builder.into_bytes()));
         let snapshot = crate::DocumentSnapshot::open(source, crate::DocumentLimits::default())
             .expect("document opens");
         assert_eq!(snapshot.page_count(), 1);

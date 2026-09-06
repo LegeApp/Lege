@@ -141,7 +141,9 @@ pub fn compose_options_for(
     let dpi = capabilities
         .resolution_dpi
         .filter(|dpi| dpi.is_finite() && *dpi > 0.0)
-        .map_or(defaults.dpi, |dpi| dpi.clamp(MIN_COMPOSE_DPI, MAX_COMPOSE_DPI));
+        .map_or(defaults.dpi, |dpi| {
+            dpi.clamp(MIN_COMPOSE_DPI, MAX_COMPOSE_DPI)
+        });
     ComposeOptions {
         dpi,
         grayscale: options.grayscale || !capabilities.supports_color,
@@ -205,8 +207,10 @@ pub fn print_document_with(
             })
         }
         RouteKind::Composed => {
-            let session =
-                lege_pdf_read::RenderSession::open(Arc::clone(&request.pdf_bytes), request.password)?;
+            let session = lege_pdf_read::RenderSession::open(
+                Arc::clone(&request.pdf_bytes),
+                request.password,
+            )?;
             let job = PrintJob::from_session(&session, request.options.clone())?;
             let sheets = crate::layout::impose(&job, capabilities.hardware_margins)?;
             let compose = request

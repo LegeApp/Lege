@@ -141,11 +141,7 @@ impl PageGeometry {
     /// `display_width`/`display_height` are exactly this applied to
     /// `crop_box`.
     pub fn display_size_of_box(self, b: [f64; 4]) -> (f64, f64) {
-        display_extent(
-            (b[2] - b[0]).max(0.0),
-            (b[3] - b[1]).max(0.0),
-            self.rotate,
-        )
+        display_extent((b[2] - b[0]).max(0.0), (b[3] - b[1]).max(0.0), self.rotate)
     }
 }
 

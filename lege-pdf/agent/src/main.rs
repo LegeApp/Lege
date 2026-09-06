@@ -5,9 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use lege_pdf_agent::bounds::Bounds;
-use lege_pdf_agent::commands::{
-    content, images, inspect, mcp, print, render, search, serve, text,
-};
+use lege_pdf_agent::commands::{content, images, inspect, mcp, print, render, search, serve, text};
 use lege_pdf_agent::schema::OutputMode;
 
 #[derive(Debug, Parser)]

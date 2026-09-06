@@ -188,10 +188,7 @@ pub fn build_lp_args(
         // Collation only means anything with more than one copy.
         opt(
             &mut args,
-            format!(
-                "Collate={}",
-                if options.collate { "True" } else { "False" }
-            ),
+            format!("Collate={}", if options.collate { "True" } else { "False" }),
         );
     }
 
@@ -289,11 +286,7 @@ fn media_value(paper: PaperSize) -> Option<String> {
         return Some(name.to_string());
     }
     let (w, h) = paper.size();
-    Some(format!(
-        "Custom.{}x{}",
-        format_number(w),
-        format_number(h)
-    ))
+    Some(format!("Custom.{}x{}", format_number(w), format_number(h)))
 }
 
 /// `page-ranges` takes one-based inclusive spans, `1-3,5`.
@@ -497,13 +490,15 @@ pub fn parse_lpoptions(text: &str) -> DeviceCapabilities {
         .is_none_or(|entry| entry.choices.iter().any(|choice| !is_mono_choice(choice)));
 
     let resolution_dpi = find(&["Resolution", "printer-resolution"]).and_then(|entry| {
-        entry
-            .current
-            .as_deref()
-            .and_then(parse_dpi)
-            .or_else(|| entry.choices.iter().filter_map(|c| parse_dpi(c)).fold(None, |acc, dpi| {
-                Some(acc.map_or(dpi, |best: f64| best.max(dpi)))
-            }))
+        entry.current.as_deref().and_then(parse_dpi).or_else(|| {
+            entry
+                .choices
+                .iter()
+                .filter_map(|c| parse_dpi(c))
+                .fold(None, |acc, dpi| {
+                    Some(acc.map_or(dpi, |best: f64| best.max(dpi)))
+                })
+        })
     });
 
     DeviceCapabilities {
@@ -609,7 +604,10 @@ fn run_lp(args: &[String], stdin_bytes: Option<&[u8]>) -> Result<String, PrintEr
     use std::io::Write as _;
 
     let mut command = Command::new("lp");
-    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     command.stdin(if stdin_bytes.is_some() {
         Stdio::piped()
     } else {
@@ -662,10 +660,7 @@ fn staging_dir() -> Result<PathBuf, PrintError> {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "lege-print-{}-{nanos}-{seq}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("lege-print-{}-{nanos}-{seq}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

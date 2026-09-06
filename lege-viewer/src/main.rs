@@ -95,17 +95,15 @@ enum Startup {
 fn open_engine(mode: LaunchMode) -> Result<Startup, Box<dyn std::error::Error>> {
     match mode {
         LaunchMode::Empty => Ok(Startup::Ready(Arc::new(EmptyEngine::new()))),
-        LaunchMode::Synthetic { page_count } => Ok(Startup::Ready(Arc::new(
-            SyntheticEngine::new(page_count),
-        ))),
+        LaunchMode::Synthetic { page_count } => {
+            Ok(Startup::Ready(Arc::new(SyntheticEngine::new(page_count))))
+        }
         LaunchMode::Pdf(path) => {
             #[cfg(feature = "pdf-engine")]
             {
                 match lege_viewer::document::pdf_engine::PdfEngine::open(&path, None) {
                     Ok(engine) => Ok(Startup::Ready(Arc::new(engine))),
-                    Err(DocumentEngineError::PasswordRequired) => {
-                        Ok(Startup::NeedsPassword(path))
-                    }
+                    Err(DocumentEngineError::PasswordRequired) => Ok(Startup::NeedsPassword(path)),
                     Err(error) => {
                         Err(std::io::Error::other(format!("failed to open PDF: {error}")).into())
                     }

@@ -264,7 +264,10 @@ pub enum PaperSize {
     Tabloid,
     Executive,
     /// Explicit portrait dimensions in points.
-    Custom { width: f64, height: f64 },
+    Custom {
+        width: f64,
+        height: f64,
+    },
 }
 
 impl PaperSize {

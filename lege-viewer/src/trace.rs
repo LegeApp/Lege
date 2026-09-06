@@ -236,7 +236,10 @@ mod tests {
     fn flick_trace() -> InputTrace {
         let mut trace = InputTrace::default();
         for step in 1..=4_u64 {
-            trace.push(step * 16_000, TraceCommand::DragPan(Vec2d { x: 0.0, y: 45.0 }));
+            trace.push(
+                step * 16_000,
+                TraceCommand::DragPan(Vec2d { x: 0.0, y: 45.0 }),
+            );
         }
         trace.push(72_000, TraceCommand::Fling { from_touch: false });
         trace
@@ -277,7 +280,10 @@ mod tests {
     fn autoscroll_replays_deterministically() {
         let mut trace = InputTrace::default();
         trace.push(0, TraceCommand::BeginAutoScroll);
-        trace.push(1_000, TraceCommand::SteerAutoScroll(Vec2d { x: 0.0, y: 80.0 }));
+        trace.push(
+            1_000,
+            TraceCommand::SteerAutoScroll(Vec2d { x: 0.0, y: 80.0 }),
+        );
         trace.push(500_000, TraceCommand::EndAutoScroll);
         let mut first = model();
         let mut second = model();

@@ -256,10 +256,9 @@ mod tests {
 
     #[test]
     fn a_version_one_file_loads_with_default_movement_tuning() {
-        let stored: StoredSettings = serde_json::from_str(
-            r#"{"version":1,"trim-enabled":true,"color-mode":"warm-paper"}"#,
-        )
-        .expect("a settings file written before movement tuning existed");
+        let stored: StoredSettings =
+            serde_json::from_str(r#"{"version":1,"trim-enabled":true,"color-mode":"warm-paper"}"#)
+                .expect("a settings file written before movement tuning existed");
         assert_eq!(stored.version, 1);
         let movement: MovementTuning = stored.movement.into();
         assert_eq!(movement, MovementTuning::default());

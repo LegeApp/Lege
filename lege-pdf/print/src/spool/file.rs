@@ -164,7 +164,14 @@ impl Spooler for FileSpooler {
                     .dir
                     .join(format!("document-{:04}.pdf", self.job_count() + 1));
                 std::fs::write(&path, bytes)?;
-                Ok(self.record(&job.printer, &job.title, job.options, vec![path], true, None))
+                Ok(self.record(
+                    &job.printer,
+                    &job.title,
+                    job.options,
+                    vec![path],
+                    true,
+                    None,
+                ))
             }
             SpoolPayload::Sheets {
                 session,
@@ -238,5 +245,7 @@ fn png_error(error: png::EncodingError) -> PrintError {
 /// Take a lock, ignoring poisoning: the spooler's state is a plain record and
 /// a panic elsewhere does not make it invalid.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

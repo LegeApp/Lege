@@ -45,7 +45,10 @@ fn file_backend_reports_one_synthetic_queue() {
     );
 
     let caps = spooler.capabilities(&printers[0].id).expect("capabilities");
-    assert!(caps.accepts_pdf, "the file backend can always take PDF bytes");
+    assert!(
+        caps.accepts_pdf,
+        "the file backend can always take PDF bytes"
+    );
     assert!(caps.supports_duplex);
     assert!(caps.supports_color);
     // A directory has no unprintable border, which keeps layout tests honest.
@@ -111,7 +114,11 @@ fn sheets_are_written_one_png_each_in_order() {
         grayscale: true,
         ..ComposeOptions::default()
     };
-    let rasters = vec![solid(8, 4, 1, 0x20), solid(8, 4, 1, 0x40), solid(8, 4, 1, 0x60)];
+    let rasters = vec![
+        solid(8, 4, 1, 0x20),
+        solid(8, 4, 1, 0x40),
+        solid(8, 4, 1, 0x60),
+    ];
 
     let printer = PrinterId::new("file");
     let id = spooler
@@ -129,7 +136,10 @@ fn sheets_are_written_one_png_each_in_order() {
         .iter()
         .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
         .collect();
-    assert_eq!(names, ["sheet-0001.png", "sheet-0002.png", "sheet-0003.png"]);
+    assert_eq!(
+        names,
+        ["sheet-0001.png", "sheet-0002.png", "sheet-0003.png"]
+    );
 
     for (path, raster) in job.files.iter().zip(&rasters) {
         let (info, pixels) = decode_png(path);
@@ -225,9 +235,7 @@ mod cups {
         parse_lpoptions_entries, parse_printers,
     };
     use lege_pdf_print::spool::{JobId, JobStatus, PrinterId};
-    use lege_pdf_print::{
-        Duplex, Orientation, PageRange, PaperSize, PrintOptions, Scaling,
-    };
+    use lege_pdf_print::{Duplex, Orientation, PageRange, PaperSize, PrintOptions, Scaling};
     use std::path::PathBuf;
 
     const LPSTAT_E: &str = "Office\nBasement_HP\nPDF\n";
@@ -253,7 +261,10 @@ printer PDF is idle.  enabled since Mon 01 Jan 2024 09:12:44 AM CET
 
         let basement = &printers[1];
         assert!(!basement.is_default);
-        assert!(!basement.accepting_jobs, "a disabled queue is not accepting");
+        assert!(
+            !basement.accepting_jobs,
+            "a disabled queue is not accepting"
+        );
     }
 
     #[test]
@@ -324,9 +335,8 @@ Resolution/Resolution: 300dpi *600dpi 1200dpi
 
     #[test]
     fn a_simplex_mono_queue_reports_neither() {
-        let caps = parse_lpoptions(
-            "Duplex/2-Sided Printing: *None\nColorModel/Output Mode: *Gray\n",
-        );
+        let caps =
+            parse_lpoptions("Duplex/2-Sided Printing: *None\nColorModel/Output Mode: *Gray\n");
         assert!(!caps.supports_duplex);
         assert!(!caps.supports_color);
         assert_eq!(caps.resolution_dpi, None);
@@ -346,9 +356,11 @@ Resolution/Resolution: 300dpi *600dpi 1200dpi
 
     #[test]
     fn lines_without_a_colon_are_not_options() {
-        assert!(parse_lpoptions_entries("lpoptions: no such printer\n")
-            .iter()
-            .all(|e| e.keyword != "no"));
+        assert!(
+            parse_lpoptions_entries("lpoptions: no such printer\n")
+                .iter()
+                .all(|e| e.keyword != "no")
+        );
         assert!(parse_lpoptions_entries("just some prose\n").is_empty());
     }
 
@@ -438,13 +450,23 @@ Resolution/Resolution: 300dpi *600dpi 1200dpi
         );
         assert!(!composed.iter().any(|a| a.starts_with("page-ranges=")));
         assert!(!composed.iter().any(|a| a.starts_with("outputorder=")));
-        assert!(!composed.iter().any(|a| a.starts_with("orientation-requested=")));
-        assert_eq!(composed.last().map(String::as_str), Some("/tmp/sheet-0001.png"));
+        assert!(
+            !composed
+                .iter()
+                .any(|a| a.starts_with("orientation-requested="))
+        );
+        assert_eq!(
+            composed.last().map(String::as_str),
+            Some("/tmp/sheet-0001.png")
+        );
     }
 
     #[test]
     fn odd_and_even_become_a_page_set() {
-        for (range, expected) in [(PageRange::Odd, "page-set=odd"), (PageRange::Even, "page-set=even")] {
+        for (range, expected) in [
+            (PageRange::Odd, "page-set=odd"),
+            (PageRange::Even, "page-set=even"),
+        ] {
             let options = PrintOptions {
                 range,
                 ..PrintOptions::default()
@@ -456,7 +478,10 @@ Resolution/Resolution: 300dpi *600dpi 1200dpi
                 LpMode::PassThroughPdf,
                 &[],
             );
-            assert!(args.iter().any(|a| a == expected), "{expected} missing from {args:?}");
+            assert!(
+                args.iter().any(|a| a == expected),
+                "{expected} missing from {args:?}"
+            );
         }
     }
 
@@ -476,7 +501,10 @@ Resolution/Resolution: 300dpi *600dpi 1200dpi
             LpMode::PassThroughPdf,
             &[],
         );
-        assert!(args.iter().any(|a| a == "media=Custom.300x500.5"), "{args:?}");
+        assert!(
+            args.iter().any(|a| a == "media=Custom.300x500.5"),
+            "{args:?}"
+        );
     }
 
     #[test]
@@ -492,7 +520,10 @@ Resolution/Resolution: 300dpi *600dpi 1200dpi
             LpMode::PassThroughPdf,
             &[],
         );
-        assert!(pass_through.iter().any(|a| a == "scaling=50"), "{pass_through:?}");
+        assert!(
+            pass_through.iter().any(|a| a == "scaling=50"),
+            "{pass_through:?}"
+        );
 
         let composed = build_lp_args(
             &PrinterId::new("Office"),

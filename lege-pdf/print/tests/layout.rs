@@ -9,8 +9,7 @@
 use lege_pdf_print::layout::{booklet_slots, expand_copies, fit_page, impose};
 use lege_pdf_print::paper::{Margins, Orientation, PaperSize, Rect};
 use lege_pdf_print::{
-    Duplex, NUp, NUpOrder, PageRange, PrintError, PrintJob, PrintOptions, Scaling, Side,
-    SourcePage,
+    Duplex, NUp, NUpOrder, PageRange, PrintError, PrintJob, PrintOptions, Scaling, Side, SourcePage,
 };
 
 /// Points of float slop tolerated when comparing geometry.
@@ -148,7 +147,11 @@ fn a_user_margin_wider_than_the_hardware_one_is_kept() {
     let sheets = impose(&job(a4_pages(1), options), hardware())
         .unwrap_or_else(|e| unreachable!("impose failed: {e}"));
     let sheet = &sheets[0];
-    assert!((sheet.imageable.x0 - 72.0).abs() < EPS, "{:?}", sheet.imageable);
+    assert!(
+        (sheet.imageable.x0 - 72.0).abs() < EPS,
+        "{:?}",
+        sheet.imageable
+    );
     assert!(
         (sheet.bounds.x1 - sheet.imageable.x1 - 18.0).abs() < EPS,
         "{:?}",
@@ -340,15 +343,17 @@ fn fitting_scalings_preserve_the_aspect_ratio() {
         let page = SourcePage::new(0, w, h);
         for scaling in FITTING {
             for orientation in [Orientation::Portrait, Orientation::Auto] {
-                let bounds =
-                    fit_page(page, cell, scaling, orientation).transformed_bounds(page);
+                let bounds = fit_page(page, cell, scaling, orientation).transformed_bounds(page);
                 let placed = bounds.width() / bounds.height();
                 let upright = w / h;
                 assert!(
                     (placed - upright).abs() < 1e-9 || (placed - 1.0 / upright).abs() < 1e-9,
                     "{scaling:?}/{orientation:?}: {w}x{h} became {placed}"
                 );
-                assert!(bounds.contained_by(cell, EPS), "{bounds:?} escaped {cell:?}");
+                assert!(
+                    bounds.contained_by(cell, EPS),
+                    "{bounds:?} escaped {cell:?}"
+                );
             }
         }
     }
@@ -390,8 +395,8 @@ fn actual_size_is_one_to_one_and_clips_the_overflow() {
 fn fill_page_covers_the_cell_and_crops() {
     let page = SourcePage::new(0, 200.0, 400.0);
     let cell = Rect::new(0.0, 0.0, 400.0, 400.0);
-    let bounds = fit_page(page, cell, Scaling::FillPage, Orientation::Portrait)
-        .transformed_bounds(page);
+    let bounds =
+        fit_page(page, cell, Scaling::FillPage, Orientation::Portrait).transformed_bounds(page);
     // Cover: the short axis is met exactly, the long one overflows.
     assert!((bounds.width() - 400.0).abs() < 1e-9, "{bounds:?}");
     assert!(bounds.height() > 400.0 + EPS, "{bounds:?}");
@@ -404,11 +409,11 @@ fn fill_page_covers_the_cell_and_crops() {
 fn percent_is_a_factor_not_a_percentage() {
     let page = SourcePage::new(0, 100.0, 100.0);
     let cell = Rect::new(0.0, 0.0, 1000.0, 1000.0);
-    let half = fit_page(page, cell, Scaling::Percent(0.5), Orientation::Portrait)
-        .transformed_bounds(page);
+    let half =
+        fit_page(page, cell, Scaling::Percent(0.5), Orientation::Portrait).transformed_bounds(page);
     assert!((half.width() - 50.0).abs() < 1e-9, "{half:?}");
-    let double = fit_page(page, cell, Scaling::Percent(2.0), Orientation::Portrait)
-        .transformed_bounds(page);
+    let double =
+        fit_page(page, cell, Scaling::Percent(2.0), Orientation::Portrait).transformed_bounds(page);
     assert!((double.width() - 200.0).abs() < 1e-9, "{double:?}");
 }
 
@@ -428,7 +433,10 @@ fn auto_orientation_turns_the_sheet_towards_the_page() {
     };
     let wide_sheets = impose(&job(wide, options.clone()), hardware())
         .unwrap_or_else(|e| unreachable!("impose failed: {e}"));
-    assert!(wide_sheets[0].is_landscape(), "a wide page wants a wide sheet");
+    assert!(
+        wide_sheets[0].is_landscape(),
+        "a wide page wants a wide sheet"
+    );
 
     let tall_sheets = impose(&job(tall, options), hardware())
         .unwrap_or_else(|e| unreachable!("impose failed: {e}"));
@@ -484,7 +492,12 @@ fn a_duplex_pair_shares_one_orientation() {
 
 #[test]
 fn mixed_page_sizes_are_fitted_independently() {
-    let document = pages(&[(200.0, 400.0), (400.0, 200.0), (100.0, 100.0), (600.0, 800.0)]);
+    let document = pages(&[
+        (200.0, 400.0),
+        (400.0, 200.0),
+        (100.0, 100.0),
+        (600.0, 800.0),
+    ]);
     let options = PrintOptions {
         paper: PaperSize::A4,
         orientation: Orientation::Portrait,
@@ -636,7 +649,10 @@ fn long_edge_and_short_edge_backs_differ() {
 
     // Fronts agree: the binding only ever moves the back.
     assert_eq!(long[0].imageable, short[0].imageable);
-    assert_eq!(long[0].placements[0].transform, short[0].placements[0].transform);
+    assert_eq!(
+        long[0].placements[0].transform,
+        short[0].placements[0].transform
+    );
 
     // Backs do not.
     assert_ne!(
@@ -645,11 +661,27 @@ fn long_edge_and_short_edge_backs_differ() {
     );
 
     // Long-edge on a portrait sheet mirrors left/right ...
-    assert!((long[1].imageable.x0 - 18.0).abs() < EPS, "{:?}", long[1].imageable);
-    assert!((long[1].imageable.y0 - 18.0).abs() < EPS, "{:?}", long[1].imageable);
+    assert!(
+        (long[1].imageable.x0 - 18.0).abs() < EPS,
+        "{:?}",
+        long[1].imageable
+    );
+    assert!(
+        (long[1].imageable.y0 - 18.0).abs() < EPS,
+        "{:?}",
+        long[1].imageable
+    );
     // ... short-edge mirrors top/bottom.
-    assert!((short[1].imageable.x0 - 72.0).abs() < EPS, "{:?}", short[1].imageable);
-    assert!((short[1].imageable.y0 - 54.0).abs() < EPS, "{:?}", short[1].imageable);
+    assert!(
+        (short[1].imageable.x0 - 72.0).abs() < EPS,
+        "{:?}",
+        short[1].imageable
+    );
+    assert!(
+        (short[1].imageable.y0 - 54.0).abs() < EPS,
+        "{:?}",
+        short[1].imageable
+    );
 }
 
 #[test]
@@ -674,8 +706,16 @@ fn the_binding_axis_follows_the_sheet_on_landscape_paper() {
     // On a landscape sheet the long axis is horizontal, so the roles swap.
     let long = build(Duplex::LongEdge);
     let short = build(Duplex::ShortEdge);
-    assert!((long[1].imageable.y0 - 54.0).abs() < EPS, "{:?}", long[1].imageable);
-    assert!((short[1].imageable.x0 - 18.0).abs() < EPS, "{:?}", short[1].imageable);
+    assert!(
+        (long[1].imageable.y0 - 54.0).abs() < EPS,
+        "{:?}",
+        long[1].imageable
+    );
+    assert!(
+        (short[1].imageable.x0 - 18.0).abs() < EPS,
+        "{:?}",
+        short[1].imageable
+    );
 }
 
 #[test]
@@ -721,7 +761,11 @@ fn booklet_order_round_trips() {
         assert_eq!(folded.len(), usize::try_from(padded).unwrap_or(0));
         for (position, slot) in folded.iter().enumerate() {
             let position = u32::try_from(position).unwrap_or(u32::MAX);
-            let expected = if position < total { Some(position) } else { None };
+            let expected = if position < total {
+                Some(position)
+            } else {
+                None
+            };
             assert_eq!(*slot, expected, "N={total}, folded position {position}");
         }
     }

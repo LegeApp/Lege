@@ -18,8 +18,16 @@ use lege_pdf_print::{Margins, NUp, PrintError, PrintOptions, PrintRoute, Scaling
 /// What the fake spooler saw, flattened so the test can compare it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seen {
-    PassThrough { printer: String, title: String, bytes: usize },
-    Sheets { printer: String, title: String, sheets: usize },
+    PassThrough {
+        printer: String,
+        title: String,
+        bytes: usize,
+    },
+    Sheets {
+        printer: String,
+        title: String,
+        sheets: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -292,7 +300,10 @@ fn copies_are_left_to_the_spooler() {
         n_up: NUp::Two,
         ..PrintOptions::default()
     };
-    let many = PrintOptions { copies: 7, ..one.clone() };
+    let many = PrintOptions {
+        copies: 7,
+        ..one.clone()
+    };
 
     let submit = |options: &PrintOptions| {
         print_document_with(

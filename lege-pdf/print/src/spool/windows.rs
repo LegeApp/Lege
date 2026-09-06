@@ -25,19 +25,18 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Graphics::Printing::{
     ClosePrinter, DocumentPropertiesW, EnumPrintersW, GetDefaultPrinterW, JOB_INFO_1W,
-    PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_HANDLE, PRINTER_INFO_4W, OpenPrinterW,
+    OpenPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_HANDLE, PRINTER_INFO_4W,
     SetJobW,
 };
 use windows::Win32::Storage::Xps::{
-    DC_COLORDEVICE, DC_DUPLEX, DOCINFOW, DeviceCapabilitiesW, EndDoc, EndPage,
-    StartDocW, StartPage,
+    DC_COLORDEVICE, DC_DUPLEX, DOCINFOW, DeviceCapabilitiesW, EndDoc, EndPage, StartDocW, StartPage,
 };
 use windows::core::{PCWSTR, PWSTR};
 
 use super::{
     DeviceCapabilities, JobId, JobStatus, PrinterId, PrinterInfo, SpoolJob, SpoolPayload, Spooler,
 };
-use crate::paper::{Margins, PaperSize, POINTS_PER_INCH};
+use crate::paper::{Margins, POINTS_PER_INCH, PaperSize};
 use crate::{Duplex, PrintError, PrintOptions};
 
 /// `SetJob`'s `JOB_CONTROL_CANCEL`.
@@ -92,13 +91,7 @@ impl Spooler for WindowsSpooler {
         // SAFETY: `name` is a NUL-terminated wide string that outlives the
         // call; a null port and null DEVMODE ask about the queue's defaults.
         let duplex = unsafe {
-            DeviceCapabilitiesW(
-                PCWSTR(name.as_ptr()),
-                PCWSTR::null(),
-                DC_DUPLEX,
-                None,
-                None,
-            )
+            DeviceCapabilitiesW(PCWSTR(name.as_ptr()), PCWSTR::null(), DC_DUPLEX, None, None)
         };
         // SAFETY: as above.
         let color = unsafe {
@@ -315,18 +308,11 @@ impl InfoDc {
     fn open(name: &[u16]) -> Result<Self, PrintError> {
         // SAFETY: `name` is a NUL-terminated wide string that outlives the
         // call; a null driver and port select the queue's own driver.
-        let hdc = unsafe {
-            CreateDCW(
-                PCWSTR::null(),
-                PCWSTR(name.as_ptr()),
-                PCWSTR::null(),
-                None,
-            )
-        };
+        let hdc = unsafe { CreateDCW(PCWSTR::null(), PCWSTR(name.as_ptr()), PCWSTR::null(), None) };
         if hdc.is_invalid() {
-            return Err(PrintError::NoSuchPrinter(
-                String::from_utf16_lossy(&name[..name.len().saturating_sub(1)]),
-            ));
+            return Err(PrintError::NoSuchPrinter(String::from_utf16_lossy(
+                &name[..name.len().saturating_sub(1)],
+            )));
         }
         Ok(Self { hdc })
     }
@@ -367,9 +353,9 @@ impl PrintDc {
             )
         };
         if hdc.is_invalid() {
-            return Err(PrintError::NoSuchPrinter(
-                String::from_utf16_lossy(&name[..name.len().saturating_sub(1)]),
-            ));
+            return Err(PrintError::NoSuchPrinter(String::from_utf16_lossy(
+                &name[..name.len().saturating_sub(1)],
+            )));
         }
         Ok(Self {
             hdc,
@@ -437,7 +423,9 @@ impl PrintDc {
         // reported rows, so the document stays well-formed.
         let ended = unsafe { EndPage(self.hdc) };
         if copied == 0 {
-            return Err(PrintError::Spool("StretchDIBits copied no rows".to_string()));
+            return Err(PrintError::Spool(
+                "StretchDIBits copied no rows".to_string(),
+            ));
         }
         if ended <= 0 {
             return Err(PrintError::Spool("EndPage failed".to_string()));
@@ -486,11 +474,7 @@ impl DevMode {
     /// Every step degrades to "no DEVMODE" rather than failing: a job that
     /// prints simplex because the driver would not cooperate is better than
     /// a job that does not print.
-    fn for_job(
-        name: &[u16],
-        options: &PrintOptions,
-        landscape: bool,
-    ) -> Result<Self, PrintError> {
+    fn for_job(name: &[u16], options: &PrintOptions, landscape: bool) -> Result<Self, PrintError> {
         let Ok(printer) = PrinterHandle::open(name) else {
             return Ok(Self { buffer: None });
         };
@@ -790,7 +774,11 @@ impl Dib {
                         let v = src[x];
                         (v, v, v)
                     }
-                    3 | 4 => (src[x * channels], src[x * channels + 1], src[x * channels + 2]),
+                    3 | 4 => (
+                        src[x * channels],
+                        src[x * channels + 1],
+                        src[x * channels + 2],
+                    ),
                     other => {
                         return Err(PrintError::Spool(format!(
                             "cannot blit a {other}-channel sheet raster"

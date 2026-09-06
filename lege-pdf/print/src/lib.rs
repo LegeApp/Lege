@@ -52,7 +52,9 @@ pub enum PrintError {
     EmptyRange,
     /// A sheet's imageable area is empty once hardware and user margins are
     /// applied.
-    #[error("imageable area is empty: paper {paper_w:.1}x{paper_h:.1}pt is smaller than its margins")]
+    #[error(
+        "imageable area is empty: paper {paper_w:.1}x{paper_h:.1}pt is smaller than its margins"
+    )]
     EmptyImageableArea { paper_w: f64, paper_h: f64 },
     /// Reading or rasterizing the source document failed.
     #[error("document error: {0}")]
@@ -404,7 +406,9 @@ impl PrintOptions {
     /// calling before any rendering happens.
     pub fn validate(&self) -> Result<(), PrintError> {
         if self.copies == 0 {
-            return Err(PrintError::InvalidOptions("copies must be at least 1".into()));
+            return Err(PrintError::InvalidOptions(
+                "copies must be at least 1".into(),
+            ));
         }
         if let Scaling::Percent(p) = self.scaling
             && (!p.is_finite() || p <= 0.0 || p > 100.0)
@@ -463,7 +467,13 @@ impl SourcePage {
 
 impl fmt::Display for SourcePage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "page {} ({:.1}x{:.1}pt)", self.index + 1, self.width, self.height)
+        write!(
+            f,
+            "page {} ({:.1}x{:.1}pt)",
+            self.index + 1,
+            self.width,
+            self.height
+        )
     }
 }
 
@@ -542,9 +552,18 @@ mod tests {
             PageRange::parse("1,3-5", 10).unwrap().resolve(10),
             vec![0, 2, 3, 4]
         );
-        assert_eq!(PageRange::parse("8-", 10).unwrap().resolve(10), vec![7, 8, 9]);
-        assert_eq!(PageRange::parse("5-3", 10).unwrap().resolve(10), vec![2, 3, 4]);
-        assert_eq!(PageRange::parse("odd", 5).unwrap().resolve(5), vec![0, 2, 4]);
+        assert_eq!(
+            PageRange::parse("8-", 10).unwrap().resolve(10),
+            vec![7, 8, 9]
+        );
+        assert_eq!(
+            PageRange::parse("5-3", 10).unwrap().resolve(10),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            PageRange::parse("odd", 5).unwrap().resolve(5),
+            vec![0, 2, 4]
+        );
     }
 
     #[test]
@@ -571,6 +590,9 @@ mod tests {
 
     #[test]
     fn page_range_clamps_past_the_end() {
-        assert_eq!(PageRange::parse("9-99", 10).unwrap().resolve(10), vec![8, 9]);
+        assert_eq!(
+            PageRange::parse("9-99", 10).unwrap().resolve(10),
+            vec![8, 9]
+        );
     }
 }

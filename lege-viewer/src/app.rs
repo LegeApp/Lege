@@ -166,9 +166,10 @@ impl PasswordPrompt {
     }
 
     fn file_name(&self) -> std::borrow::Cow<'_, str> {
-        self.path
-            .file_name()
-            .map_or_else(|| self.path.to_string_lossy(), std::ffi::OsStr::to_string_lossy)
+        self.path.file_name().map_or_else(
+            || self.path.to_string_lossy(),
+            std::ffi::OsStr::to_string_lossy,
+        )
     }
 }
 

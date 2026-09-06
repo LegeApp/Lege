@@ -31,11 +31,11 @@
 //!   DJVU_BENCH_HEIGHT — synthetic image height (default 1200)
 
 use djvu_encoder::doc::page_encoder::{PageComponents, PageEncodeParams};
+use djvu_encoder::encode::iw44::rgb_to_ycbcr_planes;
+use djvu_encoder::encode::iw44::transform::Encode as IwTransform;
 use djvu_encoder::encode::jb2::cc_image::{analyze_page, shapes_to_encoder_format};
 use djvu_encoder::encode::jb2::encoder::JB2Encoder;
 use djvu_encoder::encode::jb2::symbol_dict::BitImage;
-use djvu_encoder::encode::iw44::rgb_to_ycbcr_planes;
-use djvu_encoder::encode::iw44::transform::Encode as IwTransform;
 use djvu_encoder::image::image_formats::{Pixel, Pixmap};
 use djvu_encoder::{DjvuBuilder, Page, PageBuilder};
 use std::time::Instant;
@@ -88,7 +88,8 @@ fn synthetic_rgb(width: u32, height: u32) -> Pixmap {
         Ok("noise") => Pixmap::from_fn(width, height, |x, y| {
             // Deterministic hash-based noise: dense detail in every band, the
             // opposite extreme from the smooth gradient.
-            let h = (x.wrapping_mul(374761393) ^ y.wrapping_mul(668265263)).wrapping_mul(1274126177);
+            let h =
+                (x.wrapping_mul(374761393) ^ y.wrapping_mul(668265263)).wrapping_mul(1274126177);
             let h = h ^ (h >> 15);
             Pixel::new((h >> 3) as u8, (h >> 11) as u8, (h >> 19) as u8)
         }),
@@ -250,8 +251,7 @@ fn main() {
 
         // The JB2 symbol coder on its own (no page container, no BG44 layer).
         let cc = analyze_page(&bilevel, 300, 1);
-        let (dictionary, parents, blits) =
-            shapes_to_encoder_format(cc.extract_shapes(), jh as i32);
+        let (dictionary, parents, blits) = shapes_to_encoder_format(cc.extract_shapes(), jh as i32);
         let mut sjbz_bytes = 0usize;
         let t = time_it(jb2_iters, || {
             let mut enc = JB2Encoder::new(Vec::new());

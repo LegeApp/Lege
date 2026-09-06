@@ -97,7 +97,11 @@ fn dry_run_n_up_reports_every_placement() {
     assert!(sheet["imageable"]["x0"].as_f64().unwrap() > sheet["bounds"]["x0"].as_f64().unwrap());
 
     let placements = sheet["placements"].as_array().expect("placements");
-    assert_eq!(placements.len(), 1, "one source page fills one of two cells");
+    assert_eq!(
+        placements.len(),
+        1,
+        "one source page fills one of two cells"
+    );
     let placement = &placements[0];
     assert_eq!(placement["source_page"], 1);
     assert_eq!(placement["source_page_index"], 0);

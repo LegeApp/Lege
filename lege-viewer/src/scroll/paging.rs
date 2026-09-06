@@ -86,9 +86,8 @@ pub fn nearest_page_boundary(
             continue;
         }
         let candidate = boundary.clamp(0.0, max_scroll.max(0.0));
-        let better = best.is_none_or(|current| {
-            (candidate - viewport_y).abs() < (current - viewport_y).abs()
-        });
+        let better = best
+            .is_none_or(|current| (candidate - viewport_y).abs() < (current - viewport_y).abs());
         if better {
             best = Some(candidate);
         }

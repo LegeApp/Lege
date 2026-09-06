@@ -174,7 +174,12 @@ pub fn impose(job: &PrintJob, hardware_margins: Margins) -> Result<Vec<Sheet>, P
     } else {
         grid_sides(&pages, options)
     };
-    build_sheets(&sides, booklet || options.duplex.is_duplex(), options, hardware_margins)
+    build_sheets(
+        &sides,
+        booklet || options.duplex.is_duplex(),
+        options,
+        hardware_margins,
+    )
 }
 
 /// Repeat an imposed sheet sequence for `copies` copies.
@@ -350,7 +355,11 @@ fn build_sheets(
         let (columns, rows) = cell_grid(options.n_up, landscape);
 
         for (position, slots) in chunk.iter().enumerate() {
-            let side = if position == 0 { Side::Front } else { Side::Back };
+            let side = if position == 0 {
+                Side::Front
+            } else {
+                Side::Back
+            };
             let margins = if side == Side::Back {
                 back_margins(user, options.duplex, booklet, landscape)
             } else {
@@ -674,7 +683,11 @@ fn scale_for(scaling: Scaling, width: f64, height: f64, cell_width: f64, cell_he
         Scaling::FillPage => x.max(y),
         Scaling::Percent(percent) => percent,
     };
-    if scale.is_finite() && scale > 0.0 { scale } else { 1.0 }
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
 }
 
 /// `numerator / denominator`, with a degenerate denominator reading as "no
@@ -700,7 +713,12 @@ mod tests {
 
     #[test]
     fn cells_run_left_to_right_then_down() {
-        let cells = cell_rects(Rect::new(0.0, 0.0, 100.0, 100.0), 2, 2, NUpOrder::RightThenDown);
+        let cells = cell_rects(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            2,
+            2,
+            NUpOrder::RightThenDown,
+        );
         assert_eq!(cells[0], Rect::new(0.0, 50.0, 50.0, 100.0));
         assert_eq!(cells[1], Rect::new(50.0, 50.0, 100.0, 100.0));
         assert_eq!(cells[2], Rect::new(0.0, 0.0, 50.0, 50.0));
@@ -719,7 +737,10 @@ mod tests {
             let cells = cell_rects(area, 3, 2, order);
             assert_eq!(cells.len(), base.len());
             for cell in &cells {
-                assert!(base.contains(cell), "{order:?} produced a stray cell {cell:?}");
+                assert!(
+                    base.contains(cell),
+                    "{order:?} produced a stray cell {cell:?}"
+                );
             }
         }
     }
@@ -730,7 +751,10 @@ mod tests {
         let cell = Rect::new(10.0, 20.0, 110.0, 220.0);
         let placement = fit_page(page, cell, Scaling::FitToPage, Orientation::Landscape);
         let bounds = placement.transformed_bounds(page);
-        assert!(bounds.contained_by(cell, 1e-6), "{bounds:?} escaped {cell:?}");
+        assert!(
+            bounds.contained_by(cell, 1e-6),
+            "{bounds:?} escaped {cell:?}"
+        );
         // Rotated, the 200x100 page is 100 wide and 200 tall: an exact fit.
         assert!((bounds.width() - 100.0).abs() < 1e-6, "{bounds:?}");
         assert!((bounds.height() - 200.0).abs() < 1e-6, "{bounds:?}");

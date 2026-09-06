@@ -1443,11 +1443,9 @@ impl lege_viewer::document::engine::DocumentCompileWorker for BrokenCompileWorke
         lege_viewer::document::engine::DocumentEngineError,
     > {
         if page == self.broken {
-            return Err(
-                lege_viewer::document::engine::DocumentEngineError::Engine(
-                    "synthetic page defect".to_owned(),
-                ),
-            );
+            return Err(lege_viewer::document::engine::DocumentEngineError::Engine(
+                "synthetic page defect".to_owned(),
+            ));
         }
         self.inner.compile_page(page, page_to_doc, cancellation)
     }

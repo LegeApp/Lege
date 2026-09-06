@@ -25,8 +25,9 @@ use lege_pdf_print::{
 use crate::bounds::Bounds;
 use crate::schema::{Envelope, OutputMode};
 use crate::views::print::{
-    ComposeView, DeviceView, MarginsView, PaperView, PlacementView, PrintOptionsView, PrintPlanData,
-    PrintersData, PrinterView, RasterSizeView, RectView, SheetView, SubmittedJobData, TransformView,
+    ComposeView, DeviceView, MarginsView, PaperView, PlacementView, PrintOptionsView,
+    PrintPlanData, PrinterView, PrintersData, RasterSizeView, RectView, SheetView,
+    SubmittedJobData, TransformView,
 };
 
 /// Imposition emits one copy; both platform spoolers take a native copy
@@ -152,16 +153,12 @@ pub fn run(args: PrintArgs<'_>) -> Result<i32> {
     }
 
     if args.dry_run {
-        plan(&args, &document, pages, page_count, options, selected, warnings)
+        plan(
+            &args, &document, pages, page_count, options, selected, warnings,
+        )
     } else {
         submit(
-            &args,
-            &document,
-            bytes,
-            page_count,
-            options,
-            selected,
-            warnings,
+            &args, &document, bytes, page_count, options, selected, warnings,
         )
     }
 }
@@ -263,9 +260,8 @@ fn plan(
         }
     };
     if options.copies > 1 && args.to_file.is_some() {
-        warnings.push(
-            "copies are the spooler's to apply; the file backend records one copy".into(),
-        );
+        warnings
+            .push("copies are the spooler's to apply; the file backend records one copy".into());
     }
 
     let sides = match route {
@@ -395,14 +391,10 @@ fn submit(
 fn make_spooler(to_file: Option<&Path>) -> Result<(Box<dyn Spooler>, &'static str)> {
     match to_file {
         Some(dir) => {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
             Ok((Box::new(FileSpooler::new(dir)), "file"))
         }
-        None => Ok((
-            lege_pdf_print::spool::platform_spooler(),
-            PLATFORM_BACKEND,
-        )),
+        None => Ok((lege_pdf_print::spool::platform_spooler(), PLATFORM_BACKEND)),
     }
 }
 
@@ -428,9 +420,8 @@ fn dry_run_capabilities(
     warnings: &mut Vec<String>,
 ) -> Result<(DeviceCapabilities, &'static str)> {
     if !args.query_device {
-        warnings.push(
-            "device capabilities assumed; pass --query-device to ask the real queue".into(),
-        );
+        warnings
+            .push("device capabilities assumed; pass --query-device to ask the real queue".into());
         return Ok((
             DeviceCapabilities {
                 accepts_pdf: cfg!(any(target_os = "linux", target_os = "macos")),
@@ -693,7 +684,11 @@ fn placement_view(
         .iter()
         .copied()
         .find(|p| p.index == placement.source_page)
-        .unwrap_or(lege_pdf_print::SourcePage::new(placement.source_page, 0.0, 0.0));
+        .unwrap_or(lege_pdf_print::SourcePage::new(
+            placement.source_page,
+            0.0,
+            0.0,
+        ));
     PlacementView {
         source_page: placement.source_page.saturating_add(1),
         source_page_index: placement.source_page,

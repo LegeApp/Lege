@@ -268,7 +268,11 @@ impl Codec {
                     for i in 0..16 {
                         let sig = (src16[i].unsigned_abs() >= thres_u) as u8;
                         // sig -> NEW|UNK (0x03), !sig -> UNK (0x01)
-                        let state = if ep16[i] != 0 { ACTIVE } else { UNK | (sig << 1) };
+                        let state = if ep16[i] != 0 {
+                            ACTIVE
+                        } else {
+                            UNK | (sig << 1)
+                        };
                         cstate[i] = state;
                         bstate |= state;
                     }
@@ -297,7 +301,8 @@ impl Codec {
                 // band. Reading a stale array (rather than the seed) would be
                 // a silent correctness bug, so this reads `coeff_state`
                 // explicitly.
-                let prev = &coeff_state[coeff_base + bucket_idx * 16..coeff_base + bucket_idx * 16 + 16];
+                let prev =
+                    &coeff_state[coeff_base + bucket_idx * 16..coeff_base + bucket_idx * 16 + 16];
                 for i in 0..16 {
                     let thres = quant_lo[i];
                     let mut cstatetmp = prev[i];
@@ -500,7 +505,11 @@ impl Codec {
             // Loop-invariant for every band but 0, where the threshold is
             // per-coefficient; hoisting it out of the coefficient loop drops a
             // branch and a load from the innermost body.
-            let band_thres = if band == 0 { 0 } else { quant_hi[band as usize] };
+            let band_thres = if band == 0 {
+                0
+            } else {
+                quant_hi[band as usize]
+            };
             for buckno in 0..nbucket {
                 let bucket_state_value = scratch_bucket[buckno];
                 if (bucket_state_value & NEW) != 0 {
@@ -577,7 +586,11 @@ impl Codec {
             // Same hoist as pass 2: for bands 1..9 both the threshold and the
             // `3 * thresh` adaptive/raw cutoff are constant across the whole
             // pass, and this is the encoder's single hottest loop.
-            let band_thres = if band == 0 { 0 } else { quant_hi[band as usize] };
+            let band_thres = if band == 0 {
+                0
+            } else {
+                quant_hi[band as usize]
+            };
             let band_thres3 = band_thres.saturating_mul(3);
             for buckno in 0..nbucket {
                 if (scratch_bucket[buckno] & ACTIVE) != 0 {

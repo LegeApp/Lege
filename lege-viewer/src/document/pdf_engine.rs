@@ -837,8 +837,9 @@ mod tests {
 
     use pdf_render_api::{HostPage, OutputFormat};
 
-    use super::{DocumentEngineError, classify_open_error, decode_geometry_scalar,
-        ingest_rgba_to_xrgb};
+    use super::{
+        DocumentEngineError, classify_open_error, decode_geometry_scalar, ingest_rgba_to_xrgb,
+    };
 
     fn host_page(width: u32, height: u32, stride: usize, pixels: Vec<u8>) -> HostPage {
         HostPage {
@@ -893,10 +894,8 @@ mod tests {
         // Nothing the reader can type opens a document the renderer cannot
         // decrypt, so it must not be offered a password field.
         let error = classify_open_error(
-            pdf_security::SecurityError::UnsupportedScheme(
-                pdf_security::EncryptionScheme::None,
-            )
-            .into(),
+            pdf_security::SecurityError::UnsupportedScheme(pdf_security::EncryptionScheme::None)
+                .into(),
         );
         assert!(matches!(error, DocumentEngineError::Engine(_)));
     }
