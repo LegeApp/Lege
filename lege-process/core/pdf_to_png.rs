@@ -230,15 +230,20 @@ fn parse_page_range(range_str: &str, total_pages: usize) -> Result<Vec<usize>> {
     Ok(pages)
 }
 
-/// Render PDF pages and encode each as JP2 (RGB and grayscale), logging file sizes.
+/// Render PDF pages and encode each as JP2 twice — the legacy open-loop preset
+/// and the verified display floor it maps to — logging bytes, encode time and
+/// the reader-visible SSIMULACRA2 score of both.
 ///
 /// Usage: `lege <file.pdf> [page-range] --jp2-debug HEIGHT`
 ///
-/// Outputs per page:
-/// - `page_NNNN_q80.jp2`      — RGB JP2 at quality 80
-/// - `page_NNNN_q62.jp2`      — RGB JP2 at quality 62 (WebHigh equivalent)
-/// - `page_NNNN_q42.jp2`      — RGB JP2 at quality 42 (WebLow equivalent)
-/// - `page_NNNN_gray_q80.jp2` — Grayscale JP2 at quality 80
+/// `HEIGHT` is the *source* render height. The display box is the saved
+/// resolution preset, or 1200px tall when none is saved, so rendering above it
+/// exercises the pre-resize (the emitted JP2 then carries the box dimensions).
+///
+/// Outputs per page, for tiers (preset 80 → floor 75), (62 → 70), (42 → 65):
+/// - `page_NNNN_q{80,62,42}.jp2`      — legacy RGB preset
+/// - `page_NNNN_f{75,70,65}.jp2`      — verified RGB display floor
+/// - `page_NNNN_gray_q80.jp2` / `_gray_f75.jp2`
 pub fn run_pdf_to_jp2_debug_mode(
     pdf_path: std::path::PathBuf,
     page_range: Option<String>,
@@ -247,6 +252,7 @@ pub fn run_pdf_to_jp2_debug_mode(
 ) -> Result<()> {
     use crate::encoding::{
         EncodingManager, EncodingResult, EncodingSettings, ImageBuffer as LegeImageBuffer,
+        Jp2DisplaySettings,
     };
     use std::fs;
 
@@ -278,20 +284,27 @@ pub fn run_pdf_to_jp2_debug_mode(
         (1..=(total_pages)).collect()
     };
 
+    // Where the reader actually sees the page. The saved device preset when
+    // there is one, else a 1200px-tall e-reader panel.
+    let (box_h, box_w_fixed) = match crate::resolution_preset::load().ok().flatten() {
+        Some(preset) => (preset.height.max(1), preset.width),
+        None => (1200, None),
+    };
+
     println!(
-        "Encoding {} pages as JP2 (RGB + gray, 3 quality levels each)…",
-        pages_to_render.len()
+        "Encoding {} pages as JP2: legacy preset vs verified display floor (box height {}px)…",
+        pages_to_render.len(),
+        box_h
     );
     println!(
-        "{:<28} {:>10} {:>10} {:>10} {:>10}",
-        "page", "rgb_q80", "rgb_q62", "rgb_q42", "gray_q80"
+        "{:<7} {:<11} {:>4} {:>8} {:>7} {:>6}   {:>5} {:>8} {:>7} {:>6}  {}",
+        "page", "source", "q", "bytes", "ms", "s2", "floor", "bytes", "ms", "s2", "emitted"
     );
-    println!("{}", "-".repeat(62));
+    println!("{}", "-".repeat(96));
 
     let overall_start = std::time::Instant::now();
     for &page_num in &pages_to_render {
         crate::progress::cancellation_checkpoint("before PDF-to-JP2 debug page")?;
-        let page_start = std::time::Instant::now();
 
         let rgb = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
@@ -309,6 +322,8 @@ pub fn run_pdf_to_jp2_debug_mode(
         let w = rgb.width;
         let h = rgb.height;
         let rgb_data = rgb.data;
+        let box_w = box_w_fixed
+            .unwrap_or_else(|| ((w as f64 * box_h as f64 / h as f64).round() as u32).max(1));
 
         // Build grayscale
         let gray_data: Vec<u8> = rgb_data
@@ -321,42 +336,77 @@ pub fn run_pdf_to_jp2_debug_mode(
             })
             .collect();
 
-        let encode_jp2 = |data: &[u8], channels: u8, q: u8| -> anyhow::Result<Vec<u8>> {
+        let encode_timed = |settings: &EncodingSettings,
+                            data: &[u8],
+                            channels: u8|
+         -> anyhow::Result<(Vec<u8>, f64)> {
             let buf = LegeImageBuffer {
                 data,
                 width: w,
                 height: h,
                 channels,
             };
-            let result = EncodingManager::encode(&buf, &EncodingSettings::Jp2Lam { quality: q })
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let started = std::time::Instant::now();
+            let result =
+                EncodingManager::encode(&buf, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
             match result {
-                EncodingResult::Standard(d) => Ok(d),
+                EncodingResult::Standard(d) => Ok((d, ms)),
                 _ => Err(anyhow::anyhow!("unexpected encoding result type")),
             }
         };
 
-        let rgb80 = encode_jp2(&rgb_data, 3, 80)?;
-        let rgb62 = encode_jp2(&rgb_data, 3, 62)?;
-        let rgb42 = encode_jp2(&rgb_data, 3, 42)?;
-        let gray80 = encode_jp2(&gray_data, 1, 80)?;
-
         let stem = format!("page_{:04}", page_num);
-        fs::write(output_dir.join(format!("{stem}_q80.jp2")), &rgb80)?;
-        fs::write(output_dir.join(format!("{stem}_q62.jp2")), &rgb62)?;
-        fs::write(output_dir.join(format!("{stem}_q42.jp2")), &rgb42)?;
-        fs::write(output_dir.join(format!("{stem}_gray_q80.jp2")), &gray80)?;
+        // (channels, source, legacy preset, display floor)
+        let tiers: [(u8, &[u8], u8, u8); 4] = [
+            (3, &rgb_data, 80, 75),
+            (3, &rgb_data, 62, 70),
+            (3, &rgb_data, 42, 65),
+            (1, &gray_data, 80, 75),
+        ];
 
-        let elapsed_ms = page_start.elapsed().as_secs_f64() * 1000.0;
-        println!(
-            "{:<28} {:>10} {:>10} {:>10} {:>10}   ({:.0}ms)",
-            format!("page {}", page_num),
-            fmt_bytes(rgb80.len()),
-            fmt_bytes(rgb62.len()),
-            fmt_bytes(rgb42.len()),
-            fmt_bytes(gray80.len()),
-            elapsed_ms,
-        );
+        for (channels, source, quality, floor) in tiers {
+            crate::progress::cancellation_checkpoint("during PDF-to-JP2 debug tier")?;
+            let (legacy, legacy_ms) =
+                encode_timed(&EncodingSettings::Jp2Lam { quality }, source, channels)?;
+            let display_settings = EncodingSettings::Jp2Display(Jp2DisplaySettings {
+                max_width: box_w,
+                max_height: box_h,
+                floor,
+                fallback_quality: quality,
+            });
+            let (display, display_ms) = encode_timed(&display_settings, source, channels)?;
+            let (emitted_w, emitted_h) = display_dimensions(&display, w, h);
+
+            let tag = if channels == 1 { "gray_" } else { "" };
+            fs::write(
+                output_dir.join(format!("{stem}_{tag}q{quality}.jp2")),
+                &legacy,
+            )?;
+            fs::write(
+                output_dir.join(format!("{stem}_{tag}f{floor}.jp2")),
+                &display,
+            )?;
+
+            let (legacy_s2, display_s2) =
+                display_scores(source, w, h, channels, box_w, box_h, &legacy, &display);
+
+            println!(
+                "{:<7} {:<11} {:>4} {:>8} {:>7.0} {:>6} {:>7} {:>8} {:>7.0} {:>6}  {}x{}",
+                format!("p{}{}", page_num, if channels == 1 { "g" } else { "" }),
+                format!("{}x{}", w, h),
+                format!("q{}", quality),
+                fmt_bytes(legacy.len()),
+                legacy_ms,
+                legacy_s2,
+                format!("f{}", floor),
+                fmt_bytes(display.len()),
+                display_ms,
+                display_s2,
+                emitted_w,
+                emitted_h,
+            );
+        }
         crate::progress::cancellation_checkpoint("after PDF-to-JP2 debug page")?;
     }
 
@@ -368,6 +418,65 @@ pub fn run_pdf_to_jp2_debug_mode(
         output_dir.display()
     );
     Ok(())
+}
+
+/// Pixel dimensions of an emitted JP2, falling back to the source size.
+fn display_dimensions(data: &[u8], width: u32, height: u32) -> (u32, u32) {
+    crate::encoding::jp2::jp2_dimensions(data).unwrap_or((width, height))
+}
+
+/// SSIMULACRA2 of both streams measured where the reader sees them: source and
+/// candidate downscaled into the display box (grayscale sources folded to e-ink
+/// luminance). Returns `("n/a", ..)` if the metric cannot run.
+#[cfg(feature = "jp2-lam")]
+fn display_scores(
+    source: &[u8],
+    width: u32,
+    height: u32,
+    channels: u8,
+    box_w: u32,
+    box_h: u32,
+    legacy: &[u8],
+    display: &[u8],
+) -> (String, String) {
+    let profile = if channels == 1 {
+        jp2lam::DisplayProfile::eink(box_w, box_h)
+    } else {
+        jp2lam::DisplayProfile::tablet(box_w, box_h)
+    };
+    let view = if channels == 1 {
+        jp2lam::ImageView::from_gray8(width, height, source)
+    } else {
+        jp2lam::ImageView::from_rgb8_interleaved(width, height, source)
+    };
+    let Ok(view) = view else {
+        return ("n/a".into(), "n/a".into());
+    };
+    let Ok(mut evaluator) = jp2lam::StreamEvaluator::for_display(view, profile) else {
+        return ("n/a".into(), "n/a".into());
+    };
+    let score = |eval: &mut jp2lam::StreamEvaluator, bytes: &[u8]| {
+        eval.score_stream(bytes)
+            .map(|o| format!("{:.1}", o.score))
+            .unwrap_or_else(|_| "err".to_string())
+    };
+    let a = score(&mut evaluator, legacy);
+    let b = score(&mut evaluator, display);
+    (a, b)
+}
+
+#[cfg(not(feature = "jp2-lam"))]
+fn display_scores(
+    _source: &[u8],
+    _width: u32,
+    _height: u32,
+    _channels: u8,
+    _box_w: u32,
+    _box_h: u32,
+    _legacy: &[u8],
+    _display: &[u8],
+) -> (String, String) {
+    ("n/a".into(), "n/a".into())
 }
 
 fn fmt_bytes(n: usize) -> String {

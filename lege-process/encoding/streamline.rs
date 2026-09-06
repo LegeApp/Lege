@@ -187,13 +187,73 @@ impl Default for Jbig2Settings {
     fn default() -> Self {
         Self {
             pdf_fragment_mode: true, // Default to PDF fragment mode for PDF assembly
-            mode: Jbig2Mode::Symbol,
+            mode: Jbig2Mode::Generic,
             use_jbig2_halftone_segments: false,
         }
     }
 }
 
 // Indexed8Settings removed - indexed8 encoder deleted
+
+/// Where a JP2 image is actually shown: the pixel box it occupies on the
+/// reader's screen, plus the quality to guarantee *there*.
+///
+/// `floor` is a **verified** SSIMULACRA2 score (jp2lam
+/// `PerceptualTarget::for_display`), measured after source and candidate are
+/// both downscaled into the box — unlike the legacy `Jp2Lam { quality }`
+/// preset, whose perceptual quality drifts with content and resolution
+/// (preset 80 measures 52 at 0.8 MP and 14 at 50 MP).
+///
+/// Source resampling is on, so a source larger than the box is encoded *at*
+/// the box size and **the emitted JP2 is smaller than the input**. Whatever
+/// places the image must take its pixel dimensions from
+/// [`Jp2DisplaySettings::encoded_size`] (or the emitted stream), never from the
+/// source dimensions. The placement rectangle on the page is unaffected.
+#[derive(Debug, Clone, Copy)]
+pub struct Jp2DisplaySettings {
+    /// Widest the image is ever drawn, in device pixels.
+    pub max_width: u32,
+    /// Tallest the image is ever drawn, in device pixels.
+    pub max_height: u32,
+    /// SSIMULACRA2 floor at display size, 0–99.
+    pub floor: u8,
+    /// Legacy open-loop preset used if the verified encode is unavailable.
+    pub fallback_quality: u8,
+}
+
+impl Jp2DisplaySettings {
+    /// Corpus recommendation for e-reader page images: 65 if size dominates,
+    /// 75 buys about +5 points of measured quality for +23% bytes.
+    pub const DEFAULT_FLOOR: u8 = 70;
+
+    /// Pixel dimensions the encoder will emit for a `width` x `height` source —
+    /// the box when the source is meaningfully larger, the source size
+    /// otherwise (it never upscales).
+    #[cfg(feature = "jp2-lam")]
+    pub fn encoded_size(&self, width: u32, height: u32) -> (u32, u32) {
+        // Colour mode does not affect geometry, so ask as a colour panel.
+        crate::encoding::jp2::display_profile(self, 3).encoded_size(width, height)
+    }
+
+    #[cfg(not(feature = "jp2-lam"))]
+    pub fn encoded_size(&self, width: u32, height: u32) -> (u32, u32) {
+        (width, height)
+    }
+
+    /// Whether jp2lam would resample a `width` x `height` source into a
+    /// `box_w` x `box_h` box (it never upscales and ignores sources below its
+    /// 1.25x threshold).
+    pub fn resamples_into(box_w: u32, box_h: u32, width: u32, height: u32) -> bool {
+        Self {
+            max_width: box_w,
+            max_height: box_h,
+            floor: Self::DEFAULT_FLOOR,
+            fallback_quality: 0,
+        }
+        .encoded_size(width, height)
+            != (width, height)
+    }
+}
 
 #[derive(Debug, Clone)]
 /// Encoding settings that determine the output format and its parameters.
@@ -210,6 +270,12 @@ pub enum EncodingSettings {
         /// Quality 0–100; 100 = lossless.
         quality: u8,
     },
+    /// JPEG 2000 via jp2lam at a verified quality floor measured where the
+    /// reader sees the image, with the source pre-resized to that box.
+    /// Channels are inferred from `ImageBuffer.channels`: 1 → grayscale JP2
+    /// scored as e-ink luminance, 3 → RGB JP2 scored as a colour panel.
+    /// **Emits smaller dimensions than the input** — see [`Jp2DisplaySettings`].
+    Jp2Display(Jp2DisplaySettings),
     // /// Indexed 8-bit paletted image encoding.
     // Indexed8(Indexed8Settings),  // Removed - indexed8 encoder deleted
 }
@@ -285,6 +351,24 @@ impl EncodingManager {
                             *_quality,
                         )
                     }
+                    .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+                    Ok::<EncodingResult, Box<dyn Error>>(EncodingResult::Standard(data))
+                }
+                #[cfg(not(feature = "jp2-lam"))]
+                Err(Box::new(crate::encoding::EncodingError::EncoderError(
+                    "jp2-lam feature not enabled; rebuild with --features jp2-lam".to_string(),
+                )) as Box<dyn Error>)
+            }
+            EncodingSettings::Jp2Display(_settings) => {
+                #[cfg(feature = "jp2-lam")]
+                {
+                    let data = encoders::jp2::encode_display(
+                        buffer.data,
+                        buffer.width,
+                        buffer.height,
+                        buffer.channels,
+                        _settings,
+                    )
                     .map_err(|e| Box::new(e) as Box<dyn Error>)?;
                     Ok::<EncodingResult, Box<dyn Error>>(EncodingResult::Standard(data))
                 }

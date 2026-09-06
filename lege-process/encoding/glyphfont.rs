@@ -25,8 +25,8 @@
 //! the SIMD alignment [`Comparator`] for similarity, the same code that drives
 //! JBIG2 symbol mode.
 
-use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -130,6 +130,64 @@ fn component_fits(bitmap: &BitImage) -> bool {
     let loops = trace_pixel_loops(bitmap);
     loops.len() <= MAX_GLYPH_CONTOURS
         && loops.iter().map(Vec::len).sum::<usize>() <= MAX_GLYPH_POINTS
+}
+
+/// Largest ink area (pixels) of a speck at `dpi`: 12 at 240 dpi, 3 at 120.
+/// A full stop in body text is bigger, and specks scale with the square of
+/// the resolution.
+fn speck_area(dpi: i32) -> usize {
+    (dpi * dpi / 4800).max(1) as usize
+}
+
+/// Ink area (pixels) below which nothing is printed matter wherever it
+/// sits: 2 at 240 dpi, 3 at 300, the rule cjb2 applies at 300 dpi. 0 at
+/// 120 dpi, where a two-pixel mark can be a full stop.
+fn tiny_area(dpi: i32) -> usize {
+    (dpi * dpi / 24000) as usize
+}
+
+/// How far (pixels) a speck must be from any other ink to be one: about
+/// 1.3 mm. A tittle sits closer to its stem, a full stop to its word, and
+/// the dots of a halftone to each other.
+fn speck_gap(dpi: i32) -> i32 {
+    (dpi / 20).max(3)
+}
+
+/// Paper grain the binarizer kept: a component of at most [`speck_area`]
+/// ink pixels, no more than a quarter the size of the page's typical
+/// component (`typical`, the upper-quartile box side), with no other ink
+/// within [`speck_gap`] of its box. Text has no such marks, and a font that
+/// keeps them is mostly specks: on a 240-dpi book scan three shapes in four
+/// were used once. Dense marks (halftone dots, a dotted rule) have
+/// neighbours and stay; a lone small letter on an otherwise empty page is
+/// its own typical size and stays too.
+fn is_speck(page: &BitImage, bitmap: &BitImage, bbox: &BBox, dpi: i32, typical: i32) -> bool {
+    let area = bitmap.count_ones();
+    if area == 0 || area > speck_area(dpi) {
+        return false;
+    }
+    if area <= tiny_area(dpi) {
+        return true;
+    }
+    let side = (bbox.xmax - bbox.xmin).max(bbox.ymax - bbox.ymin);
+    if side * 4 > typical {
+        return false;
+    }
+    let gap = speck_gap(dpi);
+    let x0 = (bbox.xmin - gap).max(0) as usize;
+    let y0 = (bbox.ymin - gap).max(0) as usize;
+    let x1 = ((bbox.xmax + gap).max(0) as usize).min(page.width);
+    let y1 = ((bbox.ymax + gap).max(0) as usize).min(page.height);
+    let mut ink = 0usize;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            ink += page.get_usize(x, y) as usize;
+            if ink > area {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Paint a component's ink into a page-sized 8-bit raster (0 = ink).
@@ -254,6 +312,8 @@ pub struct PageAnalysis {
     /// raster (0 = ink) in the page's own pixel space.
     residual: Option<Vec<u8>>,
     residual_components: usize,
+    /// Isolated specks dropped before matching (see [`is_speck`]).
+    specks: usize,
     frame: PageFrame,
     components: Duration,
     frame_time: Duration,
@@ -284,9 +344,20 @@ impl PageAnalysis {
         let (pw, ph) = (page.width, page.height);
         let mut residual: Option<Vec<u8>> = None;
         let mut residual_components = 0usize;
+        let mut specks = 0usize;
+        let mut sides: Vec<i32> = shapes
+            .iter()
+            .map(|(_, b)| (b.xmax - b.xmin).max(b.ymax - b.ymin))
+            .collect();
+        sides.sort_unstable();
+        let typical = sides.get(sides.len() * 3 / 4).copied().unwrap_or(0);
         let shapes: Vec<(BitImage, BBox)> = shapes
             .into_iter()
             .filter(|(bitmap, bbox)| {
+                if is_speck(page, bitmap, bbox, dpi, typical) {
+                    specks += 1;
+                    return false;
+                }
                 if component_fits(bitmap) {
                     return true;
                 }
@@ -326,6 +397,7 @@ impl PageAnalysis {
             shapes,
             residual,
             residual_components,
+            specks,
             frame,
             components,
             frame_time,
@@ -974,6 +1046,77 @@ impl Gate {
     }
 }
 
+/// A multiplicative hasher for the small integer keys of the candidate
+/// index. A search touches some fifty `(width, height)` neighbours per
+/// component, so the keyed SipHash of the default map was a measurable
+/// share of matching; these keys are never attacker-chosen.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(u64::from(i));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
+
+/// What a read-only search found for one component: the prototype it
+/// matches and how, or nothing. Pages probe all their components against
+/// the dictionary in parallel this way, and only folding the results in
+/// (votes, refreshes, new prototypes) runs in sequence.
+#[derive(Clone, Copy, Debug)]
+enum Probe {
+    /// Bit-for-bit the same as a prototype's matcher.
+    Exact(u32),
+    /// Within the strict gate of a prototype, at `(dx, dy)`.
+    Strict(u32, i32, i32),
+    /// Within the tolerant gate of an established prototype, at `(dx, dy)`.
+    Tolerant(u32, i32, i32),
+    /// No prototype fits.
+    Miss,
+}
+
+/// Candidates looked at and comparators run in one search.
+#[derive(Clone, Copy, Debug, Default)]
+struct SearchStats {
+    candidates: u64,
+    compared: u64,
+}
+
+/// A prototype's place in the candidate and exact indexes, taken before
+/// its matcher changes so it can be moved afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexKeys {
+    size: (u32, u32),
+    class: u32,
+    black: u32,
+    exact: (u32, u32, u64),
+}
+
 /// Where the dictionary's time goes, for the diagnostic dump.
 #[derive(Clone, Copy, Debug, Default)]
 struct Profile {
@@ -1045,38 +1188,46 @@ pub struct GlyphDictionary {
     /// Matcher (width, height) → `(ink, prototype index)` sorted by ink,
     /// for cheap candidate lookup: a search starts at the first admissible
     /// ink count and stops at the last, touching no other prototype.
-    buckets: HashMap<(u32, u32, u32), Vec<(u32, u32)>>,
+    buckets: FastMap<(u32, u32, u32), Vec<(u32, u32)>>,
     /// Matcher (width, height) -> populated structural classes. Class zero
     /// has no stroke interior; a stroked shape uses `counters + 1`.
     /// Matching a stroked occurrence can therefore skip every prototype
     /// whose counter identity would reject it after comparison anyway.
-    bucket_classes: HashMap<(u32, u32), Vec<u32>>,
+    bucket_classes: FastMap<(u32, u32), Vec<u32>>,
     /// Exact matcher bitmap -> prototype ids, before the similarity search.
     /// Scanned books repeat many glyph bitmaps byte-for-byte; those need no
     /// alignment or difference pass at all.
-    exact: HashMap<(u32, u32, u64), Vec<u32>>,
+    exact: FastMap<(u32, u32, u64), Vec<u32>>,
     comparator: Comparator,
     instances: usize,
     /// Components no glyph can represent, carried by the page residual.
     residual_components: usize,
+    /// Isolated specks dropped before matching (see [`is_speck`]).
+    specks: usize,
     /// Outline glyphs whose curve fit passed its check in the last build;
     /// the rest were emitted as staircases.
-    fitted: std::cell::Cell<usize>,
+    fitted: AtomicUsize,
     /// Prototype → its position variants (see `SEMANTIC_RISE_MIN_PX`).
     variants: HashMap<u32, Vec<u32>>,
     /// Part prototypes (in reading order) → the compounds made of them.
     compounds: HashMap<Vec<u32>, Vec<u32>>,
-    /// (shape identity, recognized text) → the glyph id that carries that
-    /// text. The first text a shape is recognized as keeps the shape's own
-    /// id; every other text gets a text variant, so `O` and `0` extract as
+    /// Shape identity → the first text it was recognized as. Occurrences
+    /// read as that text keep their own glyph ids; every other text gets a
+    /// text variant (see `text_variants`), so `O` and `0` extract as
     /// themselves even when they share one outline.
-    text_ids: HashMap<u32, HashMap<String, u32>>,
+    primary_text: HashMap<u32, String>,
+    /// (glyph, recognized text) → the text variant of exactly that glyph
+    /// which carries the text. Keyed by the occurrence's own glyph, not by
+    /// the shape: the shape's position variants each sit at their own
+    /// baseline offset, and an occurrence handed another variant's id would
+    /// be drawn at that other offset.
+    text_variants: HashMap<(u32, String), u32>,
     /// Prototype → text it stood for, with vote counts, from `record_text`.
     text_votes: HashMap<u32, HashMap<String, u32>>,
     /// Glyph ids the last build mapped to text.
-    mapped: std::cell::Cell<usize>,
+    mapped: AtomicUsize,
     /// Outline fitting time of the last build.
-    outlines: std::cell::Cell<Duration>,
+    outlines: std::sync::atomic::AtomicU64,
     /// `(folded, into)` pairs the tolerant end-of-document pass made, for
     /// the diagnostic dump.
     tolerant_folds: Vec<(u32, u32)>,
@@ -1103,6 +1254,10 @@ impl GlyphDictionary {
         self.residual_components
     }
 
+    pub fn specks(&self) -> usize {
+        self.specks
+    }
+
     /// Segment a binarized page (1 = ink) into components, match each against
     /// the dictionary (growing it as needed), and return the page's glyph
     /// placements grouped into lines.
@@ -1119,6 +1274,7 @@ impl GlyphDictionary {
             shapes,
             residual,
             residual_components,
+            specks,
             frame,
             components,
             frame_time,
@@ -1126,13 +1282,85 @@ impl GlyphDictionary {
             median_size: _,
         } = analysis;
         self.residual_components += residual_components;
+        self.specks += specks;
         self.profile.components += components;
         self.profile.frame += frame_time;
         self.profile.features += features_time;
 
+        // Every component looks for its prototype at once, against the
+        // dictionary as the page found it: the searches only read. Folding
+        // the answers in below is what mutates, and it is cheap.
+        let started = Instant::now();
+        let probes: Vec<(Probe, SearchStats, SearchStats)> = shapes
+            .par_iter()
+            .map_init(Comparator::default, |comparator, (bitmap, _, features)| {
+                self.probe(comparator, bitmap, features)
+            })
+            .collect();
+        self.profile.strict += started.elapsed();
+        for (_, strict, tolerant) in &probes {
+            self.profile.strict_candidates += strict.candidates;
+            self.profile.strict_compared += strict.compared;
+            self.profile.tolerant_candidates += tolerant.candidates;
+            self.profile.tolerant_compared += tolerant.compared;
+        }
+
+        // Prototypes whose matcher changed, or that were retired, while this
+        // page folds in: a probe that found one of them is stale and searches
+        // again. Prototypes this page adds start at `first_new`.
+        let first_new = self.protos.len() as u32;
+        let mut dirty: HashSet<u32> = HashSet::new();
         let mut instances = Vec::with_capacity(shapes.len());
-        for (bitmap, bbox, features) in shapes {
-            let (glyph, dx, dy) = self.match_or_insert(bitmap, features);
+        for ((bitmap, bbox, features), (probe, ..)) in shapes.into_iter().zip(probes) {
+            let (glyph, dx, dy) = match probe {
+                Probe::Exact(idx) if !dirty.contains(&idx) => {
+                    self.profile.exact_hits += 1;
+                    self.profile.strict_hits += 1;
+                    self.fold(idx, 0, 0, &bitmap, &mut dirty)
+                }
+                Probe::Strict(idx, dx, dy) if !dirty.contains(&idx) => {
+                    self.profile.strict_hits += 1;
+                    self.fold(idx, dx, dy, &bitmap, &mut dirty)
+                }
+                Probe::Tolerant(idx, dx, dy) if !dirty.contains(&idx) => {
+                    // A prototype this page added may fit strictly, and a
+                    // strict match always wins over a tolerant one.
+                    let started = Instant::now();
+                    let strict = if self.protos.len() as u32 > first_new || !dirty.is_empty() {
+                        self.find_match(&bitmap, &features, Gate::Strict, |i, _| {
+                            i >= first_new || dirty.contains(&i)
+                        })
+                    } else {
+                        None
+                    };
+                    self.profile.strict += started.elapsed();
+                    match strict {
+                        Some((idx, dx, dy)) => {
+                            self.profile.strict_hits += 1;
+                            self.fold(idx, dx, dy, &bitmap, &mut dirty)
+                        }
+                        None => {
+                            self.profile.tolerant_hits += 1;
+                            self.fold(idx, dx, dy, &bitmap, &mut dirty)
+                        }
+                    }
+                }
+                // Nothing the page found fits: only what has changed since
+                // — the prototypes this page added and those it rebuilt —
+                // is worth searching again before the shape is added.
+                Probe::Miss => {
+                    let changed = dirty.clone();
+                    self.match_or_insert_among(
+                        bitmap,
+                        features,
+                        |i| i >= first_new || changed.contains(&i),
+                        &mut dirty,
+                    )
+                }
+                // The probe named a prototype that has changed since; search
+                // everything again, as a page on its own would.
+                _ => self.match_or_insert(bitmap, features, &mut dirty),
+            };
             let proto = &self.protos[glyph as usize];
             // The component's bottom-left corner, levelled; its bottom is
             // what sits on the baseline.
@@ -1364,10 +1592,11 @@ impl GlyphDictionary {
 
     /// The glyph id that stands for `text` in glyph `idx`'s shape: `idx`
     /// itself for the first text the shape is recognized as, else a text
-    /// variant drawing the same outline with its own text votes.
+    /// variant of `idx` drawing the same outline at the same place with its
+    /// own text votes. Whatever comes back sits exactly where `idx` does.
     fn text_identity(&mut self, idx: u32, text: &str) -> u32 {
-        // A text variant votes with the shape it came from, so the identity
-        // set is keyed by the shape, not by the occurrence.
+        // A text variant votes with the shape it came from, so the primary
+        // text is keyed by the shape, not by the occurrence.
         let owner = {
             let p = &self.protos[idx as usize];
             if p.text_variant {
@@ -1377,20 +1606,20 @@ impl GlyphDictionary {
                 self.tally_key(idx)
             }
         };
-        let taken = self.text_ids.entry(owner).or_default();
-        if taken.is_empty() {
-            taken.insert(text.to_string(), idx);
+        let primary = self
+            .primary_text
+            .entry(owner)
+            .or_insert_with(|| text.to_string());
+        if *primary == text {
             return idx;
         }
-        if let Some(&existing) = taken.get(text) {
+        if let Some(&existing) = self.text_variants.get(&(idx, text.to_string())) {
             self.protos[existing as usize].uses += 1;
             return existing;
         }
         let variant_idx = self.protos.len() as u32;
-        self.text_ids
-            .get_mut(&owner)
-            .expect("just created")
-            .insert(text.to_string(), variant_idx);
+        self.text_variants
+            .insert((idx, text.to_string()), variant_idx);
         let descent = self.protos[idx as usize].descent.unwrap_or(0);
         let mut variant = Prototype::position_variant(&self.protos[idx as usize], idx, descent);
         variant.text_variant = true;
@@ -1640,7 +1869,25 @@ impl GlyphDictionary {
     /// Find the prototype this component belongs to, or add it as a new one.
     /// Returns `(index, dx, dy)`: the prototype frame's offset relative to
     /// the component's top-left.
-    fn match_or_insert(&mut self, bitmap: BitImage, features: ShapeFeatures) -> (u32, i32, i32) {
+    fn match_or_insert(
+        &mut self,
+        bitmap: BitImage,
+        features: ShapeFeatures,
+        dirty: &mut HashSet<u32>,
+    ) -> (u32, i32, i32) {
+        self.match_or_insert_among(bitmap, features, |_| true, dirty)
+    }
+
+    /// [`Self::match_or_insert`] considering only the prototypes `among`
+    /// admits. A page whose parallel probe of a component found nothing
+    /// passes the prototypes that have changed since the probe.
+    fn match_or_insert_among(
+        &mut self,
+        bitmap: BitImage,
+        features: ShapeFeatures,
+        among: impl Fn(u32) -> bool,
+        dirty: &mut HashSet<u32>,
+    ) -> (u32, i32, i32) {
         let w = bitmap.width as u32;
         let h = bitmap.height as u32;
 
@@ -1648,19 +1895,22 @@ impl GlyphDictionary {
         // type inked a little differently, judged only against prototypes
         // established enough to have a clean majority shape.
         let started = Instant::now();
-        let mut found = self.find_exact(&bitmap).map(|idx| (idx, 0, 0));
+        let mut found = self
+            .find_exact(&bitmap)
+            .filter(|&idx| among(idx))
+            .map(|idx| (idx, 0, 0));
         if found.is_some() {
             self.profile.exact_hits += 1;
         } else {
-            found = self.find_match(&bitmap, &features, Gate::Strict, |_, _| true);
+            found = self.find_match(&bitmap, &features, Gate::Strict, |i, _| among(i));
         }
         self.profile.strict += started.elapsed();
         if found.is_some() {
             self.profile.strict_hits += 1;
         } else if features.stroked {
             let started = Instant::now();
-            found = self.find_match(&bitmap, &features, Gate::Tolerant, |_, p| {
-                p.uses >= ESTABLISHED_USES
+            found = self.find_match(&bitmap, &features, Gate::Tolerant, |i, p| {
+                among(i) && p.uses >= ESTABLISHED_USES
             });
             self.profile.tolerant += started.elapsed();
             if found.is_some() {
@@ -1668,24 +1918,7 @@ impl GlyphDictionary {
             }
         }
         if let Some((idx, dx, dy)) = found {
-            let started = Instant::now();
-            let proto = &mut self.protos[idx as usize];
-            // The matcher sits at `matcher_offset` in the frame and at
-            // `(dx, dy)` in the instance, so the instance's origin in frame
-            // coordinates is `matcher_offset − (dx, dy)`.
-            let origin = (proto.matcher_offset.0 - dx, proto.matcher_offset.1 - dy);
-            proto.accumulate(&bitmap, origin);
-            let frame_dx = dx - proto.matcher_offset.0;
-            let frame_dy = dy - proto.matcher_offset.1;
-            if proto.uses >= proto.next_refresh {
-                proto.next_refresh = proto.next_refresh * 2 - 1;
-                self.refresh(idx);
-                // With the noise voted out, a young cluster often turns out
-                // to be an established glyph whose first instance it missed.
-                self.try_alias(idx, Gate::Strict);
-            }
-            self.profile.fold += started.elapsed();
-            return (idx, frame_dx, frame_dy);
+            return self.fold(idx, dx, dy, &bitmap, dirty);
         }
 
         self.profile.inserted += 1;
@@ -1704,6 +1937,79 @@ impl GlyphDictionary {
         );
         Self::index_exact(&mut self.exact, &self.protos[idx as usize].matcher, idx);
         (idx, 0, 0)
+    }
+
+    /// The read-only half of [`Self::match_or_insert`]: what `bitmap` would
+    /// match right now, and the search counts, without touching the
+    /// dictionary. Safe to run for many components at once.
+    fn probe(
+        &self,
+        comparator: &mut Comparator,
+        bitmap: &BitImage,
+        features: &ShapeFeatures,
+    ) -> (Probe, SearchStats, SearchStats) {
+        if let Some(idx) = self.find_exact(bitmap) {
+            return (
+                Probe::Exact(idx),
+                SearchStats::default(),
+                SearchStats::default(),
+            );
+        }
+        let (strict, strict_stats) =
+            self.search(comparator, bitmap, features, Gate::Strict, |_, _| true);
+        if let Some((idx, dx, dy)) = strict {
+            return (
+                Probe::Strict(idx, dx, dy),
+                strict_stats,
+                SearchStats::default(),
+            );
+        }
+        if !features.stroked {
+            return (Probe::Miss, strict_stats, SearchStats::default());
+        }
+        let (tolerant, tolerant_stats) =
+            self.search(comparator, bitmap, features, Gate::Tolerant, |_, p| {
+                p.uses >= ESTABLISHED_USES
+            });
+        match tolerant {
+            Some((idx, dx, dy)) => (Probe::Tolerant(idx, dx, dy), strict_stats, tolerant_stats),
+            None => (Probe::Miss, strict_stats, tolerant_stats),
+        }
+    }
+
+    /// Fold an instance that matched prototype `idx` with its matcher at
+    /// `(dx, dy)` in the instance. Returns `(idx, frame_dx, frame_dy)`, the
+    /// prototype frame's offset relative to the instance's top-left. A
+    /// prototype whose matcher is rebuilt here, or that is retired into
+    /// another, goes into `dirty`: earlier probes that named it no longer
+    /// describe it.
+    fn fold(
+        &mut self,
+        idx: u32,
+        dx: i32,
+        dy: i32,
+        bitmap: &BitImage,
+        dirty: &mut HashSet<u32>,
+    ) -> (u32, i32, i32) {
+        let started = Instant::now();
+        let proto = &mut self.protos[idx as usize];
+        // The matcher sits at `matcher_offset` in the frame and at
+        // `(dx, dy)` in the instance, so the instance's origin in frame
+        // coordinates is `matcher_offset − (dx, dy)`.
+        let origin = (proto.matcher_offset.0 - dx, proto.matcher_offset.1 - dy);
+        proto.accumulate(bitmap, origin);
+        let frame_dx = dx - proto.matcher_offset.0;
+        let frame_dy = dy - proto.matcher_offset.1;
+        if proto.uses >= proto.next_refresh {
+            proto.next_refresh = proto.next_refresh * 2 - 1;
+            self.refresh(idx);
+            dirty.insert(idx);
+            // With the noise voted out, a young cluster often turns out
+            // to be an established glyph whose first instance it missed.
+            self.try_alias(idx, Gate::Strict);
+        }
+        self.profile.fold += started.elapsed();
+        (idx, frame_dx, frame_dy)
     }
 
     fn feature_class(stroked: bool, counters: u32) -> u32 {
@@ -1738,14 +2044,14 @@ impl GlyphDictionary {
         })
     }
 
-    fn index_exact(exact: &mut HashMap<(u32, u32, u64), Vec<u32>>, bitmap: &BitImage, idx: u32) {
+    fn index_exact(exact: &mut FastMap<(u32, u32, u64), Vec<u32>>, bitmap: &BitImage, idx: u32) {
         let ids = exact.entry(Self::exact_key(bitmap)).or_default();
         let at = ids.partition_point(|&known| known < idx);
         ids.insert(at, idx);
     }
 
     fn unindex_exact(
-        exact: &mut HashMap<(u32, u32, u64), Vec<u32>>,
+        exact: &mut FastMap<(u32, u32, u64), Vec<u32>>,
         key: (u32, u32, u64),
         idx: u32,
     ) {
@@ -1756,8 +2062,8 @@ impl GlyphDictionary {
 
     /// Put prototype `idx` with `black` ink into its bucket, in ink order.
     fn index(
-        buckets: &mut HashMap<(u32, u32, u32), Vec<(u32, u32)>>,
-        classes: &mut HashMap<(u32, u32), Vec<u32>>,
+        buckets: &mut FastMap<(u32, u32, u32), Vec<(u32, u32)>>,
+        classes: &mut FastMap<(u32, u32), Vec<u32>>,
         key: (u32, u32),
         class: u32,
         black: u32,
@@ -1774,7 +2080,7 @@ impl GlyphDictionary {
 
     /// Take prototype `idx` out of the bucket for `key`.
     fn unindex(
-        buckets: &mut HashMap<(u32, u32, u32), Vec<(u32, u32)>>,
+        buckets: &mut FastMap<(u32, u32, u32), Vec<(u32, u32)>>,
         key: (u32, u32),
         class: u32,
         idx: u32,
@@ -1794,6 +2100,33 @@ impl GlyphDictionary {
         gate: Gate,
         accept: impl Fn(u32, &Prototype) -> bool,
     ) -> Option<(u32, i32, i32)> {
+        let mut comparator = std::mem::take(&mut self.comparator);
+        let (found, stats) = self.search(&mut comparator, bitmap, features, gate, accept);
+        self.comparator = comparator;
+        match gate {
+            Gate::Strict => {
+                self.profile.strict_candidates += stats.candidates;
+                self.profile.strict_compared += stats.compared;
+            }
+            Gate::Tolerant => {
+                self.profile.tolerant_candidates += stats.candidates;
+                self.profile.tolerant_compared += stats.compared;
+            }
+        }
+        found
+    }
+
+    /// [`Self::find_match`] without the bookkeeping: reads the dictionary
+    /// only, so any number of searches can run at once, each with its own
+    /// comparator scratch.
+    fn search(
+        &self,
+        comparator: &mut Comparator,
+        bitmap: &BitImage,
+        features: &ShapeFeatures,
+        gate: Gate,
+        accept: impl Fn(u32, &Prototype) -> bool,
+    ) -> (Option<(u32, i32, i32)>, SearchStats) {
         let w = bitmap.width as u32;
         let h = bitmap.height as u32;
         let black = features.black;
@@ -1864,7 +2197,7 @@ impl GlyphDictionary {
                         // The comparator only finds the alignment; its word-wise
                         // error is loose, so it gets a loose budget and the
                         // packed diff decides.
-                        let Some(r) = self.comparator.compare_for_refine_family(
+                        let Some(r) = comparator.compare_for_refine_family(
                             bitmap,
                             &proto.matcher,
                             gate.comparator_budget(ink),
@@ -1906,45 +2239,51 @@ impl GlyphDictionary {
                 }
             }
         }
-        match gate {
-            Gate::Strict => {
-                self.profile.strict_candidates += candidates;
-                self.profile.strict_compared += compared;
-            }
-            Gate::Tolerant => {
-                self.profile.tolerant_candidates += candidates;
-                self.profile.tolerant_compared += compared;
-            }
-        }
-        best.map(|(_, idx, dx, dy)| (idx, dx, dy))
+        (
+            best.map(|(_, idx, dx, dy)| (idx, dx, dy)),
+            SearchStats {
+                candidates,
+                compared,
+            },
+        )
     }
 
     /// Rebuild prototype `idx`'s matcher from its votes, keeping the bucket
     /// index in step.
     fn refresh(&mut self, idx: u32) {
-        let proto = &mut self.protos[idx as usize];
-        let old_key = (proto.matcher.width as u32, proto.matcher.height as u32);
-        let old_exact = Self::exact_key(&proto.matcher);
-        let old_black = proto.black;
-        let old_class = Self::feature_class(proto.stroked, proto.counters);
-        proto.refresh_matcher();
-        let black = proto.black;
-        let new_key = (proto.matcher.width as u32, proto.matcher.height as u32);
-        let new_class = Self::feature_class(proto.stroked, proto.counters);
-        if new_key != old_key || new_class != old_class || black != old_black {
-            Self::unindex(&mut self.buckets, old_key, old_class, idx);
+        let old = self.index_keys(idx);
+        self.protos[idx as usize].refresh_matcher();
+        self.reindex(idx, old);
+    }
+
+    /// Where prototype `idx` sits in the candidate and exact indexes.
+    fn index_keys(&self, idx: u32) -> IndexKeys {
+        let proto = &self.protos[idx as usize];
+        IndexKeys {
+            size: (proto.matcher.width as u32, proto.matcher.height as u32),
+            class: Self::feature_class(proto.stroked, proto.counters),
+            black: proto.black,
+            exact: Self::exact_key(&proto.matcher),
+        }
+    }
+
+    /// Move prototype `idx` from where `old` says it was indexed to where
+    /// its current matcher belongs.
+    fn reindex(&mut self, idx: u32, old: IndexKeys) {
+        let new = self.index_keys(idx);
+        if new.size != old.size || new.class != old.class || new.black != old.black {
+            Self::unindex(&mut self.buckets, old.size, old.class, idx);
             Self::index(
                 &mut self.buckets,
                 &mut self.bucket_classes,
-                new_key,
-                new_class,
-                black,
+                new.size,
+                new.class,
+                new.black,
                 idx,
             );
         }
-        let new_exact = Self::exact_key(&self.protos[idx as usize].matcher);
-        if new_exact != old_exact {
-            Self::unindex_exact(&mut self.exact, old_exact, idx);
+        if new.exact != old.exact {
+            Self::unindex_exact(&mut self.exact, old.exact, idx);
             Self::index_exact(&mut self.exact, &self.protos[idx as usize].matcher, idx);
         }
     }
@@ -1954,27 +2293,57 @@ impl GlyphDictionary {
     /// "Heavier" breaks ties by index, so two shapes with equal counts can
     /// still fold one into the other.
     fn try_alias(&mut self, idx: u32, gate: Gate) -> bool {
-        let (matcher, features, offset, uses) = {
-            let p = &self.protos[idx as usize];
-            if gate == Gate::Tolerant && !p.stroked {
-                return false;
+        let mut comparator = std::mem::take(&mut self.comparator);
+        let (found, stats) = self.alias_target(&mut comparator, idx, gate);
+        self.comparator = comparator;
+        match gate {
+            Gate::Strict => {
+                self.profile.strict_candidates += stats.candidates;
+                self.profile.strict_compared += stats.compared;
             }
-            (
-                p.matcher.clone(),
-                ShapeFeatures {
-                    profile: p.profile.clone(),
-                    black: p.black,
-                    stroked: p.stroked,
-                    counters: p.counters,
-                },
-                p.matcher_offset,
-                p.uses,
-            )
+            Gate::Tolerant => {
+                self.profile.tolerant_candidates += stats.candidates;
+                self.profile.tolerant_compared += stats.compared;
+            }
+        }
+        match found {
+            Some((target, dx, dy)) => {
+                self.apply_alias(idx, target, dx, dy, gate);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The read-only half of [`Self::try_alias`]: the heavier prototype
+    /// `idx`'s current shape matches under `gate`, with the target's matcher
+    /// at `(dx, dy)` in `idx`'s matcher, if there is one.
+    fn alias_target(
+        &self,
+        comparator: &mut Comparator,
+        idx: u32,
+        gate: Gate,
+    ) -> (Option<(u32, i32, i32)>, SearchStats) {
+        let p = &self.protos[idx as usize];
+        if gate == Gate::Tolerant && !p.stroked {
+            return (None, SearchStats::default());
+        }
+        let features = ShapeFeatures {
+            profile: p.profile.clone(),
+            black: p.black,
+            stroked: p.stroked,
+            counters: p.counters,
         };
-        let heavier = |i: u32, p: &Prototype| p.uses > uses || (p.uses == uses && i < idx);
-        let Some((target, dx, dy)) = self.find_match(&matcher, &features, gate, heavier) else {
-            return false;
-        };
+        let uses = p.uses;
+        let heavier = |i: u32, q: &Prototype| q.uses > uses || (q.uses == uses && i < idx);
+        self.search(comparator, &p.matcher, &features, gate, heavier)
+    }
+
+    /// The mutating half of [`Self::try_alias`]: retire `idx` into `target`,
+    /// whose matcher sits at `(dx, dy)` in `idx`'s matcher.
+    fn apply_alias(&mut self, idx: u32, target: u32, dx: i32, dy: i32, gate: Gate) {
+        let keys = self.index_keys(idx);
+        let offset = self.protos[idx as usize].matcher_offset;
         // Target matcher pixel q is at `offset + (dx, dy) + q` in this frame
         // and at `target.matcher_offset + q` in the target's; the difference
         // is where the target's frame origin lands here.
@@ -1983,16 +2352,60 @@ impl GlyphDictionary {
             offset.0 + dx - t.matcher_offset.0,
             offset.1 + dy - t.matcher_offset.1,
         );
-        let key = (matcher.width as u32, matcher.height as u32);
-        let exact_key = Self::exact_key(&matcher);
-        let class = Self::feature_class(features.stroked, features.counters);
-        Self::unindex(&mut self.buckets, key, class, idx);
-        Self::unindex_exact(&mut self.exact, exact_key, idx);
+        Self::unindex(&mut self.buckets, keys.size, keys.class, idx);
+        Self::unindex_exact(&mut self.exact, keys.exact, idx);
         self.protos[idx as usize].alias = Some((target, origin.0, origin.1));
         if gate == Gate::Tolerant {
             self.tolerant_folds.push((idx, target));
         }
-        true
+    }
+
+    /// One aliasing pass of [`Self::finalize`] over `order`, in that order.
+    /// Every prototype looks for its target at once against the index as
+    /// the pass starts; a target that an earlier prototype in the order has
+    /// since retired is no longer there to fold into, so that prototype
+    /// searches again on its own. The result is what the sequential pass
+    /// would have produced: aliasing only ever removes candidates, and the
+    /// best of a set that is still present is the best of what remains.
+    fn alias_pass(&mut self, order: &[u32], gate: Gate) {
+        let probes: Vec<(Option<(u32, i32, i32)>, SearchStats)> = order
+            .par_iter()
+            .map_init(Comparator::default, |comparator, &idx| {
+                if gate == Gate::Tolerant && !self.protos[idx as usize].is_simple() {
+                    return (None, SearchStats::default());
+                }
+                self.alias_target(comparator, idx, gate)
+            })
+            .collect();
+        let mut retired: HashSet<u32> = HashSet::new();
+        for (&idx, (found, stats)) in order.iter().zip(probes) {
+            match gate {
+                Gate::Strict => {
+                    self.profile.strict_candidates += stats.candidates;
+                    self.profile.strict_compared += stats.compared;
+                }
+                Gate::Tolerant => {
+                    self.profile.tolerant_candidates += stats.candidates;
+                    self.profile.tolerant_compared += stats.compared;
+                }
+            }
+            if gate == Gate::Tolerant && !self.protos[idx as usize].is_simple() {
+                continue;
+            }
+            match found {
+                Some((target, dx, dy)) if !retired.contains(&target) => {
+                    self.apply_alias(idx, target, dx, dy, gate);
+                    retired.insert(idx);
+                }
+                Some(_) => {
+                    if self.try_alias(idx, gate) {
+                        retired.insert(idx);
+                    }
+                }
+                // Nothing matched among more candidates than remain now.
+                None => {}
+            }
+        }
     }
 
     /// Follow aliases to the prototype that owns the outline, accumulating
@@ -2016,38 +2429,48 @@ impl GlyphDictionary {
         let live: Vec<u32> = (0..self.protos.len() as u32)
             .filter(|&i| self.protos[i as usize].is_simple())
             .collect();
-        for &idx in &live {
-            if self.protos[idx as usize].uses >= 2 {
-                self.refresh(idx);
-            }
+        // Every matcher is rebuilt from its votes independently; only the
+        // index moves have to follow one another.
+        let refreshed: Vec<u32> = live
+            .iter()
+            .copied()
+            .filter(|&i| self.protos[i as usize].uses >= 2)
+            .collect();
+        let old_keys: Vec<IndexKeys> = refreshed.iter().map(|&i| self.index_keys(i)).collect();
+        {
+            let refresh: HashSet<u32> = refreshed.iter().copied().collect();
+            self.protos
+                .par_iter_mut()
+                .enumerate()
+                .filter(|(i, _)| refresh.contains(&(*i as u32)))
+                .for_each(|(_, proto)| {
+                    proto.refresh_matcher();
+                });
+        }
+        for (idx, old) in refreshed.into_iter().zip(old_keys) {
+            self.reindex(idx, old);
         }
         let mut order = live;
         order.sort_by_key(|&i| std::cmp::Reverse(self.protos[i as usize].uses));
-        for &idx in &order {
-            self.try_alias(idx, Gate::Strict);
-        }
+        self.alias_pass(&order, Gate::Strict);
         // Heaviest first, so that whatever a shape folds into has already
         // had its turn and stays a root: a tolerant fold is only ever one
         // hop, and two hops of "within a pixel" could add up to a different
         // letter.
-        for idx in order {
-            if self.protos[idx as usize].is_simple() {
-                self.try_alias(idx, Gate::Tolerant);
-            }
-        }
+        self.alias_pass(&order, Gate::Tolerant);
         self.profile.finalize += started.elapsed();
     }
 
     /// Outline glyphs the last [`build_embedded_font`](Self::build_embedded_font)
     /// emitted as fitted curves rather than staircases.
     pub fn fitted(&self) -> usize {
-        self.fitted.get()
+        self.fitted.load(Ordering::Relaxed)
     }
 
     /// Glyph ids the last [`build_embedded_font`](Self::build_embedded_font)
     /// mapped to text.
     pub fn mapped(&self) -> usize {
-        self.mapped.get()
+        self.mapped.load(Ordering::Relaxed)
     }
 
     /// Prototypes that own an outline (neither aliases nor compounds).
@@ -2139,12 +2562,16 @@ impl GlyphDictionary {
             hist[3]
         )?;
         eprintln!(
-            "[glyphfont] {} shapes: {} used once, {} used 2-3 times, {} used 4-15 times, {} used 16+ times",
+            "[glyphfont] {} shapes: {} used once, {} used 2-3 times, {} used 4-15 times, {} used 16+ times; {} glyph ids ({} position variants, {} compounds, {} text variants)",
             simple.len(),
             hist[0],
             hist[1],
             hist[2],
-            hist[3]
+            hist[3],
+            self.protos.len(),
+            self.variants.values().map(Vec::len).sum::<usize>(),
+            self.compounds.values().map(Vec::len).sum::<usize>(),
+            self.protos.iter().filter(|p| p.text_variant).count(),
         );
 
         let cell_w = simple
@@ -2449,7 +2876,8 @@ impl GlyphDictionary {
         })
         .map_err(|e| anyhow!("glyph font: {e}"))?;
 
-        self.outlines.set(outlines);
+        self.outlines
+            .store(outlines.as_nanos() as u64, Ordering::Relaxed);
         if std::env::var_os("LEGE_GLYPH_DUMP").is_some() {
             eprintln!(
                 "[glyphfont] time: {}",
@@ -2462,14 +2890,14 @@ impl GlyphDictionary {
         }
 
         let entries = self.to_unicode_entries();
-        self.mapped.set(entries.len());
+        self.mapped.store(entries.len(), Ordering::Relaxed);
         let to_unicode = if entries.is_empty() {
             ToUnicode::None
         } else {
             ToUnicode::Custom(to_unicode_cmap(&entries).into())
         };
 
-        self.fitted.set(fitted_count);
+        self.fitted.store(fitted_count, Ordering::Relaxed);
         Ok(EmbeddedFont {
             data: built.data.into(),
             post_script_name: FONT_NAME.to_string(),
@@ -2575,9 +3003,14 @@ fn group_lines(mut instances: Vec<GlyphInstance>) -> Vec<GlyphLine> {
             line.members.sort_by_key(|i| (i.x, i.y));
             // The baseline: a fit through the bottoms where the line is
             // long enough to support one (page curl leaves a line tilted
-            // after the page-wide skew is gone), else the median bottom.
-            // Each glyph's descent is measured from the baseline under it,
-            // and the line is placed level at the baseline's midpoint.
+            // after the page-wide skew is gone), evaluated at the line's
+            // midpoint, else the median bottom. The PDF draws the whole
+            // line level at that one height — the text matrix is never
+            // tilted — so every glyph's descent is measured from that same
+            // height, not from the fit under it: measured from a tilted fit
+            // and drawn on a level line, glyphs at the ends of a tilted
+            // line (or of one whose fit a stray shape has tilted) would
+            // ride above or below their ink by the tilt.
             let points: Vec<(f64, f64)> = line
                 .members
                 .iter()
@@ -2588,32 +3021,26 @@ fn group_lines(mut instances: Vec<GlyphInstance>) -> Vec<GlyphLine> {
                     )
                 })
                 .collect();
-            let (baseline_y, baseline_at): (i32, Box<dyn Fn(f64) -> i32>) =
-                match fit_baseline(&points) {
-                    Some((slope, intercept)) => {
-                        let mid_x = (points[0].0 + points[points.len() - 1].0) / 2.0;
-                        (
-                            (intercept + slope * mid_x).round() as i32,
-                            Box::new(move |x| (intercept + slope * x).round() as i32),
-                        )
-                    }
-                    None => {
-                        let mut bottoms: Vec<i32> =
-                            line.members.iter().map(|i| i.y + i.height as i32).collect();
-                        bottoms.sort_unstable();
-                        let median = bottoms[(bottoms.len() - 1) / 2];
-                        (median, Box::new(move |_| median))
-                    }
-                };
+            let baseline_y = match fit_baseline(&points) {
+                Some((slope, intercept)) => {
+                    let mid_x = (points[0].0 + points[points.len() - 1].0) / 2.0;
+                    (intercept + slope * mid_x).round() as i32
+                }
+                None => {
+                    let mut bottoms: Vec<i32> =
+                        line.members.iter().map(|i| i.y + i.height as i32).collect();
+                    bottoms.sort_unstable();
+                    bottoms[(bottoms.len() - 1) / 2]
+                }
+            };
             let glyphs = line
                 .members
                 .iter()
-                .zip(&points)
-                .map(|(i, &(xc, _))| PlacedGlyph {
+                .map(|i| PlacedGlyph {
                     glyph: i.glyph,
                     x: i.x,
                     width: i.width,
-                    rise_px: (i.y + i.height as i32) - baseline_at(xc),
+                    rise_px: (i.y + i.height as i32) - baseline_y,
                 })
                 .collect();
             GlyphLine { baseline_y, glyphs }
@@ -2875,9 +3302,10 @@ impl GlyphFontSession {
             .lock()
             .map_err(|_| anyhow!("glyph font dictionary poisoned"))?;
         let dump = std::env::var_os("LEGE_GLYPH_DUMP");
+        // Banks are independent dictionaries: each folds its own shapes.
+        dicts.par_iter_mut().for_each(GlyphDictionary::finalize);
         let mut fonts = Vec::with_capacity(dicts.len());
         for (bank, dict) in dicts.iter_mut().enumerate() {
-            dict.finalize();
             if let Some(dir) = dump.as_ref() {
                 let dir = std::path::Path::new(dir);
                 let dir = if bank == 0 {
@@ -2916,6 +3344,12 @@ impl GlyphFontSession {
             dicts.iter().map(|dict| dict.instances()).sum(),
             dicts.iter().map(|dict| dict.residual_components()).sum(),
         )
+    }
+
+    /// Isolated specks dropped from the pages so far (see [`is_speck`]).
+    pub fn specks(&self) -> usize {
+        let dicts = self.dicts.lock().unwrap_or_else(|e| e.into_inner());
+        dicts.iter().map(|dict| dict.specks()).sum()
     }
 }
 
@@ -3070,6 +3504,28 @@ mod tests {
     const GLYPH_P: &[&str] = &[
         "####.", "#...#", "####.", "#....", "#....", "#....", "#....",
     ];
+
+    #[test]
+    fn isolated_specks_are_dropped_and_a_full_stop_beside_its_word_stays() {
+        // At 240 dpi a speck holds at most 12 pixels, is at most a quarter
+        // the size of the page's typical component (the 14-tall bar) and
+        // has no ink within 12 of its box. The 2x2 dot two pixels from the
+        // bar is punctuation.
+        let page = page_with(
+            &[
+                (&["###"; 14], 2, 2),
+                (&["##", "##"], 7, 14),
+                (&["###", "###", "###"], 60, 60),
+                // Two pixels is grain wherever it sits, even beside ink.
+                (&["##"], 6, 3),
+            ],
+            80,
+            80,
+        );
+        let analysis = PageAnalysis::of(&page, 240);
+        assert_eq!(analysis.specks, 2);
+        assert_eq!(analysis.shape_count(), 2);
+    }
 
     #[test]
     fn identical_shapes_share_a_prototype_and_lines_are_grouped() {
@@ -3253,8 +3709,18 @@ mod tests {
         assert_eq!(runs.lines.len(), 1);
         assert_eq!(dict.distinct(), 1, "the H outline remains deduplicated");
         assert_eq!(dict.len(), 2, "the lower H gets an exact position variant");
-        let root = runs.lines[0].glyphs.iter().find(|g| g.x == 2).unwrap().glyph;
-        let lower = runs.lines[0].glyphs.iter().find(|g| g.x == 10).unwrap().glyph;
+        let root = runs.lines[0]
+            .glyphs
+            .iter()
+            .find(|g| g.x == 2)
+            .unwrap()
+            .glyph;
+        let lower = runs.lines[0]
+            .glyphs
+            .iter()
+            .find(|g| g.x == 10)
+            .unwrap()
+            .glyph;
         assert_ne!(lower, root);
         assert_eq!(dict.resolve_alias(lower), (root, 0, 0));
         assert_eq!(
@@ -3615,6 +4081,64 @@ mod tests {
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[1], (2, "m".to_string()));
         assert_eq!(entries[2], (3, String::new()));
+    }
+
+    #[test]
+    fn text_identities_keep_each_occurrence_at_its_own_baseline_offset() {
+        // The same shape twice on one line, the second three pixels lower:
+        // a position variant of the first. Whatever text OCR reads for
+        // either, each keeps drawing where it was scanned.
+        let page = page_with(&[(GLYPH_BLOCK, 2, 2), (GLYPH_BLOCK, 12, 5)], 24, 20);
+        let mut dict = GlyphDictionary::new();
+        let mut runs = dict.process_page(&page, 72);
+        assert_eq!(runs.lines.len(), 1);
+        let bottom_of = |dict: &GlyphDictionary, runs: &PageGlyphRuns, x: i32| -> i32 {
+            let line = &runs.lines[0];
+            let g = line.glyphs.iter().find(|g| g.x == x).unwrap();
+            line.baseline_y + dict.protos[g.glyph as usize].descent.unwrap_or(0) + g.rise_px
+        };
+        assert_eq!(bottom_of(&dict, &runs, 2), 12);
+        assert_eq!(bottom_of(&dict, &runs, 12), 15);
+        let before: Vec<u32> = runs.lines[0].glyphs.iter().map(|g| g.glyph).collect();
+        assert_ne!(
+            before[0], before[1],
+            "the lower occurrence is a position variant"
+        );
+
+        // Read as the same letter: nothing is remapped onto the other's id.
+        dict.record_text(
+            &mut runs,
+            &[
+                word("a", 2.0, 2.0, 8.0, 12.0),
+                word("a", 12.0, 5.0, 18.0, 15.0),
+            ],
+        );
+        let after: Vec<u32> = runs.lines[0].glyphs.iter().map(|g| g.glyph).collect();
+        assert_eq!(before, after);
+
+        // Read as another letter: a text variant of that very occurrence.
+        dict.record_text(
+            &mut runs,
+            &[
+                word("a", 2.0, 2.0, 8.0, 12.0),
+                word("b", 12.0, 5.0, 18.0, 15.0),
+            ],
+        );
+        let g2 = runs.lines[0].glyphs[1].glyph;
+        assert_ne!(g2, before[1]);
+        assert!(dict.protos[g2 as usize].text_variant);
+        assert_eq!(bottom_of(&dict, &runs, 2), 12);
+        assert_eq!(bottom_of(&dict, &runs, 12), 15);
+        assert_eq!(dict.alias_rise(g2), dict.alias_rise(before[1]));
+        let entries = dict.to_unicode_entries();
+        let text_of = |g: u32| {
+            entries
+                .iter()
+                .find(|(gid, _)| *gid == g as u16 + FIRST_SHAPE_GID as u16)
+                .map(|(_, t)| t.clone())
+        };
+        assert_eq!(text_of(before[0]).as_deref(), Some("a"));
+        assert_eq!(text_of(g2).as_deref(), Some("b"));
     }
 
     #[test]

@@ -163,6 +163,10 @@ async fn process_single_page(
     checkpoint(&cancellation, "before page processing")?;
     let page_index = inference_data.inference_result.index;
     let local_index = page_index.saturating_sub(page_index_offset);
+    // A page whose ink is already one bit keeps it as JBIG2 (see
+    // `page_ink_is_bilevel`); truetyping traces only rendered scans.
+    let glyph_session =
+        glyph_session.filter(|_| !page_ink_is_bilevel(document_session.as_ref(), page_index));
 
     // CPU-heavy work in spawn_blocking
     let config_clone = config.clone();
@@ -202,7 +206,7 @@ async fn process_single_page(
     let mut elements: Vec<crate::accumulator::ContentElement> = Vec::new();
 
     let has_cover_layer = cover_encoded_data.is_some();
-    if let Some((encoded_data, format)) = cover_encoded_data {
+    if let Some((encoded_data, format, cover_px_w, cover_px_h)) = cover_encoded_data {
         crate::bbox_trace!(
             "PAGE {} PDF queue cover fullpage fmt={} bytes={}",
             page_index,
@@ -216,8 +220,8 @@ async fn process_single_page(
             height: height as f32,
             content: crate::accumulator::ContentType::EncodedImage {
                 data: Arc::from(encoded_data),
-                pixel_width: width as u32,
-                pixel_height: height as u32,
+                pixel_width: cover_px_w,
+                pixel_height: cover_px_h,
                 format,
             },
         });
@@ -252,8 +256,8 @@ async fn process_single_page(
             } else {
                 crate::accumulator::ContentType::EncodedImage {
                     data: Arc::from(encoded_data),
-                    pixel_width: region_result.region_w,
-                    pixel_height: region_result.region_h,
+                    pixel_width: region_result.encoded_w,
+                    pixel_height: region_result.encoded_h,
                     format,
                 }
             };
@@ -334,10 +338,12 @@ async fn process_single_page(
 
     // If any region on this page is Abandon and we're using JBIG2 Symbol mode,
     // force the base layer to Generic to avoid Symbol-mode corruption of noisy pixels.
-    let force_jbig2_generic = config.text_format() == "jbig2"
-        && adjusted_detections
-            .iter()
-            .any(|d| d.category.force_generic_jbig2());
+    let force_jbig2_generic = matches!(
+        config.text_format(),
+        "jbig2" | crate::pipeline::config::TRUETYPING
+    ) && adjusted_detections
+        .iter()
+        .any(|d| d.category.force_generic_jbig2());
 
     // Encode base layer.
     // - "jpeg" mode: encode the full RGB image (binarized held only the OCR luma above).
@@ -492,6 +498,11 @@ struct RegionProcessingResult {
     region_y: u32,
     region_w: u32,
     region_h: u32,
+    /// Pixel size of the encoded stream. Equal to `region_w`/`region_h` for
+    /// every codec except a JP2 display encode, which emits the box the region
+    /// is drawn in. Placement on the page still uses `region_w`/`region_h`.
+    encoded_w: u32,
+    encoded_h: u32,
     should_dither: bool,
     encoded_data: Option<(Vec<u8>, String)>,
     /// JBIG2 globals (pattern dictionary for halftone, symbol dict for Symbol mode).
@@ -518,7 +529,7 @@ struct PageProcessingOutput {
     width: usize,
     height: usize,
     is_cover_page: bool,
-    cover_encoded_data: Option<(Vec<u8>, String)>,
+    cover_encoded_data: Option<(Vec<u8>, String, u32, u32)>,
     region_processing_results: Vec<RegionProcessingResult>,
     native_text_transform: NativeTextTransform,
 }
@@ -1056,14 +1067,42 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
     // Cover page encoding must happen before region processing (it fills binarized with white).
     let cover_encoded_data = if is_cover_page {
         // Use synchronous version for cover page encoding within the blocking task
+        // The page raster is already at the device's pixel height, so the
+        // cover's display box is its own size: the floor is verified where the
+        // reader sees it and nothing is resampled away.
+        // A JP2 cover with the high-res raster retained is encoded from it, so
+        // the downscale into the device box happens inside the rate loop.
+        let hi_cover = ocr_image.as_ref().filter(|hi| {
+            crate::pipeline::helper_functions::region_emits_jp2(
+                *config.cover_format(),
+                true,
+                config.jpeg_compat(),
+            ) && crate::encoding::Jp2DisplaySettings::resamples_into(
+                width as u32,
+                height as u32,
+                hi.width(),
+                hi.height(),
+            )
+        });
+        let (cover_src, cover_w, cover_h) = match hi_cover {
+            Some(hi) => (hi.as_raw().as_slice(), hi.width(), hi.height()),
+            None => (
+                adjusted_image.as_raw().as_slice(),
+                width as u32,
+                height as u32,
+            ),
+        };
         let cover_result = encode_region_image_sync(
-            adjusted_image.as_raw(),
-            width as u32,
-            height as u32,
+            cover_src,
+            cover_w,
+            cover_h,
             *config.cover_format(),
             true,
             config.high_quality_output(),
             config.jpeg_compat(),
+            Some((width as u32, height as u32)),
+            // A cover is the whole page.
+            crate::pipeline::quality_policy::RegionSize::Large,
         )
         .map_err(|e| anyhow!("Failed to encode cover image: {}", e))?;
 
@@ -1133,6 +1172,48 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
 
         let mut encoded_data = None;
         let mut encoded_global_data: Option<Vec<u8>> = None;
+        let (mut encoded_w, mut encoded_h) = (region_w, region_h);
+
+        // Slow OCR kept the page above device resolution. A JP2 region is then
+        // cropped from that raster and jp2lam downscales it into the region's
+        // device box in linear light inside the rate loop, instead of encoding
+        // the Lanczos-resized device crop. Only when the crop is large enough
+        // for jp2lam to resample at all (its 1.25x threshold), and only for the
+        // two modes whose region ends up JP2; every other codec keeps the
+        // device crop. Same luma/RGB layout as `region_data`.
+        let hi_region: Option<(Vec<u8>, u32, u32)> = ocr_image
+            .as_ref()
+            .filter(|_| {
+                image_region_mode == ImageRegionDitherMode::GrayJp2
+                    || (!should_dither
+                        && crate::pipeline::helper_functions::region_emits_jp2(
+                            *config.cover_format(),
+                            is_cover_page,
+                            config.jpeg_compat(),
+                        ))
+            })
+            .and_then(|hi| {
+                let sx = hi.width() as f32 / width as f32;
+                let sy = hi.height() as f32 / height as f32;
+                let hi_bbox = [
+                    exact_bbox[0] * sx,
+                    exact_bbox[1] * sy,
+                    exact_bbox[2] * sx,
+                    exact_bbox[3] * sy,
+                ];
+                let (data, w, h) = crate::color::color_processing::process_image_region(
+                    hi.as_raw(),
+                    hi.width(),
+                    hi.height(),
+                    hi_bbox,
+                    image_region_mode,
+                    config.text_format(),
+                    false,
+                )
+                .ok()?;
+                crate::encoding::Jp2DisplaySettings::resamples_into(region_w, region_h, w, h)
+                    .then_some((data, w, h))
+            });
 
         // Mask the region in the base layer with padding so any overlay fully
         // covers remnant binarized pixels at the edges. Cover pages skip the
@@ -1157,19 +1238,39 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
                     EncodingManager, EncodingResult, EncodingSettings,
                     ImageBuffer as LegeImageBuffer,
                 };
+                let hi_gray: Option<(Vec<u8>, u32, u32)> = hi_region
+                    .as_ref()
+                    .map(|(d, w, h)| (d.chunks(3).map(|px| px[0]).collect(), *w, *h));
+                let (gray, gray_w, gray_h): (&[u8], u32, u32) = match &hi_gray {
+                    Some((d, w, h)) => (d, *w, *h),
+                    None => (&grayscale_data, region_w, region_h),
+                };
                 let buffer = LegeImageBuffer {
-                    data: &grayscale_data,
-                    width: region_w,
-                    height: region_h,
+                    data: gray,
+                    width: gray_w,
+                    height: gray_h,
                     channels: 1,
                 };
                 let q =
                     crate::pipeline::quality_policy::region_gray_jp2(config.high_quality_output());
-                match EncodingManager::encode(&buffer, &EncodingSettings::Jp2Lam { quality: q }) {
-                    Ok(EncodingResult::Standard(data)) => {
-                        encoded_data = Some((data, "jp2-gray".to_string()));
-                    }
-                    _ => {}
+                // Grayscale overlay on a grayscale panel: verify the floor as
+                // e-ink luminance, in the box the region is drawn in.
+                let settings = EncodingSettings::Jp2Display(crate::encoding::Jp2DisplaySettings {
+                    max_width: region_w,
+                    max_height: region_h,
+                    floor: crate::pipeline::quality_policy::region_gray_jp2_floor(
+                        config.high_quality_output(),
+                    ),
+                    fallback_quality: q,
+                });
+                if let Ok(EncodingResult::Standard(data)) =
+                    EncodingManager::encode(&buffer, &settings)
+                {
+                    (encoded_w, encoded_h) =
+                        crate::pipeline::helper_functions::encoded_region_dimensions(
+                            &data, "jp2-gray", region_w, region_h,
+                        );
+                    encoded_data = Some((data, "jp2-gray".to_string()));
                 }
             } else if image_region_mode == ImageRegionDitherMode::Halftone {
                 // Halftone overlay: grayscale → jbig2halftone.rs (halftone region segments)
@@ -1278,18 +1379,34 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
         } else {
             // For non-dithered regions that need overlay encoding
             if !should_dither {
-                encoded_data = Some(
-                    encode_region_image_sync(
-                        &region_data,
+                // The box the region is drawn in is its device-resolution
+                // crop size; the source is that crop, or the high-res crop
+                // when jp2lam gets to do the downscale.
+                let (src, src_w, src_h): (&[u8], u32, u32) = match &hi_region {
+                    Some((d, w, h)) => (d, *w, *h),
+                    None => (&region_data, region_w, region_h),
+                };
+                let (data, fmt, enc_w, enc_h) = encode_region_image_sync(
+                    src,
+                    src_w,
+                    src_h,
+                    *config.cover_format(),
+                    is_cover_page,
+                    config.high_quality_output(),
+                    config.jpeg_compat(),
+                    Some((region_w, region_h)),
+                    // Measured on the page the reader sees, not the source crop.
+                    crate::pipeline::quality_policy::RegionSize::of(
                         region_w,
                         region_h,
-                        *config.cover_format(),
-                        is_cover_page,
-                        config.high_quality_output(),
-                        config.jpeg_compat(),
-                    )
-                    .map_err(|e| anyhow!("Could not encode image region: {}", e))?,
-                );
+                        width as u32,
+                        height as u32,
+                    ),
+                )
+                .map_err(|e| anyhow!("Could not encode image region: {}", e))?;
+                encoded_w = enc_w;
+                encoded_h = enc_h;
+                encoded_data = Some((data, fmt));
             }
         }
 
@@ -1313,6 +1430,8 @@ fn process_page_cpu_work(input: PageProcessingInput) -> Result<PageProcessingOut
             region_y: bbox_y1,
             region_w,
             region_h,
+            encoded_w,
+            encoded_h,
             should_dither,
             encoded_data,
             encoded_global_data,
@@ -1476,7 +1595,9 @@ fn encode_region_image_sync(
     is_cover: bool,
     high_quality: bool,
     jpeg_compat: bool,
-) -> Result<(Vec<u8>, String)> {
+    display_box: Option<(u32, u32)>,
+    region_size: crate::pipeline::quality_policy::RegionSize,
+) -> Result<(Vec<u8>, String, u32, u32)> {
     // Guardrails: sanity-check dimensions and buffer length
     const MAX_OVERLAY_SIDE: u32 = 8192;
     const CHANNELS: usize = 3; // regions are RGB buffers
@@ -1506,6 +1627,8 @@ fn encode_region_image_sync(
         is_cover,
         high_quality,
         jpeg_compat,
+        display_box,
+        region_size,
     )?;
 
     let buffer = LegeImageBuffer {
@@ -1522,8 +1645,8 @@ fn encode_region_image_sync(
         )
     };
 
-    match encoding_result {
-        EncodingResult::Standard(data) => Ok((data, fmt_str)),
+    let data = match encoding_result {
+        EncodingResult::Standard(data) => data,
         EncodingResult::Jbig2WithGlobals { page_data, .. } => {
             if fmt_str != "jbig2" {
                 return Err(anyhow!(
@@ -1533,9 +1656,13 @@ fn encode_region_image_sync(
             }
             // Region overlays do not carry a separate global stream in this path.
             // Return page data only to avoid producing invalid concatenated JBIG2 bytes.
-            Ok((page_data, fmt_str))
+            page_data
         }
-    }
+    };
+    let (pixel_width, pixel_height) = crate::pipeline::helper_functions::encoded_region_dimensions(
+        &data, &fmt_str, width, height,
+    );
+    Ok((data, fmt_str, pixel_width, pixel_height))
 }
 
 /// Perform OCR on binarized image
@@ -1607,6 +1734,20 @@ fn bilevel_source_height(
         }
     }
     (natural > 0 && bilevel * 2 >= sampled).then_some(natural)
+}
+
+/// Whether a page's ink already comes from a one-bit source (a full-page
+/// bilevel image or a bilevel soft mask, see
+/// [`lege_pdf_read::CompiledDocumentPage::bilevel_raster_height`]). Such a
+/// page is original text: truetyping leaves it as JBIG2 instead of tracing
+/// it, and a source mask passes through untouched.
+fn page_ink_is_bilevel(
+    session: Option<&Arc<lege_pdf_read::RenderSession>>,
+    page_index: usize,
+) -> bool {
+    session
+        .and_then(|session| session.compile(page_index as u32).ok())
+        .is_some_and(|page| page.bilevel_raster_height().is_some())
 }
 
 /// The orientation of a page's text for the recognizer, measured from its
@@ -1761,15 +1902,10 @@ async fn encode_mrc_base_layer(
     let _ = force_generic;
     let jbig2_mode = crate::encoding::Jbig2Mode::Generic;
     // Glyph-font output keeps the JP2 background and draws the ink layer as
-    // text instead of a JBIG2 stencil.
-    let glyph_session = if config.text_format() == crate::pipeline::config::TRUETYPING {
-        Some(
-            glyph_session
-                .ok_or_else(|| anyhow!("glyphfont text format selected without a glyph session"))?,
-        )
-    } else {
-        None
-    };
+    // text instead of a JBIG2 stencil. A truetyping page without a session
+    // is one whose ink was already one bit, and it keeps the stencil.
+    let glyph_session =
+        glyph_session.filter(|_| config.text_format() == crate::pipeline::config::TRUETYPING);
     crate::runtime_stats::spawn_blocking_stage(crate::runtime_stats::Stage::Encode, move || {
         let mask_content = if let Some(session) = glyph_session {
             let runs = session.process_page_pixels(
@@ -1923,7 +2059,10 @@ async fn encode_preserved_mrc_base_layer(
 
         let background = match image_mode {
             ImageRegionDitherMode::None => {
-                let (data, format) = encode_region_image_sync(
+                // Preservation path: the background is already subsampled
+                // beneath a full-resolution source mask, so it stays on the
+                // legacy full-resolution encode (`None` display box).
+                let (data, format, ow, oh) = encode_region_image_sync(
                     &rgb,
                     ow,
                     oh,
@@ -1931,6 +2070,9 @@ async fn encode_preserved_mrc_base_layer(
                     false,
                     high_quality,
                     jpeg_compat,
+                    None,
+                    // The MRC background spans the whole page.
+                    crate::pipeline::quality_policy::RegionSize::Large,
                 )
                 .map_err(|error| anyhow!("preserved-mask original background encode: {error}"))?;
                 crate::accumulator::ContentType::EncodedImage {
@@ -2068,9 +2210,15 @@ async fn encode_base_layer(
 
     let encoding_start = std::time::Instant::now();
 
-    if config.text_format() == crate::pipeline::config::TRUETYPING {
-        return encode_glyph_text(binarized, width, height, page_index, glyph_session).await;
-    }
+    let text_format = match (config.text_format(), glyph_session) {
+        (crate::pipeline::config::TRUETYPING, Some(session)) => {
+            return encode_glyph_text(binarized, width, height, page_index, Some(session)).await;
+        }
+        // A truetyping page whose ink was already one bit (see
+        // `page_ink_is_bilevel`) is encoded as the JBIG2 format would.
+        (crate::pipeline::config::TRUETYPING, None) => "jbig2",
+        (format, _) => format,
+    };
 
     // Determine encoding settings
     let jbig2_mode = if force_jbig2_generic {
@@ -2078,7 +2226,7 @@ async fn encode_base_layer(
     } else {
         config.jbig2_mode()
     };
-    let (encoding_settings, base_format) = match config.text_format() {
+    let (encoding_settings, base_format) = match text_format {
         "jbig2" => (
             EncodingSettings::Jbig2(Jbig2Settings {
                 pdf_fragment_mode: true,
@@ -2108,7 +2256,7 @@ async fn encode_base_layer(
     };
 
     // Spawn blocking task for encoding with semaphore backpressure
-    let text_format = config.text_format().to_string();
+    let text_format = text_format.to_string();
     let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
     let permit = match encode_sem {
         Some(sem) => Some(sem.acquire_owned().await.ok()),
@@ -2473,6 +2621,14 @@ async fn encode_base_layer_fused(
     }
 }
 
+/// Width that keeps `width` x `height`'s aspect at the device's target height.
+fn dimensions_for_device_height(width: u32, height: u32, target_height: u32) -> u32 {
+    if height == 0 {
+        return width.max(1);
+    }
+    ((f64::from(width) * f64::from(target_height.max(1)) / f64::from(height)).round() as u32).max(1)
+}
+
 /// Encode base layer as full-color image for full-page mode (JP2 by default, JPEG in compat mode)
 pub(crate) async fn encode_base_layer_for_jpeg_mode(
     image: Arc<RgbImage>,
@@ -2492,6 +2648,17 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
     let image_data = Arc::clone(&image);
     let jpeg_compat = config.jpeg_compat();
     let high_quality = config.high_quality_output();
+    // The device box this page is read in. Usually the raster is already at it
+    // (the page was resized before encoding), but a page rendered above
+    // `target_height` — no-layout mode, or a high render height for OCR — is
+    // encoded straight from the high-res raster, and there the box is what
+    // makes the JP2 smaller instead of coding pixels nobody sees.
+    let device_box = (
+        config
+            .target_width()
+            .unwrap_or_else(|| dimensions_for_device_height(width, height, config.target_height())),
+        config.target_height().max(1),
+    );
 
     let encode_sem = crate::pipeline::helper_functions::get_encode_semaphore();
     let permit = match encode_sem {
@@ -2522,7 +2689,17 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
                 )
             } else {
                 let q = crate::pipeline::helper_functions::jp2_quality(high_quality);
-                (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+                // The page raster is already at the device height, so the box
+                // is its own size: a verified floor, nothing resampled away.
+                (
+                    EncodingSettings::Jp2Display(crate::encoding::Jp2DisplaySettings {
+                        max_width: device_box.0,
+                        max_height: device_box.1,
+                        floor: crate::pipeline::quality_policy::full_page_jp2_floor(high_quality),
+                        fallback_quality: q,
+                    }),
+                    "jp2",
+                )
             };
             let result = EncodingManager::encode(&buffer, &settings)
                 .map_err(|e| anyhow!("Full-page encoding failed: {}", e))?;
@@ -2551,10 +2728,13 @@ pub(crate) async fn encode_base_layer_for_jpeg_mode(
         page_index + 1
     );
 
+    let (pixel_width, pixel_height) =
+        crate::pipeline::helper_functions::encoded_region_dimensions(&data, &format, width, height);
+
     Ok(ContentType::EncodedImage {
         data: std::sync::Arc::from(data),
-        pixel_width: width,
-        pixel_height: height,
+        pixel_width,
+        pixel_height,
         format,
     })
 }
@@ -3319,16 +3499,27 @@ async fn process_planned_pdf_products(
         let lege_pdf_read::RasterPlane::Rgb8(surface) = region.plane else {
             continue;
         };
-        let (encoded, format) = crate::pipeline::helper_functions::encode_region_image(
-            &surface.pixels,
-            surface.width,
-            surface.height,
-            *config.cover_format(),
-            false,
-            config.high_quality_output(),
-            config.jpeg_compat(),
-        )
-        .await?;
+        // The source raster can be far larger than the box it is drawn in on
+        // the output page; encode it at the box and place it unchanged.
+        let (encoded, format, pixel_width, pixel_height) =
+            crate::pipeline::helper_functions::encode_region_image(
+                &surface.pixels,
+                surface.width,
+                surface.height,
+                *config.cover_format(),
+                false,
+                config.high_quality_output(),
+                config.jpeg_compat(),
+                Some((crop.width.max(1), crop.height.max(1))),
+                // The placement box on the page, not the source surface.
+                crate::pipeline::quality_policy::RegionSize::of(
+                    crop.width.max(1),
+                    crop.height.max(1),
+                    width,
+                    height,
+                ),
+            )
+            .await?;
         elements.push(crate::accumulator::ContentElement {
             x: crop.x.max(0) as f32,
             y: crop.y.max(0) as f32,
@@ -3336,8 +3527,8 @@ async fn process_planned_pdf_products(
             height: crop.height as f32,
             content: crate::accumulator::ContentType::EncodedImage {
                 data: Arc::from(encoded),
-                pixel_width: surface.width,
-                pixel_height: surface.height,
+                pixel_width,
+                pixel_height,
                 format,
             },
         });
@@ -3349,10 +3540,12 @@ async fn process_planned_pdf_products(
         page_index + 1,
         region_count
     );
-    let force_jbig2_generic = config.text_format() == "jbig2"
-        && detections
-            .iter()
-            .any(|detection| detection.category.force_generic_jbig2());
+    let force_jbig2_generic = matches!(
+        config.text_format(),
+        "jbig2" | crate::pipeline::config::TRUETYPING
+    ) && detections
+        .iter()
+        .any(|detection| detection.category.force_generic_jbig2());
     if let Some(mask) = preserved_mask {
         let coverage = working_coverage.expect("preserved mask has working coverage");
         let (background, foreground) = encode_preserved_mrc_base_layer(
@@ -3365,20 +3558,9 @@ async fn process_planned_pdf_products(
             mask,
         )
         .await?;
-        // Glyph-font output replaces the passed-through source mask with text
-        // drawn from the same decoded ink view, over the cleaned background.
-        let foreground = if config.text_format() == crate::pipeline::config::TRUETYPING {
-            encode_glyph_text(
-                binarized,
-                width as usize,
-                height as usize,
-                page_index,
-                glyph_session,
-            )
-            .await?
-        } else {
-            foreground
-        };
+        // The source's own text layer passes through under every text
+        // format, truetyping included: it is the original ink, and tracing
+        // it could only move its edges.
         elements.insert(
             0,
             crate::accumulator::ContentElement {
@@ -3586,6 +3768,18 @@ async fn run_page_owned_job(
                 planned.output_width,
                 planned.output_height,
             );
+            // JP2 regions render above device size so jp2lam does the downscale
+            // in linear light inside its rate loop; every other codec emits the
+            // crop as-is and renders at 1.
+            let region_render_scale = if crate::pipeline::helper_functions::region_emits_jp2(
+                *config.cover_format(),
+                false,
+                config.jpeg_compat(),
+            ) {
+                crate::pipeline::page_output_plan::JP2_REGION_RENDER_SCALE
+            } else {
+                1
+            };
             let has_text = detections
                 .iter()
                 .any(|detection| crate::types::LABEL_CLASSIFIER.is_substantive_text(detection));
@@ -3613,12 +3807,17 @@ async fn run_page_owned_job(
                             detection.bbox,
                             planned.output_width,
                             planned.output_height,
+                            region_render_scale,
                         )
                     })
                     .collect()
             };
             let render_session = session.clone();
             let compiled_page = planned.page.clone();
+            // A page whose ink is already one bit keeps it (its own mask, or
+            // JBIG2); truetyping traces only rendered scans.
+            let glyph_session =
+                glyph_session.filter(|_| planned.page.bilevel_raster_height().is_none());
             let plan = planned.plan.clone();
             let render_cancellation = cancellation.clone();
             let products = crate::runtime_stats::spawn_blocking_stage(
@@ -3789,25 +3988,28 @@ pub async fn create_and_run_pdf_source_pipeline(
     }
     let document_session = source.document_session();
 
-    // Truetyping raised the render height for outline fidelity. A book that
-    // is already black and white has no more detail to give, and rendering it
-    // larger only invents edges, so it is rendered at its own resolution.
+    // Truetyping redraws rendered ink as outlines. A book whose ink is
+    // already one bit (a JBIG2 or CCITT text layer, an MRC mask) is the
+    // original text at its own resolution: tracing it could only move its
+    // edges, and rendering it larger only invents them. Such a book keeps its
+    // text layer as the JBIG2 format would, at the height that was asked for.
+    // Pages are checked one by one as well (`page_ink_is_bilevel`), for a
+    // book that mixes scans with bilevel pages.
     let config = match document_session
         .as_ref()
-        .filter(|_| config.glyph_requested_height().is_some())
+        .filter(|_| config.text_format() == crate::pipeline::config::TRUETYPING)
         .and_then(|session| bilevel_source_height(session, page_start, page_end))
     {
-        Some(natural) if natural < config.target_height() => {
-            let mut lowered = (*config).clone();
-            lowered.clamp_truetyping_render_height(natural);
+        Some(natural) => {
+            let mut kept = (*config).clone();
+            kept.set_text_format("jbig2")?;
             info_log!(
-                "[PDF-Parallel] Truetyping renders at {} px: the source holds {} px",
-                lowered.target_height(),
+                "[PDF-Parallel] The source's ink is already bilevel ({} px): truetyping is skipped and the text stays JBIG2",
                 natural
             );
-            Arc::new(lowered)
+            Arc::new(kept)
         }
-        _ => config,
+        None => config,
     };
 
     // Gate the GPU resize backend by document size: cold-start cost only pays
@@ -4096,10 +4298,11 @@ pub async fn create_and_run_pdf_source_pipeline(
     if let Some(session) = glyph_session.as_ref() {
         let (pages, glyphs, occurrences, residual) = session.stats();
         info_log!(
-            "[PDF-Parallel] Glyph font: {} pages, {} distinct glyphs, {} occurrences{}",
+            "[PDF-Parallel] Glyph font: {} pages, {} distinct glyphs, {} occurrences, {} specks dropped{}",
             pages,
             glyphs,
             occurrences,
+            session.specks(),
             if residual > 0 {
                 format!(", {} components kept as raster residual", residual)
             } else {
@@ -4305,6 +4508,92 @@ mod phase4_ocr_baseline_tests {
         let ocr = output.ocr_image.expect("high resolution OCR surface");
         assert_eq!(ocr.dimensions(), (800, 1200));
         assert_eq!(output.binarized.len(), 400 * 600);
+    }
+
+    /// With the high-res raster retained, a JP2 image region is encoded from
+    /// that raster, but the stream must still be emitted at the device-space
+    /// region size: that is what the PDF XObject declares and what the reader
+    /// draws, so the high-res source must never leak into it.
+    #[cfg(feature = "jp2-lam")]
+    #[test]
+    fn slow_ocr_jp2_region_is_encoded_from_high_res_at_device_size() {
+        let mut config = (*slow_ocr_config()).clone();
+        config.set_enable_layout_detection(true);
+        config.set_enable_ocr(false);
+        let config = Arc::new(config);
+        // A textured colour photo in the page's upper half (noise over a
+        // gradient: the overlay classifier drops flat or line-art crops), over
+        // a text page.
+        let source = Arc::new(RgbImage::from_fn(800, 1200, |x, y| {
+            if y < 560 {
+                let h = (x.wrapping_mul(2_654_435_761) ^ y.wrapping_mul(40_503)) >> 8;
+                Rgb([
+                    ((x / 4) as u8).wrapping_add((h & 0x3f) as u8),
+                    ((y / 4) as u8).wrapping_add(((h >> 6) & 0x3f) as u8),
+                    (180u8).wrapping_add(((h >> 12) & 0x3f) as u8),
+                ])
+            } else {
+                Rgb([244, 242, 235])
+            }
+        }));
+        let region = crate::engine::Detection {
+            class_id: 0,
+            class_name: None,
+            confidence: 0.9,
+            // Device (400x600) space: the top 280 rows.
+            bbox: [0.0, 0.0, 400.0, 280.0],
+            category: crate::types::ContentCategory::Image,
+            context: None,
+        };
+        let rendered = RenderedPageData {
+            index: 1,
+            high_res_image: source.clone(),
+            inference_image: source.clone(),
+            layout_detection_enabled: true,
+            original_width_pts: 400.0,
+            original_height_pts: 600.0,
+        };
+        let inference_result = InferenceResult {
+            index: 1,
+            high_res_image: source.clone(),
+            inference_image: source,
+            detections: vec![region],
+            text_layer: None,
+            detections_are_page_space: true,
+            original_width_pts: 400.0,
+            original_height_pts: 600.0,
+            has_no_detections: false,
+        };
+        let output = process_page_cpu_work(PageProcessingInput {
+            rendered,
+            inference_result,
+            page_index: 1,
+            config,
+            margin_analysis: None,
+            cancellation: lege_pdf_read::CancellationToken::new(),
+        })
+        .expect("page work with an image region");
+
+        assert!(output.ocr_image.is_some(), "high-res raster retained");
+        let result = output
+            .region_processing_results
+            .iter()
+            .find(|r| r.encoded_data.is_some())
+            .expect("the image region was encoded");
+        let (data, fmt) = result.encoded_data.as_ref().unwrap();
+        assert_eq!(fmt, "jp2");
+        // Device-space region (page policy may grow the box), never the
+        // 800x1200 high-res crop.
+        let region = (result.region_w, result.region_h);
+        assert!(
+            region.0 <= 400 && region.1 <= 600,
+            "region {region:?} not device-space"
+        );
+        assert_eq!((result.encoded_w, result.encoded_h), region);
+        assert_eq!(
+            crate::encoding::jp2::jp2_dimensions(data).expect("jp2 header"),
+            region
+        );
     }
 
     #[test]

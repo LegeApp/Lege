@@ -397,22 +397,76 @@ pub fn should_keep_image_overlay(
 }
 
 // Helper to encode a small image region; used by image overlays in the page pipeline
+/// Pixel dimensions of an encoded region — what the PDF XObject must declare.
+/// JP2 is read back from the stream because a display encode emits the display
+/// box rather than the source size; every other codec emits the source size.
+pub fn encoded_region_dimensions(data: &[u8], fmt: &str, width: u32, height: u32) -> (u32, u32) {
+    if !fmt.starts_with("jp2") {
+        return (width, height);
+    }
+    crate::encoding::jp2::jp2_dimensions(data).unwrap_or((width, height))
+}
+
+/// JP2 settings for a region: the verified display encode when the caller knows
+/// the pixel box the image is drawn in, the legacy open-loop preset otherwise.
+fn jp2_region_settings(
+    display_box: Option<(u32, u32)>,
+    floor: u8,
+    quality: u8,
+) -> crate::encoding::EncodingSettings {
+    use crate::encoding::{EncodingSettings, Jp2DisplaySettings};
+    match display_box {
+        Some((max_width, max_height)) if max_width > 0 && max_height > 0 => {
+            EncodingSettings::Jp2Display(Jp2DisplaySettings {
+                max_width,
+                max_height,
+                floor,
+                fallback_quality: quality,
+            })
+        }
+        _ => EncodingSettings::Jp2Lam { quality },
+    }
+}
+
+/// Whether a region in `format` is written as JP2: the `Jp2` format always, the
+/// `Jpeg` format for non-cover regions unless JPEG compatibility is forced.
+pub fn region_emits_jp2(format: CoverFormat, is_cover: bool, jpeg_compat: bool) -> bool {
+    match format {
+        CoverFormat::Jp2 => true,
+        CoverFormat::Jpeg => !is_cover && !jpeg_compat,
+        _ => false,
+    }
+}
+
 /// Build the `(EncodingSettings, format_tag)` pair for a region overlay.
 ///
 /// `jpeg_compat`: when true the `Jpeg` format variant always emits JPEG even for
 /// non-cover regions; when false a non-cover Jpeg region is encoded as JP2 instead.
+///
+/// `display_box`: the pixel box the region occupies on the reader's screen. When
+/// given, JP2 output takes the verified display path (see
+/// [`crate::encoding::Jp2DisplaySettings`]) and **may emit smaller dimensions
+/// than the source**; `None` keeps the legacy open-loop preset at source resolution.
+///
+/// `region_size`: the region's share of the output page (see
+/// [`crate::pipeline::quality_policy::RegionSize`]). Only the JP2 display floor
+/// for ordinary regions reads it — a small figure can afford a lower verified
+/// floor than a full-page plate.
 pub fn region_encoding_settings(
     format: CoverFormat,
     is_cover: bool,
     high_quality: bool,
     jpeg_compat: bool,
+    display_box: Option<(u32, u32)>,
+    region_size: crate::pipeline::quality_policy::RegionSize,
 ) -> Result<(crate::encoding::EncodingSettings, &'static str)> {
     use crate::encoding::{EncodingSettings, Jbig2Settings, JpegSettings};
     Ok(match format {
         CoverFormat::Jpeg => {
-            if !is_cover && !jpeg_compat {
+            if region_emits_jp2(format, is_cover, jpeg_compat) {
                 let q = jp2_quality(high_quality);
-                (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+                let floor = crate::pipeline::quality_policy::full_page_jp2_floor(high_quality);
+                (jp2_region_settings(display_box, floor, q), "jp2")
             } else {
                 let q = crate::pipeline::quality_policy::region_jpeg(high_quality, is_cover);
                 (
@@ -437,12 +491,21 @@ pub fn region_encoding_settings(
         ),
         CoverFormat::Jp2 => {
             let q = crate::pipeline::quality_policy::region_jp2(high_quality, is_cover);
-            (EncodingSettings::Jp2Lam { quality: q }, "jp2")
+            let floor = crate::pipeline::quality_policy::region_jp2_floor(
+                high_quality,
+                is_cover,
+                region_size,
+            );
+            (jp2_region_settings(display_box, floor, q), "jp2")
         }
         CoverFormat::None => return Err(anyhow!("No format for region encoding")),
     })
 }
 
+/// Encode one region overlay. Returns `(data, format_tag, pixel_width,
+/// pixel_height)` — the pixel dimensions are the *emitted* ones, which a
+/// display encode shrinks to `display_box`; the caller's placement rectangle on
+/// the page is unaffected.
 pub async fn encode_region_image(
     image_data: &[u8],
     width: u32,
@@ -451,7 +514,9 @@ pub async fn encode_region_image(
     is_cover: bool,
     high_quality: bool,
     jpeg_compat: bool,
-) -> Result<(Vec<u8>, String)> {
+    display_box: Option<(u32, u32)>,
+    region_size: crate::pipeline::quality_policy::RegionSize,
+) -> Result<(Vec<u8>, String, u32, u32)> {
     // Guardrails: sanity-check dimensions and buffer length
     const MAX_OVERLAY_SIDE: u32 = 8192;
     const CHANNELS: usize = 3; // regions are RGB buffers
@@ -484,8 +549,14 @@ pub async fn encode_region_image(
     }
     use crate::encoding::{EncodingManager, EncodingResult, ImageBuffer as LegeImageBuffer};
 
-    let (settings, fmt_str) =
-        region_encoding_settings(format, is_cover, high_quality, jpeg_compat)?;
+    let (settings, fmt_str) = region_encoding_settings(
+        format,
+        is_cover,
+        high_quality,
+        jpeg_compat,
+        display_box,
+        region_size,
+    )?;
 
     let image_data_owned = image_data[..expected_len].to_vec();
     let permit = match get_encode_semaphore() {
@@ -510,8 +581,8 @@ pub async fn encode_region_image(
     .map_err(|e| anyhow!("Region encoding task panicked: {}", e))??;
     drop(permit);
 
-    match encoding_result {
-        EncodingResult::Standard(data) => Ok((data, fmt_str)),
+    let data = match encoding_result {
+        EncodingResult::Standard(data) => data,
         EncodingResult::Jbig2WithGlobals { page_data, .. } => {
             if fmt_str != "jbig2" {
                 return Err(anyhow!(
@@ -521,9 +592,11 @@ pub async fn encode_region_image(
             }
             // Region overlays do not carry a separate global stream in this path.
             // Return the page stream only to avoid corrupting the JBIG2 payload.
-            Ok((page_data, fmt_str))
+            page_data
         }
-    }
+    };
+    let (pixel_width, pixel_height) = encoded_region_dimensions(&data, &fmt_str, width, height);
+    Ok((data, fmt_str, pixel_width, pixel_height))
 }
 
 // Helper function to determine if a page should be treated as a cover page

@@ -35,6 +35,12 @@ pub mod jp2 {
             "JPEG2000 support requires the jp2-lam feature".to_string(),
         ))
     }
+
+    pub fn jp2_dimensions(_bytes: &[u8]) -> Result<(u32, u32)> {
+        Err(EncodingError::EncoderError(
+            "JPEG2000 support requires the jp2-lam feature".to_string(),
+        ))
+    }
 }
 
 // JPEG encoder adapter (vstroebel/jpeg-encoder).

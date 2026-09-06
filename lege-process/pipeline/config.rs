@@ -568,7 +568,7 @@ impl PipelineConfig {
             ocr_binarization_threshold: None,
             ocr_preserve_grayscale: false,
             invert_input: false,
-            jbig2_mode: Jbig2Mode::Symbol,
+            jbig2_mode: Jbig2Mode::Generic,
             max_retries: 3,
             retry_delay_ms: 1000,
             max_parallel_pages: Some(4),
@@ -952,7 +952,12 @@ impl PipelineConfig {
                 // Truetyping is resolution independent on the reader, so the
                 // source raster is chosen for outline fidelity rather than for
                 // a screen; the requested height is kept for the background.
-                self.raise_render_height_for_truetyping();
+                // Leaving truetyping gives that height back.
+                if format == TRUETYPING {
+                    self.raise_render_height_for_truetyping();
+                } else {
+                    self.restore_requested_height();
+                }
                 Ok(())
             }
             _ => Err(anyhow!(
@@ -1041,21 +1046,19 @@ impl PipelineConfig {
         self.set_truetyping_working_height(GLYPHFONT_MIN_TARGET_HEIGHT);
     }
 
-    /// Lower the working height a scan is traced at to what the scan itself
-    /// holds ([`lege_pdf_read::CompiledDocumentPage::natural_raster_height`]),
-    /// never below the height the caller asked for. Rendering a scan above
-    /// its own resolution invents detail: the interpolated edges differ from
-    /// one impression of a letter to the next, so the dictionary fills with
-    /// near-duplicates and every stage pays for pixels that carry nothing.
-    pub fn clamp_truetyping_render_height(&mut self, natural: u32) {
-        let Some(requested) = self.glyph_requested_height else {
+    /// Give back the height the caller asked for once truetyping is no
+    /// longer the format: the working height existed only for tracing
+    /// outlines (see [`Self::raise_render_height_for_truetyping`]).
+    fn restore_requested_height(&mut self) {
+        let Some(requested) = self.glyph_requested_height.take() else {
             return;
         };
-        let working = natural.max(requested);
-        if working >= self.target_height {
-            return;
+        if let Some(width) = self.target_width.as_mut() {
+            let scaled = (u64::from(*width) * u64::from(requested)
+                / u64::from(self.target_height.max(1))) as u32;
+            *width = scaled.max(1);
         }
-        self.set_truetyping_working_height(working);
+        self.target_height = requested;
     }
 
     /// Set the height the page is rendered at while keeping the caller's own
@@ -1186,9 +1189,13 @@ impl PipelineConfig {
     pub fn set_jbig2_mode(&mut self, mode: Jbig2Mode) {
         self.jbig2_mode = mode;
     }
+    /// Turn symbol substitution on or off. On means the unifying mode: a
+    /// plain symbol dictionary already risks a wrong match, and unification
+    /// is what pays for that risk in bytes. Off is the bit-exact generic
+    /// region, and the default.
     pub fn set_jbig2_symbol_mode(&mut self, symbol_mode: bool) {
         self.jbig2_mode = if symbol_mode {
-            Jbig2Mode::Symbol
+            Jbig2Mode::SymUnify
         } else {
             Jbig2Mode::Generic
         };
@@ -1409,6 +1416,21 @@ mod truetyping_height_tests {
         config.set_text_format("glyphfont").unwrap();
         assert_eq!(config.text_format(), TRUETYPING);
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn leaving_truetyping_gives_the_requested_height_back() {
+        let mut config = PipelineConfig::default();
+        config.set_text_format(TRUETYPING).unwrap();
+        config.set_target_dimensions(900, 1200).unwrap();
+        assert_eq!(config.target_height(), GLYPHFONT_MIN_TARGET_HEIGHT);
+
+        config.set_text_format("jbig2").unwrap();
+
+        assert_eq!(config.target_height(), 1200);
+        assert_eq!(config.target_width(), Some(900));
+        assert_eq!(config.glyph_requested_height(), None);
+        assert_eq!(config.glyph_background_subsample(), 1);
     }
 
     #[test]

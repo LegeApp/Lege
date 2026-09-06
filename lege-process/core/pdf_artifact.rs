@@ -682,7 +682,10 @@ mod tests {
         assert_eq!(art.elements.len(), 1, "the residual is drawn");
         assert!(matches!(
             art.elements[0].image,
-            PdfImageResource::Jbig2 { image_mask: true, .. }
+            PdfImageResource::Jbig2 {
+                image_mask: true,
+                ..
+            }
         ));
         assert!(art.glyph_layer.is_some(), "and the text is still there");
     }

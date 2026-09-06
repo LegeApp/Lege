@@ -229,6 +229,63 @@ pub mod jp2_config {
     }
 }
 
+/// jp2lam display profile for `settings`: a 1-channel source is scored as
+/// e-ink display luminance, a 3-channel one as a colour panel, and the source
+/// is resampled down into the box before encoding.
+pub fn display_profile(
+    settings: &crate::encoding::Jp2DisplaySettings,
+    channels: u8,
+) -> jp2lam::DisplayProfile {
+    let w = settings.max_width.max(1);
+    let h = settings.max_height.max(1);
+    if channels == 1 {
+        jp2lam::DisplayProfile::eink(w, h)
+    } else {
+        jp2lam::DisplayProfile::tablet(w, h)
+    }
+    .resampling_source()
+}
+
+/// Encode at a verified SSIMULACRA2 floor measured at the reader's display
+/// size, pre-resizing the source into that box.
+///
+/// **The emitted stream can be smaller than `width` x `height`** — read the
+/// real dimensions back with [`jp2_dimensions`] before placing it.
+pub fn encode_display(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    channels: u8,
+    settings: &crate::encoding::Jp2DisplaySettings,
+) -> Result<Vec<u8>> {
+    validate_input(input, width, height, channels)?;
+    let image = match channels {
+        1 => jp2lam::Image::from_gray_bytes(width, height, input),
+        _ => jp2lam::Image::from_rgb_bytes(width, height, input),
+    }
+    .map_err(|e| EncodingError::InvalidInput(e.to_string()))?;
+
+    let profile = display_profile(settings, channels);
+    match jp2lam::EncodeOptions::display_photo(f64::from(settings.floor.min(99)), profile)
+        .and_then(|options| jp2lam::encode(&image, &options))
+    {
+        Ok(data) => Ok(data),
+        // The verified path refuses some sources (a degenerate box, a source
+        // below the metric's 8x8 floor). Falling back to the legacy preset
+        // keeps the page instead of failing it; it emits at source size, which
+        // `jp2_dimensions` reports correctly.
+        Err(_) => encode_image(&image, settings.fallback_quality),
+    }
+}
+
+/// Pixel dimensions of an encoded JP2 — what the PDF XObject's `/Width` and
+/// `/Height` must be. Header-only, no image reconstruction.
+pub fn jp2_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
+    let meta = jp2lam::inspect_jp2(bytes)
+        .map_err(|e| EncodingError::EncoderError(format!("JP2 inspect: {e}")))?;
+    Ok((meta.width, meta.height))
+}
+
 pub fn encode_rgb(data: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>> {
     let image = jp2lam::Image::from_rgb_bytes(width, height, data)
         .map_err(|e| EncodingError::InvalidInput(e.to_string()))?;
@@ -663,5 +720,38 @@ mod tests {
             validate_input(&[], 0, 1, 1),
             Err(EncodingError::InvalidDimensions { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use crate::encoding::Jp2DisplaySettings;
+
+    /// The emitted JP2 must carry the box dimensions, not the source ones —
+    /// the PDF XObject is sized from them.
+    #[test]
+    fn display_encode_emits_the_box_size_and_reports_it() {
+        let (w, h) = (320u32, 240u32);
+        let rgb: Vec<u8> = (0..w * h * 3)
+            .map(|i| ((i * 7 % 251) as u8).wrapping_add((i / 97) as u8))
+            .collect();
+        let settings = Jp2DisplaySettings {
+            max_width: 80,
+            max_height: 60,
+            floor: Jp2DisplaySettings::DEFAULT_FLOOR,
+            fallback_quality: 72,
+        };
+        assert_eq!(settings.encoded_size(w, h), (80, 60));
+
+        let data = super::encode_display(&rgb, w, h, 3, &settings).expect("display encode");
+        assert_eq!(super::jp2_dimensions(&data).expect("dims"), (80, 60));
+
+        // A box the source already fits must not resample or upscale.
+        let same = Jp2DisplaySettings {
+            max_width: w,
+            max_height: h,
+            ..settings
+        };
+        assert_eq!(same.encoded_size(w, h), (w, h));
     }
 }
