@@ -65,7 +65,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "AGPL-3.0-only"
-repository = "https://github.com/LegeApp/Lege"
+repository = "https://github.com/liminalism/lege"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

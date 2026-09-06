@@ -31,7 +31,7 @@ case "$codec" in
   *) usage >&2; exit 2 ;;
 esac
 
-target=https://github.com/LegeApp/Lege/tree/main/lege-codecs/$canonical
+target=https://github.com/liminalism/lege/tree/main/lege-codecs/$canonical
 echo "Legacy repository: $legacy_repo"
 echo "Canonical source:  $target"
 "$apply" || exit 0

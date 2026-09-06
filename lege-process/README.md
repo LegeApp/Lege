@@ -4,7 +4,7 @@
 </div>
 
 # Lege - 1.4.5
-Releases are updated with every new version --> https://github.com/LegeApp/Lege/releases/
+Releases are updated with every new version --> https://github.com/liminalism/lege/releases/
 
 Lege is a document-processing program (CLI + desktop GUI) that converts scanned documents into reader-optimized **PDF** or **DjVu**, focusing on **better readability**, **smaller output size**, and **fast page turns** on e-ink devices. It uses optional layout-aware processing to detect image areas so that they can be excluded from the text binarization process, which makes the original scanned documents readable on e-ink readers with small file size.
 
@@ -24,7 +24,7 @@ There are 2 generally intended usages for the program; outputs of commercial boo
 ### Build (from source)
 
 ```bash
-git clone https://github.com/LegeApp/Lege.git
+git clone https://github.com/liminalism/lege.git
 cd Lege
 cargo build --release
 ```

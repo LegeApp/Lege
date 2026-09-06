@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/djvu_encoder.svg)](https://crates.io/crates/djvu_encoder)
 [![Documentation](https://docs.rs/djvu_encoder/badge.svg)](https://docs.rs/djvu_encoder)
-[![Repository](https://img.shields.io/badge/github-LegeApp%2FLege-blue)](https://github.com/LegeApp/Lege/tree/main/lege-codecs/djvulibrust)
+[![Repository](https://img.shields.io/badge/github-liminalism%2Flege-blue)](https://github.com/liminalism/lege/tree/main/lege-codecs/djvulibrust)
 
 DJVULibRust is a Rust DjVu encoder focused on building valid single-page `DJVU`
 and bundled multi-page `DJVM` documents from image data. It provides a high-level
@@ -266,7 +266,7 @@ macOS, and Windows on common x86_64 and ARM64 targets.
 
 ## Related Projects
 
-- [Lege](https://github.com/LegeApp/Lege): PDF-to-DjVu conversion project using
+- [Lege](https://github.com/liminalism/lege): PDF-to-DjVu conversion project using
   this library.
 - [DjVuLibre](http://djvu.sourceforge.net/): the reference open-source DjVu
   implementation used as a compatibility and benchmark point.

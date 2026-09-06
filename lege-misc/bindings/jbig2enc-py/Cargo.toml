@@ -14,7 +14,7 @@ edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for jbig2enc-rust"
-repository = "https://github.com/LegeApp/Lege"
+repository = "https://github.com/liminalism/lege"
 publish = false
 
 [lib]

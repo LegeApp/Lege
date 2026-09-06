@@ -10,7 +10,7 @@
   </description>
   <launchable type="desktop-id">lege.desktop</launchable>
   <url type="homepage">https://www.legeapp.com</url>
-  <url type="bugtracker">https://github.com/LegeApp/Lege/issues</url>
+  <url type="bugtracker">https://github.com/liminalism/lege/issues</url>
   <developer_name>Lege Apps</developer_name>
   <categories>
     <category>Office</category>

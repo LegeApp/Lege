@@ -18,8 +18,8 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Repository = "https://github.com/LegeApp/Lege"
-Source = "https://github.com/LegeApp/Lege/tree/main/lege-codecs/jbig2enc-rust"
+Repository = "https://github.com/liminalism/lege"
+Source = "https://github.com/liminalism/lege/tree/main/lege-codecs/jbig2enc-rust"
 
 [tool.maturin]
 # One wheel per platform, importable by CPython 3.9 and up.

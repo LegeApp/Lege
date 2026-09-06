@@ -1,6 +1,6 @@
 # jbig2enc
 
-Python bindings for [`jbig2enc-rust`](https://github.com/LegeApp/Lege/tree/main/lege-codecs/jbig2enc-rust),
+Python bindings for [`jbig2enc-rust`](https://github.com/liminalism/lege/tree/main/lege-codecs/jbig2enc-rust),
 a pure-Rust JBIG2 encoder. JBIG2 is the bilevel image codec used by scanned
 PDFs; on clean text it typically beats CCITT Group 4 by 2-4x.
 
