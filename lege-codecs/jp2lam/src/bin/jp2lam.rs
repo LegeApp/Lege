@@ -1,8 +1,8 @@
 use chrono::Local;
 use image::{DynamicImage, GenericImageView, GrayImage, RgbImage};
 use jp2lam::{
-    BatchDecoder, BatchEncoder, ColorSpace, Component, EncodeOptions, Image, OutputFormat,
-    PerceptualEffort, PerceptualTarget, RateControl, decode_jp2, encode,
+    BatchDecoder, BatchEncoder, ColorSpace, Component, DisplayColor, DisplayProfile, EncodeOptions,
+    Image, OutputFormat, PerceptualEffort, PerceptualTarget, RateControl, decode_jp2, encode,
 };
 use std::env;
 use std::fs::{self, File};
@@ -22,6 +22,8 @@ enum CliCommand {
         quality: Option<u8>,
         ssimulacra2: Option<f64>,
         effort: Option<PerceptualEffort>,
+        approx: bool,
+        display: Option<DisplayProfile>,
     },
     EncodeDir {
         input_dir: PathBuf,
@@ -29,6 +31,8 @@ enum CliCommand {
         quality: Option<u8>,
         ssimulacra2: Option<f64>,
         effort: Option<PerceptualEffort>,
+        approx: bool,
+        display: Option<DisplayProfile>,
     },
     Decode {
         input_path: PathBuf,
@@ -59,14 +63,26 @@ fn run() -> Result<(), String> {
             quality,
             ssimulacra2,
             effort,
-        } => run_encode(input_path, quality, ssimulacra2, effort),
+            approx,
+            display,
+        } => run_encode(input_path, quality, ssimulacra2, effort, approx, display),
         CliCommand::EncodeDir {
             input_dir,
             output_dir,
             quality,
             ssimulacra2,
             effort,
-        } => run_encode_dir(input_dir, output_dir, quality, ssimulacra2, effort),
+            approx,
+            display,
+        } => run_encode_dir(
+            input_dir,
+            output_dir,
+            quality,
+            ssimulacra2,
+            effort,
+            approx,
+            display,
+        ),
         CliCommand::Decode {
             input_path,
             output_path,
@@ -87,6 +103,8 @@ fn run_encode(
     quality: Option<u8>,
     ssimulacra2: Option<f64>,
     effort: Option<PerceptualEffort>,
+    approx: bool,
+    display: Option<DisplayProfile>,
 ) -> Result<(), String> {
     if !input_path.exists() {
         return Err(format!("input file not found: {}", input_path.display()));
@@ -94,7 +112,8 @@ fn run_encode(
     let decoded =
         image::open(&input_path).map_err(|err| format!("failed to open input image: {err}"))?;
     let image = to_jp2lam_image(decoded)?;
-    let (options, label) = encode_options_from_cli(&image, quality, ssimulacra2, effort)?;
+    let (options, label) =
+        encode_options_from_cli(&image, quality, ssimulacra2, effort, approx, display)?;
 
     let encoded = encode(&image, &options).map_err(|err| format!("encode failed: {err}"))?;
 
@@ -123,6 +142,8 @@ fn run_encode_dir(
     quality: Option<u8>,
     ssimulacra2: Option<f64>,
     effort: Option<PerceptualEffort>,
+    approx: bool,
+    display: Option<DisplayProfile>,
 ) -> Result<(), String> {
     if !input_dir.is_dir() {
         return Err(format!(
@@ -144,7 +165,8 @@ fn run_encode_dir(
     let first = image::open(&files[0])
         .map_err(|err| format!("failed to open input image {}: {err}", files[0].display()))?;
     let first_image = to_jp2lam_image(first)?;
-    let (options, label) = encode_options_from_cli(&first_image, quality, ssimulacra2, effort)?;
+    let (options, label) =
+        encode_options_from_cli(&first_image, quality, ssimulacra2, effort, approx, display)?;
     let mut encoder = BatchEncoder::new(options);
 
     for input_path in &files {
@@ -612,9 +634,22 @@ fn parse_encode_args(args: &[String]) -> Result<CliArgs, String> {
     let mut quality: Option<u8> = None;
     let mut ssimulacra2: Option<f64> = None;
     let mut effort: Option<PerceptualEffort> = None;
+    let mut approx = false;
+    let mut display: Option<DisplayProfile> = None;
+    let mut resample = false;
     let mut i = 0usize;
     while i < args.len() {
         let arg = &args[i];
+        if arg == "--approx" {
+            approx = true;
+            i += 1;
+            continue;
+        }
+        if arg == "--resample" {
+            resample = true;
+            i += 1;
+            continue;
+        }
         if arg == "--quality" || arg == "-q" {
             let Some(next) = args.get(i + 1) else {
                 return Err(format!("{usage}\nmissing value after {arg}"));
@@ -635,6 +670,11 @@ fn parse_encode_args(args: &[String]) -> Result<CliArgs, String> {
         }
         if let Some((parsed, consumed)) = parse_effort_flag(args, i)? {
             effort = Some(parsed);
+            i += consumed;
+            continue;
+        }
+        if let Some((parsed, consumed)) = parse_display_flag(args, i)? {
+            display = Some(parsed);
             i += consumed;
             continue;
         }
@@ -652,7 +692,8 @@ fn parse_encode_args(args: &[String]) -> Result<CliArgs, String> {
     let Some(input_path) = input_path else {
         return Err(usage.to_string());
     };
-    reject_quality_and_ssim_together(quality, ssimulacra2, effort)?;
+    reject_quality_and_ssim_together(quality, ssimulacra2, effort, approx, display)?;
+    let display = apply_resample_flag(display, resample)?;
 
     Ok(CliArgs {
         command: CliCommand::Encode {
@@ -660,6 +701,8 @@ fn parse_encode_args(args: &[String]) -> Result<CliArgs, String> {
             quality,
             ssimulacra2,
             effort,
+            approx,
+            display,
         },
     })
 }
@@ -672,9 +715,22 @@ fn parse_encode_dir_args(args: &[String]) -> Result<CliArgs, String> {
     let mut quality: Option<u8> = None;
     let mut ssimulacra2: Option<f64> = None;
     let mut effort: Option<PerceptualEffort> = None;
+    let mut approx = false;
+    let mut display: Option<DisplayProfile> = None;
+    let mut resample = false;
     let mut i = 0usize;
     while i < args.len() {
         let arg = &args[i];
+        if arg == "--approx" {
+            approx = true;
+            i += 1;
+            continue;
+        }
+        if arg == "--resample" {
+            resample = true;
+            i += 1;
+            continue;
+        }
         if arg == "--quality" || arg == "-q" {
             let Some(next) = args.get(i + 1) else {
                 return Err(format!("{usage}\nmissing value after {arg}"));
@@ -695,6 +751,11 @@ fn parse_encode_dir_args(args: &[String]) -> Result<CliArgs, String> {
         }
         if let Some((parsed, consumed)) = parse_effort_flag(args, i)? {
             effort = Some(parsed);
+            i += consumed;
+            continue;
+        }
+        if let Some((parsed, consumed)) = parse_display_flag(args, i)? {
+            display = Some(parsed);
             i += consumed;
             continue;
         }
@@ -715,7 +776,8 @@ fn parse_encode_dir_args(args: &[String]) -> Result<CliArgs, String> {
     let Some(input_dir) = input_dir else {
         return Err(usage.to_string());
     };
-    reject_quality_and_ssim_together(quality, ssimulacra2, effort)?;
+    reject_quality_and_ssim_together(quality, ssimulacra2, effort, approx, display)?;
+    let display = apply_resample_flag(display, resample)?;
     Ok(CliArgs {
         command: CliCommand::EncodeDir {
             input_dir,
@@ -723,6 +785,8 @@ fn parse_encode_dir_args(args: &[String]) -> Result<CliArgs, String> {
             quality,
             ssimulacra2,
             effort,
+            approx,
+            display,
         },
     })
 }
@@ -794,7 +858,7 @@ fn parse_decode_zip_args(args: &[String]) -> Result<CliArgs, String> {
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run --features cli --bin jp2lam -- <input> [q0..q100 | --ssimulacra2 <score> [--effort fast|balanced|quality]]\n       cargo run --features cli --bin jp2lam -- encode <input> [q0..q100 | --ssimulacra2 <score> [--effort fast|balanced|quality]]\n       cargo run --features cli --bin jp2lam -- encode-dir <input-dir> [output-dir] [q0..q100 | --ssimulacra2 <score> [--effort fast|balanced|quality]]\n       cargo run --features cli --bin jp2lam -- decode <input.jp2> [output.png]\n       cargo run --features cli --bin jp2lam -- decode-dir <input-dir> [output-dir]\n       cargo run --features cli --bin jp2lam -- decode-zip <archive.zip> [output-dir]"
+    "usage: cargo run --features cli --bin jp2lam -- <input> [q0..q100 [--effort fast|balanced|quality] | --approx q0..q100 | --ssimulacra2 <score> [--effort fast|balanced|quality]] [--display eink:WxH|tablet:WxH [--resample]]\n       cargo run --features cli --bin jp2lam -- encode <input> [q0..q100 [--effort fast|balanced|quality] | --approx q0..q100 | --ssimulacra2 <score> [--effort fast|balanced|quality]] [--display eink:WxH|tablet:WxH [--resample]]\n       cargo run --features cli --bin jp2lam -- encode-dir <input-dir> [output-dir] [q0..q100 [--effort fast|balanced|quality] | --approx q0..q100 | --ssimulacra2 <score> [--effort fast|balanced|quality]] [--display eink:WxH|tablet:WxH [--resample]]\n       cargo run --features cli --bin jp2lam -- decode <input.jp2> [output.png]\n       cargo run --features cli --bin jp2lam -- decode-dir <input-dir> [output-dir]\n       cargo run --features cli --bin jp2lam -- decode-zip <archive.zip> [output-dir]"
 }
 
 fn encode_options_from_cli(
@@ -802,7 +866,38 @@ fn encode_options_from_cli(
     quality: Option<u8>,
     ssimulacra2: Option<f64>,
     effort: Option<PerceptualEffort>,
+    approx: bool,
+    display: Option<DisplayProfile>,
 ) -> Result<(EncodeOptions, String), String> {
+    // A display target measures the floor at the size and color mode the reader
+    // will actually see, and is capped at one encode plus one correction.
+    if let Some(display) = display {
+        let effort = effort.unwrap_or(PerceptualEffort::Fast);
+        let score = ssimulacra2
+            .or_else(|| quality.map(f64::from))
+            .ok_or("--display needs a quality (qN) or --ssimulacra2")?;
+        let target =
+            PerceptualTarget::for_display(score, display, effort).map_err(|err| err.to_string())?;
+        let options = EncodeOptions {
+            rate_control: Some(RateControl::Perceptual(target)),
+            format: OutputFormat::Jp2,
+            profile: Default::default(),
+            ..Default::default()
+        };
+        let label = format!(
+            "s{score}-{}{}x{}-{}{}",
+            display_label(display.color),
+            display.max_width,
+            display.max_height,
+            effort_label(effort),
+            if display.resample_source {
+                "-resampled"
+            } else {
+                ""
+            }
+        );
+        return Ok((options, label));
+    }
     if let Some(score) = ssimulacra2 {
         let effort = effort.unwrap_or_default();
         let target = PerceptualTarget::new(score, effort).map_err(|err| err.to_string())?;
@@ -814,6 +909,27 @@ fn encode_options_from_cli(
         };
         let label = format!("ssim{score}-{}", effort_label(effort));
         return Ok((options, label));
+    }
+    // Explicit qN is the canonical verified scale (SSIMULACRA2 floor of N); the
+    // content classifier's auto number and --approx are the legacy open-loop preset.
+    if let Some(level) = quality.filter(|_| !approx) {
+        if level >= 100 {
+            let options = EncodeOptions {
+                quality: 100,
+                format: OutputFormat::Jp2,
+                profile: Default::default(),
+                ..Default::default()
+            };
+            return Ok((options, "lossless".to_string()));
+        }
+        let effort = effort.unwrap_or_default();
+        let options = EncodeOptions {
+            rate_control: Some(RateControl::Quality { level, effort }),
+            format: OutputFormat::Jp2,
+            profile: Default::default(),
+            ..Default::default()
+        };
+        return Ok((options, format!("q{level}-{}", effort_label(effort))));
     }
     let (quality, auto_note) = match quality {
         Some(q) => (q, String::new()),
@@ -828,7 +944,7 @@ fn encode_options_from_cli(
         profile: Default::default(),
         ..Default::default()
     };
-    Ok((options, format!("quality={quality}{auto_note}")))
+    Ok((options, format!("approx-q{quality}{auto_note}")))
 }
 
 fn effort_label(effort: PerceptualEffort) -> &'static str {
@@ -836,6 +952,66 @@ fn effort_label(effort: PerceptualEffort) -> &'static str {
         PerceptualEffort::Fast => "fast",
         PerceptualEffort::Balanced => "balanced",
         PerceptualEffort::Quality => "quality",
+    }
+}
+
+fn display_label(color: DisplayColor) -> &'static str {
+    match color {
+        DisplayColor::Eink => "eink",
+        DisplayColor::Tablet => "tablet",
+    }
+}
+
+/// `--resample` only means anything alongside `--display`: it moves the encode
+/// itself down to the panel box, so the emitted image has the display size.
+fn apply_resample_flag(
+    display: Option<DisplayProfile>,
+    resample: bool,
+) -> Result<Option<DisplayProfile>, String> {
+    if !resample {
+        return Ok(display);
+    }
+    let Some(profile) = display else {
+        return Err("--resample needs --display".into());
+    };
+    Ok(Some(profile.resampling_source()))
+}
+
+fn parse_display_flag(
+    args: &[String],
+    i: usize,
+) -> Result<Option<(DisplayProfile, usize)>, String> {
+    let arg = &args[i];
+    if arg == "--display" {
+        let Some(next) = args.get(i + 1) else {
+            return Err("missing value after --display".into());
+        };
+        return Ok(Some((parse_display(next)?, 2)));
+    }
+    if let Some(value) = arg.strip_prefix("--display=") {
+        return Ok(Some((parse_display(value)?, 1)));
+    }
+    Ok(None)
+}
+
+/// `eink:WxH` or `tablet:WxH`: the largest size the reader ever renders the
+/// image at, and the panel's color mode.
+fn parse_display(value: &str) -> Result<DisplayProfile, String> {
+    let invalid = || format!("invalid --display `{value}`, expected eink:WxH or tablet:WxH");
+    let lowered = value.trim().to_ascii_lowercase();
+    let (mode, size) = lowered.split_once(':').ok_or_else(invalid)?;
+    let (width, height) = size.split_once('x').ok_or_else(invalid)?;
+    let width = width.parse::<u32>().map_err(|_| invalid())?;
+    let height = height.parse::<u32>().map_err(|_| invalid())?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "--display size must be non-zero, got {width}x{height}"
+        ));
+    }
+    match mode {
+        "eink" => Ok(DisplayProfile::eink(width, height)),
+        "tablet" => Ok(DisplayProfile::tablet(width, height)),
+        _ => Err(invalid()),
     }
 }
 
@@ -897,12 +1073,29 @@ fn reject_quality_and_ssim_together(
     quality: Option<u8>,
     ssimulacra2: Option<f64>,
     effort: Option<PerceptualEffort>,
+    approx: bool,
+    display: Option<DisplayProfile>,
 ) -> Result<(), String> {
     if quality.is_some() && ssimulacra2.is_some() {
         return Err("cannot combine --quality with --ssimulacra2".into());
     }
-    if effort.is_some() && ssimulacra2.is_none() {
-        return Err("--effort requires --ssimulacra2".into());
+    if approx && (ssimulacra2.is_some() || effort.is_some()) {
+        return Err(
+            "--approx is the unmeasured legacy preset; it takes no --effort or --ssimulacra2"
+                .into(),
+        );
+    }
+    if approx && display.is_some() {
+        return Err("--approx is the unmeasured legacy preset; it takes no --display".into());
+    }
+    if display.is_some() && quality.is_none() && ssimulacra2.is_none() {
+        return Err("--display needs a quality (qN) or --ssimulacra2".into());
+    }
+    if effort.is_some() && quality.is_none() && ssimulacra2.is_none() {
+        return Err(
+            "--effort needs a quality (qN) or --ssimulacra2; auto quality is an approximate preset"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -992,7 +1185,7 @@ fn component_from_u8_plane(data: Vec<i32>, width: u32, height: u32) -> Component
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, PerceptualEffort, parse_args, parse_quality};
+    use super::{CliCommand, DisplayProfile, PerceptualEffort, parse_args, parse_quality};
     use std::path::PathBuf;
 
     #[test]
@@ -1005,6 +1198,8 @@ mod tests {
                 quality: None,
                 ssimulacra2: None,
                 effort: None,
+                approx: false,
+                display: None,
             }
         );
     }
@@ -1020,6 +1215,8 @@ mod tests {
                     quality: Some(50),
                     ssimulacra2: None,
                     effort: None,
+                    approx: false,
+                    display: None,
                 }
             );
         }
@@ -1039,6 +1236,8 @@ mod tests {
                 quality: Some(75),
                 ssimulacra2: None,
                 effort: None,
+                approx: false,
+                display: None,
             }
         );
     }
@@ -1088,6 +1287,8 @@ mod tests {
                 quality: Some(85),
                 ssimulacra2: None,
                 effort: None,
+                approx: false,
+                display: None,
             }
         );
     }
@@ -1150,6 +1351,8 @@ mod tests {
                 quality: None,
                 ssimulacra2: Some(90.0),
                 effort: Some(PerceptualEffort::Fast),
+                approx: false,
+                display: None,
             }
         );
     }
@@ -1166,13 +1369,124 @@ mod tests {
     }
 
     #[test]
-    fn rejects_effort_without_ssimulacra2() {
-        let err = parse_args(vec![
+    fn quality_with_effort_and_approx_parse() {
+        let args = parse_args(vec![
             "file.png".to_string(),
+            "q80".to_string(),
             "--effort".to_string(),
             "balanced".to_string(),
         ])
-        .expect_err("effort alone");
-        assert!(err.contains("--effort requires"), "{err}");
+        .expect("quality with effort");
+        assert_eq!(
+            args.command,
+            CliCommand::Encode {
+                input_path: PathBuf::from("file.png"),
+                quality: Some(80),
+                ssimulacra2: None,
+                effort: Some(PerceptualEffort::Balanced),
+                approx: false,
+                display: None,
+            }
+        );
+        let args = parse_args(vec![
+            "file.png".to_string(),
+            "--approx".to_string(),
+            "q80".to_string(),
+        ])
+        .expect("approx preset");
+        assert_eq!(
+            args.command,
+            CliCommand::Encode {
+                input_path: PathBuf::from("file.png"),
+                quality: Some(80),
+                ssimulacra2: None,
+                effort: None,
+                approx: true,
+                display: None,
+            }
+        );
+        let err = parse_args(vec![
+            "file.png".to_string(),
+            "--approx".to_string(),
+            "q80".to_string(),
+            "--effort=fast".to_string(),
+        ])
+        .expect_err("approx takes no effort");
+        assert!(err.contains("--approx"), "{err}");
+        let err = parse_args(vec!["file.png".to_string(), "--effort=fast".to_string()])
+            .expect_err("effort needs a quality");
+        assert!(err.contains("--effort needs"), "{err}");
+    }
+
+    #[test]
+    fn parses_display_targets() {
+        let args = parse_args(vec![
+            "file.png".to_string(),
+            "q75".to_string(),
+            "--display".to_string(),
+            "eink:400x300".to_string(),
+        ])
+        .expect("display target");
+        assert_eq!(
+            args.command,
+            CliCommand::Encode {
+                input_path: PathBuf::from("file.png"),
+                quality: Some(75),
+                ssimulacra2: None,
+                effort: None,
+                display: Some(DisplayProfile::eink(400, 300)),
+                approx: false,
+            }
+        );
+
+        let args = parse_args(vec![
+            "file.png".to_string(),
+            "--ssimulacra2=72.5".to_string(),
+            "--display=TABLET:1024x768".to_string(),
+        ])
+        .expect("tablet target");
+        let CliCommand::Encode { display, .. } = args.command else {
+            panic!("expected encode");
+        };
+        assert_eq!(display, Some(DisplayProfile::tablet(1024, 768)));
+
+        for bad in ["eink", "eink:0x300", "phone:400x300", "eink:400"] {
+            assert!(
+                parse_args(vec![
+                    "file.png".to_string(),
+                    "q75".to_string(),
+                    format!("--display={bad}"),
+                ])
+                .is_err(),
+                "{bad} must be rejected"
+            );
+        }
+        let err = parse_args(vec![
+            "file.png".to_string(),
+            "--display=eink:400x300".to_string(),
+        ])
+        .expect_err("no floor");
+        assert!(err.contains("--display needs a quality"), "{err}");
+    }
+
+    #[test]
+    fn display_target_defaults_to_fast_effort() {
+        let image = super::Image::from_gray_bytes(8, 8, &[128u8; 64]).expect("gray");
+        let (options, label) = super::encode_options_from_cli(
+            &image,
+            Some(75),
+            None,
+            None,
+            false,
+            Some(DisplayProfile::eink(400, 300)),
+        )
+        .expect("options");
+        let Some(jp2lam::RateControl::Perceptual(target)) = options.rate_control else {
+            panic!("expected a perceptual target");
+        };
+        assert_eq!(target.effort, PerceptualEffort::Fast);
+        assert_eq!(target.score, 75.0);
+        assert_eq!(target.display, Some(DisplayProfile::eink(400, 300)));
+        assert_eq!(label, "s75-eink400x300-fast");
     }
 }

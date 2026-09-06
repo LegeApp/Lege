@@ -5,6 +5,12 @@ use crate::plan::EncodingPlan;
 pub(crate) struct EncodeContext<'a> {
     pub image: ImageView<'a>,
     pub plan: EncodingPlan,
+    /// Source the perceptual floor is verified against, when that is not
+    /// `image`. A display-resampled encode plans and encodes the downscaled
+    /// image, but the floor it promises is against the *original*, conditioned
+    /// into the display box - so the search scores its candidates against this
+    /// instead. `None` on every other path, which is the hot path.
+    pub metric_reference: Option<ImageView<'a>>,
 }
 
 impl<'a> EncodeContext<'a> {
@@ -13,8 +19,33 @@ impl<'a> EncodeContext<'a> {
     }
 
     pub(crate) fn new_view(image: ImageView<'a>, options: &EncodeOptions) -> Result<Self> {
+        let _p = crate::encode::profile_enter("context::new_view");
         let plan = EncodingPlan::build_view(&image, options)?;
-        Ok(Self { image, plan })
+        Ok(Self {
+            image,
+            plan,
+            metric_reference: None,
+        })
+    }
+
+    /// Same source, another rung's plan.
+    pub(crate) fn with_plan(&self, plan: EncodingPlan) -> Self {
+        Self {
+            image: self.image.clone(),
+            plan,
+            metric_reference: self.metric_reference.clone(),
+        }
+    }
+
+    /// Verify the perceptual floor against `reference` rather than `image`.
+    pub(crate) fn with_metric_reference(mut self, reference: ImageView<'a>) -> Self {
+        self.metric_reference = Some(reference);
+        self
+    }
+
+    /// The image the perceptual floor is measured against.
+    pub(crate) fn metric_source(&self) -> &ImageView<'a> {
+        self.metric_reference.as_ref().unwrap_or(&self.image)
     }
 
     pub(crate) fn load_component_i32(&self, index: usize) -> Result<Vec<i32>> {

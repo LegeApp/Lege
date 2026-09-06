@@ -170,6 +170,7 @@ impl NativeBackend {
         height: u32,
         data: Vec<f32>,
     ) -> Result<NativeComponentCoefficients> {
+        let _p = crate::encode::profile_enter("dwt::forward");
         let dwt =
             self.forward_dwt_97_from_input(context, component_index, x0, y0, width, height, data)?;
         self.quantize_unquantized_component(context, &dwt)
@@ -400,6 +401,7 @@ impl NativeBackend {
         component_index: usize,
         coefficients: &NativeComponentCoefficients,
     ) -> Result<t1::NativeEncodedTier1Layout> {
+        let _p = crate::encode::profile_enter("t1::encode_tier1_coefficients");
         let precision = context
             .plan
             .components
@@ -957,6 +959,60 @@ impl NativeBackend {
         )
     }
 
+    /// This image's unquantized 9/7 statistics: the near-zero coefficient fraction and
+    /// the two band energies per source pixel, the per-source terms of the first-probe
+    /// crossing predictor and of the display scale.
+    ///
+    /// `None` only for a transform that has no unquantized 9/7 planes to read. The DWT
+    /// cache is a memory optimisation and must not move the winner, so when it is refused
+    /// this recomputes the same coefficients one tile at a time and drops them again --
+    /// one extra forward DWT per tile, and only on the memory-capped path.
+    fn source_bands(
+        &self,
+        context: &EncodeContext<'_>,
+        tile_rects: &[TileRect],
+        dwt_cache: Option<&[UnquantizedTileDwt]>,
+    ) -> Result<Option<crate::encode::ssim::SourceBands>> {
+        if !matches!(context.plan.transform, WaveletTransform::Irreversible97) {
+            return Ok(None);
+        }
+        let mut near = 0u64;
+        let mut total = 0u64;
+        let mut ll = 0.0;
+        let mut high = 0.0;
+        let mut accumulate = |stats: (u64, u64, f64, f64)| {
+            near += stats.0;
+            total += stats.1;
+            ll += stats.2;
+            high += stats.3;
+        };
+        match dwt_cache {
+            Some(cache) => {
+                for tile in cache {
+                    accumulate(crate::encode::ssim_oracle::source_band_stats(tile));
+                }
+            }
+            None => {
+                for tile in tile_rects {
+                    let dwt = self.prepare_unquantized_dwt_for_tile_rect(context, *tile)?;
+                    accumulate(crate::encode::ssim_oracle::source_band_stats(&dwt));
+                }
+            }
+        }
+        if total == 0 {
+            return Ok(None);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let samples = total as f64;
+        #[allow(clippy::cast_precision_loss)]
+        Ok(Some(crate::encode::ssim::SourceBands {
+            near_zero: near as f64 / samples,
+            ll_per_sample: ll / samples,
+            highpass_per_sample: high / samples,
+            samples,
+        }))
+    }
+
     pub(crate) fn search_perceptual_tile_parts_with_optional_cache(
         &self,
         context: &EncodeContext<'_>,
@@ -969,11 +1025,18 @@ impl NativeBackend {
         let target = context.plan.perceptual.ok_or_else(|| {
             Jp2LamError::EncodeFailed("perceptual search requires a perceptual target".into())
         })?;
-        let mut evaluator = StreamEvaluator::from_view_ref(&context.image)?;
-        let budget = QualityBudget::for_effort(target.effort).max_evaluations();
+        // A display-resampled encode plans the downscaled image but owes its floor
+        // to the original: score against that, conditioned into the same box.
+        let mut evaluator = StreamEvaluator::for_target(context.metric_source(), &target)?;
+        let budget = QualityBudget::for_target(&target).max_evaluations();
+        // The per-source term of the first-probe predictor, once per encode. The DWT
+        // cache is a memory optimisation and must not change the winner, so the uncached
+        // path recomputes the same coefficients one tile at a time and drops them again;
+        // with the cache (the default) this is one pass over planes already in memory.
+        let bands = self.source_bands(context, tile_rects, dwt_cache)?;
         let mut best: Option<(u64, Vec<TilePart>, EncodingPlan)> = None;
         let mut finest_score = f64::NEG_INFINITY;
-        let outer_rungs = [75_u8, 90, 99];
+        let outer_rungs = crate::encode::ssim::outer_rungs_for_target(target.score);
         for quality in outer_rungs {
             if evaluator.evaluations() >= budget {
                 break;
@@ -986,10 +1049,7 @@ impl NativeBackend {
             apply_perceptual_quant_scale(&mut plan.subband_quants, scale);
             let rung_emit = native_emit_plan(&plan);
             let rung_headers = build_main_header_segments(&rung_emit)?;
-            let rung_context = EncodeContext {
-                image: context.image.clone(),
-                plan: plan.clone(),
-            };
+            let rung_context = context.with_plan(plan.clone());
             let mut store =
                 EncodedBlockStore::from_resource_limits(&rung_context.plan.resource_limits);
             let mut stored_tiles = Vec::with_capacity(tile_rects.len());
@@ -1031,9 +1091,10 @@ impl NativeBackend {
                 shared_store,
                 &mut evaluator,
                 budget,
+                bands,
                 &mut finest_score,
             ) {
-                Ok(parts) => {
+                Ok((parts, score)) => {
                     let encoded = CodestreamParts {
                         main_header_segments: rung_headers,
                         tile_parts: parts.clone(),
@@ -1044,6 +1105,19 @@ impl NativeBackend {
                         .is_none_or(|(best_bytes, _, _)| bytes < *best_bytes)
                     {
                         best = Some((bytes, parts, plan));
+                        crate::encode::ssim::record_achieved_score(score);
+                    }
+                    // This rung landed inside the accept band, and the rungs are
+                    // ordered byte-cheapest first: re-searching a finer one only pays
+                    // probes to confirm the answer we already measured (JPXL's N3
+                    // trusted stop). Out of band, the spill is still worth its probes.
+                    if score - target.score <= crate::encode::ssim::accept_band(&target) {
+                        break;
+                    }
+                    // A finer rung needs its ceiling plus two probes to beat this one;
+                    // with less budget left the spill only buys wasted evaluations.
+                    if budget.saturating_sub(evaluator.evaluations()) < 3 {
+                        break;
                     }
                 }
                 Err(Jp2LamError::PerceptualTargetMissed { status, .. })
@@ -1562,6 +1636,7 @@ pub(crate) fn select_stored_tile_passes(
     context: &EncodeContext<'_>,
     target_body_bytes: Option<u32>,
 ) -> Result<Vec<Vec<t1::NativeTier1SelectionLayout>>> {
+    let _p = crate::encode::profile_enter("rate::select_stored_tile_passes");
     if context.plan.quality >= 100 {
         return stored_tiles
             .iter()
@@ -1685,6 +1760,7 @@ pub(crate) fn build_stored_tile_parts(
     stored_selections: Vec<Vec<t1::NativeTier1SelectionLayout>>,
     shared_store: SharedEncodedBlockStore,
 ) -> Result<Vec<TilePart>> {
+    let _p = crate::encode::profile_enter("t2::build_stored_tile_parts");
     stored_tiles
         .iter()
         .zip(stored_selections)
@@ -1728,9 +1804,14 @@ fn select_perceptual_tile_parts(
     shared_store: SharedEncodedBlockStore,
     evaluator: &mut crate::encode::ssim::StreamEvaluator,
     budget: u32,
+    bands: Option<crate::encode::ssim::SourceBands>,
     finest_score: &mut f64,
-) -> Result<Vec<TilePart>> {
-    use crate::encode::ssim::{BRACKET_RATIO, aim_body_bytes, interpolate_body_bytes};
+) -> Result<(Vec<TilePart>, f64)> {
+    use crate::encode::ssim::{
+        MIN_BRACKET_STEP, PriorFeatures, accept_band, aim_body_bytes, aim_score,
+        display_prior_scale, interpolate_body_bytes, prior_body_fraction, safe_ceiling_for_rung,
+        shrink_body_bytes,
+    };
 
     let target = context.plan.perceptual.ok_or_else(|| {
         Jp2LamError::EncodeFailed("perceptual search requires a perceptual target".into())
@@ -1754,6 +1835,8 @@ fn select_perceptual_tile_parts(
         if let Some(index) = probed.iter().position(|obs| obs.body == body) {
             return Ok(index);
         }
+        crate::encode::ssim::PERCEPTUAL_PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let selections = select_stored_tile_passes(stored_tiles, context, Some(body))?;
         let reconstruct_started = std::time::Instant::now();
         let reconstructed = crate::encode::ssim_recon::reconstruct_stored_selection(
@@ -1781,18 +1864,46 @@ fn select_perceptual_tile_parts(
         Ok(probed.len() - 1)
     };
 
-    let ceiling = probe(max_body, &mut probed, evaluator)?;
-    *finest_score = finest_score.max(probed[ceiling].score);
-    if probed[ceiling].score < target.score {
-        return Err(Jp2LamError::PerceptualTargetMissed {
-            achieved: probed[ceiling].score,
-            target: target.score,
-            status: "SaturatedTop",
-        });
-    }
+    let ceiling_score = match safe_ceiling_for_rung(context.plan.quality) {
+        // Target far enough below this rung's all-pass score: skip the ceiling probe and
+        // aim from the corpus estimate. A miss still surfaces as UnderTargetWorkCap.
+        Some(safe) if target.score <= safe => safe,
+        _ => {
+            let ceiling = probe(max_body, &mut probed, evaluator)?;
+            *finest_score = finest_score.max(probed[ceiling].score);
+            if probed[ceiling].score < target.score {
+                return Err(Jp2LamError::PerceptualTargetMissed {
+                    achieved: probed[ceiling].score,
+                    target: target.score,
+                    status: "SaturatedTop",
+                });
+            }
+            probed[ceiling].score
+        }
+    };
 
-    let mut next_body = aim_body_bytes(max_body, probed[ceiling].score, target.score)
-        .min(max_body.saturating_sub(1).max(1));
+    // Corrections aim one effort-sized margin above the floor and stop anywhere inside
+    // twice it, so a landing on the aim ends the search instead of costing a probe.
+    let aim = aim_score(&target);
+    let band = accept_band(&target);
+    // First probe: this rung's own stored pass bytes scaled by the corpus crossing
+    // fraction, falling back to the loss-model aim from the ceiling when out of range.
+    // A display-conditioned target scores the same body far higher, so its crossing
+    // sits well below the source-resolution one.
+    let features = PriorFeatures {
+        bands,
+        body_bytes: f64::from(max_body),
+    };
+    let prior_body = (prior_body_fraction(context.plan.quality, aim, features)
+        * display_prior_scale(&target, context.image.width, context.image.height, bands)
+        * f64::from(max_body))
+    .round();
+    let mut next_body = if prior_body >= 1.0 && prior_body < f64::from(max_body) {
+        prior_body as u32
+    } else {
+        aim_body_bytes(max_body, ceiling_score, aim).min(max_body.saturating_sub(1).max(1))
+    };
+    let mut consecutive_infeasible = 0_i32;
     while evaluator.evaluations() < budget {
         if probed
             .iter()
@@ -1801,6 +1912,11 @@ fn select_perceptual_tile_parts(
             break;
         }
         let index = probe(next_body, &mut probed, evaluator)?;
+        consecutive_infeasible = if probed[index].score >= target.score {
+            0
+        } else {
+            consecutive_infeasible + 1
+        };
         let mut best_feasible: Option<(u32, f64)> = None;
         let mut worst_infeasible: Option<(u32, f64)> = None;
         for obs in &probed {
@@ -1812,30 +1928,59 @@ fn select_perceptual_tile_parts(
                 worst_infeasible = Some((obs.body, obs.score));
             }
         }
+        if best_feasible.is_some_and(|(_, score)| score - target.score <= band) {
+            break;
+        }
         if let (Some(lo), Some(hi)) = (worst_infeasible, best_feasible) {
-            if hi.0.saturating_sub(lo.0) <= 1 {
+            // Bracket tighter than one minimum step: take the feasible side. The step
+            // escalates with each consecutive infeasible probe so a flat plateau just
+            // under target cannot absorb the whole budget in 5% increments.
+            let step = MIN_BRACKET_STEP.powi(consecutive_infeasible.max(1));
+            let step_floor = (f64::from(lo.0) * step).round() as u32;
+            if hi.0 <= step_floor {
                 break;
             }
-            match interpolate_body_bytes(lo, hi, target.score) {
-                Some(body) if body != lo.0 && body != hi.0 => next_body = body,
+            match interpolate_body_bytes(lo, hi, aim) {
+                Some(body) if body != lo.0 && body != hi.0 => {
+                    // The crossing fit creeps by <1%/probe when the feasible side is far
+                    // away (the ceiling), burning the budget just under target; force a
+                    // minimum relative climb from the largest infeasible probe.
+                    next_body = body.max(step_floor).min(hi.0 - 1);
+                }
                 _ => break,
             }
         } else if probed[index].score >= target.score {
-            next_body = (f64::from(probed[index].body) / BRACKET_RATIO)
-                .round()
-                .clamp(1.0, f64::from(max_body)) as u32;
+            next_body = shrink_body_bytes(probed[index].body, probed[index].score, aim);
             if next_body == probed[index].body {
                 break;
             }
         } else {
-            next_body =
-                ((f64::from(probed[index].body) * BRACKET_RATIO).round() as u32).clamp(1, max_body);
-            if next_body == probed[index].body {
+            let body = probed[index].body;
+            next_body = aim_body_bytes(body, probed[index].score, aim)
+                .max((f64::from(body) * MIN_BRACKET_STEP).round() as u32)
+                .clamp(1, max_body);
+            if next_body == body {
                 break;
             }
         }
     }
 
+    // The aimed search ended with nothing feasible. Spend one rescue probe on the rung
+    // ceiling -- the best this rung can do -- rather than fail the encode outright: a fat
+    // verified stream still honours the floor, and an infeasible ceiling turns the miss
+    // into an honest SaturatedTop the outer loop can answer with a finer rung. Display
+    // targets need this most: they get one correction, and the metric is not monotone in
+    // body bytes once both sides are downscaled to a small panel.
+    if !probed.iter().any(|obs| obs.score >= target.score)
+        && !probed.iter().any(|obs| obs.body == max_body)
+    {
+        let rescue = probe(max_body, &mut probed, evaluator)?;
+        *finest_score = finest_score.max(probed[rescue].score);
+    }
+
+    let saturated = probed
+        .iter()
+        .any(|obs| obs.body == max_body && obs.score < target.score);
     let winner = probed
         .iter()
         .filter(|obs| obs.score >= target.score)
@@ -1846,9 +1991,13 @@ fn select_perceptual_tile_parts(
                 .map(|obs| obs.score)
                 .fold(f64::NEG_INFINITY, f64::max),
             target: target.score,
-            status: "UnderTargetWorkCap",
+            status: if saturated {
+                "SaturatedTop"
+            } else {
+                "UnderTargetWorkCap"
+            },
         })?;
-    Ok(winner.tile_parts.clone())
+    Ok((winner.tile_parts.clone(), winner.score))
 }
 
 fn select_exact_rate_tile_parts(

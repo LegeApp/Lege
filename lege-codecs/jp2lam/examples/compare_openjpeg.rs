@@ -19,8 +19,8 @@
 //! - `OPJ_DECOMPRESS` / `OPENJPEG_BIN` path overrides
 
 use jp2lam::{
-    DecodeConcurrency, DecodeOutputFormat, DecodeRequest, DecodeResolution, DecodeResult,
-    EncodeOptions, Image, Jp2Decoder, OutputFormat, encode, inspect_jp2,
+    DecodeConcurrency, DecodeOutputFormat, DecodeRequest, DecodeResolution, DecodeResult, Image,
+    Jp2Decoder, OutputFormat, encode, inspect_jp2,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -220,8 +220,7 @@ fn prepare_jp2(path: &str, outdir: &Path, quality: u8) -> (String, PathBuf, Vec<
     let rgb = dyn_img.to_rgb8();
     let (w, h) = rgb.dimensions();
     let image = Image::from_rgb_bytes(w, h, rgb.as_raw()).expect("Image");
-    let encoded =
-        encode(&image, &EncodeOptions::photo(quality, OutputFormat::Jp2)).expect("encode jp2");
+    let encoded = encode(&image, &approx_photo(quality, OutputFormat::Jp2)).expect("encode jp2");
     let dest = outdir.join(format!("lear_q{quality}.jp2"));
     std::fs::write(&dest, &encoded).expect("write jp2");
     (format!("{path}->jp2-q{quality}-{w}x{h}"), dest, encoded)
@@ -341,4 +340,13 @@ fn env_usize(name: &str, default: usize) -> usize {
         .and_then(|v| v.parse().ok())
         .filter(|&v| v > 0)
         .unwrap_or(default)
+}
+
+/// Legacy open-loop photo preset: this harness compares rates, not verified quality.
+fn approx_photo(quality: u8, format: jp2lam::OutputFormat) -> jp2lam::EncodeOptions {
+    let mut options = jp2lam::EncodeOptions::photo(quality, format);
+    if quality < 100 {
+        options.rate_control = Some(jp2lam::RateControl::ApproxQuality(quality));
+    }
+    options
 }

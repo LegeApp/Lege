@@ -27,11 +27,18 @@ use std::path::{Path, PathBuf};
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let recursive = args.iter().any(|arg| arg == "--recursive");
-    let positional: Vec<&str> = args
-        .iter()
-        .map(String::as_str)
-        .filter(|arg| !arg.starts_with("--"))
-        .collect();
+    let mut positional = Vec::new();
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if arg == "--qualities" || arg == "--fractions" {
+            index += 2;
+        } else if arg.starts_with("--") {
+            index += 1;
+        } else {
+            positional.push(arg.as_str());
+            index += 1;
+        }
+    }
 
     let corpus = PathBuf::from(positional.first().copied().unwrap_or("test-set"));
     let output = PathBuf::from(
@@ -45,6 +52,12 @@ fn main() -> Result<(), String> {
     let qualities = parse_qualities(
         args.iter()
             .position(|arg| arg == "--qualities")
+            .and_then(|index| args.get(index + 1))
+            .map(String::as_str),
+    )?;
+    let fractions = parse_fractions(
+        args.iter()
+            .position(|arg| arg == "--fractions")
             .and_then(|index| args.get(index + 1))
             .map(String::as_str),
     )?;
@@ -66,7 +79,7 @@ fn main() -> Result<(), String> {
     let config = OracleConfig {
         targets,
         quant_qualities: qualities,
-        body_fractions: default_oracle_body_fractions(),
+        body_fractions: fractions,
         output_dir: output.clone(),
     };
 
@@ -143,6 +156,24 @@ fn parse_qualities(value: Option<&str>) -> Result<Vec<u8>, String> {
                     return Err(format!("quantizer quality must be 0..=99, got {quality}"));
                 }
                 Ok(quality)
+            })
+            .collect(),
+    }
+}
+
+fn parse_fractions(value: Option<&str>) -> Result<Vec<f64>, String> {
+    match value {
+        None => Ok(default_oracle_body_fractions()),
+        Some(raw) => raw
+            .split(',')
+            .map(|part| {
+                let fraction: f64 = part
+                    .parse()
+                    .map_err(|_| format!("invalid body fraction `{part}`"))?;
+                if !(fraction.is_finite() && fraction > 0.0 && fraction <= 1.0) {
+                    return Err(format!("body fraction must be in (0, 1], got {fraction}"));
+                }
+                Ok(fraction)
             })
             .collect(),
     }

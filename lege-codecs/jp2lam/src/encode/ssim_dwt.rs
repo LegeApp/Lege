@@ -45,7 +45,7 @@ fn rgb_ramp(width: u32, height: u32) -> Image {
 
 fn quality_options(quality: u8) -> EncodeOptions {
     EncodeOptions {
-        rate_control: Some(RateControl::Quality(quality)),
+        rate_control: Some(RateControl::ApproxQuality(quality)),
         format: OutputFormat::J2k,
         tile_policy: TilePolicy::Single,
         ..Default::default()
@@ -166,10 +166,7 @@ fn cached_outer_rungs_do_not_rerun_forward_dwt() {
 
     for quality in [75_u8, 90, 99] {
         let rung_plan = apply_rung(&context.plan, quality);
-        let rung_context = EncodeContext {
-            image: context.image.clone(),
-            plan: rung_plan,
-        };
+        let rung_context = context.with_plan(rung_plan);
         let mut store = EncodedBlockStore::from_resource_limits(&rung_context.plan.resource_limits);
         for cached in &cache {
             let _ = backend

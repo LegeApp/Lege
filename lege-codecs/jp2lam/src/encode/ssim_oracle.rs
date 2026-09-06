@@ -3,7 +3,7 @@
 //! The production scheduler is not allowed to run this search. Session 9 trains
 //! on the JSONL this module writes; this module does not fit a predictor.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -139,8 +139,9 @@ pub struct OracleSweepResult {
     pub labels: Vec<OracleLabel>,
 }
 
-/// Exhaustive densified search for one image. Resumes if `raw/<stem>.jsonl`
-/// already ends with a `done` record.
+/// Exhaustive densified search for one image. Each probe is synced to
+/// `raw/<stem>.jsonl`, so an interrupted source resumes from its last durable
+/// probe; a trailing `done` record still marks a fully completed source.
 pub fn sweep_source(
     image: &Image,
     source: Option<&Path>,
@@ -179,8 +180,9 @@ pub fn sweep_source(
             .collect::<Result<Vec<_>>>()?,
     };
     let features = extract_features(image, &cache_tiles);
+    let (mut checkpoint, mut probes) =
+        open_jsonl_checkpoint(&jsonl_path, &source_name, fingerprint, &features)?;
     let mut evaluator = StreamEvaluator::from_view_ref(&context.image)?;
-    let mut probes = Vec::new();
 
     let mut qualities = config.quant_qualities.clone();
     qualities.sort_unstable();
@@ -198,10 +200,7 @@ pub fn sweep_source(
         apply_perceptual_quant_scale(&mut plan.subband_quants, scale);
         let emit_plan = backend.emit_plan(&plan);
         let headers = build_main_header_segments(&emit_plan)?;
-        let rung_context = EncodeContext {
-            image: context.image.clone(),
-            plan,
-        };
+        let rung_context = context.with_plan(plan);
         let mut store = EncodedBlockStore::from_resource_limits(&rung_context.plan.resource_limits);
         let mut stored_tiles = Vec::with_capacity(cache_tiles.len());
         for cached in &cache_tiles {
@@ -224,6 +223,12 @@ pub fn sweep_source(
             }
         }
         for body in bodies {
+            if probes
+                .iter()
+                .any(|probe| probe.quant_quality == quality && probe.pcrd_body == body)
+            {
+                continue;
+            }
             let selections = select_stored_tile_passes(&stored_tiles, &rung_context, Some(body))?;
             let reconstructed = reconstruct_stored_selection(
                 &rung_context.plan,
@@ -239,25 +244,20 @@ pub fn sweep_source(
                 tile_parts,
             };
             let output_bytes = complete_output_len(&rung_context, &emit_plan, &parts)?;
-            probes.push(OracleProbe {
+            let probe = OracleProbe {
                 quant_quality: quality,
                 quant_scale: scale,
                 pcrd_body: body,
                 score: observation.score,
                 output_bytes,
-            });
+            };
+            append_probe(&mut checkpoint, &probe)?;
+            probes.push(probe);
         }
     }
 
     let labels = reduce_labels(&probes, &config.targets);
-    write_jsonl(
-        &jsonl_path,
-        &source_name,
-        fingerprint,
-        &features,
-        &probes,
-        &labels,
-    )?;
+    finish_jsonl_checkpoint(&mut checkpoint, &labels)?;
     Ok(OracleSweepResult {
         source: source_name,
         skipped: false,
@@ -470,6 +470,28 @@ fn luma_chroma(image: &Image, x: u32, y: u32, gray: bool) -> (f32, f32) {
     }
 }
 
+/// One tile's contribution to the per-source terms of the production first-probe
+/// predictors: `(near-zero coefficients, coefficients, LL energy, highpass energy)`.
+///
+/// See `ssim::prior_body_fraction` and `ssim::display_prior_scale`. No sort and no
+/// allocation, and the same three statistics the oracle records as
+/// `coefficient_near_zero_fraction`, `ll_energy` and `highpass_energy`, so the fitted
+/// constants transfer directly.
+pub(crate) fn source_band_stats(tile: &UnquantizedTileDwt) -> (u64, u64, f64, f64) {
+    let mut near = 0u64;
+    let mut total = 0u64;
+    let mut ll = 0.0;
+    let mut high = 0.0;
+    for plane in &tile.components {
+        total += plane.data.len() as u64;
+        near += plane.data.iter().filter(|c| c.abs() < NEAR_ZERO).count() as u64;
+        let bands = plane_band_energy(plane);
+        ll += bands.ll;
+        high += bands.hl + bands.lh + bands.hh;
+    }
+    (near, total, ll, high)
+}
+
 fn dwt_features(tiles: &[UnquantizedTileDwt]) -> DwtFeat {
     let mut ll = 0.0;
     let mut hl = 0.0;
@@ -664,54 +686,132 @@ fn jsonl_is_complete(path: &Path) -> Result<bool> {
     Ok(last.is_some_and(|line| line.contains("\"kind\":\"done\"")))
 }
 
-fn write_jsonl(
+fn open_jsonl_checkpoint(
     path: &Path,
     source: &str,
     fingerprint: u64,
     features: &OracleFeatures,
-    probes: &[OracleProbe],
-    labels: &[OracleLabel],
-) -> Result<()> {
+) -> Result<(File, Vec<OracleProbe>)> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
     }
-    let tmp = path.with_extension("jsonl.tmp");
-    let mut file = File::create(&tmp).map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
-    writeln!(
-        file,
-        "{{\"kind\":\"header\",\"schema\":\"jp2lam.perceptual-oracle-raw/1\",\"metric_version\":{},\"source\":{},\"fingerprint\":{}}}",
+    if path.exists() {
+        let probes = read_partial_probes(path, source, fingerprint)?;
+        let file = OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+        return Ok((file, probes));
+    }
+
+    let mut file = File::create(path).map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+    let lines = format!(
+        "{{\"kind\":\"header\",\"schema\":\"jp2lam.perceptual-oracle-raw/1\",\"metric_version\":{},\"source\":{},\"fingerprint\":{}}}\n{{\"kind\":\"features\",{}}}\n",
         json_str(METRIC_VERSION),
         json_str(source),
-        fingerprint
-    )
-    .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
-    writeln!(
+        fingerprint,
+        features_fields(features),
+    );
+    sync_jsonl(&mut file, &lines)?;
+    Ok((file, Vec::new()))
+}
+
+fn append_probe(file: &mut File, probe: &OracleProbe) -> Result<()> {
+    sync_jsonl(
         file,
-        "{{\"kind\":\"features\",{}}}",
-        features_fields(features)
-    )
-    .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
-    for probe in probes {
-        writeln!(
-            file,
-            "{{\"kind\":\"probe\",\"quant_quality\":{},\"quant_scale\":{},\"pcrd_body\":{},\"score\":{},\"output_bytes\":{}}}",
+        &format!(
+            "{{\"kind\":\"probe\",\"quant_quality\":{},\"quant_scale\":{},\"pcrd_body\":{},\"score\":{},\"output_bytes\":{}}}\n",
             probe.quant_quality,
             json_f64(probe.quant_scale),
             probe.pcrd_body,
             json_f64(probe.score),
             probe.output_bytes
-        )
-        .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
-    }
+        ),
+    )
+}
+
+fn finish_jsonl_checkpoint(file: &mut File, labels: &[OracleLabel]) -> Result<()> {
+    let mut lines = String::new();
     for label in labels {
-        writeln!(file, "{}", label_line(label))
-            .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+        lines.push_str(&label_line(label));
+        lines.push('\n');
     }
-    writeln!(file, "{{\"kind\":\"done\"}}")
+    lines.push_str("{\"kind\":\"done\"}\n");
+    sync_jsonl(file, &lines)
+}
+
+fn sync_jsonl(file: &mut File, lines: &str) -> Result<()> {
+    file.write_all(lines.as_bytes())
         .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
-    drop(file);
-    fs::rename(&tmp, path).map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+    file.flush()
+        .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+    file.sync_data()
+        .map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
     Ok(())
+}
+
+fn read_partial_probes(path: &Path, source: &str, fingerprint: u64) -> Result<Vec<OracleProbe>> {
+    let file = File::open(path).map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+    let mut lines = BufReader::new(file).lines();
+    let header = lines
+        .find_map(|line| match line {
+            Ok(line) if !line.trim().is_empty() => Some(Ok(line)),
+            Ok(_) => None,
+            Err(err) => Some(Err(Jp2LamError::EncodeFailed(err.to_string()))),
+        })
+        .transpose()?
+        .ok_or_else(|| {
+            Jp2LamError::EncodeFailed(format!("partial oracle JSONL is empty: {}", path.display()))
+        })?;
+    let expected_schema = "\"schema\":\"jp2lam.perceptual-oracle-raw/1\"";
+    let expected_metric = format!("\"metric_version\":{}", json_str(METRIC_VERSION));
+    let expected_source = format!("\"source\":{}", json_str(source));
+    let expected_fingerprint = format!("\"fingerprint\":{fingerprint}");
+    if !header.contains("\"kind\":\"header\"")
+        || !header.contains(expected_schema)
+        || !header.contains(&expected_metric)
+        || !header.contains(&expected_source)
+        || !header.contains(&expected_fingerprint)
+    {
+        return Err(Jp2LamError::EncodeFailed(format!(
+            "partial oracle JSONL does not match this source or metric: {}",
+            path.display()
+        )));
+    }
+
+    let mut probes = Vec::new();
+    for line in lines {
+        let line = line.map_err(|err| Jp2LamError::EncodeFailed(err.to_string()))?;
+        if line.contains("\"kind\":\"probe\"") {
+            probes.push(parse_probe_line(&line)?);
+        }
+    }
+    Ok(probes)
+}
+
+fn parse_probe_line(line: &str) -> Result<OracleProbe> {
+    Ok(OracleProbe {
+        quant_quality: json_number(line, "quant_quality")?,
+        quant_scale: json_number(line, "quant_scale")?,
+        pcrd_body: json_number(line, "pcrd_body")?,
+        score: json_number(line, "score")?,
+        output_bytes: json_number(line, "output_bytes")?,
+    })
+}
+
+fn json_number<T>(line: &str, field: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let prefix = format!("\"{field}\":");
+    let (_, rest) = line.split_once(&prefix).ok_or_else(|| {
+        Jp2LamError::EncodeFailed(format!("oracle JSONL probe is missing `{field}`"))
+    })?;
+    let end = rest.find(|ch| ch == ',' || ch == '}').unwrap_or(rest.len());
+    rest[..end].parse().map_err(|err: T::Err| {
+        Jp2LamError::EncodeFailed(format!("invalid `{field}` in oracle JSONL probe: {err}"))
+    })
 }
 
 fn features_fields(features: &OracleFeatures) -> String {
@@ -836,8 +936,9 @@ fn fnv1a_bytes(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        OracleConfig, OracleProbe, OracleStatus, default_oracle_targets, reduce_labels,
-        sweep_source,
+        OracleConfig, OracleFeatures, OracleProbe, OracleStatus, append_probe,
+        default_oracle_targets, finish_jsonl_checkpoint, jsonl_is_complete, open_jsonl_checkpoint,
+        reduce_labels, sweep_source,
     };
     use crate::model::Image;
     use std::fs;
@@ -860,6 +961,29 @@ mod tests {
             pcrd_body: body,
             score,
             output_bytes: bytes,
+        }
+    }
+
+    fn features() -> OracleFeatures {
+        OracleFeatures {
+            width: 32,
+            height: 24,
+            grayscale: true,
+            luma_variance_q10: 0.1,
+            luma_variance_q50: 0.2,
+            luma_variance_q90: 0.3,
+            chroma_variance_q50: 0.0,
+            flat_fraction: 0.25,
+            edge_proxy: 0.1,
+            ll_energy: 1.0,
+            highpass_energy: 2.0,
+            high_low_ratio: 2.0,
+            hh_fraction: 0.25,
+            directional_asymmetry: 0.1,
+            chroma_wavelet_ratio: 0.0,
+            coefficient_near_zero_fraction: 0.5,
+            coefficient_tail_q90: 1.0,
+            coefficient_tail_q99: 2.0,
         }
     }
 
@@ -929,6 +1053,36 @@ mod tests {
 
         let second = sweep_source(&image, None, &config).expect("resume");
         assert!(second.skipped);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn partial_jsonl_recovers_durable_probes_before_done() {
+        let dir = std::env::temp_dir().join(format!(
+            "jp2lam-oracle-checkpoint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let path = dir.join("raw").join("src_memory.jsonl");
+        let first = probe(50, 1.0, 100, 91.0, 1000);
+        {
+            let (mut checkpoint, restored) =
+                open_jsonl_checkpoint(&path, "<memory>", 17, &features()).expect("new checkpoint");
+            assert!(restored.is_empty());
+            append_probe(&mut checkpoint, &first).expect("sync probe");
+        }
+
+        let (mut checkpoint, restored) =
+            open_jsonl_checkpoint(&path, "<memory>", 17, &features()).expect("resume checkpoint");
+        assert_eq!(restored, vec![first.clone()]);
+        let labels = reduce_labels(&restored, &[80.0]);
+        finish_jsonl_checkpoint(&mut checkpoint, &labels).expect("finish checkpoint");
+        assert!(jsonl_is_complete(&path).expect("completion"));
+        let text = fs::read_to_string(&path).expect("jsonl");
+        assert_eq!(text.matches("\"kind\":\"probe\"").count(), 1);
         fs::remove_dir_all(&dir).ok();
     }
 

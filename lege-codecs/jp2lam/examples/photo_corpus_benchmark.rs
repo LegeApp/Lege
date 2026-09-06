@@ -79,7 +79,7 @@ fn run_case(index: usize, input: &Path, output: &Path, rate: CorpusRate) -> Resu
             quality,
             0.0,
             0,
-            RateControl::Quality(quality),
+            RateControl::ApproxQuality(quality),
             format!("q_{quality}"),
         ),
     };

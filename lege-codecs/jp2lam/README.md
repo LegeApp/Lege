@@ -1,6 +1,6 @@
 # jp2lam
 
-The canonical source is the [Lege monorepo](https://github.com/LegeApp/Lege/tree/main/lege-codecs/jp2lam).
+The canonical source is the [Lege monorepo](https://github.com/liminalism/lege/tree/main/lege-codecs/jp2lam).
 
 JPEG 2000 Part 1 encoding in Rust, with focused JP2 decoding for document image workflows.
 
@@ -163,7 +163,7 @@ This is not a universal JPEG 2000 or JPX decoder yet. Selective arithmetic bypas
 
 ## Quality Guide
 
-Prefer `RateControl` for new code. `Lossless` selects reversible 5/3; `Quality(0..=99)` selects calibrated photographic 9/7; exact-rate variants target the complete J2K codestream or JP2 file. The legacy `quality` field retains its compatibility meaning when `rate_control` is absent.
+Prefer `RateControl` for new code. `Lossless` selects reversible 5/3. `Quality { level, effort }` is the canonical quality scale: `level` is a verified SSIMULACRA2 floor of the same value (quality 80 means score 80 on every image and resolution), and the encoder emits the smallest stream that meets it, spending up to `effort` metric evaluations to find it; `EncodeOptions::photo_quality(80)` is the one-call form. `ApproxQuality(0..=99)` is the legacy open-loop photographic preset: one encode at a rate derived from the number, cheap and unmeasured, whose perceptual quality varies with content and resolution (preset 80 measured SSIMULACRA2 52 at 0.8 MP and 14 at 50 MP). `Perceptual(PerceptualTarget)` is the expert form of `Quality` with a raw fractional score, and its optional `display` profile (`PerceptualTarget::for_display`, `EncodeOptions::display_photo`, CLI `--display eink:WxH` / `--display tablet:WxH`) moves the floor to where the reader sees it: source and candidate are both box-filtered in linear light into the display box (fit inside, aspect preserved, never upscaled) and, for `Eink`, folded to display luminance, so the score means "SSIMULACRA2 at display size". That metric is cheaper and more permissive than the source-resolution one, so a display target spends at most three evaluations - one encode plus two corrections - and still refuses to emit an under-floor stream; 72-75 with `Eink` and `Fast` effort suits small page images. A profile that conditions nothing for the source - a color panel the image already fits, or an e-ink panel for a gray source - is planned as the plain `Quality` target with the effort's own search (`DisplayProfile::conditions`): the display policy at box == source shipped first probes up to 1.5x the bytes of that search. `DisplayProfile::resampling_source()` (CLI `--resample`) goes one step further and encodes the display-sized image instead of the source, so the pixels the reader will never see are never coded: on the 2026-09-05 display corpus (11 photos, 0.8-6 MP, floor 70 into e-ink 600x450) that is 0.44x the bytes, 0.26x the encode time and 0.30x the decode time of the same target at source resolution, with every emitted stream still clearing the floor when re-measured against a linear-light downscale of the original. **It changes the emitted image dimensions** - `DisplayProfile::encoded_size(width, height)` says what they will be - so whatever places the image must read them back; it is off by default, and skipped when the source is less than `DisplayProfile::RESAMPLE_MIN_FACTOR` (1.25x) larger than the box. A source below the metric's 8x8 floor has no meaningful score, so a `Quality` or `Perceptual` target on one silently encodes reversible 5/3 instead of failing. exact-rate variants target the complete J2K codestream or JP2 file. The legacy `quality` field retains its compatibility meaning when `rate_control` is absent.
 
 | Quality  | Use case                                                                    |
 | -------: | --------------------------------------------------------------------------- |
@@ -197,7 +197,13 @@ The CLI is optional:
 
 ```bash
 cargo run --release --features cli --bin jp2lam -- input.png
-cargo run --release --features cli --bin jp2lam -- encode input.png q75
+cargo run --release --features cli --bin jp2lam -- encode input.png q80                    # verified: SSIMULACRA2 >= 80, balanced effort
+cargo run --release --features cli --bin jp2lam -- encode input.png q80 --effort fast      # same floor, fewer metric evaluations
+cargo run --release --features cli --bin jp2lam -- encode input.png --approx q75           # legacy open-loop preset, unmeasured
+cargo run --release --features cli --bin jp2lam -- encode input.png --ssimulacra2 82.5     # expert: raw score floor
+cargo run --release --features cli --bin jp2lam -- encode input.png q75 --display eink:400x300  # floor measured at the reader's display size, in grayscale
+cargo run --release --features cli --bin jp2lam -- encode input.png q75 --display tablet:1024x768
+cargo run --release --features cli --bin jp2lam -- encode input.png q70 --display eink:600x450 --resample  # encode the panel, not the source: output is 600x450
 cargo run --release --features cli --bin jp2lam -- encode-dir pages_png/ pages_jp2/ q85
 cargo run --release --features cli --bin jp2lam -- decode page.jp2 page.png
 cargo run --release --features cli --bin jp2lam -- decode-dir book_jp2/ book_png/

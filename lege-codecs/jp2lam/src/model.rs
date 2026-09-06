@@ -727,6 +727,133 @@ pub enum PerceptualEffort {
     Quality,
 }
 
+/// Color the reader's display actually shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayColor {
+    /// Color panel: the metric keeps RGB.
+    #[default]
+    Tablet,
+    /// Grayscale e-ink panel: the metric scores display luminance (no
+    /// dithering is modelled).
+    Eink,
+}
+
+/// The size and color the reader will actually see an image at.
+///
+/// Both the source and every candidate are conditioned to this box (fit
+/// inside, aspect preserved, never upscaled) before scoring, so the floor
+/// means "SSIMULACRA2 at display size", not at source resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayProfile {
+    /// Widest the image is ever rendered, in display pixels.
+    pub max_width: u32,
+    /// Tallest the image is ever rendered, in display pixels.
+    pub max_height: u32,
+    /// Color mode of the panel.
+    pub color: DisplayColor,
+    /// Encode the display-sized image instead of the source.
+    ///
+    /// **This changes the emitted image dimensions.** With it on, a source
+    /// larger than the box is box-filtered down to [`Self::metric_size`] before
+    /// planning, and the codestream, the JP2 `ihdr` box and every decode carry
+    /// those dimensions - so whatever places the image (a PDF `/Width`, a page
+    /// layout) must read them back rather than assume the source size.
+    /// [`Self::encoded_size`] answers what they will be without encoding.
+    ///
+    /// Off by default. Pixels the reader never sees are the cheapest bytes to
+    /// drop, so this is much smaller and much faster than encoding the source
+    /// and letting the metric score it downscaled; the cost is that the file
+    /// can no longer be shown larger than the panel it was encoded for.
+    /// Resampling is skipped when it would upscale, or when the source is less
+    /// than [`Self::RESAMPLE_MIN_FACTOR`] larger than the box.
+    pub resample_source: bool,
+}
+
+impl DisplayProfile {
+    /// Grayscale e-ink panel of at most `max_width` x `max_height` pixels.
+    #[must_use]
+    pub fn eink(max_width: u32, max_height: u32) -> Self {
+        Self {
+            max_width,
+            max_height,
+            color: DisplayColor::Eink,
+            resample_source: false,
+        }
+    }
+
+    /// Color panel of at most `max_width` x `max_height` pixels.
+    #[must_use]
+    pub fn tablet(max_width: u32, max_height: u32) -> Self {
+        Self {
+            max_width,
+            max_height,
+            color: DisplayColor::Tablet,
+            resample_source: false,
+        }
+    }
+
+    /// Smallest linear downscale worth resampling the source for. Below it the
+    /// bytes saved do not pay for throwing resolution away.
+    pub const RESAMPLE_MIN_FACTOR: f64 = 1.25;
+
+    /// Turns on [`Self::resample_source`]: encode the display-sized image, not
+    /// the source. Read [`Self::resample_source`] first - it changes the
+    /// emitted image dimensions.
+    #[must_use]
+    pub fn resampling_source(self) -> Self {
+        Self {
+            resample_source: true,
+            ..self
+        }
+    }
+
+    /// Dimensions an encode with this profile will actually emit for a
+    /// `width` x `height` source: the display box when [`Self::resample_source`]
+    /// is on and the source is at least [`Self::RESAMPLE_MIN_FACTOR`] larger in
+    /// both axes, and the source size otherwise.
+    #[must_use]
+    pub fn encoded_size(self, width: u32, height: u32) -> (u32, u32) {
+        if !self.resample_source {
+            return (width, height);
+        }
+        let (fit_width, fit_height) = self.metric_size(width, height);
+        if f64::from(width) < f64::from(fit_width) * Self::RESAMPLE_MIN_FACTOR {
+            return (width, height);
+        }
+        (fit_width, fit_height)
+    }
+
+    /// Whether this profile changes what the metric sees for a `width` x
+    /// `height` source: it downscales into the box, or folds a color source to
+    /// e-ink luminance. A profile that does neither is the source-resolution
+    /// metric under another name, and the encoder plans such a target as the
+    /// plain [`PerceptualTarget`] it is - the display search policy (one probe
+    /// plus two corrections) is tuned for the downscaled metric and, at box ==
+    /// source, ships first probes 1.5x the bytes of the effort's own search
+    /// (measured 2026-09-05 on 21 device-resolution book-scan figure crops:
+    /// floor 55 landed at 65-82).
+    #[must_use]
+    pub fn conditions(self, width: u32, height: u32, gray_source: bool) -> bool {
+        self.metric_size(width, height) != (width, height)
+            || (matches!(self.color, DisplayColor::Eink) && !gray_source)
+    }
+
+    /// Size the metric scores at: fit inside the box, aspect preserved, never
+    /// upscaled. Returns the source size unchanged when it already fits.
+    #[must_use]
+    pub fn metric_size(self, width: u32, height: u32) -> (u32, u32) {
+        if width <= self.max_width && height <= self.max_height {
+            return (width, height);
+        }
+        let scale = (f64::from(self.max_width) / f64::from(width))
+            .min(f64::from(self.max_height) / f64::from(height));
+        (
+            ((f64::from(width) * scale).round() as u32).max(1),
+            ((f64::from(height) * scale).round() as u32).max(1),
+        )
+    }
+}
+
 /// A minimum SSIMULACRA2 score the encoder must meet.
 ///
 /// Construct with [`PerceptualTarget::new`] so out-of-range scores are rejected
@@ -737,6 +864,10 @@ pub struct PerceptualTarget {
     pub score: f64,
     /// Probe / exact-price budget.
     pub effort: PerceptualEffort,
+    /// When set, the score is measured at the reader's display size and color
+    /// mode instead of at source resolution. `None` keeps the source-resolution
+    /// metric.
+    pub display: Option<DisplayProfile>,
 }
 
 impl PerceptualTarget {
@@ -752,7 +883,71 @@ impl PerceptualTarget {
                 "perceptual minimum score must be finite and in 0..=100, got {score}"
             )));
         }
-        Ok(Self { score, effort })
+        Ok(Self {
+            score,
+            effort,
+            display: None,
+        })
+    }
+
+    /// The target behind [`RateControl::Quality`]: quality `q` is a
+    /// SSIMULACRA2 floor of `q`; 100 is the lossless path, not a score.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::Jp2LamError::InvalidInput`] for quality 100, which is
+    /// the lossless path and has no score floor.
+    pub fn for_quality(quality: u8, effort: PerceptualEffort) -> crate::error::Result<Self> {
+        if quality >= 100 {
+            return Err(crate::error::Jp2LamError::InvalidInput(
+                "quality 100 is lossless; use RateControl::Lossless".into(),
+            ));
+        }
+        Self::new(f64::from(quality), effort)
+    }
+
+    /// A floor measured at the size and color the reader will actually see,
+    /// not at source resolution: both source and candidate are downscaled into
+    /// `display` (and folded to luminance for e-ink) before scoring.
+    ///
+    /// Suggested default for page images on an e-reader: `score` 70,
+    /// [`DisplayProfile::eink`], [`PerceptualEffort::Fast`]. 70 is where the
+    /// byte cost per floor point turns over on the 2026-09-05 display corpus
+    /// (11 photos, 0.8-6 MP, four panels): below it a point of floor costs
+    /// under 2.7% of the file, above it about 4%. At 600x450 a floor of 70
+    /// lands 0.49x the bytes of a plain source-resolution q75 and delivers 75.6
+    /// at display size on average, because the correction aims above the floor.
+    /// The same number suits a colour tablet - a bigger panel is already a
+    /// stricter test at the same score (source-resolution equivalent 62 at
+    /// 800x600 against 51 at 600x450), so the profile carries the difference
+    /// and the floor does not have to.
+    ///
+    /// A display target is capped at two metric evaluations - one encode plus
+    /// one correction - whatever `effort` says, because the point is a cheap
+    /// verified encode. A third, rescue evaluation at the quantizer's all-pass
+    /// body is spent only when neither of those met the floor: the metric is
+    /// not monotone in body bytes at heavy downscale, so an aimed correction
+    /// can miss, and a fat verified stream beats a failed encode.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::Jp2LamError::InvalidInput`] for a score outside
+    /// `0..=100` or a display box with a zero dimension.
+    pub fn for_display(
+        score: f64,
+        display: DisplayProfile,
+        effort: PerceptualEffort,
+    ) -> crate::error::Result<Self> {
+        if display.max_width == 0 || display.max_height == 0 {
+            return Err(crate::error::Jp2LamError::InvalidInput(format!(
+                "display profile must have non-zero pixel dimensions, got {}x{}",
+                display.max_width, display.max_height
+            )));
+        }
+        Ok(Self {
+            display: Some(display),
+            ..Self::new(score, effort)?
+        })
     }
 }
 
@@ -825,10 +1020,20 @@ pub struct PerceptualTrace {
 pub enum RateControl {
     /// Reversible 5/3 coding with no truncation target.
     Lossless,
-    /// Calibrated photographic quality in the inclusive range 0..=99.
-    Quality(u8),
-    /// Smallest exact stream whose reconstructed pixels meet a SSIMULACRA2
-    /// floor. Does not change the meaning of [`Self::Quality`].
+    /// Canonical quality: `level` in `0..=99` is a verified SSIMULACRA2 floor
+    /// of the same value (`ssimulacra2-jpxl-1`), so quality 80 means score 80
+    /// for every image and resolution. Emits the smallest exact stream that
+    /// meets it; `effort` bounds the metric evaluations spent finding it.
+    /// Requires 8-bit gray or sRGB; 100 is [`Self::Lossless`].
+    Quality { level: u8, effort: PerceptualEffort },
+    /// Legacy open-loop photographic preset in `0..=99`: one encode at a rate
+    /// derived from the number, no measurement. Cheap, but the resulting
+    /// perceptual quality varies with content and resolution (the Session 8c
+    /// calibration measured preset 80 at SSIMULACRA2 52 on 0.8 MP photos and
+    /// 14 at 50 MP). Not on the [`Self::Quality`] scale.
+    ApproxQuality(u8),
+    /// Expert form of [`Self::Quality`]: a raw SSIMULACRA2 floor, fractional
+    /// scores allowed.
     Perceptual(PerceptualTarget),
     /// Target complete output size in bytes.
     TargetBytes(u64),
@@ -842,11 +1047,14 @@ pub enum RateControl {
 
 #[derive(Debug, Clone)]
 pub struct EncodeOptions {
-    /// Quality 0–100. 100 = lossless (reversible 5/3 wavelet, no rate cap).
-    /// Values below 100 use the irreversible 9/7 wavelet with lossy compression.
+    /// Approximate preset 0–100 used only when `rate_control` is absent:
+    /// 100 = lossless (reversible 5/3), below 100 = [`RateControl::ApproxQuality`]
+    /// (irreversible 9/7 at a rate derived from the number, unmeasured).
+    /// Photographs wanting a guaranteed quality use [`Self::photo_quality`]
+    /// or [`RateControl::Quality`] instead.
     pub quality: u8,
-    /// Authoritative rate-control intent. When absent, `quality` retains its
-    /// compatibility meaning (`100` lossless, otherwise `Quality(quality)`).
+    /// Authoritative rate-control intent. When absent, `quality` applies as
+    /// described above.
     pub rate_control: Option<RateControl>,
     pub format: OutputFormat,
     /// Lossy rate-control strategy. Ignored for lossless (quality 100).
@@ -870,7 +1078,10 @@ impl EncodeOptions {
         );
         Self {
             quality: preset.quality(),
-            rate_control: is_photo.then(|| RateControl::Quality(preset.quality())),
+            rate_control: is_photo.then(|| RateControl::Quality {
+                level: preset.quality(),
+                effort: PerceptualEffort::Balanced,
+            }),
             format,
             profile: if is_photo {
                 ContentProfile::Photo
@@ -887,6 +1098,27 @@ impl EncodeOptions {
         }
     }
 
+    /// JP2 photograph at verified quality `level` (SSIMULACRA2 floor of
+    /// `level`, balanced effort): the one-call form of [`Self::photo`].
+    pub fn photo_quality(level: u8) -> Self {
+        Self::photo(level, OutputFormat::Jp2)
+    }
+
+    /// JP2 photograph whose verified floor is measured at the reader's display
+    /// size and color mode (see [`PerceptualTarget::for_display`]).
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::Jp2LamError::InvalidInput`] for an out-of-range score or
+    /// a degenerate display box.
+    pub fn display_photo(score: f64, display: DisplayProfile) -> crate::error::Result<Self> {
+        let target = PerceptualTarget::for_display(score, display, PerceptualEffort::Fast)?;
+        Ok(Self {
+            rate_control: Some(RateControl::Perceptual(target)),
+            ..Self::photo(99, OutputFormat::Jp2)
+        })
+    }
+
     /// Options for scanned document pages (see [`ContentProfile::Document`]).
     pub fn document(quality: u8, format: OutputFormat) -> Self {
         Self {
@@ -900,12 +1132,20 @@ impl EncodeOptions {
         }
     }
 
-    /// Options for continuous-tone photographs using the explicit photo-safe
-    /// quality/PCRD path.
+    /// Options for continuous-tone photographs on the canonical verified
+    /// quality scale ([`RateControl::Quality`], balanced effort); `quality`
+    /// 100 stays lossless.
     pub fn photo(quality: u8, format: OutputFormat) -> Self {
         Self {
             quality,
-            rate_control: Some(RateControl::Quality(quality.min(99))),
+            rate_control: Some(if quality >= 100 {
+                RateControl::Lossless
+            } else {
+                RateControl::Quality {
+                    level: quality,
+                    effort: PerceptualEffort::Balanced,
+                }
+            }),
             format,
             profile: ContentProfile::Photo,
             tile_policy: TilePolicy::Auto,
@@ -958,11 +1198,26 @@ mod tests {
         assert_eq!(Preset::PhotoNearLossless.quality(), 95);
         let options = EncodeOptions::photo(75, OutputFormat::Jp2);
         assert_eq!(options.profile, ContentProfile::Photo);
-        assert_eq!(options.rate_control, Some(RateControl::Quality(75)));
+        let verified = Some(RateControl::Quality {
+            level: 75,
+            effort: PerceptualEffort::Balanced,
+        });
+        assert_eq!(options.rate_control, verified);
         assert_eq!(options.tile_policy, TilePolicy::Auto);
         let preset = EncodeOptions::from_preset(Preset::PhotoHigh, OutputFormat::Jp2);
         assert_eq!(preset.profile, ContentProfile::Photo);
-        assert_eq!(preset.rate_control, Some(RateControl::Quality(75)));
+        assert_eq!(preset.rate_control, verified);
+        assert_eq!(
+            EncodeOptions::photo_quality(80).rate_control,
+            Some(RateControl::Quality {
+                level: 80,
+                effort: PerceptualEffort::Balanced
+            })
+        );
+        assert_eq!(
+            EncodeOptions::photo(100, OutputFormat::Jp2).rate_control,
+            Some(RateControl::Lossless)
+        );
     }
 
     #[test]

@@ -31,7 +31,7 @@ pub use encode::counters::{
     CLEANUP_PASSES, EMPTY_BLOCKS, MQ_SYMBOLS, MR_PASSES, MemoryCounterSnapshot, SP_PASSES,
     TOTAL_BLOCKS, TOTAL_PASS_BYTES, memory_snapshot, print, reset,
 };
-pub use encode::ssim::StreamEvaluator;
+pub use encode::ssim::{PERCEPTUAL_PROBES, StreamEvaluator, last_achieved_score};
 pub use encode::ssim_oracle::{
     OracleConfig, OracleFeatures, OracleLabel, OracleProbe, OracleStatus, OracleSweepResult,
     default_oracle_body_fractions, default_oracle_quant_qualities, default_oracle_targets,
@@ -49,7 +49,7 @@ pub use error::{Jp2LamError, Result};
 pub use jpxl_perceptual::METRIC_VERSION;
 pub use model::{
     ColorEncoding, ColorSpace, Component, ComponentSampleData, ComponentView, ContentProfile,
-    EncodeOptions, IccComponentModel, Image, ImageView, OutputFormat, PerceptualEffort,
-    PerceptualObservation, PerceptualProbe, PerceptualTarget, PerceptualTrace, Preset,
-    QualityStatus, RateControl, ResourceLimits, SamplePrecision, TilePolicy,
+    DisplayColor, DisplayProfile, EncodeOptions, IccComponentModel, Image, ImageView, OutputFormat,
+    PerceptualEffort, PerceptualObservation, PerceptualProbe, PerceptualTarget, PerceptualTrace,
+    Preset, QualityStatus, RateControl, ResourceLimits, SamplePrecision, TilePolicy,
 };

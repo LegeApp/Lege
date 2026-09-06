@@ -51,7 +51,7 @@ fn main() -> Result<(), String> {
             let bytes = encode(
                 &jp2_image,
                 &EncodeOptions {
-                    rate_control: Some(RateControl::Quality(quality)),
+                    rate_control: Some(RateControl::ApproxQuality(quality)),
                     format: OutputFormat::Jp2,
                     ..Default::default()
                 },

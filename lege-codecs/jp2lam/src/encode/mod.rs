@@ -13,7 +13,7 @@ pub mod counters;
 use crate::error::{Jp2LamError, Result};
 use crate::j2k::CodestreamParts;
 use crate::jp2;
-use crate::model::{EncodeOptions, Image, ImageView, OutputFormat};
+use crate::model::{EncodeOptions, Image, ImageView, OutputFormat, PerceptualTarget, RateControl};
 use backend::{CodestreamBackend, NativeBackend};
 use context::EncodeContext;
 use std::io::Write;
@@ -40,21 +40,28 @@ pub fn print_timing_data() {
         if times.is_empty() {
             return;
         }
-        let mut sorted: Vec<_> = times.clone();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        let total: std::time::Duration = sorted.iter().map(|t| t.1).sum();
-        println!("\n=== Profile Timing ({} entries) ===", sorted.len());
+        let mut totals: std::collections::HashMap<&str, (std::time::Duration, u64)> =
+            std::collections::HashMap::new();
+        for (name, dur) in times.iter() {
+            let slot = totals.entry(name.as_str()).or_default();
+            slot.0 += *dur;
+            slot.1 += 1;
+        }
+        let mut sorted: Vec<_> = totals.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        let total = sorted.first().map_or(std::time::Duration::ZERO, |e| e.1.0);
+        println!("\n=== Profile Timing ({} scopes) ===", sorted.len());
         println!("  primitives: {}", crate::simd::active_backend());
-        for (name, dur) in sorted.iter().take(20) {
-            let pct = 100.0 * dur.as_secs_f64() / total.as_secs_f64();
+        for (name, (dur, calls)) in sorted.iter().take(30) {
+            let pct = 100.0 * dur.as_secs_f64() / total.as_secs_f64().max(1e-12);
             println!(
-                "  {:>6.2}% {:12.3}ms  {}",
+                "  {:>6.2}% {:12.3}ms {:>8} calls  {}",
                 pct,
                 dur.as_secs_f64() * 1000.0,
+                calls,
                 name
             );
         }
-        println!("  Total: {:.3}ms", total.as_secs_f64() * 1000.0);
     }
 }
 
@@ -106,15 +113,157 @@ pub fn encode(image: &Image, options: &EncodeOptions) -> Result<Vec<u8>> {
 }
 
 pub fn encode_view(image: ImageView<'_>, options: &EncodeOptions) -> Result<Vec<u8>> {
+    let resampled = display_resampled_source(&image, options)?;
+    encode_prepared_view(&prepared_context(&image, resampled.as_ref(), options)?)
+}
+
+/// The context the backend encodes: the resampled image when a display profile
+/// asked for one, and then the original as the metric reference, so the
+/// perceptual floor is still verified against the pixels the caller handed in.
+fn prepared_context<'a>(
+    image: &ImageView<'a>,
+    resampled: Option<&'a Image>,
+    options: &EncodeOptions,
+) -> Result<EncodeContext<'a>> {
+    match resampled {
+        Some(small) => Ok(EncodeContext::new_view(small.as_view()?, options)?
+            .with_metric_reference(image.clone())),
+        None => EncodeContext::new_view(
+            image.clone(),
+            &plain_when_display_is_identity(image, options),
+        ),
+    }
+}
+
+/// A display profile that neither downscales nor folds this source (see
+/// [`crate::model::DisplayProfile::conditions`]) is the source-resolution metric under another
+/// name, so the target is planned as the plain one: the display search policy
+/// is tuned for the downscaled metric, and at box == source ships first probes
+/// 1.5x the bytes of the effort's own search. Only reached when no resample
+/// happened; a resampled encode keeps its profile to condition the original
+/// reference.
+fn plain_when_display_is_identity(image: &ImageView<'_>, options: &EncodeOptions) -> EncodeOptions {
+    let Some(RateControl::Perceptual(target)) = options.rate_control else {
+        return options.clone();
+    };
+    let gray_source = image.components.len() == 1;
+    match target.display {
+        Some(display) if !display.conditions(image.width, image.height, gray_source) => {
+            EncodeOptions {
+                rate_control: Some(RateControl::Perceptual(PerceptualTarget {
+                    display: None,
+                    ..target
+                })),
+                ..options.clone()
+            }
+        }
+        _ => options.clone(),
+    }
+}
+
+/// The image the encoder actually sees when a display profile asks for its
+/// source to be resampled: `None` keeps the caller's pixels.
+///
+/// Box-filtered in the source colour space at 8 bits, so gray stays gray and no
+/// colour conversion enters the encode. After it the source already fits the
+/// box, so [`crate::model::DisplayProfile::metric_size`] is the identity and the
+/// metric runs at the emitted resolution with no further conditioning (an e-ink
+/// profile still folds to luminance).
+fn display_resampled_source(
+    image: &ImageView<'_>,
+    options: &EncodeOptions,
+) -> Result<Option<Image>> {
+    let Some(RateControl::Perceptual(target)) = options.rate_control else {
+        return Ok(None);
+    };
+    let Some(display) = target.display.filter(|profile| profile.resample_source) else {
+        return Ok(None);
+    };
+    // Subsampled or deep components would need their own geometry; the
+    // perceptual lane is 8-bit gray/sRGB anyway, so leave anything else alone.
+    if image.components.iter().any(|component| {
+        component.dx != 1
+            || component.dy != 1
+            || component.precision != 8
+            || component.signed
+            || component.width != image.width
+            || component.height != image.height
+    }) {
+        return Ok(None);
+    }
+    let (width, height) = display.encoded_size(image.width, image.height);
+    if (width, height) == (image.width, image.height) {
+        return Ok(None);
+    }
+    box_downscale_view(image, width, height).map(Some)
+}
+
+/// Area-average an 8-bit image down to `width` x `height`, one plane at a time.
+///
+/// The averaging is in linear light, exactly like the metric's display
+/// conditioner: averaging gamma-encoded codes instead would darken every edge,
+/// and the resampled stream would then score below its own floor when a reader
+/// re-measures it against a linear-light downscale of the original.
+fn box_downscale_view(image: &ImageView<'_>, width: u32, height: u32) -> Result<Image> {
+    let _p = profile_enter("encode::box_downscale_source");
+    let lut = ssim::srgb8_lut();
+    let xmap = ssim::axis_map(image.width, width);
+    let ymap = ssim::axis_map(image.height, height);
+    let dst_width = width as usize;
+    let mut temp = vec![0.0f32; dst_width * image.height as usize];
+    // One linearized source row at a time: the horizontal box taps then read a
+    // contiguous f32 slice instead of re-entering the component view per tap.
+    let mut row = vec![0.0f32; image.width as usize];
+    let mut components = Vec::with_capacity(image.components.len());
+    for source in &image.components {
+        for y in 0..image.height {
+            ssim::linear_row(source, y, lut, &mut row)?;
+            let out = &mut temp[y as usize * dst_width..(y as usize + 1) * dst_width];
+            for (slot, (start, weights)) in out.iter_mut().zip(&xmap) {
+                let mut acc = 0.0f32;
+                for (offset, weight) in weights.iter().enumerate() {
+                    acc += row[start + offset] * weight;
+                }
+                *slot = acc;
+            }
+        }
+        let mut data = vec![0i32; dst_width * height as usize];
+        for (y, (start, weights)) in ymap.iter().enumerate() {
+            for x in 0..dst_width {
+                let mut acc = 0.0f32;
+                for (offset, weight) in weights.iter().enumerate() {
+                    acc += temp[(start + offset) * dst_width + x] * weight;
+                }
+                data[y * dst_width + x] = i32::from(ssim::linear_to_srgb8(acc));
+            }
+        }
+        components.push(crate::model::Component {
+            data,
+            width,
+            height,
+            precision: source.precision,
+            signed: source.signed,
+            dx: source.dx,
+            dy: source.dy,
+        });
+    }
+    Ok(Image {
+        width,
+        height,
+        colorspace: image.colorspace,
+        components,
+    })
+}
+
+fn encode_prepared_view(context: &EncodeContext<'_>) -> Result<Vec<u8>> {
     let _p = profile_enter("encode::total");
-    let context = EncodeContext::new_view(image, options)?;
     let native = NativeBackend;
-    if !native.supports(&context) {
+    if !native.supports(context) {
         return Err(Jp2LamError::EncodeFailed(
             "native backend does not support this lane".to_string(),
         ));
     }
-    let backend_codestream = native.encode_codestream(&context)?;
+    let backend_codestream = native.encode_codestream(context)?;
     CodestreamParts::parse_single_tile(&backend_codestream)?;
     let codestream = backend_codestream;
 
@@ -141,16 +290,26 @@ pub fn encode_view_to_writer<W: Write>(
     options: &EncodeOptions,
     writer: &mut W,
 ) -> Result<()> {
+    let resampled = display_resampled_source(&image, options)?;
+    encode_prepared_view_to_writer(
+        &prepared_context(&image, resampled.as_ref(), options)?,
+        writer,
+    )
+}
+
+fn encode_prepared_view_to_writer<W: Write>(
+    context: &EncodeContext<'_>,
+    writer: &mut W,
+) -> Result<()> {
     let _p = profile_enter("encode_to_writer::total");
-    let context = EncodeContext::new_view(image, options)?;
     let native = NativeBackend;
-    if !native.supports(&context) {
+    if !native.supports(context) {
         return Err(Jp2LamError::EncodeFailed(
             "native backend does not support this lane".to_string(),
         ));
     }
     if context.plan.perceptual.is_some() {
-        let j2k = native.encode_codestream(&context)?;
+        let j2k = native.encode_codestream(context)?;
         match context.plan.output_format {
             OutputFormat::J2k => writer
                 .write_all(&j2k)
@@ -165,7 +324,7 @@ pub fn encode_view_to_writer<W: Write>(
             }
         }
     } else {
-        let parts = native.prepare_codestream_parts(&context)?;
+        let parts = native.prepare_codestream_parts(context)?;
         let emit_plan = native.emit_plan(&context.plan);
         match context.plan.output_format {
             OutputFormat::J2k => parts.write_to(&emit_plan, writer),
@@ -203,8 +362,10 @@ pub fn encode_with_psnr(
     image: &Image,
     options: &EncodeOptions,
 ) -> Result<(Vec<u8>, EncodeMetrics)> {
-    let bytes = encode(image, options)?;
-    let context = EncodeContext::new(image, options)?;
+    let view = image.as_view()?;
+    let resampled = display_resampled_source(&view, options)?;
+    let context = prepared_context(&view, resampled.as_ref(), options)?;
+    let bytes = encode_prepared_view(&context)?;
     let native = NativeBackend;
     let metrics = native.compute_quality_metrics(&context, &bytes)?;
     Ok((bytes, metrics))

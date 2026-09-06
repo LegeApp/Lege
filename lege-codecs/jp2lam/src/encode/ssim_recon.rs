@@ -22,6 +22,7 @@ pub(crate) fn reconstruct_stored_selection(
     selections: &[Vec<NativeTier1SelectionLayout>],
     store: &EncodedBlockStore,
 ) -> Result<Image> {
+    let _p = crate::encode::profile_enter("ssim::reconstruct");
     if stored_tiles.len() != selections.len() {
         return Err(Jp2LamError::EncodeFailed(
             "stored tile count does not match selection count".into(),
@@ -335,7 +336,7 @@ mod tests {
 
     fn assert_internal_matches_decode(image: &Image, quality: u8, truncate: bool) {
         let options = EncodeOptions {
-            rate_control: Some(RateControl::Quality(quality)),
+            rate_control: Some(RateControl::ApproxQuality(quality)),
             format: OutputFormat::J2k,
             ..Default::default()
         };

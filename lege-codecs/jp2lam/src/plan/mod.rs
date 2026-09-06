@@ -212,7 +212,12 @@ impl EncodingPlan {
         let rate_control = resolve_rate_control(image, options)?;
         let (quality, output_rate_target, perceptual) = match rate_control {
             RateControl::Lossless => (100, None, None),
-            RateControl::Quality(quality) => (quality, None, None),
+            RateControl::ApproxQuality(quality) => (quality, None, None),
+            RateControl::Quality { level, effort } => (
+                99,
+                None,
+                Some(PerceptualTarget::for_quality(level, effort)?),
+            ),
             RateControl::Perceptual(target) => (99, None, Some(target)),
             RateControl::TargetBytes(bytes) => (99, Some(OutputRateTarget::Bytes(bytes)), None),
             RateControl::TargetBitsPerPixel(bpp) => (
@@ -342,14 +347,22 @@ fn resolve_rate_control(image: &ImageView<'_>, options: &EncodeOptions) -> Resul
         if options.quality >= 100 {
             RateControl::Lossless
         } else {
-            RateControl::Quality(options.quality)
+            RateControl::ApproxQuality(options.quality)
         }
     });
     match rate_control {
-        RateControl::Quality(0..=99) | RateControl::Lossless => Ok(rate_control),
-        RateControl::Quality(quality) => Err(Jp2LamError::InvalidInput(format!(
-            "quality rate control must be in 0..=99, got {quality}"
+        RateControl::ApproxQuality(0..=99) | RateControl::Lossless => Ok(rate_control),
+        RateControl::ApproxQuality(quality) => Err(Jp2LamError::InvalidInput(format!(
+            "approximate quality preset must be in 0..=99, got {quality}"
         ))),
+        RateControl::Quality { level, effort } => {
+            PerceptualTarget::for_quality(level, effort)?;
+            reject_unsupported_perceptual_source(image)?;
+            Ok(perceptual_or_lossless_below_metric_floor(
+                image,
+                rate_control,
+            ))
+        }
         RateControl::Perceptual(target) => {
             if !target.score.is_finite() || !(0.0..=100.0).contains(&target.score) {
                 return Err(Jp2LamError::InvalidInput(format!(
@@ -365,7 +378,10 @@ fn resolve_rate_control(image: &ImageView<'_>, options: &EncodeOptions) -> Resul
                 });
             }
             reject_unsupported_perceptual_source(image)?;
-            Ok(rate_control)
+            Ok(perceptual_or_lossless_below_metric_floor(
+                image,
+                rate_control,
+            ))
         }
         RateControl::TargetBytes(0) => Err(Jp2LamError::InvalidInput(
             "target output bytes must be non-zero".into(),
@@ -385,6 +401,23 @@ fn resolve_rate_control(image: &ImageView<'_>, options: &EncodeOptions) -> Resul
         RateControl::CompressionRatio(value) => Err(Jp2LamError::InvalidInput(format!(
             "compression ratio must be finite and positive, got {value}"
         ))),
+    }
+}
+
+/// SSIMULACRA2 refuses an image below `MIN_DIMENSION` in either axis, so a
+/// score floor has no meaning there and asking for one used to fail the encode.
+/// Reversible 5/3 is the honest substitute: it meets every floor exactly, and a
+/// sub-8-pixel image is a few hundred bytes lossless anyway. A display profile
+/// never upscales, so this one check covers the conditioned metric too.
+fn perceptual_or_lossless_below_metric_floor(
+    image: &ImageView<'_>,
+    rate_control: RateControl,
+) -> RateControl {
+    const MIN: u32 = jpxl_perceptual::MIN_DIMENSION;
+    if image.width < MIN || image.height < MIN {
+        RateControl::Lossless
+    } else {
+        rate_control
     }
 }
 
@@ -698,7 +731,11 @@ mod tests {
     fn invalid_explicit_rate_values_are_rejected() {
         let image = gray_image(13, 11);
         for rate_control in [
-            RateControl::Quality(100),
+            RateControl::ApproxQuality(100),
+            RateControl::Quality {
+                level: 100,
+                effort: crate::model::PerceptualEffort::Balanced,
+            },
             RateControl::TargetBytes(0),
             RateControl::TargetBitsPerPixel(f32::NAN),
             RateControl::CompressionRatio(0.0),
@@ -739,6 +776,7 @@ mod tests {
                 rate_control: Some(RateControl::Perceptual(PerceptualTarget {
                     score: 101.0,
                     effort: PerceptualEffort::Fast,
+                    display: None,
                 })),
                 ..Default::default()
             },

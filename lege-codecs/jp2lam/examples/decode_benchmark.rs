@@ -42,7 +42,7 @@ fn main() {
             let width = env_dimension("JP2LAM_DECODE_BENCH_WIDTH", 2048);
             let height = env_dimension("JP2LAM_DECODE_BENCH_HEIGHT", 2048);
             let image = synthetic_gray(width, height);
-            let options = tile_options_from_env(EncodeOptions::photo(75, OutputFormat::Jp2));
+            let options = tile_options_from_env(approx_photo(75, OutputFormat::Jp2));
             let bytes = encode(&image, &options).expect("encode synthetic benchmark fixture");
             (format!("synthetic-gray-{width}x{height}-q75"), bytes)
         }
@@ -128,7 +128,7 @@ fn load_or_encode_fixture(path: &str) -> (String, Vec<u8>) {
     // PNG / other raster: encode as irreversible photo JP2 (~quality 75 ≈ 20:1 class).
     let image = load_raster_image(&bytes, path);
     let quality = env_usize("JP2LAM_DECODE_BENCH_QUALITY", 75).min(100) as u8;
-    let options = tile_options_from_env(EncodeOptions::photo(quality, OutputFormat::Jp2));
+    let options = tile_options_from_env(approx_photo(quality, OutputFormat::Jp2));
     let encoded = encode(&image, &options).expect("encode raster to JP2");
     (
         format!("{path}->jp2-q{quality}-{}x{}", image.width, image.height),
@@ -532,4 +532,13 @@ fn bytes_hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
+}
+
+/// Legacy open-loop photo preset: this harness compares rates, not verified quality.
+fn approx_photo(quality: u8, format: jp2lam::OutputFormat) -> jp2lam::EncodeOptions {
+    let mut options = jp2lam::EncodeOptions::photo(quality, format);
+    if quality < 100 {
+        options.rate_control = Some(jp2lam::RateControl::ApproxQuality(quality));
+    }
+    options
 }
